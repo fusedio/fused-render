@@ -326,11 +326,11 @@ test("cwd+command: sends the full cd-and-run string", async () => {
   expect(sent).toEqual([["sid-1", "cd '/tmp/foo' && ls\r"]]);
 });
 
-test("skipCd: sends only the command, since the session was created in that cwd already", async () => {
+test("createdCwd matching the request's cwd: sends only the command, since the session was created in that cwd already", async () => {
   const sent: unknown[] = [];
   await sendPendingRequestIfAny(
     "sid-1",
-    { skipCd: true },
+    { createdCwd: "/tmp/foo" },
     {
       take: () => ({ cwd: "/tmp/foo", command: "ls" }),
       send: async (id, data) => { sent.push([id, data]); return { ok: true }; },
@@ -339,14 +339,27 @@ test("skipCd: sends only the command, since the session was created in that cwd 
   expect(sent).toEqual([["sid-1", "ls\r"]]);
 });
 
-test("skipCd with no command left: nothing to send", async () => {
+test("createdCwd matching the request's cwd, no command left: nothing to send", async () => {
   const sent: unknown[] = [];
   await sendPendingRequestIfAny(
     "sid-1",
-    { skipCd: true },
+    { createdCwd: "/tmp/foo" },
     { take: () => ({ cwd: "/tmp/foo" }), send: async (...args) => { sent.push(args); return { ok: true }; } },
   );
   expect(sent).toEqual([]);
+});
+
+test("createdCwd NOT matching the request's cwd (a newer request replaced the peeked one): still sends the cd", async () => {
+  const sent: unknown[] = [];
+  await sendPendingRequestIfAny(
+    "sid-1",
+    { createdCwd: "/tmp/foo" },
+    {
+      take: () => ({ cwd: "/tmp/bar", command: "ls" }),
+      send: async (id, data) => { sent.push([id, data]); return { ok: true }; },
+    },
+  );
+  expect(sent).toEqual([["sid-1", "cd '/tmp/bar' && ls\r"]]);
 });
 
 test("take() is called exactly once per invocation (consume-once is the caller's job via the store, not re-checked here)", async () => {

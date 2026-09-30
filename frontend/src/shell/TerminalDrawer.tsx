@@ -150,16 +150,24 @@ export async function createSessionOrAbandon(
  * request (`terminalDockStore.ts`) and types the resulting string into
  * `sessionId`'s pty via `sendTerminalInput` — exactly once per request,
  * since `takePendingTerminalRequest()` clears the slot on its way out. A
- * no-op if there is no pending request, or the request (after `skipCd`) has
- * nothing left to send. `skipCd` is set for a session that was just CREATED
- * with the request's own `cwd` (see the effect below) — it already starts
- * in the right directory, so re-sending `cd '<cwd>' && ...` would be a
- * redundant, visible extra line. Exported and dependency-injectable so a
+ * no-op if there is no pending request, or the request (once the `cd` is
+ * dropped, see below) has nothing left to send. When `opts.createdCwd`
+ * matches the request's own `cwd`, the session was just CREATED in that
+ * directory (see the effect below) — it already starts there, so re-sending
+ * `cd '<cwd>' && ...` would be a redundant, visible extra line, and only the
+ * command (if any) is sent. Exported and dependency-injectable so a
  * test can drive it without a real store slot or a real POST, the same
  * shape `createSessionOrAbandon` uses. */
 export async function sendPendingRequestIfAny(
   sessionId: string,
-  opts: { skipCd?: boolean } = {},
+  // `createdCwd`: the cwd the session was ACTUALLY created with, if this call
+  // follows a fresh `createTerminalSession(createCwd)`. Compared against the
+  // request `take()` itself returns below — never against a request peeked
+  // earlier — because a newer request can replace the one-slot pending
+  // request (terminalDockStore.ts) during the `await create(...)` this
+  // follows; comparing against the stale peeked value would skip `cd` for a
+  // request the session was never actually started in.
+  opts: { createdCwd?: string } = {},
   deps: {
     take?: () => TerminalRequest | null;
     send?: (id: string, data: string) => Promise<{ ok: boolean }>;
@@ -169,7 +177,8 @@ export async function sendPendingRequestIfAny(
   const send = deps.send ?? sendTerminalInput;
   const req = take();
   if (req === null) return;
-  const toSend = opts.skipCd ? { command: req.command } : req;
+  const skipCd = opts.createdCwd !== undefined && req.cwd === opts.createdCwd;
+  const toSend = skipCd ? { command: req.command } : req;
   const data = buildTerminalCommand(toSend);
   if (!data) return;
   await send(sessionId, data);
@@ -202,6 +211,23 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // running drawer still gets typed in, not just the very first one that
   // happened to also mint the session.
   const pendingVersion = usePendingTerminalRequestVersion();
+  // `sendPendingRequestIfAny`'s three call sites below all funnel their
+  // rejection here instead of swallowing it: a 409 (fused_render/server/routers/terminal.py
+  // — the pty's foreground process isn't the shell itself, so typing into it
+  // would go to whatever program is running) gets its own actionable line;
+  // anything else (a dropped connection, a dead session the list check
+  // missed) still surfaces in the drawer's existing error line rather than
+  // vanishing with nothing typed and no explanation.
+  function reportPendingSendFailure(err: unknown): void {
+    const status = err && typeof err === "object" && "status" in err ? (err as { status?: unknown }).status : undefined;
+    if (status === 409) {
+      setCreateError("Terminal is busy — finish the running program, then try again");
+      return;
+    }
+    setCreateError(
+      "Couldn't send the pending terminal request: " + (err instanceof Error ? err.message : String(err))
+    );
+  }
   const heightRef = useRef(height);
   heightRef.current = height;
   const drag = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -224,6 +250,23 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     };
   }, []);
 
+  // Re-verify the held id on every closed->open transition, not just once
+  // per page load: the shell can die (or the dev server restart, reaping its
+  // whole registry) while the drawer is CLOSED, when there is no mounted
+  // `TerminalView` to observe an exit frame and clear the cached id. Without
+  // this, the verify-or-create effect below bails out on its own
+  // `sessionId !== null` guard on the next open, handing `TerminalView` a
+  // dead id straight away (an open-then-flash-closed round trip the guard
+  // below exists to avoid in the first place). Resetting to `null` here
+  // costs nothing: `loadState().sessionId` still holds the cached id (this
+  // never touches localStorage), so the effect below re-reads it and
+  // reattaches if the live check says it is still alive.
+  const wasOpenRef = useRef(open);
+  useEffect(() => {
+    if (wasOpenRef.current && !open) setSessionId(null);
+    wasOpenRef.current = open;
+  }, [open]);
+
   useEffect(() => {
     if (!open || sessionId !== null) return;
     let cancelled = false;
@@ -245,7 +288,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
             // Reattaching to an already-running shell — it did not just
             // start in the request's `cwd`, so a `cd` (not just the
             // command) is still needed.
-            sendPendingRequestIfAny(cached).catch(() => {});
+            sendPendingRequestIfAny(cached).catch(reportPendingSendFailure);
             return;
           }
         } catch {
@@ -271,11 +314,12 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         if (id !== null) {
           setSessionId(id);
           saveState({ height: heightRef.current, sessionId: id });
-          // Only skip the `cd` when THIS session was actually created with
-          // the pending request's own cwd — a cached `cwd` prop (no
-          // pending request) means the request (if any arrives later) still
-          // needs its own `cd`.
-          sendPendingRequestIfAny(id, { skipCd: pending?.cwd !== undefined }).catch(() => {});
+          // `createdCwd: createCwd` lets `sendPendingRequestIfAny` skip the
+          // `cd` ONLY if the request it actually `take()`s (which can be a
+          // newer one than `pending` above, replaced during the `await`
+          // just finished) carries that same cwd — i.e. this session really
+          // was created in it.
+          sendPendingRequestIfAny(id, { createdCwd: createCwd }).catch(reportPendingSendFailure);
         }
       } catch (err) {
         if (!cancelled) {
@@ -299,7 +343,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // created in the request's cwd, so a full `cd` is always needed here.
   useEffect(() => {
     if (sessionId === null) return;
-    sendPendingRequestIfAny(sessionId).catch(() => {});
+    sendPendingRequestIfAny(sessionId).catch(reportPendingSendFailure);
   }, [sessionId, pendingVersion]);
 
   // `TerminalView`'s exit callback: clears the cached session id (React
@@ -330,8 +374,15 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
       e.preventDefault();
       toggleTerminalDock();
     }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    // CAPTURE phase, not bubble: with the drawer open and focused, xterm's
+    // own hidden textarea (TerminalView.tsx) sees a bubble-phase document
+    // listener AFTER its own keydown handler already turned the chord into a
+    // control byte written into the pty. Capturing on `document` runs before
+    // that, so the toggle fires and the byte is never sent (xterm's handler
+    // still runs after — TerminalView's `attachCustomKeyEventHandler` is
+    // what stops that half).
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
   }, []);
 
   function onHandlePointerDown(e: PointerEvent<HTMLDivElement>): void {
