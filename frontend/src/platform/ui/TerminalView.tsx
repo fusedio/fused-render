@@ -23,6 +23,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 import { TerminalSession, type TerminalStatus } from "@platform/lib/terminalSession";
+import { useResolvedTheme } from "@platform/lib/theme";
+import { buildTerminalTheme, documentCssVarLookup, terminalFontFamily } from "@platform/ui/terminalTheme";
 
 export interface TerminalViewProps {
   /** A live pty session id (fused_render/pty_session.py). */
@@ -35,6 +37,13 @@ export interface TerminalViewProps {
 
 export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  // `useResolvedTheme()` (platform/lib/theme.ts) is the same live signal
+  // every other theme-aware component subscribes to — a pin, an OS flip
+  // under System, or another window's choice all resolve through it. The
+  // effect below re-applies `term.options.theme` whenever this changes,
+  // independent of the `[id]` effect that (re)builds the whole `Terminal`.
+  const resolvedTheme = useResolvedTheme();
 
   // Re-runs whenever `id` changes (a restarted shell gets a new session id
   // from the caller, which this effect treats as a fresh mount).
@@ -58,13 +67,19 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
     };
 
     try {
+      const lookup = documentCssVarLookup();
       const term = new Terminal({
         convertEol: true,
         fontSize: 12,
         cursorBlink: true,
-        theme: { background: "transparent" },
+        fontFamily: terminalFontFamily(lookup),
+        theme: buildTerminalTheme(resolvedTheme, lookup),
       });
-      teardown.push(() => term.dispose());
+      termRef.current = term;
+      teardown.push(() => {
+        termRef.current = null;
+        term.dispose();
+      });
 
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -207,7 +222,20 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onExit/onStatus
     // are event callbacks, not reactive inputs; re-subscribing to them would
     // tear down and rebuild the whole terminal on every parent render.
+    // `resolvedTheme` is deliberately read only once here, at construction —
+    // the effect below re-applies it live without rebuilding the `Terminal`.
   }, [id]);
+
+  // Re-applies `term.options.theme` whenever the app theme changes, without
+  // tearing down the `Terminal`/`TerminalSession`/`ResizeObserver` the effect
+  // above owns — a theme flip should repaint the pane, not drop the
+  // connection or clear the scrollback.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const lookup = documentCssVarLookup();
+    term.options.theme = buildTerminalTheme(resolvedTheme, lookup);
+  }, [resolvedTheme]);
 
   // `.term-view` carries the padding; `.term-view-surface` is the unpadded
   // element xterm actually opens into and measures against (see the CSS
