@@ -146,6 +146,29 @@ class PtySession:
         except OSError:
             pass
 
+    def shell_is_foreground(self) -> bool:
+        """True if the shell itself (its own process group, per the
+        `setsid()` in `_pty_exec_helper.py`) currently owns the terminal's
+        foreground process group — false while a program the shell launched
+        (vim, a REPL, `sleep 30`, a dev server) is running in it.
+
+        Used by `POST /api/terminal/{sid}/input` (routers/terminal.py) to
+        refuse an "open in terminal / run a command" request against a busy
+        pane instead of typing `cd ... && cmd\\r` into whatever program has
+        the terminal right now. A dead session, or one where the group
+        comparison itself fails (ENOTTY on a fully torn-down master, or the
+        pty briefly has no foreground group at all mid-exec), reads as "not
+        the shell" — the safer default: refuse the write rather than risk
+        typing into the wrong program."""
+        if not self.alive:
+            return False
+        try:
+            fg_pgid = os.tcgetpgrp(self.master_fd)
+            shell_pgid = os.getpgid(self.proc.pid)
+        except OSError:
+            return False
+        return fg_pgid == shell_pgid
+
     def resize(self, rows: int, cols: int) -> None:
         if not self.alive:
             return
@@ -161,8 +184,15 @@ class PtySession:
         import fcntl
         import termios
         try:
-            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ,
-                        struct.pack("HHHH", rows, cols, 0, 0))
+            packed = struct.pack("HHHH", rows, cols, 0, 0)
+        except struct.error:
+            # Out of range for "HHHH" (an unsigned 16-bit int per field) —
+            # the route above already clamps/ignores this, but a caller that
+            # skips that check (a test, a future direct caller) gets a no-op
+            # instead of an unhandled exception out of this method.
+            return
+        try:
+            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, packed)
         except OSError:
             pass
 

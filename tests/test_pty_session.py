@@ -237,6 +237,39 @@ def test_attach_snapshot_alive_and_subscribe_are_atomic(registry, tmp_path, monk
     assert q is not None
 
 
+def test_shell_is_foreground_true_at_the_prompt(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    assert _wait_until(lambda: len(session.scrollback()) > 0)
+    assert session.shell_is_foreground()
+
+
+def test_shell_is_foreground_false_while_a_child_runs(registry, tmp_path, monkeypatch):
+    """`POST /api/terminal/{sid}/input` (routers/terminal.py) refuses to type
+    into a pane the shell doesn't currently own — this is the check behind
+    that 409. `sleep 30` becomes the terminal's foreground process group the
+    moment the shell execs it; Ctrl-C (SIGINT to the whole group) kills it
+    and hands the foreground back to the shell itself."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    assert _wait_until(lambda: len(session.scrollback()) > 0)
+    session.write(b"sleep 30\n")
+    assert _wait_until(lambda: not session.shell_is_foreground())
+    session.write(b"\x03")
+    assert _wait_until(lambda: session.shell_is_foreground())
+
+
+def test_shell_is_foreground_false_once_the_session_is_dead(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    session.write(b"exit\n")
+    assert _wait_until(lambda: not session.alive)
+    assert session.shell_is_foreground() is False
+
+
 def test_popen_kwargs_are_fork_safe(registry, tmp_path, monkeypatch):
     """The regression guard for the SIGSEGV: a Popen with cwd=,
     start_new_session=True, or close_fds=True (the default) takes the fork

@@ -66,8 +66,15 @@ def resolve_profile(cwd: Optional[str] = None) -> Optional[TerminalProfile]:
     if os.name == "nt":
         return None
 
-    shell = os.environ.get("SHELL") or "/bin/bash"
-    if not executable(shell):
+    # `$SHELL` can be SET but stale (a shell that was uninstalled, a path
+    # that never existed on this machine) — that is not "the user asked for
+    # no terminal," so this falls through to /bin/bash and then /bin/sh
+    # instead of reporting "not supported on this platform" for a machine
+    # that plainly has pty support and a POSIX shell.
+    for shell in (os.environ.get("SHELL"), "/bin/bash", "/bin/sh"):
+        if shell and executable(shell):
+            break
+    else:
         return None
 
     env = dict(os.environ)

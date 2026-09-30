@@ -159,6 +159,13 @@ def test_create_requires_x_fused_header(client, scratch_registry):
 
 def test_input_route_writes_into_the_pty_without_a_stream_socket(client, scratch_registry):
     sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    session = scratch_registry.get(sid)
+    # The child's `setsid()` (its own process group leader) races the create
+    # POST's response — give it a beat to land so `shell_is_foreground()`
+    # sees the shell rather than a stale/empty foreground group.
+    deadline = time.time() + 5
+    while time.time() < deadline and not session.shell_is_foreground():
+        time.sleep(0.02)
 
     resp = client.post(f"/api/terminal/{sid}/input", json={"data": "echo inputted\n"},
                         headers=_HEADERS)
@@ -189,3 +196,53 @@ def test_input_route_404s_for_unknown_session(client, scratch_registry):
     resp = client.post("/api/terminal/does-not-exist/input", json={"data": "x"},
                         headers=_HEADERS)
     assert resp.status_code == 404
+
+
+def test_input_route_409s_while_a_child_holds_the_foreground(client, scratch_registry):
+    """An "open in terminal / run a command" request against an existing
+    session (TerminalDrawer.tsx) must not type into whatever program the
+    shell is currently running — `sleep 30` becomes the pty's foreground
+    process group the moment it starts, and the route refuses the write
+    instead of sending `cd ... && cmd\\r` into it."""
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    session = scratch_registry.get(sid)
+    session.write(b"sleep 30\n")
+
+    deadline = time.time() + 5
+    while time.time() < deadline and session.shell_is_foreground():
+        time.sleep(0.02)
+    assert not session.shell_is_foreground()
+
+    resp = client.post(f"/api/terminal/{sid}/input", json={"data": "echo should-not-run\n"},
+                        headers=_HEADERS)
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "terminal is busy"
+
+
+def test_non_dict_control_frame_does_not_kill_the_socket(client, scratch_registry):
+    """A syntactically valid JSON frame that isn't an object (`5`, `[1, 2]`)
+    has no `.get` — the route must ignore it rather than raise
+    AttributeError out of the receive loop, which `except
+    WebSocketDisconnect` does not catch and would otherwise kill the whole
+    socket over one stray frame."""
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        ws.receive_bytes()
+        ws.send_text(json.dumps(5))
+        ws.send_text(json.dumps([1, 2]))
+        ws.send_bytes(b"echo still-alive\n")
+        _read_until(ws, b"still-alive")
+
+
+def test_out_of_range_resize_does_not_kill_the_socket(client, scratch_registry):
+    """`struct.pack`'s "HHHH" format (PtySession.resize) only accepts
+    unsigned 16-bit ints; the route clamps/ignores anything outside 1..65535
+    instead of letting `struct.error` propagate out of the receive loop."""
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        ws.receive_bytes()
+        ws.send_text(json.dumps({"resize": [0, 100000]}))
+        ws.send_bytes(b"echo still-alive\n")
+        _read_until(ws, b"still-alive")

@@ -100,6 +100,16 @@ def api_terminal_input(sid: str, body: dict = Body(default={}),
     session = pty_session.REGISTRY.get(sid)
     if session is None or not session.alive:
         return _error("no such terminal session", status=404)
+    # Refuse to type into a pane that isn't sitting at the shell's own
+    # prompt: an "open in terminal / run a command" request landing on an
+    # existing, reattached session (TerminalDrawer.tsx) has no idea what's
+    # currently running there, and `cd ... && cmd\r` going to vim, a REPL, or
+    # a dev server instead of the shell is silent data loss / a bogus
+    # command. `shell_is_foreground()` (pty_session.py) is the actual check;
+    # this just turns "no" into a 409 the client shows a line for instead of
+    # blindly writing the bytes.
+    if not session.shell_is_foreground():
+        return _error("terminal is busy", status=409)
     session.write(data.encode())
     return {"ok": True}
 
@@ -192,6 +202,12 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
                 control = json.loads(text)
             except json.JSONDecodeError:
                 continue
+            # A syntactically valid but non-object control frame (`5`,
+            # `[1, 2]`, `"resize"`) has no `.get` — ignored here rather than
+            # tearing down the socket with an AttributeError the same way the
+            # JSONDecodeError guard above it is.
+            if not isinstance(control, dict):
+                continue
             resize = control.get("resize")
             if isinstance(resize, list) and len(resize) == 2:
                 rows, cols = resize
@@ -205,6 +221,13 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
                     # WebSocketDisconnect` does not catch, tearing down an
                     # otherwise healthy terminal over a single bad control
                     # frame.
+                    continue
+                # `struct.pack`'s "HHHH" format (PtySession.resize) rejects
+                # anything outside an unsigned 16-bit int with `struct.error`
+                # — ignored here rather than raised, same as the malformed
+                # cases above. (`PtySession.resize` also catches it directly,
+                # as a second line of defense for any other caller.)
+                if not (1 <= rows <= 65535 and 1 <= cols <= 65535):
                     continue
                 session.resize(rows, cols)
     except WebSocketDisconnect:

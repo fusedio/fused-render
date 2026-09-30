@@ -79,6 +79,41 @@ def test_none_on_windows(monkeypatch):
     assert terminal_profiles.resolve_profile() is None
 
 
+def test_non_executable_shell_falls_back_to_bin_bash(monkeypatch):
+    """A SET but stale `$SHELL` (uninstalled, a path that never existed on
+    this machine) must not read as "no terminal support" — it falls through
+    to /bin/bash, the same fallback `claude_health.py:281` uses."""
+    monkeypatch.setenv("SHELL", "/opt/nonexistent/shell")
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        terminal_profiles, "executable",
+        lambda p: p == "/bin/bash")
+    profile = terminal_profiles.resolve_profile()
+    assert profile is not None
+    assert profile.shell == "/bin/bash"
+
+
+def test_non_executable_shell_and_bash_fall_back_to_bin_sh(monkeypatch):
+    monkeypatch.setenv("SHELL", "/opt/nonexistent/shell")
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        terminal_profiles, "executable",
+        lambda p: p == "/bin/sh")
+    profile = terminal_profiles.resolve_profile()
+    assert profile is not None
+    assert profile.shell == "/bin/sh"
+
+
+def test_none_when_no_shell_is_executable(monkeypatch):
+    monkeypatch.setenv("SHELL", "/opt/nonexistent/shell")
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(terminal_profiles, "executable", lambda p: False)
+    assert terminal_profiles.resolve_profile() is None
+
+
 @pytest.mark.parametrize("cwd_in, expect_fallback", [
     (None, True),
     ("/nonexistent/definitely/not/a/dir", True),
