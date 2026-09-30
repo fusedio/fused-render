@@ -47,9 +47,78 @@ export function useTerminalDockOpen(): boolean {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
+/** A "open the drawer in this folder / run this command in it" request from
+ * outside the drawer/chip (the explorer's "Open in Terminal" menu item,
+ * `fused.terminal.open`/`.run` via the page-API bridge). Both fields are
+ * optional so a bare "just open the drawer" request can share the same
+ * shape as a folder-scoped or command-scoped one. */
+export interface TerminalRequest {
+  cwd?: string;
+  command?: string;
+}
+
+// One slot, not a queue: a newer request replacing an unconsumed older one
+// matches "open the terminal here" semantics (the user cares about the
+// latest folder/command they asked for, not a backlog of every one they
+// clicked before the drawer got around to reading it). Separate listener set
+// from `listeners` above because `open` alone does not change on a second
+// `openTerminal()` call while the drawer is already open — TerminalDrawer
+// still needs to learn a new request arrived in that case.
+let pendingRequest: TerminalRequest | null = null;
+let pendingVersion = 0;
+const pendingListeners = new Set<() => void>();
+
+/** Open the drawer, optionally carrying a pending cwd/command request for
+ * TerminalDrawer to consume once a session id is available. Passing no
+ * `req` (or one with both fields undefined) just opens the drawer, same as
+ * `toggleTerminalDock()` when already closed. */
+export function openTerminal(req?: TerminalRequest): void {
+  if (req && (req.cwd !== undefined || req.command !== undefined)) {
+    pendingRequest = req;
+    pendingVersion += 1;
+    for (const listener of pendingListeners) listener();
+  }
+  set(true);
+}
+
+/** Read the pending request without consuming it — used to decide a
+ * brand-new session's create-time `cwd` before a session id exists to send
+ * input to. */
+export function peekPendingTerminalRequest(): TerminalRequest | null {
+  return pendingRequest;
+}
+
+/** Consume the pending request: returns it once, then clears the slot so a
+ * second consumer (or a re-run effect) doesn't resend it. */
+export function takePendingTerminalRequest(): TerminalRequest | null {
+  const req = pendingRequest;
+  pendingRequest = null;
+  return req;
+}
+
+function subscribePending(listener: () => void): () => void {
+  pendingListeners.add(listener);
+  return () => pendingListeners.delete(listener);
+}
+
+function getPendingVersion(): number {
+  return pendingVersion;
+}
+
+/** Bumps whenever a new pending request is recorded (including a repeat
+ * request while the drawer is already open, when `sessionId` won't itself
+ * change) — TerminalDrawer depends on this in the effect that consumes the
+ * request, alongside `sessionId`. */
+export function usePendingTerminalRequestVersion(): number {
+  return useSyncExternalStore(subscribePending, getPendingVersion);
+}
+
 /** Test-only: reset between test files (bun runs the whole suite in one
  * module registry, and this store is module-level — see the header). */
 export function resetTerminalDockForTests(): void {
   open = false;
   listeners.clear();
+  pendingRequest = null;
+  pendingVersion = 0;
+  pendingListeners.clear();
 }
