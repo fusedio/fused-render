@@ -1,0 +1,32 @@
+{
+  "name": "fused-render-map-vendor",
+  "private": true,
+  "description": "Build workspace for map.bundle.mjs — the browser-side rendering stack the map viewer template uses (no tile server: everything draws in the browser). Not shipped; only the built bundle is committed. See README.md.",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "dependencies": {
+    "@carbonplan/zarr-layer": "0.10.0",
+    "@deck.gl/core": "9.3.10",
+    "@deck.gl/geo-layers": "9.3.10",
+    "@deck.gl/layers": "9.3.10",
+    "@deck.gl/mapbox": "9.3.10",
+    "@deck.gl/mesh-layers": "9.3.10",
+    "@luma.gl/core": "9.3.6",
+    "@luma.gl/shadertools": "9.3.6",
+    "esbuild": "^0.25.11",
+    "maplibre-gl": "5.6.0",
+    "maplibre-gl-raster": "0.14.15",
+    "maplibre-gl-vector": "0.11.1",
+    "pmtiles": "4.5.0"
+  },
+  "overrides": {
+    "@luma.gl/core": "9.3.6",
+    "@luma.gl/shadertools": "9.3.6",
+    "@luma.gl/engine": "9.3.6",
+    "@luma.gl/webgl": "9.3.6",
+    "@luma.gl/gltf": "9.3.6",
+    "@luma.gl/constants": "9.3.6"
+  }
+}
