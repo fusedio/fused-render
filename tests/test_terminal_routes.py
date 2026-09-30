@@ -95,11 +95,12 @@ def test_resize_control_frame_reaches_the_session(client, scratch_registry):
 
 
 def test_malformed_resize_values_do_not_kill_the_session(client, scratch_registry):
-    """Regression guard for finding 9 (code review, PR #1290): the route
-    validated that `resize` is a 2-element list but not that the elements
-    are numeric. `int("a")` raising ValueError used to propagate out of the
-    handler (not caught by `except WebSocketDisconnect`), tearing down an
-    otherwise healthy terminal over one bad control frame."""
+    """The route validates that `resize` is a 2-element list but the
+    elements themselves can still be non-numeric. `int("a")` raising
+    ValueError would propagate out of the handler (not caught by `except
+    WebSocketDisconnect`), tearing down an otherwise healthy terminal over
+    one bad control frame — the `except (TypeError, ValueError)` in
+    routers/terminal.py guards against exactly that."""
     sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
 
     with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:

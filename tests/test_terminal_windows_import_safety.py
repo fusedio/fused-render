@@ -1,16 +1,16 @@
-"""Regression guard for "finding 0" (code review, PR #1290): the server must
-still IMPORT on Windows, not merely degrade gracefully once running.
+"""The server must still IMPORT on Windows, not merely degrade gracefully
+once running.
 
-`fused_render/pty_session.py` used to `import fcntl`/`import termios` at
-module scope. Both are POSIX-only. `fused_render/server/app.py` does an
-unconditional top-level `from fused_render.server.routers.terminal import
-router`, and that router imports `pty_session` — so on Windows, importing
-`fused_render.server.app` raised ImportError before `resolve_profile()`'s
-`os.name == "nt"` guard ever got a chance to run, taking the WHOLE app down,
-not just the terminal. The fix moved the two POSIX-only imports into the one
-function that uses them (`PtySession.resize`), which is never reached on
-Windows (no session is ever constructed there — `PtySessionRegistry.create`
-raises before touching `PtySession` once `resolve_profile()` returns None).
+`fcntl`/`termios` are POSIX-only, so `fused_render/pty_session.py` imports
+them only inside the one function that uses them (`PtySession.resize`),
+never at module scope. `fused_render/server/app.py` does an unconditional
+top-level `from fused_render.server.routers.terminal import router`, and
+that router imports `pty_session` — a module-scope import of either name
+would raise ImportError on Windows before `resolve_profile()`'s `os.name ==
+"nt"` guard ever got a chance to run, taking the WHOLE app down, not just
+the terminal. `PtySession.resize` is never reached on Windows: no session is
+ever constructed there — `PtySessionRegistry.create` raises before touching
+`PtySession` once `resolve_profile()` returns None.
 
 Run as a subprocess with `fcntl`/`termios` import-blocked, rather than
 monkeypatching `sys.modules` in-process: this module is already imported by

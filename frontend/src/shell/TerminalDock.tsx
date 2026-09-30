@@ -10,14 +10,14 @@
 // header describes for the identical reason: no store subscription, so
 // `TerminalDock.test.tsx` can render the view directly with fixed props.
 //
-// NO SESSION-COUNT/FOREGROUND-COMMAND LABEL YET: the plan's own Task 5 text
-// mentions "the running foreground command or shell name when open, count
-// from 2 sessions" as the eventual chip label, but this round only ever
-// keeps one live drawer session (TerminalDrawer.tsx owns a single session
-// id) — there is no multi-session list to count or read a foreground command
-// off yet. The label here is "Terminal" in both states; the tone flips
-// on/off with `open` so the chip still visibly tracks the drawer. Revisit
-// once multi-session support exists.
+// NO SESSION-COUNT/FOREGROUND-COMMAND LABEL: PLAN-status-bar-terminal.md's
+// Task 5 text mentions "the running foreground command or shell name when
+// open, count from 2 sessions" as an eventual chip label, but
+// TerminalDrawer.tsx owns a single session id — there is no multi-session
+// list to count or a foreground command to read off. The label here is
+// "Terminal" in both states; the tone flips on/off with `open` so the chip
+// still visibly tracks the drawer. Revisit once multi-session support
+// exists.
 import StatusChip from "@platform/ui/StatusChip";
 import { toggleTerminalDock, useTerminalDockOpen } from "@shell/terminalDockStore";
 

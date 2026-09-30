@@ -174,15 +174,15 @@ class PtySession:
         """Snapshot scrollback, the alive/exit_code pair, and register a new
         subscriber queue — all under one lock acquisition.
 
-        This exists because a WS route that called `scrollback()`,
-        `alive`, and `subscribe()` as three separate calls (with `await`s
-        between them) had a real gap: output the reader thread produced in
-        that window landed after the scrollback snapshot but before the
-        subscriber queue existed, so it reached neither and was lost to that
-        client entirely. Worse, if the child exited in that window, the
-        `("exit", code)` broadcast could predate the subscription AND the
-        earlier `alive` check could have already passed, so the client would
-        never learn the shell died. One lock hold closes both gaps."""
+        This exists because calling `scrollback()`, `alive`, and
+        `subscribe()` as three separate calls (with `await`s between them)
+        would leave a real gap: output the reader thread produces in that
+        window would land after the scrollback snapshot but before the
+        subscriber queue exists, reaching neither and being lost to that
+        client entirely. Worse, if the child exits in that window, the
+        `("exit", code)` broadcast could predate the subscription entirely,
+        so the client would never learn the shell died. One lock hold closes
+        both gaps."""
         q: SimpleQueue = SimpleQueue()
         with self._lock:
             snapshot = bytes(self._scrollback)

@@ -68,15 +68,14 @@ def test_scrollback_is_capped_and_keeps_the_tail(registry, tmp_path, monkeypatch
     # A distinguishable, non-repeating payload so a byte-for-byte tail
     # comparison actually proves something (uniform bytes could pass by luck).
     #
-    # The payload used to be embedded as a literal in the `python -c`
-    # argument (`{body!r}`), which put a 360000-byte string into a single
-    # argv element. Linux caps one argv element at MAX_ARG_STRLEN (128 KiB)
-    # regardless of the total ARG_MAX, so the spawn raised
-    # `OSError: [Errno 7] Argument list too long` on every Linux CI lane
-    # (macOS has no comparable per-argument cap, so it passed there). The
-    # child now GENERATES the same non-repeating bytes itself from a short
-    # loop, so the argv element stays tiny; `count` is shared with the
-    # `full` computation below so the two can't drift apart.
+    # The child GENERATES the non-repeating bytes itself from a short loop
+    # rather than receiving them as a literal in the `python -c` argument:
+    # embedding a 360000-byte string there would put a single argv element
+    # past Linux's MAX_ARG_STRLEN (128 KiB, independent of the total
+    # ARG_MAX), raising `OSError: [Errno 7] Argument list too long` on every
+    # Linux CI lane (macOS has no comparable per-argument cap). Generating
+    # the bytes in-process keeps the argv element tiny; `count` is shared
+    # with the `full` computation below so the two can't drift apart.
     count = 60_000  # 360000 bytes, no '\n'
     code = f"import sys; [sys.stdout.write('%06d' % i) for i in range({count})]; sys.stdout.flush()"
     monkeypatch.setattr(
@@ -110,9 +109,9 @@ def test_cap_refuses_a_ninth_session(registry, tmp_path, monkeypatch):
 
 
 def test_shutdown_all_reaps_every_live_session(registry, tmp_path, monkeypatch):
-    """Task 6: the shutdown hook (`fused_render/server/app.py`'s on_shutdown,
-    wired in Task 3) calls `REGISTRY.shutdown_all()` so a server restart never
-    leaves an orphaned shell running. Two long-lived sessions here (`/bin/sh`
+    """The shutdown hook (`fused_render/server/app.py`'s on_shutdown) calls
+    `REGISTRY.shutdown_all()` so a server restart never leaves an orphaned
+    shell running. Two long-lived sessions here (`/bin/sh`
     with no exit command — nothing to make them die on their own) prove the
     hook does the reaping itself rather than the test getting lucky with
     sessions that were about to exit anyway."""
@@ -141,21 +140,19 @@ def test_shutdown_all_reaps_every_live_session(registry, tmp_path, monkeypatch):
 
 
 def test_shell_does_not_inherit_pythonhome_or_pythonpath(registry, tmp_path, monkeypatch):
-    """Regression guard for finding 1 (code review, PR #1290): the profile's
-    env keeps PYTHONHOME/PYTHONPATH (terminal_profiles.py no longer scrubs
-    them — the immediate Popen target there is `sys.executable`, which in a
-    packaged build needs them). The scrub has to happen one process later,
-    in `_pty_exec_helper.py` right before `execv`, so the actual SHELL never
-    sees either var. This spawns a real shell through the real helper (no
-    mocking of `resolve_profile`'s env) and asserts both are empty in the
-    shell's own environment.
+    """The profile's env keeps PYTHONHOME/PYTHONPATH: `terminal_profiles.py`
+    does not scrub them, because the immediate Popen target there is
+    `sys.executable`, which in a packaged build needs them. The scrub
+    happens one process later, in `_pty_exec_helper.py` right before
+    `execv`, so the actual SHELL never sees either var. This spawns a real
+    shell through the real helper (no mocking of `resolve_profile`'s env)
+    and asserts both are empty in the shell's own environment.
 
     PYTHONHOME is set to `sys.base_prefix` (the running interpreter's own,
     real prefix) rather than a made-up path: an invalid PYTHONHOME crashes
-    the interpreter running the helper script before it ever reaches
-    execv (that IS finding 1's bug, reproduced by hand while writing this
-    test) — this test is about what the SHELL inherits, one process later,
-    so the helper's own interpreter needs to actually start."""
+    the interpreter running the helper script before it ever reaches execv —
+    this test is about what the SHELL inherits, one process later, so the
+    helper's own interpreter needs to actually start."""
     env = dict(os.environ)
     env["PYTHONHOME"] = sys.base_prefix
     env["PYTHONPATH"] = "/some/bundled/site-packages"
@@ -169,11 +166,10 @@ def test_shell_does_not_inherit_pythonhome_or_pythonpath(registry, tmp_path, mon
 
 
 def test_kill_on_an_already_dead_session_signals_nothing(registry, tmp_path, monkeypatch):
-    """Regression guard for finding 6 (code review, PR #1290): once the
-    reader thread has reaped the child (`alive` False), its pid is free for
-    the OS to hand to an unrelated process. `kill()` must not call
-    `os.getpgid`/`os.kill` at all in that case — this asserts `_signal` (the
-    only thing that would ever touch a pid) is never invoked."""
+    """Once the reader thread has reaped the child (`alive` False), its pid
+    is free for the OS to hand to an unrelated process. `kill()` must not
+    call `os.getpgid`/`os.kill` at all in that case — this asserts `_signal`
+    (the only thing that would ever touch a pid) is never invoked."""
     monkeypatch.setattr(pty_session, "resolve_profile",
                          lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "printf hi"]))
     session = registry.create()
@@ -187,10 +183,9 @@ def test_kill_on_an_already_dead_session_signals_nothing(registry, tmp_path, mon
 
 
 def test_reap_dead_runs_on_create_and_list(registry, tmp_path, monkeypatch):
-    """Regression guard for finding 10 (code review, PR #1290): `reap_dead`
-    had no callers anywhere, so a dead session lingered in the registry
-    forever and kept appearing in `list()`. This asserts `create()` and
-    `list()` each drop it."""
+    """Without a caller, a dead session would linger in the registry
+    forever and keep appearing in `list()`. This asserts `create()` and
+    `list()` each drop it, via `_reap_dead_locked`."""
     monkeypatch.setattr(pty_session, "resolve_profile",
                          lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "printf hi"]))
     dead = registry.create()
@@ -205,9 +200,9 @@ def test_reap_dead_runs_on_create_and_list(registry, tmp_path, monkeypatch):
 
 
 def test_failed_popen_does_not_leak_the_master_fd(tmp_path, monkeypatch):
-    """Regression guard for finding 11 (code review, PR #1290): if Popen
-    raises, `master_fd` (already assigned to `self.master_fd`) must still be
-    closed on that path, or each failed create leaks a pty master."""
+    """If Popen raises, `master_fd` (already assigned to `self.master_fd`)
+    must still be closed on that path, or each failed create leaks a pty
+    master."""
     profile = _profile(tmp_path, ["/bin/sh"])
 
     def boom(*args, **kwargs):
@@ -228,10 +223,9 @@ def test_failed_popen_does_not_leak_the_master_fd(tmp_path, monkeypatch):
 
 
 def test_attach_snapshot_alive_and_subscribe_are_atomic(registry, tmp_path, monkeypatch):
-    """Regression guard for finding 5 (code review, PR #1290): `attach()`
-    returns a scrollback snapshot, the alive/exit_code pair, and a
-    subscriber queue from a single lock hold, so a client can never see a
-    scrollback snapshot that is stale relative to `alive`."""
+    """`attach()` returns a scrollback snapshot, the alive/exit_code pair,
+    and a subscriber queue from a single lock hold, so a client can never
+    see a scrollback snapshot that is stale relative to `alive`."""
     monkeypatch.setattr(pty_session, "resolve_profile",
                          lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "printf hi"]))
     session = registry.create()

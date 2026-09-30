@@ -1,8 +1,8 @@
 // TerminalDrawer.tsx owns two things this suite covers directly, both
 // without ever mounting `TerminalView` (deliberately untested per its own
-// header — a headless renderer cannot run its real resize/layout pass, the
-// same reason a prior round on this branch declined to add a test-only prop
-// there; see DECISIONS.md):
+// header — a headless renderer cannot run its real resize/layout pass, and a
+// test-only prop to fake that pass is deliberately not added; see
+// DECISIONS.md):
 //
 //   1. The toggle shortcut (Cmd/Ctrl+Shift+` and the VS Code Ctrl+` alias),
 //      registered once regardless of `open` — exercised by rendering the

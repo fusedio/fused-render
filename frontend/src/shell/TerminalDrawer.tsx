@@ -28,11 +28,10 @@
 // owns) mounts and unmounts with `open`.
 //
 // EXIT HIDES THE DRAWER: `TerminalView`'s `onExit` fires once, when the
-// pty's child process dies (server-side `{"exit": code}` frame). An earlier
-// round left the last frame of a dead shell on screen with a dim status line
-// and restarted on Enter; that read as a shell users had to notice and
-// dismiss. Instead, an exit closes the drawer AND clears the cached session
-// id (both the React state and the persisted `sessionId` in localStorage),
+// pty's child process dies (server-side `{"exit": code}` frame). Leaving
+// that dead shell on screen would read as something users had to notice and
+// dismiss, so an exit closes the drawer AND clears the cached session id
+// (both the React state and the persisted `sessionId` in localStorage),
 // so the next open — via the chip or the keyboard shortcut below — finds
 // `sessionId === null` and runs the verify-or-create effect fresh, minting a
 // brand new shell rather than trying to reattach to the one that just died.
@@ -148,9 +147,9 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // above avoids). Starting at `null` guarantees the verify-or-create
   // effect always runs once per drawer open.
   const [sessionId, setSessionId] = useState<string | null>(null);
-  // Finding 7: `createTerminalSession` can reject (server down, 501 on
-  // Windows, the session cap). Surfaced here instead of an unhandled
-  // rejection that would leave the drawer open and permanently empty.
+  // `createTerminalSession` can reject (server down, 501 on Windows, the
+  // session cap). Surfaced here instead of an unhandled rejection that
+  // would leave the drawer open and permanently empty.
   const [createError, setCreateError] = useState<string | null>(null);
   // Bumped by the retry affordance to re-run the effect below even though
   // `sessionId` and `open` haven't changed.
@@ -189,10 +188,10 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
             sessions: { id: string; alive: boolean }[];
           }>("/api/terminal");
           if (cancelled) return;
-          // Finding 10 (client-side): a dead session can still be in the
-          // list for one tick (the registry only reaps on the next
-          // create()/list() call) — filter on `alive`, not just presence,
-          // or this can reattach to a session that is about to vanish.
+          // A dead session can still be in the list for one tick (the
+          // registry only reaps on the next create()/list() call) — filter
+          // on `alive`, not just presence, or this can reattach to a
+          // session that is about to vanish.
           if (sessions.some((s) => s.id === cached && s.alive)) {
             setSessionId(cached);
             return;

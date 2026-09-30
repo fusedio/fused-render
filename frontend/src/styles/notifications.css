@@ -212,9 +212,8 @@
   min-height: 0;
 }
 
-/* Was the dead-shell status line (Task 6); a process exit now closes the
-   drawer instead (TerminalDrawer.tsx's own header), so the only remaining
-   user of this layout/tone is the createError banner below (finding 7). */
+/* A process exit closes the drawer (TerminalDrawer.tsx's own header), so the
+   only user of this layout/tone is the createError banner below. */
 .term-drawer-exit {
   flex: 0 0 auto;
   padding: 4px 8px;
@@ -223,11 +222,11 @@
   border-top: 1px solid var(--border);
 }
 
-/* Finding 7 (code review, PR #1290): `createTerminalSession` failing (server
-   down, the session cap, 501 on Windows) used to leave the drawer open and
-   permanently empty with an unhandled rejection. Reuses `.term-drawer-exit`'s
-   layout/tone for the message itself; this is the one inline affordance to
-   retry without a full page reload. */
+/* `createTerminalSession` failing (server down, the session cap, 501 on
+   Windows) is surfaced here instead of leaving the drawer open and
+   permanently empty. Reuses `.term-drawer-exit`'s layout/tone for the
+   message itself; this is the one inline affordance to retry without a
+   full page reload. */
 .term-drawer-retry {
   background: none;
   border: 1px solid var(--border);

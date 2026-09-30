@@ -85,7 +85,8 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
       term.loadAddon(fit);
       term.open(el);
 
-      // Repaint watchdog (Task: black-pane-on-open regression).
+      // Repaint watchdog: guards against a pane that stays black after
+      // scrollback replay, on both a brand-new session and a reattach.
       //
       // Confirmed, not guessed, by instrumenting `write()`'s completion
       // callback and `.xterm-rows`' DOM text directly: on both a brand-new
@@ -106,8 +107,8 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
       // throttled/backgrounded page, unlike a starved rAF) — a real fix for
       // ordinary tab-backgrounding, where the browser throttles rAF but
       // still eventually runs it. It does NOT help when rAF is fully dead:
-      // confirmed live in this task's own test harness, a bare
-      // `requestAnimationFrame` ping scheduled directly (no xterm involved)
+      // confirmed live in a harness built to isolate this exact behavior, a
+      // bare `requestAnimationFrame` ping scheduled directly (no xterm involved)
       // never fired even once across several seconds on the affected
       // surface, while a real keystroke immediately produced a correct
       // paint — proof that the keystroke's fix in that harness comes from
