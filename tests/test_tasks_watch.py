@@ -21,6 +21,14 @@ from fused_render.server.routers import tasks as tasks_mod
 SID = "11111111-1111-1111-1111-111111111111"
 SID2 = "22222222-2222-2222-2222-222222222222"
 
+# Captured at collection time, before the autouse `_no_tasks_watch_thread`
+# fixture (conftest.py) replaces `tasks_watch.start` with a no-op for every
+# test in the suite — the one place in this file that needs the REAL
+# implementation back (B3's lazy-start test) grabs it from here rather than
+# from `tasks_watch.start` at test-body time, which would already be the
+# patched no-op.
+_REAL_TASKS_WATCH_START = tasks_watch.start
+
 
 @pytest.fixture(autouse=True)
 def claude_home(tmp_path, monkeypatch):
@@ -793,3 +801,43 @@ def test_a_tick_with_no_card_does_not_ring(claude_home, carded, rings):
     _transcript(claude_home, SID, lines=2)
     assert tasks_watch.tick() == {SID}, "the transcript grew"
     assert rings == []
+
+
+# -------------------------------------------------------- lean on-demand (B3)
+
+
+def test_a_lean_requests_the_watcher_on_its_first_tasks_request(
+        claude_home, tmp_path, monkeypatch):
+    """`lean` registers no `_startup_tasks_watch` hook at all (it's an
+    `@on_startup`), so without this the watcher thread never starts and
+    `/api/tasks/changes` blocks out its full wait with nothing to report.
+    `routers/tasks._ensure_duties` — a dependency on every `/api/tasks*`
+    route — must bring it up lazily instead, on an ORDINARY request, no
+    lifespan involved.
+
+    `tasks_watch.start()` is called on EVERY request (see `_ensure_duties`),
+    not just the first — its own `_started` flag is what makes repeating
+    that call free, so this only has to prove the dependency reaches it at
+    all under `lean`, not re-derive `start`'s own idempotence (covered
+    elsewhere)."""
+    calls = []
+
+    def recording_start():
+        calls.append(True)
+        _REAL_TASKS_WATCH_START()
+
+    monkeypatch.setattr(tasks_watch, "start", recording_start)
+    monkeypatch.setattr(tasks_watch, "_started", False)
+
+    app = create_app(start_dir=str(tmp_path), lean=True)
+    assert "_startup_tasks_watch" not in [
+        f.__name__ for f in app.state.startup_handlers], (
+        "lean must not register the startup hook for this test to prove "
+        "anything")
+
+    with TestClient(app) as client:
+        assert calls == [], "must not start before any request lands"
+        resp = client.get("/api/tasks")
+        assert resp.status_code == 200
+        assert calls == [True]
+        assert tasks_watch._started is True
