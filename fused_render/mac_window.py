@@ -458,7 +458,6 @@ class _WebDelegate(NSObject):
             window.key = window_policy.window_key_of(current)
             window.view = window_policy.window_view_of(current)
             window.sync_edit_button()
-            window.sync_frame_owner()
 
     # ---- NSWindowDelegate --------------------------------------------------
 
@@ -494,12 +493,6 @@ class _Window:
         # navigation, but a window must never jump or resize because the page
         # inside it navigated. The frame belongs to the window as opened.
         self.frame_name: str | None = None
-        # An app's run window (opened as an embed) saves its frame only while
-        # it SHOWS that app: Edit switches it to the explorer, and a resize
-        # there must not become the app's size next time. `sync_frame_owner`
-        # pauses the autosave on the way out and resumes it on the way back.
-        self._opened_as = (self.view, self.key)
-        self._frame_paused = False
         self._popup = not load
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                  | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
@@ -636,28 +629,11 @@ class _Window:
         """Persist the frame now. Autosave writes on move/resize; a window
         the user never touched (cascaded, then closed) needs this so it too
         reopens where it was."""
-        if self.frame_name and self.ns is not None and not self._frame_paused:
+        if self.frame_name and self.ns is not None:
             try:
                 self.ns.saveFrameUsingName_(self.frame_name)
             except Exception:  # noqa: BLE001 — a lost frame is not worth a crash
                 logger.debug("saveFrameUsingName failed", exc_info=True)
-
-    def sync_frame_owner(self) -> None:
-        """Pause / resume the app's frame autosave as the page leaves / comes
-        back to the app it was opened on (see `_opened_as`). Only for a
-        window opened as an embed: Home and explorer windows roam the shell
-        and keep one frame wherever they go, as before."""
-        if not self.frame_name or self.ns is None or self._opened_as[0] != "embed":
-            return
-        home = (self.view, self.key) == self._opened_as
-        if not home and not self._frame_paused:
-            self.save_frame()
-            self.ns.setFrameAutosaveName_("")
-            self._frame_paused = True
-        elif home and self._frame_paused:
-            self._frame_paused = False
-            if not self.ns.setFrameAutosaveName_(self.frame_name):
-                logger.warning("frame autosave name in use: %s", self.frame_name)
 
     def set_title(self, title: str) -> None:
         self.ns.setTitle_(title or APP_NAME)
@@ -1038,9 +1014,7 @@ class WindowManager:
         """The open window that owns frame-autosave ``name`` (one per name),
         so a sibling window can cascade from it instead of stacking."""
         for w in self._windows:
-            # A paused owner (an app window switched to the explorer by Edit)
-            # gave the name up: the app reopened beside it takes its frame.
-            if w.frame_name == name and w.ns is not None and not w._frame_paused:
+            if w.frame_name == name and w.ns is not None:
                 return w
         return None
 
