@@ -284,18 +284,39 @@ _LEASE_RETRY_INTERVAL = 0.5
 
 def _open_lease_file(name: str):
     """Open (creating if needed) `name`'s lease file in STATE_DIR, ready for
-    either platform's locking call. On the simulated/real Windows path the
-    file needs at least one byte in it before `msvcrt.locking` can lock
-    anything — a zero-length lock is a silent no-op there — so this stamps
-    one and seeks back to it; POSIX's `flock` locks the whole file regardless
-    of its length, so this is harmless there too."""
+    either platform's locking call, WITHOUT EVER TRUNCATING IT. On the
+    simulated/real Windows path the file needs at least one byte in it
+    before `msvcrt.locking` can lock anything — a zero-length lock is a
+    silent no-op there — so a still-empty file gets one byte stamped;
+    POSIX's `flock` locks the whole file regardless of its length, so the
+    stamp is harmless there too.
+
+    Non-truncating (`"a+"`) on purpose: a rival process can already hold
+    `msvcrt.locking` on byte 0 by the time this runs, and real Windows
+    raises `PermissionError` for any access to a byte another process has
+    locked. The old truncating `"w"` open wrote that byte on EVERY call —
+    including a second process's — which raised outside any try/except and
+    outside `acquire_lease_blocking`'s retry loop, killing the waiter thread
+    that calls this. Stamping only once, when the file is still empty, means
+    every call after the first winner's never touches byte 0 at all; and the
+    stamp attempt itself tolerates losing that race, since the point is
+    "at least one process has stamped this, ever", not that THIS call must
+    be the one that does it.
+
+    Always returns the handle seeked to 0: both locking calls lock starting
+    from the current/given position, and every caller expects position 0."""
     os.makedirs(STATE_DIR, exist_ok=True)
     path = os.path.join(STATE_DIR, name)
-    handle = open(path, "w")
+    handle = open(path, "a+")
     if fcntl is None and msvcrt is not None:
-        handle.write("\0")
-        handle.flush()
-        handle.seek(0)
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            try:
+                handle.write("\0")
+                handle.flush()
+            except OSError:
+                pass
+    handle.seek(0)
     return handle
 
 

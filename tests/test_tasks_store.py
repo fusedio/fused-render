@@ -1368,6 +1368,80 @@ def test_try_acquire_lease_loses_on_simulated_windows_to_a_rival(state_dir, monk
     assert tasks_store.try_acquire_lease("duties") is False
 
 
+def test_open_lease_file_does_not_crash_when_a_simulated_windows_rival_holds_the_stamped_byte(
+        state_dir, monkeypatch):
+    """Finding 4 repro. A prior winner already stamped the lease file's first
+    byte, and a rival process holds `msvcrt.locking` on it (real `msvcrt`
+    can't be exercised on this POSIX dev machine, so this fakes the
+    `PermissionError` real Windows raises for an access to a byte another
+    process has locked — same simulated-Windows posture as the tests
+    around this one).
+
+    `_open_lease_file`'s old implementation opened in truncating `"w"` mode
+    unconditionally, which means it tried to write byte 0 — the locked byte
+    — on EVERY call, including this second process's. That raised
+    `PermissionError` outside any try/except and outside the retry loop in
+    `acquire_lease_blocking`, so the waiter thread that calls it would just
+    die instead of retrying. Called here as a genuinely separate open of the
+    same path (not through the module's cached `_lease_handles`, which would
+    short-circuit before ever reaching this code — see
+    `test_acquire_lease_blocking_waits_for_a_real_rival_to_release`'s own
+    comment on why the suite uses a real second handle for this kind of
+    test), it must not raise."""
+    path = os.path.join(state_dir, "duties")
+    with open(path, "w") as f:
+        f.write("\0")  # a prior winner's stamp
+
+    real_open = open
+
+    def fake_open(p, mode="r", *a, **kw):
+        if p == path and mode == "w":
+            raise PermissionError("simulated: a rival holds byte 0 locked")
+        return real_open(p, mode, *a, **kw)
+
+    monkeypatch.setattr(tasks_store, "open", fake_open, raising=False)
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    monkeypatch.setattr(tasks_store, "msvcrt", _FakeMsvcrt())
+
+    handle = tasks_store._open_lease_file("duties")
+    try:
+        assert handle.tell() == 0
+    finally:
+        handle.close()
+
+
+def test_acquire_lease_blocking_retries_instead_of_crashing_when_a_simulated_windows_rival_holds_the_stamped_byte(
+        state_dir, monkeypatch):
+    """The waiter thread `acquire_lease_blocking` runs on in production
+    (`queue_manager`'s duties waiter) must survive the same contention as
+    the test above without dying silently: `_open_lease_file` must not raise
+    just because a rival holds the byte this call was not even trying to
+    test, and the `msvcrt.locking` retry loop then does the actual waiting —
+    looping past a few simulated failures and succeeding once the rival lets
+    go, the same pattern `test_acquire_lease_blocking_on_simulated_windows_waits_then_wins`
+    exercises for the locking call itself."""
+    path = os.path.join(state_dir, "duties")
+    with open(path, "w") as f:
+        f.write("\0")
+
+    real_open = open
+
+    def fake_open(p, mode="r", *a, **kw):
+        if p == path and mode == "w":
+            raise PermissionError("simulated: a rival holds byte 0 locked")
+        return real_open(p, mode, *a, **kw)
+
+    monkeypatch.setattr(tasks_store, "open", fake_open, raising=False)
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    fake = _FakeMsvcrt(fail_times=3)
+    monkeypatch.setattr(tasks_store, "msvcrt", fake)
+    monkeypatch.setattr(tasks_store.time, "sleep", lambda _seconds: None)
+
+    tasks_store.acquire_lease_blocking("duties")
+    assert "duties" in tasks_store._lease_handles
+    assert fake.calls >= 4  # 3 simulated failures, then the winning call
+
+
 def test_acquire_lease_blocking_on_simulated_windows_waits_then_wins(
         state_dir, monkeypatch):
     """`LK_LOCK` gives up after ~10 tries, so the real implementation has to
