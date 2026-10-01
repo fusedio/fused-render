@@ -51,6 +51,7 @@ import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate, navigateToJobPage, navigateUrl } from "@platform/lib/router";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
+import type { ChipTone } from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
 import type { NotificationCardDismiss } from "@platform/ui/NotificationCard";
 // `JobRow` reused verbatim for a terminal job (D586) — shell may import
@@ -67,8 +68,13 @@ import {
   jobsAfterClear,
 } from "@platform/lib/jobs";
 import type { Job, JobGroup } from "@platform/lib/jobs";
-import { dismissNotification, useRetainedNotifications } from "@platform/lib/notifications";
+import {
+  dismissNotification,
+  useRetainedNotifications,
+  UPDATE_NOTIFICATION_FAMILY,
+} from "@platform/lib/notifications";
 import type { StoredNotification } from "@platform/lib/notifications";
+import { compactAge } from "@platform/lib/format";
 import {
   attentionRows,
   attentionDismissSignature,
@@ -76,6 +82,13 @@ import {
   type AttentionRow,
 } from "@shell/tasks-lib";
 import { useTasksPulseRows } from "@shell/tasksPulse";
+import {
+  getFirstSeenAt,
+  isSeen,
+  markSeen,
+  syncPresentKeys,
+  type SeenState,
+} from "@shell/notifications-seen-store";
 import { loadDismissed, saveDismissed } from "./dismiss-store";
 import {
   repoActionLabel,
@@ -661,28 +674,46 @@ function GroupJobRow({
   );
 }
 
-/** §3: one `<JobRow>`/`<GroupJobRow>` per `(page, group)` group found in
- *  `jobs` — the single place both sections (terminal-attention,
- *  terminal-trail) turn a flat `Job[]` into rows, so the "fold a
- *  multi-member group into one row" rule lives in exactly one function
- *  rather than three copies that could drift. A lone member renders exactly
- *  as it always has (`JobRow`, unchanged props) — the single-member
- *  regression trap the task brief names by number. */
-function renderJobRows(
-  jobs: Job[],
-  onChanged: () => void,
-  onPatch: (fn: (jobs: Job[]) => Job[]) => void,
-): ReactNode[] {
-  return groupJobs(jobs).map((g) => {
-    // The cluster-scoped identity (finding 3), not the bare family -- two
-    // different bursts of the same family must not collide as React keys.
-    const key = g.key;
-    return g.jobs.length > 1 ? (
-      <GroupJobRow key={key} group={g} onChanged={onChanged} onPatch={onPatch} />
-    ) : (
-      <JobRow key={g.jobs[0].id} job={g.jobs[0]} onChanged={onChanged} onPatch={onPatch} />
-    );
-  });
+// ---- status-popovers R3/R4/R5: one stable key per row, folding in
+// whatever makes that row's OWN claim change — so "a key change makes it
+// unseen again" (R4) falls out of the key alone, with no special-casing in
+// `notifications-seen-store.ts`. A repo row's key already carries its
+// position signature (`repoDismissSignature`); a waiting task's carries its
+// question (`attentionDismissSignature`); a message's carries its own title
+// and repeat count, so a collapsed repeat (DEFECT 1) or a retitled update row
+// (R3's "Update available" -> "Update ready") both read as new again, not as
+// the same old row lingering; a job group's carries the cluster identity
+// `groupJobs` already keys React's own list on.
+function pairingKey(event: LanPairingEvent): string {
+  return `pairing:${event.id}`;
+}
+function repoRowKey(row: RepoRow): string {
+  return `repo:${row.repo.root}:${repoDismissSignature(row.repo)}`;
+}
+function attentionRowKey(row: AttentionRow): string {
+  return `attention:${row.key}:${attentionDismissSignature(row)}`;
+}
+function messageKey(m: StoredNotification): string {
+  return `message:${m.id}:${m.title}:${m.count}`;
+}
+function jobGroupKey(g: JobGroup): string {
+  return `job:${g.key}`;
+}
+/** The group's own age (R5) — its NEWEST member's `finished_at`. `Job`
+ *  carries this as epoch SECONDS (jobs.py); `compactAge`/the sort below both
+ *  want milliseconds. Every member here already has one — `terminal` is
+ *  narrowed to terminal jobs before this component ever sees it, so there is
+ *  no still-running member to fall back for. */
+function jobGroupAgeMs(g: JobGroup): number {
+  return Math.max(0, ...g.jobs.map((j) => (j.finished_at ?? 0) * 1000));
+}
+
+/** A sortable, already-rendered row — the shape "New"/"Earlier" sort and
+ *  fold by (R3), newest `ts` first. */
+interface RowEntry {
+  key: string;
+  ts: number;
+  node: ReactNode;
 }
 
 /**
@@ -771,24 +802,52 @@ export function RepoUpdatesCardView({
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
 }) {
+  // R4: "mark seen on panel close, or ~1.5s after it opens, never on open
+  // itself." A ref, not state — `presentKeys` is recomputed every render
+  // below and written into it directly (render is not the place to call
+  // `setState`), so the effect always marks whatever is on screen at the
+  // moment it fires, not a stale snapshot from whichever render scheduled
+  // it. Starts empty, filled before paint by the same render that first
+  // introduces a row, well before this effect's timer could ever fire.
+  //
+  // `globalThis.setTimeout`, not `window.setTimeout`: this file's own
+  // polling effects use the latter, but `RepoUpdatesDock.test.tsx`'s
+  // `withNav` helper swaps `window` for a bare `{ dispatchEvent }` stub for
+  // the span of a click (nothing about a nav press needs a timer), and this
+  // effect can legitimately still be mounted underneath that swap. The two
+  // are the same function in every real browser — this only has to dodge a
+  // test-only stand-in that was never trying to stub timers at all.
+  const presentKeysRef = useRef<string[]>([]);
+  useEffect(() => {
+    if (collapsed) return;
+    let firedOnTimer = false;
+    const timer = globalThis.setTimeout(() => {
+      firedOnTimer = true;
+      markSeen(presentKeysRef.current);
+    }, 1500);
+    return () => {
+      globalThis.clearTimeout(timer);
+      // The panel closed (or this view unmounted) before the timer landed —
+      // closing is the OTHER event R4 names, so this still has to mark
+      // whatever was on screen, not drop it on the floor.
+      if (!firedOnTimer) markSeen(presentKeysRef.current);
+    };
+  }, [collapsed]);
+
   const visible = visibleRepoRows(rows, dismissed);
   const visibleAttention = visibleAttentionRows(attention, attentionDismissed);
   // THE THREE-TIER MODEL (SPEC actionable-notifications) SPLITS `terminal`
-  // INTO ITS OWN TWO SECTIONS — a job whose `effectiveTier` reads "attention"
+  // INTO ITS OWN TWO GROUPS — a job whose `effectiveTier` reads "attention"
   // (declared that way, or a terminal row in `error`/`cancelled` regardless
   // of what it declared) joins the waiting tasks in "Needs you"; everything
-  // else joins the repo rows and pairings in "Worth keeping". This is the
-  // SAME override `jobs.ts`'s `jobRows` already reads for the Jobs section —
-  // a producer's declared tier is a default, not the last word, once a run
-  // has actually failed.
+  // else joins the repo rows and pairings in "New"/"Earlier" (R3). This is
+  // the SAME override `jobs.ts`'s `jobRows` already reads for the Jobs
+  // section — a producer's declared tier is a default, not the last word,
+  // once a run has actually failed.
   // §3 (SPEC-quiet-notifications.md): a multi-member group is classified as
-  // ONE UNIT, never split across "Needs you"/"Worth keeping" — the same
-  // "group first, then classify" rule `jobs.ts`'s own `groupJobs`-before-
-  // `popupJobs` composition already applies for popup suppression. Filtering
-  // `terminal` by each job's OWN `effectiveTier` (the pre-§3 code this
-  // replaced) would tear a mixed group in half — one member's row in each
-  // section — which is exactly the outcome D-C's "one failing member keeps
-  // the whole group visible" rule exists to prevent. `groupEffectiveTier`
+  // ONE UNIT, never split across sections — the same "group first, then
+  // classify" rule `jobs.ts`'s own `groupJobs`-before-`popupJobs`
+  // composition already applies for popup suppression. `groupEffectiveTier`
   // is the group-level version of the same promotion `effectiveTier` does
   // per job: one attention-effective member promotes the WHOLE group.
   const terminalGroups = groupJobs(terminal);
@@ -798,8 +857,6 @@ export function RepoUpdatesCardView({
   const terminalTrailGroups = terminalGroups.filter(
     (g) => groupEffectiveTier(g.jobs) !== "attention",
   );
-  const terminalAttention = terminalAttentionGroups.flatMap((g) => g.jobs);
-  const terminalTrail = terminalTrailGroups.flatMap((g) => g.jobs);
   // MESSAGES SPLIT THE SAME WAY — but NOT by `tier === "trail"` any more.
   // `lib/notifications.ts`'s `isRetained` already decided every entry in
   // `messages` belongs here — an error (always "attention"), or a message
@@ -809,63 +866,23 @@ export function RepoUpdatesCardView({
   // here is simply "attention" vs. "everything else that made it into this
   // already-retained list" — not a re-check of a specific tier value.
   const messagesAttention = messages.filter((m) => m.tier === "attention");
-  // Removed 2026-09-17 (user: "I also don't like this recent stuff.
-  // notification is notification. remove this recent."): a retained, non-error
-  // message no longer has anywhere else to land — every non-attention
-  // message is "Worth keeping" now, full stop. Presence no longer decides
-  // where the retained row lands, and (2026-09-23, D888) no longer decides
-  // whether a finished task pops either — a clean finish never pops a card
-  // at all any more.
   const messagesTrail = messages.filter((m) => m.tier !== "attention");
-  // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
-  // an attention-tier terminal job are always shown in full, never counted
-  // toward this cap: the cap exists to bound how tall "Worth keeping" gets
-  // on a machine that has finished a great many ordinary jobs, not to hide
-  // something that still needs a look.
-  // `olderShown` is local UI state, not a prop: once the reader opens the
-  // fold there is no reason for anything outside this view to know or care.
-  const [olderShown, setOlderShown] = useState(false);
-  // `terminal` arrives oldest-first (jobs.py's `list_jobs`), so the NEWEST
-  // jobs are the ones at the end of the array — a plain `slice(0, CAP)`
-  // would show the oldest five and fold away whatever just finished, which
-  // is backwards from what the cap is for. Slicing off the tail keeps the
-  // newest `TERMINAL_VISIBLE_CAP` visible, still oldest-first among
-  // themselves, so the panel's reading order never changes.
-  //
-  // Finding 4 (code review 2026-09-16): this used to slice `terminalTrail`
-  // itself — a flat JOB list — which cuts a multi-member group's members in
-  // half whenever the cap boundary lands inside it. `renderJobRows` below
-  // re-derives groups from whatever job list it's given, so a group missing
-  // some members re-grouped into a row with the WRONG "N of M done" count,
-  // and that row's dismiss-all only touched the members that made it past
-  // the slice, orphaning the rest with no row left to dismiss them from.
-  // `TERMINAL_VISIBLE_CAP` bounds how many ROWS show, and a group is always
-  // exactly one row regardless of member count — so the cap has to slice
-  // `terminalTrailGroups` (one entry per row), never the flattened jobs.
-  // Slicing complete groups out, rather than jobs, means the jobs handed to
-  // `renderJobRows` are always a union of WHOLE groups, so re-grouping them
-  // reproduces the exact same groups with nothing missing.
-  const shownTerminalGroups = olderShown
-    ? terminalTrailGroups
-    : terminalTrailGroups.slice(Math.max(0, terminalTrailGroups.length - TERMINAL_VISIBLE_CAP));
-  const shownTerminal = shownTerminalGroups.flatMap((g) => g.jobs);
-  const olderTerminalCount = terminalTrailGroups.length - shownTerminalGroups.length;
+  // THE UPDATE ROW (R3/R6) — marked by `family`, not by title text, so it
+  // survives its own title changing mid-flow ("Update available" ->
+  // "Update ready" -> "Restarting…"). Always `tier: "attention"`
+  // (UpdateNotifier.tsx), so it is already inside `messagesAttention`; this
+  // just peels it back out so "Needs you" can pin it first and the chip
+  // (R7) can tell "only the update wants a look" apart from an ordinary
+  // failure.
+  const updateMessages = messagesAttention.filter((m) => m.family === UPDATE_NOTIFICATION_FAMILY);
+  const ordinaryAttentionMessages = messagesAttention.filter(
+    (m) => m.family !== UPDATE_NOTIFICATION_FAMILY,
+  );
+
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
-  // The count on the chip, the idle predicate and the empty state all read
-  // this one total, so none of them can disagree about what this section
-  // holds — a count that still counted only repo rows was the likeliest bug
-  // in this change. Unaffected by the attention/trail split above: `terminal`
-  // is still every terminal job, whichever section it lands in.
-  //
   // COUNTS ROWS, NOT RAW JOBS (user decision, verbatim: "yes we should count
   // rows") — eight downloads folded into one grouped row must read as one,
-  // not eight. `terminalGroups` is the exact `groupJobs(terminal)` call the
-  // attention/trail split above already computed, so this reads the SAME
-  // row-level collection the terminal sections render rather than
-  // introducing a second, parallel count that could disagree with it.
-  // `messagesAttention.length + messagesTrail.length` is exactly
-  // `messages.length` — every retained message counts toward this total now
-  // that there is no separate Recent bucket to exclude.
+  // not eight.
   const total =
     visible.length +
     terminalGroups.length +
@@ -874,51 +891,290 @@ export function RepoUpdatesCardView({
     messagesAttention.length +
     messagesTrail.length;
   const idle = total === 0;
-  // HOW MANY ROWS NEED A LOOK, ACROSS BOTH ATTENTION SOURCES (SPEC
-  // actionable-notifications item 3) — a waiting task and a failed/cancelled
-  // job are the same kind of fact from the chip's point of view: something
-  // the person asked for, or something that happened to them, that nobody
-  // has looked at yet. Counts ROWS here too, for the same reason as `total`
-  // above: `terminalAttentionGroups` is the exact collection "Needs you"
-  // renders a `GroupJobRow`/`JobRow` per entry of, so a two-member failing
-  // group counts once, matching the single row the reader actually sees.
+  // HOW MANY ROWS NEED A LOOK, ACROSS EVERY ATTENTION SOURCE (SPEC
+  // actionable-notifications item 3) — a waiting task, a failed/cancelled
+  // job and an update row are all the same kind of fact from the chip's
+  // point of view: something nobody has looked at yet. Counts ROWS, for the
+  // same reason `total` does.
   const attentionCount =
     visibleAttention.length + terminalAttentionGroups.length + messagesAttention.length;
-  const hasAttentionSection = attentionCount > 0;
-  const hasTrailSection =
-    pairings.length > 0 ||
-    visible.length > 0 ||
-    terminalTrail.length > 0 ||
-    messagesTrail.length > 0;
+  // R7: an ORDINARY attention row — anything besides the update row — is
+  // what earns the loud "N needs you"/failure treatment. The update row
+  // alone wanting a look is not an emergency; it is an offer to restart.
+  const hasOrdinaryAttention =
+    visibleAttention.length > 0 ||
+    terminalAttentionGroups.length > 0 ||
+    ordinaryAttentionMessages.length > 0;
+
+  // `olderShown` is local UI state, not a prop: once the reader opens the
+  // fold there is no reason for anything outside this view to know or care.
+  const [olderShown, setOlderShown] = useState(false);
+
+  // ---- R4/R5: every row's stable key, its age, and whether it is unseen ----
+  //
+  // `syncPresentKeys` is cheap and idempotent (its own doc comment: "every
+  // render of the Notifications panel's contents is fine") — called straight
+  // from render, not an effect, so every row below reads an up-to-date
+  // `SeenState` on the very render that introduces it, rather than one
+  // render behind. It also PRUNES to exactly the keys built here, so a row
+  // that scrolled out of existence (dismissed, or its signature moved) does
+  // not linger in storage.
+  const now = Date.now();
+  const age = (ts: number) => compactAge(ts, now);
+
+  const presentKeys = [
+    ...updateMessages.map(messageKey),
+    ...visibleAttention.map(attentionRowKey),
+    ...terminalAttentionGroups.map(jobGroupKey),
+    ...ordinaryAttentionMessages.map(messageKey),
+    ...pairings.map(pairingKey),
+    ...visible.map(repoRowKey),
+    ...terminalTrailGroups.map(jobGroupKey),
+    ...messagesTrail.map(messageKey),
+  ];
+  const seenState: SeenState = syncPresentKeys(presentKeys);
+  const unseen = (key: string) => !isSeen(seenState, key);
+
+  // R4: a row counts unseen until the panel has been open while it was
+  // present, marked seen on close or ~1.5s after open — never on open
+  // itself, so the reader still sees what's new during the very open in
+  // which they're looking at it. `presentKeysRef` is read by that effect
+  // (below the JSX this function returns), always holding this render's keys.
+  presentKeysRef.current = presentKeys;
+
+  // ---- "Needs you": the update row pinned first, then waiting tasks, then
+  // everything else newest-first (R3) ----
+  const needsYouNodes: ReactNode[] = [];
+  for (const m of updateMessages) {
+    const key = messageKey(m);
+    needsYouNodes.push(
+      <MessageRowView
+        key={key}
+        notification={m}
+        className="dl-row-attention-update"
+        age={age(m.updatedAt)}
+        unseen={unseen(key)}
+      />,
+    );
+  }
+  for (const row of visibleAttention) {
+    const key = attentionRowKey(row);
+    const ts = getFirstSeenAt(seenState, key, now);
+    needsYouNodes.push(
+      <AttentionRowView
+        key={row.key}
+        row={row}
+        onDismiss={() => (onAttentionDismiss ?? NOOP)(row.key, attentionDismissSignature(row))}
+        age={age(ts)}
+        unseen={unseen(key)}
+      />,
+    );
+  }
+  const restAttentionEntries: RowEntry[] = [
+    ...terminalAttentionGroups.map((g, idx): RowEntry => {
+      const key = jobGroupKey(g);
+      const ts = jobGroupAgeMs(g);
+      // Same oldest-first tie-break as the trail list below — see its
+      // comment for why `idx` only ever breaks a genuine tie.
+      const sortTs = ts + idx * 0.001;
+      return {
+        key,
+        ts: sortTs,
+        node:
+          g.jobs.length > 1 ? (
+            <GroupJobRow
+              key={key}
+              group={g}
+              onChanged={onJobsChanged ?? NOOP}
+              onPatch={onTerminalPatch ?? NOOP_PATCH}
+              age={age(ts)}
+              unseen={unseen(key)}
+            />
+          ) : (
+            <JobRow
+              key={key}
+              job={g.jobs[0]}
+              onChanged={onJobsChanged ?? NOOP}
+              onPatch={onTerminalPatch ?? NOOP_PATCH}
+              className="dl-row-attention"
+              age={age(ts)}
+              unseen={unseen(key)}
+            />
+          ),
+      };
+    }),
+    ...ordinaryAttentionMessages.map((m): RowEntry => {
+      const key = messageKey(m);
+      return {
+        key,
+        ts: m.updatedAt,
+        node: (
+          <MessageRowView
+            key={key}
+            notification={m}
+            className="dl-row-attention"
+            age={age(m.updatedAt)}
+            unseen={unseen(key)}
+          />
+        ),
+      };
+    }),
+  ].sort((a, b) => b.ts - a.ts);
+  needsYouNodes.push(...restAttentionEntries.map((e) => e.node));
+
+  // ---- "New"/"Earlier": every non-attention row, newest-first, split on
+  // whether the panel has ever been open while it was present (R4) ----
+  const nonAttentionEntries: RowEntry[] = [
+    ...pairings.map((event): RowEntry => {
+      const key = pairingKey(event);
+      const ts = getFirstSeenAt(seenState, key, now);
+      return {
+        key,
+        ts,
+        node: (
+          <PairingRowView
+            key={key}
+            event={event}
+            onGone={onPairingGone ?? NOOP}
+            age={age(ts)}
+            unseen={unseen(key)}
+          />
+        ),
+      };
+    }),
+    ...visible.map((row): RowEntry => {
+      const key = repoRowKey(row);
+      const ts = getFirstSeenAt(seenState, key, now);
+      return {
+        key,
+        ts,
+        node: (
+          <RepoRowView
+            key={key}
+            row={row}
+            onDone={onDone}
+            onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
+            age={age(ts)}
+            unseen={unseen(key)}
+          />
+        ),
+      };
+    }),
+    ...terminalTrailGroups.map((g, idx): RowEntry => {
+      const key = jobGroupKey(g);
+      const ts = jobGroupAgeMs(g);
+      // `terminal` arrives oldest-first (jobs.py's `list_jobs` order). Two
+      // groups that finished in the same second carry an identical
+      // `finished_at`, so the sort below would otherwise fall back to
+      // Array.prototype.sort's stability and keep them in that oldest-first
+      // reading order — backwards for a newest-first list. `idx` nudges a
+      // later arrival just ahead of an earlier one with the same `ts`,
+      // without ever outweighing a real difference in `finished_at`.
+      const sortTs = ts + idx * 0.001;
+      return {
+        key,
+        ts: sortTs,
+        node:
+          g.jobs.length > 1 ? (
+            <GroupJobRow
+              key={key}
+              group={g}
+              onChanged={onJobsChanged ?? NOOP}
+              onPatch={onTerminalPatch ?? NOOP_PATCH}
+              age={age(ts)}
+              unseen={unseen(key)}
+            />
+          ) : (
+            <JobRow
+              key={key}
+              job={g.jobs[0]}
+              onChanged={onJobsChanged ?? NOOP}
+              onPatch={onTerminalPatch ?? NOOP_PATCH}
+              age={age(ts)}
+              unseen={unseen(key)}
+            />
+          ),
+      };
+    }),
+    ...messagesTrail.map((m): RowEntry => {
+      const key = messageKey(m);
+      return {
+        key,
+        ts: m.updatedAt,
+        node: <MessageRowView key={key} notification={m} age={age(m.updatedAt)} unseen={unseen(key)} />,
+      };
+    }),
+  ].sort((a, b) => b.ts - a.ts);
+
+  const newEntries = nonAttentionEntries.filter((e) => unseen(e.key));
+  const earlierEntriesAll = nonAttentionEntries.filter((e) => !unseen(e.key));
+  // THE VOLUME CAP, WIDENED TO THE WHOLE "Earlier" LIST (deviation from the
+  // pre-R3 code, which only ever folded terminal-trail jobs — see
+  // DECISIONS-status-popovers.md's R3 entry): "Earlier" is now one
+  // newest-first list across every non-attention row kind, so there is no
+  // single kind left to scope the cap to without either re-fragmenting the
+  // list back into per-kind runs or leaving a repo row/pairing that happens
+  // to be old sitting uncounted forever. A repo row or pairing landing in
+  // the fold is rare in practice (a repo stays behind until fixed, a pairing
+  // is dismissed once read), so this is a simplification, not a rule anyone
+  // asked for by name. Nothing is ever deleted by this, only folded — the
+  // full list is still there, one click away.
+  const cappedEarlierEntries = olderShown
+    ? earlierEntriesAll
+    : earlierEntriesAll.slice(0, TERMINAL_VISIBLE_CAP);
+  const olderCount = earlierEntriesAll.length - cappedEarlierEntries.length;
+  // The cap keeps the NEWEST members of `earlierEntriesAll` (the slice
+  // above, off the newest-first sort), but draws them back in the same
+  // oldest-first reading order the pre-R3 terminal trail always used — a
+  // plain `.reverse()` turns "newest kept" into "oldest kept reads first".
+  const shownEarlierEntries = [...cappedEarlierEntries].reverse();
+
+  const hasNeedsYou = needsYouNodes.length > 0;
+  const hasNew = newEntries.length > 0;
+  const hasEarlier = earlierEntriesAll.length > 0;
+
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
-  // THE CHIP READS (D673, extended by item 3): "Notifications" with a count
-  // pill whenever anything waits — a repo update, a pairing, a finished job —
-  // but the moment anything needs a person's attention (a failed/cancelled
-  // job, a task asking a question) the label itself SAYS so ("N needs you")
-  // and takes the same loud, red treatment the failure tint always did
-  // (Akshil, 2026-09-03: a plain count was "not prominent enough to let user
-  // know it needs attention"). Muted "Notifications" at zero attention rows,
-  // whether or not other, non-attention rows exist. The sidebar's Tasks dot
-  // is red for the same state; the two agree rather than one of them staying
-  // quiet — this corner is where the reader looks for what wants them, and a
-  // neutral pill there read as "nothing urgent".
-  const tone = hasAttentionSection ? "failure" : total > 0 ? "on" : "idle";
-  const label = hasAttentionSection ? `${attentionCount} needs you` : "Notifications";
+  //
+  // THE CHIP (R7): an ORDINARY attention row (anything but the update row)
+  // still gets the loud "N needs you"/failure treatment (D673, Akshil,
+  // 2026-09-03: a plain count was "not prominent enough"). When the update
+  // row is the ONLY thing waiting, that is an offer, not an alarm — the
+  // chip reads the update row's OWN current label ("Update available" /
+  // "Update ready" / …) in the ordinary "on" tone instead. With no attention
+  // rows at all, the numeral becomes how many rows are UNSEEN (not the
+  // total) — "Notifications" with no pill at all once everything on screen
+  // has already been looked at, even if the list itself is not empty.
+  let tone: ChipTone;
+  let label: string;
+  let chipCount: number;
+  if (hasOrdinaryAttention) {
+    tone = "failure";
+    label = `${attentionCount} needs you`;
+    chipCount = attentionCount;
+  } else if (updateMessages.length > 0) {
+    tone = "on";
+    label = updateMessages[0].title;
+    chipCount = 0;
+  } else {
+    tone = total > 0 ? "on" : "idle";
+    label = "Notifications";
+    chipCount = newEntries.length;
+  }
   const ariaLabel =
     total === 0
       ? "Notifications, none"
-      : `Notifications, ${total}${
-          hasAttentionSection
-            ? `, ${attentionCount} needing you`
-            : ""
-        }`;
+      : hasOrdinaryAttention
+        ? `Notifications, ${total}, ${attentionCount} needing you`
+        : updateMessages.length > 0
+          ? `Notifications, ${updateMessages[0].title}`
+          : `Notifications, ${chipCount} new`;
 
   return (
     <div className="dl-host" {...hostProps}>
       <StatusChip
         label={label}
-        count={total}
+        count={chipCount}
         tone={tone}
         open={!collapsed}
         pinned={pinned}
@@ -939,118 +1195,61 @@ export function RepoUpdatesCardView({
             <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
-              {/* TWO SECTIONS, NOT ONE FLAT LIST (SPEC actionable-notifications
-                  item 3) — "Needs you" first, "Worth keeping" second, each
-                  drawn only when it actually holds a row. A waiting task and
-                  a failed/cancelled job are the same kind of fact (something
-                  nobody has looked at yet) and now share one section rather
-                  than the job living in the same flat list as a repo update
-                  or a pairing, which have nothing left to act on. `JobRow` is
-                  reused verbatim in BOTH sections rather than a new row shape
-                  being invented for this — it already draws the title, the
-                  failure sentence and the ✕, and it already carries D572's
-                  rejected-request surfacing, which is the behaviour a dismiss
-                  here most needs to keep. */}
-              {hasAttentionSection && (
+              {/* THREE SECTIONS, TOP TO BOTTOM (R3): "Needs you", "New", then
+                  "Earlier" — each drawn only when it actually holds a row,
+                  its own heading ALWAYS shown alongside it once it does
+                  (R2 — no "2+ sections" gate; see `.dl-section-head`/
+                  `.dl-section-count` in notifications.css and
+                  DownloadManager.tsx's identical Running/Background-tasks
+                  split). "Needs you" collects a waiting task, a
+                  failed/cancelled job and the update row — the same kind of
+                  fact from the reader's point of view, something nobody has
+                  looked at yet. "New"/"Earlier" is one merged, newest-first
+                  list across every other row kind, split purely on R4's
+                  seen state — a row moves from "New" to "Earlier" the moment
+                  the panel has been open while it was present, never because
+                  of what KIND of row it is. */}
+              {hasNeedsYou && (
                 <div className="dl-section">
-                  {/* The heading itself only when 2+ sections are present at
-                      once — the same rule ActivityDock's own "Running" /
-                      "Background tasks" split already follows
-                      (`.dl-section-head` in notifications.css): a single
-                      section carrying a label nobody needed to disambiguate
-                      is a redundant header. */}
-                  {hasAttentionSection && hasTrailSection && (
-                    <div className="dl-section-head">Needs you</div>
-                  )}
-                  <div className="dl-rows">
-                    {/* A WAITING TASK GOES ABOVE EVERY OTHER ATTENTION ROW
-                        (2026-09-03): it is the only row anywhere in this panel
-                        whose subject has not finished happening — a failed
-                        job is a record of something that already ended, a
-                        parked run is a person being waited on right now. */}
-                    {visibleAttention.map((row) => (
-                      <AttentionRowView
-                        key={row.key}
-                        row={row}
-                        onDismiss={() =>
-                          (onAttentionDismiss ?? NOOP)(row.key, attentionDismissSignature(row))
-                        }
-                      />
-                    ))}
-                    {/* An attention-tier terminal job — declared that way, or a
-                        run that ended in `error`/`cancelled` regardless of what
-                        it declared (`effectiveTier`). Never capped: this
-                        section is exactly the rows worth a look, so there is
-                        nothing here for `TERMINAL_VISIBLE_CAP` to fold. */}
-                    {renderJobRows(terminalAttention, onJobsChanged ?? NOOP, onTerminalPatch ?? NOOP_PATCH)}
-                    {/* Client-raised messages last — the newest row kind,
-                        appended rather than interleaved so the existing
-                        reading order (waiting task, then a failed run) never
-                        shuffles for a caller that never sees one. */}
-                    {messagesAttention.map((m) => (
-                      <MessageRowView key={m.id} notification={m} />
-                    ))}
+                  <div className="dl-section-head">
+                    Needs you <span className="dl-section-count">{needsYouNodes.length}</span>
                   </div>
+                  <div className="dl-rows">{needsYouNodes}</div>
                 </div>
               )}
-              {hasTrailSection && (
+              {hasNew && (
                 <div className="dl-section">
-                  {hasAttentionSection && hasTrailSection && (
-                    <div className="dl-section-head">Worth keeping</div>
-                  )}
-                  {/* THE VOLUME CAP: only TERMINAL-TRAIL jobs ever collapse —
-                      a repo row and a pairing are always drawn in full below,
-                      uncounted by `TERMINAL_VISIBLE_CAP`, because neither
-                      piles up the way a finished job does (a repo stays
-                      behind until fixed, one row; a pairing is dismissed the
-                      moment it is read). Nothing is dropped, only folded: the
-                      count names exactly how many more `JobRow`s are one
-                      click away, and clicking it is the only thing that
-                      changes `olderShown` — a fresh terminal job arriving
-                      never re-collapses a panel the user already opened wide.
-                      ABOVE `.dl-rows`, not inside it (D762): `terminalTrail`
-                      arrives oldest-first and the fold keeps the newest rows
-                      visible, so the folded rows are chronologically earlier
-                      than every rendered one — a pinned line above the
-                      scrolling list keeps the section reading top-to-bottom
-                      in time order whether it is folded or open, and keeps
-                      `.dl-rows` holding nothing but the rows it scrolls. */}
-                  {olderTerminalCount > 0 && (
+                  <div className="dl-section-head">
+                    New <span className="dl-section-count">{newEntries.length}</span>
+                  </div>
+                  <div className="dl-rows">{newEntries.map((e) => e.node)}</div>
+                </div>
+              )}
+              {hasEarlier && (
+                <div className="dl-section">
+                  <div className="dl-section-head">
+                    Earlier <span className="dl-section-count">{earlierEntriesAll.length}</span>
+                  </div>
+                  {/* THE VOLUME CAP: bounds how many "Earlier" rows draw at
+                      once — nothing is ever deleted by it, only folded, one
+                      click away behind this button. ABOVE `.dl-rows`, not
+                      inside it (D762): `earlierEntriesAll` is already
+                      newest-first, so the folded rows are chronologically
+                      EARLIER than every rendered one — a pinned line above
+                      the scrolling list keeps the section reading
+                      top-to-bottom in time order whether folded or open, and
+                      keeps `.dl-rows` holding nothing but the rows it
+                      scrolls. */}
+                  {olderCount > 0 && (
                     <button
                       type="button"
                       className="dl-panel-more"
                       onClick={() => setOlderShown(true)}
                     >
-                      {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
+                      {olderCount} older notification{olderCount === 1 ? "" : "s"}
                     </button>
                   )}
-                  <div className="dl-rows">
-                    {/* Pairings first: the newest kind of news, and the only
-                        one with nothing to act on beyond reading it. */}
-                    {pairings.map((event) => (
-                      <PairingRowView key={event.id} event={event} onGone={onPairingGone ?? NOOP} />
-                    ))}
-                    {visible.map((row) => (
-                      <RepoRowView
-                        key={row.repo.root}
-                        row={row}
-                        onDone={onDone}
-                        onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
-                      />
-                    ))}
-                    {/* A REAL patcher (D586): `JobRow`'s dismiss (and
-                        `GroupJobRow`'s dismiss-all) calls
-                        `onPatch(js => js.filter(...))` on success, and the
-                        shell's own `terminal` state is exactly that list — so
-                        the row goes the instant the server confirms, instead
-                        of lingering until the next poll. D572's
-                        rejected-request sentence still shows on failure,
-                        because the patch only runs when the request landed. */}
-                    {renderJobRows(shownTerminal, onJobsChanged ?? NOOP, onTerminalPatch ?? NOOP_PATCH)}
-                    {messagesTrail.map((m) => (
-                      <MessageRowView key={m.id} notification={m} />
-                    ))}
-                  </div>
+                  <div className="dl-rows">{shownEarlierEntries.map((e) => e.node)}</div>
                 </div>
               )}
               {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed

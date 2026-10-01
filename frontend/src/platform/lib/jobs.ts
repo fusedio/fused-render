@@ -376,8 +376,9 @@ function familyKey(job: Job): string {
  *  member's id instead (content-derived, not positional) means the key only
  *  moves when that cluster's own earliest member actually changes.
  *
- *  This is defence-in-depth / a React-key fix (`groupJobs`'s `key`,
- *  `renderJobRows`'s list key) — it is NOT what makes `groupPopupTick`'s
+ *  This is defence-in-depth / a React-key fix (`groupJobs`'s `key`, read by
+ *  every caller that lists one row per group) — it is NOT what makes
+ *  `groupPopupTick`'s
  *  START rule correct by itself. `GroupPopupState` tracks running MEMBER
  *  IDS, not group keys, specifically so a key change here can never revive a
  *  duplicate START pop. See that type's own doc comment. */

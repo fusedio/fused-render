@@ -10,7 +10,7 @@
 // `history` DOM shim (installed once at file load so router.ts's real
 // module can be imported — see the comment just below), and a per-test
 // `globalThis.fetch` stub in the one test that presses a row's own button.
-import { expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 import type { Job } from "@platform/lib/jobs";
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -52,6 +52,19 @@ import { installDomShim } from "@platform/lib/testDomShim";
 // now installs it and leaves it installed, exactly like everyone else.
 installDomShim();
 
+// bun's test runtime has no `localStorage` at all (a bare read throws
+// `ReferenceError`, not "unavailable") — `notifications-seen-store.ts`'s own
+// suite stands one up the same way; R4's seen/unseen split silently never
+// persists anything without it, which would make every `renderSeenView` in
+// this file a no-op rather than a loud failure.
+const seenStorageBacking = new Map<string, string>();
+(globalThis as { localStorage?: unknown }).localStorage = {
+  getItem: (k: string) => (seenStorageBacking.has(k) ? seenStorageBacking.get(k)! : null),
+  setItem: (k: string, v: string) => void seenStorageBacking.set(k, String(v)),
+  removeItem: (k: string) => void seenStorageBacking.delete(k),
+  clear: () => seenStorageBacking.clear(),
+};
+
 // A rowClick's `onClick` calls `navigateUrl`, which touches `history` and
 // `window` — swapped out for the press itself and restored after, via this
 // helper, so nothing here leaks between tests.
@@ -88,6 +101,19 @@ const { notify, getRetainedNotifications, _resetNotificationsForTest } = await i
   "@platform/lib/notifications"
 );
 import type { StoredNotification } from "@platform/lib/notifications";
+const { _resetSeenStoreForTest } = await import("@shell/notifications-seen-store");
+
+// R4's seen/unseen split is itself persisted state (notifications-seen-store.ts,
+// backed by localStorage) — shared across every test in this one `bun test`
+// process exactly like `_resetNotificationsForTest` resets the message store
+// each test already relies on. Without this, a key one test's `renderSeenView`
+// marks seen (doneJob()'s default id, asking()'s default key, ...) would still
+// read as seen in a LATER test that assumes a fresh, nothing-looked-at-yet
+// "first look" — order-dependent flakiness of exactly the kind
+// `testDomShim.ts`'s own header warns about for shared globals.
+beforeEach(() => {
+  _resetSeenStoreForTest();
+});
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -184,35 +210,67 @@ function numeral(tree: ReactTestRendererJSON | null): string | null {
   return nums.length ? text(nums[0]) : null;
 }
 
+function fullProps(
+  props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},
+): Parameters<typeof RepoUpdatesCardView>[0] {
+  const rows = props.rows ?? repoRows([status()]);
+  return {
+    rows,
+    dismissed: props.dismissed ?? {},
+    terminal: props.terminal ?? [],
+    pairings: props.pairings ?? [],
+    attention: props.attention ?? [],
+    attentionDismissed: props.attentionDismissed ?? {},
+    onAttentionDismiss: props.onAttentionDismiss,
+    messages: props.messages ?? [],
+    collapsed: props.collapsed ?? false,
+    onToggle: props.onToggle ?? (() => {}),
+    onDismiss: props.onDismiss ?? (() => {}),
+    onDismissAll: props.onDismissAll ?? (() => {}),
+    onDone: props.onDone ?? (() => {}),
+    onTerminalPatch: props.onTerminalPatch,
+    onPairingGone: props.onPairingGone,
+  };
+}
+
 function renderInstance(
   props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},
 ): ReactTestRenderer {
-  const rows = props.rows ?? repoRows([status()]);
-  return create(
-    <RepoUpdatesCardView
-      rows={rows}
-      dismissed={props.dismissed ?? {}}
-      terminal={props.terminal ?? []}
-      pairings={props.pairings ?? []}
-      attention={props.attention ?? []}
-      attentionDismissed={props.attentionDismissed ?? {}}
-      onAttentionDismiss={props.onAttentionDismiss}
-      messages={props.messages ?? []}
-      collapsed={props.collapsed ?? false}
-      onToggle={props.onToggle ?? (() => {})}
-      onDismiss={props.onDismiss ?? (() => {})}
-      onDismissAll={props.onDismissAll ?? (() => {})}
-      onDone={props.onDone ?? (() => {})}
-      onTerminalPatch={props.onTerminalPatch}
-      onPairingGone={props.onPairingGone}
-    />,
-  );
+  return create(<RepoUpdatesCardView {...fullProps(props)} />);
 }
 
 function renderView(
   props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},
 ): ReactTestRendererJSON | null {
   return renderInstance(props).toJSON() as ReactTestRendererJSON | null;
+}
+
+// R4: a row counts unseen until the panel has been open while it was present
+// (RepoUpdatesDock.tsx's own close-effect marks it seen on close, or ~1.5s
+// after open). A test that wants to see what a SECOND look reads — a row
+// sorted into "Earlier" rather than "New", the volume cap applying to it —
+// renders once open, closes it (firing that effect's cleanup, which marks
+// everything then-present seen immediately, with no real timer to wait out),
+// then reopens with the same rows. Every key built from those rows is seen
+// from this point on, for as long as the key itself doesn't change.
+function createSeenInstance(
+  props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},
+): ReactTestRenderer {
+  const full = fullProps({ ...props, collapsed: false });
+  const renderer = create(<RepoUpdatesCardView {...full} />);
+  act(() => {
+    renderer.update(<RepoUpdatesCardView {...full} collapsed={true} />);
+  });
+  act(() => {
+    renderer.update(<RepoUpdatesCardView {...full} collapsed={false} />);
+  });
+  return renderer;
+}
+
+function renderSeenView(
+  props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},
+): ReactTestRendererJSON | null {
+  return createSeenInstance(props).toJSON() as ReactTestRendererJSON | null;
 }
 
 // D573 (user: "lets have simpler stuff like models (x count) | notifications
@@ -479,6 +537,12 @@ test("five or fewer terminal jobs draw with no fold row at all", () => {
   expect(findAll(tree, "dl-panel-more")).toHaveLength(0);
 });
 
+// The cap only ever bites "Earlier" (R3/R4) — a row freshly arrived reads in
+// full under "New" regardless of how many of them there are (the previous
+// test, "five or fewer..."), and the pre-R3 "Worth keeping" fold now applies
+// once those same rows have been SEEN (`renderSeenView`'s open-close-reopen
+// dance — RepoUpdatesDock.tsx's own close effect marks everything present
+// seen).
 test("the fold keeps the NEWEST five, not the oldest — `terminal` arrives oldest-first", () => {
   // j0 is the oldest job, j6 the newest (jobs.py's `list_jobs` order). The
   // visible five must be j2..j6, in that same oldest-first reading order —
@@ -486,7 +550,7 @@ test("the fold keeps the NEWEST five, not the oldest — `terminal` arrives olde
   const terminal = Array.from({ length: 7 }, (_, i) =>
     doneJob({ id: `j${i}`, detail: `job ${i}` })
   );
-  const tree = renderView({ rows: [], terminal });
+  const tree = renderSeenView({ rows: [], terminal });
   const rows = findAll(tree, "dl-row");
   expect(rows.map((r) => text(r))).toEqual([
     expect.stringContaining("job 2"),
@@ -499,18 +563,22 @@ test("the fold keeps the NEWEST five, not the oldest — `terminal` arrives olde
 
 test("a 6th terminal job folds behind an 'N older notifications' row — nothing is dropped", () => {
   const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
-  const tree = renderView({ rows: [], terminal });
+  const tree = renderSeenView({ rows: [], terminal });
   expect(findAll(tree, "dl-row").length).toBe(5);
   const more = findAll(tree, "dl-panel-more");
   expect(more).toHaveLength(1);
   expect(text(more[0])).toBe("2 older notifications");
-  // Nothing was deleted — the chip's own count still reads every one of them.
-  expect(numeral(tree)).toBe("7");
+  // Nothing was deleted — every one of the 7 jobs is seen (R4's close
+  // effect, via `renderSeenView`), so the chip's own numeral reads the
+  // unseen count (R7): zero. The section heading is what still reads 7.
+  expect(numeral(tree)).toBe(null);
+  const heading = findAll(tree, "dl-section-head").map((n) => text(n));
+  expect(heading).toEqual(["Earlier 7"]);
 });
 
 test("the fold row sits above `.dl-rows`, not inside it — `.dl-rows` scrolls the terminal rows alone", () => {
   const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
-  const tree = renderView({ rows: [], terminal });
+  const tree = renderSeenView({ rows: [], terminal });
   const dlRows = findAll(tree, "dl-rows")[0];
   expect(findAll(dlRows, "dl-panel-more")).toHaveLength(0);
   expect(findAll(dlRows, "dl-row")).toHaveLength(5);
@@ -518,7 +586,7 @@ test("the fold row sits above `.dl-rows`, not inside it — `.dl-rows` scrolls t
 
 test("clicking the fold row reveals every job", () => {
   const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
-  const renderer = renderInstance({ rows: [], terminal });
+  const renderer = createSeenInstance({ rows: [], terminal });
   const before = renderer.toJSON() as ReactTestRendererJSON;
   const more = findAll(before, "dl-panel-more")[0];
   act(() => {
@@ -529,18 +597,26 @@ test("clicking the fold row reveals every job", () => {
   expect(findAll(after, "dl-panel-more")).toHaveLength(0);
 });
 
-test("repo rows, pairings and a waiting task are never folded, however many terminal jobs there are", () => {
+// DEVIATION from the pre-R3 behaviour this test's own name used to assert
+// (DECISIONS-status-popovers.md's R3 entry): once every non-attention row
+// kind is merged into one newest-first "Earlier" list, there is no single
+// kind left to scope `TERMINAL_VISIBLE_CAP` to — a repo row or a pairing
+// that happens to be the OLDEST rows on screen now folds exactly like an old
+// finished job would. A waiting task never folds either way, because it
+// lives in "Needs you", untouched by any cap.
+test("the earlier cap spans every row kind together, not terminal jobs alone", () => {
   const terminal = Array.from({ length: 8 }, (_, i) => doneJob({ id: `j${i}` }));
   const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
-  const tree = renderView({
+  const tree = renderSeenView({
     rows,
     terminal,
     pairings: [{ id: "p1", name: "Suryas iPhone", at: 1000 }],
     attention: [asking()],
   });
-  // 2 repo rows + 1 pairing + 1 attention row + 5 shown terminal jobs.
-  expect(findAll(tree, "dl-row").length).toBe(9);
-  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
+  // 1 attention row (never folded) + 5 shown Earlier rows, out of 11 total
+  // non-attention rows (2 repo + 1 pairing + 8 terminal).
+  expect(findAll(tree, "dl-row").length).toBe(6);
+  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("6 older notifications");
 });
 
 // Finding 4 (code review 2026-09-16): TERMINAL_VISIBLE_CAP used to slice the
@@ -712,9 +788,11 @@ test("a genuinely new repo row arriving while collapsed does NOT open the panel"
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-panel")).toHaveLength(0);
-  // The arrival is still ANNOUNCED — just by the chip's own numeral, not a
-  // panel thrown open uninvited.
-  expect(numeral(after)).toBe("2");
+  // `one` was present through a full open-then-collapse cycle before `two`
+  // ever arrived, so R4's close effect already marked it seen — the chip's
+  // own numeral (R7: the unseen count, once nothing is in "Needs you")
+  // reads only the genuinely new arrival, `two`, not both.
+  expect(numeral(after)).toBe("1");
 });
 
 test("the chip's own click is what opens the panel — a collapsed one only opens on click", () => {
@@ -805,9 +883,12 @@ test("a terminal job draws as a row here, with its failure message", () => {
   expect(text(rows[0])).toContain("GDAL ran out of memory");
 });
 
-// The numeral answers "is there anything here" across BOTH sources — the
-// combined count. Each source alone must fill it (count = visible repo rows +
-// terminal + pairings), or one of them would be invisible from the bar.
+// The numeral answers "is there anything here" — a repo row alone (unseen,
+// nothing attention-tier) fills it with the unseen count, and a failure alone
+// fills it with the needs-you count (R7). With BOTH present, the numeral
+// reads the needs-you count alone, not the two sources summed — it is the
+// same number the chip's own "N needs you" label already names, not a second,
+// different tally of something else.
 test("either source fills the numeral, and neither alone leaves it empty", () => {
   const repoOnly = renderView({ rows: repoRows([status()]), terminal: [] });
   expect(numeral(repoOnly)).toBe("1");
@@ -816,7 +897,7 @@ test("either source fills the numeral, and neither alone leaves it empty", () =>
   expect(numeral(failureOnly)).toBe("1");
 
   const both = renderView({ rows: repoRows([status()]), terminal: [failedJob()] });
-  expect(numeral(both)).toBe("2");
+  expect(numeral(both)).toBe("1");
 });
 
 test("failures alone still make the section non-idle", () => {
@@ -889,16 +970,15 @@ test("the footer is absent at one repo row and present at two", () => {
   expect(findAll(two, "dl-clear")).toHaveLength(1);
 });
 
-test("a failure comes before an ordinary repo row — Needs you precedes Worth keeping (item 3)", () => {
+test("a failure comes before an ordinary repo row — Needs you precedes New (R3)", () => {
   // Both row kinds share `.dl-row` now (status-bar merge, brief item 4), so
   // ordering is asserted by what each kind carries rather than by class name:
   // a repo row's own action button is `.q-all` (kept — see this row's own
   // header comment for why it did not migrate to `.dl-row-cancel`), which a
   // terminal-job row (`JobRow`) never renders. `failedJob()`'s `state: "error"`
   // makes its `effectiveTier` "attention" regardless of its declared tier, so
-  // it lands in "Needs you" — the section item 3 draws FIRST — ahead of the
-  // ordinary repo row in "Worth keeping", reversing what used to be true when
-  // every terminal job shared one flat list with the repo rows.
+  // it lands in "Needs you" — drawn FIRST — ahead of the ordinary repo row in
+  // "New".
   const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), terminal: [failedJob()] });
   const rows = findAll(tree, "dl-row");
   expect(rows).toHaveLength(2);
@@ -1074,9 +1154,11 @@ test("a task naming no folder still opens as a row — its door is /tasks itself
 });
 
 test("waiting tasks fill the numeral like every other source, and end the idle state", () => {
-  // EVERY SOURCE DECIDES EVERY DERIVED NUMBER: the count, the idle predicate and
-  // the empty sentence all read one total, so a new row kind that forgot to join
-  // it would be invisible from the bar.
+  // EVERY SOURCE DECIDES EVERY DERIVED NUMBER: a waiting task alone fills the
+  // numeral and ends idle, same as any other source. With a failure ALSO
+  // present, the numeral reads the needs-you count (R7) — a waiting task and
+  // a failed job together, not the repo row alongside them (that row never
+  // counts toward "needs you").
   const alone = renderView({ rows: [], attention: [asking()] });
   expect(numeral(alone)).toBe("1");
   expect(findAll(alone, "dl-panel-empty")).toHaveLength(0);
@@ -1087,7 +1169,7 @@ test("waiting tasks fill the numeral like every other source, and end the idle s
     terminal: [failedJob()],
     attention: [asking()],
   });
-  expect(numeral(withOthers)).toBe("3");
+  expect(numeral(withOthers)).toBe("2");
 });
 
 test("a waiting task tints the chip red, like a failure does", () => {
@@ -1126,47 +1208,56 @@ test("Clear never counts a waiting row — there is nothing there to clear", () 
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
 });
 
-// ---------------------------------------------------------- item 3: two sections, one chip
+// ---------------------------------------------------------- R3: three sections, one chip
 
-test("rows split into 'Needs you' and 'Worth keeping', each drawn only when non-empty", () => {
-  // A waiting task and a failed job both land in "Needs you"; a repo row
-  // lands in "Worth keeping" — the two sections never mix. Both headings show
-  // here because both sections are actually present at once — the same
-  // "2+ sections" rule ActivityDock's own Running/Background split follows.
+test("rows split into 'Needs you' and 'New', each drawn only when non-empty", () => {
+  // A waiting task and a failed job both land in "Needs you"; a repo row that
+  // has never been seen before lands in "New" — the two sections never mix.
   const tree = renderView({
     rows: repoRows([status({ root: "/a/one" })]),
     terminal: [failedJob()],
     attention: [asking()],
   });
   const titles = findAll(tree, "dl-section-head").map((n) => text(n));
-  expect(titles).toEqual(["Needs you", "Worth keeping"]);
+  expect(titles).toEqual(["Needs you 2", "New 1"]);
 });
 
-test("a lone section draws no heading at all — nothing here needs disambiguating", () => {
-  // Same "PLURALITY, NOT PRESENCE" rule this file already follows for the
-  // Clear-all footer and ActivityDock follows for its own section headings:
-  // with only "Worth keeping" ever populated, a label distinguishing it from
-  // an empty sibling is a redundant header.
-  const onlyTrail = renderView({ rows: repoRows([status()]) });
-  expect(findAll(onlyTrail, "dl-section-head")).toHaveLength(0);
-  expect(findAll(onlyTrail, "dl-row")).toHaveLength(1);
+test("a repo row seen on an earlier look moves from 'New' to 'Earlier'", () => {
+  const props = { rows: repoRows([status({ root: "/a/one" })]) };
+  const tree = renderSeenView(props);
+  const titles = findAll(tree, "dl-section-head").map((n) => text(n));
+  expect(titles).toEqual(["Earlier 1"]);
+});
+
+// R2: every PRESENT section's heading always shows, with a count — never
+// gated on a sibling section also being present. A lone section is the
+// common case (most opens see either all-new or all-earlier rows), and R2
+// asks for the count right there precisely because there is nothing else on
+// screen to read it against.
+test("a lone section still draws its own heading, with a count", () => {
+  const onlyNew = renderView({ rows: repoRows([status()]) });
+  const newHeadings = findAll(onlyNew, "dl-section-head");
+  expect(newHeadings.map((n) => text(n))).toEqual(["New 1"]);
+  expect(findAll(onlyNew, "dl-row")).toHaveLength(1);
 
   const onlyAttention = renderView({ rows: [], attention: [asking()] });
-  expect(findAll(onlyAttention, "dl-section-head")).toHaveLength(0);
+  const needsYouHeadings = findAll(onlyAttention, "dl-section-head");
+  expect(needsYouHeadings.map((n) => text(n))).toEqual(["Needs you 1"]);
   expect(findAll(onlyAttention, "dl-row")).toHaveLength(1);
 });
 
-test("an attention-tier terminal job never folds behind the trail cap, however many trail jobs there are", () => {
-  // 8 ordinary (done, trail-tier) jobs plus 1 failed (attention-tier) job:
-  // TERMINAL_VISIBLE_CAP (5) folds the trail jobs down to 5, with 3 folded —
-  // but the failed job is never part of that count at all, because it never
-  // reaches `terminalTrail` in the first place.
+test("an attention-tier terminal job never folds behind the earlier cap, however many earlier jobs there are", () => {
+  // 8 ordinary (done, trail-tier) jobs, already seen from an earlier look,
+  // plus 1 failed (attention-tier) job freshly arrived: TERMINAL_VISIBLE_CAP
+  // (5) folds the 8 earlier jobs down to 5, with 3 folded — but the failed
+  // job is never part of that count at all, because "Needs you" is never
+  // folded by anything.
   const trail = Array.from({ length: 8 }, (_, i) => doneJob({ id: `j${i}` }));
-  const tree = renderView({ rows: [], terminal: [...trail, failedJob()] });
+  const tree = renderSeenView({ rows: [], terminal: [...trail, failedJob()] });
   const rows = findAll(tree, "dl-row");
-  // 5 shown trail jobs + 1 attention job, never folded.
+  // 5 shown earlier jobs + 1 attention job, never folded.
   expect(rows).toHaveLength(6);
-  expect(text(rows[0])).toContain("Pyramid build"); // attention section first
+  expect(text(rows[0])).toContain("Pyramid build"); // Needs you section first
   expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
 });
 
@@ -1207,13 +1298,13 @@ test("a done (trail-tier) job alone never turns the label loud — only attentio
 // A 5th row source: client-raised notifications retained by
 // `@platform/lib/notifications`, split the same way `terminal` already is —
 // `attention` into "Needs you", everything else that made it into `messages`
-// into "Worth keeping". Retention narrowed (user: "don't keep this in the
-// list. just show popup. anything non actionable or error doesn't belong in
-// the list") from "attention or trail" to "attention, or carries an
-// action/page" — `trail` is no longer even a type a client call site can
-// pass (`ClientNotificationTier` in notifications.ts), so a real
-// "Worth keeping" message today resolves to `tier: "transient"` while still
-// being retained, because it carries an action/page. These tests still build
+// into "New"/"Earlier" by R4's own seen state. Retention narrowed (user:
+// "don't keep this in the list. just show popup. anything non actionable or
+// error doesn't belong in the list") from "attention or trail" to
+// "attention, or carries an action/page" — `trail` is no longer even a type a
+// client call site can pass (`ClientNotificationTier` in notifications.ts),
+// so a real non-attention message today resolves to `tier: "transient"`
+// while still being retained, because it carries an action/page. These tests still build
 // mock `StoredNotification`s with `tier: "trail"` for the "not attention"
 // half of the split — that continues to work (the dock's own split is just
 // "attention vs. not"), but the more important, more regression-prone case
@@ -1247,7 +1338,7 @@ test("a trail-tier message fills the numeral but not the needs-you count", () =>
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
 });
 
-test("an attention message draws in 'Needs you', a trail message in 'Worth keeping'", () => {
+test("an attention message draws in 'Needs you', a trail message in 'New'", () => {
   const tree = renderView({
     rows: [],
     messages: [
@@ -1256,7 +1347,7 @@ test("an attention message draws in 'Needs you', a trail message in 'Worth keepi
     ],
   });
   const headings = findAll(tree, "dl-section-head").map((h) => text(h));
-  expect(headings).toEqual(["Needs you", "Worth keeping"]);
+  expect(headings).toEqual(["Needs you 1", "New 1"]);
   const rows = findAll(tree, "dl-row").map((r) => text(r));
   expect(rows[0]).toContain("Could not save");
   expect(rows[1]).toContain("Moved 3 items");
@@ -1264,11 +1355,11 @@ test("an attention message draws in 'Needs you', a trail message in 'Worth keepi
 
 // The half most likely to regress: a `tone: "info"` message with NO error
 // and NO explicit `tier` at all — it resolves to `tier: "transient"` — is
-// still retained (and lands in "Worth keeping") purely because it carries a
-// `page`. Built through the REAL store (`notify`), not the hand-rolled
-// `message()` mock above, so this exercises `isRetained` end to end rather
-// than assuming the dock trusts whatever mock tier a test hands it.
-test("a tone: info, non-error message with a page is retained and drawn in 'Worth keeping', not dropped", () => {
+// still retained (and lands in "New", on this first look) purely because it
+// carries a `page`. Built through the REAL store (`notify`), not the
+// hand-rolled `message()` mock above, so this exercises `isRetained` end to
+// end rather than assuming the dock trusts whatever mock tier a test hands it.
+test("a tone: info, non-error message with a page is retained and drawn in 'New', not dropped", () => {
   _resetNotificationsForTest();
   try {
     notify({ title: "Could not save", tone: "error" }); // gives "Needs you" a row too
@@ -1278,7 +1369,7 @@ test("a tone: info, non-error message with a page is retained and drawn in 'Wort
 
     const tree = renderView({ rows: [], messages: stored });
     const headings = findAll(tree, "dl-section-head").map((h) => text(h));
-    expect(headings).toEqual(["Needs you", "Worth keeping"]);
+    expect(headings).toEqual(["Needs you 1", "New 1"]);
     const rows = findAll(tree, "dl-row").map((r) => text(r));
     expect(rows[0]).toContain("Could not save");
     expect(rows[1]).toContain("Export ready");
@@ -1440,8 +1531,8 @@ test("a two-member group with one failing member gets the attention stripe and c
   const ok = doneJob({ id: "sys:g:a", group: "g" });
   const bad = failedJob({ id: "sys:g:b", group: "g" });
   const tree = renderView({ rows: [], terminal: [ok, bad] });
-  // One row, not split across "Needs you"/"Worth keeping" — D-C's "one
-  // failing member keeps the whole group visible" rule, at the row level.
+  // One row, not split across "Needs you"/"New" — D-C's "one failing member
+  // keeps the whole group visible" rule, at the row level.
   expect(findAll(tree, "dl-row")).toHaveLength(1);
   expect(findAll(tree, "dl-row-group-attention")).toHaveLength(1);
   expect(text(findAll(tree, "dl-model")[0])).toBe("1 of 2 done");
@@ -1540,21 +1631,27 @@ test("dismissing a group's row dismisses every member at once, and removes all o
 // `labelForSource`) already carry that fact; this section pins that every
 // row TYPE actually draws it, not just jobs.
 
+// R5 shares the caption's own line with a trailing age stamp
+// (NotificationCard.tsx's `.dl-origin`/`.dl-eyebrow` row), so every row
+// carries that container now regardless of whether it HAS a caption — the
+// age alone is reason enough for it to render. `dl-origin-text` is the
+// caption's own span inside it, which is what these tests actually care
+// about; `dl-origin` (the container) would include the age stamp's text too.
 test("a job row draws its origin caption; a job with no origin draws no line at all", () => {
   const withOrigin = renderView({ rows: [], terminal: [failedJob({ origin: "Playground" })] });
-  const caption = findAll(withOrigin, "dl-origin");
+  const caption = findAll(withOrigin, "dl-origin-text");
   expect(caption).toHaveLength(1);
   expect(text(caption[0])).toBe("Playground");
 
   const without = renderView({ rows: [], terminal: [failedJob({ origin: "" })] });
-  expect(findAll(without, "dl-origin")).toHaveLength(0);
+  expect(findAll(without, "dl-origin-text")).toHaveLength(0);
 });
 
 test("a folded group row draws the oldest member's origin, not one per member", () => {
   const g1 = doneJob({ id: "sys:g:a", group: "g", origin: "Local models" });
   const g2 = doneJob({ id: "sys:g:b", group: "g", origin: "Benchmark" });
   const tree = renderView({ rows: [], terminal: [g1, g2] });
-  const caption = findAll(tree, "dl-origin");
+  const caption = findAll(tree, "dl-origin-text");
   expect(caption).toHaveLength(1);
   expect(text(caption[0])).toBe("Local models");
 });
@@ -1564,7 +1661,7 @@ test("a message row draws its origin caption when the notify() call carried a so
     rows: [],
     messages: [message({ tier: "attention", title: "Could not save", origin: "my-app" })],
   });
-  const caption = findAll(withSource, "dl-origin");
+  const caption = findAll(withSource, "dl-origin-text");
   expect(caption).toHaveLength(1);
   expect(text(caption[0])).toBe("my-app");
 
@@ -1572,17 +1669,17 @@ test("a message row draws its origin caption when the notify() call carried a so
     rows: [],
     messages: [message({ tier: "attention", title: "Could not save" })],
   });
-  expect(findAll(noSource, "dl-origin")).toHaveLength(0);
+  expect(findAll(noSource, "dl-origin-text")).toHaveLength(0);
 });
 
 test("a waiting-task row draws its origin caption from the task's own target/project", () => {
   const withOrigin = renderView({ rows: [], attention: [asking({ origin: "my-project" })] });
-  const caption = findAll(withOrigin, "dl-origin");
+  const caption = findAll(withOrigin, "dl-origin-text");
   expect(caption).toHaveLength(1);
   expect(text(caption[0])).toBe("my-project");
 
   const without = renderView({ rows: [], attention: [asking({ origin: "" })] });
-  expect(findAll(without, "dl-origin")).toHaveLength(0);
+  expect(findAll(without, "dl-origin-text")).toHaveLength(0);
 });
 
 // ---- CHANGE 2 (reversed 2026-09-17, Recent section removed): a finished
@@ -1592,9 +1689,10 @@ test("a waiting-task row draws its origin caption from the task's own target/pro
 // clickable) but no longer opts into a folded "Recent" section — that
 // section is gone (user: "I also don't like this recent stuff. notification
 // is notification. remove this recent."). A finished task's row now behaves
-// exactly like any other non-attention message: unfolded, in "Worth keeping".
+// exactly like any other non-attention message: unfolded, in "New" on this
+// first look.
 
-test("a finished-task message lands in 'Worth keeping', unfolded, clickable via its own page", () => {
+test("a finished-task message lands in 'New', unfolded, clickable via its own page", () => {
   const instance = renderInstance({
     rows: [],
     messages: [message({ tier: "transient", title: "Task finished", page: "/tasks" })],
@@ -1609,7 +1707,7 @@ test("a finished-task message lands in 'Worth keeping', unfolded, clickable via 
   expect(typeof (rows[0].props as { onClick?: () => void }).onClick).toBe("function");
 });
 
-test("a non-attention, retained message lands in 'Worth keeping', unfolded (unchanged behaviour)", () => {
+test("a non-attention, retained message lands in 'New', unfolded (unchanged behaviour)", () => {
   const tree = renderView({
     rows: [],
     messages: [message({ tier: "transient", title: "Moved 3 items", page: "/tasks" })],
