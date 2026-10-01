@@ -13,7 +13,17 @@ ONE SHELL WINDOW, MORE ON DEMAND. The home window runs the shell SPA; its
 sidebar and in-page links navigate inside it, exactly as in a browser tab. A
 second window comes from what would have been a second tab: `target=_blank`,
 `window.open`, ⌘-click / middle-click on an app link, a Finder open, a deep
-link, the launcher. Nothing in the shell was taught about windows.
+link, the launcher.
+
+APPS RUN IN WINDOWS OF THEIR OWN. Inside a native window the shell knows it
+is one (the ``FusedRender/`` user-agent marker, router.ts
+``IS_NATIVE_WINDOW``): an app click — a card, a sidebar row — asks the
+server (POST /api/windows/open) to focus-or-open that app's window, which
+runs its entry page as a chrome-free embed (`window_policy.app_window_path`)
+under its own saved size and place; the launcher's pick lands the same way.
+The title bar's Edit button (⌘⇧E) opens the explorer view of what the
+window runs in a SECOND window (`window_policy.edit_target`); the run window
+stays until the user closes it.
 
 What the browser used to do for a page, the delegates here do instead
 (`window_policy.py` holds the decisions; this module enacts them):
@@ -42,8 +52,9 @@ macOS-only. `app.py` imports this lazily inside `main()` and falls back to
 surface. Every method must run on the main thread; `app.py` hops with
 `PyObjCTools.AppHelper.callAfter`.
 
-Ported from Render App (fused-render-lite `mainwindow.py`); the Edit button,
-web notifications and the `.fused`-file identity did not come along.
+Ported from Render App (fused-render-lite `mainwindow.py`); web
+notifications and the `.fused`-file identity did not come along, and Edit
+opens this app's own explorer instead of handing off to another app.
 """
 from __future__ import annotations
 
@@ -444,8 +455,10 @@ class _WebDelegate(NSObject):
             window.set_title(str(obj.title() or ""))
         elif key == "URL":
             u = obj.URL()
-            window.key = window_policy.window_key_of(
-                str(u.absoluteString()) if u is not None else None)
+            current = str(u.absoluteString()) if u is not None else None
+            window.key = window_policy.window_key_of(current)
+            window.view = window_policy.window_view_of(current)
+            window.sync_edit_button()
 
     # ---- NSWindowDelegate --------------------------------------------------
 
@@ -474,6 +487,9 @@ class _Window:
         # kept current by the URL observer. Plain Python attribute, so the
         # server thread may read it without touching WebKit.
         self.key: str | None = window_policy.window_key_of(url)
+        # HOW it shows ``key`` (app page / explorer view / embed): an app's
+        # run window and its Edit window share a key and differ only here.
+        self.view: str | None = window_policy.window_view_of(url)
         # The saved frame's owner is fixed at creation: `key` follows in-window
         # navigation, but a window must never jump or resize because the page
         # inside it navigated. The frame belongs to the window as opened.
@@ -506,19 +522,21 @@ class _Window:
         self.ns.setDelegate_(self.delegate)
         self._add_titlebar_buttons()
 
-        self._place(self.key)
+        self._place(self.key, self.view)
         # A popup WebKit asked us to create (`window.open`) loads itself once
         # we hand the view back; loading here too would race it.
         if load:
             self.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
 
     def _add_titlebar_buttons(self) -> None:
-        """"Open in Browser" and "Home" at the right end of the title bar —
-        Home rightmost. A titlebar accessory keeps the standard titled window
-        (title stays centred, traffic lights untouched) — no toolbar row, no
-        full-size-content-view mask. Same actions as the ⌘⇧L / ⌘⇧H menu
-        items."""
+        """"Edit", "Open in Browser" and "Home" at the right end of the title
+        bar — Home rightmost, Edit leftmost. A titlebar accessory keeps the
+        standard titled window (title stays centred, traffic lights
+        untouched) — no toolbar row, no full-size-content-view mask. Same
+        actions as the ⌘⇧E / ⌘⇧L / ⌘⇧H menu items. Edit means something only
+        while the window runs an app (`sync_edit_button`)."""
         specs = (  # left to right
+            ("square.and.pencil", "Edit", "Edit (⌘⇧E)", b"editApp:"),
             ("safari", "Open in Browser", "Open in Browser (⌘⇧L)", b"openInBrowser:"),
             ("house", "Home", "Home (⌘⇧H)", b"goHome:"),
         )
@@ -552,8 +570,21 @@ class _Window:
         vc.setView_(holder)
         vc.setLayoutAttribute_(NSLayoutAttributeTrailing)
         self.ns.addTitlebarAccessoryViewController_(vc)
+        self.edit_button = buttons[0]
+        self.sync_edit_button()
 
-    def _place(self, key: str | None) -> None:
+    def edit_path(self) -> str | None:
+        """The explorer URL path Edit opens for this window, or None."""
+        return window_policy.edit_target(self.view, self.key)
+
+    def sync_edit_button(self) -> None:
+        """Edit follows the page (URL KVO): enabled while the window runs an
+        app (an embed or an app page), off on Home and in the explorer."""
+        button = getattr(self, "edit_button", None)
+        if button is not None:
+            button.setEnabled_(self.view in ("embed", "app") and bool(self.key))
+
+    def _place(self, key: str | None, view: str | None = None) -> None:
         """Size and position the new window.
 
         Every app (and Home) has its own saved frame — the size and place
@@ -565,7 +596,7 @@ class _Window:
         else cascade from the front one. Popups (`window.open`) cascade and
         are never saved — they would otherwise overwrite Home's frame.
         """
-        name = None if self._popup else window_policy.frame_autosave_name(key)
+        name = None if self._popup else window_policy.frame_autosave_name(key, view)
         owner = self.manager.frame_owner(name) if name else None
         if owner is not None:
             self._cascade_from(owner)
@@ -734,6 +765,13 @@ class _MenuTarget(NSObject):
             w.load(self._m.home_url)
         else:
             self._m.open(self._m.home_url)
+
+    def editApp_(self, _s):
+        # The title-bar button targets this too, and a click on an inactive
+        # window's button makes that window key first — so `front()` is the
+        # window whose button was pressed.
+        if (w := self._m.front()) is not None:
+            self._m.edit(w)
 
     def showTasks_(self, _s):
         self._m.show_tasks()
@@ -911,16 +949,53 @@ class WindowManager:
     def open_keys(self) -> set[str]:
         """The app folders / files currently showing in a window. Safe from
         ANY thread: reads Python attributes only, never WebKit."""
-        return {w.key for w in list(self._windows) if w.key}
+        keys = set()
+        for w in list(self._windows):
+            if w.key:
+                keys.add(w.key)
+                # An app's run window is keyed on its entry FILE (an embed);
+                # the launcher's running dot keys on the app FOLDER.
+                if w.view == "embed":
+                    keys.add(os.path.dirname(w.key))
+        return keys
 
-    def window_for(self, fs_path: str) -> _Window | None:
-        """The most recently used window showing ``fs_path``, or None.
-        ``_windows`` is kept in MRU order (see ``_touch``), newest last."""
+    def window_for(self, fs_path: str, view: str | None = None) -> _Window | None:
+        """The most recently used window showing ``fs_path`` (in ``view``,
+        when given), or None. ``_windows`` is kept in MRU order (see
+        ``_touch``), newest last."""
         fs_path = os.path.abspath(fs_path)
         for w in reversed(self._windows):
-            if w.key == fs_path:
+            if w.key == fs_path and (view is None or w.view == view):
                 return w
         return None
+
+    def focus_or_open_url(self, url: str) -> _Window | None:
+        """Dock semantics for a shell URL: the window already showing the same
+        thing the same way (key AND view) comes to the front, else one opens.
+        A keyless URL always opens fresh."""
+        key = window_policy.window_key_of(url)
+        if key:
+            win = self.window_for(key, window_policy.window_view_of(url))
+            if win is not None:
+                win.show()
+                return win
+        return self.open(url)
+
+    def focus_or_open_app(self, fs_path: str) -> _Window | None:
+        """An app clicked in the shell or picked in the launcher: its OWN
+        window, running its entry page as an embed
+        (`window_policy.app_window_path`). Already open → to the front."""
+        return self.focus_or_open_url(
+            f"http://127.0.0.1:{self.port}" + window_policy.app_window_path(fs_path))
+
+    def edit(self, win: _Window) -> _Window | None:
+        """The Edit button: the explorer view of what ``win`` runs, in a window
+        of its own (focused if already open). ``win`` stays open — the user
+        closes it when done with it."""
+        path = win.edit_path()
+        if path is None:
+            return None
+        return self.focus_or_open_url(f"http://127.0.0.1:{self.port}" + path)
 
     def focus_or_open(self, fs_path: str) -> _Window:
         """Dock semantics: an app already open comes to the front (its most
@@ -1038,6 +1113,7 @@ def _build_main_menu(target) -> NSMenu:
         item("Back", b"goBack:", "["),
         item("Forward", b"goForward:", "]"),
         item("Home", b"goHome:", "H", CMD | _SHIFT),
+        item("Edit App", b"editApp:", "E", CMD | _SHIFT),
         sep(),
         item("Search Apps…", b"showLauncher:"),
         sep(),

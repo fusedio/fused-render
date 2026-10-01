@@ -1586,6 +1586,22 @@ def main() -> None:
         _apply_windows(native_windows_enabled())
         window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
 
+        def _open_app_window(fs_path: str) -> None:
+            # POST /api/windows/open: the shell, running inside one of our
+            # windows, was clicked on an app. Its own window, focused if
+            # already open (`WindowManager.focus_or_open_app`). The route
+            # answers before this runs; with no manager (the preference off
+            # since the page loaded) the click becomes a browser tab at the
+            # same address, never nothing.
+            manager = state["windows"]
+            if manager is None:
+                webbrowser.open(url.rstrip("/") + window_policy.app_window_path(fs_path))
+                return
+            manager.focus_or_open_app(fs_path)
+
+        window_policy.native_hooks["open_app"] = (
+            lambda fs_path: AppHelper.callAfter(_open_app_window, fs_path))
+
         def _open_window(target: str) -> None:
             # The popover's `window.open` / target=_blank (menubar_pin), main
             # thread already. Classified FIRST, like a window's own policy:
@@ -1617,8 +1633,9 @@ def main() -> None:
                     return
                 # Dock semantics; the panel is non-activating, so bring
                 # this app forward or the window opens behind the caller.
+                # An app lands in its own run window, as a shell click does.
                 NSApp.activateIgnoringOtherApps_(True)
-                manager.focus_or_open(fs_path)
+                manager.focus_or_open_app(fs_path)
 
             def _home_from_launcher() -> None:
                 manager = state["windows"]
