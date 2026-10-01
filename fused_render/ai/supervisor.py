@@ -1422,6 +1422,14 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     runner = _runner_or_raise(capability)
     _require_build_tools()
 
+    # A worker is about to become resident (joined below, or spawned fresh) —
+    # either way something now needs reaping once it idles out. `start_reaper`
+    # is idempotent (a module-level thread handle), so calling it on every
+    # load is just as correct as calling it once at process startup, and is
+    # the only thing that starts it at all in lean mode, which skips the
+    # `@on_startup` hooks that would otherwise have done it.
+    start_reaper()
+
     job = job_id_for(model)
     with _lock:
         current = _workers.get(capability)

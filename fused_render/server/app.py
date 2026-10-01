@@ -615,15 +615,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
     # nothing has used it for the configured window (default 5 min, 0 = off).
-    # A startup event and deliberately not the create_app body, for the same
-    # reason as `_startup_schedule` above: tests build apps with no lifespan,
-    # and this starts a thread that lives for the process — building one per
-    # test-constructed app would leak a thread per test.
-    @on_startup
-    async def _startup_ai_idle_reaper():
-        from fused_render.ai import supervisor
-
-        supervisor.start_reaper()
+    # No startup hook for it — `supervisor._start_resident` calls
+    # `start_reaper()` itself the moment a worker actually becomes resident,
+    # idempotently, which starts it in `lean` mode too (where this hook would
+    # have been skipped) and never starts it at all on a process that never
+    # loads a local model.
 
     # GPU/VRAM detection (SPEC AI-18, D519): `hw_detect.detect_hardware` is a
     # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),

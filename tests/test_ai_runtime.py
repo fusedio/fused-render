@@ -3669,6 +3669,18 @@ def test_cancel_check_is_not_tied_to_the_tightened_health_poll_cadence(
     assert calls["n"] <= 5, f"_cancel_requested called {calls['n']} times over a ~1s load"
 
 
+def test_a_resident_load_starts_the_idle_reaper(fake_runner, monkeypatch):
+    # The reaper is normally only started by the app's `@on_startup` hook,
+    # which lean mode skips — so a lean process that loads a local model on
+    # demand must start it itself, or the model never idles out. `load` must
+    # reach the real `start_reaper`, not the no-op `tests/conftest.py`
+    # installs for every other test in this module.
+    calls = []
+    monkeypatch.setattr(supervisor, "start_reaper", lambda: calls.append(1))
+    supervisor.load("org/reaped", registry.TEXT_GENERATION)
+    assert calls, "_start_resident did not call supervisor.start_reaper()"
+
+
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):
     first = supervisor.load("org/same", registry.TEXT_GENERATION)
     worker = _wait_ready("org/same")

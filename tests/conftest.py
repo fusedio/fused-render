@@ -597,14 +597,16 @@ def _no_startup_engine_warm(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_ai_idle_reaper_thread(monkeypatch):
-    """`create_app` starts the AI idle-unload reaper thread (SPEC AI-13, D414);
-    no test may let it run.
+    """`supervisor._start_resident` starts the AI idle-unload reaper thread
+    (SPEC AI-13, D414) the moment any local model becomes resident; no test
+    may let it run.
 
     Same hazard as `_no_schedule_loop_thread`/`_no_background_mount_threads`/
     `_no_startup_index_scan` above, same root cause: `supervisor.start_reaper()`
-    runs from the app's STARTUP event, so any test that enters
-    `with TestClient(create_app(...))` spawns a daemon that is never joined and
-    ticks every `_REAPER_TICK_S` for the REST OF THE WORKER PROCESS, calling
+    is reached from `_start_resident`, which plenty of AI tests call directly
+    (never through a lifespan), so letting it run spawns a daemon that is
+    never joined and ticks every `_REAPER_TICK_S` for the REST OF THE WORKER
+    PROCESS, calling
     `prefs.effective_ai_idle_unload_minutes()` -> `read_prefs()`, which reads
     `FUSED_RENDER_HOME` AFRESH on every tick. A later test's tmp home is
     whatever is current when a tick lands, not the one that started the
