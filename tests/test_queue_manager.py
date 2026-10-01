@@ -2950,6 +2950,69 @@ def test_ensure_duties_waiter_blocks_behind_a_rival_then_takes_over(state,
     assert started == [True]
 
 
+def test_ensure_duties_waiter_does_not_restart_once_done(monkeypatch):
+    """A thread that finished its one-shot startup work — `is_alive()` is
+    already False by then — must not be mistaken for "never started" by a
+    later call. Before this, keying idempotence off `is_alive()` meant every
+    `/api/tasks*` request after the first one restarted the waiter and
+    re-ran `reconcile()`; keying it off `_duties_state` instead, `_DUTIES_DONE`
+    is terminal for the life of the process."""
+    from fused_render import project_queue, schedule
+
+    starts = []
+    reconciles = []
+    monkeypatch.setattr(schedule, "start", lambda: starts.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+
+    class _Manager:
+        def reconcile(self):
+            reconciles.append(True)
+
+    qm.reset_for_tests(_Manager())
+    first = _REAL_ENSURE_DUTIES_WAITER()
+    first.join(timeout=5)
+    assert not first.is_alive()
+    assert starts == [True]
+    assert reconciles == [True]
+    assert qm._duties_state == qm._DUTIES_DONE
+
+    second = _REAL_ENSURE_DUTIES_WAITER()
+    assert second is first
+    assert starts == [True]
+    assert reconciles == [True]
+
+
+def test_ensure_duties_waiter_retries_with_backoff_after_a_failure(
+        monkeypatch):
+    """A raise out of `acquire_lease_blocking` (standing in for any failure
+    in the lease-acquire-then-schedule-start sequence) does not kill the
+    thread: it is logged and retried on a backoff, staying in
+    `_DUTIES_WAITING` the whole time, until it succeeds."""
+    from fused_render import project_queue, schedule
+
+    attempts = []
+
+    def flaky_acquire(name):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OSError("simulated lease failure")
+
+    monkeypatch.setattr(tasks_store, "acquire_lease_blocking", flaky_acquire)
+    monkeypatch.setattr(schedule, "start", lambda: None)
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+
+    slept = []
+    monkeypatch.setattr(qm.time, "sleep", lambda s: slept.append(s))
+
+    qm.reset_for_tests(None)
+    thread = _REAL_ENSURE_DUTIES_WAITER()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert len(attempts) == 3
+    assert slept == [qm._DUTIES_RETRY_MIN_S, qm._DUTIES_RETRY_MIN_S * 2]
+    assert qm._duties_state == qm._DUTIES_DONE
+
+
 # ------------------------------------------------ cross-process freshness
 
 

@@ -2342,16 +2342,18 @@ def get() -> QueueManager:
 
 
 def reset_for_tests(manager: QueueManager | None = None) -> None:
-    global _manager, _duties_waiter_thread
+    global _manager, _duties_waiter_thread, _duties_state
     _manager = manager
     # Forget any waiter thread a prior test started. `tasks_store`'s own
     # `reset_leases_for_tests()` fixture (conftest.py) releases the lease
-    # handle itself; this just drops the stale `Thread` object so the next
-    # test's `ensure_duties_waiter()` idempotent-start check doesn't short-
-    # circuit against a thread that belonged to a `STATE_DIR` no longer in
-    # use. A test that started a still-blocked waiter is responsible for
-    # joining it (with a timeout) before it ends — this does not join.
+    # handle itself; this just drops the stale `Thread` object and resets
+    # `_duties_state` to idle so the next test's `ensure_duties_waiter()`
+    # starts fresh rather than short-circuiting on `_DUTIES_DONE` left over
+    # from a `STATE_DIR` no longer in use. A test that started a
+    # still-blocked waiter is responsible for joining it (with a timeout)
+    # before it ends — this does not join.
     _duties_waiter_thread = None
+    _duties_state = _DUTIES_IDLE
 
 
 # ----------------------------------------------------------- machine duties
@@ -2371,6 +2373,35 @@ _duties_waiter_thread: threading.Thread | None = None
 # same idiom `ai/supervisor.py`'s `start_reaper`/`start_hardware_refresh`
 # use for the same reason.
 _duties_waiter_lock = threading.Lock()
+
+# `ensure_duties_waiter`'s own state — NOT the thread's `is_alive()`
+# (finding 1, review). The waiter thread is not a loop: it blocks on
+# `acquire_lease_blocking`, then runs `schedule.start()` plus an optional
+# one-shot `reconcile()`, then RETURNS — `is_alive()` goes False the moment
+# that work finishes, win or lose. Keying "once per process" off `is_alive()`
+# meant every `/api/tasks*` request after the first one landed on an
+# already-finished thread and started a brand new waiter, which re-ran
+# `reconcile()` on every single request. `_duties_state` tracks intent
+# instead of thread liveness: `_DUTIES_IDLE` (nothing started yet) is the
+# only state a call may start a new thread from; `_DUTIES_WAITING` (a
+# thread is parked in `acquire_lease_blocking`, still working, possibly
+# retrying after a failure) and `_DUTIES_DONE` (the one-time startup work
+# has already run to completion — TERMINAL for the life of this process,
+# since there is nothing left for a second thread to do once this process
+# holds the lease and has already run `schedule.start()`/`reconcile()`) are
+# both no-ops.
+_DUTIES_IDLE = "idle"
+_DUTIES_WAITING = "waiting"
+_DUTIES_DONE = "done"
+_duties_state = _DUTIES_IDLE
+
+# Backoff for the waiter thread's own retry loop (finding 7): a raise from
+# `acquire_lease_blocking`/`schedule.start()` used to kill the thread
+# silently, leaving `_duties_state` stuck at `_DUTIES_WAITING` forever with
+# nothing left trying — not even a crash, just a thread that quietly
+# stopped mattering. 5s on the first retry, doubling up to a 60s cap.
+_DUTIES_RETRY_MIN_S = 5.0
+_DUTIES_RETRY_MAX_S = 60.0
 
 
 def ensure_duties_waiter() -> threading.Thread:
@@ -2402,47 +2433,78 @@ def ensure_duties_waiter() -> threading.Thread:
     between the two, every process that can ever run ends up with a waiter
     parked and ready, with no separate polling/retry mechanism anywhere.
 
-    Safe to call from every process, any number of times, at any moment:
-    idempotent via `_duties_waiter_thread`/`_duties_waiter_lock` the same
-    way `ai/supervisor.py`'s `start_reaper` is — only the first call in a
-    given process actually starts the thread; every later call (every
-    `/api/tasks*` request after the first, say) is a fast no-op check, not a
-    retry, since the thread it already started is the one doing the
-    retrying by staying blocked.
+    A raise from `acquire_lease_blocking` or `schedule.start()` (finding 7)
+    does not kill the thread: it is logged at warning with a traceback,
+    waited out on a capped exponential backoff, and retried from the top —
+    `_duties_state` stays `_DUTIES_WAITING` through every retry, so a later
+    call in the same process still sees "already working on it" rather than
+    starting a second thread. `reconcile()`'s own failure is unchanged: it
+    is swallowed where it already was, because the scheduler's next tick
+    (now running in this process, since `schedule.start()` already
+    succeeded by the time `reconcile()` runs) retries the resume on its own.
 
-    Always returns the waiter thread — never None — so a caller that wants
-    a test seam (`_startup_queue_manager` keeps it on `app.state`, the same
-    pattern `_startup_tasks_warm` leaves) has one to `.join(timeout=...)`.
-    A plain `.join()` with no timeout can hang forever, legitimately, if
-    another live process still holds the lease.
+    Safe to call from every process, any number of times, at any moment:
+    idempotent via `_duties_state`/`_duties_waiter_lock` the same way
+    `ai/supervisor.py`'s `start_reaper` is idempotent via its own module
+    handle — only a call made while `_duties_state` is `_DUTIES_IDLE`
+    actually starts the thread; every other call (every `/api/tasks*`
+    request after the first, say, whether the thread is still retrying or
+    has already finished for good) is a fast no-op check.
+
+    Always returns the waiter thread — `_duties_waiter_thread`, never None
+    once any call has run — so a caller that wants a test seam
+    (`_startup_queue_manager` keeps it on `app.state`, the same pattern
+    `_startup_tasks_warm` leaves) has one to `.join(timeout=...)`. A plain
+    `.join()` with no timeout can hang forever, legitimately, if another
+    live process still holds the lease or this one is mid-retry.
 
     Deferred imports: `schedule` reaches back into this module (`_qm()`'s
     fallback wiring, and each tick's `reconcile()`), so importing it at
     module level here would cycle."""
-    global _duties_waiter_thread
+    global _duties_waiter_thread, _duties_state
     with _duties_waiter_lock:
-        if _duties_waiter_thread is not None and _duties_waiter_thread.is_alive():
+        if _duties_state != _DUTIES_IDLE:
             return _duties_waiter_thread
 
         def run() -> None:
-            tasks_store.acquire_lease_blocking(_DUTIES_LEASE)
+            global _duties_state
+            backoff = _DUTIES_RETRY_MIN_S
+            while True:
+                try:
+                    tasks_store.acquire_lease_blocking(_DUTIES_LEASE)
 
-            from fused_render import schedule
+                    from fused_render import schedule
 
-            schedule.start()
+                    schedule.start()
+                except Exception:  # noqa: BLE001 — this thread is the only
+                    # thing that will ever try to win the lease for this
+                    # process; dying silently here means this process never
+                    # runs machine duties again, even once whatever is
+                    # failing clears up (a rival lease holder exiting, a
+                    # transient filesystem error). Retry forever instead.
+                    logger.warning(
+                        "queue: machine-duties waiter failed; retrying in "
+                        "%.0fs", backoff, exc_info=True)
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, _DUTIES_RETRY_MAX_S)
+                    continue
+                break
 
             from fused_render import project_queue
 
-            if not project_queue.enabled():
-                return
+            if project_queue.enabled():
+                try:
+                    get().reconcile()
+                except Exception:  # noqa: BLE001 — a queue that cannot
+                    # resume must not take the server down with it; the
+                    # scheduler's next tick (now running in this process)
+                    # tries again.
+                    logger.exception("could not resume the project queue")
 
-            try:
-                get().reconcile()
-            except Exception:  # noqa: BLE001 — a queue that cannot resume
-                # must not take the server down with it; the scheduler's
-                # next tick (now running in this process) tries again.
-                logger.exception("could not resume the project queue")
+            with _duties_waiter_lock:
+                _duties_state = _DUTIES_DONE
 
+        _duties_state = _DUTIES_WAITING
         _duties_waiter_thread = threading.Thread(
             target=run, daemon=True, name="fused-queue-duties-waiter")
         _duties_waiter_thread.start()
