@@ -1172,6 +1172,38 @@ def test_the_index_persists_across_a_fresh_instance(state):
     assert fresh.held_answer("c")["raw"] == {"answer": "allow"}
 
 
+def test_two_live_managers_do_not_clobber_each_others_folder(state):
+    """Two processes against the same state dir (`fused-render open` and
+    `serve`, or two `open`s) — not a before/after `second.manager()` read,
+    but both managers ALIVE AT ONCE, each claiming a different folder.
+
+    Before B1, `_state` was loaded once in `__init__` and `_save()` always
+    wrote this process's whole in-memory snapshot — so `m2`, built before
+    `m1` ever wrote, had no F1 in its own `_state`, and its own `started()`
+    would persist an index with F2 but WITHOUT F1, erasing the folder `m1`
+    had just claimed. `_txn` now re-reads the index from disk before
+    mutating, so `m2`'s write must carry `m1`'s F1 forward."""
+    world1 = idle_world()
+    world2 = idle_world()
+    m1 = world1.manager()
+    m2 = world2.manager()
+
+    m1.started(F1, "a", "run-a", "sess-a")
+    m2.started(F2, "b", "run-b", "sess-b")
+
+    on_disk = json.loads((state / qm.INDEX_FILE).read_text())
+    folders = on_disk["folders"]
+    assert folders[F1]["owner"]["task"] == "a"
+    assert folders[F2]["owner"]["task"] == "b"
+
+    # A fresh manager loading that index sees both.
+    world3 = idle_world()
+    world3.running_keys.update({"a", "b"})
+    fresh = world3.manager()
+    assert fresh.owner(F1)["task"] == "a"
+    assert fresh.owner(F2)["task"] == "b"
+
+
 def test_blocked_list_round_trips(state):
     m = World().manager()
     m.enqueue(F1, "a")
@@ -1513,12 +1545,16 @@ def test_claim_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
     the item this call takes may be the only thing ever going to unstick it."""
     world = World()
     m = world.manager()
-    m._state["folders"][F1] = {
-        "owner": None, "blocked": [],
-        "line": [{"task": "b", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False},
-                {"task": "c", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False}]}
+    # Written through `_locked_state` (B1: a transaction re-reads `_state`
+    # from disk before mutating, so a direct in-memory poke here would be
+    # overwritten by `claim`'s own reload rather than seen by it).
+    with m._locked_state():
+        m._state["folders"][F1] = {
+            "owner": None, "blocked": [],
+            "line": [{"task": "b", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False},
+                    {"task": "c", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False}]}
     world.spawned.clear()
 
     assert m.claim(F2, "b", "run-b", "sess-b") is True
@@ -1532,12 +1568,16 @@ def test_claim_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
 def test_started_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
     world = World()
     m = world.manager()
-    m._state["folders"][F1] = {
-        "owner": None, "blocked": [],
-        "line": [{"task": "b", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False},
-                {"task": "c", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False}]}
+    # Written through `_locked_state` (B1: a transaction re-reads `_state`
+    # from disk before mutating, so a direct in-memory poke here would be
+    # overwritten by `started`'s own reload rather than seen by it).
+    with m._locked_state():
+        m._state["folders"][F1] = {
+            "owner": None, "blocked": [],
+            "line": [{"task": "b", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False},
+                    {"task": "c", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False}]}
     world.spawned.clear()
 
     m.started(F2, "b", "run-b", "sess-b")

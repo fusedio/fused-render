@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import json
 import logging
 import os
 import threading
@@ -157,7 +158,15 @@ def _owner_rec(raw) -> dict | None:
             # which is right: nothing claimed against a build that minted none
             # can ever present one back.
             "claims": [t for t in (raw.get("claims") or [])
-                      if isinstance(t, str) and t][-CLAIM_CAP:]}
+                      if isinstance(t, str) and t][-CLAIM_CAP:],
+            # WHETHER THE ADMITTED SEND'S OWN TOKEN HAS BEEN PRESENTED BACK
+            # (`consume_claim`) — distinct from `claims` (follow-up sends
+            # absorbed into this owner, still outstanding). Exposed by B1:
+            # once a transaction re-reads the index from disk instead of
+            # trusting the in-memory copy forever, a field `_owner_rec`
+            # dropped on load was a field every transaction after the first
+            # silently lost.
+            "consumed": bool(raw.get("consumed"))}
 
 
 def _answer_rec(raw) -> dict | None:
@@ -334,25 +343,58 @@ class QueueManager:
                 forced.add(name)
         return {"folders": folders, "answers": answers, "forced": forced}
 
-    def _save(self) -> None:
-        """Whole-index write through `tasks_store._update` — the same sibling
-        `.lock` every other store in that directory uses, held for the whole
-        read-modify-write. An unwritable state dir costs the write and nothing
-        else: the in-memory index is still right and `reconcile` rebuilds it."""
+    def _write_locked(self) -> None:
+        """Write `self._state` to disk. The caller already holds
+        `tasks_store.locked(INDEX_FILE)` — via `_locked_state` or `_txn`,
+        the only two places this is called — so this never acquires the
+        lock itself; `flock` is per open file description, not reentrant,
+        and a second acquire from the same process would block forever.
+
+        An unwritable state dir costs the write and nothing else: the
+        in-memory index is still right and `reconcile` rebuilds it."""
         snapshot = copy.deepcopy(self._state)
         # `forced` is a set in memory and a sorted list on disk — the only
         # field of the index that is not already json.
         snapshot["forced"] = sorted(self._state.get("forced") or ())
-
-        def mutate(data: dict):
-            data.clear()
-            data.update(snapshot)
-            return None, True
-
+        path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
         try:
-            tasks_store._update(INDEX_FILE, mutate)
+            os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, indent=2, ensure_ascii=False)
         except OSError:
             logger.debug("could not write %s", INDEX_FILE, exc_info=True)
+
+    @contextlib.contextmanager
+    def _locked_state(self):
+        """Hold this process's lock AND the cross-process file lock
+        together, refresh `self._state` from whatever is on disk under
+        both, let the caller mutate it, then write the result back before
+        releasing either.
+
+        **Cross-process correctness (also a bug with ANY two servers, not
+        just two `open` processes).** `_state` used to be loaded once in
+        `__init__` and never refreshed; `_save()` always persisted THIS
+        PROCESS's whole in-memory snapshot. Two processes against the same
+        state dir clobbered each other's folders outright, and could both
+        pump the same folder's head into a double spawn. Every critical
+        section that mutates `_state` now goes through here — directly, or
+        through `_txn`, which layers its diff/notify bookkeeping on top —
+        so "decide" always starts from a fresh read and "persist" always
+        carries forward whatever anyone else wrote in between.
+
+        `self._lock` outermost, `tasks_store.locked(INDEX_FILE)` inside it,
+        and NEVER NESTED: `self._lock` is an `RLock` (tolerates a handler
+        that calls another locked method on `self`), but the file lock is
+        not — a second `flock()` from this same process on the same open
+        file would block on itself. Nothing below calls into a second
+        `_locked_state()`/`_txn()` while already inside one; `_pump` (what
+        handlers nested inside a transaction actually call) only ever
+        touches `self._state` directly."""
+        with self._lock:
+            with tasks_store.locked(INDEX_FILE):
+                self._state = self._load()
+                yield
+                self._write_locked()
 
     def _migrate_legacy(self) -> None:
         """Fold the derived-holder layer's `held_answers.json` into the index,
@@ -385,47 +427,44 @@ class QueueManager:
             logger.exception("queue: could not read %s; leaving it alone",
                              LEGACY_ANSWERS_FILE)
             return
-        known: set[str] = set()
-        for rec in self._state["folders"].values():
-            if rec["owner"] is not None:
-                known.add(rec["owner"]["task"])
-            known.update(i["task"] for i in rec["line"] + rec["blocked"])
-        heads: dict[str, int] = {}
-        changed = False
-        for record in sorted(records, key=lambda r: _number(r.get("at"))):
-            session_id = _text(record.get("session_id"))
-            if not session_id:
-                continue
-            payload = record.get("payload")
-            raw = payload.get("raw") if isinstance(payload, dict) else None
-            run_id = _text(record.get("run_id"))
-            # A DECISION FOR A RUN THAT IS GONE IS NOT A DECISION. The old store
-            # outlived the runs it was about, so an upgrade on a machine that has
-            # been off for a week would re-own a folder for a process that died
-            # days ago and replay a verdict into an empty run dir. The status
-            # sync is asked; an unreadable one KEEPS the record, because dropping
-            # a live decision is the expensive direction of that guess.
-            if not self._alive({"task": session_id, "run_id": run_id,
-                                "session_id": session_id}):
-                continue
-            if not self._add_answer(session_id, {
-                    "run_id": run_id,
-                    "request_id": _text(record.get("request_id")),
-                    "raw": copy.deepcopy(raw) if isinstance(raw, dict) else {},
-                    "at": _number(record.get("at"))}):
-                continue
-            changed = True
-            folder = _text(record.get("queue_key"))
-            if not folder or session_id in known:
-                continue
-            slot = heads.get(folder, 0)
-            self._folder(folder)["line"].insert(
-                slot, {"task": session_id, "entry_id": "", "promoted": True,
-                       "resumed": False})
-            heads[folder] = slot + 1
-            known.add(session_id)
-        if changed:
-            self._save()
+        with self._locked_state():
+            known: set[str] = set()
+            for rec in self._state["folders"].values():
+                if rec["owner"] is not None:
+                    known.add(rec["owner"]["task"])
+                known.update(i["task"] for i in rec["line"] + rec["blocked"])
+            heads: dict[str, int] = {}
+            for record in sorted(records, key=lambda r: _number(r.get("at"))):
+                session_id = _text(record.get("session_id"))
+                if not session_id:
+                    continue
+                payload = record.get("payload")
+                raw = payload.get("raw") if isinstance(payload, dict) else None
+                run_id = _text(record.get("run_id"))
+                # A DECISION FOR A RUN THAT IS GONE IS NOT A DECISION. The old store
+                # outlived the runs it was about, so an upgrade on a machine that has
+                # been off for a week would re-own a folder for a process that died
+                # days ago and replay a verdict into an empty run dir. The status
+                # sync is asked; an unreadable one KEEPS the record, because dropping
+                # a live decision is the expensive direction of that guess.
+                if not self._alive({"task": session_id, "run_id": run_id,
+                                    "session_id": session_id}):
+                    continue
+                if not self._add_answer(session_id, {
+                        "run_id": run_id,
+                        "request_id": _text(record.get("request_id")),
+                        "raw": copy.deepcopy(raw) if isinstance(raw, dict) else {},
+                        "at": _number(record.get("at"))}):
+                    continue
+                folder = _text(record.get("queue_key"))
+                if not folder or session_id in known:
+                    continue
+                slot = heads.get(folder, 0)
+                self._folder(folder)["line"].insert(
+                    slot, {"task": session_id, "entry_id": "", "promoted": True,
+                           "resumed": False})
+                heads[folder] = slot + 1
+                known.add(session_id)
         try:
             os.replace(path, path + MIGRATED_SUFFIX)
         except OSError:
@@ -481,28 +520,37 @@ class QueueManager:
         the new key is already `keys.add()`-ed by the handler — so this never
         over-fires on the common case. A REORDER of the very same set of line
         tasks (skip's `⤒`) touches the owner too, since what its row would
-        call "up next" just changed name."""
+        call "up next" just changed name.
+
+        Re-reads `self._state` from disk under BOTH locks before the body
+        runs, same as `_locked_state` (see its own docstring on cross-process
+        correctness) — inlined here rather than wrapping that helper because
+        the before/after fingerprint diff has to sit between the reload and
+        the write, which two separately-yielding context managers cannot
+        express cleanly."""
         with self._lock:
-            keys: set[str] = set()
-            before = self._folder_fingerprints()
-            yield keys
-            after = self._folder_fingerprints()
-            for folder, after_snap in after.items():
-                before_snap = before.get(folder, ("", ()))
-                if before_snap == after_snap:
-                    continue
-                before_facts = self._line_facts(before_snap)
-                after_facts = self._line_facts(after_snap)
-                for task in set(before_facts) | set(after_facts):
-                    if before_facts.get(task) != after_facts.get(task):
-                        keys.add(task)
-                if (set(before_snap[1]) == set(after_snap[1])
-                        and before_snap[1] != after_snap[1]):
-                    if before_snap[0]:
-                        keys.add(before_snap[0])
-                    if after_snap[0]:
-                        keys.add(after_snap[0])
-            self._save()
+            with tasks_store.locked(INDEX_FILE):
+                self._state = self._load()
+                keys: set[str] = set()
+                before = self._folder_fingerprints()
+                yield keys
+                after = self._folder_fingerprints()
+                for folder, after_snap in after.items():
+                    before_snap = before.get(folder, ("", ()))
+                    if before_snap == after_snap:
+                        continue
+                    before_facts = self._line_facts(before_snap)
+                    after_facts = self._line_facts(after_snap)
+                    for task in set(before_facts) | set(after_facts):
+                        if before_facts.get(task) != after_facts.get(task):
+                            keys.add(task)
+                    if (set(before_snap[1]) == set(after_snap[1])
+                            and before_snap[1] != after_snap[1]):
+                        if before_snap[0]:
+                            keys.add(before_snap[0])
+                        if after_snap[0]:
+                            keys.add(after_snap[0])
+                self._write_locked()
         self._flush(keys)
 
     def _flush(self, keys: set) -> None:
@@ -595,7 +643,13 @@ class QueueManager:
                         "task": item["task"],
                         "entry_id": item.get("entry_id", ""),
                         "since": float(self._clock()), "starting": False,
-                        "turns": turns}
+                        "turns": turns,
+                        # Same shape `_owner_rec` loads from disk (B1: a
+                        # transaction now reloads through there before every
+                        # mutation, so a freshly-minted owner has to match
+                        # that shape from the start, not just after a round
+                        # trip).
+                        "claims": [], "consumed": False}
         return rec["owner"]
 
     @staticmethod
@@ -907,11 +961,14 @@ class QueueManager:
             started = self._spawn(folder, key)
         except Exception as exc:  # noqa: BLE001 — every outcome is handled below
             failure = exc
-        with self._lock:
-            # PHASE 2: the injected `spawn` call has returned (or raised), so
-            # whatever it is doing to the world it has finished doing. From
-            # here `reconcile` may treat this owner as an ordinary one again.
-            self._spawning.discard(key)
+        # PHASE 2: the injected `spawn` call has returned (or raised), so
+        # whatever it is doing to the world it has finished doing. From here
+        # `reconcile` may treat this owner as an ordinary one again.
+        # `_spawning` is process-local bookkeeping (see its docstring in
+        # `__init__`), not part of `self._state` — it is discarded outside
+        # `_locked_state()` so the reload inside never touches it.
+        self._spawning.discard(key)
+        with self._locked_state():
             rec = self._folder(folder)
             owner = self._still_starting(rec, item)
             if owner is None:
@@ -921,7 +978,6 @@ class QueueManager:
                 # folder's state now.
                 logger.debug("queue: %s in %s was reassigned mid-spawn", key,
                              folder)
-                self._save()
                 return
             if failure is not None:
                 busy = _busy_class()
@@ -942,7 +998,6 @@ class QueueManager:
                 owner["run_id"] = _text(started.get("run_id"))
                 owner["session_id"] = _text(started.get("session_id"))
                 owner["starting"] = False
-            self._save()
 
     def _deliver_answers(self, folder: str, item: dict, keys: set) -> None:
         """Replay every decision this task is owed, oldest first.
@@ -956,14 +1011,13 @@ class QueueManager:
         is its own first-writer-wins latch)."""
         key = item["task"]
         while True:
-            with self._lock:
+            with self._locked_state():
                 answers = self._answers_of(key)
                 if not answers:
                     rec = self._folder(folder)
                     owner = self._still_starting(rec, item)
                     if owner is not None:
                         owner["starting"] = False
-                    self._save()
                     return
                 answer = copy.deepcopy(answers[0])
             try:
@@ -971,15 +1025,13 @@ class QueueManager:
             except Exception:
                 logger.exception("queue: delivering the held answer for %s failed",
                                  key)
-                with self._lock:
+                with self._locked_state():
                     rec = self._folder(folder)
                     if self._still_starting(rec, item) is not None:
                         self._resign(rec, item, promoted=True)
-                    self._save()
                 return
-            with self._lock:
+            with self._locked_state():
                 self._drop_answer(key, answer)
-                self._save()
 
     def _place(self, task_key: str) -> dict:
         """``{"key", "position", "ahead_key"}`` for one task.
@@ -1701,12 +1753,11 @@ class QueueManager:
         keep = {str(name) for name in names if name}
         if not keep:
             return
-        with self._lock:
+        with self._locked_state():
             forced = self._state.setdefault("forced", set())
             if keep <= forced:
                 return
             forced |= keep
-            self._save()
 
     def is_forced(self, *names: str) -> bool:
         """Does any of these names belong to a task that was force-started —

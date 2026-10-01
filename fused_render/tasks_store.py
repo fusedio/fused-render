@@ -101,6 +101,7 @@ two lines.
 """
 from __future__ import annotations
 
+import contextlib
 import glob
 import json
 import os
@@ -214,6 +215,29 @@ def load_state(filename: str) -> dict:
         return {}
 
 
+@contextlib.contextmanager
+def locked(filename: str):
+    """Hold `filename`'s sibling `.lock` exclusively for an arbitrary
+    caller-defined critical section — the same lock `_update` takes for its
+    own read-modify-write, exposed here for a caller (`queue_manager`) whose
+    critical section is more than one `mutate(data)` call: it needs to
+    RE-READ the store, run its own decision logic against the fresh read,
+    and write back, all under one hold, which `_update`'s single-callback
+    shape cannot express.
+
+    POSIX-only (`fcntl`): on Windows `fcntl` is None and this yields without
+    locking anything, the same posture `_update` already has there. This
+    does not add cross-process correctness on Windows beyond what `_update`
+    already provided — it exists to keep every writer on the same code
+    path, not to add a primitive this module doesn't have."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    path = os.path.join(STATE_DIR, filename)
+    with open(path + ".lock", "w") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def _update(filename: str, mutate):
     """Read-modify-write one store under an exclusive lock; return whatever
     `mutate` returns.
@@ -224,11 +248,8 @@ def _update(filename: str, mutate):
     against one server, and FastAPI serves sync routes from a threadpool), and
     without the read inside the lock the second writer would persist a snapshot
     taken before the first one's change and drop it."""
-    os.makedirs(STATE_DIR, exist_ok=True)
     path = os.path.join(STATE_DIR, filename)
-    with open(path + ".lock", "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+    with locked(filename):
         data = load_state(filename)
         result, changed = mutate(data)
         if changed:
