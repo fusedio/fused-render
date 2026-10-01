@@ -1296,40 +1296,16 @@ def test_a_file_whose_only_line_never_ends_is_still_read(tmp_path):
 # ------------------------------------------------------------- lease (B2)
 
 
-def test_try_acquire_lease_wins_when_nobody_else_holds_it(state_dir):
-    assert tasks_store.try_acquire_lease("duties") is True
+def test_acquire_lease_blocking_creates_the_lease_file(state_dir):
+    tasks_store.acquire_lease_blocking("duties")
     assert os.path.exists(os.path.join(state_dir, "duties"))
 
 
-def test_try_acquire_lease_is_idempotent_for_the_same_holder(state_dir):
-    assert tasks_store.try_acquire_lease("duties") is True
-    assert tasks_store.try_acquire_lease("duties") is True
-
-
-def test_try_acquire_lease_loses_to_another_holder():
-    """A second, independent flock on the same file — a real second open file
-    description, the only thing that exercises `LOCK_NB` actually blocking —
-    stands in for a second process. `try_acquire_lease`'s own module-level
-    cache only short-circuits a SECOND CALL FROM THIS PROCESS, so it can't be
-    used on both sides of this test; the rival has to lock the file directly."""
-    import fcntl
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as d:
-        import os as _os
-        from unittest import mock
-
-        with mock.patch.object(tasks_store, "STATE_DIR", d):
-            path = _os.path.join(d, "duties")
-            with open(path, "w") as rival:
-                fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                assert tasks_store.try_acquire_lease("duties") is False
-
-
 def test_a_lease_released_by_reset_can_be_won_again(state_dir):
-    assert tasks_store.try_acquire_lease("duties") is True
+    tasks_store.acquire_lease_blocking("duties")
     tasks_store.reset_leases_for_tests()
-    assert tasks_store.try_acquire_lease("duties") is True
+    tasks_store.acquire_lease_blocking("duties")
+    assert "duties" in tasks_store._lease_handles
 
 
 class _FakeMsvcrt:
@@ -1354,18 +1330,6 @@ class _FakeMsvcrt:
                 if self._remaining_failures == 0:
                     self.rival_holds = False
             raise OSError("simulated rival holds the lock")
-
-
-def test_try_acquire_lease_wins_on_simulated_windows_when_free(state_dir, monkeypatch):
-    monkeypatch.setattr(tasks_store, "fcntl", None)
-    monkeypatch.setattr(tasks_store, "msvcrt", _FakeMsvcrt())
-    assert tasks_store.try_acquire_lease("duties") is True
-
-
-def test_try_acquire_lease_loses_on_simulated_windows_to_a_rival(state_dir, monkeypatch):
-    monkeypatch.setattr(tasks_store, "fcntl", None)
-    monkeypatch.setattr(tasks_store, "msvcrt", _FakeMsvcrt(fail_times=10**9))
-    assert tasks_store.try_acquire_lease("duties") is False
 
 
 def test_open_lease_file_does_not_crash_when_a_simulated_windows_rival_holds_the_stamped_byte(
@@ -1463,10 +1427,10 @@ def test_acquire_lease_blocking_is_idempotent_for_the_same_holder(state_dir):
 
 
 def test_acquire_lease_blocking_waits_for_a_real_rival_to_release(state_dir):
-    """A second, independent flock (a real second open file description, the
-    same trick `test_try_acquire_lease_loses_to_another_holder` uses) holds
-    the lease; `acquire_lease_blocking` on a background thread must sit there
-    until that rival lets go, then return promptly once it does."""
+    """A second, independent flock on the same file — a real second open file
+    description, the only thing that exercises an actual block — stands in
+    for a rival process; `acquire_lease_blocking` on a background thread
+    must sit there until it lets go, then return promptly once it does."""
     import fcntl
 
     path = os.path.join(state_dir, "duties")

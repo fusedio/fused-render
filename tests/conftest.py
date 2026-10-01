@@ -294,8 +294,8 @@ def _no_queue_manager_across_tests():
 def _no_tasks_store_leases_across_tests():
     """No test inherits another test's machine-duties lease (B2).
 
-    `tasks_store.try_acquire_lease` keeps the winning open file handle for
-    the rest of the PROCESS's life, not the test's — and `STATE_DIR` is
+    `tasks_store.acquire_lease_blocking` keeps the winning open file handle
+    for the rest of the PROCESS's life, not the test's — and `STATE_DIR` is
     repointed at a fresh `tmp_path` every test (see `state_dir` fixtures
     across the suite). Left standing, a lease name reused by a later test in
     the same xdist worker would short-circuit to "already held" against a

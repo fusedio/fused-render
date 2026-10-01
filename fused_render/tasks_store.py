@@ -320,51 +320,16 @@ def _open_lease_file(name: str):
     return handle
 
 
-def try_acquire_lease(name: str) -> bool:
-    """Claim `name`'s lease file exclusively, non-blocking, and keep holding
-    it for the rest of this process's life — no release call exists, because
-    an orderly release isn't the point: the OS drops the lock the instant
-    this process exits or crashes, which is what lets some other process (or
-    this one, later) retry and win the role (B2's "holder-less case retried
-    later"). Returns whether THIS process now holds (or already held) it.
-
-    Non-blocking (`LOCK_EX | LOCK_NB` on POSIX, `LK_NBLCK` on Windows): a
-    caller that loses the race gets False immediately rather than queuing
-    behind the winner — the whole point for a duty that must run in exactly
-    one process at a time while every other process just skips it and moves
-    on. Idempotent: calling it again for a lease this process already holds
-    returns True without touching the filesystem again.
-
-    Real locking on both POSIX (`fcntl`) and Windows (`msvcrt`) — this is a
-    genuine cross-process lease on either platform. Only when NEITHER
-    primitive is importable (a build of Python missing both, which is not a
-    real platform either of us ships to) does this fall back to "just claim
-    it, no cross-process guarantee", the same no-worse-than-before posture
-    `locked`/`_update` fall back to when `fcntl` is unavailable."""
-    with _lease_lock:
-        if name in _lease_handles:
-            return True
-        if fcntl is None and msvcrt is None:
-            return True
-        handle = _open_lease_file(name)
-        try:
-            if fcntl is not None:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            else:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            handle.close()
-            return False
-        _lease_handles[name] = handle
-        return True
-
-
 def acquire_lease_blocking(name: str) -> None:
-    """Like `try_acquire_lease`, but waits as long as it takes instead of
-    giving up immediately — for a caller that wants its turn at `name`
-    rather than an instant yes/no. Returns once this process holds the
-    lease (or returns immediately if it already did, same idempotence as
-    `try_acquire_lease`).
+    """Claim `name`'s lease file exclusively, waiting as long as it takes,
+    and keep holding it for the rest of this process's life — no release
+    call exists, because an orderly release isn't the point: the OS drops
+    the lock the instant this process exits or crashes, which is what lets
+    some other process (or this one, later) retry and win the role (B2's
+    "holder-less case retried later"). Returns once this process holds the
+    lease (or returns immediately if it already did — idempotent: calling
+    it again for a lease this process already holds returns without
+    touching the filesystem again).
 
     This BLOCKS THE CALLING THREAD, potentially for a long time — call it
     from a thread you can afford to park (a background worker, never a
@@ -381,15 +346,15 @@ def acquire_lease_blocking(name: str) -> None:
     loop `LK_NBLCK`, and on `OSError` sleep `_LEASE_RETRY_INTERVAL` and try
     again, until it succeeds.
 
-    Neither primitive available: falls back to claiming the lease
-    unconditionally, same posture (and same caveat: no cross-process
-    guarantee) as `try_acquire_lease`'s fallback for that case.
+    Neither primitive available (a build of Python missing both, which is
+    not a real platform either of us ships to): falls back to claiming the
+    lease unconditionally, no cross-process guarantee.
 
     `_lease_lock` is held only around the bookkeeping (the idempotence check
     and registering the winning handle), never across the actual wait —
     different lease NAMES are unrelated, and holding the lock across a
-    long block would freeze every other name's `try_acquire_lease` and
-    `acquire_lease_blocking` call in this process for the whole wait."""
+    long block would freeze every other name's `acquire_lease_blocking`
+    call in this process for the whole wait."""
     with _lease_lock:
         if name in _lease_handles:
             return
@@ -420,7 +385,8 @@ def reset_leases_for_tests() -> None:
     test can simulate losing/giving up a role (or simply not leak a held
     lease into the next test's `tmp_path`-scoped `STATE_DIR`) without exiting
     the interpreter — the only way a lease is ever released for real in
-    production, where `try_acquire_lease` is deliberately one-directional."""
+    production, where `acquire_lease_blocking` is deliberately
+    one-directional."""
     with _lease_lock:
         handles = list(_lease_handles.values())
         _lease_handles.clear()
