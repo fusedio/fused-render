@@ -18,6 +18,8 @@ so it can be driven directly, with `hw_detect.refresh_hardware` and
 `fit.machine_ram_gb` monkeypatched, the same way `reap_idle(now)` is tested
 without ever starting `start_reaper`'s thread.
 """
+import threading
+
 import pytest
 
 from fused_render.ai import fit, hw_detect, supervisor
@@ -115,3 +117,66 @@ def test_start_hardware_refresh_starts_a_new_thread_once_the_old_one_died(monkey
     assert len(started) == 2
 
     monkeypatch.setattr(supervisor, "_hardware_refresh_thread", None)
+
+
+def test_concurrent_first_calls_to_start_hardware_refresh_start_exactly_one_thread(
+        monkeypatch):
+    """`start_hardware_refresh()` fires its first probe inline, from
+    whichever caller wins the race — a burst of concurrent request-path
+    callers (the new lazy-start call sites in `ai_runtime.py`/
+    `hub_models.py`) can all reach it at once on a cold process. Two callers
+    racing the `is_alive()` check before either has created a thread must
+    not both create and start one, the identical race
+    `test_concurrent_first_calls_to_start_reaper_start_exactly_one_thread`
+    (`tests/test_ai_runtime.py`) pins for `start_reaper`/`_reaper_lock` —
+    this is the same test, mirrored for `start_hardware_refresh`/
+    `_hardware_refresh_lock`.
+
+    `_hardware_refresh_tick` is patched to a harmless counter: the real tick
+    spawns a subprocess probe immediately, on thread start, not on a delay,
+    so leaving it real would spawn real `nvidia-smi`/`rocm-smi`/`powershell`
+    processes here. Every spawned thread is joined before returning so
+    nothing outlives the test — `run`'s only other work is `time.sleep`,
+    which a daemon thread sitting in forever is fine to leave behind, but
+    this test does not need to find out, since the tick itself returns
+    immediately."""
+    monkeypatch.setattr(supervisor, "_hardware_refresh_thread", None)
+    monkeypatch.setattr(supervisor, "_hardware_refresh_tick", lambda: None)
+    real_thread_cls = threading.Thread
+    created = []
+
+    class CountingThread(real_thread_cls):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            if self.name == "ai-hardware-refresh":
+                created.append(self)
+
+    monkeypatch.setattr(supervisor.threading, "Thread", CountingThread)
+
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def call_start_hardware_refresh():
+        barrier.wait(timeout=5)
+        _real_start_hardware_refresh()
+
+    callers = [real_thread_cls(target=call_start_hardware_refresh) for _ in range(n)]
+    for t in callers:
+        t.start()
+    for t in callers:
+        t.join(timeout=5)
+        assert not t.is_alive(), "a start_hardware_refresh() caller never returned"
+
+    assert len(created) == 1, (
+        f"expected exactly one hardware-refresh thread to be created, got {len(created)}")
+    refresh_thread = created[0]
+    assert supervisor._hardware_refresh_thread is refresh_thread
+    try:
+        assert refresh_thread.is_alive()
+    finally:
+        # The real `run` sleeps `_HARDWARE_REFRESH_INTERVAL_S` (6 hours)
+        # between ticks and never exits; it's a daemon so there is nothing
+        # to join. Reset the module global so later tests see a clean
+        # slate, matching how every other test here gets
+        # `start_hardware_refresh` no-op'd by the autouse conftest fixture.
+        supervisor._hardware_refresh_thread = None

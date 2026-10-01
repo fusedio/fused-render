@@ -2219,6 +2219,11 @@ def start_reaper() -> None:
 _HARDWARE_REFRESH_INTERVAL_S = 6 * 60 * 60  # 6 hours
 
 _hardware_refresh_thread: threading.Thread | None = None
+# Guards `start_hardware_refresh`'s check-AND-create-AND-assign, the same
+# race `_reaper_lock` closes for `start_reaper`: two concurrent callers
+# racing the unlocked `is_alive()` check could otherwise both see no live
+# thread and each create and start one.
+_hardware_refresh_lock = threading.Lock()
 
 
 def _hardware_refresh_tick() -> None:
@@ -2254,22 +2259,29 @@ def start_hardware_refresh() -> None:
     interval, forever. A failed tick (no vendor tool found, a hung spawn
     past `hw_detect._PROBE_TIMEOUT_S`, an `OSError` writing the cache) is
     logged and never kills the loop — the next tick tries again.
+
+    `_hardware_refresh_lock` covers the check, the thread's creation, and the
+    assignment to `_hardware_refresh_thread` as one step — the identical
+    guard `start_reaper` draws around `_reaper_lock`, for the identical
+    race: two concurrent callers racing the `is_alive()` check could
+    otherwise both see no live thread and each create and start one.
     """
     global _hardware_refresh_thread
-    if _hardware_refresh_thread is not None and _hardware_refresh_thread.is_alive():
-        return
+    with _hardware_refresh_lock:
+        if _hardware_refresh_thread is not None and _hardware_refresh_thread.is_alive():
+            return
 
-    def run() -> None:
-        while True:
-            try:
-                _hardware_refresh_tick()
-            except Exception:  # noqa: BLE001 - a tick must never kill the loop
-                logger.exception("hardware-refresh tick failed")
-            time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
+        def run() -> None:
+            while True:
+                try:
+                    _hardware_refresh_tick()
+                except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                    logger.exception("hardware-refresh tick failed")
+                time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
 
-    _hardware_refresh_thread = threading.Thread(
-        target=run, name="ai-hardware-refresh", daemon=True)
-    _hardware_refresh_thread.start()
+        _hardware_refresh_thread = threading.Thread(
+            target=run, name="ai-hardware-refresh", daemon=True)
+        _hardware_refresh_thread.start()
 
 
 #: How often the background Hub-metadata-warming thread re-sweeps the
