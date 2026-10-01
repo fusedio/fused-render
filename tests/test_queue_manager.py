@@ -2478,7 +2478,7 @@ def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
                       # test is about the grace, not the ceiling.
                       "entry_id": "", "since": world.now, "starting": True,
                       "turns": 1, "claims": [], "consumed": False,
-                      "spawner_pid": other.pid},
+                      "spawner_pid": other.pid, "spawn_started": world.now},
             "line": [], "blocked": []}}, "answers": {}, "forced": []}
         os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
         with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
@@ -2510,7 +2510,7 @@ def test_reconcile_pops_a_starting_owner_whose_spawner_process_died():
         "owner": {"task": "stuck", "run_id": "", "session_id": "",
                   "entry_id": "", "since": 0.0, "starting": True,
                   "turns": 1, "claims": [], "consumed": False,
-                  "spawner_pid": dead_pid},
+                  "spawner_pid": dead_pid, "spawn_started": 0.0},
         "line": [], "blocked": []}}, "answers": {}, "forced": []}
     os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
     with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
@@ -2522,14 +2522,17 @@ def test_reconcile_pops_a_starting_owner_whose_spawner_process_died():
     assert owner_key(m) is None
 
 
-def test_reconcile_pops_a_starting_owner_past_spawn_max_despite_a_live_pid():
-    """Finding 9 (code review): a live `spawner_pid` does not prove it is
-    still OUR spawner — the OS reuses pids, so a spawner that crashed can
+def test_reconcile_pops_another_processs_starting_owner_past_spawn_max_despite_a_live_pid():
+    """Finding 9 (first review round): a live `spawner_pid` does not prove it
+    is still OUR spawner — the OS reuses pids, so a spawner that crashed can
     hand its pid to a later, unrelated process, and trusting liveness alone
     would read this owner as in-flight forever with nothing left to ever
-    clear `starting`. Past `SPAWN_MAX`, `_spawn_in_flight` stops trusting the
-    pid probe (and `self._spawning`) regardless of what they say, so
-    `reconcile` is willing to pop and retry even with the pid still alive."""
+    clear `starting`. Past `SPAWN_MAX`, measured from `spawn_started` (finding
+    2, second review round — not from `since`, which is when the OTHER
+    process's `_pump` decided to spawn, a fact this process has no clock
+    relationship to anyway), `_spawn_in_flight` stops trusting the pid probe
+    for a CROSS-PROCESS spawn, so `reconcile` is willing to pop and retry
+    even with the pid still alive."""
     import subprocess
 
     other = subprocess.Popen(["sleep", "5"])
@@ -2540,7 +2543,7 @@ def test_reconcile_pops_a_starting_owner_past_spawn_max_despite_a_live_pid():
             "owner": {"task": "stuck", "run_id": "", "session_id": "",
                       "entry_id": "", "since": world.now, "starting": True,
                       "turns": 1, "claims": [], "consumed": False,
-                      "spawner_pid": other.pid},
+                      "spawner_pid": other.pid, "spawn_started": world.now},
             "line": [], "blocked": []}}, "answers": {}, "forced": []}
         os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
         with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
@@ -2553,6 +2556,44 @@ def test_reconcile_pops_a_starting_owner_past_spawn_max_despite_a_live_pid():
     finally:
         other.terminate()
         other.wait(5)
+
+
+def test_reconcile_never_pops_this_processs_own_in_flight_spawn_past_spawn_max():
+    """Finding 2 (second review round): `self._spawning` is THIS process's
+    own bookkeeping, set and cleared around the one `_start_one` call that
+    actually spawns — there is no clock it needs to be aged against, because
+    it is never wrong about whether a spawn is still running in this
+    process. The ceiling used to be checked first and aged off
+    `owner["since"]` (when `_pump` decided to hand the folder over, not when
+    `_start_one` actually began spawning), so a slow spawn that crossed
+    `SPAWN_MAX` while genuinely still in flight got popped out from under
+    itself — the next pump then started a SECOND task in the same folder.
+    `self._spawning` membership is asked first, unconditionally, and answers
+    True no matter how old the owner is."""
+    world = World()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def slow(folder, key):
+        inside.set()
+        assert release.wait(5)
+        return {"run_id": "run-" + key, "session_id": "sess-" + key}
+
+    world.spawn = slow
+    m = world.manager()
+    thread = threading.Thread(target=m.enqueue, args=(F1, "slow"))
+    thread.start()
+    assert inside.wait(5)                    # the spawn is in flight
+
+    world.now += qm.SPAWN_MAX + 5            # past the ceiling, still spawning
+    m.reconcile()
+    assert owner_key(m) == "slow"            # not popped: self._spawning says so
+    assert line_of(m) == []
+
+    release.set()
+    thread.join(5)
+    assert owner_key(m) == "slow"
+    assert m.owner(F1)["run_id"] == "run-slow"
 
 
 def test_reconcile_still_trusts_a_fresh_in_flight_spawn_under_spawn_max():
@@ -2569,7 +2610,7 @@ def test_reconcile_still_trusts_a_fresh_in_flight_spawn_under_spawn_max():
             "owner": {"task": "slow", "run_id": "", "session_id": "",
                       "entry_id": "", "since": world.now, "starting": True,
                       "turns": 1, "claims": [], "consumed": False,
-                      "spawner_pid": other.pid},
+                      "spawner_pid": other.pid, "spawn_started": world.now},
             "line": [], "blocked": []}}, "answers": {}, "forced": []}
         os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
         with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:

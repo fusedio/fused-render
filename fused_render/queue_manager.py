@@ -190,7 +190,16 @@ def _owner_rec(raw) -> dict | None:
             # the 60s a `dispatch_entry`/`_send` call can legitimately take
             # — and would pop an owner out from under a spawn that was
             # still working. See `_spawn_in_flight`.
-            "spawner_pid": int(_number(raw.get("spawner_pid")))}
+            "spawner_pid": int(_number(raw.get("spawner_pid"))),
+            # WHEN THE SPAWN NAMED BY `spawner_pid` ACTUALLY STARTED
+            # (finding 2, review) — a `time.time()` wall-clock stamp, 0
+            # unless `spawner_pid` is too. `_spawn_in_flight` ages the
+            # cross-process pid probe off this, never off `since`: `since`
+            # is when `_pump` decided to hand the folder over, which can
+            # predate the real spawn by as long as `_flush` takes to reach
+            # it, and coupling the `SPAWN_MAX` ceiling to the wrong moment
+            # is what let a still-spawning owner get popped early.
+            "spawn_started": _number(raw.get("spawn_started"))}
 
 
 def _answer_rec(raw) -> dict | None:
@@ -825,9 +834,11 @@ class QueueManager:
                         # transaction now reloads through there before every
                         # mutation, so a freshly-minted owner has to match
                         # that shape from the start, not just after a round
-                        # trip). `spawner_pid` is set separately, by `_pump`,
-                        # the moment it marks this owner `starting`.
-                        "claims": [], "consumed": False, "spawner_pid": 0}
+                        # trip). `spawner_pid`/`spawn_started` are set
+                        # separately, by `_pump`, the moment it marks this
+                        # owner `starting`.
+                        "claims": [], "consumed": False, "spawner_pid": 0,
+                        "spawn_started": 0.0}
         return rec["owner"]
 
     @staticmethod
@@ -905,31 +916,51 @@ class QueueManager:
         which case it is never popped for age alone, whatever `SPAWN_GRACE`
         says (B1b, and `_spawning`'s docstring in `__init__`).
 
-        THE AGE CEILING GOES FIRST (`SPAWN_MAX`, review). A `spawner_pid`
-        that is still alive does not prove IT IS STILL OUR SPAWNER — pid
-        reuse after a crash hands that pid to an unrelated process, and
-        trusting liveness alone would call this owner in-flight forever,
-        with nothing left to ever clear `starting`. Past `SPAWN_MAX` this
-        returns False no matter what `self._spawning` or the pid probe would
-        say — including for a spawn that is still genuinely running in THIS
-        process, because a `_spawn` wedged that long is no better than a
-        crashed one as far as the folder is concerned.
+        THIS PROCESS'S OWN `self._spawning` IS AUTHORITATIVE AND NEVER AGED
+        OUT (review, finding 2). `SPAWN_MAX` used to be checked first, aged
+        from `owner["since"]` — the moment `_pump` handed the folder over,
+        which is the WRONG clock: `_pump`'s decision and `_start_one`'s
+        actual spawn can be seconds apart inside one `_flush` pass when
+        several folders spawn serially, so a slow-but-legitimate in-flight
+        spawn in THIS process could cross the ceiling and get popped while
+        `_start_one` was still mid-call — the exact window that let two
+        tasks land in one folder. `self._spawning` already answers "is MY
+        spawn still running" with certainty (it is this process's own
+        bookkeeping, set and cleared around the one call that matters), so
+        nothing about it needs to age out: a membership check here is
+        always correct and is asked first, unconditionally.
 
-        Under the ceiling: THIS PROCESS answers from `self._spawning` for
-        free. ANOTHER PROCESS'S spawn (`owner["spawner_pid"]`, set by
-        `_pump`) is asked with a liveness probe instead — POSIX only:
-        `tasks_store` already treats cross-process locking as POSIX-only,
-        and a `spawner_pid` nothing can check on Windows is worth less than
-        falling back to the `SPAWN_GRACE` backstop every caller already
-        has."""
-        if now - _number(owner.get("since")) >= SPAWN_MAX:
-            return False
+        ONLY THE CROSS-PROCESS PID PROBE IS BOUNDED BY `SPAWN_MAX`, and aged
+        from `owner["spawn_started"]` — the wall-clock moment `_pump`
+        actually marked this owner `starting` and stamped `spawner_pid`
+        (not `since`, which predates it by nothing in the common case but is
+        the wrong field to couple this to) — because a live `spawner_pid`
+        does not prove it is still OUR spawner: pid reuse after a crash
+        hands that pid to an unrelated process, and trusting liveness alone
+        would read this owner as in-flight forever with nothing left to
+        ever clear `starting`. `spawn_started` is a `time.time()` stamp
+        (POSIX cross-process correctness needs wall time; `time.monotonic`
+        means nothing to another process) — a negative or backwards age
+        (clock stepped back, or a stamp somehow after `now`) is treated as
+        fresh (age 0) rather than as "infinitely old", since a backwards
+        clock says nothing trustworthy about how long the spawn has
+        actually been running.
+
+        POSIX only: `tasks_store` already treats cross-process locking as
+        POSIX-only, and a `spawner_pid` nothing can check on Windows is
+        worth less than falling back to the `SPAWN_GRACE` backstop every
+        caller already has."""
         if owner["task"] in self._spawning:
             return True
         if os.name != "posix":
             return False
         pid = int(_number(owner.get("spawner_pid")))
-        return bool(pid) and pid != os.getpid() and _pid_alive(pid)
+        if not pid or pid == os.getpid() or not _pid_alive(pid):
+            return False
+        age = now - _number(owner.get("spawn_started"))
+        if age < 0:
+            age = 0.0
+        return age < SPAWN_MAX
 
     # -- identity ---------------------------------------------------------
     #
@@ -1160,7 +1191,12 @@ class QueueManager:
             # is still in flight too (B1b) — `self._spawning` only answers
             # for THIS process. Written now, inside the same transaction
             # that just set `starting`, so the two reach disk together.
+            # `spawn_started` is the wall-clock moment this happens — the
+            # cross-process `SPAWN_MAX` ceiling in `_spawn_in_flight` ages
+            # off this stamp, not off `owner["since"]` (set earlier, when
+            # `_pump` only decided to spawn, not when it actually did).
             rec["owner"]["spawner_pid"] = os.getpid()
+            rec["owner"]["spawn_started"] = float(self._clock())
         self._starting.append((kind, folder, item))
 
     def _start_one(self, kind: str, folder: str, item: dict, keys: set) -> None:
