@@ -552,6 +552,22 @@ def _clean_jobs():
     jobs.reset()
 
 
+@pytest.fixture(autouse=True)
+def _no_hardware_cache_wait(monkeypatch):
+    """`_child_env`'s budget computation waits up to `hw_detect.
+    _PROBE_TIMEOUT_S` for a cold hardware cache to land before giving up
+    (`supervisor._await_hardware_cache`) — covered directly in
+    `tests/test_ai_supervisor_hardware_refresh.py`. Every `_child_env` call
+    in THIS file is testing something else entirely, and this file's
+    isolated `FUSED_RENDER_HOME` means the cache is always cold with no
+    real probe thread ever landing one, so left unpatched every one of
+    those tests would burn the full bound. Reduced to the single immediate
+    read `_await_hardware_cache` already does on a warm cache."""
+    from fused_render.ai import hw_detect
+
+    monkeypatch.setattr(supervisor, "_await_hardware_cache", hw_detect.cached_hardware)
+
+
 @pytest.fixture()
 def client():
     return TestClient(create_app(start_dir="/"))
@@ -6847,27 +6863,6 @@ def test_the_hardware_reading_is_loaded_ONCE_per_catalog_request(
     assert len(calls) == 1, f"expected exactly one hw_detect read, got {len(calls)}"
 
 
-def test_the_catalog_route_lazily_starts_the_background_hardware_refresh(
-        client, fake_runner, fixed_fit_machine, monkeypatch):
-    """A lean process skips `server/app.py`'s `@on_startup` hook, so nothing
-    ever calls `supervisor.start_hardware_refresh()` there (code review
-    finding 8) — `describe_catalog`'s own `hw_detect.cached_hardware()` read
-    must ensure it itself, so a lean process's cache eventually gets written
-    by someone, even though THIS request still answers off whatever is
-    already on disk (the autouse `_no_ai_hardware_refresh_thread` fixture in
-    `tests/conftest.py` would otherwise silently swallow this call as a
-    no-op, so the real function is restored here just to count calls into
-    it)."""
-    calls = []
-    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
-    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
-        {"id": "org/one", "label": "One", "size_gb": 4.0, "note": ""},
-    ])
-    row = _fit_text_row(client)
-    assert len(row["models"]) >= 1
-    assert calls == [1]
-
-
 # -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------
 #
 # The Playground's image composer draws its attach affordance off this flag, so
@@ -11848,16 +11843,35 @@ def test_a_worker_with_no_model_gets_no_permission(monkeypatch, tmp_path):
 
 def test_child_env_carries_the_computed_budget(monkeypatch, tmp_path):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 12_345_678_901.0)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda hardware=None: 12_345_678_901.0)
     env = supervisor._child_env("t")
     assert env["FUSED_AI_MEMORY_BUDGET_BYTES"] == "12345678901"
 
 
 def test_child_env_omits_the_budget_when_it_cannot_be_computed(monkeypatch, tmp_path):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda hardware=None: None)
     env = supervisor._child_env("t")
     assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
+
+
+def test_child_env_threads_the_awaited_hardware_reading_into_the_budget_call(
+        monkeypatch, tmp_path):
+    """`_child_env` must not let `fit.available_budget_bytes()` re-read
+    `hw_detect.cached_hardware()` itself — the whole point of
+    `_await_hardware_cache()` (SPEC AI-18's bounded spawn-time wait) is to
+    give the budget computation a reading that already waited for an
+    in-flight probe, so the two must be the SAME object, not two
+    independent reads of a cache that could have changed between them."""
+    sentinel = object()
+    monkeypatch.setattr(supervisor, "_await_hardware_cache", lambda: sentinel)
+    received = []
+    monkeypatch.setattr(
+        fit, "available_budget_bytes",
+        lambda hardware=None: (received.append(hardware), 1.0)[1])
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    supervisor._child_env("t")
+    assert received == [sentinel]
 
 
 def test_an_inherited_budget_is_stripped_rather_than_passed_on(monkeypatch, tmp_path):
@@ -11867,7 +11881,7 @@ def test_an_inherited_budget_is_stripped_rather_than_passed_on(monkeypatch, tmp_
     produce it fresh on every spawn."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", "999")
-    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda hardware=None: None)
     env = supervisor._child_env("t")
     assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
 

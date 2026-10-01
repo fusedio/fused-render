@@ -615,26 +615,20 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),
     # 50-500ms cold — the same cost `fit._wired_limit_mb` refuses on the
     # per-request verdict path, which is why `fit.py`/`speed.py` only ever
-    # read `hw_detect.cached_hardware()`. Without this hook nothing ever
-    # calls the probe, and both modules take their no-GPU-known branch
-    # forever (code review, 2026-08-27) — a background daemon thread, same
-    # shape as the idle reaper above, not the create_app body: it fires one
-    # probe immediately and then re-probes every few hours for the rest of
-    # the process's life.
-    @on_startup
-    async def _startup_ai_hardware_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hardware_refresh()
+    # read `hw_detect.cached_hardware()`. No startup hook for it — like the
+    # idle reaper above, `hw_detect.cached_hardware()` itself calls
+    # `supervisor.start_hardware_refresh()` the moment ANY reader (a route
+    # handler, or `_child_env`'s budget computation at worker-spawn time)
+    # first hits a cold cache, idempotently, which starts it in `lean` mode
+    # too (where a startup hook would have been skipped) and never starts
+    # it at all on a process that never touches an AI route.
 
     # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
     # `ai_runtime._accepts_image`/`_capability_tags` used to call
     # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
     # 8-second timeout — straight from `describe_catalog`, a route the AI
     # Models picker polls. They now read `hub_metadata.cached()` only (a
-    # plain disk read), and this background thread is the sole writer,
-    # mirroring the hardware-refresh hook immediately above for the
-    # identical reason.
+    # plain disk read), and this background thread is the sole writer.
     @on_startup
     async def _startup_ai_hub_metadata_refresh():
         from fused_render.ai import supervisor

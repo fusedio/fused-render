@@ -744,6 +744,41 @@ def _mirror_ok(model: str) -> str:
         return ""
 
 
+def _await_hardware_cache() -> hw_detect.HardwareInfo | None:
+    """Waits briefly and boundedly for an in-flight hardware probe to land,
+    for `_child_env`'s budget computation at spawn time.
+
+    `hw_detect.cached_hardware()` kicks the background refresh thread awake
+    on a cold cache (`hw_detect._probe_once_if_missing`) but stays a
+    synchronous read itself — it answers `None` immediately rather than
+    waiting for that thread. That is the right contract for the
+    verdict/estimate paths `fit.py`/`speed.py` sit on, which must never
+    block, but wrong for a spawn: spawn is already a slow path (it is
+    already paying for a worker process to come up), and whatever budget
+    `_child_env` bakes into `FUSED_AI_MEMORY_BUDGET_BYTES` now outlives the
+    worker's entire life — a cold cache caught here would otherwise commit
+    a worker to the no-GPU-known budget forever, with nothing left to
+    correct it.
+
+    Bounded by `hw_detect._PROBE_TIMEOUT_S` (not a separate constant): that
+    is the same ceiling the probe itself is built never to exceed, so
+    waiting any longer than it could only mean the probe already gave up.
+    A warm cache returns on the first read, no sleep at all; a cache that
+    is still cold after the bound answers `None`, exactly what an unawaited
+    read would have answered — a bound, not a guarantee that a reading
+    exists."""
+    hardware = hw_detect.cached_hardware()
+    if hardware is not None:
+        return hardware
+    deadline = time.monotonic() + hw_detect._PROBE_TIMEOUT_S
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        hardware = hw_detect.cached_hardware()
+        if hardware is not None:
+            return hardware
+    return None
+
+
 def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     """Environment for a worker process.
 
@@ -788,7 +823,11 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     the computation answers `None` (RAM itself unreadable), for the same
     "this environment is a copy of the server's" reason `FUSED_MODEL_
     MIRROR_OK` is: a stale or operator-set value must not silently outlive
-    the fresh computation that is supposed to produce it.
+    the fresh computation that is supposed to produce it. `_await_hardware_
+    cache()` waits briefly and boundedly for a cold hardware cache to land
+    before this computation runs, so a wrong-for-the-machine budget is not
+    baked in and carried for the worker's whole life just because this
+    happened to be the first spawn since the process started.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
@@ -801,7 +840,7 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
-    budget = fit.available_budget_bytes()
+    budget = fit.available_budget_bytes(hardware=_await_hardware_cache())
     if budget is not None:
         env["FUSED_AI_MEMORY_BUDGET_BYTES"] = str(int(budget))
     else:
