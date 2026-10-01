@@ -1628,7 +1628,10 @@ def main() -> None:
 
             def _open_from_launcher(fs_path: str) -> None:
                 manager = state["windows"]
-                if manager is None:
+                # `enabled`, not just a manager: it outlives the preference
+                # being switched off, and off must be the browser tab on the
+                # app page exactly as before — never the run window's embed.
+                if manager is None or not manager.enabled:
                     webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
                     return
                 # Dock semantics; the panel is non-activating, so bring
