@@ -816,10 +816,22 @@
 /* ---- Activity's own labelled sections (status-bar merge) ------------------ */
 /* One `.dl-section` per non-empty group — Running, Background tasks, and (in
    RepoUpdatesDock.tsx's own card) Needs you/New/Earlier — wrapping that
-   group's own `.dl-rows`/footer. Sections are told apart by the sticky
-   `.dl-section-head` band itself (below), not by a hairline between them —
-   a border directly under an opaque sticky header is a redundant second
-   divider, so there is none here. */
+   group's own `.dl-rows`/footer. */
+
+/* status-popovers item 8 (visual finding): the sticky `.dl-section-head`
+   band alone did not read as a boundary once a reader had scrolled a
+   section's own rows up underneath it — the opaque background looks the
+   same whether it is the panel's only header or the Nth one in a row. A
+   hairline above every section but the FIRST fixes that without doubling up
+   on the first section's own top edge (`.dl-panel`'s own padding already
+   separates it from the panel's edge there). Scoped to the header
+   (`> .dl-section-head`), not the section box itself, so the line stays
+   attached to the sticky band and scrolls away WITH it rather than sitting
+   pinned at a fixed spot while the band slides out from under it. */
+.dl-section + .dl-section > .dl-section-head {
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
 
 /* ALWAYS RENDERED WHEN ITS SECTION RENDERS (status-popovers R2) — even a
    lone section gets a heading, because the count it carries ("Running 3")
