@@ -27,6 +27,13 @@ F1 = "/tmp/proj-one"
 F2 = "/tmp/proj-two"
 INDEX_PATH_NAME = qm.INDEX_FILE
 
+#: The real `ensure_duties_waiter`, captured at import — before the autouse
+#: `_no_duties_waiter_thread` fixture (conftest.py) replaces it with a no-op
+#: for every test in the suite. The tests below are ABOUT this function, so
+#: they call it from here rather than from `qm.ensure_duties_waiter` at
+#: test-body time, which would already be the patched no-op.
+_REAL_ENSURE_DUTIES_WAITER = qm.ensure_duties_waiter
+
 
 @pytest.fixture(autouse=True)
 def state(tmp_path, monkeypatch):
@@ -2798,13 +2805,43 @@ def test_restore_claim_refuses_a_folder_whose_owner_changed():
     assert m.consume_claim(F1, token) is False
 
 
-# --------------------------------------------------- ensure_machine_duties (B2)
+# ----------------------------------------------------- ensure_duties_waiter (B2)
 
 
-def test_ensure_machine_duties_starts_the_scheduler_and_resumes_when_it_wins(
+def test_ensure_duties_waiter_starts_exactly_one_daemon_thread(monkeypatch):
+    """A single call starts a daemon thread named `fused-queue-duties-waiter`.
+    A second call while that thread is still alive (here: still blocked
+    behind a rival holder of the lease) is a no-op — same thread object
+    back, nothing new started."""
+    import fcntl
+
+    from fused_render import project_queue, schedule
+
+    monkeypatch.setattr(schedule, "start", lambda: None)
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+
+    path = os.path.join(str(tasks_store.STATE_DIR), qm._DUTIES_LEASE)
+    os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+    with open(path, "w") as rival:
+        fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        first = _REAL_ENSURE_DUTIES_WAITER()
+        assert first.name == "fused-queue-duties-waiter"
+        assert first.daemon is True
+        assert first.is_alive()
+
+        second = _REAL_ENSURE_DUTIES_WAITER()
+        assert second is first
+
+    first.join(timeout=5)
+    assert not first.is_alive()
+
+
+def test_ensure_duties_waiter_runs_startup_work_once_it_wins_the_lease(
         monkeypatch):
-    """Winning the lease starts BOTH duties: `schedule.start()`, and — only
-    with the project-queue flag on — a daemon thread that reconciles."""
+    """Once the thread acquires the lease (here: uncontended, so immediately)
+    it runs `schedule.start()` and, with the project-queue flag on, a
+    one-shot `reconcile()` resume — then the thread ends."""
     from fused_render import project_queue, schedule
 
     started = []
@@ -2818,59 +2855,58 @@ def test_ensure_machine_duties_starts_the_scheduler_and_resumes_when_it_wins(
             reconciled.append(True)
 
     qm.reset_for_tests(_Manager())
-    thread = qm.ensure_machine_duties()
-    assert started == [True]
-    assert thread is not None
+    thread = _REAL_ENSURE_DUTIES_WAITER()
     thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert started == [True]
     assert reconciled == [True]
 
 
-def test_ensure_machine_duties_skips_resume_when_the_flag_is_off(monkeypatch):
+def test_ensure_duties_waiter_skips_resume_when_the_flag_is_off(monkeypatch):
     from fused_render import project_queue, schedule
 
     started = []
     monkeypatch.setattr(schedule, "start", lambda: started.append(True))
     monkeypatch.setattr(project_queue, "enabled", lambda: False)
 
-    assert qm.ensure_machine_duties() is None
+    thread = _REAL_ENSURE_DUTIES_WAITER()
+    thread.join(timeout=5)
     # Still the machine's scheduler holder — the flag only gates the resume.
     assert started == [True]
 
 
-def test_ensure_machine_duties_keeps_the_lease_on_a_repeat_call(monkeypatch):
-    """A later call from the SAME process (another `/api/tasks*` request,
-    say) still holds its own cached lease handle, so it keeps claiming the
-    scheduler/resume duties rather than silently losing them — idempotence
-    for "don't double-start" lives in `schedule.start()` and `reconcile()`
-    themselves (both already safe to call repeatedly), not here."""
-    from fused_render import project_queue, schedule
-
-    monkeypatch.setattr(schedule, "start", lambda: None)
-    monkeypatch.setattr(project_queue, "enabled", lambda: True)
-    qm.reset_for_tests(_StubManager())
-
-    first = qm.ensure_machine_duties()
-    first.join(timeout=5)
-    second = qm.ensure_machine_duties()
-    assert second is not None
-
-
-def test_ensure_machine_duties_loses_to_a_real_rival_holder(state, monkeypatch):
-    """A second OPEN FILE DESCRIPTION holding the same lease file — the only
-    thing that exercises `LOCK_NB` actually refusing, since this process's
-    own cached handle (the case above) short-circuits before ever touching
-    `fcntl` again. Stands in for another process that already won the race."""
+def test_ensure_duties_waiter_blocks_behind_a_rival_then_takes_over(state,
+                                                                     monkeypatch):
+    """A second OPEN FILE DESCRIPTION holding the lease stands in for another
+    live process. The waiter thread parks behind it — `schedule.start()` and
+    `reconcile()` must not run while the rival holds the lease — and wakes
+    the instant the rival releases it, same as a real holder's process
+    exiting drops its flock with it."""
     import fcntl
 
     from fused_render import project_queue, schedule
 
-    monkeypatch.setattr(schedule, "start", lambda: None)
-    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+    started = []
+    monkeypatch.setattr(schedule, "start", lambda: started.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
 
     path = os.path.join(str(state), qm._DUTIES_LEASE)
-    with open(path, "w") as rival:
-        fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert qm.ensure_machine_duties() is None
+    rival = open(path, "w")
+    fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        thread = _REAL_ENSURE_DUTIES_WAITER()
+        # Give the thread a moment to actually park on the blocking acquire;
+        # it must not have run the startup work while the rival holds it.
+        thread.join(timeout=0.2)
+        assert thread.is_alive()
+        assert started == []
+    finally:
+        fcntl.flock(rival, fcntl.LOCK_UN)
+        rival.close()
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert started == [True]
 
 
 # ------------------------------------------------ cross-process freshness
@@ -3027,8 +3063,3 @@ def test_a_transaction_after_corruption_never_persists_an_empty_index(state):
     assert on_disk["folders"][F1]["owner"]["task"] == "a"
     assert on_disk["forced"] == ["z"]
     assert owner_key(m) == "a"
-
-
-class _StubManager:
-    def reconcile(self):
-        pass

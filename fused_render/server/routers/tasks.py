@@ -148,25 +148,29 @@ def _ensure_duties() -> None:
     but `lean` skips as a startup hook (create_app's rule: skip only
     BACKGROUND/WARM-UP work).
 
-    Claims the machine-duties lease (B2 — scheduler + project-queue resume)
-    lazily on the first request reaching THIS process, when nothing else is
-    holding it. `serve` already claims it from `_startup_queue_manager`, so
-    here it is normally a no-op repeat of a lease this process already
-    won — one `flock` syscall, nothing else. `open` (lean) runs no startup
-    hooks at all, so this is the only place it ever tries; trying again on
-    every request, rather than once, is what lets a lean process pick the
-    role up the moment a `serve` that was holding it exits (B2's
-    "holder-less case retried later") with no separate retry thread of its
-    own.
+    Ensures THIS process's machine-duties waiter thread is running (B2 —
+    scheduler + project-queue resume), lazily, on the first request reaching
+    it. `serve` already starts that waiter from `_startup_queue_manager`, so
+    here it is normally a no-op repeat of a thread this process already
+    has — one lock-guarded `is_alive()` check, nothing else.
+    `queue_manager.ensure_duties_waiter()` itself never blocks: it only
+    starts (or confirms it already started) a dedicated daemon thread that
+    does the actual, potentially long, lease-acquire wait, so calling this
+    on every request's handling thread is cheap and never holds the request
+    up. `open` (lean) runs no startup hooks at all, so this is the only
+    place it ever starts that thread — which is what lets a lean process end
+    up with a waiter parked and ready to take over the moment a `serve` that
+    was holding the lease exits, with no separate retry/polling mechanism of
+    its own.
 
     Also starts the Tasks page's change watcher (B3 — `tasks_watch.start()`,
     otherwise only run from `_startup_tasks_watch`): read-only and safe to
-    run in every process at once, unlike the lease above, so this is a plain
-    idempotent start rather than anything gated. Without it `lean`'s
+    run in every process at once, unlike the waiter above, so this is a
+    plain idempotent start rather than anything gated. Without it `lean`'s
     `/api/tasks/changes` had nothing to `wait()` on and always blocked the
     full 25s with nothing to report — and `generation()`/`live_from_registry`
     and every other route above read from the same registry this primes."""
-    queue_manager.ensure_machine_duties()
+    queue_manager.ensure_duties_waiter()
     tasks_watch.start()
 
 

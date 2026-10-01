@@ -4362,3 +4362,35 @@ def test_create_answers_the_stored_target_and_its_folder(client, tmp_path,
                     headers={"X-Fused": "1"})
     assert r.status_code == 200, r.text
     assert r.json()["under"] == str(app_dir)
+
+
+# ------------------------------------------------------- the duties waiter
+
+
+def test_ensure_duties_does_not_block_a_request_behind_a_held_lease(
+        monkeypatch):
+    """`_ensure_duties()` runs on every `/api/tasks*` request's handling
+    thread, so it must return promptly no matter who holds the
+    machine-duties lease — it only has to make sure a per-process waiter
+    thread exists, never wait on the lease itself. Stand in for "someone
+    else holds it" with a stub `ensure_duties_waiter` that would hang if
+    `_ensure_duties` called anything blocking."""
+    import threading as threading_mod
+
+    from fused_render import queue_manager, tasks_watch
+
+    calls = []
+
+    def fake_waiter():
+        calls.append(True)
+        return threading_mod.current_thread()
+
+    monkeypatch.setattr(queue_manager, "ensure_duties_waiter", fake_waiter)
+    monkeypatch.setattr(tasks_watch, "start", lambda: None)
+
+    start = time.monotonic()
+    tasks_mod._ensure_duties()
+    elapsed = time.monotonic() - start
+
+    assert calls == [True]
+    assert elapsed < 1.0

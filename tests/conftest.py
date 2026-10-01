@@ -649,6 +649,35 @@ def _no_ai_idle_reaper_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_duties_waiter_thread(monkeypatch):
+    """No test may start the real machine-duties waiter thread.
+
+    `routers/tasks.py`'s `_ensure_duties()` dependency runs on EVERY
+    `/api/tasks*` request, so any test that hits that router through a real
+    `TestClient` calls `queue_manager.ensure_duties_waiter()` — and unlike
+    `schedule.start()`/`tasks_watch.start()` (already no-op'd by
+    `_no_schedule_loop_thread`/`_no_tasks_watch_thread` above), the waiter's
+    OWN first step, `tasks_store.acquire_lease_blocking`, does real
+    filesystem I/O (opening `STATE_DIR`'s lease file) before either of those
+    ever runs — so patching them is not enough. Same hazard as
+    `_no_ai_idle_reaper_thread` just above, same root cause: a leaked daemon
+    thread, never joined, reaching `STATE_DIR` afresh on its own schedule
+    reads whatever test's `tmp_path` is current (or, once that test's
+    `monkeypatch` has unwound, a `STATE_DIR` that no longer exists at all) —
+    confirmed directly, a `FileNotFoundError` inside the thread surfaced by
+    pytest as an unhandled-thread-exception warning before this fixture
+    existed.
+
+    No test asserts `ensure_duties_waiter` spawns a real thread through the
+    router; the tests that are ABOUT it (`tests/test_queue_manager.py`) call
+    the REAL function directly, captured at import before this fixture
+    replaces it, and join every thread they start with a timeout."""
+    from fused_render import queue_manager
+
+    monkeypatch.setattr(queue_manager, "ensure_duties_waiter", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_ai_hardware_refresh_thread(monkeypatch):
     """`create_app` starts the background GPU/VRAM-detection thread
     (`supervisor.start_hardware_refresh`, SPEC AI-18, D519); no test may let

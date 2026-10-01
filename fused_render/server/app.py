@@ -532,15 +532,20 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # moment the process is brought up. Wiring runs in EVERY process — it only
     # registers how to build this process's own manager, nothing machine-wide.
     #
-    # Then try to become the machine's duties holder (B2): the scheduler
-    # (`schedule.start()`, which also SENDS whatever is already overdue on its
-    # first tick) and a reconcile resume so a restart picks every folder's line
-    # back up immediately rather than on whatever event happens to arrive
-    # first. `queue_manager.ensure_machine_duties()` is a non-blocking lease
-    # claim — `serve` and every lean process both call it here, and only the
-    # one that wins actually starts anything; a lean process that loses tries
-    # again on its first `/api/tasks*` request (routers/tasks.py), which is
-    # also how the role moves over once the winner exits.
+    # Then start this process's machine-duties waiter (B2): a dedicated
+    # daemon thread that blocks on the machine-duties lease until it holds
+    # it, then runs the scheduler (`schedule.start()`, which also SENDS
+    # whatever is already overdue on its first tick) and a reconcile resume
+    # so a restart picks every folder's line back up immediately rather than
+    # on whatever event happens to arrive first.
+    # `queue_manager.ensure_duties_waiter()` starts that thread idempotently
+    # — `serve` and every lean process both call it (here, and again from
+    # `routers/tasks.py`'s `_ensure_duties` on a lean process's first
+    # `/api/tasks*` request), so every process that can ever run ends up
+    # with a waiter parked and ready. Whichever waiter's lease-acquire
+    # unblocks first runs the startup work; if that process later exits or
+    # crashes, the OS drops its flock with it and another already-parked
+    # waiter wakes and takes over — no separate retry mechanism anywhere.
     #
     # A startup event and not the create_app body for the usual reason — tests
     # build apps without running lifespan, and claiming the lease or reconciling
@@ -554,9 +559,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         from fused_render.server.routers import tasks as tasks_router_mod
 
         tasks_router_mod._wire_manager()
-        # For tests, the same seam `_startup_tasks_warm` leaves — None when
-        # this process didn't win the lease or the flag is off.
-        app.state.queue_resume = queue_manager.ensure_machine_duties()
+        # For tests, the same seam `_startup_tasks_warm` leaves. Always a
+        # `Thread`, never `None` — it may still be blocked on the lease when
+        # this returns, so a test joining it needs a timeout; a plain
+        # `.join()` can legitimately hang forever if another live process
+        # still holds the lease.
+        app.state.queue_resume = queue_manager.ensure_duties_waiter()
 
     # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
     # Claude Code's live-session registry, prompt history and live transcripts.

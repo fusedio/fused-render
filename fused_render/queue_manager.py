@@ -2274,8 +2274,16 @@ def get() -> QueueManager:
 
 
 def reset_for_tests(manager: QueueManager | None = None) -> None:
-    global _manager
+    global _manager, _duties_waiter_thread
     _manager = manager
+    # Forget any waiter thread a prior test started. `tasks_store`'s own
+    # `reset_leases_for_tests()` fixture (conftest.py) releases the lease
+    # handle itself; this just drops the stale `Thread` object so the next
+    # test's `ensure_duties_waiter()` idempotent-start check doesn't short-
+    # circuit against a thread that belonged to a `STATE_DIR` no longer in
+    # use. A test that started a still-blocked waiter is responsible for
+    # joining it (with a timeout) before it ends — this does not join.
+    _duties_waiter_thread = None
 
 
 # ----------------------------------------------------------- machine duties
@@ -2288,60 +2296,86 @@ def reset_for_tests(manager: QueueManager | None = None) -> None:
 _DUTIES_LEASE = "machine-duties.lock"
 
 
-def ensure_machine_duties() -> threading.Thread | None:
-    """Try to become the one process on this machine that runs the
-    scheduler (`schedule.start()`) and resumes the project queue
-    (`reconcile()` over whatever a restart left queued) — B2's "one process
-    runs machine-wide duties". Now that B1/B1b make every process's queue
-    index correct on its own, these two are the pieces that must still run
-    in exactly one place: the scheduler ticking in two processes would send
-    every scheduled message twice, and two resumes would race each other's
-    reconcile the same way two `serve`s used to (B1's bug) before anyone
-    had taken a lease at all.
+_duties_waiter_thread: threading.Thread | None = None
+# Guards `ensure_duties_waiter`'s check-create-assign so two concurrent
+# callers (two requests landing on a lean process at once, say) can't both
+# pass the "is there already a live waiter" check and each start one — the
+# same idiom `ai/supervisor.py`'s `start_reaper`/`start_hardware_refresh`
+# use for the same reason.
+_duties_waiter_lock = threading.Lock()
 
-    Safe to call from every process, any number of times, at any moment —
-    full `serve` calls it once at startup; a lean process calls it lazily on
-    its first `/api/tasks*` request, and again on every later one, which is
-    what makes B2's "holder-less case retried later" work with no separate
-    retry thread: `tasks_store.try_acquire_lease` is non-blocking, and a
-    losing call costs one `flock(LOCK_NB)` syscall, nothing else, since
-    `schedule.start()` and the reconcile resume below never even run unless
-    the lease was won. The desktop app exiting drops its flock with it (the
-    OS does that, not this function), so the very next lean request after
-    that claims the role.
 
-    Returns the daemon thread spawned to run the reconcile resume, or None
-    when this call didn't start one — either the lease was lost, or the
-    project-queue flag is off. A caller doesn't need the thread to decide
-    whether to retry (retrying is always safe and nearly free), but a
-    startup hook keeps it on `app.state` as the same test seam
-    `_startup_tasks_warm` leaves, so a test can `.join()` it rather than
-    sleep-polling for the resume to land.
+def ensure_duties_waiter() -> threading.Thread:
+    """Start, once per process, a daemon thread that BLOCKS until this
+    process becomes the one process on this machine that runs the scheduler
+    (`schedule.start()`) and resumes the project queue (`reconcile()` over
+    whatever a restart left queued) — B2's "one process runs machine-wide
+    duties". Now that B1/B1b make every process's queue index correct on its
+    own, these two are the pieces that must still run in exactly one place:
+    the scheduler ticking in two processes would send every scheduled
+    message twice, and two resumes would race each other's reconcile the
+    same way two `serve`s used to (B1's bug) before anyone had taken a lease
+    at all.
+
+    The thread parks in `tasks_store.acquire_lease_blocking(_DUTIES_LEASE)`
+    for as long as it takes — potentially forever, if another live process
+    already holds the lease — which is fine and intended, because this runs
+    on its own dedicated daemon thread, never on a request-handling one.
+    Once it returns, this process holds the lease, and the thread runs
+    `schedule.start()` plus, only with the project-queue flag on, a one-shot
+    `reconcile()` resume, then ends — it does not loop. Whichever process
+    holds the lease keeps it for as long as it lives; the OS drops the flock
+    on exit or crash, which is what wakes whichever OTHER process's waiter
+    thread is still parked in `acquire_lease_blocking` and lets it take
+    over. Only a process whose waiter was already started before the holder
+    died can ever take over this way — which is why this is called from
+    both `serve`'s startup (`_startup_queue_manager`) and a lean process's
+    very first `/api/tasks*` request (`routers/tasks.py`'s `_ensure_duties`):
+    between the two, every process that can ever run ends up with a waiter
+    parked and ready, with no separate polling/retry mechanism anywhere.
+
+    Safe to call from every process, any number of times, at any moment:
+    idempotent via `_duties_waiter_thread`/`_duties_waiter_lock` the same
+    way `ai/supervisor.py`'s `start_reaper` is — only the first call in a
+    given process actually starts the thread; every later call (every
+    `/api/tasks*` request after the first, say) is a fast no-op check, not a
+    retry, since the thread it already started is the one doing the
+    retrying by staying blocked.
+
+    Always returns the waiter thread — never None — so a caller that wants
+    a test seam (`_startup_queue_manager` keeps it on `app.state`, the same
+    pattern `_startup_tasks_warm` leaves) has one to `.join(timeout=...)`.
+    A plain `.join()` with no timeout can hang forever, legitimately, if
+    another live process still holds the lease.
 
     Deferred imports: `schedule` reaches back into this module (`_qm()`'s
     fallback wiring, and each tick's `reconcile()`), so importing it at
     module level here would cycle."""
-    if not tasks_store.try_acquire_lease(_DUTIES_LEASE):
-        return None
+    global _duties_waiter_thread
+    with _duties_waiter_lock:
+        if _duties_waiter_thread is not None and _duties_waiter_thread.is_alive():
+            return _duties_waiter_thread
 
-    from fused_render import schedule
+        def run() -> None:
+            tasks_store.acquire_lease_blocking(_DUTIES_LEASE)
 
-    schedule.start()
+            from fused_render import schedule
 
-    from fused_render import project_queue
+            schedule.start()
 
-    if not project_queue.enabled():
-        return None
+            from fused_render import project_queue
 
-    def resume():
-        try:
-            get().reconcile()
-        except Exception:  # noqa: BLE001 — a queue that cannot resume
-            # must not take the server down with it; the scheduler's
-            # next tick (now running in this process) tries again.
-            logger.exception("could not resume the project queue")
+            if not project_queue.enabled():
+                return
 
-    thread = threading.Thread(target=resume, daemon=True,
-                              name="fused-queue-resume")
-    thread.start()
-    return thread
+            try:
+                get().reconcile()
+            except Exception:  # noqa: BLE001 — a queue that cannot resume
+                # must not take the server down with it; the scheduler's
+                # next tick (now running in this process) tries again.
+                logger.exception("could not resume the project queue")
+
+        _duties_waiter_thread = threading.Thread(
+            target=run, daemon=True, name="fused-queue-duties-waiter")
+        _duties_waiter_thread.start()
+        return _duties_waiter_thread
