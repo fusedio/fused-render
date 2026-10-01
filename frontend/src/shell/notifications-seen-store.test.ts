@@ -7,7 +7,7 @@ import {
   getFirstSeenAt,
   isSeen,
   markSeen,
-  syncPresentKeys,
+  stampFirstSeen,
 } from "@shell/notifications-seen-store";
 
 const store = new Map<string, string>();
@@ -24,59 +24,98 @@ beforeEach(() => {
 });
 
 test("a key never synced before is unseen and has no first-seen stamp", () => {
-  const state = syncPresentKeys(["a"], 1000);
+  const state = stampFirstSeen(["a"], 1000);
   expect(isSeen(state, "a")).toBe(false);
   expect(getFirstSeenAt(state, "a", 999)).toBe(1000);
 });
 
-test("markSeen persists across a later syncPresentKeys call", () => {
-  syncPresentKeys(["a", "b"], 1000);
+test("markSeen persists across a later stampFirstSeen call", () => {
+  stampFirstSeen(["a", "b"], 1000);
   markSeen(["a"]);
-  const state = syncPresentKeys(["a", "b"], 2000);
+  const state = stampFirstSeen(["a", "b"], 2000);
   expect(isSeen(state, "a")).toBe(true);
   expect(isSeen(state, "b")).toBe(false);
 });
 
 test("firstSeenAt is stamped once and never moves on a later sync", () => {
-  syncPresentKeys(["a"], 1000);
-  const state = syncPresentKeys(["a"], 5000);
+  stampFirstSeen(["a"], 1000);
+  const state = stampFirstSeen(["a"], 5000);
   expect(getFirstSeenAt(state, "a", 0)).toBe(1000);
 });
 
-test("pruning: a key that drops out of presentKeys is forgotten, seen state and first-seen alike", () => {
-  syncPresentKeys(["a", "b"], 1000);
+test("a key missing from a later, partial presentKeys call is NOT forgotten (R4 fix)", () => {
+  // A render with fewer rows than last time — a filtered view, a transient
+  // empty list, the panel's very first paint — must not be read as "every
+  // other row is gone". Pruning is age/size-based, never presence-based.
+  stampFirstSeen(["a", "b"], 1000);
   markSeen(["a", "b"]);
-  // "a" scrolls out of existence (dismissed, resolved, evicted — whatever the
-  // caller's reason); only "b" is still present.
-  const state = syncPresentKeys(["b"], 2000);
+  const state = stampFirstSeen(["b"], 2000);
+  expect(isSeen(state, "a")).toBe(true);
   expect(isSeen(state, "b")).toBe(true);
-  // "a" is gone entirely, not just unseen — a later reappearance under the
-  // SAME key would otherwise wrongly read as "already seen" from stale data.
+  expect(getFirstSeenAt(state, "a", 9999)).toBe(1000);
+});
+
+test("an entry older than 30 days is pruned on the next write", () => {
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  stampFirstSeen(["a"], 1000);
+  markSeen(["a"]);
+  // A write that happens well past the age window drops "a" even though it
+  // is still present — pruning only ever happens on write, and only by age
+  // or size, never by a render's present-key set.
+  const state = stampFirstSeen(["a", "b"], 1000 + THIRTY_DAYS_MS + 1);
   expect(isSeen(state, "a")).toBe(false);
-  expect(getFirstSeenAt(state, "a", 9999)).toBe(9999);
+  expect(getFirstSeenAt(state, "a", 4242)).toBe(4242);
+  expect(getFirstSeenAt(state, "b", 0)).toBe(1000 + THIRTY_DAYS_MS + 1);
+});
+
+test("over the entry cap, the oldest-by-firstSeenAt entries are dropped first", () => {
+  // Fill past the 500-entry cap with distinct, ascending firstSeenAt stamps.
+  const keys = Array.from({ length: 501 }, (_, i) => `k${i}`);
+  for (const [i, key] of keys.entries()) {
+    stampFirstSeen([key], 1000 + i);
+  }
+  const state = stampFirstSeen(["final"], 1000 + 501);
+  // The very first key stamped (oldest) is gone; the most recent 500 remain.
+  expect(getFirstSeenAt(state, "k0", -1)).toBe(-1);
+  expect(getFirstSeenAt(state, "k500", -1)).toBe(1000 + 500);
+  expect(getFirstSeenAt(state, "final", -1)).toBe(1000 + 501);
 });
 
 test("a key's reappearance under a changed signature is unseen again (R4)", () => {
-  // The seen store itself does not know about "signatures" — it only ever
-  // prunes/stamps whatever keys the caller currently passes it. A caller
-  // folding a changed repo signature into the key (e.g. `repo:${root}@${behind}`)
-  // gets "unseen again on change" for free: the OLD key simply stops being
-  // present and is pruned away, and the NEW key starts fresh.
-  syncPresentKeys(["repo:/x@3"], 1000);
+  // The seen store itself does not know about "signatures" — a caller folds
+  // a changed repo signature into the key (e.g. `repo:${root}@${behind}`),
+  // so the OLD key simply never gets marked seen again under its new name,
+  // and the NEW key starts fresh/unseen on its own.
+  stampFirstSeen(["repo:/x@3"], 1000);
   markSeen(["repo:/x@3"]);
-  const state = syncPresentKeys(["repo:/x@5"], 2000);
+  const state = stampFirstSeen(["repo:/x@5"], 2000);
   expect(isSeen(state, "repo:/x@5")).toBe(false);
-  expect(isSeen(state, "repo:/x@3")).toBe(false);
+  expect(isSeen(state, "repo:/x@3")).toBe(true);
+});
+
+test("message keys never touch localStorage — they live in memory only", () => {
+  stampFirstSeen(["message:1"], 1000);
+  markSeen(["message:1"]);
+  // Nothing was ever written to the backing store for a message key.
+  expect(store.has("fused-render:notifications-seen")).toBe(false);
+  const state = stampFirstSeen(["message:1"], 2000);
+  expect(isSeen(state, "message:1")).toBe(true);
+  // A fresh module instance (simulated here by a full reset) forgets it —
+  // the same as a reload or a second window would.
+  _resetSeenStoreForTest();
+  const reloaded = stampFirstSeen(["message:1"], 3000);
+  expect(isSeen(reloaded, "message:1")).toBe(false);
 });
 
 test("malformed JSON is treated as empty state, not a throw", () => {
   store.set("fused-render:notifications-seen", "{oops");
-  expect(() => syncPresentKeys(["a"], 1000)).not.toThrow();
-  const state = syncPresentKeys(["a"], 1000);
+  _resetSeenStoreForTest();
+  expect(() => stampFirstSeen(["a"], 1000)).not.toThrow();
+  const state = stampFirstSeen(["a"], 1000);
   expect(isSeen(state, "a")).toBe(false);
 });
 
-test("unavailable storage degrades to nothing seen, and never throws", () => {
+test("a write that fails to persist never throws, and still updates the live state", () => {
   const real = (globalThis as { localStorage?: unknown }).localStorage;
   (globalThis as { localStorage?: unknown }).localStorage = {
     getItem: () => {
@@ -87,9 +126,36 @@ test("unavailable storage degrades to nothing seen, and never throws", () => {
     },
   };
   try {
-    expect(() => syncPresentKeys(["a"], 1000)).not.toThrow();
+    // A failed disk write degrades silently — the in-memory cache this
+    // module keeps still reflects every call, so the current session reads
+    // correctly even though none of it survives a reload.
+    expect(() => stampFirstSeen(["a"], 1000)).not.toThrow();
     expect(() => markSeen(["a"])).not.toThrow();
-    const state = syncPresentKeys(["a"], 1000);
+    const state = stampFirstSeen(["a"], 1000);
+    expect(isSeen(state, "a")).toBe(true);
+  } finally {
+    (globalThis as { localStorage?: unknown }).localStorage = real;
+  }
+});
+
+test("a reload after storage denies every write starts over from nothing", () => {
+  const real = (globalThis as { localStorage?: unknown }).localStorage;
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: () => {
+      throw new Error("denied");
+    },
+    setItem: () => {
+      throw new Error("denied");
+    },
+  };
+  try {
+    stampFirstSeen(["a"], 1000);
+    markSeen(["a"]);
+    // `_resetSeenStoreForTest` simulates a fresh module load, which re-reads
+    // from (still-denying) storage — nothing was ever persisted, so it comes
+    // back empty rather than throwing.
+    expect(() => _resetSeenStoreForTest()).not.toThrow();
+    const state = stampFirstSeen(["a"], 2000);
     expect(isSeen(state, "a")).toBe(false);
   } finally {
     (globalThis as { localStorage?: unknown }).localStorage = real;
