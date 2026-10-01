@@ -39,6 +39,19 @@ One plain fn `main(**params)`. Rules:
 - **Fresh subprocess per call.** No globals survive. Import cost paid every call (pandas ≈ 1 s). Killed at **60 s** (`DEFAULT_TIMEOUT`, `fused_render/executor.py`), no override. Longer work → `fused-render-jobs`.
 - `print()` → browser console as `[python]`.
 
+### Bot-callable files (SPEC §49)
+
+A bot (OpenBot's `py` action) can run any `.py` beside the page **without the page**, through the same `/api/run` the page uses. It reads the file from its AST only — nothing imported — and sees `main`'s signature and docstring. So every `.py` is a tool in its own right:
+
+- **One top-level sync `main(**params)`** per file. `async def main` is listed as not callable. Other public functions are listed, not callable (curate them in `mcp.toml` for MCP hosts).
+- **First docstring line = the description a bot reads.** One plain line: what it reads, what it changes ("Totals per category. Reads csv; writes nothing." / "Appends an entry to .fused/data/ledger.json"). Module docstring is the fallback.
+- **Annotate and default every param** (above) — the bot coerces by annotation and shows the signature as-is.
+- **Name side effects in that line.** A bot calling an app it did not build pauses for the user, and the doc line is what the user reads.
+- **Secrets never in params.** Read them from `.fused/data` or the keychain inside `main`.
+- A `helpers.py` without `main` is fine; it is listed with a reason. `_private()` helpers are not listed.
+
+Listing: `GET /api/apps/python?dir=<folder>` (`X-Fused: 1`) → `{files:[{file, callable, signature, params, doc, reason?}], tools, background}`; run: the page's own `POST /api/run {py, html, params}` → `{ok, result, error, stdout, duration_ms}`.
+
 ### Available Python libraries
 
 A `pyproject.toml` is always expected — App Doctor's `pyproject` row fails a folder that lacks one. Without one, the app interpreter falls back to stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). `dependencies` should list the app's own third-party imports — NOT this bundled set; an app that only imports from it declares an empty `dependencies` list, which keeps it on that zero-install interpreter.
