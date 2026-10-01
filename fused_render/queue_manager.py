@@ -35,6 +35,15 @@ logger = logging.getLogger(__name__)
 
 INDEX_FILE = "queue_index.json"
 
+# `_write_locked`'s retry budget for `os.replace` raising `PermissionError`
+# (Windows, when another process still has the index open) — a handful of
+# short retries, not a long wait: the holder is a brief open-read-close, so
+# if it hasn't cleared in under half a second something else is wrong and
+# this falls through to the same "could not write, in-memory state is still
+# right" handling every other write failure gets.
+_REPLACE_MAX_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_S = 0.1
+
 # The store the derived-holder layer kept its parked card decisions in, migrated
 # into the index the first time a manager loads and then renamed out of the way
 # (`QueueManager._migrate_legacy`). Named here rather than imported from
@@ -524,7 +533,15 @@ class QueueManager:
         either the old complete document or the new one.
 
         An unwritable state dir costs the write and nothing else: the
-        in-memory index is still right and `reconcile` rebuilds it."""
+        in-memory index is still right and `reconcile` rebuilds it.
+
+        On Windows, `os.replace` can raise `PermissionError` when another
+        process still has `path` open (even just for reading) — unlike
+        POSIX, where a rename can land on top of an open file with no
+        complaint. That window is usually brief — a reader's own
+        open-read-close around `_load` — so a `PermissionError` here is
+        retried a few times on a short backoff before being treated as the
+        generic "could not write" case every other `OSError` already is."""
         snapshot = copy.deepcopy(self._state)
         # `forced` is a set in memory and a sorted list on disk — the only
         # field of the index that is not already json.
@@ -537,8 +554,26 @@ class QueueManager:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, path)
+            attempt = 0
+            while True:
+                try:
+                    os.replace(tmp_path, path)
+                    break
+                except PermissionError:
+                    attempt += 1
+                    if attempt >= _REPLACE_MAX_ATTEMPTS:
+                        raise
+                    time.sleep(_REPLACE_RETRY_DELAY_S)
             self._loaded_stat = _stat_tuple(path)
+        except PermissionError:
+            logger.warning(
+                "queue: could not replace %s after %d attempt(s); another "
+                "process still had it open", INDEX_FILE,
+                _REPLACE_MAX_ATTEMPTS, exc_info=True)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         except OSError:
             logger.debug("could not write %s", INDEX_FILE, exc_info=True)
             try:

@@ -17,6 +17,7 @@ import json
 import os
 import threading
 import time
+from unittest import mock
 
 import pytest
 
@@ -3127,6 +3128,64 @@ def test_write_locked_replaces_a_temp_file_in_the_same_directory(state, monkeypa
         assert dst == os.path.join(str(state), INDEX_PATH_NAME)
         assert src != dst
         assert os.path.dirname(src) == os.path.dirname(dst)
+
+
+def test_write_locked_retries_os_replace_through_a_transient_permission_error(
+        state, monkeypatch):
+    """On Windows, `os.replace` can raise `PermissionError` while another
+    process still has the index open for reading — a brief window, not a
+    real failure. `_write_locked` retries a few times on a short backoff
+    instead of treating the very first `PermissionError` as "could not
+    write" (finding 5)."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")  # one real write, sets up state
+
+    real_replace = os.replace
+    calls = []
+
+    def flaky_replace(src, dst):
+        calls.append((src, dst))
+        if len(calls) < 3:
+            raise PermissionError("simulated rival holding it open")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    slept = []
+    monkeypatch.setattr(qm.time, "sleep", lambda s: slept.append(s))
+
+    m.mark_forced("z")  # the one write this test is actually about
+
+    assert len(calls) == 3
+    assert slept == [qm._REPLACE_RETRY_DELAY_S, qm._REPLACE_RETRY_DELAY_S]
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, encoding="utf-8") as f:
+        json.load(f)  # the retried write actually landed
+
+
+def test_write_locked_gives_up_after_the_retry_budget_and_keeps_in_memory_state(
+        state, monkeypatch):
+    """Once `_REPLACE_MAX_ATTEMPTS` is exhausted, a still-failing
+    `PermissionError` is swallowed the same way any other write failure is
+    — the in-memory index stays right, nothing crashes — but it is logged
+    at warning (not debug), since by then it's no longer a brief window."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    monkeypatch.setattr(
+        os, "replace",
+        lambda src, dst: (_ for _ in ()).throw(
+            PermissionError("simulated rival holding it open")))
+    monkeypatch.setattr(qm.time, "sleep", lambda s: None)
+
+    with mock.patch.object(qm.logger, "warning") as warning:
+        m.mark_forced("z")  # a transaction; must not raise
+    assert warning.called
+
+    # The in-memory state is still right even though nothing landed on disk.
+    assert owner_key(m) == "a"
 
 
 # --------------------------------------------------- corrupt index on disk
