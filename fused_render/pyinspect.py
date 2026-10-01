@@ -93,8 +93,8 @@ def python_files(folder: str) -> list[str]:
 def file_report(folder: str, name: str) -> dict:
     """One `.py` as a caller sees it.
 
-    `callable` is true only when a top-level `main` exists — the single
-    entrypoint `/api/run` binds. Other public functions are listed under
+    `callable` is true only when a top-level sync `main` exists — the single
+    entrypoint `/api/run` binds (an `async def main` is listed, not callable). Other public functions are listed under
     `functions` (names only) so a bot can tell "helper module" from "has a
     `send()` the MCP panel could curate", without pretending `/api/run`
     could reach them. An unparseable file is reported with its error, not
@@ -121,6 +121,12 @@ def file_report(folder: str, name: str) -> dict:
     if fn is None:
         entry["doc"] = first_line(ast.get_docstring(tree))
         entry["reason"] = "no top-level main()"
+        return entry
+    if isinstance(fn, ast.AsyncFunctionDef):
+        # `_child.py` calls main() and JSON-dumps the return; a coroutine would
+        # come back as "not serialisable". Listed, named, not callable.
+        entry["doc"] = first_line(ast.get_docstring(fn)) or first_line(ast.get_docstring(tree))
+        entry["reason"] = "async def main (/api/run calls a sync main)"
         return entry
     entry["callable"] = True
     # The function's own docstring describes the call; the module's is the

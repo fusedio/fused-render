@@ -53,6 +53,13 @@ def test_listing_never_imports_the_file(tmp_path):
     assert not marker.exists()
 
 
+def test_async_main_is_listed_not_callable(tmp_path):
+    _write(tmp_path, "a.py", "async def main(x: int = 1):\n    return x\n")
+    rep = pyinspect.file_report(str(tmp_path), "a.py")
+    assert rep["callable"] is False and rep["reason"].startswith("async def main")
+    assert rep["functions"] == ["main"]
+
+
 def test_python_files_skips_hidden_and_non_py(tmp_path):
     for n in ("a.py", ".hidden.py", "b.txt", "c.py"):
         _write(tmp_path, n, "")
@@ -79,6 +86,6 @@ def test_route_requires_x_fused_and_lists(tmp_path, monkeypatch):
     assert body["tools"] == [{"name": "run_x", "description": "d", "file": "x.py", "entrypoint": "main", "curated": True}]
     assert body["background"] is None
     r = c.get("/api/apps/python", params={"dir": str(tmp_path)}, headers={"X-Fused": "1"})
-    assert r.status_code == 200 and r.json()["html"] == str(tmp_path / "index.html")
+    assert r.status_code == 200 and r.json()["html"] == os.path.join(os.path.realpath(str(tmp_path)), "index.html")
     r = c.get("/api/apps/python", params={"dir": str(tmp_path / "nope")}, headers={"X-Fused": "1"})
     assert r.status_code == 404

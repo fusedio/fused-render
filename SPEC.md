@@ -12015,7 +12015,9 @@ the app has. Design page: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ.
   timeout_s, files:[{file, callable, signature, params:[{name,type,default,
   required}], doc, functions, error|reason}], tools:[mcp.toml rows,
   curated:true], background:{kind,file,running}|null}`. `callable` is true
-  only for a top-level `main` — the single entrypoint `_child.py` binds;
+  only for a top-level sync `main` — the single entrypoint `_child.py` binds
+  (an `async def main` is listed with a `reason`, since the runner JSON-dumps
+  the return and a coroutine is not serialisable);
   other public names are listed under `functions` so a bot can tell a helper
   module from a file the MCP panel could curate, never as something
   `/api/run` could reach. Everything is `ast.parse` of the file's text:

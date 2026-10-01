@@ -22,7 +22,7 @@ def main(month: str = "2026-09", csv: str = "", top: int = 10) -> dict:
 
 | Rule | Why |
 |---|---|
-| `main` only, top level, sync or async | `/api/run` binds exactly `main(**params)` (`_child.py`). Other public functions are listed but not callable here (curate them in `mcp.toml` for MCP hosts). |
+| `main` only, top level, **sync** | `/api/run` binds exactly `main(**params)` (`_child.py`) and JSON-dumps the return; an `async def main` is listed as not callable. Other public functions are listed but not callable here (curate them in `mcp.toml` for MCP hosts). |
 | Annotate every parameter (`str`/`int`/`float`/`bool`), give defaults | Bots read the signature from the AST and coerce URL-style strings by annotation (`_binding.coerce`). Unannotated → raw string. |
 | First docstring line = the description a bot sees | One line, plain, states what it reads and what it changes ("Sends the summary by mail" vs "Reads the ledger"). Module docstring is the fallback. |
 | Return JSON-native (`dict`/`list`/scalars) | Envelope is JSON. Non-serialisable → error. |
