@@ -925,22 +925,21 @@ export function DownloadManagerView({
               {/* TWO POSSIBLE SECTIONS, in this order (status-bar merge):
                   Running (the old Jobs chip's own content, unchanged) and
                   Background tasks (the old Engines chip). A section renders
-                  only when it has rows, and the heading itself only when 2+
-                  sections are present at once — a single section carrying a
-                  header nobody needed to disambiguate is the redundant-label
-                  problem the brief calls out; see `.dl-section-head` in
-                  notifications.css. (A third section, Models, lived here
-                  during the status-bar merge and moved back out into its own
-                  chip — `shell/ModelsDock.tsx` — in a follow-up revision.) */}
+                  only when it has rows, and its heading always renders
+                  alongside it, carrying the section's own row count — see
+                  `.dl-section-head`/`.dl-section-count` in notifications.css.
+                  (A third section, Models, lived here during the status-bar
+                  merge and moved back out into its own chip —
+                  `shell/ModelsDock.tsx` — in a follow-up revision.) */}
               {(() => {
                 const runningVisible = jobs.length > 0;
-                const sectionCount = (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0);
-                const showHeadings = sectionCount > 1;
                 return (
                   <>
                     {runningVisible && (
                       <div className="dl-section">
-                        {showHeadings && <div className="dl-section-head">Running</div>}
+                        <div className="dl-section-head">
+                          Running <span className="dl-section-count">{jobs.length}</span>
+                        </div>
                         <div className="dl-rows">
                           {jobs.map((job) => (
                             <JobRow
@@ -956,7 +955,9 @@ export function DownloadManagerView({
                     )}
                     {engineCount > 0 && (
                       <div className="dl-section">
-                        {showHeadings && <div className="dl-section-head">Background tasks</div>}
+                        <div className="dl-section-head">
+                          Background tasks <span className="dl-section-count">{engineCount}</span>
+                        </div>
                         <div className="dl-rows">
                           {engines!.engines.map((e) => (
                             <EngineRow key={e.engine_id} engine={e} onStop={engines!.onStop} />
