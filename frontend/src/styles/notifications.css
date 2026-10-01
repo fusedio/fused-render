@@ -1058,6 +1058,65 @@
   margin-top: 0;
 }
 
+/* THE TIMESTAMP'S OWN LINE (status-popovers R5) — ONLY on the instances that
+   pass `age` (`NotificationCard`'s own gate): `.dl-origin` turns into a flex
+   row, origin on the left and the compact relative-time stamp pinned to the
+   right by `margin-left: auto` on `.dl-row-age`, rather than a second line
+   nothing asked for. Scoped to `.dl-meta-line` specifically so every caller
+   that never passes `age` (every row in ActivityDock's own Running/Background
+   tasks sections) keeps the exact single-line `.dl-origin` it always had —
+   this rule never fires for them. */
+.dl-origin.dl-meta-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dl-origin-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-row-age {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--fg-faint);
+}
+
+/* THE UNSEEN DOT (status-popovers R4) — a small filled circle ahead of a row's
+   title, drawn only for a row the Notifications panel has not yet been open
+   while it was present (`notifications-seen-store.ts`'s `isSeen`). Round,
+   not a glyph, so it reads as a mark rather than a letter; the accent token,
+   not the error one, because unseen is a neutral fact ("new"), not itself a
+   warning — a row that is BOTH unseen and attention-worthy already gets its
+   warning from the left accent bar below. */
+.dl-unread-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+/* THE NEEDS-YOU ACCENT BAR (status-popovers R3) — every row in that section
+   gets a left stripe, not only a folded group's own (`.dl-row-group-attention`
+   above, kept as its own class since §3's "a group is one row" framing still
+   names it specifically). `--error` is the ordinary case: a failed job, a
+   waiting task, a plain attention message. The fused-render update row is the
+   one exception — it is not a failure, so it earns the accent token instead,
+   via `.dl-row-attention-update` layered on top. */
+.dl-row.dl-row-attention {
+  border-left: 3px solid var(--error);
+  padding-left: 7px;
+}
+
+.dl-row.dl-row-attention-update {
+  border-left-color: var(--accent);
+}
+
 /* THE MODEL ROW'S FIGURES, ON THEIR OWN LINE — the same device D596 used for
    `.dl-model` above, applied for the same reason: the head is short of
    LINES, not width. `.dl-panel` caps at `min(340px, ...)` (D608), which

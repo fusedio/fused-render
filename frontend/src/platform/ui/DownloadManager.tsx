@@ -469,6 +469,9 @@ export function JobRow({
   dismissFn = dismissJob,
   onDismissClick,
   now = Date.now() / 1000,
+  className,
+  age,
+  unseen,
 }: {
   job: Job;
   onChanged: () => void;
@@ -495,6 +498,18 @@ export function JobRow({
    *  falls through to `jobDetail` at all since every terminal state has its
    *  own non-empty status text — and for tests that do not care. */
   now?: number;
+  /** Extra class appended to the row's own `.dl-row` — `RepoUpdatesDock.tsx`'s
+   *  Needs-you section uses this for its left accent bar (status-popovers
+   *  R3), the same seam `GroupJobRow`/`NotificationCard` already expose.
+   *  Every caller in THIS file's own Jobs section omits it. */
+  className?: string;
+  /** Compact relative-time stamp (R5) — `RepoUpdatesDock.tsx` passes
+   *  `compactAge(job.finished_at * 1000)` for a terminal job; omitted by
+   *  every caller in THIS file's own Jobs section (a running job's age is
+   *  not what R5 is about). */
+  age?: string;
+  /** The unread dot (R4) — same scoping as `age`. */
+  unseen?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   // A REJECTED cancel/dismiss must say so, not vanish (D572, user: "the
@@ -657,7 +672,14 @@ export function JobRow({
   // `failure`.
   return (
     <NotificationCard
-      title={job.title}
+      className={className}
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {job.title}
+        </>
+      }
+      age={age}
       // One line, ellipsis, never wraps (SPEC actionable-notifications item
       // 4): a long prompt used to wrap to two lines, halving how many rows
       // fit in the panel. The full text still has to be reachable somehow,

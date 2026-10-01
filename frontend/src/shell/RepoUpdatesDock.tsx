@@ -197,7 +197,22 @@ function useRepoUpdates() {
 // Clicking clears the row exactly as the ✕ does (reuses `dismiss`): the news
 // was "a device paired", and having read it (by going to look) is as much an
 // acknowledgement as swatting it would have been.
-function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id: string) => void }) {
+function PairingRowView({
+  event,
+  onGone,
+  age,
+  unseen,
+}: {
+  event: LanPairingEvent;
+  onGone: (id: string) => void;
+  /** Compact relative-time stamp (R5) — the client's own `firstSeenAt`, this
+   *  row carries no server timestamp of its own. */
+  age?: string;
+  /** The unread dot (R4) — unset while this view is also used anywhere that
+   *  doesn't track seen state (there is none today; kept optional like every
+   *  other row view's same param, for the same reason). */
+  unseen?: boolean;
+}) {
   const dismiss = async () => {
     // Optimistic: the row is news, and news the user swatted must go now.
     onGone(event.id);
@@ -209,7 +224,13 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
   };
   return (
     <NotificationCard
-      title={`${event.name} paired`}
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {event.name} paired
+        </>
+      }
+      age={age}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${event.name} paired` }}
       status="It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network."
       rowClick={{
@@ -262,11 +283,32 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
 // worse than a repo row before D572, just not as good as it could be; call
 // sites are encouraged to set one where an obvious destination exists (SPEC
 // §3), not required to.
-function MessageRowView({ notification }: { notification: StoredNotification }) {
+function MessageRowView({
+  notification,
+  className,
+  age,
+  unseen,
+}: {
+  notification: StoredNotification;
+  /** The left accent bar (R3) — `.dl-row-attention`/`.dl-row-attention-update`
+   *  for a Needs-you row, undefined for New/Earlier. */
+  className?: string;
+  /** Compact relative-time stamp (R5) — `notification.updatedAt`. */
+  age?: string;
+  /** The unread dot (R4). */
+  unseen?: boolean;
+}) {
   const dismiss = () => dismissNotification(notification.id);
   return (
     <NotificationCard
-      title={notification.title}
+      className={className}
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {notification.title}
+        </>
+      }
+      age={age}
       secondary={notification.detail}
       // `.dl-origin` — who raised this row (`labelForSource(source)`,
       // notifications.ts), the exact caption `JobRow` already draws from
@@ -306,9 +348,16 @@ function MessageRowView({ notification }: { notification: StoredNotification }) 
 function AttentionRowView({
   row,
   onDismiss,
+  age,
+  unseen,
 }: {
   row: AttentionRow;
   onDismiss: () => void;
+  /** Compact relative-time stamp (R5) — this row's own `firstSeenAt`. */
+  age?: string;
+  /** The unread dot (R4) — a waiting task is a Needs-you row and so never
+   *  moves to New/Earlier, but it still earns the dot while unseen. */
+  unseen?: boolean;
 }) {
   const title = `${shortTaskId(row.taskId)} needs your input`;
   const dismiss: NotificationCardDismiss = {
@@ -318,7 +367,14 @@ function AttentionRowView({
   const href = row.href;
   return (
     <NotificationCard
-      title={title}
+      className="dl-row-attention"
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {title}
+        </>
+      }
+      age={age}
       caption={row.origin || undefined}
       status={row.title}
       statusOneLine
@@ -403,10 +459,17 @@ function RepoRowView({
   row,
   onDone,
   onDismiss,
+  age,
+  unseen,
 }: {
   row: RepoRow;
   onDone: (result: MutationResult) => void;
   onDismiss: () => void;
+  /** Compact relative-time stamp (R5) — this row's own `firstSeenAt`, a repo
+   *  update carries no server timestamp of its own. */
+  age?: string;
+  /** The unread dot (R4). */
+  unseen?: boolean;
 }) {
   // WHICH action is running, not just whether one is (task 12, code review
   // 2026-08-27, from back when a row could offer two buttons — Update/Switch
@@ -463,7 +526,13 @@ function RepoRowView({
   // directly — `extraAction` (`.q-all`, below the status line).
   return (
     <NotificationCard
-      title={row.name}
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {row.name}
+        </>
+      }
+      age={age}
       titleTooltip={row.repo.root}
       navAction={{
         label:
@@ -506,11 +575,18 @@ function GroupJobRow({
   onChanged,
   onPatch,
   dismissFn = dismissJob,
+  age,
+  unseen,
 }: {
   group: JobGroup;
   onChanged: () => void;
   onPatch: (fn: (jobs: Job[]) => Job[]) => void;
   dismissFn?: (id: string) => Promise<{ dismissed: string }>;
+  /** Compact relative-time stamp (R5) — the group's newest member's own
+   *  `finished_at`. */
+  age?: string;
+  /** The unread dot (R4). */
+  unseen?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -548,7 +624,13 @@ function GroupJobRow({
   return (
     <NotificationCard
       className={anyFailed ? "dl-row-group-attention" : undefined}
-      title={title}
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {title}
+        </>
+      }
+      age={age}
       titleMode="id"
       // Same "oldest member represents the row" call `title`/`openPage`
       // already make above — a folded group is one row, so it draws one

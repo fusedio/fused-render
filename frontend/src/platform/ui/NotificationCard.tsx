@@ -98,6 +98,14 @@ export interface NotificationCardProps {
    *  (`Job.origin`, jobs.ts), on its own line under `secondary`/the head.
    *  Undefined/"" draws no element at all, same as `secondary`. */
   caption?: ReactNode;
+  /** A compact, right-aligned relative-time stamp (status-popovers R5) —
+   *  `compactAge()`'s output ("now"/"4m"/"2h"/"3d"). Shares `caption`'s own
+   *  line — origin on the left, age on the right — rather than a second line
+   *  nothing asked for; a caller with no `caption` still gets the line, age
+   *  alone, right-aligned. Every Notifications row kind passes this; every
+   *  Activity row kind omits it, so `.dl-origin` draws exactly as before
+   *  wherever this is undefined. */
+  age?: ReactNode;
   /** `.dl-row-figures` — the Models row's memory cells. */
   figures?: ReactNode;
   /** `.dl-bar`/`.dl-bar-fill`. `number` (0–1) is the fill; `null` draws the
@@ -143,6 +151,7 @@ export default function NotificationCard({
   secondary,
   secondaryTooltip,
   caption,
+  age,
   figures,
   progress,
   stalled = false,
@@ -219,7 +228,16 @@ export default function NotificationCard({
           all six go through this one component) gets the eyebrow placement
           for free, from this single change. `.dl-model` (the model name)
           stays exactly where it was, unmoved. */}
-      {caption != null && caption !== "" && <div className="dl-origin dl-eyebrow">{caption}</div>}
+      {((caption != null && caption !== "") || age != null) && (
+        <div
+          className={"dl-origin dl-eyebrow" + (age != null ? " dl-meta-line" : "")}
+        >
+          {caption != null && caption !== "" && (
+            <span className="dl-origin-text">{caption}</span>
+          )}
+          {age != null && <span className="dl-row-age">{age}</span>}
+        </div>
+      )}
       <div className="dl-row-head">
         <span
           className={"dl-title" + (titleMode === "id" ? " dl-title-id" : "")}
