@@ -819,12 +819,16 @@ def test_a_lean_requests_the_watcher_on_its_first_tasks_request(
     not just the first — its own `_started` flag is what makes repeating
     that call free, so this only has to prove the dependency reaches it at
     all under `lean`, not re-derive `start`'s own idempotence (covered
-    elsewhere)."""
+    elsewhere). A spy that never calls through to the real `start` — this
+    test is only about the dependency wiring, and the real function spawns
+    a daemon thread this test would otherwise have to join or leak."""
     calls = []
 
     def recording_start():
         calls.append(True)
-        _REAL_TASKS_WATCH_START()
+        # Mirror the one observable effect a real `start()` call would have
+        # had, without spawning its never-ending `_loop` thread.
+        tasks_watch._started = True
 
     monkeypatch.setattr(tasks_watch, "start", recording_start)
     monkeypatch.setattr(tasks_watch, "_started", False)
