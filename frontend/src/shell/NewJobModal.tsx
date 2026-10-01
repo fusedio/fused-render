@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import {
-  readClaudeDefaults, setClaudeDefaults, subscribeClaudeDefaults,
+  readClaudeDefaults, subscribeClaudeDefaults,
 } from "@platform/lib/claude-defaults";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
@@ -3183,58 +3183,29 @@ export default function NewJobModal({
   // somewhere else must not overwrite it.
   const tookGlobal = useRef<{ model: boolean; effort: boolean } | null>(null);
   if (tookGlobal.current === null) tookGlobal.current = { model: !model, effort: !effort };
-  // ONE VALUE, TWO SURFACES (Akshil, 2026-09-21). This card's dropdowns and the
-  // Explorer composer's pills for a new chat are two editors of the SAME
-  // setting — `~/.claude/settings.json`'s `model`/`effortLevel`. So a pick here
-  // writes it, and a pick THERE arrives here, in this window and in every other
-  // tab, without a reload.
-  //
-  // NEW TASKS ONLY. Editing a stored entry is the analogue of a chat that
-  // already has a session: what that task runs with is a fact about that task,
-  // and changing it must not re-aim every future chat on the machine.
-  const globalEditor = !editing;
-  // A PICK IN FLIGHT OUTRANKS A BROADCAST (review, 2026-09-21). Another tab's
-  // announcement landing between this card's click and its PUT settling used
-  // to overwrite the reader's own choice for a frame; the server's answer then
-  // put it back, but the flicker was real. Per field: a model pick does not
-  // hold the effort half still.
-  const pickInFlight = useRef({ model: 0, effort: 0 });
+  // A PICK HERE IS THIS TASK'S PICK, NOT THE GLOBAL'S (Akshil, 2026-10-01,
+  // reversing 2026-09-21's "one value, two surfaces"): the global pair in
+  // `~/.claude/settings.json` is edited from the Claude config page and nowhere
+  // else. A new task still OPENS on the global and keeps following it while a
+  // field is untouched — the config page saving a new default should reach a
+  // card that has not chosen — but the first pick on a field makes it this
+  // card's own, and nothing is written back.
+  const globalFollower = !editing;
   useEffect(() => {
-    if (!globalEditor) return;
+    if (!globalFollower) return;
     return subscribeClaudeDefaults((d) => {
-      if (tookGlobal.current?.model && d.model && !pickInFlight.current.model) setModel(d.model);
-      if (tookGlobal.current?.effort && d.effort && !pickInFlight.current.effort) setEffort(d.effort);
+      if (tookGlobal.current?.model && d.model) setModel(d.model);
+      if (tookGlobal.current?.effort && d.effort) setEffort(d.effort);
     });
-  }, [globalEditor]);
-  const pickModel = useCallback(
-    (value: string) => {
-      setModel(value);
-      if (!globalEditor) return;
-      pickInFlight.current.model += 1;
-      // The answer is painted from the PROMISE, not from the subscription the
-      // guard above is holding off: a refused write's correction arrives this
-      // way, so the card that made the pick hears it too (Bugbot, 2026-09-21).
-      void setClaudeDefaults({ model: value }).then((d) => {
-        pickInFlight.current.model -= 1;
-        // Unconditional: "" is the server saying the key was RESET, and the
-        // card must not go on showing a value the file no longer holds.
-        setModel(d.model);
-      });
-    },
-    [globalEditor],
-  );
-  const pickEffort = useCallback(
-    (value: string) => {
-      setEffort(value);
-      if (!globalEditor) return;
-      pickInFlight.current.effort += 1;
-      void setClaudeDefaults({ effort: value }).then((d) => {
-        pickInFlight.current.effort -= 1;
-        setEffort(d.effort);
-      });
-    },
-    [globalEditor],
-  );
+  }, [globalFollower]);
+  const pickModel = useCallback((value: string) => {
+    if (tookGlobal.current) tookGlobal.current.model = false;
+    setModel(value);
+  }, []);
+  const pickEffort = useCallback((value: string) => {
+    if (tookGlobal.current) tookGlobal.current.effort = false;
+    setEffort(value);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
