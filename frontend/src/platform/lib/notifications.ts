@@ -236,20 +236,34 @@ export const TOAST_EXIT_MS = 150;
 // keeping"/"Needs you" can hold from client-raised messages.
 export const MAX_RETAINED = 5;
 
-// THE STABLE MARKER for a fused-render update row (status-popovers R3/R6) —
-// `UpdateNotifier.tsx` sets `familyKey: UPDATE_NOTIFICATION_FAMILY_KEY` on
-// every `notify()` call it makes across the whole update flow (available,
-// failed, ready, restarting, gave-up), so every such row's `family` (via
-// `messageFamily` below) comes out to exactly `UPDATE_NOTIFICATION_FAMILY`,
-// title text notwithstanding. `capRetained` reads it to protect the update
-// row from eviction (R6), and `RepoUpdatesDock.tsx` reads it to pin the row
-// first in "Needs you" and style it with the accent, not the error,
-// treatment (R3) — a marker, not a title match, so it survives the row's
-// title changing between "Update available" and "Update ready". The raw key
-// is exported separately so `UpdateNotifier.tsx` never has to spell out (or
-// risk drifting from) the `familyKey:` prefix `messageFamily` adds.
-export const UPDATE_NOTIFICATION_FAMILY_KEY = "app-update";
-export const UPDATE_NOTIFICATION_FAMILY = `familyKey:${UPDATE_NOTIFICATION_FAMILY_KEY}`;
+// THE STABLE MARKERS for a fused-render update row (status-popovers R3/R6).
+// `UpdateNotifier.tsx` runs two logically separate cards through the same
+// flow — a download card (available/failed) and a restart card (ready/
+// restarting/gave-up) — each raised with its OWN `familyKey`, so they never
+// collapse into one row and dismissing one never dismisses the other
+// (item 4: with a single shared key, a fresh `notify()` for the restart card
+// collapsed straight into the download card's still-retained row, and the
+// two then shared one id). Title text within either card can still change
+// freely (e.g. "Update ready" -> "Restarting fused-render") without losing
+// its own row's identity.
+//
+// `UPDATE_NOTIFICATION_PREFIX` is what the two keys share — `capRetained`
+// (R6: never evict an update row) and `RepoUpdatesDock.tsx` (R3: pin every
+// update row first in "Needs you") both need to recognize BOTH cards as "the
+// update notification" without caring which one, so they match on this
+// prefix via `isUpdateNotification` rather than an exact `family` equality
+// check. Raw keys are exported separately so `UpdateNotifier.tsx` never has
+// to spell out (or risk drifting from) the `familyKey:` prefix
+// `messageFamily` adds.
+const UPDATE_NOTIFICATION_PREFIX = "app-update";
+export const UPDATE_DOWNLOAD_FAMILY_KEY = `${UPDATE_NOTIFICATION_PREFIX}:download`;
+export const UPDATE_RESTART_FAMILY_KEY = `${UPDATE_NOTIFICATION_PREFIX}:restart`;
+
+/** True for a stored notification raised by either update card — see the
+ *  comment above on why this is a prefix match, not an exact one. */
+export function isUpdateNotification(n: StoredNotification): boolean {
+  return n.family.startsWith(`familyKey:${UPDATE_NOTIFICATION_PREFIX}`);
+}
 
 // `IS_TOP_EMBED` proper (`router.ts:169`) is a `const` frozen once at that
 // module's own init from `location`/`window` — correct for production (a
@@ -439,13 +453,13 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
 
 // EVICTION MUST NOT BURY ATTENTION (status-popovers R6). The old rule —
 // "drop the oldest, tier be damned" — let a stream of ordinary transient-
-// turned-trail messages push a genuine failure (or the update row) clean out
+// turned-trail messages push a genuine failure (or an update row) clean out
 // of the retained list before the user ever saw it. The new order: evict the
 // oldest NON-attention row first (list is append-order, so index 0 is
 // oldest); only once none are left does an attention row get evicted at all,
-// and even then the update row (`UPDATE_NOTIFICATION_FAMILY`) is skipped —
-// an update is a standing opportunity, not a transient alert, and is never
-// the thing a cap-driven eviction should be the one to clear.
+// and even then any update row (`isUpdateNotification`, either card) is
+// skipped — an update is a standing opportunity, not a transient alert, and
+// is never the thing a cap-driven eviction should be the one to clear.
 function capRetained(list: StoredNotification[]): StoredNotification[] {
   let result = list;
   while (result.length > MAX_RETAINED) {
@@ -454,7 +468,7 @@ function capRetained(list: StoredNotification[]): StoredNotification[] {
     result = [...result.slice(0, idx), ...result.slice(idx + 1)];
   }
   while (result.length > MAX_RETAINED) {
-    const idx = result.findIndex((n) => n.family !== UPDATE_NOTIFICATION_FAMILY);
+    const idx = result.findIndex((n) => !isUpdateNotification(n));
     if (idx === -1) break; // nothing left but update row(s) — never evicted
     result = [...result.slice(0, idx), ...result.slice(idx + 1)];
   }

@@ -243,10 +243,10 @@ test("dismissing the restart card directly (the panel's own ✕) does not resurr
 });
 
 test("the restart card is never evicted by a busy notification stream (status-popovers R6)", async () => {
-  // `notifications.ts`'s `capRetained` never evicts a row carrying the
-  // `UPDATE_NOTIFICATION_FAMILY` marker (R6) — every `notify()` call this
-  // component makes for the update flow sets it (`UPDATE_NOTIFICATION_FAMILY_KEY`).
-  // So unlike before R6, filling the retained list past `MAX_RETAINED` with
+  // `notifications.ts`'s `capRetained` never evicts a row `isUpdateNotification`
+  // matches (R6) — every `notify()` call this component makes for the update
+  // flow sets `familyKey` to one of the two update family keys (download or
+  // restart). So unlike before R6, filling the retained list past `MAX_RETAINED` with
   // other attention notices no longer pushes the restart card out at all:
   // `capRetained` evicts the OTHER (non-update) attention rows instead, and
   // the restart card keeps its original id throughout — nothing here is left

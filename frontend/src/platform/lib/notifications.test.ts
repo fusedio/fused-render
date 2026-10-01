@@ -20,7 +20,7 @@ import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 const {
   MAX_RETAINED,
   TOAST_EXIT_MS,
-  UPDATE_NOTIFICATION_FAMILY,
+  isUpdateNotification,
   _resetNotificationsForTest,
   _setIsEmbedForTest,
   _setIsTopEmbedForTest,
@@ -1049,6 +1049,35 @@ test("capRetained evicts non-attention rows before any attention row", () => {
   expect(titles).toContain(`Export ${MAX_RETAINED - 1} ready`);
 });
 
+test("the download and restart update cards carry distinct familyKeys, so they never collapse and dismiss independently", () => {
+  // `UpdateNotifier.tsx` raises these under `UPDATE_DOWNLOAD_FAMILY_KEY` and
+  // `UPDATE_RESTART_FAMILY_KEY` respectively — distinct families, so a fresh
+  // `notify()` for one never collapses into the other's still-retained row
+  // (item 4: sharing one familyKey made the restart card's `notify()` call
+  // collapse straight into the download card's id, so dismissing either one
+  // dismissed both, and the panel showed one row for what should be two).
+  const downloadId = notify({
+    title: "Update available",
+    tier: "attention",
+    familyKey: "app-update:download",
+  });
+  const restartId = notify({
+    title: "Update ready",
+    tier: "attention",
+    familyKey: "app-update:restart",
+  });
+  expect(downloadId).not.toBe(restartId);
+  const retained = getRetainedNotifications();
+  expect(retained.map((n) => n.title).sort()).toEqual(["Update available", "Update ready"]);
+  expect(retained.every(isUpdateNotification)).toBe(true);
+
+  dismissNotification(downloadId);
+  const afterDownloadDismiss = getRetainedNotifications();
+  expect(afterDownloadDismiss).toHaveLength(1);
+  expect(afterDownloadDismiss[0].title).toBe("Update ready");
+  expect(afterDownloadDismiss[0].id).toBe(restartId);
+});
+
 test("capRetained never evicts the update row, even once only attention rows are left", () => {
   notify({ title: "Update available", tone: "info", tier: "attention", familyKey: "app-update" });
   // Fill the rest, and then some, with OTHER attention rows (ordinary
@@ -1058,8 +1087,8 @@ test("capRetained never evicts the update row, even once only attention rows are
   }
   const retained = getRetainedNotifications();
   expect(retained.length).toBe(MAX_RETAINED);
-  expect(retained.some((n) => n.family === UPDATE_NOTIFICATION_FAMILY)).toBe(true);
-  expect(retained.find((n) => n.family === UPDATE_NOTIFICATION_FAMILY)?.title).toBe("Update available");
+  expect(retained.some(isUpdateNotification)).toBe(true);
+  expect(retained.find(isUpdateNotification)?.title).toBe("Update available");
   // The oldest ordinary failures were evicted instead — "Failure 0" is the
   // first one that should be gone.
   expect(retained.map((n) => n.title)).not.toContain("Failure 0");
