@@ -735,16 +735,23 @@ describe("the row uses LINES, not a shrink ladder (D596)", () => {
     expect(text(findAll(row, "dl-title")[0])).toBe("Resize");
   });
 
-  it("closes the panel's rows list to horizontal scroll — a row must fit, not scroll sideways", () => {
+  it("closes the panel to horizontal scroll — a row must fit, not scroll sideways (status-popovers R1)", () => {
     // User, with a screenshot: "the notification cards should not be
     // scrollable" — the panel had scrolled SIDEWAYS to reach the clipped
     // Cancel button, because `overflow-y: auto` alone computes `overflow-x:
     // auto` too (CSS overflow's own "visible becomes auto" rule). Vertical
     // scroll stays — a long job list must still not push its own header
     // off-screen — only the horizontal axis is closed.
-    const rows = block(CSS, ".dl-rows");
-    expect(rows).toContain("overflow-y: auto;");
-    expect(rows).toContain("overflow-x: hidden;");
+    //
+    // `.dl-panel` is now the ONLY scroll region either popover has (R1):
+    // `.dl-rows` carries no `overflow`/`max-height` of its own at all, so
+    // there is no `.dl-rows { ... }` rule block left to find, which is
+    // exactly the "no nested scrolling" property this asserts.
+    const panel = block(CSS, ".dl-panel");
+    expect(panel).toContain("overflow-y: auto;");
+    expect(panel).toContain("overflow-x: hidden;");
+    expect(panel).toContain("max-height:");
+    expect(CSS).not.toContain(".dl-rows {");
   });
 });
 
@@ -1003,21 +1010,22 @@ describe("the Background tasks section (moved off EnginesDock's own chip)", () =
 });
 
 describe("two sections sharing one Activity panel", () => {
-  test("a section heading renders only when 2+ sections are present", () => {
-    // ONE non-empty source (engines only): no heading needed to disambiguate.
+  test("a section heading renders even when it is the only section, and carries a count", () => {
+    // ONE non-empty source (engines only): still gets a heading, with a count.
     const one = renderActivity({
-      engines: { engines: [runningEngine()], onStop: async () => {} },
+      engines: { engines: [runningEngine(), runningEngine({ engine_id: "e2" })], onStop: async () => {} },
     });
-    expect(findAll(one, "dl-section-head")).toHaveLength(0);
+    const oneHeads = findAll(one, "dl-section-head").map(text);
+    expect(oneHeads).toEqual(["Background tasks 2"]);
 
-    // TWO non-empty sources (running + engines): both get a heading.
+    // TWO non-empty sources (running + engines): both get a heading, each with its own count.
     const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
     const two = renderActivity({
       reported: [running],
       engines: { engines: [runningEngine()], onStop: async () => {} },
     });
     const heads = findAll(two, "dl-section-head").map(text);
-    expect(heads).toEqual(["Running", "Background tasks"]);
+    expect(heads).toEqual(["Running 1", "Background tasks 1"]);
   });
 
   test("everything empty draws the single 'No activity' empty state, nothing else", () => {

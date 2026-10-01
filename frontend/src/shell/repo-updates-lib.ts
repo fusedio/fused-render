@@ -10,6 +10,7 @@
 // behind GET /api/git-upstream): it already reports only repos with a
 // non-zero behind count. What this file decides is presentation only: the
 // row's label, and — the one real decision here — which action is PRIMARY.
+import { urlForFsPath } from "@platform/lib/router";
 
 export interface RepoStatus {
   root: string;
@@ -104,6 +105,18 @@ export function repoActionLabel(action: RepoAction, defaultBranch?: string): str
  */
 export function repoDismissSignature(repo: RepoStatus): string {
   return `${repo.branch ?? ""}@${repo.behind}`;
+}
+
+/** R8 — the explorer deep link a repo row's clickable body opens: the repo's
+ *  own folder, with `_side=git` so the listing's companion pane lands open on
+ *  its Git tab rather than whatever it was last left on (or closed) — an
+ *  explicit `_side` on the url wins over that session state, and an absent
+ *  one would mean "whatever the pane already shows", which is not what a
+ *  click on "Newer changes available" promises. The open/close semantics of
+ *  that param live in apps/explorer/listing/pane-side.ts; this just spells
+ *  the one value this row ever asks for. */
+export function repoGitHref(root: string): string {
+  return urlForFsPath(root, "?_side=git");
 }
 
 /** Which rows a dismissal (decision C) still hides. No server state is needed:

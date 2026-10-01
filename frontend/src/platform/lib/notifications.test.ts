@@ -18,7 +18,9 @@ installDomShim();
 
 import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 const {
+  MAX_RETAINED,
   TOAST_EXIT_MS,
+  isUpdateNotification,
   _resetNotificationsForTest,
   _setIsEmbedForTest,
   _setIsTopEmbedForTest,
@@ -1025,4 +1027,69 @@ test("forwardToShell refuses to forward to itself when window.top === window, ev
   } finally {
     (globalThis as unknown as Record<string, unknown>)._fusedIngestNotification = realIngest;
   }
+});
+
+// ---- R6 (status-popovers): eviction must not bury attention ---------------
+
+test("capRetained evicts non-attention rows before any attention row", () => {
+  // One attention row, raised first so it would be the OLDEST entry under
+  // the old "drop index 0" rule.
+  notify({ title: "Could not save", tone: "error" });
+  // Fill the rest of the cap with actionable-but-non-attention rows (an
+  // action makes them retained without promoting their tier).
+  for (let i = 0; i < MAX_RETAINED; i++) {
+    notify({ title: `Export ${i} ready`, action: { label: "Open", onClick: () => {} } });
+  }
+  const titles = getRetainedNotifications().map((n) => n.title);
+  expect(titles.length).toBe(MAX_RETAINED);
+  // The attention row survives; the OLDEST non-attention row ("Export 0
+  // ready") is the one that got evicted to make room.
+  expect(titles).toContain("Could not save");
+  expect(titles).not.toContain("Export 0 ready");
+  expect(titles).toContain(`Export ${MAX_RETAINED - 1} ready`);
+});
+
+test("the download and restart update cards carry distinct familyKeys, so they never collapse and dismiss independently", () => {
+  // `UpdateNotifier.tsx` raises these under `UPDATE_DOWNLOAD_FAMILY_KEY` and
+  // `UPDATE_RESTART_FAMILY_KEY` respectively — distinct families, so a fresh
+  // `notify()` for one never collapses into the other's still-retained row
+  // (item 4: sharing one familyKey made the restart card's `notify()` call
+  // collapse straight into the download card's id, so dismissing either one
+  // dismissed both, and the panel showed one row for what should be two).
+  const downloadId = notify({
+    title: "Update available",
+    tier: "attention",
+    familyKey: "app-update:download",
+  });
+  const restartId = notify({
+    title: "Update ready",
+    tier: "attention",
+    familyKey: "app-update:restart",
+  });
+  expect(downloadId).not.toBe(restartId);
+  const retained = getRetainedNotifications();
+  expect(retained.map((n) => n.title).sort()).toEqual(["Update available", "Update ready"]);
+  expect(retained.every(isUpdateNotification)).toBe(true);
+
+  dismissNotification(downloadId);
+  const afterDownloadDismiss = getRetainedNotifications();
+  expect(afterDownloadDismiss).toHaveLength(1);
+  expect(afterDownloadDismiss[0].title).toBe("Update ready");
+  expect(afterDownloadDismiss[0].id).toBe(restartId);
+});
+
+test("capRetained never evicts the update row, even once only attention rows are left", () => {
+  notify({ title: "Update available", tone: "info", tier: "attention", familyKey: "app-update" });
+  // Fill the rest, and then some, with OTHER attention rows (ordinary
+  // failures) so eventually only attention rows remain to evict from.
+  for (let i = 0; i < MAX_RETAINED + 2; i++) {
+    notify({ title: `Failure ${i}`, tone: "error" });
+  }
+  const retained = getRetainedNotifications();
+  expect(retained.length).toBe(MAX_RETAINED);
+  expect(retained.some(isUpdateNotification)).toBe(true);
+  expect(retained.find(isUpdateNotification)?.title).toBe("Update available");
+  // The oldest ordinary failures were evicted instead — "Failure 0" is the
+  // first one that should be gone.
+  expect(retained.map((n) => n.title)).not.toContain("Failure 0");
 });

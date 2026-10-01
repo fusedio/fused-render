@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  compactAge,
   formatMtime,
   formatMtimeFull,
   formatParams,
@@ -160,5 +161,29 @@ describe("formatParams", () => {
     expect(formatParams(null)).toBe("");
     expect(formatParams(undefined)).toBe("");
     expect(formatParams(0)).toBe("");
+  });
+});
+
+describe("compactAge (status-popovers R5)", () => {
+  const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+
+  it("reads under a minute as 'now', with no 'ago' suffix anywhere", () => {
+    expect(compactAge(NOW, NOW)).toBe("now");
+    expect(compactAge(NOW - 30_000, NOW)).toBe("now");
+  });
+
+  it("floors to whole minutes, hours and days, one unit only", () => {
+    expect(compactAge(NOW - 4 * MIN, NOW)).toBe("4m");
+    expect(compactAge(NOW - 59 * MIN, NOW)).toBe("59m");
+    expect(compactAge(NOW - 2 * HOUR, NOW)).toBe("2h");
+    expect(compactAge(NOW - 23 * HOUR, NOW)).toBe("23h");
+    expect(compactAge(NOW - 3 * DAY, NOW)).toBe("3d");
+  });
+
+  it("never returns a negative age for a clock-skewed future timestamp", () => {
+    expect(compactAge(NOW + 5000, NOW)).toBe("now");
   });
 });
