@@ -39,18 +39,41 @@ One plain fn `main(**params)`. Rules:
 - **Fresh subprocess per call.** No globals survive. Import cost paid every call (pandas ≈ 1 s). Killed at **60 s** (`DEFAULT_TIMEOUT`, `fused_render/executor.py`), no override. Longer work → `fused-render-jobs`.
 - `print()` → browser console as `[python]`.
 
-### Bot-callable files (SPEC §49)
+### App SKILL.md — bot-callable files (SPEC §49)
 
-A bot (OpenBot's `py` action) can run any `.py` beside the page **without the page**, through the same `/api/run` the page uses. It reads the file from its AST only — nothing imported — and sees `main`'s signature and docstring. So every `.py` is a tool in its own right:
+A bot (OpenBot's `py` action) can run a `.py` beside the page **without the page**, through the same `/api/run` the page uses. It learns what each file does from the app's **`SKILL.md`** at the folder root, beside `index.html` — nothing parses the code. No SKILL.md, or no section for a file → a bot cannot call it. Every app with a `.py` that has a `main` ships one.
 
-- **One top-level sync `main(**params)`** per file. `async def main` is listed as not callable. Other public functions are listed, not callable (curate them in `mcp.toml` for MCP hosts).
-- **First docstring line = the description a bot reads.** One plain line: what it reads, what it changes ("Totals per category. Reads csv; writes nothing." / "Appends an entry to .fused/data/ledger.json"). Module docstring is the fallback.
-- **Annotate and default every param** (above) — the bot coerces by annotation and shows the signature as-is.
-- **Name side effects in that line.** A bot calling an app it did not build pauses for the user, and the doc line is what the user reads.
-- **Secrets never in params.** Read them from `.fused/data` or the keychain inside `main`.
-- A `helpers.py` without `main` is fine; it is listed with a reason. `_private()` helpers are not listed.
+```markdown
+---
+name: expense-tracker
+description: Local expense ledger. Add an entry, total spend by category or month.
+approve: [add_entry.py]   # optional: own-build bots still ask before these
+---
+# Expense tracker
 
-Listing: `GET /api/apps/python?dir=<folder>` (`X-Fused: 1`) → `{files:[{file, callable, signature, params, doc, reason?}], tools, background}`; run: the page's own `POST /api/run {py, html, params}` → `{ok, result, error, stdout, duration_ms}`.
+Data lives in .fused/data/ledger.json; the page and these files share it.
+
+## summary.py
+Totals per category for one month. Reads the ledger; writes nothing.
+- Args: `month` (str, "YYYY-MM", default: current month)
+- Returns: `{"month": str, "total": float, "by_category": {name: float}}`
+- Example: `{"action":"py","app":"expense-tracker","file":"summary.py","args":{"month":"2026-09"}}`
+
+## add_entry.py
+Appends one expense to the ledger. Writes .fused/data/ledger.json.
+- Args: `amount` (float, required), `category` (str, required), `note` (str, default "")
+- Returns: `{"ok": true, "id": str}`
+- Example: `{"action":"py","app":"expense-tracker","file":"add_entry.py","args":{"amount":12.5,"category":"food"}}`
+```
+
+- **Frontmatter:** `name` (folder slug), `description` (one line a bot reads in its app list: what the app does for it). `approve:` lists files that change or delete something the user cares about; it only adds a pause, never removes one.
+- **One `## <file>.py` heading per callable file** — the exact filename; that heading is the only thing a bot parses. Helpers without `main` get no heading.
+- **First line under the heading** = what it does + what it changes ("Reads the ledger; writes nothing." / "Writes .fused/data/ledger.json"). A bot calling an app it did not build shows the user this line before running.
+- **Args with type, default, required; return shape; one example call** with real values. Keep them exactly in step with `main`'s signature — a wrong arg comes back to the bot as `TypeError` and costs it a step.
+- **Edit the section in the same change as the `.py`.** Add, rename or delete a file → add, rename or delete its section.
+- The file side stays: **one top-level sync annotated `main(**params)`** (the runner binds only `main`; annotations coerce), defaults on every param, JSON-native return, ≤ 60 s, **secrets never in params** (read them from `.fused/data` or the keychain inside `main`). A resident daemon (`fused-render-background-apps`) is not callable this way — say so in prose.
+
+Run: the page's own `POST /api/run {py, html, params}` → `{ok, result, error, stdout, duration_ms}`.
 
 ### Available Python libraries
 

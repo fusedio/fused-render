@@ -151,10 +151,10 @@ A page can do a lot through `fused`:
   tasks from a page; a handle follows a new task from pending to its session,
   and `ui()` hands back the shell's Tasks page as an iframe URL.
   → [fused-render-tasks](skills/fused-render-tasks/SKILL.md)
-- App Python, called directly — a bot runs a folder's `.py` through the same
-  `/api/run` the page uses; `GET /api/apps/python` lists the files and their
-  `main()` signatures from the AST, nothing imported. What makes a file
-  bot-callable is the "Bot-callable files" section of the authoring skill.
+- App skills — an app ships a `SKILL.md` that tells a bot what each `.py`
+  does and how to call it; the bot loads it when a task needs the app and
+  runs the file through the same `/api/run` the page uses. The format is the
+  "App SKILL.md" section of the authoring skill.
   → [fused-render-authoring](skills/fused-render-authoring/SKILL.md)
 
 `fused.env` says whether a page is running here (`"local"`) or exported and
