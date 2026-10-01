@@ -1,0 +1,86 @@
+# MCP tools for this app, curated in fused-render's MCP panel.
+# `fused app serve <this folder>` publishes one tool per [[tool]] table.
+
+[[tool]]
+name = "map_create_map"
+description = "Create a new, empty map document at map_path (a .fmap file). Refuses to overwrite an existing one. Open it in fused-render with the Map Viewer."
+file = "map_tools.py"
+entrypoint = "create_map"
+signature = "create_map(map_path: str, title: str='', basemap: str='light')"
+
+[[tool]]
+name = "map_describe_map"
+description = "The map's basemap, camera and layers (top of the map first), with each layer's id, source, kind, style and options."
+file = "map_tools.py"
+entrypoint = "describe_map"
+signature = "describe_map(map_path: str)"
+
+[[tool]]
+name = "map_add_layer"
+description = "Add a data layer on top of the map. source is a local path or URL: GeoTIFF/COG, GeoJSON, GeoParquet, Shapefile, GeoPackage, FlatGeobuf, CSV, KML, NetCDF, HDF5, Zarr, PMTiles, or a .py script returning geodata. kind is auto|raster|vector|zarr|pmtiles. See map_style_reference for style and options keys. Creates the map file if it does not exist. Returns the new layer's id, which the other layer tools take."
+file = "map_tools.py"
+entrypoint = "add_layer"
+signature = "add_layer(map_path: str, source: str, name: str='', kind: str='auto', style: dict | None=None, options: dict | None=None, visible: bool=True, opacity: float=1.0)"
+
+[[tool]]
+name = "map_update_layer"
+description = "Change a layer: rename, show/hide, opacity 0-1, or merge style/options keys (a key set to null returns to its default). See map_style_reference."
+file = "map_tools.py"
+entrypoint = "update_layer"
+signature = "update_layer(map_path: str, layer_id: str, name: str | None=None, visible: bool | None=None, opacity: float | None=None, style: dict | None=None, options: dict | None=None)"
+
+[[tool]]
+name = "map_remove_layer"
+description = "Remove a layer from the map (the data file is untouched)."
+file = "map_tools.py"
+entrypoint = "remove_layer"
+signature = "remove_layer(map_path: str, layer_id: str)"
+
+[[tool]]
+name = "map_move_layer"
+description = "Reorder a layer: to is top|bottom|up|down, or give index (0 = bottom)."
+file = "map_tools.py"
+entrypoint = "move_layer"
+signature = "move_layer(map_path: str, layer_id: str, to: str='top', index: int | None=None)"
+
+[[tool]]
+name = "map_set_view"
+description = "Move the camera: a center (lon, lat) and zoom 0-24, or bounds [west, south, east, north] to fit; bearing and pitch optional."
+file = "map_tools.py"
+entrypoint = "set_view"
+signature = "set_view(map_path: str, center_lon: float | None=None, center_lat: float | None=None, zoom: float | None=None, bounds: list[float] | None=None, bearing: float | None=None, pitch: float | None=None)"
+
+[[tool]]
+name = "map_set_basemap"
+description = "Switch the basemap: light, dark, sat (satellite) or none."
+file = "map_tools.py"
+entrypoint = "set_basemap"
+signature = "set_basemap(map_path: str, basemap: str)"
+
+[[tool]]
+name = "map_apply_commands"
+description = "Apply several map commands at once, all or nothing. Each is an object with \"op\" (add_layer, remove_layer, update_layer, move_layer, set_view, set_basemap, set_title, clear_layers) and that op's fields, e.g. {\"op\": \"update_layer\", \"id\": \"roads\", \"style\": {\"line_color\": \"#ff0000\"}}."
+file = "map_tools.py"
+entrypoint = "apply_commands"
+signature = "apply_commands(map_path: str, commands: list[dict])"
+
+[[tool]]
+name = "map_describe_source"
+description = "What a data file holds before mapping it: raster bands/dtype/CRS/bounds, vector feature count/fields/geometry type, or a NetCDF/Zarr's gridded variables and dimensions. Use it to choose styles (bands, color_by)."
+file = "map_tools.py"
+entrypoint = "describe_source"
+signature = "describe_source(source: str)"
+
+[[tool]]
+name = "map_download_source"
+description = "Copy a remote layer source (http(s) or s3 URL) into the local folder dest_dir, e.g. to keep a COG, GeoParquet or PMTiles file, or a whole Zarr store. Never overwrites: an existing name gets a -1, -2... suffix. Returns the local path, which can then be added as a layer."
+file = "map_tools.py"
+entrypoint = "download_source"
+signature = "download_source(source: str, dest_dir: str)"
+
+[[tool]]
+name = "map_style_reference"
+description = "Every style and options key a layer accepts, by layer kind, with its type. Colors are \"#rrggbb\"; unit means 0-1; range is [min, max]."
+file = "map_tools.py"
+entrypoint = "style_reference"
+signature = "style_reference()"

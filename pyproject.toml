@@ -223,8 +223,8 @@ bundled = [
     # shipped once and downloaded again, and the shipped copy was never imported.
     #
     # REMOVED (D276): matplotlib (25 MB with contourpy/cycler/kiwisolver). Two
-    # consumers, neither of which needed it HERE: `map/geo_classify.py` (now
-    # declared in fused_render/templates/map/pyproject.toml) and
+    # consumers, neither of which needed it HERE: `map/geo_classify.py` (gone
+    # since the map template draws in the browser) and
     # `notebook/kernel_body.py`, which only harvests figures the user's own cell
     # created and does nothing at all when matplotlib is absent.
 
