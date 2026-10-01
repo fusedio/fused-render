@@ -990,12 +990,24 @@ class WindowManager:
     def edit(self, win: _Window) -> _Window | None:
         """The Edit button: ``win`` itself switches to the explorer view of
         what it runs (owner's call — no second window). The URL observer
-        then re-keys it as a ``view`` window, which disables Edit; its saved
-        frame stays the one it was opened under."""
+        then re-keys it as a ``view`` window, which disables Edit.
+
+        The window also changes HANDS for its frame: the app's size and place
+        are saved where they are, and the window takes the explorer's own
+        saved frame (where the user last left the explorer on this file) —
+        kept as it is if there is none yet — and autosaves under that name
+        from here on, so resizing the explorer never moves the app."""
         path = win.edit_path()
         if path is None:
             return None
-        win.load(f"http://127.0.0.1:{self.port}" + path)
+        url = f"http://127.0.0.1:{self.port}" + path
+        name = window_policy.frame_autosave_name(window_policy.window_key_of(url), "view")
+        if win.ns is not None and name != win.frame_name and self.frame_owner(name) is None:
+            win.save_frame()
+            win.ns.setFrameAutosaveName_("")
+            win.ns.setFrameUsingName_(name)
+            win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
+        win.load(url)
         return win
 
     def focus_or_open(self, fs_path: str) -> _Window:
