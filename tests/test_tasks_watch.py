@@ -841,3 +841,48 @@ def test_a_lean_requests_the_watcher_on_its_first_tasks_request(
         assert resp.status_code == 200
         assert calls == [True]
         assert tasks_watch._started is True
+
+
+def test_concurrent_first_calls_start_the_loop_exactly_once(monkeypatch):
+    """Two threads calling `start()` for the first time at once (the race this
+    guards against: two near-simultaneous requests under `lean`, which calls
+    `start()` on every request) must not both pass the `_started` check and
+    each spawn a watcher thread. A sequential call proves idempotence but
+    never exercises the window between the check and the set — this pins
+    threads at a `Barrier` so they all call `start()` at the same instant.
+
+    `_loop` is replaced with a no-op (count the calls, return immediately)
+    so the spawned thread is both harmless and joinable, rather than the
+    real forever-loop a leaked thread would otherwise run past this test."""
+    monkeypatch.setattr(tasks_watch, "_started", False)
+    monkeypatch.setattr(tasks_watch, "tick", lambda: None)
+    loop_calls = []
+
+    def fake_loop():
+        loop_calls.append(1)
+
+    monkeypatch.setattr(tasks_watch, "_loop", fake_loop)
+
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def call_start():
+        barrier.wait(timeout=5)
+        _REAL_TASKS_WATCH_START()
+
+    threads = [threading.Thread(target=call_start) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+        assert not t.is_alive(), "a start() caller never returned"
+
+    # The spawned watcher thread(s) run `fake_loop` and return immediately;
+    # give them a beat to finish before counting.
+    deadline = time.monotonic() + 2
+    while len(loop_calls) < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert loop_calls == [1], (
+        f"expected exactly one watcher thread to start, got {len(loop_calls)}")
+    assert tasks_watch._started is True
