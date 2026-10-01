@@ -1013,7 +1013,7 @@ export function RepoUpdatesCardView({
       <MessageRowView
         key={key}
         notification={m}
-        className="dl-row-attention-update"
+        className="dl-row-attention dl-row-attention-update"
         age={age(m.updatedAt)}
         unseen={unseen(key)}
       />,

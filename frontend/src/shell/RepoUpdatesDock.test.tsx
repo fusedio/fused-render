@@ -97,9 +97,12 @@ import type { AttentionRow } from "@shell/tasks-lib";
 // drive the real store the way `MessageRowView`'s dismiss button does (it
 // calls `dismissNotification` directly, not through a prop — see
 // RepoUpdatesDock.tsx's own header comment on that row kind).
-const { notify, getRetainedNotifications, _resetNotificationsForTest } = await import(
-  "@platform/lib/notifications"
-);
+const {
+  notify,
+  getRetainedNotifications,
+  _resetNotificationsForTest,
+  UPDATE_DOWNLOAD_FAMILY_KEY,
+} = await import("@platform/lib/notifications");
 import type { StoredNotification } from "@platform/lib/notifications";
 const { _resetSeenStoreForTest } = await import("@shell/notifications-seen-store");
 
@@ -1580,6 +1583,34 @@ const message = (over: Partial<StoredNotification> = {}): StoredNotification => 
   leaving: false,
   dismissible: true,
   ...over,
+});
+
+// R3: every "Needs you" row gets a left accent bar — `.dl-row-attention`
+// carries the actual 3px `border-left` (`notifications.css`); the update
+// row layers `.dl-row-attention-update` ON TOP of it to swap the color to
+// the non-error accent token, rather than instead of it. The update row's
+// className must therefore include BOTH classes, or it draws no bar at all
+// (`.dl-row-attention-update` alone sets only `border-left-color`, with no
+// `border-left-style`/`-width` of its own to make that color show).
+test("the pinned update row draws the full needs-you accent bar, in the accent color (R3)", () => {
+  _resetNotificationsForTest();
+  try {
+    notify({ title: "Update available", tier: "attention", familyKey: UPDATE_DOWNLOAD_FAMILY_KEY });
+    const stored = getRetainedNotifications();
+    expect(stored.map((n) => n.tier)).toEqual(["attention"]);
+
+    const tree = renderView({ rows: [], messages: stored });
+    const rows = findAll(tree, "dl-row");
+    expect(rows).toHaveLength(1);
+    const classes = (rows[0].props.className as string).split(" ");
+    // `.dl-row-attention` draws the actual 3px bar; `.dl-row-attention-update`
+    // alone only overrides its color, so the row needs BOTH classes or the
+    // bar never shows at all.
+    expect(classes).toContain("dl-row-attention");
+    expect(classes).toContain("dl-row-attention-update");
+  } finally {
+    _resetNotificationsForTest();
+  }
 });
 
 test("an attention-tier message fills the numeral and the needs-you count, like a failure does", () => {
