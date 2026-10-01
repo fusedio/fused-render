@@ -215,6 +215,11 @@ export default function NotificationCard({
         .join(" ")
     : undefined;
 
+  // A caption-less row (most repo rows) has nothing to share the eyebrow
+  // line with — the age moves inline onto the title line instead of sitting
+  // alone on an otherwise empty line above it. See the age placement below.
+  const hasCaption = caption != null && caption !== "";
+
   return (
     <div className={rowClassName} {...rowClickProps}>
       {/* DEFECT 3(a) (live testing, 2026-09-17): a small dimmed EYEBROW naming
@@ -228,13 +233,11 @@ export default function NotificationCard({
           all six go through this one component) gets the eyebrow placement
           for free, from this single change. `.dl-model` (the model name)
           stays exactly where it was, unmoved. */}
-      {((caption != null && caption !== "") || age != null) && (
+      {hasCaption && (
         <div
           className={"dl-origin dl-eyebrow" + (age != null ? " dl-meta-line" : "")}
         >
-          {caption != null && caption !== "" && (
-            <span className="dl-origin-text">{caption}</span>
-          )}
+          <span className="dl-origin-text">{caption}</span>
           {age != null && <span className="dl-row-age">{age}</span>}
         </div>
       )}
@@ -245,6 +248,12 @@ export default function NotificationCard({
         >
           {title}
         </span>
+        {/* No caption means no eyebrow line above this one at all — drawing
+            the age there alone would waste a whole line on nothing else.
+            Inline here instead, at the end of the title line and before the
+            action buttons, the same age text the eyebrow line uses when
+            there IS a caption to share the line with. */}
+        {!hasCaption && age != null && <span className="dl-row-age dl-row-age-inline">{age}</span>}
         {trailing}
         {liveAction && (
           <button

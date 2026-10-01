@@ -1084,6 +1084,17 @@
   color: var(--fg-faint);
 }
 
+/* A caption-less row (NotificationCard: no `.dl-eyebrow` line at all when
+   there's no `caption`) draws the age inline on `.dl-row-head` instead of
+   alone on an otherwise empty line above it. Same muted color and
+   right-pinning `.dl-row-age` already carries; `font-size` is set explicitly
+   because `.dl-row-head` is 12px where the eyebrow line's own 11px was
+   inherited from `.dl-origin`, and this keeps the figure reading identically
+   small in either position. */
+.dl-row-age-inline {
+  font-size: 11px;
+}
+
 /* THE UNSEEN DOT (status-popovers R4) — a small filled circle ahead of a row's
    title, drawn only for a row the Notifications panel has not yet been open
    while it was present (`notifications-seen-store.ts`'s `isSeen`). Round,
