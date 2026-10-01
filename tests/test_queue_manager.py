@@ -2466,7 +2466,9 @@ def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
         world = idle_world()
         index = {"folders": {F1: {
             "owner": {"task": "slow", "run_id": "", "session_id": "",
-                      "entry_id": "", "since": 0.0, "starting": True,
+                      # Recent enough to stay well under `SPAWN_MAX` — this
+                      # test is about the grace, not the ceiling.
+                      "entry_id": "", "since": world.now, "starting": True,
                       "turns": 1, "claims": [], "consumed": False,
                       "spawner_pid": other.pid},
             "line": [], "blocked": []}}, "answers": {}, "forced": []}
@@ -2510,6 +2512,69 @@ def test_reconcile_pops_a_starting_owner_whose_spawner_process_died():
     m = loaded(world)
     m.reconcile()
     assert owner_key(m) is None
+
+
+def test_reconcile_pops_a_starting_owner_past_spawn_max_despite_a_live_pid():
+    """Finding 9 (code review): a live `spawner_pid` does not prove it is
+    still OUR spawner — the OS reuses pids, so a spawner that crashed can
+    hand its pid to a later, unrelated process, and trusting liveness alone
+    would read this owner as in-flight forever with nothing left to ever
+    clear `starting`. Past `SPAWN_MAX`, `_spawn_in_flight` stops trusting the
+    pid probe (and `self._spawning`) regardless of what they say, so
+    `reconcile` is willing to pop and retry even with the pid still alive."""
+    import subprocess
+
+    other = subprocess.Popen(["sleep", "5"])
+    try:
+        assert qm._pid_alive(other.pid) is True
+        world = idle_world()
+        index = {"folders": {F1: {
+            "owner": {"task": "stuck", "run_id": "", "session_id": "",
+                      "entry_id": "", "since": world.now, "starting": True,
+                      "turns": 1, "claims": [], "consumed": False,
+                      "spawner_pid": other.pid},
+            "line": [], "blocked": []}}, "answers": {}, "forced": []}
+        os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+        with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+            json.dump(index, f)
+
+        world.now += qm.SPAWN_MAX + 5        # past the ceiling, pid still alive
+        m = loaded(world)
+        m.reconcile()
+        assert owner_key(m) is None          # popped: too old to trust, live pid or not
+    finally:
+        other.terminate()
+        other.wait(5)
+
+
+def test_reconcile_still_trusts_a_fresh_in_flight_spawn_under_spawn_max():
+    """The ordinary case the ceiling must not touch: a `starting` owner well
+    under `SPAWN_MAX`, past only `SPAWN_GRACE`, with a live spawner pid is
+    still reported in-flight — same behavior as before the ceiling existed
+    for an owner this young."""
+    import subprocess
+
+    other = subprocess.Popen(["sleep", "5"])
+    try:
+        world = idle_world()
+        index = {"folders": {F1: {
+            "owner": {"task": "slow", "run_id": "", "session_id": "",
+                      "entry_id": "", "since": world.now, "starting": True,
+                      "turns": 1, "claims": [], "consumed": False,
+                      "spawner_pid": other.pid},
+            "line": [], "blocked": []}}, "answers": {}, "forced": []}
+        os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+        with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+            json.dump(index, f)
+
+        world.now += qm.SPAWN_GRACE + 5      # old enough to need the pid check...
+        assert qm.SPAWN_GRACE + 5 < qm.SPAWN_MAX  # ...young enough the ceiling does not fire
+        m = loaded(world)
+        m.reconcile()
+        assert owner_key(m) == "slow"
+    finally:
+        other.terminate()
+        other.wait(5)
 
 
 def test_reconcile_trusts_the_status_sync_once_a_spawn_has_a_run():

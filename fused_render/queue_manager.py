@@ -66,6 +66,20 @@ PLACEHOLDER_TTL = 30.0
 # grace at all.
 SPAWN_GRACE = 10.0
 
+# THE CEILING ON "STILL SPAWNING" (B1b/review). `_spawn_in_flight` trusts a
+# `starting` owner's `spawner_pid` for as long as that pid stays alive — but a
+# pid is not a name, it is a number the OS reuses, and a spawner that crashed
+# can hand its pid to some unrelated process that happens to start later.
+# Without a ceiling that unrelated process's mere existence would keep this
+# owner "in flight" forever, and nothing is left to ever clear `starting` —
+# the folder wedges for good. `dispatch_entry`/`_send` (the call `_spawn`
+# wraps) can legitimately block up to 60s; this gives it generous headroom
+# past that and then stops trusting the pid check regardless of what it
+# answers. An owner still `starting` at this age is dead, hung, or being lied
+# to by pid reuse, and every one of those is `reconcile`'s problem to pop and
+# retry, not a reason to wedge the folder forever.
+SPAWN_MAX = 120.0
+
 # A PER-SEND CLAIM, MINTED ON EVERY SUCCESSFUL `claim_took` (2026-09-17, Bugbot
 # PR #1194). Admit and the run gate used to answer the same question twice —
 # "is this send allowed to take/hold the folder?" — with no way to tell a send
@@ -752,17 +766,30 @@ class QueueManager:
             return None
         return owner if owner["task"] == item["task"] else None
 
-    def _spawn_in_flight(self, owner: dict) -> bool:
+    def _spawn_in_flight(self, owner: dict, now: float) -> bool:
         """Is somebody still actively spawning this `starting` owner — in
         which case it is never popped for age alone, whatever `SPAWN_GRACE`
         says (B1b, and `_spawning`'s docstring in `__init__`).
 
-        THIS PROCESS answers from `self._spawning` for free. ANOTHER
-        PROCESS'S spawn (`owner["spawner_pid"]`, set by `_pump`) is asked
-        with a liveness probe instead — POSIX only: `tasks_store` already
-        treats cross-process locking as POSIX-only, and a `spawner_pid`
-        nothing can check on Windows is worth less than falling back to the
-        `SPAWN_GRACE` backstop every caller already has."""
+        THE AGE CEILING GOES FIRST (`SPAWN_MAX`, review). A `spawner_pid`
+        that is still alive does not prove IT IS STILL OUR SPAWNER — pid
+        reuse after a crash hands that pid to an unrelated process, and
+        trusting liveness alone would call this owner in-flight forever,
+        with nothing left to ever clear `starting`. Past `SPAWN_MAX` this
+        returns False no matter what `self._spawning` or the pid probe would
+        say — including for a spawn that is still genuinely running in THIS
+        process, because a `_spawn` wedged that long is no better than a
+        crashed one as far as the folder is concerned.
+
+        Under the ceiling: THIS PROCESS answers from `self._spawning` for
+        free. ANOTHER PROCESS'S spawn (`owner["spawner_pid"]`, set by
+        `_pump`) is asked with a liveness probe instead — POSIX only:
+        `tasks_store` already treats cross-process locking as POSIX-only,
+        and a `spawner_pid` nothing can check on Windows is worth less than
+        falling back to the `SPAWN_GRACE` backstop every caller already
+        has."""
+        if now - _number(owner.get("since")) >= SPAWN_MAX:
+            return False
         if owner["task"] in self._spawning:
             return True
         if os.name != "posix":
@@ -1933,7 +1960,7 @@ class QueueManager:
                             and self._stale_placeholder(owner, now)):
                         pass
                     elif owner.get("starting") and (
-                            self._spawn_in_flight(owner)
+                            self._spawn_in_flight(owner, now)
                             or (not _text(owner.get("run_id"))
                                 and now - _number(owner.get("since")) < SPAWN_GRACE)):
                         return True
@@ -2036,7 +2063,7 @@ class QueueManager:
                         keys.add(owner["task"])
                         rec["owner"] = None
                     continue
-                if owner.get("starting") and self._spawn_in_flight(owner):
+                if owner.get("starting") and self._spawn_in_flight(owner, now):
                     # THE SPAWN IS STILL IN FLIGHT, in this process or
                     # another one (B1b: `owner["spawner_pid"]`).
                     # `dispatch_entry`/`_send` can block up to 60s (the
@@ -2044,7 +2071,10 @@ class QueueManager:
                     # and there is nothing the status sync can be asked
                     # about a process with no run id yet, so an owner known
                     # to still be spawning is never popped for being dead,
-                    # whatever its age (Bugbot, PR #1194). `SPAWN_GRACE`
+                    # whatever its age (Bugbot, PR #1194), short of
+                    # `SPAWN_MAX` — `_spawn_in_flight` itself stops trusting
+                    # a live pid that old, since pid reuse after a crash
+                    # would otherwise wedge the folder forever. `SPAWN_GRACE`
                     # below is the backstop for a `starting` owner this
                     # process never spawned and whose spawner has died —
                     # e.g. a crash mid-spawn.
