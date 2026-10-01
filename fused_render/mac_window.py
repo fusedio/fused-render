@@ -955,7 +955,7 @@ class WindowManager:
                 keys.add(w.key)
                 # An app's run window is keyed on its entry FILE (an embed);
                 # the launcher's running dot keys on the app FOLDER.
-                if w.view == "embed":
+                if w.view == "embed" and w.key.lower().endswith(".html"):
                     keys.add(os.path.dirname(w.key))
         return keys
 
