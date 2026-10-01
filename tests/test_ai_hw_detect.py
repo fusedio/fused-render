@@ -533,6 +533,65 @@ def test_a_corrupt_cache_reads_as_none(tmp_path):
     assert hw_detect.cached_hardware() is None
 
 
+# -- the lazy, once-per-process probe: a machine that never ran `serve` -----
+#
+# Captured at COLLECTION time, before `tests/conftest.py`'s autouse
+# `_no_lazy_hardware_probe` fixture neutralizes `_probe_once_if_missing` for
+# the rest of the suite — the same trick
+# `test_ai_supervisor_hardware_refresh.py` uses for `start_hardware_refresh`,
+# for the identical reason: everywhere else must not spawn a real
+# `nvidia-smi`/`rocm-smi`/`powershell` subprocess just because a test happens
+# to call `cached_hardware()` on a cold cache.
+_real_probe_once_if_missing = hw_detect._probe_once_if_missing
+
+
+def test_a_missing_cache_is_probed_exactly_once(monkeypatch):
+    monkeypatch.setattr(hw_detect, "_probe_once_if_missing", _real_probe_once_if_missing)
+    monkeypatch.setattr(hw_detect, "_lazy_probed", False)
+    gpus = [hw_detect.GpuDevice(name="RTX 4090", vram_gb=24.0)]
+    calls = []
+
+    def fake_detect(ram_gb=None):
+        calls.append(ram_gb)
+        return hw_detect.HardwareInfo(gpus=gpus, total_vram_gb=24.0,
+                                      bandwidth_gb_s=1008.0, detected_at=time.time())
+
+    monkeypatch.setattr(hw_detect, "detect_hardware", fake_detect)
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 32.0)
+
+    first = hw_detect.cached_hardware()
+    assert first is not None
+    assert first.gpus[0].name == "RTX 4090"
+    assert calls == [32.0]
+
+    # The result is also written to disk, so a later FULL-mode process (or
+    # this same process's next call) never re-probes.
+    second = hw_detect.cached_hardware()
+    assert second is not None
+    assert second.gpus[0].name == "RTX 4090"
+    assert calls == [32.0], "a second read re-ran the probe instead of reading the cache it wrote"
+
+
+def test_a_missing_cache_is_probed_at_most_once_even_when_the_probe_finds_nothing(monkeypatch):
+    # A machine with no GPU at all must not be re-probed on every request —
+    # that would be a real subprocess spawn on every fit/catalog read.
+    monkeypatch.setattr(hw_detect, "_probe_once_if_missing", _real_probe_once_if_missing)
+    monkeypatch.setattr(hw_detect, "_lazy_probed", False)
+    calls = []
+
+    def fake_detect(ram_gb=None):
+        calls.append(ram_gb)
+        return hw_detect.HardwareInfo(gpus=[], total_vram_gb=0.0,
+                                      bandwidth_gb_s=None, detected_at=time.time())
+
+    monkeypatch.setattr(hw_detect, "detect_hardware", fake_detect)
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 32.0)
+
+    hw_detect.cached_hardware()
+    hw_detect.cached_hardware()
+    assert calls == [32.0]
+
+
 def test_run_survives_non_utf8_bytes_from_a_real_child(tmp_path):
     """`_run` pins `encoding="utf-8", errors="replace"` (SPEC AI-18, house
     convention per `app_git.py`/`tests/test_subprocess_encoding.py`) rather

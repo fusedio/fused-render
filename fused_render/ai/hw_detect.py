@@ -62,17 +62,21 @@ up to read it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from fused_render.shell import storage
+
+logger = logging.getLogger(__name__)
 
 #: A cold vendor-tool spawn is slow (see module docstring) — this caps how
 #: long ANY one of them is allowed to hang before it is treated as absent,
@@ -747,20 +751,77 @@ def _from_json(data: dict) -> HardwareInfo | None:
 
 def cached_hardware() -> HardwareInfo | None:
     """The last `refresh_hardware()`'s result, straight off disk — a plain
-    `storage.read_json` and nothing else, so this is cheap enough to call on
-    every verdict/estimate. None before anything has ever been detected, or
-    when the file is corrupt/unreadable — the same "no measurement yet"
-    contract `footprints.read` and `bench_store.read` already give their own
-    callers.
+    `storage.read_json` most of the time, so this is cheap enough to call on
+    every verdict/estimate. None when the file is corrupt/unreadable — the
+    same "no measurement yet" contract `footprints.read` and
+    `bench_store.read` already give their own callers.
+
+    A machine that has never written the cache at all (never run `serve`,
+    whose startup hook is the usual writer) falls through to
+    `_probe_once_if_missing` instead of answering None outright — see its
+    own docstring.
 
     **This is the ONLY function in this module `fit.py` and `benchmark.py`
     may call.** `detect_hardware`/`refresh_hardware` spawn subprocesses; see
     the module docstring.
     """
     data = storage.read_json(_path())
-    if not isinstance(data, dict):
+    if isinstance(data, dict):
+        return _from_json(data)
+    return _probe_once_if_missing()
+
+
+#: Guards `_probe_once_if_missing` so at most one probe ever runs per
+#: process, however many requests race in on a cold cache concurrently.
+_lazy_probe_lock = threading.Lock()
+#: Set the first time `_probe_once_if_missing` runs, successfully or not —
+#: a machine with genuinely no GPU must answer that from the cache it wrote
+#: on the first ask, not re-spawn `nvidia-smi`/`rocm-smi` on every later one.
+_lazy_probed = False
+
+
+def _probe_once_if_missing() -> HardwareInfo | None:
+    """The first reader to find NO cache file at all runs one probe and
+    writes it, rather than letting `fit.py`'s verdict silently assume no
+    GPU forever. This is what makes `cached_hardware()` correct in `lean`
+    mode, which skips `server/app.py`'s startup event — the only other
+    writer (`supervisor.start_hardware_refresh`'s background thread) never
+    runs there, so without this a lean process never has a cache to read.
+
+    Thread-safe and once-per-process: the lock is held across the re-check
+    AND the probe so two requests racing in on a cold cache spawn one
+    `detect_hardware()`, not two, and every call after the first — whether
+    it found a GPU or not — returns immediately without touching the
+    filesystem or a subprocess again. `refresh_hardware` itself has no such
+    guard (callers like the background thread are expected to call it on a
+    cadence); this wrapper is what makes the REQUEST path safe to call
+    unconditionally.
+
+    `ram_gb` comes from `fit.machine_ram_gb()` — imported here, not at
+    module level, because `fit.py` imports THIS module (a probe wired the
+    other way at import time would be circular); by the time any request
+    reaches this function both modules are already fully loaded.
+    """
+    global _lazy_probed
+    if _lazy_probed:
         return None
-    return _from_json(data)
+    with _lazy_probe_lock:
+        if _lazy_probed:
+            return None
+        _lazy_probed = True
+        # Re-read under the lock: a concurrent caller (or the background
+        # refresh thread, in full mode) may have written the cache between
+        # the outer `storage.read_json` miss and this lock being acquired.
+        data = storage.read_json(_path())
+        if isinstance(data, dict):
+            return _from_json(data)
+        from fused_render.ai import fit
+
+        try:
+            return refresh_hardware(ram_gb=fit.machine_ram_gb())
+        except Exception:  # noqa: BLE001 - a failed probe must not break the request
+            logger.exception("lazy hardware probe failed")
+            return None
 
 
 def refresh_hardware(ram_gb: float | None = None) -> HardwareInfo:
