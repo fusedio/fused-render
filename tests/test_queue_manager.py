@@ -2332,6 +2332,69 @@ def test_reconcile_keeps_a_pending_owner_the_registry_knows_by_its_session():
     assert owner_key(m) == "pending:e1"
 
 
+def test_start_one_discards_spawning_and_patches_owner_in_one_critical_section():
+    """Code review finding: `_start_one` used to discard a spawn's key from
+    `self._spawning` BEFORE entering `_locked_state()`, leaving a window
+    where `reconcile()` could see `_spawn_in_flight` answer False for an
+    owner this call had not patched yet — and pop a `starting` owner for age
+    under `SPAWN_GRACE` right as its spawn was about to land. The discard is
+    now the lock's first act, in the same critical section as the owner
+    patch, so nothing else can observe the key missing from `_spawning`
+    while the owner it names still reads `starting=True` unpatched —
+    `reconcile()` wants the very same `self._lock`, through its own
+    `_txn()`, and cannot make progress until this section is done."""
+    world = World()
+    m = world.manager()
+
+    entered = threading.Event()
+    proceed = threading.Event()
+    real_still_starting = m._still_starting
+
+    def watched_still_starting(rec, item):
+        # Called right after the discard, still inside `_locked_state()`.
+        entered.set()
+        assert proceed.wait(5)
+        return real_still_starting(rec, item)
+
+    m._still_starting = watched_still_starting
+
+    thread = threading.Thread(target=m.enqueue, args=(F1, "a"))
+    thread.start()
+    assert entered.wait(5)
+
+    # A real intermediate state — the discard (the section's first
+    # statement) has run but the owner patch has not — yet nothing outside
+    # this thread can observe it: these reads only see it because the test
+    # is peeking past the lock, not because anyone else could acquire it.
+    assert "a" not in m._spawning
+    assert m._state["folders"][F1]["owner"]["starting"] is True
+    assert m._state["folders"][F1]["owner"]["run_id"] == ""
+    world.running_keys.add("run")            # so the status sync keeps it once patched
+
+    reconciled = threading.Event()
+
+    def run_reconcile():
+        m.reconcile()
+        reconciled.set()
+
+    watcher = threading.Thread(target=run_reconcile)
+    watcher.start()
+    # `reconcile()` wants the same `self._lock` this thread is sitting
+    # inside (via its own `_txn()`) — it cannot run, let alone pop this
+    # owner, until the critical section above closes.
+    assert not reconciled.wait(0.3)
+
+    proceed.set()
+    thread.join(5)
+    watcher.join(5)
+    assert reconciled.is_set()
+
+    # The owner landed clean: `reconcile` never got a window to pop a
+    # `starting` owner whose spawn had, in fact, already succeeded.
+    assert owner_key(m) == "a"
+    assert m.owner(F1)["run_id"] == "run"
+
+
 def test_reconcile_never_pops_a_spawn_that_has_not_landed_yet():
     """An owner whose spawn has not come back with a run has nothing the status
     sync can be asked about — no run dir, no registry row, no mark — so every

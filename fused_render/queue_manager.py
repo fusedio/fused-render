@@ -316,14 +316,18 @@ class QueueManager:
         self._starting: list[tuple[str, str, dict]] = []
         # TASK KEYS WHOSE SPAWN IS STILL IN FLIGHT (2026-09-17, Bugbot PR
         # #1194) — added in `_pump` (phase 1, under the lock, the same moment
-        # the job is queued) and removed in `_start_one` (phase 2, the moment
-        # the injected `spawn` call has actually returned). `dispatch_entry`/
-        # `_send` can block up to 60s; `SPAWN_GRACE` is only 10s, so
-        # `reconcile` used to pop a `starting` owner mid-spawn and start a
-        # second task beside it. An owner in this set is never popped for age
-        # alone; not in it, `SPAWN_GRACE` still applies (e.g. a crash mid-spawn,
-        # where a fresh process's set starts empty). Not persisted: it
-        # describes THIS process's in-flight calls, nothing a restart inherits.
+        # the job is queued) and removed in `_start_one` (phase 2, as the
+        # FIRST act inside the `_locked_state()` block that patches the owner
+        # once the injected `spawn` call has actually returned) — the same
+        # critical section, so there is no window where this set has
+        # forgotten the key but the owner still reads `starting` unpatched.
+        # `dispatch_entry`/`_send` can block up to 60s; `SPAWN_GRACE` is only
+        # 10s, so `reconcile` used to pop a `starting` owner mid-spawn and
+        # start a second task beside it. An owner in this set is never popped
+        # for age alone; not in it, `SPAWN_GRACE` still applies (e.g. a crash
+        # mid-spawn, where a fresh process's set starts empty). Not
+        # persisted: it describes THIS process's in-flight calls, nothing a
+        # restart inherits.
         self._spawning: set[str] = set()
         self._state = self._load()
         self._migrate_legacy()
@@ -1012,12 +1016,20 @@ class QueueManager:
             failure = exc
         # PHASE 2: the injected `spawn` call has returned (or raised), so
         # whatever it is doing to the world it has finished doing. From here
-        # `reconcile` may treat this owner as an ordinary one again.
+        # `reconcile` may treat this owner as an ordinary one again — but
+        # ONLY once the owner below is actually patched to say so, which is
+        # why the discard is the lock's first act rather than something done
+        # before it. A discard left outside the lock opened a window where
+        # `_spawn_in_flight` had already forgotten `key` for THIS process
+        # while the owner still read `starting` with nothing to show for it
+        # — exactly the gap `reconcile` can land in and pop the owner for age
+        # under `SPAWN_GRACE`, right as this call is about to patch it in.
         # `_spawning` is process-local bookkeeping (see its docstring in
-        # `__init__`), not part of `self._state` — it is discarded outside
-        # `_locked_state()` so the reload inside never touches it.
-        self._spawning.discard(key)
+        # `__init__`), not part of `self._state`, so discarding from it
+        # anywhere inside `_locked_state()`'s `with` block is safe — the
+        # reload in there only ever touches `self._state`.
         with self._locked_state():
+            self._spawning.discard(key)
             rec = self._folder(folder)
             owner = self._still_starting(rec, item)
             if owner is None:
