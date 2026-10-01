@@ -1953,6 +1953,16 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # Hub sent back before truncation. `_model_row` threads both straight
     # through to `fit.verdict`/`speed.estimate_tok_s` rather than letting
     # either call resolve its own reading per row.
+    # A lean process skips `server/app.py`'s `@on_startup` hook, so nothing
+    # has ever called `supervisor.start_hardware_refresh()` there — ensure
+    # it here (code review finding 8). Deferred import: this module does
+    # not otherwise need `supervisor` at import time. Idempotent and cheap
+    # after the first call; THIS request still answers off whatever is
+    # already cached (`None` on a cold cache), the background probe this
+    # starts is for the next one.
+    from fused_render.ai import supervisor
+
+    supervisor.start_hardware_refresh()
     footprint_store = footprints.load_store()
     hardware = hw_detect.cached_hardware()
     # `_model_row` is also the supported-tag filter (see its docstring): a row
@@ -2244,6 +2254,11 @@ def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(def
     speed_estimate = None
     if file and capability and isinstance(payload.get("fileSize"), int):
         size_gb = payload["fileSize"] / fit.GB_BYTES
+        # Same lean-process gap, same fix, as `api_hub_search`'s own
+        # `hw_detect.cached_hardware()` read above (code review finding 8).
+        from fused_render.ai import supervisor
+
+        supervisor.start_hardware_refresh()
         footprint_store = footprints.load_store()
         hardware = hw_detect.cached_hardware()
         fit_verdict = fit.verdict(capability, model_id, size_gb, params=None,

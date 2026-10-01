@@ -6847,6 +6847,27 @@ def test_the_hardware_reading_is_loaded_ONCE_per_catalog_request(
     assert len(calls) == 1, f"expected exactly one hw_detect read, got {len(calls)}"
 
 
+def test_the_catalog_route_lazily_starts_the_background_hardware_refresh(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """A lean process skips `server/app.py`'s `@on_startup` hook, so nothing
+    ever calls `supervisor.start_hardware_refresh()` there (code review
+    finding 8) — `describe_catalog`'s own `hw_detect.cached_hardware()` read
+    must ensure it itself, so a lean process's cache eventually gets written
+    by someone, even though THIS request still answers off whatever is
+    already on disk (the autouse `_no_ai_hardware_refresh_thread` fixture in
+    `tests/conftest.py` would otherwise silently swallow this call as a
+    no-op, so the real function is restored here just to count calls into
+    it)."""
+    calls = []
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/one", "label": "One", "size_gb": 4.0, "note": ""},
+    ])
+    row = _fit_text_row(client)
+    assert len(row["models"]) >= 1
+    assert calls == [1]
+
+
 # -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------
 #
 # The Playground's image composer draws its attach affordance off this flag, so

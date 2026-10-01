@@ -1107,6 +1107,21 @@ def test_the_hardware_and_footprint_store_are_read_once_per_request_not_per_row(
     assert cached_hardware_calls == [1]
 
 
+def test_search_lazily_starts_the_background_hardware_refresh(client, hub_cache, monkeypatch):
+    """A lean process skips `server/app.py`'s `@on_startup` hook, so nothing
+    ever calls `supervisor.start_hardware_refresh()` there (code review
+    finding 8) — this route must ensure it itself, so a lean process's cache
+    eventually gets written by someone, even though THIS request still
+    answers off whatever is already on disk."""
+    from fused_render.ai import supervisor
+
+    calls = []
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/m")]))
+    _search(client)
+    assert calls == [1]
+
+
 # -- one entry per model family (task 3) -------------------------------------
 
 
@@ -2075,6 +2090,26 @@ def test_no_speed_estimate_for_a_non_text_capability(client, monkeypatch):
     }).json()
     assert body["fit"] is not None
     assert body["speedEstimate"] is None
+
+
+def test_size_lazily_starts_the_background_hardware_refresh(client, monkeypatch):
+    """Same lean-process gap, same fix, as the search route's own
+    `start_hardware_refresh()` call (code review finding 8) — this route
+    reads `hw_detect.cached_hardware()` too, on the file+capability branch
+    that computes fit/speed."""
+    from fused_render.ai import supervisor
+
+    calls = []
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
+    fake = _detail({"id": "unsloth/x-GGUF", "siblings": [
+        {"rfilename": "x-Q4_K_M.gguf", "size": 4_000_000_000},
+    ]})
+    monkeypatch.setattr(httpx, "get", fake)
+    _size(client, {
+        "id": "unsloth/x-GGUF", "file": "x-Q4_K_M.gguf",
+        "capability": registry.TEXT_GENERATION,
+    })
+    assert calls == [1]
 
 
 def test_no_fit_without_a_resolved_file(client, monkeypatch):

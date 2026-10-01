@@ -1029,6 +1029,15 @@ def _catalog_with_downloads() -> list[dict]:
     # start_hardware_refresh()` rewrites that file on a 6-hour tick (an
     # eGPU plugged in mid-session), and a permanently memoized reading
     # would never see that.
+    #
+    # A lean process skips `server/app.py`'s `@on_startup` hook, so nothing
+    # has ever called `supervisor.start_hardware_refresh()` there — this
+    # ensures it anyway (code review finding 8). Idempotent and cheap after
+    # the first call, like `tasks_watch.start()`'s own request-path
+    # "ensure a background thing is running" call. THIS request still gets
+    # whatever is already on disk (`None` on a cold cache); the background
+    # probe this kicks off is for the NEXT one.
+    supervisor.start_hardware_refresh()
     hardware = hw_detect.cached_hardware()
     for row in rows:
         curated = [
