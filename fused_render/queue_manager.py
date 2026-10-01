@@ -400,26 +400,58 @@ class QueueManager:
         get written back as the real state on the next transaction.
 
         Either way, `self._loaded_stat` ends up holding the stat tuple of
-        whatever was actually found (or None, if nothing was there) — what
-        `_refresh_if_stale()` compares a fresh `os.stat()` against, and also
-        what keeps this from re-parsing the same corrupt bytes on every call
-        once a corrupt file has been seen once."""
+        the HANDLE actually read (`os.fstat`, not a fresh `os.stat(path)`
+        taken after the fact — a concurrent `os.replace` can land a new
+        file at `path` in the gap between this call's read finishing and a
+        path-stat running, which would record the new file's stat beside
+        the old file's parsed contents and leave `_refresh_if_stale()`
+        comparing a current stat that happens to already match, so the new
+        content never gets picked up) — or None, if nothing was there.
+        That is what `_refresh_if_stale()` compares a fresh `os.stat()`
+        against, and also what keeps this from re-parsing the same corrupt
+        bytes on every call once a corrupt file has been seen once.
+
+        Valid JSON whose top level is not an object (`null`, a list, a bare
+        string/number/bool) is not an index either — it parses fine, so it
+        cannot take the `except` branch above, but building an index out of
+        it would be indistinguishable from "the file was genuinely empty"
+        and the next transaction would persist `{}` over whatever was
+        really on disk. Treated the same as corrupt/unparseable: the None
+        sentinel, not an empty default."""
         path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
+            f = open(path, "r", encoding="utf-8")
         except FileNotFoundError:
             self._loaded_stat = None
             raw = {}
-        except (OSError, ValueError):
+        except OSError:
             logger.warning("queue: %s is unreadable; keeping in-memory state",
                             INDEX_FILE, exc_info=True)
             self._loaded_stat = _stat_tuple(path)
             return None
         else:
-            if not isinstance(raw, dict):
-                raw = {}
-            self._loaded_stat = _stat_tuple(path)
+            with f:
+                # `os.fstat` on the handle we actually read, taken before
+                # anything else can touch `path` — not `os.stat(path)`
+                # afterward, which a concurrent `os.replace` could beat us
+                # to (see the docstring above).
+                fstat = os.fstat(f.fileno())
+                stat_tuple = (fstat.st_mtime_ns, fstat.st_size, fstat.st_ino)
+                try:
+                    raw = json.load(f)
+                except ValueError:
+                    logger.warning(
+                        "queue: %s is unreadable; keeping in-memory state",
+                        INDEX_FILE, exc_info=True)
+                    self._loaded_stat = stat_tuple
+                    return None
+                if not isinstance(raw, dict):
+                    logger.warning(
+                        "queue: %s does not hold a JSON object; keeping "
+                        "in-memory state", INDEX_FILE)
+                    self._loaded_stat = stat_tuple
+                    return None
+                self._loaded_stat = stat_tuple
         folders: dict[str, dict] = {}
         source = raw.get("folders")
         for key, value in (source if isinstance(source, dict) else {}).items():

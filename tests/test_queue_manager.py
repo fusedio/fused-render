@@ -3063,3 +3063,93 @@ def test_a_transaction_after_corruption_never_persists_an_empty_index(state):
     assert on_disk["folders"][F1]["owner"]["task"] == "a"
     assert on_disk["forced"] == ["z"]
     assert owner_key(m) == "a"
+
+
+@pytest.mark.parametrize("top_level", [None, [], "a string", 5, True])
+def test_valid_json_that_is_not_an_object_is_treated_as_unreadable(state, top_level):
+    """`null`, `[]`, a bare string/number/bool are all valid JSON — `json.load`
+    raises nothing — but none of them is an index. Treating one as "empty" is
+    the exact bug (finding 10): the next transaction would persist `{}` over
+    whatever was really on disk, same as a corrupt file wiping it. It has to
+    be the SAME None-sentinel path a parse failure already takes, so an
+    in-memory owner survives it."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump(top_level, f)
+
+    # A read-only call must not let the non-object JSON erase what is
+    # already held in memory — exactly like a corrupt/unparseable file.
+    assert owner_key(m) == "a"
+
+    # And a transaction still has to carry the in-memory state forward
+    # rather than persist the `{}` a "non-object means empty" bug would
+    # have produced.
+    m.mark_forced("z")
+    with open(index_path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk["folders"][F1]["owner"]["task"] == "a"
+    assert on_disk["forced"] == ["z"]
+    assert owner_key(m) == "a"
+
+
+def test_load_stats_the_handle_it_actually_read_not_the_path_afterward(state):
+    """`_load()` has to record the stat of the BYTES it parsed, not whatever
+    happens to be at `path` by the time it gets around to calling `os.stat`.
+
+    A concurrent writer (another process's `os.replace`) can land a brand
+    new file at `path` in the gap between this process finishing its read
+    and it stat-ing the path — finding 3. If `_load` stats the path
+    afterward, `self._loaded_stat` ends up describing the NEW file while
+    `self._state` was built from the OLD one, and `_refresh_if_stale()`
+    (which compares a fresh `os.stat()` against `self._loaded_stat`) sees
+    them match and never reloads — the new content is silently stuck
+    unread until something else happens to touch `_state`.
+
+    Fixed, `_load` stats the open file descriptor it actually read
+    (`os.fstat`) before anything else can replace `path` out from under
+    it, so the recorded stat always describes the bytes `self._state` was
+    built from, and a later `os.stat(path)` genuinely differs once another
+    writer has landed."""
+    world = idle_world()
+    m = world.manager()
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+
+    # First write: forces m to load real content off disk once.
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    # Simulate a concurrent `os.replace` landing a second folder's index
+    # the instant after `_load`'s `open(...).read()` returns, by swapping
+    # `json.load` for a wrapper that does the replace before returning.
+    real_json_load = qm.json.load
+    replaced = {"done": False}
+
+    def racing_load(f):
+        raw = real_json_load(f)
+        if not replaced["done"]:
+            replaced["done"] = True
+            tmp = index_path + ".racer"
+            with open(tmp, "w", encoding="utf-8") as g:
+                json.dump({"folders": {F2: {"owner": {"task": "b"},
+                                             "line": [], "blocked": []}},
+                           "answers": {}, "forced": []}, g)
+            os.replace(tmp, index_path)
+        return raw
+
+    import unittest.mock as mock
+    with mock.patch.object(qm.json, "load", side_effect=racing_load):
+        loaded = m._load()
+    assert loaded is not None
+
+    # The stat `_load` recorded must describe the file it actually read
+    # (the ORIGINAL content, owner "a"), not the racer's replacement that
+    # landed mid-call — so comparing it against the CURRENT on-disk stat
+    # (the racer's file) must come up different, which is what lets
+    # `_refresh_if_stale` notice and reload.
+    current = qm._stat_tuple(index_path)
+    assert m._loaded_stat != current
