@@ -12033,15 +12033,16 @@ the app has. Design page: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ.
   routes are unknown statically and carry no envelope; a `main=` worker has a
   different lifetime and failure mode). A later section when a real case
   needs it.
-- **AP-4 Author contract** — `skills/fused-render-app-python/SKILL.md`,
-  pointed at from `fused-render-authoring`: a top-level annotated
-  `main(**params)` (bots coerce by annotation, `_binding.coerce`), first
-  docstring line = the description a bot reads (what it reads, what it
-  changes), JSON-native return, no argv/stdin, ≤ 60 s (longer →
-  `fused.trackJob` or a daemon), secrets never in params. The same file's
-  second half is the consumer recipe (both routes, the header, the envelope,
-  one `curl` each) for Claude-harness bots; OpenBot bots never read it — their
-  surface is the `py` action in their own prompt.
+- **AP-4 Author contract** — the "Bot-callable files" section of
+  `skills/fused-render-authoring/SKILL.md` (the skill every builder task
+  already loads; **no separate skill** — the only readers are app authors,
+  and OpenBot bots never read skills, their surface is the `py` action in
+  their own prompt): a top-level sync annotated `main(**params)` (bots
+  coerce by annotation, `_binding.coerce`), first docstring line = the
+  description a bot reads (what it reads, what it changes), JSON-native
+  return, no argv/stdin, ≤ 60 s (longer → `fused.trackJob` or a daemon),
+  secrets never in params. The two routes and their envelopes are AP-1/AP-2
+  above; that is the whole consumer recipe.
 - **AP-5 Approval is the caller's.** The server runs what it is asked; the
   gate lives in the bot: OpenBot runs a `py` call at once when the folder is
   one of that bot's own builds and pauses for the user otherwise, since a raw
