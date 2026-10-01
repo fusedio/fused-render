@@ -234,6 +234,7 @@ function fullProps(
     messages: props.messages ?? [],
     collapsed: props.collapsed ?? false,
     onToggle: props.onToggle ?? (() => {}),
+    onClose: props.onClose,
     onDismiss: props.onDismiss ?? (() => {}),
     onDismissAll: props.onDismissAll ?? (() => {}),
     onDone: props.onDone ?? (() => {}),
@@ -977,6 +978,65 @@ test("the footer is absent at one repo row and present at two", () => {
   });
   expect(findAll(two, "dl-head")).toHaveLength(1);
   expect(findAll(two, "dl-clear")).toHaveLength(1);
+});
+
+// R8: a repo row's body is itself a click target, the same `rowClick` seam
+// the waiting-task and pairing rows above already use — `role="button"`,
+// not a real `<button>`, because the row also nests the Update action and
+// the ✕ (and, on a failure, "Fix with Claude" too), and a button cannot
+// nest inside a button.
+test("a repo row's body is a keyboard-reachable click target, named for where it goes", () => {
+  const tree = renderView({ rows: repoRows([status({ root: "/Users/me/Work/widget" })]) });
+  const row = findAll(tree, "dl-row")[0];
+  expect(row.type).toBe("div");
+  expect(row.props.role).toBe("button");
+  expect(row.props.tabIndex).toBe(0);
+  expect(row.props["aria-label"]).toBe("Open widget in Git");
+  expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+});
+
+test("clicking a repo row's body opens its folder in the explorer with the Git sidebar, and closes the panel", () => {
+  withNav((pushed) => {
+    const onClose = mock(() => {});
+    const tree = renderInstance({
+      rows: repoRows([status({ root: "/Users/me/Work/widget" })]),
+      onClose,
+    });
+    const row = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row")[0];
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    // `repoGitHref` builds the url `urlForFsPath` would for this root, plus
+    // the one query param this row ever asks for.
+    expect(pushed).toContain("/explorer/view/Users/me/Work/widget?_side=git");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+test("the repo row's Update button and dismiss ✕ act on their own buttons, not on the row's navigation", () => {
+  // `NotificationCard`'s own `liveAction`/`navAction`/`onDismiss` buttons each
+  // call `stopPropagation` before their own handler (platform/ui/
+  // NotificationCard.tsx) — asserted here at the integration level, not just
+  // in that component's own suite, since this is the row `rowClick` and two
+  // other buttons actually coexist on.
+  withNav((pushed) => {
+    const onDismiss = mock(() => {});
+    const onClose = mock(() => {});
+    const tree = renderInstance({
+      rows: repoRows([status({ root: "/Users/me/Work/widget" })]),
+      onDismiss,
+      onClose,
+    });
+    const x = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-x")[0];
+    act(() => {
+      (x.props as { onClick: (e: { stopPropagation: () => void }) => void }).onClick({
+        stopPropagation: () => {},
+      });
+    });
+    expect(onDismiss).toHaveBeenCalledWith("/Users/me/Work/widget", "main@3");
+    expect(pushed).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
 
 test("a failure comes before an ordinary repo row — Needs you precedes New (R3)", () => {

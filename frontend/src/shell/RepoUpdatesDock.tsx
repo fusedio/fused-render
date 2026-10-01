@@ -95,6 +95,7 @@ import {
   repoActionLabel,
   repoDismissSignature,
   repoFixPrompt,
+  repoGitHref,
   repoRows,
   repoStatusText,
   visibleRepoRows,
@@ -473,12 +474,19 @@ function RepoRowView({
   row,
   onDone,
   onDismiss,
+  onOpen,
   age,
   unseen,
 }: {
   row: RepoRow;
   onDone: (result: MutationResult) => void;
   onDismiss: () => void;
+  /** R8 — the panel closes once the row's body is clicked and the explorer
+   *  hop is under way, the same "navigating away, so get out of the way"
+   *  rule a click-to-navigate menu follows anywhere else in this shell.
+   *  Optional: a caller that mounts this row bare (a test) needs no panel to
+   *  close. */
+  onOpen?: () => void;
   /** Compact relative-time stamp (R5) — this row's own `firstSeenAt`, a repo
    *  update carries no server timestamp of its own. */
   age?: string;
@@ -538,6 +546,19 @@ function RepoRowView({
   // staging the ask for whatever Claude-capable surface mounts there
   // (pending-claude-ask.ts) rather than calling `window._fusedClaudeAsk`
   // directly — `extraAction` (`.q-all`, below the status line).
+  //
+  // THE ROW'S BODY IS ALSO A CLICK TARGET (R8) — `rowClick`, the same
+  // `NotificationCard` seam `AttentionRowView`/`MessageRowView` already use:
+  // a `role="button"` div, not a real `<button>`, because this row already
+  // nests two (`navAction`, `onDismiss`, and sometimes `extraAction`) and a
+  // button cannot nest inside a button. Every one of those three already
+  // calls `stopPropagation` before its own `onClick` (`NotificationCard`'s
+  // own doing), so pressing Update/Fix with Claude/✕ never also fires this
+  // row's navigation — no extra wiring needed here for that half of it.
+  // `navigateUrl`, not `navigate`: `repoGitHref` already built the full
+  // `/explorer/view/<root>?_side=git` url, so this is exactly the "hand it a
+  // whole url" case `AttentionRowView`'s own comment on this same choice
+  // describes, not the "hand it an fs path" one `navigate` is for.
   return (
     <NotificationCard
       title={
@@ -559,6 +580,14 @@ function RepoRowView({
       onDismiss={{ onClick: onDismiss, ariaLabel: `Dismiss ${row.name}` }}
       status={failure ? failure.message : repoStatusText(row)}
       extraAction={failure ? { label: "Fix with Claude", onClick: fixWithClaude } : undefined}
+      rowClick={{
+        onClick: () => {
+          navigateUrl(repoGitHref(row.repo.root), { isDir: true });
+          onOpen?.();
+        },
+        ariaLabel: `Open ${row.name} in Git`,
+        title: `Open ${row.name} in Git`,
+      }}
     />
   );
 }
@@ -748,6 +777,7 @@ export function RepoUpdatesCardView({
   dismissed,
   collapsed,
   onToggle,
+  onClose,
   pinned = false,
   hostProps,
   onDismiss,
@@ -794,6 +824,12 @@ export function RepoUpdatesCardView({
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   collapsed: boolean;
   onToggle: () => void;
+  /** R8 — unpins and closes the panel at once (`useStatusChip`'s own
+   *  `close`), called once a repo row's body is clicked and the explorer
+   *  hop is under way. Optional: a bare-mounted test needs no panel to
+   *  close, and a caller with no repo rows of its own (none today) would
+   *  have nothing to wire it to. */
+  onClose?: () => void;
   /** Held open by a click (D673) — styles the chip as engaged. */
   pinned?: boolean;
   /** Hover intent + outside-dismiss wiring for the `.dl-host` wrapper, from
@@ -1060,6 +1096,7 @@ export function RepoUpdatesCardView({
             row={row}
             onDone={onDone}
             onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
+            onOpen={onClose}
             age={age(ts)}
             unseen={unseen(key)}
           />
@@ -1430,6 +1467,7 @@ export function RepoUpdatesDockView({
       messages={messages}
       collapsed={!chip.open}
       onToggle={chip.toggle}
+      onClose={chip.close}
       pinned={chip.pinned}
       hostProps={chip.hostProps}
       onJobsChanged={onJobsChanged}

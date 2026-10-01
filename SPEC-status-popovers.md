@@ -63,6 +63,15 @@ These replace "Worth keeping". A section with no rows is not rendered.
 - Keep the label `"N needs you"` and the failure tone when there are attention rows. **But** when the only attention row(s) are update rows, use the non-failure `on` tone with the label `Update ready` or `Update available`, matching the row. An update is not a failure.
 - The chip numeral for the non-attention case becomes the **unseen** count, not the total. With zero unseen and zero attention, show the plain `Notifications` label with the `on` tone if any rows exist, else `idle`.
 
+### R8. Repo-update rows are clickable
+
+In the Notifications popover (`frontend/src/shell/RepoUpdatesDock.tsx`, `RepoUpdatesCardView`, repo rows built from `frontend/src/shell/repo-updates-lib.ts`), a row like "sandbox — Newer changes available [Update] [×]" opens the explorer at that repo's folder with the **Git sidebar** open when its body is clicked, and closes the popover. The Update and × buttons (and, on a failure, "Fix with Claude") keep their own behavior — a click on any of them never triggers the row's navigation.
+
+- The destination is the repo's own folder, `_side=git` appended (`apps/explorer/listing/pane-side.ts`'s `git` companion — a `?_side=<companion>` deep link wins over whatever the folder's own session state last left the pane on, per `paneReopenedByUrl`).
+- The clickable body is keyboard reachable (Enter/Space), has a hover state and `cursor: pointer`, and carries an aria-label/title "Open \<name\> in Git".
+- No nested buttons inside buttons: the row uses `NotificationCard`'s existing `rowClick` seam (a `role="button"` div, not a `<button>`) — the same mechanism the waiting-task and pairing rows already use — with the action buttons' own `stopPropagation` (already built into `NotificationCard`) keeping them independent.
+- Scope is repo rows only; other row kinds that already have a click target (waiting tasks, pairings, a message with a `page`) are unchanged.
+
 ## Out of scope
 
 - The floating toast/pop-up column (`NotificationHost`, `.notif-host`). Don't touch it.

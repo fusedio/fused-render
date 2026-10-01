@@ -218,6 +218,55 @@
   "Earlier". Zero unseen and zero attention draws the plain "Notifications"
   label.
 
+## R8 — repo rows are clickable
+
+- `repo-updates-lib.ts` exports `repoGitHref(root)`, a one-line wrapper over
+  `urlForFsPath(root, "?_side=git")`. The row's own `onClick` hands this
+  straight to `navigateUrl` (not `navigate`) — the same choice
+  `AttentionRowView`'s own comment on this already explains: `navigate`
+  takes an fs path and builds its own url (and only carries an existing
+  `_side` forward from a folder-to-folder hop, never lets a caller set one
+  explicitly); `repoGitHref` already built the whole url this row wants, so
+  `navigateUrl` is the "hand it a url" call, exactly like the waiting-task
+  and pairing rows already use for their own destinations.
+- The row's body is `NotificationCard`'s existing `rowClick` seam — a
+  `role="button"` div, not a `<button>`, since this row nests up to three
+  real buttons already (Update, ✕, and "Fix with Claude" on a failure) and a
+  button cannot nest inside a button. No new accessibility plumbing was
+  needed: `rowClick` already gives Enter/Space, `tabIndex`, `.dl-row-open`'s
+  hover/cursor styling, and each action button already calls
+  `stopPropagation` before its own `onClick` (`NotificationCard.tsx`) — this
+  row only had to supply the `onClick`/`ariaLabel`/`title`.
+- **Closing the popover is new, not reused from an existing row.** Neither
+  the waiting-task row nor the pairing row closes the panel on click today —
+  both only navigate. `useStatusChip`'s `close` (unpin + close at once) had
+  no caller anywhere in this card before this. R8 asks for it explicitly
+  ("close the popover"), so it is threaded through for repo rows only: a new
+  `onClose?: () => void` prop on `RepoUpdatesCardView`, wired from
+  `RepoUpdatesDockView` as `onClose={chip.close}`, passed to `RepoRowView` as
+  `onOpen` (named for what the row does when it fires, not for what the
+  panel does), called right after `navigateUrl`. The other row kinds are
+  deliberately left as they are — the spec scopes this to repo rows, and
+  "should every clickable row also close the panel" is a product question
+  nobody asked here.
+- **Verified by tracing, not a live click, that the deep link reopens the
+  pane even when the explorer is already mounted on that exact folder** —
+  the case most likely to silently no-op, since `StatView`/`Listing` is
+  keyed on `epoch + ":" + fsPath` (`shell/App.tsx`) and a plain query-string
+  change would not by itself remount anything. `useNavEpoch`
+  (`platform/lib/hooks.ts`) bumps the epoch unconditionally on every
+  `navigate()`/`navigateUrl()` call — "that is an explicit navigation, which
+  every route has always been remounted by, including the same-path ones"
+  (its own comment) — so a repo row click always forces a fresh mount, and
+  `Listing.tsx`'s `sideState` (a lazy `useState` initializer reading
+  `_side` off `location.search`) is re-evaluated from the new URL every
+  time, not just on a first visit. No code change was needed for this case;
+  it already falls out of the epoch-always-bumps rule the router documents
+  for exactly this reason. The dev server was left running (per instructions)
+  rather than clicked through live for this report.
+- No CSS changes: `.dl-row.dl-row-open`'s hover/cursor treatment already
+  covers any row using this seam, including this one.
+
 ## Test-infra notes (apply to any future work here)
 
 - Bun's test runtime has no `localStorage` global at all — a bare read
