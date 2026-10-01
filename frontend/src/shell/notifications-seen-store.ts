@@ -172,25 +172,44 @@ export function getFirstSeenAt(state: SeenState, key: string, fallback: number):
  *  per-render write path) — not here, since this is the one call site that
  *  does not carry the caller's own notion of "now", and reusing `Date.now()`
  *  here would prune entries stamped under a test's (or a future caller's)
- *  synthetic clock. */
+ *  synthetic clock.
+ *
+ *  `useSeenSnapshot` is a `useSyncExternalStore` read, which skips the
+ *  re-render it would otherwise trigger whenever two consecutive
+ *  `getSnapshot()` calls are `Object.is`-equal. A message-only change here
+ *  used to leave `cachedState` (and so `snapshot`) pointing at the exact
+ *  same object — `messageSeenSet` had changed, but nothing a subscriber's
+ *  `getSnapshot()` returns had, so a chip relying only on this store's own
+ *  notification (no other prop forcing it to re-render anyway) never
+ *  refreshed its unseen count. `persistedChanged` tracks whether `seen`
+ *  itself grew (worth a `commit`/write), separately from `anyChanged`
+ *  (worth a fresh snapshot object and an `emit`, messages included) — so a
+ *  message-only call still gets a new reference without rewriting
+ *  localStorage with an unchanged `seen` array, and a call that changes
+ *  nothing at all still returns the identical reference `getSnapshot` must
+ *  keep stable. */
 export function markSeen(keys: readonly string[]): void {
-  let changed = false;
+  let persistedChanged = false;
+  let anyChanged = false;
   const seenSet = new Set(cachedState.seen);
   for (const key of keys) {
     if (isMessageKey(key)) {
       if (!messageSeenSet.has(key)) {
         messageSeenSet.add(key);
-        changed = true;
+        anyChanged = true;
       }
     } else if (!seenSet.has(key)) {
       seenSet.add(key);
-      changed = true;
+      persistedChanged = true;
+      anyChanged = true;
     }
   }
-  if (seenSet.size !== cachedState.seen.length) {
+  if (persistedChanged) {
     commit({ ...cachedState, seen: [...seenSet] });
+  } else if (anyChanged) {
+    cachedState = { ...cachedState };
   }
-  if (changed) emit();
+  if (anyChanged) emit();
 }
 
 /** Test-only reset so suites don't leak state into one another the way
@@ -212,4 +231,15 @@ export function _resetSeenStoreForTest(): void {
   cachedState = loadRaw();
   listeners.clear();
   emit();
+}
+
+/** Test-only: the exact object `useSeenSnapshot`'s `useSyncExternalStore`
+ *  would read right now. Lets a test assert on snapshot IDENTITY directly —
+ *  `useSyncExternalStore` bails out of re-rendering a subscriber whenever two
+ *  consecutive `getSnapshot()` calls are `Object.is`-equal, so a `markSeen`
+ *  that changes seen state but returns the SAME reference silently drops
+ *  that update on the floor for any subscriber not re-rendering for some
+ *  other reason. Not used by any non-test caller. */
+export function _currentSnapshotForTest(): SeenState {
+  return snapshot;
 }

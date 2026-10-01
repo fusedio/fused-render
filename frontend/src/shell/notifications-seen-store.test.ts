@@ -3,6 +3,7 @@
 // what matters is the round trip through a JSON-encoded string key.
 import { beforeEach, expect, test } from "bun:test";
 import {
+  _currentSnapshotForTest,
   _resetSeenStoreForTest,
   getFirstSeenAt,
   isSeen,
@@ -136,6 +137,31 @@ test("a write that fails to persist never throws, and still updates the live sta
   } finally {
     (globalThis as { localStorage?: unknown }).localStorage = real;
   }
+});
+
+test("marking a message key seen yields a fresh snapshot object (chip count must refresh)", () => {
+  // `useSeenSnapshot` is a `useSyncExternalStore` read: React skips the
+  // re-render a listener would otherwise trigger whenever `getSnapshot()`
+  // returns the SAME object it returned last time. A message-only
+  // `markSeen` call changes real seen state (`isSeen` flips from false to
+  // true) but must still hand back a NEW object, or a subscriber that isn't
+  // re-rendering for any other reason (e.g. the chip after a panel close
+  // with no other prop change) never finds out.
+  const before = _currentSnapshotForTest();
+  markSeen(["message:1"]);
+  const after = _currentSnapshotForTest();
+  expect(isSeen(after, "message:1")).toBe(true);
+  expect(after).not.toBe(before);
+});
+
+test("marking an already-seen key produces no new snapshot object (getSnapshot must stay stable)", () => {
+  markSeen(["a", "message:1"]);
+  const stable = _currentSnapshotForTest();
+  // Re-marking the exact same keys changes nothing — `getSnapshot` must
+  // return the IDENTICAL reference, or every subscriber re-renders forever
+  // on a no-op call.
+  markSeen(["a", "message:1"]);
+  expect(_currentSnapshotForTest()).toBe(stable);
 });
 
 test("a reload after storage denies every write starts over from nothing", () => {

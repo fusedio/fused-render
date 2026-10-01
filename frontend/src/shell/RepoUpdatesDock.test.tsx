@@ -1665,6 +1665,35 @@ test("a tone: info, non-error message with a page is retained and drawn in 'New'
   }
 });
 
+// R7/R4: the chip's numeral is the UNSEEN count once nothing is in "Needs
+// you" — closing the panel must mark every then-present row seen, and that
+// has to show up on the chip itself with no further interaction. A message
+// key's seen state lives only in `notifications-seen-store.ts`'s in-memory
+// `messageSeenSet` (never the persisted, array-backed `seen` state a repo
+// row's key would land in), so this exercises the path a repo-row-only test
+// never would: the close effect's `markSeen` call changing ONLY that set.
+test("the chip's unseen numeral drops after closing a panel that held only an unseen message (R4/R7)", () => {
+  const trailMessage = message({ tier: "trail", title: "Moved 3 items" });
+  const full = fullProps({ rows: [], messages: [trailMessage], collapsed: false });
+  const renderer = create(<RepoUpdatesCardView {...full} />);
+  try {
+    let tree = renderer.toJSON() as ReactTestRendererJSON | null;
+    expect(numeral(tree)).toBe("1");
+
+    // Close the panel — nothing else about the props changes. The close
+    // effect's cleanup marks the message's key seen; the chip must pick
+    // that up on its own, from the seen-store's own subscription, not
+    // because some unrelated prop re-render happened to refresh it too.
+    act(() => {
+      renderer.update(<RepoUpdatesCardView {...full} collapsed={true} />);
+    });
+    tree = renderer.toJSON() as ReactTestRendererJSON | null;
+    expect(numeral(tree)).toBeNull();
+  } finally {
+    renderer.unmount();
+  }
+});
+
 test("a message row draws with its detail, like a terminal job's failure message", () => {
   const tree = renderView({ rows: [], messages: [message({ title: "Could not save", detail: "Disk full" })] });
   const row = findAll(tree, "dl-row")[0];
