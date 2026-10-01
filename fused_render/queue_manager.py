@@ -166,7 +166,17 @@ def _owner_rec(raw) -> dict | None:
             # trusting the in-memory copy forever, a field `_owner_rec`
             # dropped on load was a field every transaction after the first
             # silently lost.
-            "consumed": bool(raw.get("consumed"))}
+            "consumed": bool(raw.get("consumed")),
+            # THE PROCESS CURRENTLY SPAWNING THIS OWNER (B1b) — 0 unless
+            # `starting` is also true. `_spawning` (`__init__`) is this
+            # process's own in-flight set and answers "is MY spawn still
+            # running" for free; a `starting` owner another process pumped
+            # is not in it at all, so without this field `reconcile` there
+            # had nothing but `SPAWN_GRACE` (10s) to go on — far short of
+            # the 60s a `dispatch_entry`/`_send` call can legitimately take
+            # — and would pop an owner out from under a spawn that was
+            # still working. See `_spawn_in_flight`.
+            "spawner_pid": int(_number(raw.get("spawner_pid")))}
 
 
 def _answer_rec(raw) -> dict | None:
@@ -251,6 +261,21 @@ def _busy_class() -> tuple:
         except Exception:
             logger.debug("no schedule.SpawnBusy; a busy spawn will drop", exc_info=True)
     return _BUSY
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is a process with this pid still running — `os.kill(pid, 0)` sends no
+    signal, it only probes. `ProcessLookupError` means the pid is gone;
+    `PermissionError` (owned by someone else) and anything else still means a
+    process is there, so the safe guess is "alive" whenever the probe itself
+    can't be trusted."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 class QueueManager:
@@ -648,8 +673,9 @@ class QueueManager:
                         # transaction now reloads through there before every
                         # mutation, so a freshly-minted owner has to match
                         # that shape from the start, not just after a round
-                        # trip).
-                        "claims": [], "consumed": False}
+                        # trip). `spawner_pid` is set separately, by `_pump`,
+                        # the moment it marks this owner `starting`.
+                        "claims": [], "consumed": False, "spawner_pid": 0}
         return rec["owner"]
 
     @staticmethod
@@ -721,6 +747,24 @@ class QueueManager:
         if owner is None or not owner.get("starting"):
             return None
         return owner if owner["task"] == item["task"] else None
+
+    def _spawn_in_flight(self, owner: dict) -> bool:
+        """Is somebody still actively spawning this `starting` owner — in
+        which case it is never popped for age alone, whatever `SPAWN_GRACE`
+        says (B1b, and `_spawning`'s docstring in `__init__`).
+
+        THIS PROCESS answers from `self._spawning` for free. ANOTHER
+        PROCESS'S spawn (`owner["spawner_pid"]`, set by `_pump`) is asked
+        with a liveness probe instead — POSIX only: `tasks_store` already
+        treats cross-process locking as POSIX-only, and a `spawner_pid`
+        nothing can check on Windows is worth less than falling back to the
+        `SPAWN_GRACE` backstop every caller already has."""
+        if owner["task"] in self._spawning:
+            return True
+        if os.name != "posix":
+            return False
+        pid = int(_number(owner.get("spawner_pid")))
+        return bool(pid) and pid != os.getpid() and _pid_alive(pid)
 
     # -- identity ---------------------------------------------------------
     #
@@ -947,6 +991,11 @@ class QueueManager:
             # (phase 2, lock released) removes this the moment the injected
             # `spawn` call returns — see `_spawning`'s docstring in `__init__`.
             self._spawning.add(key)
+            # PERSISTED so another process's `reconcile` can tell this spawn
+            # is still in flight too (B1b) — `self._spawning` only answers
+            # for THIS process. Written now, inside the same transaction
+            # that just set `starting`, so the two reach disk together.
+            rec["owner"]["spawner_pid"] = os.getpid()
         self._starting.append((kind, folder, item))
 
     def _start_one(self, kind: str, folder: str, item: dict, keys: set) -> None:
@@ -1872,7 +1921,7 @@ class QueueManager:
                             and self._stale_placeholder(owner, now)):
                         pass
                     elif owner.get("starting") and (
-                            owner["task"] in self._spawning
+                            self._spawn_in_flight(owner)
                             or (not _text(owner.get("run_id"))
                                 and now - _number(owner.get("since")) < SPAWN_GRACE)):
                         return True
@@ -1975,16 +2024,18 @@ class QueueManager:
                         keys.add(owner["task"])
                         rec["owner"] = None
                     continue
-                if owner.get("starting") and owner["task"] in self._spawning:
-                    # THE SPAWN IS STILL IN FLIGHT. `dispatch_entry`/`_send`
-                    # can block up to 60s (the subprocess timeout) — far
-                    # longer than `SPAWN_GRACE` — and there is nothing the
-                    # status sync can be asked about a process with no run id
-                    # yet, so an owner known to still be spawning is never
-                    # popped for being dead, whatever its age (Bugbot, PR
-                    # #1194). `SPAWN_GRACE` below is the backstop for a
-                    # `starting` owner NOT in this set — e.g. after a crash
-                    # mid-spawn, where a fresh process's set starts empty.
+                if owner.get("starting") and self._spawn_in_flight(owner):
+                    # THE SPAWN IS STILL IN FLIGHT, in this process or
+                    # another one (B1b: `owner["spawner_pid"]`).
+                    # `dispatch_entry`/`_send` can block up to 60s (the
+                    # subprocess timeout) — far longer than `SPAWN_GRACE` —
+                    # and there is nothing the status sync can be asked
+                    # about a process with no run id yet, so an owner known
+                    # to still be spawning is never popped for being dead,
+                    # whatever its age (Bugbot, PR #1194). `SPAWN_GRACE`
+                    # below is the backstop for a `starting` owner this
+                    # process never spawned and whose spawner has died —
+                    # e.g. a crash mid-spawn.
                     continue
                 if (not _text(owner.get("run_id"))
                         and now - _number(owner.get("since")) < SPAWN_GRACE):

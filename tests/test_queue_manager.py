@@ -2384,6 +2384,71 @@ def test_reconcile_never_pops_an_in_flight_spawn_past_the_grace():
     assert owner_key(m) is None
 
 
+def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
+    """B1b: `self._spawning` only answers "is MY spawn still running" — a
+    SECOND manager over the same state dir (another `open` process, or
+    `serve`) has its own, empty `_spawning`, so without `owner["spawner_pid"]`
+    its `reconcile` had nothing but `SPAWN_GRACE` (10s) to go on, far short of
+    the 60s `dispatch_entry`/`_send` can legitimately take, and would start a
+    second spawn beside one that was still going.
+
+    `spawner_pid` names a REAL other process (a `sleep`, kept alive for the
+    assertion) — a fake/self pid would not exercise the cross-process liveness
+    probe `_spawn_in_flight` actually falls back to."""
+    import subprocess
+
+    other = subprocess.Popen(["sleep", "5"])
+    try:
+        assert qm._pid_alive(other.pid) is True
+        world = idle_world()
+        index = {"folders": {F1: {
+            "owner": {"task": "slow", "run_id": "", "session_id": "",
+                      "entry_id": "", "since": 0.0, "starting": True,
+                      "turns": 1, "claims": [], "consumed": False,
+                      "spawner_pid": other.pid},
+            "line": [], "blocked": []}}, "answers": {}, "forced": []}
+        os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+        with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+            json.dump(index, f)
+
+        world.now += qm.SPAWN_GRACE + 5      # far older than the grace
+        m = loaded(world)
+        m.reconcile()
+        assert owner_key(m) == "slow"        # not popped: the spawner is still alive
+    finally:
+        other.terminate()
+        other.wait(5)
+
+
+def test_reconcile_pops_a_starting_owner_whose_spawner_process_died():
+    """The other half of B1b: a `starting` owner whose `spawner_pid` names a
+    process that is actually gone (crashed mid-spawn) is NOT treated as
+    in-flight forever — it falls back to the ordinary `SPAWN_GRACE` backstop,
+    same as an owner with no `spawner_pid` at all."""
+    import subprocess
+
+    proc = subprocess.Popen(["true"])
+    proc.wait(5)
+    dead_pid = proc.pid                      # exited; this pid is not reused yet
+    assert qm._pid_alive(dead_pid) is False
+
+    world = idle_world()
+    index = {"folders": {F1: {
+        "owner": {"task": "stuck", "run_id": "", "session_id": "",
+                  "entry_id": "", "since": 0.0, "starting": True,
+                  "turns": 1, "claims": [], "consumed": False,
+                  "spawner_pid": dead_pid},
+        "line": [], "blocked": []}}, "answers": {}, "forced": []}
+    os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+    with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+        json.dump(index, f)
+
+    world.now += qm.SPAWN_GRACE + 5
+    m = loaded(world)
+    m.reconcile()
+    assert owner_key(m) is None
+
+
 def test_reconcile_trusts_the_status_sync_once_a_spawn_has_a_run():
     """With a run id there IS something to ask about — the run dir and the pid
     in it — so the grace would only delay the truth by ten seconds."""
