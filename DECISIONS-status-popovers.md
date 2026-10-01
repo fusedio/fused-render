@@ -30,4 +30,29 @@
   opaque heading band is now what visually separates one section from the
   next, so a redundant hairline directly under it was pure clutter.
 
-(remaining sections filled in as R3–R7 land)
+## R6 — retention must not bury attention
+
+- `capRetained` now evicts in two passes: first every non-attention row,
+  oldest first (append order, so index 0 is oldest); only once none are left
+  does it evict an attention row, and even then it skips any row whose
+  `family` is `UPDATE_NOTIFICATION_FAMILY`.
+- Added `UPDATE_NOTIFICATION_FAMILY_KEY = "app-update"` and
+  `UPDATE_NOTIFICATION_FAMILY = `familyKey:${UPDATE_NOTIFICATION_FAMILY_KEY}``
+  to `notifications.ts`, both exported. `UpdateNotifier.tsx` sets
+  `familyKey: UPDATE_NOTIFICATION_FAMILY_KEY` on every `notify()` call across
+  its whole flow (available, failed, ready, restarting, gave-up) — this is
+  the "stable marker on the stored notification" R3 and R6 both ask for,
+  rather than a title match (titles change — "Update available" ->
+  "Update ready" -> "Restarting fused-render" — across the same logical
+  update).
+- Rewrote `UpdateNotifier.test.tsx`'s "a genuine cap eviction still
+  resurrects the restart card" test: that scenario is no longer reachable —
+  the restart/update card can no longer be evicted by a busy notification
+  stream at all, so the test now asserts exactly that (the card keeps its
+  original id through a flood of other attention notices) instead of
+  asserting the old resurrect-with-a-new-id behavior.
+- Added two focused tests to `notifications.test.ts`: non-attention rows
+  evict before any attention row, and the update row is never evicted even
+  once only attention rows remain.
+
+(remaining sections filled in as R3–R5, R7 land)

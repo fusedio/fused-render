@@ -236,6 +236,21 @@ export const TOAST_EXIT_MS = 150;
 // keeping"/"Needs you" can hold from client-raised messages.
 export const MAX_RETAINED = 5;
 
+// THE STABLE MARKER for a fused-render update row (status-popovers R3/R6) —
+// `UpdateNotifier.tsx` sets `familyKey: UPDATE_NOTIFICATION_FAMILY_KEY` on
+// every `notify()` call it makes across the whole update flow (available,
+// failed, ready, restarting, gave-up), so every such row's `family` (via
+// `messageFamily` below) comes out to exactly `UPDATE_NOTIFICATION_FAMILY`,
+// title text notwithstanding. `capRetained` reads it to protect the update
+// row from eviction (R6), and `RepoUpdatesDock.tsx` reads it to pin the row
+// first in "Needs you" and style it with the accent, not the error,
+// treatment (R3) — a marker, not a title match, so it survives the row's
+// title changing between "Update available" and "Update ready". The raw key
+// is exported separately so `UpdateNotifier.tsx` never has to spell out (or
+// risk drifting from) the `familyKey:` prefix `messageFamily` adds.
+export const UPDATE_NOTIFICATION_FAMILY_KEY = "app-update";
+export const UPDATE_NOTIFICATION_FAMILY = `familyKey:${UPDATE_NOTIFICATION_FAMILY_KEY}`;
+
 // `IS_TOP_EMBED` proper (`router.ts:169`) is a `const` frozen once at that
 // module's own init from `location`/`window` — correct for production (a
 // document really cannot be re-parented mid-life), but untestable directly:
@@ -422,9 +437,28 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
   };
 }
 
+// EVICTION MUST NOT BURY ATTENTION (status-popovers R6). The old rule —
+// "drop the oldest, tier be damned" — let a stream of ordinary transient-
+// turned-trail messages push a genuine failure (or the update row) clean out
+// of the retained list before the user ever saw it. The new order: evict the
+// oldest NON-attention row first (list is append-order, so index 0 is
+// oldest); only once none are left does an attention row get evicted at all,
+// and even then the update row (`UPDATE_NOTIFICATION_FAMILY`) is skipped —
+// an update is a standing opportunity, not a transient alert, and is never
+// the thing a cap-driven eviction should be the one to clear.
 function capRetained(list: StoredNotification[]): StoredNotification[] {
-  if (list.length <= MAX_RETAINED) return list;
-  return list.slice(list.length - MAX_RETAINED);
+  let result = list;
+  while (result.length > MAX_RETAINED) {
+    const idx = result.findIndex((n) => n.tier !== "attention");
+    if (idx === -1) break;
+    result = [...result.slice(0, idx), ...result.slice(idx + 1)];
+  }
+  while (result.length > MAX_RETAINED) {
+    const idx = result.findIndex((n) => n.family !== UPDATE_NOTIFICATION_FAMILY);
+    if (idx === -1) break; // nothing left but update row(s) — never evicted
+    result = [...result.slice(0, idx), ...result.slice(idx + 1)];
+  }
+  return result;
 }
 
 // PANE → SHELL FORWARDING (§4 of the spec). A pane (IS_EMBED, not

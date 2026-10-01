@@ -18,7 +18,9 @@ installDomShim();
 
 import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 const {
+  MAX_RETAINED,
   TOAST_EXIT_MS,
+  UPDATE_NOTIFICATION_FAMILY,
   _resetNotificationsForTest,
   _setIsEmbedForTest,
   _setIsTopEmbedForTest,
@@ -1025,4 +1027,40 @@ test("forwardToShell refuses to forward to itself when window.top === window, ev
   } finally {
     (globalThis as unknown as Record<string, unknown>)._fusedIngestNotification = realIngest;
   }
+});
+
+// ---- R6 (status-popovers): eviction must not bury attention ---------------
+
+test("capRetained evicts non-attention rows before any attention row", () => {
+  // One attention row, raised first so it would be the OLDEST entry under
+  // the old "drop index 0" rule.
+  notify({ title: "Could not save", tone: "error" });
+  // Fill the rest of the cap with actionable-but-non-attention rows (an
+  // action makes them retained without promoting their tier).
+  for (let i = 0; i < MAX_RETAINED; i++) {
+    notify({ title: `Export ${i} ready`, action: { label: "Open", onClick: () => {} } });
+  }
+  const titles = getRetainedNotifications().map((n) => n.title);
+  expect(titles.length).toBe(MAX_RETAINED);
+  // The attention row survives; the OLDEST non-attention row ("Export 0
+  // ready") is the one that got evicted to make room.
+  expect(titles).toContain("Could not save");
+  expect(titles).not.toContain("Export 0 ready");
+  expect(titles).toContain(`Export ${MAX_RETAINED - 1} ready`);
+});
+
+test("capRetained never evicts the update row, even once only attention rows are left", () => {
+  notify({ title: "Update available", tone: "info", tier: "attention", familyKey: "app-update" });
+  // Fill the rest, and then some, with OTHER attention rows (ordinary
+  // failures) so eventually only attention rows remain to evict from.
+  for (let i = 0; i < MAX_RETAINED + 2; i++) {
+    notify({ title: `Failure ${i}`, tone: "error" });
+  }
+  const retained = getRetainedNotifications();
+  expect(retained.length).toBe(MAX_RETAINED);
+  expect(retained.some((n) => n.family === UPDATE_NOTIFICATION_FAMILY)).toBe(true);
+  expect(retained.find((n) => n.family === UPDATE_NOTIFICATION_FAMILY)?.title).toBe("Update available");
+  // The oldest ordinary failures were evicted instead — "Failure 0" is the
+  // first one that should be gone.
+  expect(retained.map((n) => n.title)).not.toContain("Failure 0");
 });
