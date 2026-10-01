@@ -227,21 +227,51 @@ test("a pick is WRITTEN, and the pill shows it before the write lands", async ()
   expect("effort" in posted(seen)[1]).toBe(false);
 });
 
-test("a chat with no session writes the GLOBAL pair, not a record", async () => {
-  // There is nothing to key a record on until the first send mints an id — but
-  // the pick is not nothing either, and it used to go into the address bar and
-  // stay there, where the New task card could not see it and a stale URL kept
-  // answering for it (Akshil, 2026-09-21). It goes to the one home this pair
-  // has instead: `~/.claude/settings.json`, through
-  // `PUT /api/claude-sessions/defaults`.
-  const seen = record();
-  const box = await mount(createMemoryParamsStore({}));
+test("a chat with no session keeps its pick to ITSELF — no record, no global write", async () => {
+  // There is nothing to key a record on until the first send mints an id, and
+  // the global pair is the config page's to edit, not this pill's (Akshil,
+  // 2026-10-01: "any change … should only affect that instance of the new
+  // chat"). The pick is held in the hook until the spawn records it.
+  const seen = record({}, { model: "fable", effort: "low" });
+  const params = createMemoryParamsStore({});
+  const box = await mount(params);
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["fable", "low"]);
   await act(async () => { box.pills!.setModel("haiku"); });
+  await act(async () => { box.pills!.setEffort("max"); });
   expect(posted(seen)).toEqual([]);
-  expect(wroteGlobal(seen)).toEqual([{ model: "haiku" }]);
-  // …and the pill — and the send it is about to make — carry the pick at once,
-  // without waiting for the round trip.
+  expect(wroteGlobal(seen)).toEqual([]);
+  // …and the pill — and the send it is about to make — carry the pick at once.
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "max"]);
+  // Not into the address bar either: that is the stale-URL bug of 2026-09-21.
+  expect(params.get("model")).toBeUndefined();
+
+  // THE PICK SURVIVES THE SESSION ARRIVING. The CLI reports the id seconds
+  // after the send; the record it wrote is still being read; the pill must not
+  // flash back to the global in between.
+  await act(async () => { params.set({ session_id: "sess-late" }); });
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "max"]);
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "max"]);
+
+  // A FRESH CHAT OPENS ON THE GLOBAL PAIR AGAIN: the pick was that chat's.
+  await act(async () => { params.set({ session_id: null }); });
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["fable", "low"]);
+});
+
+test("a new chat's pick does not follow a switch into ANOTHER conversation", async () => {
+  // Chat B has no record of its own (an older chat); the pick A made before it
+  // had an id must not answer for B (review, 2026-10-01).
+  record({ recorded: { model: "", effort: "" } }, { model: "fable", effort: "low" });
+  const params = createMemoryParamsStore({});
+  const box = await mount(params);
+  await act(async () => { box.pills!.setModel("haiku"); });
+  await act(async () => { params.set({ session_id: "sess-a" }); });
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
   expect(box.pills!.model).toBe("haiku");
+  await act(async () => { params.set({ session_id: "sess-b" }); });
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  expect(box.pills!.model).not.toBe("haiku");
 });
 
 test("a HOST's seed still outranks the global pair; a stale URL no longer does",
