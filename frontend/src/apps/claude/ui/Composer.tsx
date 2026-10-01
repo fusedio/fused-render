@@ -1993,6 +1993,7 @@ export function ComposerCard({
             data-testid="composer-meta"
           >
             <span>{MODEL_LABELS[controls.model] ?? controls.model}</span>
+            <span className="c-composer-meta-dot" aria-hidden="true" />
             <span>{controls.effort}</span>
           </div>
         ) : null}

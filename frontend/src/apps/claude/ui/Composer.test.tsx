@@ -2052,7 +2052,7 @@ test("a folded chat card says its model · effort top-right; an open one hides t
   expect(meta().props["aria-hidden"]).toBe(false);
   // The model's LABEL, not its id — the same word the pill shows.
   expect(meta().findAllByType("span").map((c) => c.children.join("")))
-    .toEqual(["Opus", "max"]);
+    .toEqual(["Opus", "", "max"]);
   act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
   expect(String(meta().props.className)).toContain("is-hidden");
   expect(meta().props["aria-hidden"]).toBe(true);

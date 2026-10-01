@@ -1574,11 +1574,20 @@ select.c-pill {
   font-size: 12px;
   line-height: 1.4;
   color: var(--c-dim);
-  gap: 6px;
+  gap: 5px;
+  padding: 0 2px 1px 0;
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
   transition: opacity 0.14s ease-out 0.1s;
+}
+/* A 2px dot between the two words (Akshil, 2026-10-01: "a very small dot"). */
+.c-composer-meta-dot {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
 }
 .c-composer-meta.is-hidden {
   opacity: 0;
