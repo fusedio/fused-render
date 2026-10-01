@@ -17,7 +17,7 @@ link, the launcher.
 
 APPS RUN IN WINDOWS OF THEIR OWN. Inside a native window the shell knows it
 is one (the ``FusedRender/`` user-agent marker, router.ts
-``IS_NATIVE_WINDOW``): an app click — a card, a sidebar row — asks the
+``IS_NATIVE_WINDOW``): an app click — a card, the app page's Open — asks the
 server (POST /api/windows/open) to focus-or-open that app's window, which
 runs its entry page as a chrome-free embed (`window_policy.app_window_path`)
 under its own saved size and place; the launcher's pick lands the same way.

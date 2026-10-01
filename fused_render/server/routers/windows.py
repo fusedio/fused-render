@@ -2,7 +2,7 @@
 
 The shell calls this instead of navigating when it runs inside one of the
 app's native windows (router.ts ``IS_NATIVE_WINDOW``) and the user clicks
-an app: a card, a sidebar row. The window manager focuses the app's window
+an app: a card, the app page's Open. The window manager focuses the app's window
 or opens one on its entry page as an embed (mac_window.py
 ``WindowManager.focus_or_open_app``), through
 `window_policy.native_hooks["open_app"]`, which hops to the main thread.

@@ -1,7 +1,7 @@
 // Apps in their own native windows (macOS, `native_windows_enabled`).
 //
 // Inside one of the app's native windows (router.ts IS_NATIVE_WINDOW) an app
-// click — a card, a sidebar row — does not navigate the window it happened
+// click — a card, the app page's Open — does not navigate the window it happened
 // in: the server's window manager focuses that app's own window, or opens
 // one running the app's entry page as an embed, at the size and place the
 // user last left it (POST /api/windows/open → mac_window.py

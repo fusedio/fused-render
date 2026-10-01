@@ -81,7 +81,8 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { IS_NATIVE_WINDOW, navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { openAppWindow } from "@platform/lib/native-window";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -708,12 +709,20 @@ export default function AppPage({
                     control that does that hop, so this page offers one route (the
                     explorer) and the explorer offers the next (the embed). The
                     folder link opposite is the same route one level up. */}
+                {/* Inside a macOS native window the app RUNS in a window of
+                    its own instead (native-window.ts) — the sidebar row keeps
+                    landing here, and this is the door out to the app; that
+                    window's title-bar Edit is the way into the explorer. */}
                 <Button
                   size="sm"
                   variant="default"
                   className="app-page-open"
-                  title="Open the app in the Explorer"
-                  onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
+                  title={IS_NATIVE_WINDOW ? "Open the app in its own window" : "Open the app in the Explorer"}
+                  onClick={() => {
+                    const inPlace = () => navigateUrl(urlForFsPath(entry), { isDir: false });
+                    if (IS_NATIVE_WINDOW) void openAppWindow(dir).then((ok) => ok || inPlace());
+                    else inPlace();
+                  }}
                 >
                   <span className={APP_PAGE_FIT_LABEL}>Open</span>
                   <FolderOpen data-icon="inline-end" />

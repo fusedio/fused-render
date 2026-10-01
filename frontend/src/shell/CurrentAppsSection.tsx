@@ -40,8 +40,7 @@ import {
   SECTION_BODY_CLASS,
   useSectionContentCap,
 } from "@platform/ui/sidebar/useSectionContentCap";
-import { IS_NATIVE_WINDOW, navigate, navigateUrl } from "@platform/lib/router";
-import { openAppWindow } from "@platform/lib/native-window";
+import { navigate, navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
@@ -247,13 +246,6 @@ function CurrentAppRow({
     if (opensElsewhere(e)) return;
     e.preventDefault();
     onSeen(app.path);
-    // Inside a macOS native window the app runs in a window of its own
-    // (native-window.ts) — even from its own row, which then brings that
-    // window forward. In place only if that window cannot be had.
-    if (IS_NATIVE_WINDOW) {
-      void openAppWindow(app.path).then((ok) => ok || active || navigateUrl(href));
-      return;
-    }
     // The row for the page already on screen, on the tab it already shows, is
     // a no-op; the tab's own params would be the only thing the click cleared.
     if (!active) navigateUrl(href);
