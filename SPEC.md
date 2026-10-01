@@ -12007,9 +12007,10 @@ https://claude.ai/artifact/PDhNwAeVBVfuAvNyrxicMz (SKILL.md discovery).
   duration_ms}` envelope are what the bot sees because they are what the page
   sees. The 60 s bound (`DEFAULT_TIMEOUT`) is the bot's bound; there is no
   bot-only budget, since a file that only works with one would then fail in
-  the page. A wrong argument comes back as the runner's own
-  `TypeError: main() got an unexpected keyword argument …` envelope; that is
-  the bot's cue to re-read the skill, there is no pre-flight arg check.
+  the page. There is no pre-flight arg check: `_binding.bind_params` drops a
+  key `main` does not take (silently, as it does for the page) and a missing
+  required one comes back as the runner's `ParamError` envelope — the bot's
+  cue to re-read the skill.
   **Rejected:** a synthesized manifest-less tool through the openfused
   `fused app serve` runner inside the bot's worker (a second semantics —
   requirements venv instead of the engine pref, 180 s, no call log — and a

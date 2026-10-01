@@ -69,7 +69,7 @@ Appends one expense to the ledger. Writes .fused/data/ledger.json.
 - **Frontmatter:** `name` (folder slug), `description` (one line a bot reads in its app list: what the app does for it). `approve:` lists files that change or delete something the user cares about; it only adds a pause, never removes one.
 - **One `## <file>.py` heading per callable file** — the exact filename; that heading is the only thing a bot parses. Helpers without `main` get no heading.
 - **First line under the heading** = what it does + what it changes ("Reads the ledger; writes nothing." / "Writes .fused/data/ledger.json"). A bot calling an app it did not build shows the user this line before running.
-- **Args with type, default, required; return shape; one example call** with real values. Keep them exactly in step with `main`'s signature — a wrong arg comes back to the bot as `TypeError` and costs it a step.
+- **Args with type, default, required; return shape; one example call** with real values. Keep them exactly in step with `main`'s signature — the runner silently drops an arg `main` does not take and fails a missing required one (`ParamError`), so a stale section means a bot call that quietly does the wrong thing.
 - **Edit the section in the same change as the `.py`.** Add, rename or delete a file → add, rename or delete its section.
 - The file side stays: **one top-level sync annotated `main(**params)`** (the runner binds only `main`; annotations coerce), defaults on every param, JSON-native return, ≤ 60 s, **secrets never in params** (read them from `.fused/data` or the keychain inside `main`). A resident daemon (`fused-render-background-apps`) is not callable this way — say so in prose.
 
