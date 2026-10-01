@@ -551,6 +551,33 @@ def test_the_worker_module_runs_a_scan_end_to_end(tmp_path):
     assert end["summary"]["rows"] == 1
 
 
+def test_the_worker_reclaims_old_runs_once_its_scan_ends(tmp_path, monkeypatch):
+    """The live watcher can start hundreds of scans in one session; pruning
+    only at server startup let thousands of run dirs pile up between boots."""
+    from fused_render.index import worker
+
+    cfg = _cfg(tmp_path)
+    for i in range(30):
+        _run_with_events(cfg, f"20260101-0000{i:02d}-x",
+                         [{"type": "run_end", "msg": "complete"}])
+    run_dir = _run_with_events(cfg, "20260102-000000-me", [])
+    with open(os.path.join(run_dir, "spec.json"), "w") as f:
+        json.dump({"root": "/r", "full": False, "started": 0,
+                   "config": cfg.to_dict()}, f)
+
+    def scan(rd):
+        with open(os.path.join(rd, "events.jsonl"), "a") as f:
+            f.write(json.dumps({"type": "run_end", "msg": "complete"}) + "\n")
+
+    monkeypatch.setattr(worker, "run_scan", scan)
+    monkeypatch.setattr(worker, "_renice_self", lambda: None)
+    monkeypatch.setattr(worker, "_set_background_io_policy", lambda: False)
+    assert worker.main([run_dir]) == 0
+    left = os.listdir(cfg.runs_dir)
+    assert len(left) == 20
+    assert "20260102-000000-me" in left
+
+
 def test_start_checks_the_mount_guard_before_touching_the_kernel(tmp_path, spawned, monkeypatch):
     """The mount refusal must come from pure string work: an os.path.isdir on
     a path under a wedged NFS mount blocks the request thread indefinitely,

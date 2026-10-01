@@ -569,6 +569,15 @@ def _no_startup_index_scan(monkeypatch):
     index_routes._forget_runs()
 
 
+@pytest.fixture
+def home_outside_tmp(tmp_path, monkeypatch):
+    """On Windows `tmp_path` sits under `~/AppData/Local/Temp`, which the
+    default index ignore list drops — move `~` so a test that scans or watches
+    `tmp_path` under the real defaults still sees it."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+
 @pytest.fixture(autouse=True)
 def _no_startup_engine_warm(monkeypatch):
     """Neutralize create_app's fused-engine warm daemon in tests (same leaked-thread

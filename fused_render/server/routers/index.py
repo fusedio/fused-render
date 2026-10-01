@@ -357,10 +357,17 @@ def run_startup_scan(start_dir: str | None = None) -> None:
         return
     try:
         cfg = load_config()
-        runner.prune_runs(cfg, keep=KEEP_RUNS)
     except Exception:  # noqa: BLE001 - housekeeping must never stop the server
         logger.exception("could not read the index config")
         return
+    # Pruning is an rmtree per stale run dir, and the startup hook awaits this
+    # function: a backlog of a couple of thousand dirs outlasted the desktop
+    # launcher's 20s readiness timeout, which killed the server mid-prune and
+    # retried into the same backlog, so the app never opened. Nothing below
+    # needs it done — it never touches the newest KEEP_RUNS or a live run, and
+    # the runs this boot starts are the newest — so it goes on its own thread.
+    threading.Thread(target=_prune_runs, args=(cfg,), name="index-prune",
+                     daemon=True).start()
     import time
 
     now = time.time()
@@ -387,6 +394,13 @@ def run_startup_scan(start_dir: str | None = None) -> None:
             logger.info("index: skipping %s (%s)", root, e)
         except Exception:  # noqa: BLE001 - one bad root must not stop the rest
             logger.exception("could not start the index scan of %s", root)
+
+
+def _prune_runs(cfg: IndexConfig) -> None:
+    try:
+        runner.prune_runs(cfg, keep=KEEP_RUNS)
+    except Exception:  # noqa: BLE001 - housekeeping must never stop the server
+        logger.exception("could not prune old index runs")
 
 
 async def startup_scan(start_dir: str | None = None) -> None:

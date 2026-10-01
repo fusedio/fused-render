@@ -1287,7 +1287,8 @@ def test_rank_route_reports_covered_with_no_reason(home, tmp_path):
     assert body["covered"] is True and body["reason"] == ""
 
 
-def test_rank_route_says_an_unscanned_root_is_uncovered(home, tmp_path):
+def test_rank_route_says_an_unscanned_root_is_uncovered(home, tmp_path,
+                                                        home_outside_tmp):
     """"No index yet" and "outside the scanned roots" are one condition to the
     client: both are answered by scanning the folder on demand."""
     client = TestClient(create_app(start_dir=str(tmp_path)))

@@ -11,10 +11,13 @@ request and the spawn cannot make the worker compact into a directory nobody
 reads.
 """
 import ctypes
+import json
 import os
 import platform
 import sys
 
+from fused_render.index import runner
+from fused_render.index.config import IndexConfig
 from fused_render.index.scan import run_scan
 
 # How far below the server this process (and every pool child and stat thread
@@ -117,7 +120,23 @@ def main(argv=None) -> int:
     _renice_self()
     _set_background_io_policy()
     run_scan(argv[0])
+    _prune_old_runs(argv[0])
     return 0
+
+
+def _prune_old_runs(run_dir: str) -> None:
+    """Every scan leaves its run dir behind, and the live watcher can start
+    hundreds of scans in a session, so reclaiming them only at server startup
+    let thousands pile up — enough that the startup prune itself outlasted
+    the desktop launcher's readiness timeout. Each worker reclaims the
+    backlog as it finishes instead, off the server and after its own
+    `run_end`, so this run is never mistaken for a live one."""
+    try:
+        with open(os.path.join(run_dir, "spec.json")) as f:
+            spec = json.load(f)
+        runner.prune_runs(IndexConfig.from_dict(spec.get("config") or {}))
+    except (OSError, ValueError):
+        pass  # housekeeping — the next run's worker tries again
 
 
 if __name__ == "__main__":

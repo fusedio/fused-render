@@ -1562,6 +1562,35 @@ def test_startup_schedules_one_scan_per_root(home, tmp_path, monkeypatch):
     assert started == [runner.canonical_root(str(src))]
 
 
+def test_startup_scan_does_not_wait_for_the_prune(home, tmp_path, monkeypatch):
+    """The startup hook awaits `run_startup_scan`, so a slow prune (thousands
+    of stale run dirs) used to hold the server past the desktop launcher's
+    readiness timeout and the app never opened."""
+    import threading
+
+    src = _tree(tmp_path)
+    scanned = threading.Event()
+    pruned = threading.Event()
+    scan_started_mid_prune = []
+
+    def slow_prune(cfg, keep=20):
+        scan_started_mid_prune.append(scanned.wait(5))
+        pruned.set()
+
+    def start(cfg, root, full=False):
+        scanned.set()
+        return {"run_id": "x", "root": root}
+
+    monkeypatch.setattr(index_router.runner, "prune_runs", slow_prune)
+    monkeypatch.setattr(index_router.runner, "start", start)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+    assert pruned.wait(10)
+    assert scan_started_mid_prune == [True]
+
+
 def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
     src = _tree(tmp_path)
     started = []
