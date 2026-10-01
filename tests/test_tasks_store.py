@@ -1330,3 +1330,86 @@ def test_a_lease_released_by_reset_can_be_won_again(state_dir):
     assert tasks_store.try_acquire_lease("duties") is True
     tasks_store.reset_leases_for_tests()
     assert tasks_store.try_acquire_lease("duties") is True
+
+
+class _FakeMsvcrt:
+    """Stands in for the real `msvcrt` module on this POSIX dev machine, so
+    the Windows branch of the lease functions can be exercised without a
+    Windows box: `locking` raises `OSError` exactly as the real one does when
+    a rival already holds the byte, `rival_holds` is how a test flips that."""
+
+    LK_NBLCK = 1
+    LK_LOCK = 2
+
+    def __init__(self, fail_times=0):
+        self.rival_holds = fail_times > 0
+        self._remaining_failures = fail_times
+        self.calls = 0
+
+    def locking(self, fd, mode, nbytes):
+        self.calls += 1
+        if self.rival_holds:
+            if self._remaining_failures > 0:
+                self._remaining_failures -= 1
+                if self._remaining_failures == 0:
+                    self.rival_holds = False
+            raise OSError("simulated rival holds the lock")
+
+
+def test_try_acquire_lease_wins_on_simulated_windows_when_free(state_dir, monkeypatch):
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    monkeypatch.setattr(tasks_store, "msvcrt", _FakeMsvcrt())
+    assert tasks_store.try_acquire_lease("duties") is True
+
+
+def test_try_acquire_lease_loses_on_simulated_windows_to_a_rival(state_dir, monkeypatch):
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    monkeypatch.setattr(tasks_store, "msvcrt", _FakeMsvcrt(fail_times=10**9))
+    assert tasks_store.try_acquire_lease("duties") is False
+
+
+def test_acquire_lease_blocking_on_simulated_windows_waits_then_wins(
+        state_dir, monkeypatch):
+    """`LK_LOCK` gives up after ~10 tries, so the real implementation has to
+    loop `LK_NBLCK` itself with a sleep between attempts (per the module's
+    docstring) — this drives that loop past a few simulated failures and
+    checks it keeps retrying rather than raising."""
+    fake = _FakeMsvcrt(fail_times=3)
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    monkeypatch.setattr(tasks_store, "msvcrt", fake)
+    monkeypatch.setattr(tasks_store.time, "sleep", lambda _seconds: None)
+    tasks_store.acquire_lease_blocking("duties")
+    assert "duties" in tasks_store._lease_handles
+    assert fake.calls >= 4  # 3 failures, then the winning call
+
+
+def test_acquire_lease_blocking_is_idempotent_for_the_same_holder(state_dir):
+    tasks_store.acquire_lease_blocking("duties")
+    tasks_store.acquire_lease_blocking("duties")  # must not re-block/re-touch
+
+
+def test_acquire_lease_blocking_waits_for_a_real_rival_to_release(state_dir):
+    """A second, independent flock (a real second open file description, the
+    same trick `test_try_acquire_lease_loses_to_another_holder` uses) holds
+    the lease; `acquire_lease_blocking` on a background thread must sit there
+    until that rival lets go, then return promptly once it does."""
+    import fcntl
+
+    path = os.path.join(state_dir, "duties")
+    rival = open(path, "w")
+    fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    done = threading.Event()
+
+    def _acquire():
+        tasks_store.acquire_lease_blocking("duties")
+        done.set()
+
+    t = threading.Thread(target=_acquire)
+    t.start()
+    try:
+        assert not done.wait(timeout=0.3)  # still blocked: rival holds it
+        rival.close()  # releases the flock
+        assert done.wait(timeout=2)  # now it can proceed
+    finally:
+        t.join(timeout=2)

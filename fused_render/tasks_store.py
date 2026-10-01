@@ -120,6 +120,12 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
+try:
+    import msvcrt  # Windows only — the counterpart to `fcntl` above, used by
+    # the lease functions further down for real cross-process locking there.
+except ImportError:  # pragma: no cover
+    msvcrt = None
+
 # CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
 # duplication) as server/routers/claude_sessions.py and claude_artifacts.py.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -268,41 +274,124 @@ _lease_handles: dict[str, object] = {}
 _lease_lock = threading.Lock()
 
 
+# How long `acquire_lease_blocking`'s Windows loop sleeps between `LK_NBLCK`
+# retries — `LK_LOCK` itself gives up after ~10 tries over about a second, so
+# it cannot stand in for a true blocking wait; this is the interval of the
+# hand-rolled loop that replaces it. A module constant so a test can read or
+# shorten it without reaching past `time.sleep`.
+_LEASE_RETRY_INTERVAL = 0.5
+
+
+def _open_lease_file(name: str):
+    """Open (creating if needed) `name`'s lease file in STATE_DIR, ready for
+    either platform's locking call. On the simulated/real Windows path the
+    file needs at least one byte in it before `msvcrt.locking` can lock
+    anything — a zero-length lock is a silent no-op there — so this stamps
+    one and seeks back to it; POSIX's `flock` locks the whole file regardless
+    of its length, so this is harmless there too."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    path = os.path.join(STATE_DIR, name)
+    handle = open(path, "w")
+    if fcntl is None and msvcrt is not None:
+        handle.write("\0")
+        handle.flush()
+        handle.seek(0)
+    return handle
+
+
 def try_acquire_lease(name: str) -> bool:
     """Claim `name`'s lease file exclusively, non-blocking, and keep holding
     it for the rest of this process's life — no release call exists, because
-    an orderly release isn't the point: the OS drops the flock the instant
+    an orderly release isn't the point: the OS drops the lock the instant
     this process exits or crashes, which is what lets some other process (or
     this one, later) retry and win the role (B2's "holder-less case retried
     later"). Returns whether THIS process now holds (or already held) it.
 
-    Non-blocking (`LOCK_EX | LOCK_NB`): a caller that loses the race gets
-    False immediately rather than queuing behind the winner — the whole
-    point for a duty that must run in exactly one process at a time while
-    every other process just skips it and moves on. Idempotent: calling it
-    again for a lease this process already holds returns True without
-    touching the filesystem again.
+    Non-blocking (`LOCK_EX | LOCK_NB` on POSIX, `LK_NBLCK` on Windows): a
+    caller that loses the race gets False immediately rather than queuing
+    behind the winner — the whole point for a duty that must run in exactly
+    one process at a time while every other process just skips it and moves
+    on. Idempotent: calling it again for a lease this process already holds
+    returns True without touching the filesystem again.
 
-    POSIX-only (`fcntl`): on Windows this always returns True, the same
-    no-cross-process-guarantee posture `locked`/`_update` already have
-    there — a caller gating a machine-wide duty on this result ends up
-    running that duty in every process on Windows, no worse off than before
-    this primitive existed."""
+    Real locking on both POSIX (`fcntl`) and Windows (`msvcrt`) — this is a
+    genuine cross-process lease on either platform. Only when NEITHER
+    primitive is importable (a build of Python missing both, which is not a
+    real platform either of us ships to) does this fall back to "just claim
+    it, no cross-process guarantee", the same no-worse-than-before posture
+    `locked`/`_update` fall back to when `fcntl` is unavailable."""
     with _lease_lock:
         if name in _lease_handles:
             return True
-        if fcntl is None:
+        if fcntl is None and msvcrt is None:
             return True
-        os.makedirs(STATE_DIR, exist_ok=True)
-        path = os.path.join(STATE_DIR, name)
-        handle = open(path, "w")
+        handle = _open_lease_file(name)
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
             handle.close()
             return False
         _lease_handles[name] = handle
         return True
+
+
+def acquire_lease_blocking(name: str) -> None:
+    """Like `try_acquire_lease`, but waits as long as it takes instead of
+    giving up immediately — for a caller that wants its turn at `name`
+    rather than an instant yes/no. Returns once this process holds the
+    lease (or returns immediately if it already did, same idempotence as
+    `try_acquire_lease`).
+
+    This BLOCKS THE CALLING THREAD, potentially for a long time — call it
+    from a thread you can afford to park (a background worker, never a
+    request-handling thread).
+
+    POSIX (`fcntl`): a plain `flock(LOCK_EX)`, no `LOCK_NB` — the kernel
+    parks this thread until the lock is free, which is a true indefinite
+    wait.
+
+    Windows (`msvcrt`): there is no equivalent primitive. `LK_LOCK` looks
+    like the blocking mode but isn't one — per Windows/CPython's own
+    documented behavior it retries roughly 10 times over about a second and
+    then raises, same as a failed `LK_NBLCK`. So this hand-rolls the wait:
+    loop `LK_NBLCK`, and on `OSError` sleep `_LEASE_RETRY_INTERVAL` and try
+    again, until it succeeds.
+
+    Neither primitive available: falls back to claiming the lease
+    unconditionally, same posture (and same caveat: no cross-process
+    guarantee) as `try_acquire_lease`'s fallback for that case.
+
+    `_lease_lock` is held only around the bookkeeping (the idempotence check
+    and registering the winning handle), never across the actual wait —
+    different lease NAMES are unrelated, and holding the lock across a
+    long block would freeze every other name's `try_acquire_lease` and
+    `acquire_lease_blocking` call in this process for the whole wait."""
+    with _lease_lock:
+        if name in _lease_handles:
+            return
+    if fcntl is None and msvcrt is None:
+        with _lease_lock:
+            if name not in _lease_handles:
+                _lease_handles[name] = _open_lease_file(name)
+        return
+    handle = _open_lease_file(name)
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    else:
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except OSError:
+                time.sleep(_LEASE_RETRY_INTERVAL)
+    with _lease_lock:
+        if name in _lease_handles:
+            handle.close()
+            return
+        _lease_handles[name] = handle
 
 
 def reset_leases_for_tests() -> None:
