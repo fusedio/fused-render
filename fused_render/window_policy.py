@@ -106,7 +106,7 @@ def frame_autosave_name(key: str | None, view: str | None = None) -> str:
     reopens where the user last left *that* app, not where the last window
     of any app was. None (the shell home) gets the plain name.
 
-    An EMBED gets a name of its own: an app's run window and its Edit window
+    An EMBED gets a name of its own: an app's run window and an explorer window
     (the explorer view of the same entry file) share ``key``, and each must
     keep its own size and place.
     """
@@ -125,7 +125,7 @@ def window_view_of(url: str | None) -> str | None:
     """How a shell URL shows its `window_key_of` key: ``"app"`` (an app
     page), ``"view"`` (the explorer) or ``"embed"`` (the page alone), or None
     for a URL with no key. The other half of a window's identity: an app's
-    run window and its Edit window share a key and differ here."""
+    run window and an explorer window on it share a key and differ here."""
     if window_key_of(url) is None:
         return None
     path = urlsplit(url).path

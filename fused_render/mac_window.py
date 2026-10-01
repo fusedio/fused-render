@@ -21,9 +21,8 @@ is one (the ``FusedRender/`` user-agent marker, router.ts
 server (POST /api/windows/open) to focus-or-open that app's window, which
 runs its entry page as a chrome-free embed (`window_policy.app_window_path`)
 under its own saved size and place; the launcher's pick lands the same way.
-The title bar's Edit button (⌘⇧E) opens the explorer view of what the
-window runs in a SECOND window (`window_policy.edit_target`); the run window
-stays until the user closes it.
+The title bar's Edit button (⌘⇧E) switches the SAME window to the explorer
+view of what it runs (`window_policy.edit_target`).
 
 What the browser used to do for a page, the delegates here do instead
 (`window_policy.py` holds the decisions; this module enacts them):
@@ -488,7 +487,7 @@ class _Window:
         # server thread may read it without touching WebKit.
         self.key: str | None = window_policy.window_key_of(url)
         # HOW it shows ``key`` (app page / explorer view / embed): an app's
-        # run window and its Edit window share a key and differ only here.
+        # run window and an explorer window on it share a key and differ only here.
         self.view: str | None = window_policy.window_view_of(url)
         # The saved frame's owner is fixed at creation: `key` follows in-window
         # navigation, but a window must never jump or resize because the page
@@ -989,13 +988,15 @@ class WindowManager:
             f"http://127.0.0.1:{self.port}" + window_policy.app_window_path(fs_path))
 
     def edit(self, win: _Window) -> _Window | None:
-        """The Edit button: the explorer view of what ``win`` runs, in a window
-        of its own (focused if already open). ``win`` stays open — the user
-        closes it when done with it."""
+        """The Edit button: ``win`` itself switches to the explorer view of
+        what it runs (owner's call — no second window). The URL observer
+        then re-keys it as a ``view`` window, which disables Edit; its saved
+        frame stays the one it was opened under."""
         path = win.edit_path()
         if path is None:
             return None
-        return self.focus_or_open_url(f"http://127.0.0.1:{self.port}" + path)
+        win.load(f"http://127.0.0.1:{self.port}" + path)
+        return win
 
     def focus_or_open(self, fs_path: str) -> _Window:
         """Dock semantics: an app already open comes to the front (its most
