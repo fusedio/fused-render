@@ -43,6 +43,7 @@ from fused_render.server.common import (
 )
 from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.app_api import router as app_api_router
+from fused_render.server.routers.app_python import router as app_python_router
 from fused_render.server.routers.background_apps import router as background_apps_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
@@ -781,6 +782,10 @@ def create_app(start_dir: str) -> FastAPI:
     # `retry_post`) + background_apps.py's enabled store. See the startup
     # resurrection hook below.
     app.include_router(background_apps_router)
+    # Bots calling an app's Python directly (routers/app_python.py, SPEC §49):
+    # the AST-only listing of a folder's `.py` files + `main()` signatures.
+    # Execution is the page's own /api/run below — no second runner.
+    app.include_router(app_python_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)

@@ -151,6 +151,10 @@ A page can do a lot through `fused`:
   tasks from a page; a handle follows a new task from pending to its session,
   and `ui()` hands back the shell's Tasks page as an iframe URL.
   → [fused-render-tasks](skills/fused-render-tasks/SKILL.md)
+- App Python, called directly — a bot or Claude session runs a folder's `.py`
+  through the same `/api/run` the page uses; `GET /api/apps/python` lists the
+  files and their `main()` signatures from the AST, nothing imported.
+  → [fused-render-app-python](skills/fused-render-app-python/SKILL.md)
 
 `fused.env` says whether a page is running here (`"local"`) or exported and
 hosted (`"hosted"`). The complete list, with every option, is the header of

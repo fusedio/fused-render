@@ -11986,3 +11986,61 @@ per-row fix.
   unrun on-demand row, since its findings would describe a folder that no
   longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
   findings real.
+
+## 49. App Python, Called Directly — Bots Run a Folder's `.py` Without the Page
+
+Goal: an app folder's `.py` files are the app's capability; the page is one UI
+over them. A bot (OpenBot's `py` action, a Claude-harness bot, any local
+script) can run one **without rendering the page**, with the page's own
+semantics, so a bot that builds an app can also drive it at the lowest level
+the app has. Design page: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ.
+
+- **AP-1 One runner.** Execution is `POST /api/run` `{py, html, params}`
+  (§PY-6) — the identical call the page's `fused.runPython` makes, with an
+  absolute `py` (`resolve_py` never needed the page). Nothing bot-specific
+  lives in that handler: engine preference, the missing-module diagnosis, the
+  folder-busy gate, the call log, git-status invalidation and the
+  `{ok, result, error:{type,message,traceback}, stdout, resolved_py,
+  duration_ms}` envelope are what the bot sees because they are what the page
+  sees. The 60 s bound (`DEFAULT_TIMEOUT`) is the bot's bound; there is no
+  bot-only budget, since a file that only works with one would then fail in
+  the page. **Rejected:** a synthesized manifest-less tool through the
+  openfused `fused app serve` runner inside the bot's worker (a second
+  semantics — requirements venv instead of the engine pref, 180 s, no call
+  log — and a bundled `fused` import an exported copy of the bot lacks); a
+  wrapper endpoint that would add only a name.
+- **AP-2 Discovery is a static read.** `GET /api/apps/python?html=<page>`
+  (or `?dir=<folder>`; `X-Fused` required) — `routers/app_python.py` over
+  `fused_render/pyinspect.py` — returns `{app, html, entrypoint:"main",
+  timeout_s, files:[{file, callable, signature, params:[{name,type,default,
+  required}], doc, functions, error|reason}], tools:[mcp.toml rows,
+  curated:true], background:{kind,file,running}|null}`. `callable` is true
+  only for a top-level `main` — the single entrypoint `_child.py` binds;
+  other public names are listed under `functions` so a bot can tell a helper
+  module from a file the MCP panel could curate, never as something
+  `/api/run` could reach. Everything is `ast.parse` of the file's text:
+  nothing is imported (top-level code in these folders touches tokens and
+  local state), and an unparseable file is reported with its error rather
+  than dropped. Depth one, non-hidden, capped at 60 files, 512 KiB read —
+  the same scope `templates/mcp/inspect_app.py` lists for the MCP panel;
+  that template keeps its own stdlib copy of the formatter (PY-15: a
+  template never imports `fused_render`).
+- **AP-3 Daemon apps are reported, not called.** A folder with a §46
+  manifest shows `background:{kind: main|daemon, file, running}`; its
+  resident process is not reachable through these routes (a `daemon=` app's
+  routes are unknown statically and carry no envelope; a `main=` worker has a
+  different lifetime and failure mode). A later section when a real case
+  needs it.
+- **AP-4 Author contract** — `skills/fused-render-app-python/SKILL.md`,
+  pointed at from `fused-render-authoring`: a top-level annotated
+  `main(**params)` (bots coerce by annotation, `_binding.coerce`), first
+  docstring line = the description a bot reads (what it reads, what it
+  changes), JSON-native return, no argv/stdin, ≤ 60 s (longer →
+  `fused.trackJob` or a daemon), secrets never in params. The same file's
+  second half is the consumer recipe (both routes, the header, the envelope,
+  one `curl` each) for Claude-harness bots; OpenBot bots never read it — their
+  surface is the `py` action in their own prompt.
+- **AP-5 Approval is the caller's.** The server runs what it is asked; the
+  gate lives in the bot: OpenBot runs a `py` call at once when the folder is
+  one of that bot's own builds and pauses for the user otherwise, since a raw
+  file has no curated name or description the write heuristic could read.
