@@ -225,6 +225,13 @@ def _empty_folder() -> dict:
     return {"owner": None, "line": [], "blocked": []}
 
 
+def _empty_state() -> dict:
+    """The shape `_load()` builds from an empty/missing index file — also
+    `__init__`'s fallback when the very first load finds a file that exists
+    but will not parse, since there is no prior in-memory state to keep."""
+    return {"folders": {}, "answers": {}, "forced": set()}
+
+
 def _nowhere() -> dict:
     """The answer for a task that stands in no line — position 0, no folder."""
     return {"key": "", "position": 0, "ahead_key": ""}
@@ -275,6 +282,18 @@ def _busy_class() -> tuple:
         except Exception:
             logger.debug("no schedule.SpawnBusy; a busy spawn will drop", exc_info=True)
     return _BUSY
+
+
+def _stat_tuple(path: str) -> tuple | None:
+    """`(mtime_ns, size, st_ino)` for `path`, or None if it is not there (or
+    not readable). `st_ino` changes on every atomic replace (`_write_locked`
+    renames a fresh temp file onto `path`), so two writes close enough to
+    share an `mtime_ns` and a `size` still compare unequal."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -343,7 +362,17 @@ class QueueManager:
         # persisted: it describes THIS process's in-flight calls, nothing a
         # restart inherits.
         self._spawning: set[str] = set()
-        self._state = self._load()
+        # The `(mtime_ns, size, st_ino)` of whatever `_load()` last actually
+        # read off disk, kept up to date by `_load()` itself (and by
+        # `_write_locked()` after a successful write) — what
+        # `_refresh_if_stale()` compares a fresh `os.stat()` against to
+        # decide whether a read-only call needs to reload at all.
+        self._loaded_stat: tuple | None = None
+        loaded = self._load()
+        # A corrupt file at construction time has nothing in memory to fall
+        # back to, so this is the one call site where `None` still has to
+        # become the empty-default shape.
+        self._state = loaded if loaded is not None else _empty_state()
         self._migrate_legacy()
         # NOT RECONCILED HERE, and that absence is load-bearing. `reconcile`
         # pumps, and pumping SPAWNS — so a manager built by whatever happened to
@@ -355,8 +384,42 @@ class QueueManager:
 
     # -------------------------------------------------------------- the file
 
-    def _load(self) -> dict:
-        raw = tasks_store.load_state(INDEX_FILE)
+    def _load(self) -> dict | None:
+        """Read `INDEX_FILE` fresh off disk and rebuild the in-memory shape.
+
+        Reads the file itself rather than going through
+        `tasks_store.load_state` (which answers `{}` for both "missing" and
+        "corrupt" alike): a folder index that fails to parse is not the same
+        fact as an empty one, and every call site below needs to tell the
+        two apart. A missing file is "no index yet" and proceeds through the
+        normal empty-default construction. A file that exists but will not
+        parse — truncated, corrupted, caught mid-write by something other
+        than `_write_locked`'s own atomic replace — returns None instead: the
+        sentinel that tells every call site "could not load; keep whatever
+        `self._state` already holds" rather than let `{}` stand in for it and
+        get written back as the real state on the next transaction.
+
+        Either way, `self._loaded_stat` ends up holding the stat tuple of
+        whatever was actually found (or None, if nothing was there) — what
+        `_refresh_if_stale()` compares a fresh `os.stat()` against, and also
+        what keeps this from re-parsing the same corrupt bytes on every call
+        once a corrupt file has been seen once."""
+        path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except FileNotFoundError:
+            self._loaded_stat = None
+            raw = {}
+        except (OSError, ValueError):
+            logger.warning("queue: %s is unreadable; keeping in-memory state",
+                            INDEX_FILE, exc_info=True)
+            self._loaded_stat = _stat_tuple(path)
+            return None
+        else:
+            if not isinstance(raw, dict):
+                raw = {}
+            self._loaded_stat = _stat_tuple(path)
         folders: dict[str, dict] = {}
         source = raw.get("folders")
         for key, value in (source if isinstance(source, dict) else {}).items():
@@ -386,12 +449,38 @@ class QueueManager:
                 forced.add(name)
         return {"folders": folders, "answers": answers, "forced": forced}
 
+    def _refresh_if_stale(self) -> None:
+        """Best-effort freshness for a read that does not want to pay for the
+        cross-process `flock` on every call — `owner`, `is_forced` and the
+        other read-only methods below, which a lean `open` process (no
+        background writer of its own) can otherwise call forever against the
+        snapshot it happened to load at start-up.
+
+        Stats the index file and compares against `self._loaded_stat` (kept
+        current by `_load()` and by `_write_locked()`); a mismatch reloads
+        under `self._lock` alone — `_locked_state()`/`_txn()` already own the
+        flock-protected reload for anything that mutates. A missing file
+        compares equal to a `self._loaded_stat` of None, so "nothing there
+        yet" never forces a reload on every call."""
+        current = _stat_tuple(os.path.join(tasks_store.STATE_DIR, INDEX_FILE))
+        if current == self._loaded_stat:
+            return
+        loaded = self._load()
+        if loaded is not None:
+            self._state = loaded
+
     def _write_locked(self) -> None:
         """Write `self._state` to disk. The caller already holds
         `tasks_store.locked(INDEX_FILE)` — via `_locked_state` or `_txn`,
         the only two places this is called — so this never acquires the
         lock itself; `flock` is per open file description, not reentrant,
         and a second acquire from the same process would block forever.
+
+        Writes to a temp file beside `path` and `os.replace()`s it in:
+        `open(path, "w")` truncates in place, so a reader that reloads from
+        disk on every call (`_refresh_if_stale`) could catch the file
+        half-written. The rename is atomic, so every reader only ever sees
+        either the old complete document or the new one.
 
         An unwritable state dir costs the write and nothing else: the
         in-memory index is still right and `reconcile` rebuilds it."""
@@ -400,12 +489,21 @@ class QueueManager:
         # field of the index that is not already json.
         snapshot["forced"] = sorted(self._state.get("forced") or ())
         path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
+        tmp_path = path + f".tmp-{os.getpid()}"
         try:
             os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+            self._loaded_stat = _stat_tuple(path)
         except OSError:
             logger.debug("could not write %s", INDEX_FILE, exc_info=True)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     @contextlib.contextmanager
     def _locked_state(self):
@@ -435,7 +533,9 @@ class QueueManager:
         touches `self._state` directly."""
         with self._lock:
             with tasks_store.locked(INDEX_FILE):
-                self._state = self._load()
+                loaded = self._load()
+                if loaded is not None:
+                    self._state = loaded
                 yield
                 self._write_locked()
 
@@ -573,7 +673,9 @@ class QueueManager:
         express cleanly."""
         with self._lock:
             with tasks_store.locked(INDEX_FILE):
-                self._state = self._load()
+                loaded = self._load()
+                if loaded is not None:
+                    self._state = loaded
                 keys: set[str] = set()
                 before = self._folder_fingerprints()
                 yield keys
@@ -1718,6 +1820,7 @@ class QueueManager:
     # ------------------------------------------------------------- reads
     def owner(self, folder: str) -> dict | None:
         with self._lock:
+            self._refresh_if_stale()
             rec = self._state["folders"].get(folder)
             owner = rec["owner"] if rec else None
             return copy.deepcopy(owner) if owner else None
@@ -1785,6 +1888,7 @@ class QueueManager:
         the endpoints that have just moved a line, and its dict is the reply
         those endpoints return."""
         with self._lock:
+            self._refresh_if_stale()
             out: dict[str, dict] = {}
             for folder, rec in self._state["folders"].items():
                 ahead = self._ahead_label(rec["owner"])
@@ -1803,12 +1907,14 @@ class QueueManager:
         """``{"key", "position", "ahead_key"}`` for one task; position 0 = not
         queued, and `key` is the FOLDER (see `_place`)."""
         with self._lock:
+            self._refresh_if_stale()
             return self._place(task_key)
 
     def held_answer(self, task_key: str) -> dict | None:
         """The OLDEST decision this task is owed, or None. One question of the
         several a run may have raised — `held_answers` is the whole list."""
         with self._lock:
+            self._refresh_if_stale()
             rows = self._answers_of(task_key)
             return copy.deepcopy(rows[0]) if rows else None
 
@@ -1851,12 +1957,14 @@ class QueueManager:
         """Does any of these names belong to a task that was force-started —
         the one question the two doors, the gate and the tick ask."""
         with self._lock:
+            self._refresh_if_stale()
             forced = self._state.get("forced") or set()
             return any(str(name) in forced for name in names if name)
 
     def forced_names(self) -> set:
         """The whole set, for a test and for the listing's sake. A copy."""
         with self._lock:
+            self._refresh_if_stale()
             return set(self._state.get("forced") or ())
 
     def learn_forced(self, *names: str) -> bool:
@@ -1872,8 +1980,12 @@ class QueueManager:
             return False
         # CHEAP NO UNLESS SOMETHING IS FORCED: this runs on every queue event
         # and every admit, and `_txn` writes the whole index on exit (review,
-        # 2026-09-21). Read under the plain lock first.
+        # 2026-09-21). Read under the plain lock first — refreshed, since
+        # this pre-check's whole point is answering False cheaply without
+        # ever entering `_txn()`, which it can only do honestly if it is
+        # looking at what is actually on disk right now.
         with self._lock:
+            self._refresh_if_stale()
             forced = self._state.get("forced") or set()
             if not any(n in forced for n in clean):
                 return False
@@ -1951,6 +2063,7 @@ class QueueManager:
         if not key:
             return False
         with self._lock:
+            self._refresh_if_stale()
             now = float(self._clock())
             records: list[dict] = []
             for rec in self._state["folders"].values():

@@ -25,6 +25,7 @@ from fused_render import tasks_store
 
 F1 = "/tmp/proj-one"
 F2 = "/tmp/proj-two"
+INDEX_PATH_NAME = qm.INDEX_FILE
 
 
 @pytest.fixture(autouse=True)
@@ -2870,6 +2871,162 @@ def test_ensure_machine_duties_loses_to_a_real_rival_holder(state, monkeypatch):
     with open(path, "w") as rival:
         fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert qm.ensure_machine_duties() is None
+
+
+# ------------------------------------------------ cross-process freshness
+
+
+def test_owner_sees_a_change_another_process_wrote(state):
+    """Two `QueueManager`s over the same state dir, standing in for a lean
+    `open` process and the `serve` process: a read-only call on one must see
+    what the other just wrote, with no transaction and no manual refresh on
+    the reader's side."""
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    assert a.owner(F1) is None
+
+    b.started(F1, "task-1", "run-1", "sess-1")
+    assert a.owner(F1)["task"] == "task-1"
+
+
+def test_is_forced_sees_a_mark_another_process_wrote(state):
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    assert a.is_forced("x") is False
+
+    b.mark_forced("x")
+    assert a.is_forced("x") is True
+    assert a.forced_names() == {"x"}
+
+
+def test_positions_and_place_see_a_line_another_process_wrote(state):
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    b.started(F1, "owner-1", "run-1", "sess-1")
+    b.enqueue(F1, "task-2", "e2")
+
+    assert a.positions()["task-2"]["key"] == F1
+    assert a.place("task-2")["position"] == 1
+
+
+def test_learn_forced_fast_path_sees_a_mark_another_process_wrote(state):
+    """`learn_forced`'s pre-check reads `forced` under the plain lock before
+    ever entering `_txn()`; it has to see a mark another process just wrote,
+    or it returns False on data that is already stale."""
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    b.mark_forced("sess-1")
+
+    assert a.learn_forced("sess-1", "run-1") is True
+    assert a.is_forced("run-1") is True
+
+
+# ------------------------------------------------------ atomic index writes
+
+
+def test_a_write_leaves_no_stray_temp_file_and_a_parseable_index(state):
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a", "e1")
+    m.enqueue(F1, "b", "e2")
+
+    names = os.listdir(str(state))
+    assert INDEX_PATH_NAME in names
+    assert not any(".tmp-" in name for name in names)
+    with open(os.path.join(str(state), INDEX_PATH_NAME), encoding="utf-8") as f:
+        json.load(f)  # does not raise: always a complete, valid document
+
+
+def test_write_locked_replaces_a_temp_file_in_the_same_directory(state, monkeypatch):
+    world = World()
+    m = world.manager()
+
+    calls = []
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        calls.append((src, dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy_replace)
+    m.enqueue(F1, "a", "e1")
+
+    # `enqueue` both decides (one write) and patches the owner once the
+    # injected spawn returns (`_flush`'s second write) — every one of them
+    # has to go through the same temp-file-then-replace mechanics.
+    assert calls
+    for src, dst in calls:
+        assert dst == os.path.join(str(state), INDEX_PATH_NAME)
+        assert src != dst
+        assert os.path.dirname(src) == os.path.dirname(dst)
+
+
+# --------------------------------------------------- corrupt index on disk
+
+
+def test_a_corrupt_index_file_does_not_wipe_in_memory_state(state):
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a", "e1")
+    assert owner_key(m) == "a"
+
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("{not valid json at all")
+
+    # A read-only call must not let the corrupt file erase what is already
+    # held in memory.
+    assert owner_key(m) == "a"
+
+
+def test_a_transaction_after_corruption_never_persists_an_empty_index(state):
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("{not valid json at all")
+
+    # A transaction still has to run and write SOMETHING back — but it must
+    # carry forward the in-memory state it already had, not the `{}` a
+    # corrupt read would otherwise have produced.
+    m.mark_forced("z")
+
+    with open(index_path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk["folders"][F1]["owner"]["task"] == "a"
+    assert on_disk["forced"] == ["z"]
+    assert owner_key(m) == "a"
 
 
 class _StubManager:
