@@ -121,7 +121,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlencode
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from fused_render import (
@@ -141,7 +141,24 @@ from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
 from fused_render.shell import prefs as shell_prefs
 
-router = APIRouter()
+
+def _ensure_duties() -> None:
+    """FastAPI dependency, attached to every route below: claims the
+    machine-duties lease (B2 — scheduler + project-queue resume) lazily on
+    the first `/api/tasks*` request reaching THIS process, when nothing
+    else is holding it.
+
+    `serve` already claims it from `_startup_queue_manager`, so here it is
+    normally a no-op repeat of a lease this process already won — one
+    `flock` syscall, nothing else. `open` (lean) runs no startup hooks at
+    all, so this is the only place it ever tries; trying again on every
+    request, rather than once, is what lets a lean process pick the role up
+    the moment a `serve` that was holding it exits (B2's "holder-less case
+    retried later") with no separate retry thread of its own."""
+    queue_manager.ensure_machine_duties()
+
+
+router = APIRouter(dependencies=[Depends(_ensure_duties)])
 
 logger = logging.getLogger(__name__)
 

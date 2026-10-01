@@ -2667,3 +2667,83 @@ def test_restore_claim_refuses_a_folder_whose_owner_changed():
     m.claim_took(F1, "b", "run-b", "sess-b")
     assert m.restore_claim(F1, token) is False
     assert m.consume_claim(F1, token) is False
+
+
+# --------------------------------------------------- ensure_machine_duties (B2)
+
+
+def test_ensure_machine_duties_starts_the_scheduler_and_resumes_when_it_wins(
+        monkeypatch):
+    """Winning the lease starts BOTH duties: `schedule.start()`, and — only
+    with the project-queue flag on — a daemon thread that reconciles."""
+    from fused_render import project_queue, schedule
+
+    started = []
+    monkeypatch.setattr(schedule, "start", lambda: started.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+
+    reconciled = []
+
+    class _Manager:
+        def reconcile(self):
+            reconciled.append(True)
+
+    qm.reset_for_tests(_Manager())
+    thread = qm.ensure_machine_duties()
+    assert started == [True]
+    assert thread is not None
+    thread.join(timeout=5)
+    assert reconciled == [True]
+
+
+def test_ensure_machine_duties_skips_resume_when_the_flag_is_off(monkeypatch):
+    from fused_render import project_queue, schedule
+
+    started = []
+    monkeypatch.setattr(schedule, "start", lambda: started.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+
+    assert qm.ensure_machine_duties() is None
+    # Still the machine's scheduler holder — the flag only gates the resume.
+    assert started == [True]
+
+
+def test_ensure_machine_duties_keeps_the_lease_on_a_repeat_call(monkeypatch):
+    """A later call from the SAME process (another `/api/tasks*` request,
+    say) still holds its own cached lease handle, so it keeps claiming the
+    scheduler/resume duties rather than silently losing them — idempotence
+    for "don't double-start" lives in `schedule.start()` and `reconcile()`
+    themselves (both already safe to call repeatedly), not here."""
+    from fused_render import project_queue, schedule
+
+    monkeypatch.setattr(schedule, "start", lambda: None)
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+    qm.reset_for_tests(_StubManager())
+
+    first = qm.ensure_machine_duties()
+    first.join(timeout=5)
+    second = qm.ensure_machine_duties()
+    assert second is not None
+
+
+def test_ensure_machine_duties_loses_to_a_real_rival_holder(state, monkeypatch):
+    """A second OPEN FILE DESCRIPTION holding the same lease file — the only
+    thing that exercises `LOCK_NB` actually refusing, since this process's
+    own cached handle (the case above) short-circuits before ever touching
+    `fcntl` again. Stands in for another process that already won the race."""
+    import fcntl
+
+    from fused_render import project_queue, schedule
+
+    monkeypatch.setattr(schedule, "start", lambda: None)
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+
+    path = os.path.join(str(state), qm._DUTIES_LEASE)
+    with open(path, "w") as rival:
+        fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert qm.ensure_machine_duties() is None
+
+
+class _StubManager:
+    def reconcile(self):
+        pass

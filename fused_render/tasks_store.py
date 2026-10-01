@@ -106,6 +106,7 @@ import glob
 import json
 import os
 import re
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -256,6 +257,65 @@ def _update(filename: str, mutate):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
     return result
+
+
+# Open lease handles this process currently holds, keyed by lease file name.
+# The handle itself — not a bool — is what's kept: closing or dropping it is
+# what would release the flock, so staying open for the rest of the process's
+# life IS the lease, and the OS already does the "release on crash" part for
+# free the moment the process exits.
+_lease_handles: dict[str, object] = {}
+_lease_lock = threading.Lock()
+
+
+def try_acquire_lease(name: str) -> bool:
+    """Claim `name`'s lease file exclusively, non-blocking, and keep holding
+    it for the rest of this process's life — no release call exists, because
+    an orderly release isn't the point: the OS drops the flock the instant
+    this process exits or crashes, which is what lets some other process (or
+    this one, later) retry and win the role (B2's "holder-less case retried
+    later"). Returns whether THIS process now holds (or already held) it.
+
+    Non-blocking (`LOCK_EX | LOCK_NB`): a caller that loses the race gets
+    False immediately rather than queuing behind the winner — the whole
+    point for a duty that must run in exactly one process at a time while
+    every other process just skips it and moves on. Idempotent: calling it
+    again for a lease this process already holds returns True without
+    touching the filesystem again.
+
+    POSIX-only (`fcntl`): on Windows this always returns True, the same
+    no-cross-process-guarantee posture `locked`/`_update` already have
+    there — a caller gating a machine-wide duty on this result ends up
+    running that duty in every process on Windows, no worse off than before
+    this primitive existed."""
+    with _lease_lock:
+        if name in _lease_handles:
+            return True
+        if fcntl is None:
+            return True
+        os.makedirs(STATE_DIR, exist_ok=True)
+        path = os.path.join(STATE_DIR, name)
+        handle = open(path, "w")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        _lease_handles[name] = handle
+        return True
+
+
+def reset_leases_for_tests() -> None:
+    """Test-only escape hatch: release every lease this process holds, so a
+    test can simulate losing/giving up a role (or simply not leak a held
+    lease into the next test's `tmp_path`-scoped `STATE_DIR`) without exiting
+    the interpreter — the only way a lease is ever released for real in
+    production, where `try_acquire_lease` is deliberately one-directional."""
+    with _lease_lock:
+        handles = list(_lease_handles.values())
+        _lease_handles.clear()
+    for handle in handles:
+        handle.close()
 
 
 # --------------------------------------------------------------- task numbers

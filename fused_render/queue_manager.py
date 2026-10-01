@@ -2121,3 +2121,72 @@ def get() -> QueueManager:
 def reset_for_tests(manager: QueueManager | None = None) -> None:
     global _manager
     _manager = manager
+
+
+# ----------------------------------------------------------- machine duties
+
+
+# The lease file's name under `tasks_store.STATE_DIR` (B2). Not `INDEX_FILE`
+# or anything else this module already locks — a duties winner and a `_txn`
+# writer are unrelated critical sections and must never share a lock name,
+# or one would block on the other for no reason.
+_DUTIES_LEASE = "machine-duties.lock"
+
+
+def ensure_machine_duties() -> threading.Thread | None:
+    """Try to become the one process on this machine that runs the
+    scheduler (`schedule.start()`) and resumes the project queue
+    (`reconcile()` over whatever a restart left queued) — B2's "one process
+    runs machine-wide duties". Now that B1/B1b make every process's queue
+    index correct on its own, these two are the pieces that must still run
+    in exactly one place: the scheduler ticking in two processes would send
+    every scheduled message twice, and two resumes would race each other's
+    reconcile the same way two `serve`s used to (B1's bug) before anyone
+    had taken a lease at all.
+
+    Safe to call from every process, any number of times, at any moment —
+    full `serve` calls it once at startup; a lean process calls it lazily on
+    its first `/api/tasks*` request, and again on every later one, which is
+    what makes B2's "holder-less case retried later" work with no separate
+    retry thread: `tasks_store.try_acquire_lease` is non-blocking, and a
+    losing call costs one `flock(LOCK_NB)` syscall, nothing else, since
+    `schedule.start()` and the reconcile resume below never even run unless
+    the lease was won. The desktop app exiting drops its flock with it (the
+    OS does that, not this function), so the very next lean request after
+    that claims the role.
+
+    Returns the daemon thread spawned to run the reconcile resume, or None
+    when this call didn't start one — either the lease was lost, or the
+    project-queue flag is off. A caller doesn't need the thread to decide
+    whether to retry (retrying is always safe and nearly free), but a
+    startup hook keeps it on `app.state` as the same test seam
+    `_startup_tasks_warm` leaves, so a test can `.join()` it rather than
+    sleep-polling for the resume to land.
+
+    Deferred imports: `schedule` reaches back into this module (`_qm()`'s
+    fallback wiring, and each tick's `reconcile()`), so importing it at
+    module level here would cycle."""
+    if not tasks_store.try_acquire_lease(_DUTIES_LEASE):
+        return None
+
+    from fused_render import schedule
+
+    schedule.start()
+
+    from fused_render import project_queue
+
+    if not project_queue.enabled():
+        return None
+
+    def resume():
+        try:
+            get().reconcile()
+        except Exception:  # noqa: BLE001 — a queue that cannot resume
+            # must not take the server down with it; the scheduler's
+            # next tick (now running in this process) tries again.
+            logger.exception("could not resume the project queue")
+
+    thread = threading.Thread(target=resume, daemon=True,
+                              name="fused-queue-resume")
+    thread.start()
+    return thread

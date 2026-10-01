@@ -123,11 +123,12 @@ EXPECTED_STARTUP = [
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
     # Added 2026-09-17 (PR 2): the project queue's factory is registered here
-    # explicitly, and with the flag on the manager is built and reconciled once
-    # so a restart resumes every folder's line. BEFORE `_startup_schedule`, whose
-    # first tick otherwise self-wires it as a fallback.
+    # explicitly. Also claims the machine-duties lease (B2) and, only for the
+    # process that wins it, starts the scheduler and reconciles once so a
+    # restart resumes every folder's line — folded in rather than left as a
+    # separate `_startup_schedule` hook, since both duties now share one
+    # lease and deciding that only once, in one place, is the whole point.
     "_startup_queue_manager",
-    "_startup_schedule",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
     "_startup_ai_hardware_refresh",

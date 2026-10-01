@@ -1291,3 +1291,42 @@ def test_a_file_whose_only_line_never_ends_is_still_read(tmp_path):
     path = tmp_path / "q.jsonl"
     path.write_text(json.dumps(_user_row(_AFTER)))  # no trailing newline
     assert tasks_store.user_row_after(str(path), _AT) is True
+
+
+# ------------------------------------------------------------- lease (B2)
+
+
+def test_try_acquire_lease_wins_when_nobody_else_holds_it(state_dir):
+    assert tasks_store.try_acquire_lease("duties") is True
+    assert os.path.exists(os.path.join(state_dir, "duties"))
+
+
+def test_try_acquire_lease_is_idempotent_for_the_same_holder(state_dir):
+    assert tasks_store.try_acquire_lease("duties") is True
+    assert tasks_store.try_acquire_lease("duties") is True
+
+
+def test_try_acquire_lease_loses_to_another_holder():
+    """A second, independent flock on the same file — a real second open file
+    description, the only thing that exercises `LOCK_NB` actually blocking —
+    stands in for a second process. `try_acquire_lease`'s own module-level
+    cache only short-circuits a SECOND CALL FROM THIS PROCESS, so it can't be
+    used on both sides of this test; the rival has to lock the file directly."""
+    import fcntl
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        import os as _os
+        from unittest import mock
+
+        with mock.patch.object(tasks_store, "STATE_DIR", d):
+            path = _os.path.join(d, "duties")
+            with open(path, "w") as rival:
+                fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                assert tasks_store.try_acquire_lease("duties") is False
+
+
+def test_a_lease_released_by_reset_can_be_won_again(state_dir):
+    assert tasks_store.try_acquire_lease("duties") is True
+    tasks_store.reset_leases_for_tests()
+    assert tasks_store.try_acquire_lease("duties") is True

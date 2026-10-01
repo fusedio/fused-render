@@ -529,56 +529,38 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # and which of them happens to be first must not decide whether this process
     # has one at all. `schedule._qm()` still self-wires as a FALLBACK (and the
     # scheduler's tests rely on that path); this is the rule, said once, at the
-    # moment the process is brought up.
+    # moment the process is brought up. Wiring runs in EVERY process — it only
+    # registers how to build this process's own manager, nothing machine-wide.
     #
-    # Then, and ONLY with the flag on, build the manager and reconcile once so a
-    # restart resumes every folder's line immediately rather than on whatever
-    # event happens to arrive first. That is deliberate work: building reconciles
-    # and reconciling PUMPS, which SPAWNS (see `queue_manager.peek`) — which is
-    # exactly why it is a startup event and not the create_app body (tests build
-    # apps without lifespan and must never start a turn), and why it runs on a
-    # daemon thread like `_startup_tasks_warm`: resuming a line can spawn several
-    # Claude processes and must not hold up the first page paint.
+    # Then try to become the machine's duties holder (B2): the scheduler
+    # (`schedule.start()`, which also SENDS whatever is already overdue on its
+    # first tick) and a reconcile resume so a restart picks every folder's line
+    # back up immediately rather than on whatever event happens to arrive
+    # first. `queue_manager.ensure_machine_duties()` is a non-blocking lease
+    # claim — `serve` and every lean process both call it here, and only the
+    # one that wins actually starts anything; a lean process that loses tries
+    # again on its first `/api/tasks*` request (routers/tasks.py), which is
+    # also how the role moves over once the winner exits.
+    #
+    # A startup event and not the create_app body for the usual reason — tests
+    # build apps without running lifespan, and claiming the lease or reconciling
+    # must never happen just because a test constructed an app (reconciling
+    # PUMPS, which SPAWNS; see `queue_manager.peek`). Resuming runs on a daemon
+    # thread like `_startup_tasks_warm`: it can spawn several Claude processes
+    # and must not hold up the first page paint.
     @on_startup
     async def _startup_queue_manager():
-        from fused_render import project_queue, queue_manager
+        from fused_render import queue_manager
         from fused_render.server.routers import tasks as tasks_router_mod
 
         tasks_router_mod._wire_manager()
-        if not project_queue.enabled():
-            return
-
-        def resume():
-            try:
-                queue_manager.get().reconcile()
-            except Exception:  # noqa: BLE001 — a queue that cannot resume must
-                # not take the server down with it; the next tick tries again.
-                logger.exception("could not resume the project queue at startup")
-
-        thread = threading.Thread(target=resume, daemon=True,
-                                  name="fused-queue-resume")
-        thread.start()
-        # For tests, the same seam `_startup_tasks_warm` leaves.
-        app.state.queue_resume = thread
-
-    # Scheduled Claude messages (schedule.py). A startup event and emphatically
-    # NOT the create_app body: this loop SENDS things, and its first tick fires
-    # everything already overdue. Tests build the app without running lifespan,
-    # so under the create_app body every test that constructs an app would spawn
-    # whatever the developer's own store happened to hold.
-    #
-    # The first tick is also the catch-up pass — it is what sends a message that
-    # came due while the app was closed — so nothing here waits for a due time
-    # that has already gone by.
-    @on_startup
-    async def _startup_schedule():
-        from fused_render import schedule
-
-        schedule.start()
+        # For tests, the same seam `_startup_tasks_warm` leaves — None when
+        # this process didn't win the lease or the flag is off.
+        app.state.queue_resume = queue_manager.ensure_machine_duties()
 
     # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
     # Claude Code's live-session registry, prompt history and live transcripts.
-    # A startup event for the same reason as `_startup_schedule`: it is a
+    # A startup event for the same reason as `_startup_queue_manager`: it is a
     # thread for the life of the process that reads the user's real ~/.claude,
     # and tests build apps without lifespan.
     @on_startup

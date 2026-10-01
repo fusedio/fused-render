@@ -291,6 +291,24 @@ def _no_queue_manager_across_tests():
 
 
 @pytest.fixture(autouse=True)
+def _no_tasks_store_leases_across_tests():
+    """No test inherits another test's machine-duties lease (B2).
+
+    `tasks_store.try_acquire_lease` keeps the winning open file handle for
+    the rest of the PROCESS's life, not the test's — and `STATE_DIR` is
+    repointed at a fresh `tmp_path` every test (see `state_dir` fixtures
+    across the suite). Left standing, a lease name reused by a later test in
+    the same xdist worker would short-circuit to "already held" against a
+    handle opened under a directory that no longer exists, instead of really
+    acquiring one under the new test's dir."""
+    from fused_render import tasks_store
+
+    tasks_store.reset_leases_for_tests()
+    yield
+    tasks_store.reset_leases_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _no_share_rules_warm_guard_across_tests():
     """`share_file._kick_warm_once`'s "already kicked" flag is process state,
     not per-`create_app()` state — the same leak shape `_no_queue_manager_
