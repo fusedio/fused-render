@@ -195,7 +195,7 @@ URLs under that origin:
 - `/explorer/view/<path>` — full shell chrome.
 - Templates: open TARGET file's path; or template html directly with `?_file=<abs target>`.
 
-Render App only (no fused-render installed — origin on `2777`, `server.json` under `~/.fused-render-app`): its embed equivalent is `/render?path=<abs html>` — any absolute `.html`, `runtime.js` injected, relative `.py` resolved against it, env picked from the folder's `pyproject.toml`, params after `path` in the URL. `/explorer/*` there is the chat shell, not a view. Same render → interact → refresh loop; verification is the browser console (see below).
+Render App only (no fused-render installed — origin on `2777`, `server.json` under `~/.fused-render-app`): its embed equivalent is `/render?path=<abs html>` — `path` is the entry FILE (`<app dir>/index.html`), never the bare folder; any absolute `.html`, `runtime.js` injected, relative `.py` resolved against it, env picked from the folder's `pyproject.toml`, params after `path` in the URL. `/explorer/*` there is the chat shell, not a view. Same render → interact → refresh loop; verification is the browser console (see below).
 
 Loop: render → interact → URL updates → hard refresh → identical view.
 

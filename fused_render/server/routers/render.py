@@ -3,10 +3,10 @@ import os
 import urllib.error
 import urllib.request
 
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
-from fastapi import APIRouter, Header
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Header, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from fused_render.server.common import _error, _is_file_mount_safe
 from fused_render.shell import mounts as shell_mounts
@@ -36,13 +36,23 @@ def _referred_by_suppressed_open(referer: str | None) -> bool:
 
 @router.get("/render")
 def render(
+    request: Request,
     path: str,
     _preview: str | None = None,
     _noopen: str | None = None,
     referer: str | None = Header(default=None),
 ):
     if not _is_file_mount_safe(path):
-        return _error(f"no such file: {path}", status=404)
+        # An app FOLDER names its entry page: redirect (not serve inline) so
+        # the page's own URL carries the .html path — the runtime resolves
+        # relative .py / rawUrl against it, which a folder would put one
+        # level up. Probes the entry file, never stats the folder (mounts).
+        entry = os.path.join(path, "index.html")
+        if not _is_file_mount_safe(entry):
+            return _error(f"no such file: {path}", status=404)
+        q = [(k, v) for k, v in request.query_params.multi_items() if k != "path"]
+        return RedirectResponse(
+            "/render?" + urlencode([("path", entry), *q]), status_code=307)
     # Mount-backed pages read through the rclone serve like /api/fs/raw:
     # the kernel mount's first cold read can fail (EINVAL) mid-warmup.
     upstream = shell_mounts.serve_url_for(path)
