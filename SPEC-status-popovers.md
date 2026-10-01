@@ -63,9 +63,16 @@ These replace "Worth keeping". A section with no rows is not rendered.
 - Keep the label `"N needs you"` and the failure tone when there are attention rows. **But** when the only attention row(s) are update rows, use the non-failure `on` tone with the label `Update ready` or `Update available`, matching the row. An update is not a failure.
 - The chip numeral for the non-attention case becomes the **unseen** count, not the total. With zero unseen and zero attention, show the plain `Notifications` label with the `on` tone if any rows exist, else `idle`.
 
-### R8. Repo-update rows are clickable
+### R8. Repo-update rows are clickable, and every action on one clears it
 
-In the Notifications popover (`frontend/src/shell/RepoUpdatesDock.tsx`, `RepoUpdatesCardView`, repo rows built from `frontend/src/shell/repo-updates-lib.ts`), a row like "sandbox — Newer changes available [Update] [×]" opens the explorer at that repo's folder with the **Git sidebar** open when its body is clicked, and closes the popover. The Update and × buttons (and, on a failure, "Fix with Claude") keep their own behavior — a click on any of them never triggers the row's navigation.
+In the Notifications popover (`frontend/src/shell/RepoUpdatesDock.tsx`, `RepoUpdatesCardView`, repo rows built from `frontend/src/shell/repo-updates-lib.ts`), a row like "sandbox — Newer changes available [Update] [×]" opens the explorer at that repo's folder with the **Git sidebar** open when its body is clicked, and closes the popover.
+
+Clicking the row's body has exactly the same effect on the row as pressing its own × (dismiss): it reuses the same dismiss handler the × calls — persisted via the dismiss-store / `repoDismissSignature`, never a second, parallel dismissal path — then navigates to the Git sidebar and closes the panel. Keyboard activation (Enter/Space) behaves the same as a click.
+
+Every other action on the row clears it too, through that same handler, once the action has done its job:
+
+- **Update/Switch**: dismisses on a SUCCESSFUL mutation (`result.ok`) — the repo it was telling you about just caught up, so the row has nothing left to say. On a FAILED mutation it does **not** dismiss: the row's own failure message plus "Fix with Claude" is this row's failure notification, and `repoDismissSignature` (branch + ahead/behind counts) is unchanged by a failed pull, so dismissing here would hide a still-behind repo behind a signature that never moves again, with nothing else in the shell ever surfacing the failure. Only the signature actually changing (the repo moving, or going further behind) lifts a dismissal.
+- **"Fix with Claude"** (shown only after a failure): dismisses — staging the ask and navigating to the repo is this row's last act, the same "navigating away, so get out of the way" rule the row's own body click follows.
 
 - The destination is the repo's own folder, `_side=git` appended (`apps/explorer/listing/pane-side.ts`'s `git` companion — a `?_side=<companion>` deep link wins over whatever the folder's own session state last left the pane on, per `paneReopenedByUrl`).
 - The clickable body is keyboard reachable (Enter/Space), has a hover state and `cursor: pointer`, and carries an aria-label/title "Open \<name\> in Git".

@@ -984,7 +984,10 @@ test("the footer is absent at one repo row and present at two", () => {
 // the waiting-task and pairing rows above already use — `role="button"`,
 // not a real `<button>`, because the row also nests the Update action and
 // the ✕ (and, on a failure, "Fix with Claude" too), and a button cannot
-// nest inside a button.
+// nest inside a button. Every action on the row — the body click, a
+// SUCCESSFUL Update/Switch, and "Fix with Claude" — clears it through the
+// same `onDismiss` handler the ✕ calls (D949); a FAILED Update/Switch is the
+// one exception, covered in its own block below.
 test("a repo row's body is a keyboard-reachable click target, named for where it goes", () => {
   const tree = renderView({ rows: repoRows([status({ root: "/Users/me/Work/widget" })]) });
   const row = findAll(tree, "dl-row")[0];
@@ -995,12 +998,14 @@ test("a repo row's body is a keyboard-reachable click target, named for where it
   expect(findAll(tree, "dl-row-open")).toHaveLength(1);
 });
 
-test("clicking a repo row's body opens its folder in the explorer with the Git sidebar, and closes the panel", () => {
+test("clicking a repo row's body opens its folder in the explorer with the Git sidebar, dismisses the row, and closes the panel", () => {
   withNav((pushed) => {
     const onClose = mock(() => {});
+    const onDismiss = mock(() => {});
     const tree = renderInstance({
       rows: repoRows([status({ root: "/Users/me/Work/widget" })]),
       onClose,
+      onDismiss,
     });
     const row = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row")[0];
     act(() => {
@@ -1010,6 +1015,73 @@ test("clicking a repo row's body opens its folder in the explorer with the Git s
     // the one query param this row ever asks for.
     expect(pushed).toContain("/explorer/view/Users/me/Work/widget?_side=git");
     expect(onClose).toHaveBeenCalledTimes(1);
+    // Exactly the ✕'s own handler, keyed exactly the same way (D949) — not a
+    // second, parallel dismissal path.
+    expect(onDismiss).toHaveBeenCalledWith("/Users/me/Work/widget", "main@3");
+  });
+});
+
+// D949: a row click dismisses through the SAME persisted path the ✕ already
+// uses (dismiss-store / `repoDismissSignature`), so it survives a re-render
+// with the resulting `dismissed` map exactly the way a ✕-dismissed row does
+// (see "a re-check that moved NOTHING leaves a dismissed row dismissed"
+// above) — this is the dock-level harness that actually wires `onDismiss`
+// back into `dismissed`, rather than a prop assertion alone.
+test("a row click dismisses via the persisted store, and a later re-check with the same position leaves it dismissed", () => {
+  withNav(() => {
+    const row = repoRows([status({ root: "/a/one", branch: "main", behind: 3 })])[0];
+    let dismissed: Record<string, string> = {};
+    const renderer = create(
+      <RepoUpdatesDockView
+        rows={[row]}
+        dismissed={dismissed}
+        initialCollapsed={false}
+        onDismiss={(root, signature) => {
+          dismissed = { ...dismissed, [root]: signature };
+        }}
+        onDismissAll={() => {}}
+        onDone={() => {}}
+      />,
+    );
+    const before = renderer.toJSON() as ReactTestRendererJSON;
+    const clicked = findAll(before, "dl-row")[0];
+    act(() => {
+      (clicked.props as { onClick: () => void }).onClick();
+    });
+    act(() => {
+      renderer.update(
+        <RepoUpdatesDockView
+          rows={[row]}
+          dismissed={dismissed}
+          initialCollapsed={false}
+          onDismiss={(root, signature) => {
+            dismissed = { ...dismissed, [root]: signature };
+          }}
+          onDismissAll={() => {}}
+          onDone={() => {}}
+        />,
+      );
+    });
+    expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(0);
+
+    // A re-check at the same position (`checked_at` ticking, nothing else
+    // changing) must not resurrect it.
+    const rechecked = repoRows([
+      status({ root: "/a/one", branch: "main", behind: 3, checked_at: 999_999 }),
+    ])[0];
+    act(() => {
+      renderer.update(
+        <RepoUpdatesDockView
+          rows={[rechecked]}
+          dismissed={dismissed}
+          initialCollapsed={false}
+          onDismiss={() => {}}
+          onDismissAll={() => {}}
+          onDone={() => {}}
+        />,
+      );
+    });
+    expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(0);
   });
 });
 
@@ -1037,6 +1109,121 @@ test("the repo row's Update button and dismiss ✕ act on their own buttons, not
     expect(pushed).toHaveLength(0);
     expect(onClose).not.toHaveBeenCalled();
   });
+});
+
+// D949: a SUCCESSFUL Update/Switch dismisses the row — the repo it was
+// telling you about just caught up — through the same `onDismiss` handler
+// the ✕ uses, keyed the same way.
+test("a successful Update dismisses the row, via the same handler the ✕ uses", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, op: "update", root: "/Users/me/Work/widget" }),
+    }) as unknown as Response) as unknown as typeof fetch;
+
+  try {
+    const onDismiss = mock(() => {});
+    const tree = renderInstance({
+      rows: repoRows([status({ root: "/Users/me/Work/widget" })]),
+      onDismiss,
+    });
+    const update = findAll(tree.toJSON() as ReactTestRendererJSON, "q-all").find(
+      (n) => text(n) === "Update",
+    );
+    expect(update).toBeDefined();
+    await act(async () => {
+      (update as ReactTestRendererJSON).props.onClick();
+    });
+    expect(onDismiss).toHaveBeenCalledWith("/Users/me/Work/widget", "main@3");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// D949: a FAILED Update/Switch does NOT dismiss — `repoDismissSignature`
+// (branch + ahead/behind) is unchanged by a failed pull, and the row's own
+// failure message plus "Fix with Claude" below IS the failure notification;
+// dismissing here would hide a still-behind repo behind a signature that
+// never moves again.
+test("a failed Update does not dismiss the row — it shows the failure and Fix with Claude instead", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: false, message: "not fast-forward", reason: "diverged" }),
+    }) as unknown as Response) as unknown as typeof fetch;
+
+  try {
+    const onDismiss = mock(() => {});
+    const tree = renderInstance({
+      rows: repoRows([status({ root: "/Users/me/Work/widget" })]),
+      onDismiss,
+    });
+    const update = findAll(tree.toJSON() as ReactTestRendererJSON, "q-all").find(
+      (n) => text(n) === "Update",
+    );
+    await act(async () => {
+      (update as ReactTestRendererJSON).props.onClick();
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+    const after = tree.toJSON() as ReactTestRendererJSON;
+    expect(findAll(after, "dl-row")).toHaveLength(1);
+    const buttons = findAll(after, "q-all").map((n) => text(n));
+    expect(buttons).toContain("Fix with Claude");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// D949: "Fix with Claude" is reachable only once Update/Switch has already
+// failed (and therefore already declined to dismiss) — pressing it is the
+// row's last act, the same "navigating away, so get out of the way" rule the
+// row's own body click follows, so it dismisses too.
+test("pressing Fix with Claude dismisses the row and navigates to the repo", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: false, message: "not fast-forward", reason: "diverged" }),
+    }) as unknown as Response) as unknown as typeof fetch;
+
+  try {
+    const onDismiss = mock(() => {});
+    const tree = renderInstance({
+      rows: repoRows([status({ root: "/Users/me/Work/widget" })]),
+      onDismiss,
+    });
+    const update = findAll(tree.toJSON() as ReactTestRendererJSON, "q-all").find(
+      (n) => text(n) === "Update",
+    );
+    // No `navigate`/`history` involvement yet — `run()`'s failure path is a
+    // plain `postJson` await, so this half runs outside `withNav`.
+    await act(async () => {
+      (update as ReactTestRendererJSON).props.onClick();
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+
+    const fix = findAll(tree.toJSON() as ReactTestRendererJSON, "q-all").find(
+      (n) => text(n) === "Fix with Claude",
+    );
+    expect(fix).toBeDefined();
+
+    // `fixWithClaude` is synchronous (`stageClaudeAsk` + `navigate`), so the
+    // `history`/`window` shim only needs to be live for this one click.
+    withNav((pushed) => {
+      act(() => {
+        (fix as ReactTestRendererJSON).props.onClick();
+      });
+      expect(pushed).toContain("/explorer/view/Users/me/Work/widget");
+    });
+    expect(onDismiss).toHaveBeenCalledWith("/Users/me/Work/widget", "main@3");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("a failure comes before an ordinary repo row — Needs you precedes New (R3)", () => {

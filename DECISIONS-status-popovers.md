@@ -267,6 +267,50 @@
 - No CSS changes: `.dl-row.dl-row-open`'s hover/cursor treatment already
   covers any row using this seam, including this one.
 
+### D949 — clicking a repo row (or any action on it) dismisses it too
+
+- **The row body click dismisses.** It now calls the exact same `onDismiss`
+  prop the × calls — not a second dismissal path — before `navigateUrl` and
+  `onOpen?.()`. That handler is the one already wired to `dismissOne` /
+  `repoDismissSignature` in `RepoUpdatesCardView`, so a row dismissed by
+  clicking through to Git persists exactly the way a row dismissed by its ×
+  already did (dismiss-store, keyed on position signature), and comes back
+  the same way: only when the signature changes.
+- **Update/Switch dismisses too, but only on success.** `run()` used to call
+  `onDone(result)` unconditionally and only set `failure` on a non-ok
+  result; it now also calls `onDismiss()` when `result.ok` is true, before
+  `onDone`. A successful pull/switch means the repo caught up, so the row
+  has nothing left to report — same reasoning as the click case.
+- **Update/Switch does NOT dismiss on failure, and this is deliberate, not
+  an oversight.** `onDismiss` is keyed on `repoDismissSignature(row.repo)` —
+  the branch name plus ahead/behind counts — and a failed pull or switch
+  does not move that signature (the repo is exactly as behind as it was
+  before the click). If `run()` dismissed unconditionally, a user who tries
+  Update, watches it fail, and does nothing else would have the row vanish
+  and then (per the dismiss-store's own signature check) **never come back**
+  for that same still-behind state — a silent swallow of a real failure, not
+  a dismissal of a resolved one. There is no OTHER surface in this shell
+  that would pick up the slack: the mutation is a synchronous
+  `postJson`/await, not a tracked background job, so it never becomes a
+  terminal job row, and the server records nothing server-side on a failed
+  mutation (unlike the upstream *check*, whose "silence on failure is
+  deliberate" note in `git_upstream.py` is about a different, read-only
+  path). The row's own `status={failure.message}` plus `extraAction`
+  ("Fix with Claude") — already built, already rendered right here — IS the
+  failure notification R8's "surfaced somewhere" asks for; keeping the row
+  alive on failure is what keeps that notification visible at all.
+- **"Fix with Claude" dismisses unconditionally.** It only renders once
+  `failure` is set (Update already declined to dismiss), and by the time a
+  user presses it they are leaving: `stageClaudeAsk` queues the prompt and
+  `navigate` hops to the repo folder. Dismissing here matches the row body's
+  own "navigating away, so get out of the way" rule — nothing is lost,
+  since the way out IS the navigation, not a second chance to retry Update
+  in place.
+- Net effect: a repo row leaves the list the moment its story is actually
+  over — read (body click), fixed (Update/Switch succeeds), or handed off
+  (Fix with Claude) — and stays exactly as long as it still has unresolved
+  news to show (Update/Switch fails, nothing clicked yet).
+
 ## Test-infra notes (apply to any future work here)
 
 - Bun's test runtime has no `localStorage` global at all — a bare read

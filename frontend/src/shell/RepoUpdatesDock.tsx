@@ -505,6 +505,16 @@ function RepoRowView({
   const [busyAction, setBusyAction] = useState<RepoAction | null>(null);
   const [failure, setFailure] = useState<MutationResult | null>(null);
 
+  // SUCCESS dismisses the row (same handler the ✕ uses, D949): the repo it
+  // was telling you about just caught up, so the row has nothing left to
+  // say. FAILURE does NOT dismiss — the row's own `failure.message` plus
+  // "Fix with Claude" below IS this row's failure notification, and
+  // `onDismiss` is keyed on `repoDismissSignature` (branch + ahead/behind
+  // counts), which a failed pull leaves unchanged; dismissing here would
+  // hide a still-behind repo behind a signature that never moves, with
+  // nothing else in the shell surfacing the failure. Only a change of
+  // signature (the repo actually moving, or going further behind) would
+  // ever lift a dismissal like that.
   const run = async (action: RepoAction) => {
     if (busyAction !== null) return;
     setBusyAction(action);
@@ -514,7 +524,11 @@ function RepoRowView({
         action,
         root: row.repo.root,
       });
-      if (!result.ok) setFailure(result);
+      if (result.ok) {
+        onDismiss();
+      } else {
+        setFailure(result);
+      }
       onDone(result);
     } catch {
       setFailure({ ok: false, message: "check your connection and retry" });
@@ -523,11 +537,16 @@ function RepoRowView({
     }
   };
 
+  // Reached only once `failure` is set, i.e. only after `run` above declined
+  // to dismiss — staging the ask and navigating away is this row's last act,
+  // so it dismisses here too (same handler, D949), the same "navigating
+  // away, so get out of the way" rule the row's own body click follows.
   const fixWithClaude = () => {
     if (!failure) return;
     const prompt = repoFixPrompt(row, failure.message || "unknown error", failure.reason);
     stageClaudeAsk(row.repo.root, prompt);
     navigate(row.repo.root, { isDir: true });
+    onDismiss();
   };
 
   // THE ONE ACTION, THEN THE DISMISS ✕ — the same left-to-right order every
@@ -582,6 +601,7 @@ function RepoRowView({
       extraAction={failure ? { label: "Fix with Claude", onClick: fixWithClaude } : undefined}
       rowClick={{
         onClick: () => {
+          onDismiss();
           navigateUrl(repoGitHref(row.repo.root), { isDir: true });
           onOpen?.();
         },
