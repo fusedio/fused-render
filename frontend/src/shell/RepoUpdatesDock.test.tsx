@@ -111,7 +111,16 @@ const { _resetSeenStoreForTest } = await import("@shell/notifications-seen-store
 // read as seen in a LATER test that assumes a fresh, nothing-looked-at-yet
 // "first look" — order-dependent flakiness of exactly the kind
 // `testDomShim.ts`'s own header warns about for shared globals.
+//
+// `_resetSeenStoreForTest()` alone is not enough: it re-reads from
+// `seenStorageBacking`, the fake localStorage above, which is itself a
+// module-level `Map` that outlives any one test. Age/size pruning (R4) only
+// drops an entry once it is 30 days old or the store holds 500+ keys, so
+// without clearing this Map too, every row key any earlier test ever stamped
+// stays "seen" forever — clearing it here is what makes each test start from
+// a genuinely empty store, not an accumulating one.
 beforeEach(() => {
+  seenStorageBacking.clear();
   _resetSeenStoreForTest();
 });
 
@@ -543,21 +552,21 @@ test("five or fewer terminal jobs draw with no fold row at all", () => {
 // once those same rows have been SEEN (`renderSeenView`'s open-close-reopen
 // dance — RepoUpdatesDock.tsx's own close effect marks everything present
 // seen).
-test("the fold keeps the NEWEST five, not the oldest — `terminal` arrives oldest-first", () => {
+test("the fold keeps the NEWEST five, drawn newest-first — `terminal` arrives oldest-first", () => {
   // j0 is the oldest job, j6 the newest (jobs.py's `list_jobs` order). The
-  // visible five must be j2..j6, in that same oldest-first reading order —
-  // j0 and j1 are what the fold hides.
+  // visible five must be j6..j2, newest at the top — j0 and j1 are what the
+  // fold hides, since they are the oldest two.
   const terminal = Array.from({ length: 7 }, (_, i) =>
     doneJob({ id: `j${i}`, detail: `job ${i}` })
   );
   const tree = renderSeenView({ rows: [], terminal });
   const rows = findAll(tree, "dl-row");
   expect(rows.map((r) => text(r))).toEqual([
-    expect.stringContaining("job 2"),
-    expect.stringContaining("job 3"),
-    expect.stringContaining("job 4"),
-    expect.stringContaining("job 5"),
     expect.stringContaining("job 6"),
+    expect.stringContaining("job 5"),
+    expect.stringContaining("job 4"),
+    expect.stringContaining("job 3"),
+    expect.stringContaining("job 2"),
   ]);
 });
 

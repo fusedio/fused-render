@@ -42,7 +42,7 @@
 // platform/lib/router, which shell may import freely — but the
 // STAGED-PROMPT store this row writes into is explorer/lib territory, which
 // only shell-side code reaches.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
@@ -71,7 +71,7 @@ import type { Job, JobGroup } from "@platform/lib/jobs";
 import {
   dismissNotification,
   useRetainedNotifications,
-  UPDATE_NOTIFICATION_FAMILY,
+  isUpdateNotification,
 } from "@platform/lib/notifications";
 import type { StoredNotification } from "@platform/lib/notifications";
 import { compactAge } from "@platform/lib/format";
@@ -86,7 +86,8 @@ import {
   getFirstSeenAt,
   isSeen,
   markSeen,
-  syncPresentKeys,
+  stampFirstSeen,
+  useSeenSnapshot,
   type SeenState,
 } from "@shell/notifications-seen-store";
 import { loadDismissed, saveDismissed } from "./dismiss-store";
@@ -802,36 +803,17 @@ export function RepoUpdatesCardView({
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
 }) {
-  // R4: "mark seen on panel close, or ~1.5s after it opens, never on open
-  // itself." A ref, not state — `presentKeys` is recomputed every render
-  // below and written into it directly (render is not the place to call
-  // `setState`), so the effect always marks whatever is on screen at the
-  // moment it fires, not a stale snapshot from whichever render scheduled
-  // it. Starts empty, filled before paint by the same render that first
-  // introduces a row, well before this effect's timer could ever fire.
-  //
-  // `globalThis.setTimeout`, not `window.setTimeout`: this file's own
-  // polling effects use the latter, but `RepoUpdatesDock.test.tsx`'s
-  // `withNav` helper swaps `window` for a bare `{ dispatchEvent }` stub for
-  // the span of a click (nothing about a nav press needs a timer), and this
-  // effect can legitimately still be mounted underneath that swap. The two
-  // are the same function in every real browser — this only has to dodge a
-  // test-only stand-in that was never trying to stub timers at all.
-  const presentKeysRef = useRef<string[]>([]);
+  // R4: "mark seen on panel close" — every row key present at ANY point
+  // while the panel was open this time, not just whatever is on screen at
+  // the instant it closes (a row that first appears mid-open, after the
+  // panel was already open, still gets marked). `everPresentRef` accumulates
+  // across renders; it is cleared the moment the panel opens (see the
+  // closed->open transition below) and read once, by this effect's cleanup,
+  // the moment it closes or this view unmounts.
+  const everPresentRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (collapsed) return;
-    let firedOnTimer = false;
-    const timer = globalThis.setTimeout(() => {
-      firedOnTimer = true;
-      markSeen(presentKeysRef.current);
-    }, 1500);
-    return () => {
-      globalThis.clearTimeout(timer);
-      // The panel closed (or this view unmounted) before the timer landed —
-      // closing is the OTHER event R4 names, so this still has to mark
-      // whatever was on screen, not drop it on the floor.
-      if (!firedOnTimer) markSeen(presentKeysRef.current);
-    };
+    return () => markSeen([...everPresentRef.current]);
   }, [collapsed]);
 
   const visible = visibleRepoRows(rows, dismissed);
@@ -867,17 +849,18 @@ export function RepoUpdatesCardView({
   // already-retained list" — not a re-check of a specific tier value.
   const messagesAttention = messages.filter((m) => m.tier === "attention");
   const messagesTrail = messages.filter((m) => m.tier !== "attention");
-  // THE UPDATE ROW (R3/R6) — marked by `family`, not by title text, so it
-  // survives its own title changing mid-flow ("Update available" ->
-  // "Update ready" -> "Restarting…"). Always `tier: "attention"`
-  // (UpdateNotifier.tsx), so it is already inside `messagesAttention`; this
-  // just peels it back out so "Needs you" can pin it first and the chip
-  // (R7) can tell "only the update wants a look" apart from an ordinary
-  // failure.
-  const updateMessages = messagesAttention.filter((m) => m.family === UPDATE_NOTIFICATION_FAMILY);
-  const ordinaryAttentionMessages = messagesAttention.filter(
-    (m) => m.family !== UPDATE_NOTIFICATION_FAMILY,
-  );
+  // THE UPDATE ROW(S) (R3/R6) — marked by `family` via `isUpdateNotification`,
+  // not by title text, so each survives its own title changing mid-flow
+  // ("Update available" -> "Update ready" -> "Restarting…"). The download
+  // and restart cards carry distinct `family` values (notifications.ts) so
+  // they never collapse into each other, but both still count as "the
+  // update row" here — `isUpdateNotification` matches either. Always
+  // `tier: "attention"` (UpdateNotifier.tsx), so each is already inside
+  // `messagesAttention`; this just peels them back out so "Needs you" can
+  // pin them first and the chip (R7) can tell "only the update wants a
+  // look" apart from an ordinary failure.
+  const updateMessages = messagesAttention.filter(isUpdateNotification);
+  const ordinaryAttentionMessages = messagesAttention.filter((m) => !isUpdateNotification(m));
 
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // COUNTS ROWS, NOT RAW JOBS (user decision, verbatim: "yes we should count
@@ -912,13 +895,11 @@ export function RepoUpdatesCardView({
 
   // ---- R4/R5: every row's stable key, its age, and whether it is unseen ----
   //
-  // `syncPresentKeys` is cheap and idempotent (its own doc comment: "every
-  // render of the Notifications panel's contents is fine") — called straight
-  // from render, not an effect, so every row below reads an up-to-date
-  // `SeenState` on the very render that introduces it, rather than one
-  // render behind. It also PRUNES to exactly the keys built here, so a row
-  // that scrolled out of existence (dismissed, or its signature moved) does
-  // not linger in storage.
+  // `useSeenSnapshot` subscribes this view to the seen-store: a `markSeen`
+  // call anywhere (this view's own close effect, above) triggers the
+  // re-render that moves rows between "New"/"Earlier" and updates the chip.
+  const liveSnapshot = useSeenSnapshot();
+
   const now = Date.now();
   const age = (ts: number) => compactAge(ts, now);
 
@@ -932,15 +913,40 @@ export function RepoUpdatesCardView({
     ...terminalTrailGroups.map(jobGroupKey),
     ...messagesTrail.map(messageKey),
   ];
-  const seenState: SeenState = syncPresentKeys(presentKeys);
-  const unseen = (key: string) => !isSeen(seenState, key);
+  // Stamps `firstSeenAt` for any key seen here for the first time. Runs
+  // after render (not during it) since a write that changes the store emits
+  // to every subscriber, including `liveSnapshot` above — doing that while
+  // THIS render is still in progress would mean telling React to re-render
+  // the same component it is currently rendering. No dependency array: it is
+  // cheap and idempotent, so running it after every render is fine, same as
+  // the direct-from-render call this replaces used to be.
+  useLayoutEffect(() => {
+    stampFirstSeen(presentKeys);
+  });
 
-  // R4: a row counts unseen until the panel has been open while it was
-  // present, marked seen on close or ~1.5s after open — never on open
-  // itself, so the reader still sees what's new during the very open in
-  // which they're looking at it. `presentKeysRef` is read by that effect
-  // (below the JSX this function returns), always holding this render's keys.
-  presentKeysRef.current = presentKeys;
+  // While the panel is OPEN, classification is frozen to the snapshot taken
+  // the moment it opened — a row already on screen must not move out from
+  // under the reader's pointer just because an unrelated render happens
+  // while they're looking at it (R4/item 3). While CLOSED, the chip reads
+  // the live snapshot, so its count/tone stay current between opens. The
+  // freeze itself happens on the closed->open transition below; `wasOpenRef`
+  // is the render-time-mutated ref that detects it, the same pattern
+  // `everPresentRef`'s own accumulation (right below) already uses.
+  const wasCollapsedRef = useRef(collapsed);
+  const openSnapshotRef = useRef<SeenState | null>(null);
+  if (wasCollapsedRef.current && !collapsed) {
+    // Just opened — start a fresh "what's present this time" accumulation
+    // and freeze the view on whatever was seen/unseen coming in.
+    everPresentRef.current = new Set();
+    openSnapshotRef.current = liveSnapshot;
+  }
+  wasCollapsedRef.current = collapsed;
+  if (!collapsed) {
+    for (const key of presentKeys) everPresentRef.current.add(key);
+  }
+
+  const seenState: SeenState = collapsed ? liveSnapshot : (openSnapshotRef.current ?? liveSnapshot);
+  const unseen = (key: string) => !isSeen(seenState, key);
 
   // ---- "Needs you": the update row pinned first, then waiting tasks, then
   // everything else newest-first (R3) ----
@@ -1123,11 +1129,12 @@ export function RepoUpdatesCardView({
     ? earlierEntriesAll
     : earlierEntriesAll.slice(0, TERMINAL_VISIBLE_CAP);
   const olderCount = earlierEntriesAll.length - cappedEarlierEntries.length;
-  // The cap keeps the NEWEST members of `earlierEntriesAll` (the slice
-  // above, off the newest-first sort), but draws them back in the same
-  // oldest-first reading order the pre-R3 terminal trail always used — a
-  // plain `.reverse()` turns "newest kept" into "oldest kept reads first".
-  const shownEarlierEntries = [...cappedEarlierEntries].reverse();
+  // `cappedEarlierEntries` is already newest-first (the slice above, off the
+  // newest-first sort) — "Earlier" draws in the same order, newest at the
+  // top, matching "New" and "Needs you" above it. The folded rows are
+  // chronologically the OLDEST of the list, so the "N older notifications"
+  // button reads as the bottom of the section, not the top (see its JSX).
+  const shownEarlierEntries = cappedEarlierEntries;
 
   const hasNeedsYou = needsYouNodes.length > 0;
   const hasNew = newEntries.length > 0;
@@ -1153,7 +1160,12 @@ export function RepoUpdatesCardView({
     label = `${attentionCount} needs you`;
     chipCount = attentionCount;
   } else if (updateMessages.length > 0) {
-    tone = "on";
+    // An update row with `tone: "error"` ("Update failed", "fused-render
+    // didn't come back") is still a failure, even though it's the update
+    // family — only a row genuinely offering something ("Update available",
+    // "Update ready") gets the quiet "on" tone. The label stays the row's
+    // own title either way.
+    tone = updateMessages[0].tone === "error" ? "failure" : "on";
     label = updateMessages[0].title;
     chipCount = 0;
   } else {
@@ -1230,16 +1242,13 @@ export function RepoUpdatesCardView({
                   <div className="dl-section-head">
                     Earlier <span className="dl-section-count">{earlierEntriesAll.length}</span>
                   </div>
+                  <div className="dl-rows">{shownEarlierEntries.map((e) => e.node)}</div>
                   {/* THE VOLUME CAP: bounds how many "Earlier" rows draw at
                       once — nothing is ever deleted by it, only folded, one
-                      click away behind this button. ABOVE `.dl-rows`, not
-                      inside it (D762): `earlierEntriesAll` is already
-                      newest-first, so the folded rows are chronologically
-                      EARLIER than every rendered one — a pinned line above
-                      the scrolling list keeps the section reading
-                      top-to-bottom in time order whether folded or open, and
-                      keeps `.dl-rows` holding nothing but the rows it
-                      scrolls. */}
+                      click away behind this button. BELOW `.dl-rows`:
+                      `shownEarlierEntries` is newest-first, so the folded
+                      rows are chronologically the OLDEST of the section —
+                      this button sits where they'd be, at the bottom. */}
                   {olderCount > 0 && (
                     <button
                       type="button"
@@ -1249,7 +1258,6 @@ export function RepoUpdatesCardView({
                       {olderCount} older notification{olderCount === 1 ? "" : "s"}
                     </button>
                   )}
-                  <div className="dl-rows">{shownEarlierEntries.map((e) => e.node)}</div>
                 </div>
               )}
               {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
