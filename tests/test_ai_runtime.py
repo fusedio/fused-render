@@ -49,6 +49,14 @@ _IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 #: about what it DOES has no other way back to it.
 _REAL_ENSURE_VENV = supervisor._ensure_venv
 
+#: The real `start_reaper`, captured at import — before the autouse
+#: `_no_ai_idle_reaper_thread` fixture (conftest.py) replaces it with a no-op
+#: for every test in this module. The one test here that needs the REAL
+#: idempotency guard (the concurrent-first-call race) grabs it from here
+#: rather than from `supervisor.start_reaper` at test-body time, which would
+#: already be the patched no-op.
+_REAL_START_REAPER = supervisor.start_reaper
+
 # A worker that loads instantly, answers /health, streams two chunks and quits.
 # Deliberately stdlib-only and tiny: it stands in for mlx_text/worker.py's
 # CONTRACT, not its behaviour.
@@ -3679,6 +3687,62 @@ def test_a_resident_load_starts_the_idle_reaper(fake_runner, monkeypatch):
     monkeypatch.setattr(supervisor, "start_reaper", lambda: calls.append(1))
     supervisor.load("org/reaped", registry.TEXT_GENERATION)
     assert calls, "_start_resident did not call supervisor.start_reaper()"
+
+
+def test_concurrent_first_calls_to_start_reaper_start_exactly_one_thread(monkeypatch):
+    """`start_reaper()` is reached from `_start_resident`, which plenty of
+    code paths can hit at once in a real process (a burst of concurrent
+    loads, each finishing resident-load `_start_resident` around the same
+    moment). Two callers racing the `is_alive()` check before either has
+    created a thread must not both create and start one — a sequential
+    idempotency check never exercises that window, so this pins threads at a
+    `Barrier` so every caller reaches `start_reaper()` at the same instant.
+
+    Counts actual `threading.Thread(..., name="ai-idle-reaper")`
+    instantiations (not just the surviving `_reaper_thread` handle, which
+    would only show whichever thread a race assigned LAST, hiding an earlier
+    one that was also created and started). The reaper's `run` body is never
+    exercised — the thread this test spawns is joined before returning so
+    nothing outlives the test."""
+    monkeypatch.setattr(supervisor, "_reaper_thread", None)
+    real_thread_cls = threading.Thread
+    created = []
+
+    class CountingThread(real_thread_cls):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            if self.name == "ai-idle-reaper":
+                created.append(self)
+
+    monkeypatch.setattr(supervisor.threading, "Thread", CountingThread)
+
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def call_start_reaper():
+        barrier.wait(timeout=5)
+        _REAL_START_REAPER()
+
+    callers = [real_thread_cls(target=call_start_reaper) for _ in range(n)]
+    for t in callers:
+        t.start()
+    for t in callers:
+        t.join(timeout=5)
+        assert not t.is_alive(), "a start_reaper() caller never returned"
+
+    assert len(created) == 1, (
+        f"expected exactly one reaper thread to be created, got {len(created)}")
+    reaper_thread = created[0]
+    assert supervisor._reaper_thread is reaper_thread
+    try:
+        assert reaper_thread.is_alive()
+    finally:
+        # The real `run` sleeps _REAPER_TICK_S (30s) between ticks and never
+        # exits; it's a daemon so there is nothing to join. Reset the module
+        # global so later tests in this file see a clean slate, matching how
+        # every other test here gets `start_reaper` no-op'd by the autouse
+        # conftest fixture.
+        supervisor._reaper_thread = None
 
 
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):

@@ -2005,6 +2005,9 @@ def evict_stale_engines() -> list[str]:
 _REAPER_TICK_S = 30.0
 
 _reaper_thread: threading.Thread | None = None
+# Guards `start_reaper`'s check-AND-create-AND-assign so two concurrent
+# callers can't both pass the `is_alive()` check and each start a thread.
+_reaper_lock = threading.Lock()
 
 
 #: Margin added to a call's own request timeout before a still-positive
@@ -2178,21 +2181,29 @@ def start_reaper() -> None:
     The body is `sleep` then `reap_idle(time.monotonic())` — no wall clock, so
     a laptop that sleeps mid-tick loses no window (Key decisions: the whole
     feature is built on the monotonic clock never advancing across a suspend).
+
+    `_reaper_lock` covers the check, the thread's creation, and the assignment
+    to `_reaper_thread` as one step: two concurrent callers racing the
+    `is_alive()` check could otherwise both see no live thread (the first
+    start, or a restart once the old thread died) and each create and start
+    one. Starting a daemon thread is fast and non-blocking, so holding the
+    lock across `.start()` costs nothing a second caller would notice.
     """
     global _reaper_thread
-    if _reaper_thread is not None and _reaper_thread.is_alive():
-        return
+    with _reaper_lock:
+        if _reaper_thread is not None and _reaper_thread.is_alive():
+            return
 
-    def run() -> None:
-        while True:
-            time.sleep(_REAPER_TICK_S)
-            try:
-                reap_idle(time.monotonic())
-            except Exception:  # noqa: BLE001 - a tick must never kill the loop
-                logger.exception("idle-reaper tick failed")
+        def run() -> None:
+            while True:
+                time.sleep(_REAPER_TICK_S)
+                try:
+                    reap_idle(time.monotonic())
+                except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                    logger.exception("idle-reaper tick failed")
 
-    _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
-    _reaper_thread.start()
+        _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
+        _reaper_thread.start()
 
 
 #: How often the background hardware-detection thread re-probes once it has
