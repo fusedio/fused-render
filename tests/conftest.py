@@ -678,33 +678,6 @@ def _no_ai_hardware_refresh_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_lazy_hardware_probe(monkeypatch):
-    """`hw_detect.cached_hardware()` runs `_probe_once_if_missing` — a real
-    `nvidia-smi`/`rocm-smi`/`powershell` subprocess spawn — the first time it
-    is called against a cache that does not exist on disk; no test may let
-    it run.
-
-    Same hazard, same fix, as `_no_ai_hardware_refresh_thread` immediately
-    above, for the complementary code path: that fixture neutralizes the
-    background thread that writes the cache on a cadence, and this one
-    neutralizes the ON-DEMAND probe that fills it the first time anything
-    reads a missing cache — which, unlike the thread, is reachable from an
-    ordinary `hw_detect.cached_hardware()` call with no lifespan involved at
-    all, so every test in the suite that exercises `fit.py`/`speed.py`/a
-    catalog route on a tmp `FUSED_RENDER_HOME` (i.e. always a missing cache)
-    would otherwise spawn one.
-
-    The test that is ABOUT the probe (`tests/test_ai_hw_detect.py`) drives
-    `_probe_once_if_missing()` directly against a reference captured at
-    collection time, before this fixture patches it — matching how
-    `_hardware_refresh_tick()` is tested without ever starting
-    `start_hardware_refresh`'s thread."""
-    from fused_render.ai import hw_detect
-
-    monkeypatch.setattr(hw_detect, "_probe_once_if_missing", lambda: None)
-
-
-@pytest.fixture(autouse=True)
 def _no_ai_hub_metadata_refresh_thread(monkeypatch):
     """`create_app` starts the background Hub-metadata-warming thread
     (`supervisor.start_hub_metadata_refresh`, code review finding 1 on top
