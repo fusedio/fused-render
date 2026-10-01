@@ -26,25 +26,35 @@
   both `DownloadManager.tsx` and `RepoUpdatesDock.tsx`. A section heading now
   renders whenever its section renders, carrying a count in a new
   `.dl-section-count` span (muted, `--fg-faint`).
-- Removed the `.dl-section + .dl-section { border-top }` hairline — the sticky,
-  opaque heading band is now what visually separates one section from the
-  next, so a redundant hairline directly under it was pure clutter.
+- `.dl-section + .dl-section > .dl-section-head` carries a `1px solid
+  var(--border)` top border plus a touch more top padding (visual finding:
+  the sticky, opaque heading band alone did not read as a boundary once a
+  reader had scrolled a section's own rows up underneath it — nothing marked
+  where one ended and the next began). Scoped to the header of every section
+  but the first, so the line stays attached to the sticky band and scrolls
+  away with it rather than sitting pinned at a fixed spot while the band
+  slides out from under it.
 
 ## R6 — retention must not bury attention
 
 - `capRetained` now evicts in two passes: first every non-attention row,
   oldest first (append order, so index 0 is oldest); only once none are left
-  does it evict an attention row, and even then it skips any row whose
-  `family` is `UPDATE_NOTIFICATION_FAMILY`.
-- Added `UPDATE_NOTIFICATION_FAMILY_KEY = "app-update"` and
-  `UPDATE_NOTIFICATION_FAMILY = `familyKey:${UPDATE_NOTIFICATION_FAMILY_KEY}``
-  to `notifications.ts`, both exported. `UpdateNotifier.tsx` sets
-  `familyKey: UPDATE_NOTIFICATION_FAMILY_KEY` on every `notify()` call across
-  its whole flow (available, failed, ready, restarting, gave-up) — this is
-  the "stable marker on the stored notification" R3 and R6 both ask for,
-  rather than a title match (titles change — "Update available" ->
-  "Update ready" -> "Restarting fused-render" — across the same logical
-  update).
+  does it evict an attention row, and even then it skips any row
+  `isUpdateNotification` matches (below).
+- `notifications.ts` exports `UPDATE_DOWNLOAD_FAMILY_KEY = "app-update:download"`
+  and `UPDATE_RESTART_FAMILY_KEY = "app-update:restart"` — two distinct
+  families, not one shared `UPDATE_NOTIFICATION_FAMILY_KEY`. A single shared
+  key let `retainAndCollapse` merge the download and restart cards into one
+  row (shown with a "×2" badge) and made dismissing one dismiss both, since
+  collapsing and dismissal both key off `family`. `UpdateNotifier.tsx` sets
+  `UPDATE_DOWNLOAD_FAMILY_KEY` on its download-flow `notify()` calls
+  (available, failed) and `UPDATE_RESTART_FAMILY_KEY` on its restart-flow
+  ones (ready, restarting, gave-up, keep-alive) — the two cards track two
+  independent pieces of the update lifecycle and now behave like it. The
+  exported `isUpdateNotification(n)` helper matches either (checks the
+  shared `app-update` prefix) — every place that used to compare against the
+  single family constant (R3's "Needs you" pinning, R6's never-evict check,
+  R7's chip logic) now calls this instead.
 - Rewrote `UpdateNotifier.test.tsx`'s "a genuine cap eviction still
   resurrects the restart card" test: that scenario is no longer reachable —
   the restart/update card can no longer be evicted by a busy notification
@@ -82,12 +92,16 @@
   row — the full list is still one click away. A waiting task is unaffected
   either way, since it lives in "Needs you", never under the cap.
 - The merge sort over `pairings`/`visible` (repo rows)/`terminalTrailGroups`/
-  `messagesTrail` is newest-first by each row's own timestamp, but the
-  **displayed** order of whatever the cap keeps is reversed back to
-  oldest-first before rendering — matching the long-standing terminal-trail
-  reading order (`terminal` itself always arrives oldest-first, per
-  `jobs.py`'s `list_jobs`). The cap picks the newest N for retention; the
-  reversal is purely about reading order once those N are chosen.
+  `messagesTrail` is newest-first by each row's own timestamp, and renders in
+  that same newest-first order — matching SPEC-status-popovers.md and how
+  "Needs you" above it already reads. **An earlier draft here reversed the
+  capped list back to oldest-first before rendering, to match
+  `terminal`'s own oldest-first arrival order; that reversal is gone** — it
+  put the newest arrivals at the bottom of the list, under "Earlier"'s own
+  heading, which is backwards for a section whose whole point is "most
+  recent first". The "N older notifications" fold consequently now sits at
+  the **bottom** of "Earlier", since the rows it hides are the
+  chronologically oldest and newest-first rendering puts them there.
 - Two terminal-trail job groups that finish in the same second carry an
   identical `finished_at`, which would otherwise make the merge sort fall
   back to `Array.prototype.sort`'s stability and keep ties in `terminal`'s
@@ -101,20 +115,56 @@
 
 ## R4 — seen/unread state
 
-- New `notifications-seen-store.ts`: a small `localStorage`-backed
+- `notifications-seen-store.ts`: a `localStorage`-backed
   `{ seen: string[]; firstSeenAt: Record<string, number> }`, with
-  `syncPresentKeys`/`isSeen`/`getFirstSeenAt`/`markSeen`, degrading silently
-  to "nothing recorded" on any storage failure (matching `dismiss-store.ts`'s
-  own established try/catch pattern) rather than throwing.
+  `stampFirstSeen`/`isSeen`/`getFirstSeenAt`/`markSeen`/`useSeenSnapshot`,
+  degrading silently to "nothing recorded" on any storage failure (matching
+  `dismiss-store.ts`'s own established try/catch pattern) rather than
+  throwing.
+- **An earlier draft here (`syncPresentKeys`) pruned the persisted store down
+  to exactly whatever keys were present in the CURRENT render's call —
+  gone.** The panel's very first paint after a reload calls this with an
+  empty or partial key list before data has loaded, which that draft read as
+  "everything else is gone" and silently wiped every row's seen state on
+  every reload. Pruning is now driven by age and size, not render presence,
+  and happens only as a side effect of a write: an entry drops once it is
+  older than 30 days, and once the store holds more than 500 entries the
+  oldest-by-`firstSeenAt` are dropped first (`pruneByAgeAndSize`, called from
+  `stampFirstSeen`; `markSeen` never prunes, since it has no caller-supplied
+  notion of "now" to prune against).
+- A client message's id (`notify()`'s row id) is not stable across a reload
+  or a second window, so message keys (`message:`-prefixed) never touch
+  localStorage at all — they live only in an in-memory, module-level
+  `messageSeenSet` that starts empty every time the module loads. `isSeen`
+  and `markSeen` both branch on the key's prefix to route to the right
+  store.
+- The store is now subscribable: `useSeenSnapshot()` wraps
+  `useSyncExternalStore`, so `markSeen` triggers a re-render in every
+  subscribed component instead of leaving a row in the wrong section (and
+  the chip's own count stale) until some unrelated render happens to catch
+  up. `stampFirstSeen` runs from a `useLayoutEffect` with no dependency
+  array — after render, not during it — specifically because it can emit to
+  subscribers (including the very component calling it), and doing that
+  synchronously mid-render would mean asking React to re-render a component
+  it is still in the middle of rendering.
 - A row counts unseen until the panel has been open while it was present.
-  `RepoUpdatesDock.tsx` tracks every row key present while the panel is open
-  in a `presentKeysRef`, and marks them seen on panel close — not on open —
-  via `globalThis.setTimeout`/`globalThis.clearTimeout` (not `window.*`: the
-  test harness's `withNav()` helper temporarily swaps out `globalThis.window`
-  for a bare stub during a simulated click, and a real browser's
-  `window.setTimeout` and `globalThis.setTimeout` are the same function
-  either way, so there is no behavioral difference in production, only in
-  that one test seam).
+  **An earlier draft's close effect only called `markSeen` when a 1.5s
+  "open long enough to register as read" timer had NOT already fired,
+  which meant any row that first appeared on screen AFTER that timer went
+  off was never marked seen on close — gone, along with the timer itself.**
+  `RepoUpdatesDock.tsx` now accumulates every row key present at any point
+  during an open into an `everPresentRef`, cleared fresh on each open, and
+  marks every one of them seen unconditionally when the panel closes (the
+  effect's own cleanup, keyed on the `collapsed` prop) — the timer added
+  nothing once that accumulation + unconditional mark-on-close covers every
+  case it used to, including the one it missed.
+- While the panel is OPEN, "New" vs "Earlier" classification (and the unread
+  dot) is frozen to a snapshot of seen-state taken the instant it opened
+  (`openSnapshotRef`, captured on the closed→open transition), not read live
+  — a row already on screen must not jump sections out from under the
+  reader's pointer just because an unrelated render happens to land while
+  they're still looking at it. The chip itself (closed) always reads the
+  live snapshot, so its count/tone stay current between opens.
 - Every row's stable identity for seen-tracking is a module-level key
   function (`pairingKey`, `repoRowKey`, `attentionRowKey`, `messageKey`,
   `jobGroupKey`) — not exported, since nothing outside this module needs to
@@ -126,16 +176,22 @@
   "now"/"Xm"/"Xh"/"Xd"/"Xmo"/"Xy". Every Notifications row now computes and
   passes an `age` prop through to `NotificationCard` (via `JobRow`/
   `GroupJobRow`/`AttentionRowView`/`MessageRowView`/`RepoRowView`/
-  `PairingRowView`), which draws it right-aligned and muted on the same
-  line as the row's caption (`.dl-origin`/`.dl-eyebrow`, with a `.dl-meta-line`
-  modifier once an age is present) rather than a second line nothing asked
-  for — a caller with no caption still gets the line, age alone.
-- Since every Notifications row now always carries an `age`, the
-  `.dl-origin` container renders on every row even when there is no
-  caption — so any test isolating caption text on its own has to query
-  `.dl-origin-text` (the caption-only inner span), not `.dl-origin`
-  (the shared container). Fixed in `JobRow.test.tsx` and
-  `RepoUpdatesDock.test.tsx`.
+  `PairingRowView`).
+- **Visual finding: a caption-less row (most repo rows) has no `.dl-eyebrow`
+  line to share with `age`, so an earlier draft drew the age alone on that
+  otherwise-empty line above the title — a whole line spent on one small
+  muted figure.** `NotificationCard.tsx` now branches on whether there is a
+  caption: with one, `age` still draws right-aligned on the shared
+  `.dl-origin`/`.dl-eyebrow` line (`.dl-meta-line` modifier), unchanged; with
+  none, no eyebrow line renders at all and `age` instead draws inline inside
+  `.dl-row-head`, at the right end of the title line, before the row's
+  action buttons (`.dl-row-age-inline` in `notifications.css`, same muted
+  color and 11px size the eyebrow-line placement already used).
+- Since not every Notifications row has a caption, `.dl-origin` (the eyebrow
+  container) only renders for rows that have one — a test isolating caption
+  text queries `.dl-origin-text`, and a test on the age figure itself checks
+  `.dl-row-age` (shares the eyebrow line) or `.dl-row-age-inline` (the
+  title-line placement) depending on which case it's exercising.
 - A row's own `age` reads its `getFirstSeenAt`/`finished_at`/`updatedAt`
   (whichever timestamp that row kind already tracks) — no new timestamp
   field was added to any stored type.
@@ -143,11 +199,18 @@
 ## R7 — chip
 
 - The chip reads `"N needs you"` in failure tone when at least one
-  *ordinary* attention row (not the update-family message) is present.
-  When the only attention row is the update message, the chip instead
-  shows that row's own title as its label, in a non-failure "on" tone, with
-  no numeral (`chipCount = 0`) — an update notice is not a failure, and
-  repeating "needs you" next to its own title would be redundant.
+  *ordinary* attention row (not an update-family message, checked via
+  `isUpdateNotification`) is present. When the only attention row is an
+  update message, the chip instead shows that row's own title as its label,
+  with no numeral (`chipCount = 0`) — an update notice is not a failure, and
+  repeating "needs you" next to its own title would be redundant. **Tone in
+  that case is NOT always the quiet "on" one**: an earlier draft gave every
+  update row the "on" tone regardless of content, flattening a genuine
+  failure ("Update failed", "fused-render didn't come back") to the same
+  neutral look as "Update available". The tone now checks the row's own
+  `tone: "error"` and keeps the loud failure treatment when it is set — only
+  a row genuinely offering something ("Update available", "Update ready")
+  gets "on". The label is always the row's own title either way.
 - With no ordinary attention and no update message, the chip numeral is the
   unseen ("New") count, not the total row count — so once every present row
   has been seen, the numeral disappears (`chipCount = 0`, hidden by
@@ -164,6 +227,25 @@
   `RepoUpdatesDock.test.tsx`), and resets the seen-store's in-memory state
   in `beforeEach` (`_resetSeenStoreForTest()`) since `bun test` shares one
   process across every file in a run.
+- `_resetSeenStoreForTest()` re-reads from that same fake `localStorage`
+  rather than resetting to empty directly, so clearing the in-memory cache
+  alone is not enough: the fake's own backing `Map` is itself a module-level
+  object that outlives any one test, so `RepoUpdatesDock.test.tsx`'s
+  `beforeEach` clears `seenStorageBacking` (its own fake store) in the same
+  breath it calls `_resetSeenStoreForTest()` — found the hard way, once
+  age/size pruning (R4) replaced the old "prune to current presence" bug
+  that had accidentally been masking this: without clearing it, every key
+  any earlier test in the file ever stamped stayed "seen" forever, since
+  nothing in a short test run ever ages past 30 days or over 500 entries.
+- `useSeenSnapshot`'s subscriber list (`listeners`, module-level in
+  `notifications-seen-store.ts`) is also cleared by
+  `_resetSeenStoreForTest()`. `RepoUpdatesDock.test.tsx`'s test renderers are
+  never unmounted (several helpers build a fresh one per test and let the
+  previous ones linger for the rest of the run); a stale, still-subscribed
+  component from an earlier test would otherwise have its own
+  `useLayoutEffect` fire on ANY `emit()` — including ones a LATER test's own
+  `markSeen`/`stampFirstSeen` calls raise — re-stamping its own stale keys
+  into the store the current test is relying on.
 - `RepoUpdatesDock.test.tsx` adds `createSeenInstance`/`renderSeenView`
   helpers that simulate "a second look" at the panel (toggle `collapsed`
   closed, then open) to exercise R4's seen-marking in tests that need rows
