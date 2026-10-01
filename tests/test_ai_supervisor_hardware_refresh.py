@@ -91,7 +91,7 @@ def test_start_hardware_refresh_is_idempotent(monkeypatch):
             return self._alive
 
     monkeypatch.setattr(supervisor.threading, "Thread", _FakeThread)
-    monkeypatch.setattr(supervisor, "_hardware_refresh_thread", None)
+    supervisor._hardware_refresh_starter.reset_for_tests()
 
     _real_start_hardware_refresh()
     _real_start_hardware_refresh()
@@ -101,7 +101,7 @@ def test_start_hardware_refresh_is_idempotent(monkeypatch):
 
     # Cleanup: leave no fake "alive" thread parked in the module global for
     # a later test that happens to import supervisor fresh in-process.
-    monkeypatch.setattr(supervisor, "_hardware_refresh_thread", None)
+    supervisor._hardware_refresh_starter.reset_for_tests()
 
 
 def test_start_hardware_refresh_starts_a_new_thread_once_the_old_one_died(monkeypatch):
@@ -119,7 +119,7 @@ def test_start_hardware_refresh_starts_a_new_thread_once_the_old_one_died(monkey
             return self._alive
 
     monkeypatch.setattr(supervisor.threading, "Thread", _FakeThread)
-    monkeypatch.setattr(supervisor, "_hardware_refresh_thread", None)
+    supervisor._hardware_refresh_starter.reset_for_tests()
 
     _real_start_hardware_refresh()
     started[0]._alive = False
@@ -127,7 +127,7 @@ def test_start_hardware_refresh_starts_a_new_thread_once_the_old_one_died(monkey
 
     assert len(started) == 2
 
-    monkeypatch.setattr(supervisor, "_hardware_refresh_thread", None)
+    supervisor._hardware_refresh_starter.reset_for_tests()
 
 
 def test_concurrent_first_calls_to_start_hardware_refresh_start_exactly_one_thread(
@@ -140,9 +140,9 @@ def test_concurrent_first_calls_to_start_hardware_refresh_start_exactly_one_thre
     racing the `is_alive()` check before either has created a thread must
     not both create and start one, the identical race
     `test_concurrent_first_calls_to_start_reaper_start_exactly_one_thread`
-    (`tests/test_ai_runtime.py`) pins for `start_reaper`/`_reaper_lock` —
+    (`tests/test_ai_runtime.py`) pins for `start_reaper`/`_reaper_starter` —
     this is the same test, mirrored for `start_hardware_refresh`/
-    `_hardware_refresh_lock`.
+    `_hardware_refresh_starter`.
 
     `_hardware_refresh_tick` is patched to a harmless counter: the real tick
     spawns a subprocess probe immediately, on thread start, not on a delay,
@@ -152,7 +152,7 @@ def test_concurrent_first_calls_to_start_hardware_refresh_start_exactly_one_thre
     which a daemon thread sitting in forever is fine to leave behind, but
     this test does not need to find out, since the tick itself returns
     immediately."""
-    monkeypatch.setattr(supervisor, "_hardware_refresh_thread", None)
+    supervisor._hardware_refresh_starter.reset_for_tests()
     monkeypatch.setattr(supervisor, "_hardware_refresh_tick", lambda: None)
     real_thread_cls = threading.Thread
     created = []
@@ -182,16 +182,16 @@ def test_concurrent_first_calls_to_start_hardware_refresh_start_exactly_one_thre
     assert len(created) == 1, (
         f"expected exactly one hardware-refresh thread to be created, got {len(created)}")
     refresh_thread = created[0]
-    assert supervisor._hardware_refresh_thread is refresh_thread
+    assert supervisor._hardware_refresh_starter._thread is refresh_thread
     try:
         assert refresh_thread.is_alive()
     finally:
         # The real `run` sleeps `_HARDWARE_REFRESH_INTERVAL_S` (6 hours)
         # between ticks and never exits; it's a daemon so there is nothing
-        # to join. Reset the module global so later tests see a clean
-        # slate, matching how every other test here gets
-        # `start_hardware_refresh` no-op'd by the autouse conftest fixture.
-        supervisor._hardware_refresh_thread = None
+        # to join. Reset the starter so later tests see a clean slate,
+        # matching how every other test here gets `start_hardware_refresh`
+        # no-op'd by the autouse conftest fixture.
+        supervisor._hardware_refresh_starter.reset_for_tests()
 
 
 # -- `_await_hardware_cache`: the bounded spawn-time wait --------------------

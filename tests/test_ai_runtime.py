@@ -3715,12 +3715,12 @@ def test_concurrent_first_calls_to_start_reaper_start_exactly_one_thread(monkeyp
     `Barrier` so every caller reaches `start_reaper()` at the same instant.
 
     Counts actual `threading.Thread(..., name="ai-idle-reaper")`
-    instantiations (not just the surviving `_reaper_thread` handle, which
+    instantiations (not just the surviving `_reaper_starter` handle, which
     would only show whichever thread a race assigned LAST, hiding an earlier
     one that was also created and started). The reaper's `run` body is never
     exercised — the thread this test spawns is joined before returning so
     nothing outlives the test."""
-    monkeypatch.setattr(supervisor, "_reaper_thread", None)
+    supervisor._reaper_starter.reset_for_tests()
     real_thread_cls = threading.Thread
     created = []
 
@@ -3749,16 +3749,16 @@ def test_concurrent_first_calls_to_start_reaper_start_exactly_one_thread(monkeyp
     assert len(created) == 1, (
         f"expected exactly one reaper thread to be created, got {len(created)}")
     reaper_thread = created[0]
-    assert supervisor._reaper_thread is reaper_thread
+    assert supervisor._reaper_starter._thread is reaper_thread
     try:
         assert reaper_thread.is_alive()
     finally:
         # The real `run` sleeps _REAPER_TICK_S (30s) between ticks and never
-        # exits; it's a daemon so there is nothing to join. Reset the module
-        # global so later tests in this file see a clean slate, matching how
-        # every other test here gets `start_reaper` no-op'd by the autouse
-        # conftest fixture.
-        supervisor._reaper_thread = None
+        # exits; it's a daemon so there is nothing to join. Reset the
+        # starter so later tests in this file see a clean slate, matching
+        # how every other test here gets `start_reaper` no-op'd by the
+        # autouse conftest fixture.
+        supervisor._reaper_starter.reset_for_tests()
 
 
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):

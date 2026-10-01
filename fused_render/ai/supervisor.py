@@ -54,7 +54,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from fused_render import jobs
+from fused_render import _startonce, jobs
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
 
@@ -2043,10 +2043,7 @@ def evict_stale_engines() -> list[str]:
 #: length to fire.
 _REAPER_TICK_S = 30.0
 
-_reaper_thread: threading.Thread | None = None
-# Guards `start_reaper`'s check-AND-create-AND-assign so two concurrent
-# callers can't both pass the `is_alive()` check and each start a thread.
-_reaper_lock = threading.Lock()
+_reaper_starter = _startonce.StartOnceThread()
 
 
 #: Margin added to a call's own request timeout before a still-positive
@@ -2210,39 +2207,27 @@ def reap_idle(now: float) -> list[str]:
 def start_reaper() -> None:
     """Start the idle-reaper thread, once per process.
 
-    Idempotent via a module-level handle rather than a lock-guarded flag: the
-    startup hook that calls this (server/app.py) can run more than once across
-    the test suite's many `create_app` calls in one process, and a second
-    thread ticking the same table is pure waste, not a correctness bug — but
-    a waste that compounds by one thread per app instance created in a long
-    test session.
+    Idempotent via `_reaper_starter` (a `StartOnceThread`) rather than a
+    lock-guarded flag: the startup hook that calls this (server/app.py) can
+    run more than once across the test suite's many `create_app` calls in
+    one process, and a second thread ticking the same table is pure waste,
+    not a correctness bug — but a waste that compounds by one thread per
+    app instance created in a long test session.
 
     The body is `sleep` then `reap_idle(time.monotonic())` — no wall clock, so
     a laptop that sleeps mid-tick loses no window (Key decisions: the whole
     feature is built on the monotonic clock never advancing across a suspend).
-
-    `_reaper_lock` covers the check, the thread's creation, and the assignment
-    to `_reaper_thread` as one step: two concurrent callers racing the
-    `is_alive()` check could otherwise both see no live thread (the first
-    start, or a restart once the old thread died) and each create and start
-    one. Starting a daemon thread is fast and non-blocking, so holding the
-    lock across `.start()` costs nothing a second caller would notice.
     """
-    global _reaper_thread
-    with _reaper_lock:
-        if _reaper_thread is not None and _reaper_thread.is_alive():
-            return
+    def run() -> None:
+        while True:
+            time.sleep(_REAPER_TICK_S)
+            try:
+                reap_idle(time.monotonic())
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("idle-reaper tick failed")
 
-        def run() -> None:
-            while True:
-                time.sleep(_REAPER_TICK_S)
-                try:
-                    reap_idle(time.monotonic())
-                except Exception:  # noqa: BLE001 - a tick must never kill the loop
-                    logger.exception("idle-reaper tick failed")
-
-        _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
-        _reaper_thread.start()
+    _reaper_starter.ensure(
+        lambda: threading.Thread(target=run, name="ai-idle-reaper", daemon=True))
 
 
 #: How often the background hardware-detection thread re-probes once it has
@@ -2257,12 +2242,7 @@ def start_reaper() -> None:
 #: real subprocess spawn (50-500ms) that has no business running often.
 _HARDWARE_REFRESH_INTERVAL_S = 6 * 60 * 60  # 6 hours
 
-_hardware_refresh_thread: threading.Thread | None = None
-# Guards `start_hardware_refresh`'s check-AND-create-AND-assign, the same
-# race `_reaper_lock` closes for `start_reaper`: two concurrent callers
-# racing the unlocked `is_alive()` check could otherwise both see no live
-# thread and each create and start one.
-_hardware_refresh_lock = threading.Lock()
+_hardware_refresh_starter = _startonce.StartOnceThread()
 
 
 def _hardware_refresh_tick() -> None:
@@ -2286,10 +2266,11 @@ def start_hardware_refresh() -> None:
     silently take their "no hardware known" branch forever. This is that
     something.
 
-    Idempotent via a module-level handle, for the identical reason
-    `start_reaper` is: the startup hook that calls this (`server/app.py`)
-    can run more than once across the test suite's many `create_app` calls
-    in one process.
+    Idempotent via `_hardware_refresh_starter` (a `StartOnceThread`), for
+    the identical reason `start_reaper` is: this can run more than once
+    across the test suite's many `create_app` calls in one process, and
+    now also from `hw_detect.cached_hardware()`'s own cache-miss path, the
+    actual place every reader's first call to it now goes through.
 
     **One probe fires immediately**, unlike the reaper's sleep-then-tick
     shape — a fit verdict on the very first catalog request after server
@@ -2298,29 +2279,17 @@ def start_hardware_refresh() -> None:
     interval, forever. A failed tick (no vendor tool found, a hung spawn
     past `hw_detect._PROBE_TIMEOUT_S`, an `OSError` writing the cache) is
     logged and never kills the loop — the next tick tries again.
-
-    `_hardware_refresh_lock` covers the check, the thread's creation, and the
-    assignment to `_hardware_refresh_thread` as one step — the identical
-    guard `start_reaper` draws around `_reaper_lock`, for the identical
-    race: two concurrent callers racing the `is_alive()` check could
-    otherwise both see no live thread and each create and start one.
     """
-    global _hardware_refresh_thread
-    with _hardware_refresh_lock:
-        if _hardware_refresh_thread is not None and _hardware_refresh_thread.is_alive():
-            return
+    def run() -> None:
+        while True:
+            try:
+                _hardware_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hardware-refresh tick failed")
+            time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
 
-        def run() -> None:
-            while True:
-                try:
-                    _hardware_refresh_tick()
-                except Exception:  # noqa: BLE001 - a tick must never kill the loop
-                    logger.exception("hardware-refresh tick failed")
-                time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
-
-        _hardware_refresh_thread = threading.Thread(
-            target=run, name="ai-hardware-refresh", daemon=True)
-        _hardware_refresh_thread.start()
+    _hardware_refresh_starter.ensure(
+        lambda: threading.Thread(target=run, name="ai-hardware-refresh", daemon=True))
 
 
 #: How often the background Hub-metadata-warming thread re-sweeps the
@@ -2336,7 +2305,7 @@ def start_hardware_refresh() -> None:
 #: of the curated list is a rare event on the wire, not a busy loop.
 _HUB_METADATA_REFRESH_INTERVAL_S = 20 * 60  # 20 minutes
 
-_hub_metadata_refresh_thread: threading.Thread | None = None
+_hub_metadata_refresh_starter = _startonce.StartOnceThread()
 
 
 def _hub_metadata_refresh_tick() -> None:
@@ -2372,17 +2341,14 @@ def start_hub_metadata_refresh() -> None:
     of exactly the split `hw_detect.py` already drew for the identical
     reason: `get()` is a synchronous `urllib` GET with an 8-second timeout,
     and `describe_catalog` backs a route the picker polls. This mirrors
-    `start_hardware_refresh`'s shape exactly — idempotent via a module-level
-    thread handle, one sweep fires immediately so the first catalog request
-    after startup already has warm entries rather than waiting a full
-    interval, then the thread sleeps and re-sweeps forever. `ai_runtime.py`
-    now calls `hub_metadata.cached()` only, which is a plain disk read and
-    never touches the network — this thread is the only writer.
+    `start_hardware_refresh`'s shape exactly — idempotent via
+    `_hub_metadata_refresh_starter` (a `StartOnceThread`), one sweep fires
+    immediately so the first catalog request after startup already has
+    warm entries rather than waiting a full interval, then the thread
+    sleeps and re-sweeps forever. `ai_runtime.py` now calls
+    `hub_metadata.cached()` only, which is a plain disk read and never
+    touches the network — this thread is the only writer.
     """
-    global _hub_metadata_refresh_thread
-    if _hub_metadata_refresh_thread is not None and _hub_metadata_refresh_thread.is_alive():
-        return
-
     def run() -> None:
         while True:
             try:
@@ -2391,9 +2357,8 @@ def start_hub_metadata_refresh() -> None:
                 logger.exception("hub-metadata refresh tick failed")
             time.sleep(_HUB_METADATA_REFRESH_INTERVAL_S)
 
-    _hub_metadata_refresh_thread = threading.Thread(
-        target=run, name="ai-hub-metadata-refresh", daemon=True)
-    _hub_metadata_refresh_thread.start()
+    _hub_metadata_refresh_starter.ensure(
+        lambda: threading.Thread(target=run, name="ai-hub-metadata-refresh", daemon=True))
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to

@@ -107,7 +107,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import claude_spawn, cron, recur
+from fused_render import _startonce, claude_spawn, cron, recur
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -287,8 +287,7 @@ _wake_lock = threading.Lock()
 _watched: set[str] = set()
 _watched_lock = threading.Lock()
 
-_thread: threading.Thread | None = None
-_thread_lock = threading.Lock()
+_starter = _startonce.StartOnceThread()
 
 # THE LOOP'S DOORBELL — how work that is due NOW gets sent now.
 #
@@ -4607,15 +4606,11 @@ def _loop() -> None:
 
 
 def start() -> None:
-    """Start the background loop. Idempotent — safe to call once at server
-    startup; a redundant call while the thread is alive is a no-op.
+    """Start the background loop. Idempotent (via `_starter`, a
+    `StartOnceThread`) — safe to call once at server startup; a redundant
+    call while the thread is alive is a no-op.
 
     The FIRST tick is what catches up anything that came due while the app was
     closed, so this deliberately does not sleep before its first pass."""
-    global _thread
-    with _thread_lock:
-        if _thread is not None and _thread.is_alive():
-            return
-        _thread = threading.Thread(target=_loop, daemon=True,
-                                   name="fused-schedule")
-        _thread.start()
+    _starter.ensure(
+        lambda: threading.Thread(target=_loop, daemon=True, name="fused-schedule"))
