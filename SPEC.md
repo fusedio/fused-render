@@ -11993,7 +11993,10 @@ Goal: an app folder's `.py` files are the app's capability; the page is one UI
 over them. A bot (OpenBot's `py` action, a Claude-harness bot, any local
 script) can run one **without rendering the page**, with the page's own
 semantics, so a bot that builds an app can also drive it at the lowest level
-the app has. Design page: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ.
+the app has. What a bot knows about those files is what the app's author
+wrote down in the app's `SKILL.md`, never something parsed out of the code.
+Design pages: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ (runner),
+https://claude.ai/artifact/PDhNwAeVBVfuAvNyrxicMz (SKILL.md discovery).
 
 - **AP-1 One runner.** Execution is `POST /api/run` `{py, html, params}`
   (§PY-6) — the identical call the page's `fused.runPython` makes, with an
@@ -12004,46 +12007,48 @@ the app has. Design page: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ.
   duration_ms}` envelope are what the bot sees because they are what the page
   sees. The 60 s bound (`DEFAULT_TIMEOUT`) is the bot's bound; there is no
   bot-only budget, since a file that only works with one would then fail in
-  the page. **Rejected:** a synthesized manifest-less tool through the
-  openfused `fused app serve` runner inside the bot's worker (a second
-  semantics — requirements venv instead of the engine pref, 180 s, no call
-  log — and a bundled `fused` import an exported copy of the bot lacks); a
-  wrapper endpoint that would add only a name.
-- **AP-2 Discovery is a static read.** `GET /api/apps/python?html=<page>`
-  (or `?dir=<folder>`; `X-Fused` required) — `routers/app_python.py` over
-  `fused_render/pyinspect.py` — returns `{app, html, entrypoint:"main",
-  timeout_s, files:[{file, callable, signature, params:[{name,type,default,
-  required}], doc, functions, error|reason}], tools:[mcp.toml rows,
-  curated:true], background:{kind,file,running}|null}`. `callable` is true
-  only for a top-level sync `main` — the single entrypoint `_child.py` binds
-  (an `async def main` is listed with a `reason`, since the runner JSON-dumps
-  the return and a coroutine is not serialisable);
-  other public names are listed under `functions` so a bot can tell a helper
-  module from a file the MCP panel could curate, never as something
-  `/api/run` could reach. Everything is `ast.parse` of the file's text:
-  nothing is imported (top-level code in these folders touches tokens and
-  local state), and an unparseable file is reported with its error rather
-  than dropped. Depth one, non-hidden, capped at 60 files, 512 KiB read —
-  the same scope `templates/mcp/inspect_app.py` lists for the MCP panel;
-  that template keeps its own stdlib copy of the formatter (PY-15: a
-  template never imports `fused_render`).
-- **AP-3 Daemon apps are reported, not called.** A folder with a §46
-  manifest shows `background:{kind: main|daemon, file, running}`; its
-  resident process is not reachable through these routes (a `daemon=` app's
-  routes are unknown statically and carry no envelope; a `main=` worker has a
-  different lifetime and failure mode). A later section when a real case
-  needs it.
-- **AP-4 Author contract** — the "Bot-callable files" section of
+  the page. There is no pre-flight arg check: `_binding.bind_params` drops a
+  key `main` does not take (silently, as it does for the page) and a missing
+  required one comes back as the runner's `ParamError` envelope — the bot's
+  cue to re-read the skill.
+  **Rejected:** a synthesized manifest-less tool through the openfused
+  `fused app serve` runner inside the bot's worker (a second semantics —
+  requirements venv instead of the engine pref, 180 s, no call log — and a
+  bundled `fused` import an exported copy of the bot lacks); a wrapper
+  endpoint that would add only a name.
+- **AP-2 Discovery is the app's `SKILL.md`, read by the caller.** One file
+  at the app root beside `index.html` (so it ships in a `.fused` export and
+  a clone), in Claude Code skill shape: YAML frontmatter `name` +
+  `description` (one line: what the app does for a bot), optional
+  `approve: [file.py, …]`, then prose for the model with one fixed
+  convention — a `## <file>.py` heading per callable file. That heading is
+  the only thing a caller parses out of the body: a file is callable only
+  when it exists AND has a section, so the approval card always has the
+  author's own line to show. The caller reads the file off disk (same Mac);
+  the server has **no** discovery route. An app without `SKILL.md` has no
+  bot-callable Python — a bot uses its page. **Rejected:** the AST listing
+  (`GET /api/apps/python` over `pyinspect.py`, PR #1359), removed: it showed
+  a signature but not what a call means or changes, and an author could not
+  correct it; a structured per-file `params:` schema in frontmatter (the
+  same drift as the AST, in YAML); a `GET /api/apps/skill` route (an
+  `open()` behind HTTP). `templates/mcp/inspect_app.py` keeps its own AST
+  read for the MCP panel's tool curation — a different feature.
+- **AP-3 Daemon apps.** A §46 resident process is not reachable through
+  `/api/run`; its `SKILL.md` says so in prose and documents only the
+  `main()` files a bot can run.
+- **AP-4 Author contract** — the "App SKILL.md" section of
   `skills/fused-render-authoring/SKILL.md` (the skill every builder task
-  already loads; **no separate skill** — the only readers are app authors,
-  and OpenBot bots never read skills, their surface is the `py` action in
-  their own prompt): a top-level sync annotated `main(**params)` (bots
-  coerce by annotation, `_binding.coerce`), first docstring line = the
-  description a bot reads (what it reads, what it changes), JSON-native
-  return, no argv/stdin, ≤ 60 s (longer → `fused.trackJob` or a daemon),
-  secrets never in params. The two routes and their envelopes are AP-1/AP-2
-  above; that is the whole consumer recipe.
+  already loads; no separate skill): per file a top-level sync annotated
+  `main(**params)` (`_binding.coerce` still coerces by annotation inside
+  `/api/run`), JSON-native return, no argv/stdin, ≤ 60 s (longer →
+  `fused.trackJob` or a daemon), secrets never in params; per file a
+  `SKILL.md` section with what it does, what it changes, args, return shape
+  and one example call. Every change to a `.py` updates its section in the
+  same edit.
 - **AP-5 Approval is the caller's.** The server runs what it is asked; the
   gate lives in the bot: OpenBot runs a `py` call at once when the folder is
-  one of that bot's own builds and pauses for the user otherwise, since a raw
-  file has no curated name or description the write heuristic could read.
+  one of that bot's own builds and pauses for the user otherwise, showing the
+  first line of the file's `SKILL.md` section. Frontmatter `approve:` can
+  only **add** a pause (an own build's destructive file); nothing in a
+  `SKILL.md` can remove one, since the author of a foreign app is not the
+  user.
