@@ -22,12 +22,19 @@ import os
 import re
 from urllib.parse import unquote, urlsplit
 
-from fused_render._view_url_codec import app_page_path, view_url_path
+from fused_render._view_url_codec import (
+    app_page_path,
+    embed_url_path,
+    explorer_view_path,
+    view_url_path,
+)
 
 #: Filled by app.py on macOS once the run loop is up: ``apply(enabled)`` builds
 #: or drops the window manager when the ``native_windows_enabled`` preference
-#: flips (shell/prefs.py). Empty under ``fused-render serve`` and on every
-#: other platform — the preference still stores, nothing changes hands.
+#: flips (shell/prefs.py); ``open_app(path)`` focuses-or-opens an app's own
+#: window (POST /api/windows/open — the shell's app clicks inside a native
+#: window). Empty under ``fused-render serve`` and on every other platform —
+#: the preference still stores, nothing changes hands.
 native_hooks: dict = {}
 
 
@@ -47,22 +54,85 @@ def shell_path_for(fs_path: str) -> str:
             pass
     return view_url_path(fs_path)
 
+def app_window_path(fs_path: str) -> str:
+    """The URL PATH an app opens at in its OWN native window: the app's entry
+    page as a chrome-free embed — the app alone, not its source. A `.fused`
+    is already an embed; anything with no entry page (a plain folder, a lone
+    file) falls back to `shell_path_for`, since there is no app to run. The
+    Edit button (`edit_target`) is the way from here into the explorer."""
+    fs_path = os.path.abspath(fs_path)
+    if os.path.isdir(fs_path):
+        try:
+            from fused_render.app_listing import app_entry
+
+            entry = app_entry(fs_path)
+        except OSError:
+            entry = None
+        if entry:
+            return embed_url_path(entry)
+    return shell_path_for(fs_path)
+
+
+def edit_target(view: str | None, key: str | None) -> str | None:
+    """The explorer URL PATH the Edit button opens for a window showing
+    ``key`` in ``view`` (`window_view_of`), or None when there is nothing to
+    edit from there: Home, /tasks, or a window already in the explorer.
+
+    An embed edits the file it runs; an app page (``/apps/<folder>``) edits
+    its entry page, or the folder itself when it has none."""
+    if not key or view not in ("embed", "app"):
+        return None
+    target = key
+    if view == "app":
+        try:
+            from fused_render.app_listing import app_entry
+
+            target = app_entry(key) or key
+        except OSError:
+            pass
+    return explorer_view_path(target)
+
+
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
 HOME_FRAME_NAME = "FusedRenderWindow"
 
 
-def frame_autosave_name(key: str | None) -> str:
+def frame_autosave_name(key: str | None, view: str | None = None) -> str:
     """The NSWindow frame-autosave name for a window opened on ``key``.
 
     ``key`` is what the window was opened to show — an app folder (an
     `/apps/<folder>` page) or a file (an explorer view/embed) — so each app
     reopens where the user last left *that* app, not where the last window
     of any app was. None (the shell home) gets the plain name.
+
+    An EMBED gets a name of its own: an app's run window and an explorer window
+    (the explorer view of the same entry file) share ``key``, and each must
+    keep its own size and place.
     """
     if not key:
         return HOME_FRAME_NAME
+    if view == "embed":
+        return f"{HOME_FRAME_NAME}:embed:{os.path.abspath(key)}"
     return f"{HOME_FRAME_NAME}:{os.path.abspath(key)}"
+
+
+_VIEW_PREFIXES = (("/apps/", "app"), ("/explorer/view/", "view"),
+                  ("/explorer/embed/", "embed"))
+
+
+def window_view_of(url: str | None) -> str | None:
+    """How a shell URL shows its `window_key_of` key: ``"app"`` (an app
+    page), ``"view"`` (the explorer) or ``"embed"`` (the page alone), or None
+    for a URL with no key. The other half of a window's identity: an app's
+    run window and an explorer window on it share a key and differ here."""
+    if window_key_of(url) is None:
+        return None
+    path = urlsplit(url).path
+    for prefix, view in _VIEW_PREFIXES:
+        if path.startswith(prefix):
+            return view
+    return None
 
 
 def window_key_of(url: str | None) -> str | None:
@@ -82,7 +152,7 @@ def window_key_of(url: str | None) -> str | None:
         path = urlsplit(url).path
     except ValueError:
         return None
-    for prefix in ("/apps/", "/explorer/view/", "/explorer/embed/"):
+    for prefix, _view in _VIEW_PREFIXES:
         if path.startswith(prefix):
             rest = path[len(prefix):]
             segs = [unquote(s) for s in rest.split("/") if s]

@@ -194,6 +194,19 @@ export const IS_SNAPSHOT =
 // once at module init like the flags above — a document cannot be re-parented.
 export const IS_TOP_EMBED = IS_EMBED && window === window.top && !IS_PREVIEW && !IS_SNAPSHOT;
 
+// AM I ONE OF THE MACOS APP'S NATIVE WINDOWS? — the shell as the whole of a
+// WKWebView the app owns (fused_render/mac_window.py), told apart from a
+// browser tab by the `FusedRender/<version>` marker that window's web views
+// add to the user agent. NOT the `native_windows_enabled` preference: that
+// is also on in a browser tab, which must keep navigating in place. Top
+// level only — a frame inside such a window carries the same user agent but
+// is never the surface an app click should leave. There, an app click opens
+// the app in a window of its own (platform/lib/native-window.ts) instead of
+// navigating this one.
+export const IS_NATIVE_WINDOW =
+  window === window.top && /\bFusedRender\/\S+/.test(navigator.userAgent) &&
+  !/\bLauncher\b/.test(navigator.userAgent);
+
 // Is this pathname panel mode's sentinel route? Both prefixes, because panel
 // mode lives under the page's own one (Panel.tsx's PANEL_PATH) so that
 // entering/refreshing/exiting stays in the active mode — which means the shell
