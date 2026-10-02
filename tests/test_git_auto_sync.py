@@ -274,3 +274,49 @@ def test_known_repo_includes_a_failed_repo(tmp_path):
     root = os.path.realpath(local)
     git_upstream.sync_repo(root, action="a", push=False)
     assert git_upstream.is_known_repo(root)
+
+
+def _client(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from fused_render.server import create_app
+
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    (tmp_path / "Fused").mkdir()
+    return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+_FUSED = {"X-Fused": "1"}
+
+
+def test_get_reports_failures_and_pulls_and_post_retries_and_dismisses(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    local, _remote, other = _make(tmp_path)
+    _advance_remote(other)
+    write(local, "a.txt", "edited\n")
+    root = os.path.realpath(local)
+    git_upstream.sync_repo(root, action="Auto-update on app open", push=False)
+
+    body = client.get("/api/git-upstream").json()
+    assert body["auto_sync"] is True
+    assert [f["reason"] for f in body["sync_failures"]] == ["dirty"]
+    assert body["pulls"] == []
+
+    # Still dirty: retry fails in place.
+    r = client.post("/api/git-upstream", json={"action": "sync-retry", "root": root,
+                                               "reason": "dirty"}, headers=_FUSED).json()
+    assert r["ok"] is False and r["reason"] == "dirty"
+
+    git(local, "checkout", "--", "a.txt")
+    r = client.post("/api/git-upstream", json={"action": "sync-retry", "root": root,
+                                               "reason": "dirty"}, headers=_FUSED).json()
+    assert r["ok"] is True
+    body = client.get("/api/git-upstream").json()
+    assert body["sync_failures"] == [] and len(body["pulls"]) == 1
+
+    write(local, "a.txt", "edited again\n")
+    _advance_remote(other, "z.txt", "z\n", "z")
+    git_upstream.sync_repo(root, action="x", push=False)
+    r = client.post("/api/git-upstream", json={"action": "sync-dismiss", "root": root,
+                                               "reason": "dirty"}, headers=_FUSED).json()
+    assert r["ok"] is True
+    assert client.get("/api/git-upstream").json()["sync_failures"] == []
