@@ -14,8 +14,8 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Task } from "@platform/lib/api";
+import type { QueueOverride } from "@shell/tasks-lib";
 
-const { skippedOverride } = await import("@shell/tasks-lib");
 const { noteQueueClaim, resetQueueClaims, useRecentTasks, useSessionTask } =
   await import("./useRecentTasks");
 type SubscribeTasks = import("./useRecentTasks").SubscribeTasks;
@@ -208,21 +208,40 @@ test("a lane's DRAFTS come first, and ties keep the server's order", async () =>
   expect(h.rows()?.map((t) => t.key)).toEqual(["draft", "later", "a", "b"]);
 });
 
-// ---- RUN NEXT's claim (Akshil QA, 2026-09-16) -------------------------------
-// The Recent row IS the Tasks row, so its skip is the Tasks page's skip — and
-// the claim `TaskNode.skip` hands back had nowhere to go here. The press put a
-// request on the wire and the row could not change until the next full listing,
-// which reads as a button that does nothing.
+// ---- a promotion's claim (Akshil QA, 2026-09-16) ----------------------------
+// The Recent row IS the Tasks row, so a promoted row here is a promoted row
+// there — and the claim a press hands back had nowhere to go here. The press
+// put a request on the wire and the row could not change until the next full
+// listing, which reads as a button that does nothing.
 
-test("a skip's claim paints the row, ahead of the sort", async () => {
+/** The claim a promotion makes: head of the line, priority on, and nothing
+ *  claimed about the run in flight. `tasks-lib.skippedOverride` built this
+ *  shape until 2026-09-22, when the button it was for (Run next) came out of
+ *  the code; Run now's own deferred response builds it inline now
+ *  (ScheduleTaskViews.performRun), and this mirrors that shape so
+ *  `noteQueueClaim`/`skipLine` — still exercised by that response — stay
+ *  covered by a realistic claim. */
+function promotedOverride(task: Task): QueueOverride {
+  return {
+    key: task.key,
+    status: "queued",
+    queue_position: 1,
+    queue_ahead: task.queue_ahead ?? "",
+    queue_ahead_title: task.queue_ahead_title ?? "",
+    queue_ahead_session: task.queue_ahead_session ?? "",
+    queue_ahead_target: task.queue_ahead_target ?? "",
+    queue_ahead_key: task.queue_ahead_key ?? "",
+    queue_priority: true,
+  };
+}
+
+test("a promotion's claim paints the row, ahead of the sort", async () => {
   const h = await mount("/tpl", "/repo/x.py");
   const waiting = laned("q", "queued", { queue_position: 4, queue_priority: false });
   await h.serve([waiting]);
   expect(h.rows()?.[0].queue_position).toBe(4);
 
-  // What `performSkip` answers with (tasks-lib.skippedOverride): head of the
-  // line, priority on, and nothing claimed about the run in flight.
-  await act(async () => noteQueueClaim(skippedOverride(waiting)));
+  await act(async () => noteQueueClaim(promotedOverride(waiting)));
   expect(h.rows()?.[0].queue_position).toBe(1);
   expect(h.rows()?.[0].queue_priority).toBe(true);
   expect(h.rows()?.[0].status).toBe("queued");
@@ -232,7 +251,7 @@ test("…and the next listing retires it, right or wrong", async () => {
   const h = await mount("/tpl", "/repo/x.py");
   const waiting = laned("q", "queued", { queue_position: 4, queue_priority: false });
   await h.serve([waiting]);
-  await act(async () => noteQueueClaim(skippedOverride(waiting)));
+  await act(async () => noteQueueClaim(promotedOverride(waiting)));
   expect(h.rows()?.[0].queue_position).toBe(1);
 
   // One answer about a key is the whole life of a claim about that key
@@ -243,7 +262,7 @@ test("…and the next listing retires it, right or wrong", async () => {
   expect(h.rows()?.[0].queue_priority).toBe(false);
 });
 
-test("a skip repaints the WHOLE line, so no frame shows two 1sts", async () => {
+test("a promotion repaints the WHOLE line, so no frame shows two 1sts", async () => {
   // THE DOUBLE-1st FRAME (Akshil, 2026-09-18). The claim promoted the pressed
   // row and said nothing about the row it went past, so for the 0.3-0.6 s before
   // the listing landed both of them read "1st in line" and the reader could not
@@ -267,9 +286,10 @@ test("a skip repaints the WHOLE line, so no frame shows two 1sts", async () => {
   });
   await h.serve([first, second, third]);
 
-  await act(async () => noteQueueClaim(skippedOverride(second)));
+  await act(async () => noteQueueClaim(promotedOverride(second)));
   const by = (key: string) => h.rows()?.find((t) => t.key === key) as Task;
-  // The pressed row is the head, and the ⤒ claim is on it and on nothing else.
+  // The pressed row is the head, and the priority claim is on it and on nothing
+  // else.
   expect(by("b").queue_position).toBe(1);
   expect(by("b").queue_priority).toBe(true);
   expect(h.rows()?.filter((t) => t.queue_priority)).toHaveLength(1);
@@ -281,7 +301,7 @@ test("a skip repaints the WHOLE line, so no frame shows two 1sts", async () => {
   expect(by("a").queue_ahead_title).toBe("b");
   expect(by("a").queue_ahead_session).toBe("b");
   expect(by("a").queue_ahead_target).toBe("/repo/x.py");
-  // Nobody behind the press moved: a skip jumps the rows in front of it.
+  // Nobody behind the press moved: a promotion jumps the rows in front of it.
   expect(by("c").queue_position).toBe(3);
   expect(by("c").queue_ahead).toBe("B");
   // …and the whole set retires together on the next listing, as one claim did.
@@ -294,7 +314,7 @@ test("a claim for a key this pane has no row for changes nothing", async () => {
   const h = await mount("/tpl", "/repo/x.py");
   await h.serve([laned("a", "in_progress")]);
   await act(async () =>
-    noteQueueClaim(skippedOverride(laned("elsewhere", "queued"))),
+    noteQueueClaim(promotedOverride(laned("elsewhere", "queued"))),
   );
   expect(h.rows()?.map((t) => t.key)).toEqual(["a"]);
   expect(h.rows()?.[0].status).toBe("in_progress");
