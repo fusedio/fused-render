@@ -526,7 +526,10 @@ def inspect(path: str) -> dict:
                 "variables": {
                     name: {"dims": dict(zip(dataset[name].dims, map(int, dataset[name].shape))),
                            "dtype": str(dataset[name].dtype),
-                           "units": str(dataset[name].attrs.get("units", ""))}
+                           "units": str(dataset[name].attrs.get("units", "")),
+                           # The CF array that names the CRS, for the browser to open.
+                           "grid_mapping": str(dataset[name].attrs.get("grid_mapping")
+                                               or dataset[name].encoding.get("grid_mapping") or "")}
                     for name in _gridded_vars(dataset)
                 },
             }
@@ -627,7 +630,8 @@ def _crs_info(crs: str, bounds: list | None = None) -> dict:
     parsed = CRS.from_user_input(crs)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # "lose projection information"
-        out = {"proj4": parsed.to_proj4(), "epsg": parsed.to_epsg()}
+        out = {"proj4": parsed.to_proj4(), "epsg": parsed.to_epsg(),
+               "geographic": (parsed.source_crs if parsed.is_bound else parsed).is_geographic}
     if bounds and len(bounds) == 4:
         west, south, east, north = Transformer.from_crs(parsed, 4326, always_xy=True) \
             .transform_bounds(*map(float, bounds))

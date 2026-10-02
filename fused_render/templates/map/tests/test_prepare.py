@@ -230,6 +230,16 @@ def test_inspect_describes_rasters_vectors_and_cubes(prepare, tmp_path):
     assert cube["kind"] == "zarr" and cube["variables"]["temp"]["dims"] == {"time": 3, "lat": 20, "lon": 40}
 
 
+
+def test_inspect_names_the_grid_mapping_array(prepare, tmp_path):
+    # An unlistable store is read through inspect: the browser needs the CRS array too.
+    ds = xr.Dataset({"temp": (("y", "x"), np.zeros((4, 5), "float32"), {"grid_mapping": "spatial_ref"}),
+                     "spatial_ref": ((), 0, {"crs_wkt": "PROJCS[...]"})},
+                    coords={"y": np.arange(4.0), "x": np.arange(5.0)})
+    ds.to_zarr(tmp_path / "p.zarr", consolidated=False)
+    info = prepare.main(str(tmp_path / "p.zarr"), action="inspect")
+    assert info["variables"]["temp"]["grid_mapping"] == "spatial_ref"
+
 # ---- review follow-ups ----------------------------------------------------------------
 
 @pytest.mark.parametrize("lon, lat", [("longitude", "lat"), ("lon", "latitude"), ("Long", "Lat"), ("x", "y")])
@@ -337,3 +347,20 @@ def test_a_projected_zarr_grid_gets_proj4_and_lonlat_bounds(prepare):
     assert out["status"] == "ok" and "+proj=utm" in out["proj4"] and out["epsg"] == 32633
     west, south, east, north = out["bounds"]
     assert 14.99 < west < east < 15.2 and 45.1 < south < north < 45.3
+    assert out["geographic"] is False
+
+
+@pytest.mark.parametrize("crs", ["EPSG:4269", "OGC:CRS84", "4326", "urn:ogc:def:crs:EPSG::4326",
+                                 'BOUNDCRS[SOURCECRS[GEOGCRS["NAD27",DATUM["North American Datum 1927",'
+                                 'ELLIPSOID["Clarke 1866",6378206.4,294.978698213898]],CS[ellipsoidal,2],'
+                                 'AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433]]],'
+                                 'TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",'
+                                 'ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["lat",north],'
+                                 'AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433]]],'
+                                 'ABRIDGEDTRANSFORMATION["t",METHOD["Geocentric translations"],'
+                                 'PARAMETER["X-axis translation",-8],PARAMETER["Y-axis translation",160],'
+                                 'PARAMETER["Z-axis translation",176]]]'])
+def test_any_geographic_crs_is_reported_geographic(prepare, crs):
+    # The browser keeps a lon/lat grid on its fast path, 0..360 shift included.
+    out = prepare.main("grid", action="crs", crs=crs)
+    assert out["status"] == "ok" and out["geographic"] is True

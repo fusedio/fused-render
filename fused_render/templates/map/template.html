@@ -1013,11 +1013,12 @@ function quickPlan(layer) {
 // A remote URL with no extension may be a Zarr store: its metadata answers
 // at a known key.
 async function looksLikeZarr(source) {
-  const root = zarrRoot(source).split(/[?#]/)[0];
+  // A signed or tokenised URL keeps its query on every key.
+  const [, root, query = ""] = zarrRoot(source).match(/^([^?#]*?)\/*(\?[^#]*)?(#.*)?$/);
   for (const key of ["zarr.json", ".zmetadata", ".zgroup", ".zarray"]) {
     // GET, not HEAD: plenty of bucket CORS rules allow GET only.
     try {
-      const response = await fetch(httpUrl(`${root}/${key}`));
+      const response = await fetch(httpUrl(`${root}/${key}${query}`));
       if (response.ok) { response.body && response.body.cancel(); return true; }
     } catch (_) { /* next */ }
   }
@@ -1317,7 +1318,8 @@ async function zarrMeta(store, path) {
   } else {
     // Not listable from the browser: Python (xarray/fsspec) reads the store.
     const info = await python(path, "inspect");
-    names = [...new Set(Object.entries(info.variables || {}).flatMap(([name, v]) => [name, ...Object.keys(v.dims || {})]))];
+    names = [...new Set(Object.entries(info.variables || {}).flatMap(([name, v]) =>
+      [name, ...Object.keys(v.dims || {}), ...(v.grid_mapping ? [v.grid_mapping] : [])]))];
   }
   if (prefix) names = names.filter(n => n.startsWith(prefix));
   const arrays = {};
@@ -1368,7 +1370,17 @@ async function zarrPlacement(meta, variable, path) {
   const edge = v => { const lo = Math.min(...v), hi = Math.max(...v); const h = (hi - lo) / (v.length - 1) / 2; return [lo - h, hi + h]; };
   const [s, n] = edge(ys), [w, e] = edge(xs);
   out.layer.latIsAscending = ys[ys.length - 1] > ys[0];
-  if (w >= -181 && e <= 361 && s >= -91 && n <= 91) {
+  // The CRS the store names wins over the coordinate range: a projected grid
+  // in kilometres or cell indices also fits inside lon/lat limits.
+  const gm = a.attrs.grid_mapping && meta.arrays[a.attrs.grid_mapping];
+  const wkt = gm && (gm.attrs.crs_wkt || gm.attrs.spatial_ref) || meta.rootAttrs.crs_wkt;
+  const code = meta.rootAttrs.crs || meta.rootAttrs["proj:code"] || (meta.rootAttrs["proj:epsg"] && `EPSG:${meta.rootAttrs["proj:epsg"]}`);
+  const crs = wkt || code;
+  const xAttrs = (meta.arrays[lon] || {}).attrs || {};
+  const info = crs && await python(path, "crs", { crs: String(crs), bounds: [w, s, e, n] });
+  const projected = info ? !info.geographic
+    : /projection_x/i.test(xAttrs.standard_name || "") || /^(m|km|metres?|meters?)$/i.test(String(xAttrs.units || "").trim());
+  if (!projected && w >= -181 && e <= 361 && s >= -91 && n <= 91) {
     const lat0 = Math.max(s, -90), lat1 = Math.min(n, 90);
     out.layer.bounds = [w, lat0, e, lat1];
     out.layer.crs = "EPSG:4326";
@@ -1381,12 +1393,7 @@ async function zarrPlacement(meta, variable, path) {
   }
   // Projected: pyproj turns the CRS the store names into the proj4 string
   // the layer reprojects with, and the grid's extent into lon/lat.
-  const gm = a.attrs.grid_mapping && meta.arrays[a.attrs.grid_mapping];
-  const wkt = gm && (gm.attrs.crs_wkt || gm.attrs.spatial_ref) || meta.rootAttrs.crs_wkt;
-  const code = meta.rootAttrs.crs || meta.rootAttrs["proj:code"] || (meta.rootAttrs["proj:epsg"] && `EPSG:${meta.rootAttrs["proj:epsg"]}`);
-  const crs = wkt || code;
   if (!crs) throw new Error(`${variable}'s grid is in projected units and the store does not say which projection.`);
-  const info = await python(path, "crs", { crs: String(crs), bounds: [w, s, e, n] });
   if (info.epsg === 3857) out.layer.crs = "EPSG:3857"; else out.layer.proj4 = info.proj4;
   out.layer.bounds = [w, s, e, n];
   out.bounds = info.bounds;
@@ -1590,6 +1597,7 @@ const pointcloudEngine = {
     r.lidar = ctl;
     // Some failures only arrive as an event, never as a rejection.
     const failed = new Promise((_, reject) => ctl.on("loaderror", e => reject(e.error || new Error("could not read this point cloud"))));
+    failed.catch(() => {}); // an error after the load settled is not a load failure
     r.info = await Promise.race([ctl.loadPointCloud(httpUrl(plan.path)), failed]);
     r.streaming = ctl.isStreaming(r.info.id);
     // Streamed nodes bring classes that were not there at load: hide them too.
