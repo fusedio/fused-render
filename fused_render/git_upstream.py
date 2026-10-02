@@ -40,6 +40,16 @@ nothing and raise nothing. A background check that nagged about a
 misconfigured remote would be worse than one that says nothing; the git
 companion is where a fetch error is visible.
 
+AUTO-SYNC (the "auto-sync" section below, on by default; the
+`git_auto_sync_enabled` pref turns it off, restoring everything above
+exactly). The background check now fast-forwards the default branch itself,
+and `schedule_sync` pushes after app-made commits. Still silent: offline,
+no remote, HEAD not on the default branch. NOT silent, because nothing was
+changed and the user must decide: a dirty tree, a divergence, a rejected
+push, an auth failure. Those are recorded as one standing failure per repo
+(`sync_failures`, served by GET /api/git-upstream) until dismissed or a
+later sync succeeds. It only ever fast-forwards: never merge, rebase or force.
+
 MOUNT-BACKED REPOS ARE REFUSED OUTRIGHT, before any subprocess — the same
 rule `ops.py`'s `_refuse_mounts` (GT-4 / MD-11) enforces for the same
 reason: a background fetch across an rclone-NFS mount is exactly the wedge
