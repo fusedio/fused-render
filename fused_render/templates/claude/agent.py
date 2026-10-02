@@ -2898,6 +2898,34 @@ def _commit_turn(file: str, message: str) -> None:
         git("commit", "-q", "-m", subject, "--", spec)
     except Exception:
         pass
+    finally:
+        # Whether the sweep committed or the turn already committed its own
+        # work (the app's CLAUDE.md asks for that), whatever the default
+        # branch is now ahead by should reach the remote.
+        _request_sync(app_dir)
+
+
+def _request_sync(app_dir: str) -> None:
+    """Ask the server to fast-forward and push `app_dir`'s repo, in ITS
+    background (POST /api/git-upstream, action "sync"). This template is a
+    standalone process and may not import fused_render (D166), so the server
+    owns the git engine; the call answers at once and the push never holds up
+    this poll. Best-effort: no server (a bare test), a refusal, a timeout —
+    all mean "no sync now"; the next trigger retries."""
+    origin = _origin()
+    if not origin:
+        return
+    try:
+        req = urllib.request.Request(
+            origin + "/api/git-upstream",
+            data=json.dumps({"action": "sync", "path": app_dir,
+                             "trigger": "claude-turn"}).encode("utf-8"),
+            headers={"X-Fused": "1", "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+    except Exception:  # noqa: BLE001 — see docstring
+        pass
 
 
 def _alive(run_dir: str) -> bool:

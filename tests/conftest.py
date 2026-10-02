@@ -269,6 +269,18 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
 
 
 @pytest.fixture(autouse=True)
+def _no_git_auto_sync_threads(monkeypatch):
+    """App-made commits and app opens must not spawn real background git
+    fetch/push threads in every unrelated test (they would outlive the test's
+    tmp dirs). The suites that cover auto-sync (test_git_auto_sync.py,
+    test_app_git.py's sync cases) switch it back on themselves."""
+    from fused_render import git_upstream
+
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_queue_manager_across_tests():
     """No test inherits another test's queue index.
 

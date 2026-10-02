@@ -70,6 +70,7 @@ import {
 import type { Job, JobGroup } from "@platform/lib/jobs";
 import {
   dismissNotification,
+  notify,
   useRetainedNotifications,
   isUpdateNotification,
 } from "@platform/lib/notifications";
@@ -93,15 +94,22 @@ import {
 import { loadDismissed, saveDismissed } from "./dismiss-store";
 import {
   repoActionLabel,
+  newPulls,
+  pullPopupTitle,
   repoDismissSignature,
   repoFixPrompt,
   repoGitHref,
   repoRows,
   repoStatusText,
+  syncFailureActions,
+  syncFixPrompt,
   visibleRepoRows,
   type RepoAction,
   type RepoRow,
   type RepoStatus,
+  type SyncFailure,
+  type SyncFailureActionId,
+  type SyncPull,
 } from "@shell/repo-updates-lib";
 
 // Same order of magnitude as ActivityDock's own poll: fast enough that a row
@@ -141,7 +149,14 @@ const POLL_MS = 6000;
 // explicit click within the session. Any key left on a real machine from an
 // earlier build is inert and needs no migration — nothing reads it.
 
-type MutationResult = { ok: boolean; reason?: string; message?: string };
+type MutationResult = {
+  ok: boolean;
+  reason?: string;
+  message?: string;
+  /** The failed git command and its complete output (git_upstream._refuse). */
+  command?: string;
+  output?: string;
+};
 
 function useRepoUpdates() {
   const [repos, setRepos] = useState<RepoStatus[]>([]);
@@ -150,6 +165,12 @@ function useRepoUpdates() {
   // surface. Server-side store (lan.py `_recent_pairings`), so a dismissal
   // holds across shells and reloads for as long as the server runs.
   const [pairings, setPairings] = useState<LanPairingEvent[]>([]);
+  // Auto-sync failures (git_upstream.sync_failures): the persistent rows that
+  // say a background pull/push could not be done and nothing was changed.
+  const [syncFailures, setSyncFailures] = useState<SyncFailure[]>([]);
+  // Pull ids already announced. `null` until the first poll lands: pulls that
+  // happened before this shell opened are history, never a popup.
+  const announcedPulls = useRef<Set<string> | null>(null);
   const pollRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -170,7 +191,11 @@ function useRepoUpdates() {
       window.clearTimeout(timer);
       try {
         const [data, paired] = await Promise.all([
-          getJson<{ repos?: RepoStatus[] }>("/api/git-upstream"),
+          getJson<{
+            repos?: RepoStatus[];
+            sync_failures?: SyncFailure[];
+            pulls?: SyncPull[];
+          }>("/api/git-upstream"),
           // Its failure must not take the repo rows down with it (and vice
           // versa): each source degrades alone.
           getLanPairings().catch(() => null),
@@ -181,6 +206,18 @@ function useRepoUpdates() {
         // `useJobs` carries its own epoch).
         if (!disposed && mine === generation) {
           setRepos(data.repos || []);
+          setSyncFailures(data.sync_failures || []);
+          const pulls = data.pulls || [];
+          if (announcedPulls.current === null) {
+            announcedPulls.current = new Set(pulls.map((p) => p.id));
+          } else {
+            for (const p of newPulls(pulls, announcedPulls.current)) {
+              announcedPulls.current.add(p.id);
+              // A brief popup and nothing retained: no action, no page, not
+              // an error, so notifications.ts drops it after the popup.
+              notify({ title: pullPopupTitle(p) });
+            }
+          }
           if (paired) setPairings(paired.pairings || []);
         }
       } catch {
@@ -199,7 +236,7 @@ function useRepoUpdates() {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { repos, pairings, setPairings, refresh };
+  return { repos, pairings, setPairings, syncFailures, setSyncFailures, refresh };
 }
 
 // A device that just paired over the LAN (lan.py): title is the device's
@@ -254,6 +291,109 @@ function PairingRowView({
           void dismiss();
         },
         title: "Open Preferences → Render local network",
+      }}
+    />
+  );
+}
+
+// A BACKGROUND AUTO-SYNC THAT COULD NOT FINISH (git_upstream.sync_failures) —
+// the sixth row kind. Persistent until the user dismisses it or a later sync
+// of the same repo succeeds (the server drops it then); one row per repo,
+// updated in place. Nothing was changed on disk: the title says why. The row
+// goes somewhere (the repo's git view). Its buttons depend on the failure
+// reason (`syncFailureActions`): Retry only where re-running can help, Open git
+// view / Sign in where the user must act in the git view, Fix with Claude (the
+// overview-then-confirm prompt, with the action, command and git's complete
+// output).
+function SyncFailureRowView({
+  failure,
+  onGone,
+  onOpen,
+  age,
+  unseen,
+}: {
+  failure: SyncFailure;
+  onGone: (id: string) => void;
+  onOpen?: () => void;
+  age?: string;
+  unseen?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [retryNote, setRetryNote] = useState<string | null>(null);
+  const dismiss = async () => {
+    onGone(failure.id);
+    try {
+      await postJson("/api/git-upstream", {
+        action: "sync-dismiss",
+        root: failure.root,
+        reason: failure.reason,
+      });
+    } catch {
+      /* the next poll restores it if the server never heard */
+    }
+  };
+  const retry = async () => {
+    if (busy) return;
+    setBusy(true);
+    setRetryNote(null);
+    try {
+      const result = await postJson<MutationResult>("/api/git-upstream", {
+        action: "sync-retry",
+        root: failure.root,
+        reason: failure.reason,
+      });
+      // A success clears the failure server-side; drop the row at once. A
+      // repeat failure keeps it (the poll refreshes its text).
+      if (result.ok) onGone(failure.id);
+      else setRetryNote(result.message || "still failing");
+    } catch {
+      setRetryNote("check your connection and retry");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fixWithClaude = () => {
+    stageClaudeAsk(failure.root, syncFixPrompt(failure));
+    navigate(failure.root, { isDir: true });
+    void dismiss();
+  };
+  // Open git view / Sign in: the same hop the row body makes (the git side
+  // pane, where the sign-in panel lives). Neither retries nor dismisses.
+  const openGit = () => {
+    navigateUrl(repoGitHref(failure.root), { isDir: true });
+    onOpen?.();
+  };
+  const handlers: Record<SyncFailureActionId, () => void> = {
+    "open-git": openGit,
+    "sign-in": openGit,
+    retry,
+    fix: fixWithClaude,
+  };
+  // First action takes the head slot beside the dismiss, second the line
+  // below the status; a one-action reason simply has no second line.
+  const [first, second] = syncFailureActions(failure.reason).map((a) => ({
+    label: a.id === "retry" && busy ? "Retrying…" : a.label,
+    onClick: handlers[a.id],
+    disabled: a.id === "retry" && busy,
+  }));
+  return (
+    <NotificationCard
+      className="dl-row-attention"
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {failure.name}
+        </>
+      }
+      age={age}
+      status={retryNote ? `${failure.title} (${retryNote})` : failure.title}
+      navAction={first}
+      extraAction={second}
+      onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${failure.name} sync failure` }}
+      rowClick={{
+        onClick: openGit,
+        ariaLabel: `Open ${failure.name} in Git`,
+        title: `Open ${failure.name} in Git`,
       }}
     />
   );
@@ -504,6 +644,8 @@ function RepoRowView({
   // enough to survive this row ever growing a second action again.
   const [busyAction, setBusyAction] = useState<RepoAction | null>(null);
   const [failure, setFailure] = useState<MutationResult | null>(null);
+  // The button that produced `failure`, named in the Fix prompt.
+  const [lastAction, setLastAction] = useState<RepoAction>(row.primaryAction);
 
   // SUCCESS dismisses the row (same handler the ✕ uses, D949): the repo it
   // was telling you about just caught up, so the row has nothing left to
@@ -518,6 +660,7 @@ function RepoRowView({
   const run = async (action: RepoAction) => {
     if (busyAction !== null) return;
     setBusyAction(action);
+    setLastAction(action);
     setFailure(null);
     try {
       const result = await postJson<MutationResult>("/api/git-upstream", {
@@ -543,7 +686,11 @@ function RepoRowView({
   // away, so get out of the way" rule the row's own body click follows.
   const fixWithClaude = () => {
     if (!failure) return;
-    const prompt = repoFixPrompt(row, failure.message || "unknown error", failure.reason);
+    const prompt = repoFixPrompt(row, failure.message || "unknown error", failure.reason, {
+      action: lastAction === "switch" ? "Clicked Switch (git checkout)" : "Clicked Update (git pull --ff-only)",
+      command: failure.command,
+      output: failure.output,
+    });
     stageClaudeAsk(row.repo.root, prompt);
     navigate(row.repo.root, { isDir: true });
     onDismiss();
@@ -737,6 +884,9 @@ function GroupJobRow({
 function pairingKey(event: LanPairingEvent): string {
   return `pairing:${event.id}`;
 }
+function syncFailureKey(f: SyncFailure): string {
+  return `sync:${f.id}:${f.at}`;
+}
 function repoRowKey(row: RepoRow): string {
   return `repo:${row.repo.root}:${repoDismissSignature(row.repo)}`;
 }
@@ -809,6 +959,8 @@ export function RepoUpdatesCardView({
   attentionDismissed = {},
   onAttentionDismiss,
   onPairingGone,
+  syncFailures = [],
+  onSyncGone,
   messages = [],
   onJobsChanged,
   onTerminalPatch,
@@ -838,6 +990,9 @@ export function RepoUpdatesCardView({
   attentionDismissed?: Record<string, string>;
   onAttentionDismiss?: (key: string, signature: string) => void;
   onPairingGone?: (id: string) => void;
+  /** Standing auto-sync failures — the sixth row kind. Always "Needs you". */
+  syncFailures?: SyncFailure[];
+  onSyncGone?: (id: string) => void;
   /** A terminal row was acted on — ask the jobs poll to re-read. */
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
@@ -926,6 +1081,7 @@ export function RepoUpdatesCardView({
     visible.length +
     terminalGroups.length +
     pairings.length +
+    syncFailures.length +
     visibleAttention.length +
     messagesAttention.length +
     messagesTrail.length;
@@ -936,12 +1092,16 @@ export function RepoUpdatesCardView({
   // point of view: something nobody has looked at yet. Counts ROWS, for the
   // same reason `total` does.
   const attentionCount =
-    visibleAttention.length + terminalAttentionGroups.length + messagesAttention.length;
+    visibleAttention.length +
+    terminalAttentionGroups.length +
+    messagesAttention.length +
+    syncFailures.length;
   // R7: an ORDINARY attention row — anything besides the update row — is
   // what earns the loud "N needs you"/failure treatment. The update row
   // alone wanting a look is not an emergency; it is an offer to restart.
   const hasOrdinaryAttention =
     visibleAttention.length > 0 ||
+    syncFailures.length > 0 ||
     terminalAttentionGroups.length > 0 ||
     ordinaryAttentionMessages.length > 0;
 
@@ -962,6 +1122,7 @@ export function RepoUpdatesCardView({
   const presentKeys = [
     ...updateMessages.map(messageKey),
     ...visibleAttention.map(attentionRowKey),
+    ...syncFailures.map(syncFailureKey),
     ...terminalAttentionGroups.map(jobGroupKey),
     ...ordinaryAttentionMessages.map(messageKey),
     ...pairings.map(pairingKey),
@@ -1033,6 +1194,23 @@ export function RepoUpdatesCardView({
     );
   }
   const restAttentionEntries: RowEntry[] = [
+    ...syncFailures.map((f): RowEntry => {
+      const key = syncFailureKey(f);
+      return {
+        key,
+        ts: f.at * 1000,
+        node: (
+          <SyncFailureRowView
+            key={key}
+            failure={f}
+            onGone={onSyncGone ?? NOOP}
+            onOpen={onClose}
+            age={age(f.at * 1000)}
+            unseen={unseen(key)}
+          />
+        ),
+      };
+    }),
     ...terminalAttentionGroups.map((g, idx): RowEntry => {
       const key = jobGroupKey(g);
       const ts = jobGroupAgeMs(g);
@@ -1417,6 +1595,8 @@ export function RepoUpdatesDockView({
   attentionDismissed,
   onAttentionDismiss,
   onPairingGone,
+  syncFailures = [],
+  onSyncGone,
   messages = [],
   onDismiss,
   onDismissAll,
@@ -1450,6 +1630,8 @@ export function RepoUpdatesDockView({
   attentionDismissed?: Record<string, string>;
   onAttentionDismiss?: (key: string, signature: string) => void;
   onPairingGone?: (id: string) => void;
+  syncFailures?: SyncFailure[];
+  onSyncGone?: (id: string) => void;
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
@@ -1484,6 +1666,8 @@ export function RepoUpdatesDockView({
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={onAttentionDismiss}
       onPairingGone={onPairingGone}
+      syncFailures={syncFailures}
+      onSyncGone={onSyncGone}
       messages={messages}
       collapsed={!chip.open}
       onToggle={chip.toggle}
@@ -1506,7 +1690,12 @@ export default function RepoUpdatesDock({
   terminal?: Job[];
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 } = {}) {
-  const { repos, pairings, setPairings, refresh } = useRepoUpdates();
+  const { repos, pairings, setPairings, syncFailures, setSyncFailures, refresh } =
+    useRepoUpdates();
+  const syncGone = useCallback(
+    (id: string) => setSyncFailures((list) => list.filter((f) => f.id !== id)),
+    [setSyncFailures],
+  );
   const rows = repoRows(repos);
   const { dismissed, dismissOne, dismissAll } = useDismissed();
   const { dismissed: attentionDismissed, dismissOne: attentionDismissOne } =
@@ -1538,6 +1727,8 @@ export default function RepoUpdatesDock({
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={attentionDismissOne}
       onPairingGone={pairingGone}
+      syncFailures={syncFailures}
+      onSyncGone={syncGone}
       messages={messages}
       onTerminalPatch={onTerminalPatch}
       onDismiss={dismissOne}

@@ -54,6 +54,7 @@ import {
   putAppSharingEnabled,
   putCanvasesEnabled,
   putNativeWindowsEnabled,
+  putGitAutoSyncEnabled,
   putProjectQueueEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putLanEnabled,
@@ -484,6 +485,48 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
         />
         <span>
           <b>Project queue</b> (one task at a time per folder).
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// App git auto-sync (default ON, an opt-OUT): the app's own commits are pushed
+// to the remote and a behind repo is fast-forwarded when an app opens. Off is
+// the earlier behaviour: the Update card and the manual git flows only.
+function GitAutoSyncSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `!== false`: absence (an older server) reads as the default, ON.
+  const enabled = prefs.git?.auto_sync !== false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putGitAutoSyncEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Git sync</h2>
+      <p className="deploy-muted">
+        Push the commits the app makes itself (after a Claude turn, or when an app
+        is created, moved or deleted) and bring in newer commits when you open an
+        app. Only the default branch is synced, only by fast-forward, and nothing
+        is merged or forced. If it cannot, you get a notification.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Automatically pull and push app changes</b>
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1444,6 +1487,7 @@ export default function Preferences() {
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
                 <AppSharingSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
+                <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
               </>
             )}

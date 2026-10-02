@@ -40,6 +40,16 @@ nothing and raise nothing. A background check that nagged about a
 misconfigured remote would be worse than one that says nothing; the git
 companion is where a fetch error is visible.
 
+AUTO-SYNC (the "auto-sync" section below, on by default; the
+`git_auto_sync_enabled` pref turns it off, restoring everything above
+exactly). The background check now fast-forwards the default branch itself,
+and `schedule_sync` pushes after app-made commits. Still silent: offline,
+no remote, HEAD not on the default branch. NOT silent, because nothing was
+changed and the user must decide: a dirty tree, a divergence, a rejected
+push, an auth failure. Those are recorded as one standing failure per repo
+(`sync_failures`, served by GET /api/git-upstream) until dismissed or a
+later sync succeeds. It only ever fast-forwards: never merge, rebase or force.
+
 MOUNT-BACKED REPOS ARE REFUSED OUTRIGHT, before any subprocess — the same
 rule `ops.py`'s `_refuse_mounts` (GT-4 / MD-11) enforces for the same
 reason: a background fetch across an rclone-NFS mount is exactly the wedge
@@ -273,8 +283,10 @@ def _brief(result):
     return " ".join((diagnostic or lines)[:3])
 
 
-def _refuse(reason, message):
-    return {"ok": False, "reason": reason, "message": message}
+def _refuse(reason, message, **extra):
+    # `extra` carries `command` + `output` (git's COMPLETE text) for a failed
+    # mutation, so Fix with Claude can quote what git really said.
+    return {"ok": False, "reason": reason, "message": message, **extra}
 
 
 def _is_clean(root, *, include_untracked=True):
@@ -541,7 +553,9 @@ def update_repo(root):
         result = _run(root, "pull", "--ff-only", "--", "origin",
                       default_branch, timeout=TIMEOUT_S)
         if not _ok(result):
-            return _refuse("git-failed", _brief(result) or "git pull failed.")
+            return _refuse("git-failed", _brief(result) or "git pull failed.",
+                           command=f"git pull --ff-only -- origin {default_branch}",
+                           output=_text(result))
         _refresh_after_mutation(root)
         return {"ok": True, "op": "update", "root": root,
                 "message": f"Updated to origin/{default_branch}."}
@@ -654,7 +668,9 @@ def _switch_repo_locked(root):
                 f"{default_branch} is already checked out in another "
                 f"worktree of this repository ({worktree}) - git will not "
                 "check out the same branch twice.")
-        return _refuse("git-failed", brief or "git checkout failed.")
+        return _refuse("git-failed", brief or "git checkout failed.",
+                       command=f"git checkout {default_branch} --",
+                       output=_text(result))
     # `keep_on_failure=True` + `known_update`: see `_refresh_after_mutation`'s
     # own docstring for why switch alone survives a failed re-check, and why
     # these two fields (not ahead/behind) are what it patches in that case —
@@ -664,6 +680,297 @@ def _switch_repo_locked(root):
         known_update={"branch": default_branch, "on_default": True})
     return {"ok": True, "op": "switch", "root": root,
             "message": f"Switched to {default_branch}."}
+
+
+# --------------------------------------------------------------------- auto-sync
+#
+# The app's own commits (a Claude-turn sweep, an app create/delete/move) are
+# pushed, and a behind repo is fast-forwarded when an app opens. Both go through
+# `_sync_locked`. Rules, all from SPEC-git-auto-sync.md:
+#   * the DEFAULT branch only: no remote, or HEAD on another branch, is a
+#     silent skip;
+#   * `pull --ff-only` and a plain `push`, never a merge, rebase, stash or
+#     force. A dirty tree (only when a pull is actually needed), a divergence,
+#     a rejected push or an auth failure changes NOTHING locally and records a
+#     persistent failure (`sync_failures()`, keyed repo+reason so a repeat
+#     updates in place) that the shell turns into a notification with Retry and
+#     Fix with Claude;
+#   * offline / unreachable (including a timeout) is silent and retried at the
+#     next trigger.
+# A successful pull is recorded as a transient event (`recent_pulls()`); a
+# successful push says nothing.
+
+_OFFLINE_MARKERS = (
+    "could not resolve host", "could not resolve hostname",
+    "temporary failure in name resolution", "name or service not known",
+    "network is unreachable", "network is down", "no route to host",
+    "connection timed out", "operation timed out", "connection refused",
+    "connection reset", "failed to connect", "could not connect",
+    "unable to connect", "tls connection", "ssl_connect",
+)
+_AUTH_MARKERS = (
+    "authentication failed", "permission denied", "could not read username",
+    "could not read password", "terminal prompts disabled",
+    "invalid username", "access denied", "returned error: 401",
+    "returned error: 403", "http 401", "http 403", "repository not found",
+    "publickey",
+)
+_REJECTED_MARKERS = (
+    "[rejected]", "non-fast-forward", "fetch first", "stale info",
+    "updates were rejected",
+)
+
+_FAILURE_TITLES = {
+    "dirty": "uncommitted changes block the update",
+    "diverged": "local and remote have both changed",
+    "rejected": "the push was rejected",
+    "auth": "git could not authenticate",
+    "git-failed": "git reported an error",
+}
+
+_sync_lock = threading.Lock()
+_sync_failures: dict = {}  # (root, reason) -> failure record
+_pulled_events: list = []  # newest last, capped
+_PULLED_KEEP_S = 600.0
+
+
+def auto_sync_enabled():
+    """The `git_auto_sync_enabled` pref (default ON). Imported lazily: the prefs
+    module is part of the shell and must not be a module-scope dependency of
+    this one."""
+    try:
+        from fused_render.shell import prefs
+        return prefs.git_auto_sync_enabled()
+    except Exception:  # noqa: BLE001 — an unreadable pref reads as the default
+        return True
+
+
+def _text(result):
+    """Everything git printed, stderr first — the COMPLETE output, because the
+    Fix with Claude prompt needs the hints ("rejected ... fetch first") and not
+    only git's last line."""
+    if not result:
+        return ""
+    return (result[2].decode("utf-8", "replace")
+            + result[1].decode("utf-8", "replace")).strip()
+
+
+def _classify(result, *, push=False):
+    """`offline` | `auth` | `rejected` | `git-failed` for a failed git call.
+    `result is None` (git could not run, or timed out) is `offline`: a hung
+    remote is exactly the silent case."""
+    if result is None:
+        return "offline"
+    low = _text(result).lower()
+    if any(m in low for m in _OFFLINE_MARKERS):
+        return "offline"
+    if any(m in low for m in _AUTH_MARKERS):
+        return "auth"
+    if push and any(m in low for m in _REJECTED_MARKERS):
+        return "rejected"
+    return "git-failed"
+
+
+def _skipped(why, **extra):
+    return {"ok": True, "status": "skipped", "why": why, **extra}
+
+
+def _record_failure(root, reason, *, action, command, output, push):
+    """Persist one failure, replacing whatever the repo had before — the repo's
+    latest outcome is the only one worth a row. Same (root, reason) = same row
+    updated in place (`id` is stable)."""
+    record = {
+        "id": f"{root}::{reason}",
+        "root": root,
+        "name": os.path.basename(root.rstrip("/\\")) or root,
+        "reason": reason,
+        "title": _FAILURE_TITLES.get(reason, "git reported an error"),
+        "action": action,
+        "command": command,
+        "output": output,
+        "push": bool(push),
+        "at": time.time(),
+    }
+    with _sync_lock:
+        for key in [k for k in _sync_failures if k[0] == root]:
+            del _sync_failures[key]
+        _sync_failures[(root, reason)] = record
+    return record
+
+
+def _clear_failures(root):
+    with _sync_lock:
+        for key in [k for k in _sync_failures if k[0] == root]:
+            del _sync_failures[key]
+
+
+def sync_failures():
+    """The standing auto-sync failures, for GET /api/git-upstream."""
+    with _sync_lock:
+        return [dict(v) for v in _sync_failures.values()]
+
+
+def dismiss_sync_failure(root, reason):
+    with _sync_lock:
+        return _sync_failures.pop((root, reason), None) is not None
+
+
+def recent_pulls():
+    """Auto-pulls that brought in commits, newest last — the transient
+    "Updated <app> with N changes" popup. The shell dedups by `id`."""
+    cutoff = time.time() - _PULLED_KEEP_S
+    with _sync_lock:
+        return [dict(e) for e in _pulled_events if e["at"] >= cutoff]
+
+
+def _record_pull(root, count):
+    now = time.time()
+    with _sync_lock:
+        _pulled_events.append({
+            "id": f"{root}:{int(now * 1000)}",
+            "root": root,
+            "name": os.path.basename(root.rstrip("/\\")) or root,
+            "count": count,
+            "at": now,
+        })
+        del _pulled_events[:-20]
+
+
+def _sync_locked(root, *, action, push):
+    """One sync of `root`; the caller holds the process-wide slot. Returns a
+    dict: `status` is `synced` | `skipped` | `offline` | `failed`, plus
+    `pulled` (commits fast-forwarded in), `pushed`, and on `failed` the
+    recorded failure. A `state` key (a `check_repo`-shaped dict) is included
+    whenever the fetch succeeded, so the caller can refresh `_state`.
+
+    Never raises for a git problem; the background callers wrap it anyway."""
+    if not os.path.isdir(root) or shell_mounts.is_mount_backed(root):
+        return _skipped("unavailable")
+    if not _ok(_run(root, "remote", "get-url", "origin")):
+        return _skipped("no-remote")
+    default_branch = _default_branch(root)
+    if not default_branch:
+        return _skipped("no-remote")
+    branch = _current_branch(root)
+    if branch != default_branch:
+        return _skipped("not-default")
+    if _operation_in_flight(root) is not None:
+        return _skipped("in-progress")
+
+    fetch_cmd = f"git fetch -- origin {default_branch}"
+    fetched = _run(root, "fetch", "--", "origin", default_branch)
+    if not _ok(fetched):
+        reason = _classify(fetched)
+        if reason == "offline":
+            return {"ok": True, "status": "offline"}
+        failure = _record_failure(root, reason, action=action, command=fetch_cmd,
+                                  output=_text(fetched), push=push)
+        return {"ok": False, "status": "failed", "failure": failure}
+
+    ahead, behind = _ahead_behind_counts(root, default_branch)
+    if behind is None:
+        return _skipped("unreadable")
+
+    def state():
+        a, b = _ahead_behind_counts(root, default_branch)
+        return {"root": root, "branch": default_branch,
+                "default_branch": default_branch, "on_default": True,
+                "ahead": a or 0, "behind": b or 0, "checked_at": time.time()}
+
+    pulled = 0
+    pull_cmd = f"git pull --ff-only -- origin {default_branch}"
+    if behind > 0:
+        if not _is_clean(root, include_untracked=False):
+            failure = _record_failure(
+                root, "dirty", action=action, command=pull_cmd,
+                output=("Not run: the working tree has uncommitted changes to "
+                        "tracked files, and origin/%s is %d commit(s) ahead."
+                        % (default_branch, behind)),
+                push=push)
+            return {"ok": False, "status": "failed", "failure": failure,
+                    "state": state()}
+        result = _run(root, "pull", "--ff-only", "--", "origin", default_branch)
+        if not _ok(result):
+            # Ahead AND behind means the ff-only pull refused because the two
+            # histories diverged; git's own output is quoted either way.
+            reason = _classify(result)
+            if reason == "git-failed" and ahead:
+                reason = "diverged"
+            if reason == "offline":
+                return {"ok": True, "status": "offline"}
+            failure = _record_failure(root, reason, action=action,
+                                      command=pull_cmd, output=_text(result),
+                                      push=push)
+            return {"ok": False, "status": "failed", "failure": failure,
+                    "state": state()}
+        pulled = behind
+        _record_pull(root, pulled)
+
+    pushed = False
+    if push and (ahead or 0) > 0:
+        push_cmd = f"git push -- origin {default_branch}"
+        result = _run(root, "push", "--", "origin", default_branch)
+        if not _ok(result):
+            reason = _classify(result, push=True)
+            if reason == "offline":
+                return {"ok": True, "status": "offline", "pulled": pulled}
+            failure = _record_failure(root, reason, action=action,
+                                      command=push_cmd, output=_text(result),
+                                      push=push)
+            return {"ok": False, "status": "failed", "failure": failure,
+                    "pulled": pulled, "state": state()}
+        pushed = True
+
+    _clear_failures(root)
+    return {"ok": True, "status": "synced", "pulled": pulled, "pushed": pushed,
+            "state": state()}
+
+
+def sync_repo(root, *, action, push):
+    """Sync `root` under the process-wide slot (a bounded wait, never an
+    unbounded block behind someone else's fetch). Safe from any thread."""
+    with _mutation_slot() as slot:
+        if not slot:
+            return {"ok": True, "status": "offline", "busy": True}
+        result = _sync_locked(root, action=action, push=push)
+        if result.get("state"):
+            _record(result["state"])
+        return result
+
+
+def retry_sync(root, reason):
+    """Retry button: re-run the sync with the same action and push scope the
+    failure was recorded under. A failure that is no longer standing retries as
+    a plain pull."""
+    with _sync_lock:
+        old = _sync_failures.get((root, reason))
+    action = old["action"] if old else "Retry"
+    push = old["push"] if old else False
+    return sync_repo(root, action=action, push=push)
+
+
+def schedule_sync(path, action, *, push=True, _runner=None):
+    """Fire-and-forget sync for the repo containing `path`, off the caller's
+    thread — the hook the app-made commit sites use. No-op with the setting
+    off. Never raises, never blocks the caller."""
+    if not auto_sync_enabled():
+        return False
+
+    def run():
+        try:
+            root = repo_root(path)
+            if root is not None:
+                sync_repo(root, action=action, push=push)
+        except Exception:  # noqa: BLE001 — best-effort housekeeping
+            logger.exception("git auto-sync failed for %s", path)
+
+    runner = _runner or (lambda fn: threading.Thread(
+        target=fn, daemon=True, name="git-auto-sync").start())
+    try:
+        runner(run)
+    except RuntimeError:  # interpreter shutting down
+        return False
+    return True
 
 
 # ------------------------------------------------------------------- the throttle
@@ -709,7 +1016,19 @@ def _background_check(path):
     try:
         root = repo_root(path)
         if root is not None and _due(root, time.time()):
-            _record(check_repo(root))
+            if auto_sync_enabled():
+                # Auto-update on open: fast-forward the default branch
+                # ourselves. The slot is already held by note_app_opened.
+                result = _sync_locked(root, action="Auto-update on app open",
+                                      push=False)
+                if result.get("state"):
+                    _record(result["state"])
+                elif result["status"] == "skipped":
+                    # No remote / other branch / unreadable: the plain check
+                    # still feeds the Switch card and App Doctor.
+                    _record(check_repo(root))
+            else:
+                _record(check_repo(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
         logger.exception("git-upstream check failed for %s", path)
     finally:
@@ -822,8 +1141,13 @@ def known_repos():
     """Every repo with a recorded, non-zero behind count — what
     GET /api/git-upstream reports. A repo that is up to date (or was never
     successfully checked) produces no row."""
+    auto = auto_sync_enabled()
     with _state_lock:
-        return [dict(v) for v in _state.values() if v.get("behind", 0) > 0]
+        # With auto-sync on, the "Update" card is replaced by the automatic
+        # fast-forward (a failure of it is a sync failure notification), so
+        # only the off-default Switch rows remain.
+        return [dict(v) for v in _state.values()
+                if v.get("behind", 0) > 0 and not (auto and v.get("on_default"))]
 
 
 def repo_state_for(root):
@@ -854,4 +1178,7 @@ def is_known_repo(root):
     legitimate root. What this refuses is a root the check has never even
     heard of — an arbitrary path handed in from an open page's POST body."""
     with _state_lock:
-        return root in _state
+        if root in _state:
+            return True
+    with _sync_lock:
+        return any(k[0] == root for k in _sync_failures)
