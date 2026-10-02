@@ -344,13 +344,14 @@ def test_inspect_and_plan_know_point_clouds(prepare, tmp_path):
 
 def test_a_projected_zarr_grid_gets_proj4_and_lonlat_bounds(prepare):
     out = prepare.main("grid", action="crs", crs="EPSG:32633", bounds=[500000, 5000000, 510000, 5010000])
+    assert prepare.main("grid", action="crs", crs="EPSG:32633+5773")["geographic"] is False
     assert out["status"] == "ok" and "+proj=utm" in out["proj4"] and out["epsg"] == 32633
     west, south, east, north = out["bounds"]
     assert 14.99 < west < east < 15.2 and 45.1 < south < north < 45.3
     assert out["geographic"] is False
 
 
-@pytest.mark.parametrize("crs", ["EPSG:4269", "OGC:CRS84", "4326", "urn:ogc:def:crs:EPSG::4326",
+@pytest.mark.parametrize("crs", ["EPSG:4269", "OGC:CRS84", "4326", "urn:ogc:def:crs:EPSG::4326", "EPSG:4326+5773",
                                  'BOUNDCRS[SOURCECRS[GEOGCRS["NAD27",DATUM["North American Datum 1927",'
                                  'ELLIPSOID["Clarke 1866",6378206.4,294.978698213898]],CS[ellipsoidal,2],'
                                  'AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433]]],'

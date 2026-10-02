@@ -628,10 +628,12 @@ def _crs_info(crs: str, bounds: list | None = None) -> dict:
     from pyproj import CRS, Transformer
 
     parsed = CRS.from_user_input(crs)
+    # Geographic or not is the horizontal part's call: unwrap datum shifts and heights.
+    horizontal = parsed.source_crs if parsed.is_bound else parsed
+    horizontal = horizontal.sub_crs_list[0] if horizontal.is_compound else horizontal
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # "lose projection information"
-        out = {"proj4": parsed.to_proj4(), "epsg": parsed.to_epsg(),
-               "geographic": (parsed.source_crs if parsed.is_bound else parsed).is_geographic}
+        out = {"proj4": parsed.to_proj4(), "epsg": parsed.to_epsg(), "geographic": horizontal.is_geographic}
     if bounds and len(bounds) == 4:
         west, south, east, north = Transformer.from_crs(parsed, 4326, always_xy=True) \
             .transform_bounds(*map(float, bounds))
