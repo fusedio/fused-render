@@ -32,6 +32,9 @@ from fused_render.server.common import _require_fused
 
 router = APIRouter()
 
+# trigger -> the action sentence the Fix with Claude prompt names.
+_SYNC_ACTIONS = {"claude-turn": "Auto-push after Claude commit"}
+
 
 @router.get("/api/git-upstream")
 def api_git_upstream():
@@ -51,6 +54,21 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
     if guard is not None:
         return guard
     action = str(body.get("action") or "")
+    if action == "sync":
+        # The Claude template's post-turn hook (a standalone process that
+        # cannot import this package): push whatever the default branch is
+        # ahead by. Only a path inside a workspace app folder is accepted, and
+        # the work is queued in the background, so this answers immediately.
+        from fused_render import app_git
+
+        path = str(body.get("path") or "")
+        if not path or app_git.app_dir_for(path) is None:
+            return {"ok": False, "reason": "not-an-app",
+                    "message": "that path is not inside an app folder"}
+        label = _SYNC_ACTIONS.get(str(body.get("trigger") or ""),
+                                  "Auto-push after app change")
+        queued = git_upstream.schedule_sync(path, label, push=True)
+        return {"ok": True, "queued": queued}
     root = str(body.get("root") or "")
     if not root:
         return {"ok": False, "reason": "missing", "message": "no repo root given"}
