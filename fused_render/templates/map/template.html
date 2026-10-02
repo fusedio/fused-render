@@ -278,8 +278,8 @@
   .ctl-lbl { font-size: 11px; color: var(--muted); margin-bottom: 5px; display: flex; justify-content: space-between; }
   .ctl-lbl b { color: var(--text); font-weight: 560; font-family: var(--mono); font-size: 10.5px; }
   .ctl-pair { display: flex; gap: 6px; }
-  .ctl-pair input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 5px 7px; background: var(--panel-2); color: var(--text); font-size: 11.5px; font-family: var(--mono); }
-  .ctl-pair input:focus { outline: none; border-color: var(--accent); }
+  .ctl-pair input, .ctl > input[type=text] { flex: 1; min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 5px 7px; background: var(--panel-2); color: var(--text); font-size: 11.5px; font-family: var(--mono); }
+  .ctl-pair input:focus, .ctl > input[type=text]:focus { outline: none; border-color: var(--accent); }
   .ctl-action { width:100%; border:1px solid var(--border); border-radius:8px; padding:7px 9px; background:var(--panel-2); color:var(--text); font-size:11.5px; text-align:left; }
   .ctl-action:hover { border-color:var(--accent); }
   .row { display: flex; align-items: center; gap: 8px; }
@@ -321,6 +321,10 @@
   .md-btn:hover { color: var(--text); border-color: var(--accent); }
   .md-btn.on { color: var(--accent); border-color: #5f730055; background: var(--accent-soft); }
   .md-btn:disabled { opacity: .45; cursor: default; }
+  .md-dim select { margin-bottom: 6px; }
+  .md-row { gap: 4px; align-items: center; }
+  .md-row input[type=range] { flex: 1; min-width: 0; }
+  .md-axes { margin-top: 10px; font-size: 11px; color: var(--muted); font-family: var(--mono); }
 
   /* right-docked style panel */
   #stylepanel {
@@ -405,6 +409,13 @@
 
   /* ---- additions for the document-driven viewer ------------------------- */
   .fm-hidden-control { display: none !important; }
+  .lidar-control-panel { display: none !important; }
+  .pc-classes { display: flex; flex-direction: column; max-height: 220px; overflow: auto; }
+  .pc-classes .chk { margin-top: 6px; }
+  .pc-sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .pc-allnone { gap: 6px; margin-top: 8px; }
+  .pc-allnone button, .pc-tilt { flex: 1; width: auto; height: 26px; padding: 0 10px; font-size: 12px; }
+  .pc-tilt { width: 100%; margin-top: 12px; }
   .lc-msg.bad { color: var(--bad); }
   .lc-msg.note { color: var(--faint); }
   .chk { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); margin-top: 10px; }
@@ -558,7 +569,7 @@
 (function (root) {
   const DOC_TYPE = "fused-map", DOC_VERSION = 1;
   const BASEMAPS = ["light", "dark", "sat", "none"];
-  const KINDS = ["auto", "raster", "vector", "zarr", "pmtiles"];
+  const KINDS = ["auto", "raster", "vector", "zarr", "pmtiles", "pointcloud"];
   const STYLE_KEYS = {
     raster: {
       mode: "enum:rgb|single|palette|index", bands: "int[]", colormap: "str",
@@ -577,8 +588,13 @@
       fill_color: "color", fill_opacity: "unit", line_color: "color",
       line_width: "num", circle_color: "color", circle_radius: "num",
     },
+    pointcloud: {
+      color_scheme: "enum:elevation|intensity|classification|rgb", colormap: "str",
+      point_size: "num", clim: "range", elevation_range: "range", hidden_classes: "codes",
+      z_offset: "num",
+    },
   };
-  const OPTION_KEYS = { variable: "str", selector: "dict", source_layer: "str" };
+  const OPTION_KEYS = { variable: "str", selector: "dict", source_layer: "str", crs: "str" };
   const HEX = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
 
   class MapDocError extends Error {}
@@ -603,6 +619,8 @@
     else if (rule === "color") ok = typeof value === "string" && HEX.test(value);
     else if (rule === "int[]") ok = Array.isArray(value) && value.length >= 1 && value.length <= 4
       && value.every(v => Number.isInteger(v) && v >= 1);
+    else if (rule === "codes") ok = Array.isArray(value) && value.length <= 256
+      && value.every(v => Number.isInteger(v) && v >= 0 && v <= 255);
     else if (rule === "range") ok = pair(value) || (Array.isArray(value) && value.length >= 1
       && value.length <= 4 && value.every(pair));
     else if (rule === "nodata") ok = value === "auto" || value === "off" || isNum(value);
@@ -942,6 +960,7 @@ const map = new maplibregl.Map({
     layers: [{ id: "bg", type: "background", paint: { "background-color": "#e5e7eb" } }],
   },
   center: [0, 20], zoom: 1.5, attributionControl: false,
+  maxPitch: 85,  // the document's limit; point clouds are seen tilted
 });
 window.__map = map;
 map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "bottom-right");
@@ -974,21 +993,41 @@ const VECTOR_FORMAT = {
 const MULTIDIM_FILE = new Set([".nc", ".nc4", ".h5", ".hdf5", ".he5", ".hdf", ".cdf"]);
 const zarrRoot = s => String(s).replace(/[\\/](\.zmetadata|zarr\.json)$/i, "").replace(/[\\/]+$/, "");
 const isZarr = s => /\.zarr(-[^.\\/]*)?$/i.test(zarrRoot(s).split("?")[0]);
+const POINTCLOUD_EXT = new Set([".las", ".laz"]);
+const isEpt = s => /(^|[\\/])ept\.json$/i.test(String(s).split(/[?#]/)[0]);
 
 // How to load a layer without asking Python, when the extension settles it.
 function quickPlan(layer) {
   const s = layer.source, ext = extOf(s), kind = layer.kind;
   if (kind === "pmtiles" || ext === ".pmtiles") return { load: "pmtiles", path: s };
+  if (kind === "pointcloud" || POINTCLOUD_EXT.has(ext) || isEpt(s)) {
+    // A CRS the user named is applied by Python, which rewrites the file.
+    if (layer.options.crs && !isEpt(s)) return { load: "pointcloud", path: s, convert: layer.options.crs };
+    return { load: "pointcloud", path: s };
+  }
   if (isZarr(s) || (kind === "zarr" && !MULTIDIM_FILE.has(ext))) return { load: "zarr", path: zarrRoot(s) };
   if (VECTOR_FORMAT[ext] && kind !== "raster") return { load: "vector", path: s, format: VECTOR_FORMAT[ext] };
   if (RASTER_EXT.has(ext) && kind !== "vector") return { load: "raster", path: s };
   return null;
 }
+// A remote URL with no extension may be a Zarr store: its metadata answers
+// at a known key.
+async function looksLikeZarr(source) {
+  const root = zarrRoot(source).split(/[?#]/)[0];
+  for (const key of ["zarr.json", ".zmetadata", ".zgroup", ".zarray"]) {
+    // GET, not HEAD: plenty of bucket CORS rules allow GET only.
+    try {
+      const response = await fetch(httpUrl(`${root}/${key}`));
+      if (response.ok) { response.body && response.body.cancel(); return true; }
+    } catch (_) { /* next */ }
+  }
+  return false;
+}
 // Fully concurrent (`key: null`): by default a runPython call cancels the one
 // in flight for the same file, and two layers preparing at once would leave
 // the first stuck on "Preparing…" forever.
-async function python(source, action = "plan") {
-  const result = await fused.runPython("./prepare.py", { target: source, action }, { key: null });
+async function python(source, action = "plan", extra = {}) {
+  const result = await fused.runPython("./prepare.py", { target: source, action, ...extra }, { key: null });
   if (!result || result.status !== "ok") {
     const error = new Error((result && result.message) || "could not read this source");
     error.traceback = result && result.traceback;
@@ -1003,7 +1042,7 @@ async function python(source, action = "plan") {
 //   status  loading | ready | error
 const runtime = new Map();
 let seq = 0;
-const loadKey = layer => JSON.stringify([layer.source, layer.kind, layer.options.source_layer || ""]);
+const loadKey = layer => JSON.stringify([layer.source, layer.kind, layer.options.source_layer || "", layer.options.crs || ""]);
 const docLayer = id => doc.layers.find(l => l.id === id);
 function ownedLayerIds(r) {
   if (!r.handle) return [];
@@ -1211,9 +1250,18 @@ function zarrStore(path) {
     },
   };
 }
-const SPATIAL = new Set(["lat", "latitude", "y", "lon", "longitude", "x", "rlat", "rlon"]);
-const isLatName = d => ["lat", "latitude", "y", "rlat"].includes(d.toLowerCase());
-const isLonName = d => ["lon", "longitude", "x", "rlon"].includes(d.toLowerCase());
+// Which dimension of a variable is its latitude (y) and which its longitude
+// (x): by name first, then by what the coordinate array says it is (CF axis,
+// standard_name, units), so `south_north`, `nav_lat` or `rlat` still map.
+const LAT_NAMES = new Set(["lat", "latitude", "y", "rlat", "nav_lat", "south_north", "lat_0", "yc", "northing", "grid_latitude"]);
+const LON_NAMES = new Set(["lon", "longitude", "x", "rlon", "nav_lon", "west_east", "lon_0", "xc", "easting", "grid_longitude"]);
+function axisRole(dim, attrs = {}) {
+  const d = dim.toLowerCase(), axis = String(attrs.axis || "").toUpperCase();
+  const std = String(attrs.standard_name || "").toLowerCase(), units = String(attrs.units || "").toLowerCase();
+  if (LAT_NAMES.has(d) || axis === "Y" || /latitude|projection_y/.test(std) || /degrees?_?n(orth)?$/.test(units)) return "lat";
+  if (LON_NAMES.has(d) || axis === "X" || /longitude|projection_x/.test(std) || /degrees?_?e(ast)?$/.test(units)) return "lon";
+  return null;
+}
 const TIME_UNITS = { second: 1e3, seconds: 1e3, minute: 6e4, minutes: 6e4, hour: 36e5, hours: 36e5, day: 864e5, days: 864e5 };
 function timeLabels(values, attrs) {
   const m = String(attrs.units || "").match(/^\s*(\w+)\s+since\s+(.+?)\s*$/i);
@@ -1227,73 +1275,155 @@ function timeLabels(values, attrs) {
     return d.endsWith("T00:00:00.000Z") ? d.slice(0, 10) : d.slice(0, 16).replace("T", " ");
   });
 }
+// The children of a remote store that has no consolidated metadata (a Zarr
+// v3 group cannot list itself): ask the bucket. S3, GCS's XML API and Source
+// Cooperative answer ListObjectsV2, path- or host-style.
+async function listRemoteChildren(path) {
+  const u = new URL(httpUrl(path));
+  const key = decodeURIComponent(u.pathname.replace(/^\/+|\/+$/g, ""));
+  const [bucket, ...rest] = key.split("/");
+  const hostStyle = [`${u.origin}/?list-type=2&delimiter=/&prefix=${encodeURIComponent(key + "/")}`, key + "/"];
+  const pathStyle = [`${u.origin}/${bucket}?list-type=2&delimiter=/&prefix=${encodeURIComponent(rest.join("/") + "/")}`, rest.join("/") + "/"];
+  // A bucket in the host name (bucket.s3.…amazonaws.com) lists host-style.
+  const attempts = /^[^.]+\.s3[.-]|\.storage\.googleapis\.com$/.test(u.hostname) ? [hostStyle, pathStyle] : [pathStyle, hostStyle];
+  for (const [url, prefix] of attempts) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) continue;
+      const xml = await response.text();
+      const names = [...xml.matchAll(/<Prefix>([^<]+)<\/Prefix>/g)].map(m => m[1])
+        .filter(p => p.startsWith(prefix) && p !== prefix).map(p => p.slice(prefix.length).replace(/\/$/, ""));
+      if (names.length) return names;
+    } catch (_) { /* not a bucket that lists */ }
+  }
+  return null;
+}
 async function zarrMeta(store, path) {
   const Z = M.zarr;
   const listable = await Z.withMaybeConsolidatedMetadata(store);
   const root = Z.root(listable);
+  let rootAttrs = {};
+  try { rootAttrs = (await Z.open(root, { kind: "group" })).attrs || {}; } catch (_) { /* a bare array */ }
+  // A multiscale pyramid (carbonplan/ndpyramid): levels 0..n hold the same
+  // variables at growing resolution. Read level 0; the layer picks levels.
+  const ms = Array.isArray(rootAttrs.multiscales) && rootAttrs.multiscales[0];
+  const level0 = ms && Array.isArray(ms.datasets) && ms.datasets.length ? String(ms.datasets[0].path).replace(/^\.?\/*|\/+$/g, "") : "";
+  const prefix = level0 ? level0 + "/" : "";
   let names;
   if (typeof listable.contents === "function") {
     names = listable.contents().filter(e => e.kind === "array").map(e => e.path.replace(/^\//, ""));
+  } else if (isRemote(path) && (names = await listRemoteChildren(prefix ? `${zarrRoot(path)}/${prefix.slice(0, -1)}` : zarrRoot(path)))) {
+    names = names.map(child => prefix + child);
   } else {
+    // Not listable from the browser: Python (xarray/fsspec) reads the store.
     const info = await python(path, "inspect");
-    names = Object.keys(info.variables || {});
+    names = [...new Set(Object.entries(info.variables || {}).flatMap(([name, v]) => [name, ...Object.keys(v.dims || {})]))];
   }
+  if (prefix) names = names.filter(n => n.startsWith(prefix));
   const arrays = {};
   for (const name of names) {
     try {
       const arr = await Z.open(root.resolve(name), { kind: "array" });
       const dims = arr.dimensionNames || arr.attrs._ARRAY_DIMENSIONS || [];
-      arrays[name] = { arr, dims, shape: arr.shape, attrs: arr.attrs };
+      arrays[name.slice(prefix.length)] = { arr, dims, shape: arr.shape, attrs: arr.attrs || {} };
     } catch (_) { /* not an array we can open */ }
   }
-  const variables = Object.entries(arrays)
-    .filter(([, a]) => a.dims.length >= 2 && a.dims.filter(d => SPATIAL.has(d.toLowerCase())).length >= 2
-            && !/^(bool|string|v2:object)/.test(String(a.arr.dtype)))
-    .map(([name]) => name);
+  if (!Object.keys(arrays).length) throw new Error("No arrays found in this Zarr store (it has no consolidated metadata and could not be listed).");
+  const roleOf = dim => axisRole(dim, (arrays[dim] || {}).attrs);
+  const spatial = {};
+  for (const [name, a] of Object.entries(arrays)) {
+    if (a.dims.length < 2 || /^(bool|string|v2:object|v2:<U|v2:\|S)/.test(String(a.arr.dtype))) continue;
+    const lat = a.dims.find(d => roleOf(d) === "lat"), lon = a.dims.find(d => roleOf(d) === "lon");
+    if (lat && lon && lat !== lon) spatial[name] = { lat, lon };
+  }
+  const variables = Object.keys(spatial);
   if (!variables.length) throw new Error("No gridded (lat/lon or y/x) variable in this store.");
   const coords = {};
-  const read1d = async name => {
-    const a = arrays[name];
-    if (!a || a.shape.length !== 1 || a.shape[0] > 100000) return null;
-    return Array.from((await Z.get(a.arr)).data, Number);
-  };
   const dimNames = new Set(variables.flatMap(v => arrays[v].dims));
   for (const dim of dimNames) {
-    const values = await read1d(dim);
-    if (!values) continue;
-    coords[dim] = { values, labels: SPATIAL.has(dim.toLowerCase()) ? null
-      : timeLabels(values, arrays[dim].attrs) || values.map(v => fmtNum(v)) };
+    const a = arrays[dim];
+    if (!a || a.shape.length !== 1 || a.shape[0] > 100000) continue;
+    let raw;
+    try { raw = Array.from((await Z.get(a.arr)).data); } catch (_) { continue; }
+    const numeric = raw.every(v => typeof v === "number" || typeof v === "bigint");
+    const values = numeric ? raw.map(Number) : raw.map((_, i) => i);
+    const isSpatial = variables.some(v => spatial[v].lat === dim || spatial[v].lon === dim);
+    // `named`: text labels (band names), not positions along an axis.
+    coords[dim] = { values, named: !numeric, labels: isSpatial ? null
+      : numeric ? timeLabels(values, a.attrs) || values.map(v => fmtNum(v)) : raw.map(v => String(v).trim()) };
   }
-  let bounds = null;
-  const latDim = [...dimNames].find(isLatName), lonDim = [...dimNames].find(isLonName);
-  if (latDim && lonDim && coords[latDim] && coords[lonDim]) {
-    const edge = v => { const lo = Math.min(...v), hi = Math.max(...v); const h = v.length > 1 ? (hi - lo) / (v.length - 1) / 2 : 0; return [lo - h, hi + h]; };
-    const [s, n] = edge(coords[latDim].values), [w, e] = edge(coords[lonDim].values);
-    if (w >= -181 && e <= 361 && s >= -91 && n <= 91) bounds = [Math.max(w > 180 ? w - 360 : w, -180), Math.max(s, -90), Math.min(e > 180 ? e - 360 : e, 180), Math.min(n, 90)];
+  return { arrays, variables, spatial, coords, multiscale: !!prefix, listable, rootAttrs };
+}
+// Where a variable's grid sits, from its coordinate arrays: the layer cannot
+// find them itself in a store without consolidated metadata. A pyramid
+// declares its own placement.
+async function zarrPlacement(meta, variable, path) {
+  if (meta.multiscale) return { layer: {}, bounds: null };
+  const { lat, lon } = meta.spatial[variable], a = meta.arrays[variable];
+  const ys = meta.coords[lat] && meta.coords[lat].values, xs = meta.coords[lon] && meta.coords[lon].values;
+  const out = { layer: { spatialDimensions: { lat, lon } } };
+  const fill = [a.attrs._FillValue, a.attrs.missing_value, a.arr.fillValue].find(v => typeof v === "number" && Number.isFinite(v));
+  if (fill !== undefined) out.layer.fillValue = fill;
+  if (!ys || !xs || ys.length < 2 || xs.length < 2) return out;
+  const edge = v => { const lo = Math.min(...v), hi = Math.max(...v); const h = (hi - lo) / (v.length - 1) / 2; return [lo - h, hi + h]; };
+  const [s, n] = edge(ys), [w, e] = edge(xs);
+  out.layer.latIsAscending = ys[ys.length - 1] > ys[0];
+  if (w >= -181 && e <= 361 && s >= -91 && n <= 91) {
+    const lat0 = Math.max(s, -90), lat1 = Math.min(n, 90);
+    out.layer.bounds = [w, lat0, e, lat1];
+    out.layer.crs = "EPSG:4326";
+    // Fitting wants -180..180: a 0..360 grid is the whole world, or a
+    // regional one shifted west when it lies past the antimeridian.
+    out.bounds = e - w >= 359 ? [-180, lat0, 180, lat1]
+      : w >= 180 ? [w - 360, lat0, e - 360, lat1]
+      : [Math.max(w, -180), lat0, Math.min(e, 180), lat1];
+    return out;
   }
-  return { arrays, variables, coords, bounds };
+  // Projected: pyproj turns the CRS the store names into the proj4 string
+  // the layer reprojects with, and the grid's extent into lon/lat.
+  const gm = a.attrs.grid_mapping && meta.arrays[a.attrs.grid_mapping];
+  const wkt = gm && (gm.attrs.crs_wkt || gm.attrs.spatial_ref) || meta.rootAttrs.crs_wkt;
+  const code = meta.rootAttrs.crs || meta.rootAttrs["proj:code"] || (meta.rootAttrs["proj:epsg"] && `EPSG:${meta.rootAttrs["proj:epsg"]}`);
+  const crs = wkt || code;
+  if (!crs) throw new Error(`${variable}'s grid is in projected units and the store does not say which projection.`);
+  const info = await python(path, "crs", { crs: String(crs), bounds: [w, s, e, n] });
+  if (info.epsg === 3857) out.layer.crs = "EPSG:3857"; else out.layer.proj4 = info.proj4;
+  out.layer.bounds = [w, s, e, n];
+  out.bounds = info.bounds;
+  return out;
 }
 // A starting colour range: 2–98% of the chunk at the middle of the grid, at
-// index 0 of every other dimension — one chunk read, not the whole array.
-async function autoClim(meta, variable) {
-  const a = meta.arrays[variable];
+// the selected index of every other dimension — one chunk read.
+async function autoClim(meta, variable, selector = {}) {
+  const a = meta.arrays[variable], sp = meta.spatial[variable];
   try {
-    const coords = a.dims.map((d, i) => SPATIAL.has(d.toLowerCase())
-      ? Math.floor((a.shape[i] / a.arr.chunks[i]) / 2) : 0);
-    const chunk = await a.arr.getChunk(coords);
-    const fill = a.attrs._FillValue ?? a.arr.fillValue;
-    const vals = Array.from(chunk.data, Number).filter(v => Number.isFinite(v) && v !== fill).sort((x, y) => x - y);
+    const at = a.dims.map((d, i) => d === sp.lat || d === sp.lon ? null : Math.max(0, Math.min(a.shape[i] - 1, selector[d] ?? 0)));
+    const chunk = await a.arr.getChunk(at.map((k, i) => Math.floor((k ?? a.shape[i] / 2) / a.arr.chunks[i])));
+    const fill = [a.attrs._FillValue, a.attrs.missing_value, a.arr.fillValue].filter(v => typeof v === "number");
+    // Only the selected slice: one chunk can hold every band or month.
+    const shape = chunk.shape, stride = chunk.stride || shape.map((_, i) => shape.slice(i + 1).reduce((x, y) => x * y, 1));
+    const fixed = at.map((k, i) => k === null ? null : k % a.arr.chunks[i]);
+    const vals = [];
+    const walk = (axis, offset) => {
+      if (axis === shape.length) { const v = Number(chunk.data[offset]); if (Number.isFinite(v) && !fill.includes(v) && Math.abs(v) < 1e30) vals.push(v); return; }
+      if (fixed[axis] !== null) { if (fixed[axis] < shape[axis]) walk(axis + 1, offset + fixed[axis] * stride[axis]); return; }
+      for (let k = 0; k < shape[axis]; k++) walk(axis + 1, offset + k * stride[axis]);
+    };
+    walk(0, 0);
+    vals.sort((x, y) => x - y);
     if (!vals.length) return [0, 1];
     const lo = vals[Math.floor(vals.length * 0.02)], hi = vals[Math.floor((vals.length - 1) * 0.98)];
     return hi > lo ? [lo, hi] : [lo, lo + 1];
   } catch (_) { return [0, 1]; }
 }
+// The non-spatial dimensions a variable is sliced along, with sizes.
+function sliceDims(meta, variable) {
+  const a = meta.arrays[variable], sp = meta.spatial[variable];
+  return a.dims.map((dim, i) => ({ dim, size: a.shape[i] })).filter(d => d.dim !== sp.lat && d.dim !== sp.lon);
+}
 function zarrSelector(layer, r) {
-  const variable = r.variable, dims = r.meta.arrays[variable].dims;
   const sel = {}, wanted = layer.options.selector || {};
-  for (const dim of dims) {
-    if (SPATIAL.has(dim.toLowerCase())) continue;
-    const size = r.meta.arrays[variable].shape[dims.indexOf(dim)];
+  for (const { dim, size } of sliceDims(r.meta, r.variable)) {
     const index = Math.max(0, Math.min(size - 1, Number.isInteger(wanted[dim]) ? wanted[dim] : 0));
     sel[dim] = { selected: index, type: "index" };
   }
@@ -1305,14 +1435,22 @@ const zarrEngine = {
     r.meta = await zarrMeta(store, plan.path);
     const wanted = layer.options.variable;
     r.variable = wanted && r.meta.variables.includes(wanted) ? wanted : r.meta.variables[0];
-    r.autoClim = await autoClim(r.meta, r.variable);
+    await this.mount(layer, plan, r);
+    r.kind = "zarr";
+  },
+  // (Re)create the custom layer for r.variable: a variable's grid can differ
+  // from its neighbour's, so a variable change is a fresh layer, not a restyle.
+  async mount(layer, plan, r) {
+    const place = await zarrPlacement(r.meta, r.variable, plan.path);
+    r.bounds = place.bounds || null;
+    r.autoClim = await autoClim(r.meta, r.variable, layer.options.selector || {});
     r.handle = `z-${layer.id}-${++seq}`;
     const s = layer.style;
     r.applied = { variable: r.variable, clim: JSON.stringify(s.clim || r.autoClim),
                   cmap: `${s.colormap || "viridis"}|${!!s.reversed}` };
     r.selectorKey = JSON.stringify(zarrSelector(layer, r));
     r.zl = new M.ZarrLayer({
-      id: r.handle, store, variable: r.variable,
+      id: r.handle, store: r.meta.listable, variable: r.variable, ...place.layer,
       clim: s.clim || r.autoClim,
       colormap: (await ramp(s.colormap || "viridis", 16, !!s.reversed)).map(hexToRgb),
       selector: zarrSelector(layer, r),
@@ -1324,19 +1462,18 @@ const zarrEngine = {
     });
     r.zarrLoading = true;  // until the layer reports its first fetch settled
     map.addLayer(r.zl);
-    r.kind = "zarr";
   },
   async update(layer, r) {
-    const s = layer.style, zl = r.zl;
+    const s = layer.style;
     const wanted = layer.options.variable && r.meta.variables.includes(layer.options.variable)
       ? layer.options.variable : r.meta.variables[0];
     if (wanted !== r.applied.variable) {
+      this.remove(r);
       r.variable = wanted;
-      r.autoClim = await autoClim(r.meta, wanted);
-      r.applied.variable = wanted;
-      await zl.setVariable(wanted);
-      r.selectorKey = null;
+      await this.mount(layer, r.plan, r);
+      applyOrder();
     }
+    const zl = r.zl;
     const clim = JSON.stringify(s.clim || r.autoClim);
     if (clim !== r.applied.clim) { zl.setClim(JSON.parse(clim)); r.applied.clim = clim; }
     const cmap = `${s.colormap || "viridis"}|${!!s.reversed}`;
@@ -1345,13 +1482,34 @@ const zarrEngine = {
       r.applied.cmap = cmap;
     }
     const selector = JSON.stringify(zarrSelector(layer, r));
-    if (selector !== r.selectorKey) { zl.setSelector(JSON.parse(selector)); r.selectorKey = selector; }
+    if (selector !== r.selectorKey) {
+      // A named dimension (band) changes what the numbers mean, so the
+      // automatic range follows it; a time or depth step keeps one scale.
+      const before = JSON.parse(r.selectorKey || "{}"), after = JSON.parse(selector);
+      const relabelled = Object.keys(after).some(d => r.meta.coords[d] && r.meta.coords[d].named
+        && (before[d] || {}).selected !== after[d].selected);
+      zl.setSelector(after); r.selectorKey = selector;
+      if (relabelled && !s.clim) {
+        r.autoClim = await autoClim(r.meta, r.variable, layer.options.selector || {});
+        zl.setClim(r.autoClim); r.applied.clim = JSON.stringify(r.autoClim);
+      }
+    }
     zl.setOpacity(layer.visible ? layer.opacity : 0);
     map.triggerRepaint();
   },
   remove(r) { if (r.handle && map.getLayer(r.handle)) map.removeLayer(r.handle); },
   setBefore(r, beforeId) { if (map.getLayer(r.handle)) map.moveLayer(r.handle, beforeId); },
-  bounds(r) { return r.meta && r.meta.bounds; },
+  bounds(r) {
+    if (r.bounds) return r.bounds;
+    // A pyramid in web mercator covers what its level-0 coordinates say.
+    const sp = r.meta.spatial[r.variable], xs = r.meta.coords[sp.lon], ys = r.meta.coords[sp.lat];
+    if (r.meta.multiscale && xs && ys) {
+      const R = 6378137, lon = x => x / R * 180 / Math.PI, lat = y => (2 * Math.atan(Math.exp(y / R)) - Math.PI / 2) * 180 / Math.PI;
+      const w = Math.min(...xs.values), e = Math.max(...xs.values), s = Math.min(...ys.values), n = Math.max(...ys.values);
+      if (Math.abs(e) > 360) return [Math.max(lon(w), -180), Math.max(lat(s), -85), Math.min(lon(e), 180), Math.min(lat(n), 85)];
+    }
+    return null;
+  },
 };
 
 /* pmtiles ------------------------------------------------------------------ */
@@ -1412,7 +1570,99 @@ const pmtilesEngine = {
   bounds(r) { return r.bbox; },
 };
 
-const ENGINES = { raster, vector, zarr: zarrEngine, pmtiles: pmtilesEngine };
+/* point cloud -------------------------------------------------------------- */
+// LAS / LAZ / COPC / EPT through the lidar control (deck.gl PointCloudLayer).
+// COPC and EPT stream by viewport; LAS/LAZ are read whole. Its styling is
+// control-wide, so each layer gets its own (hidden) control.
+const PC_SCHEMES = [["elevation", "Elevation"], ["intensity", "Intensity"],
+                    ["classification", "Classification"], ["rgb", "RGB colour"]];
+const pcColormap = name => M.LIDAR_COLORMAPS.includes(name) ? name : "viridis";
+const pointcloudEngine = {
+  async add(layer, plan, r) {
+    const s = layer.style;
+    const ctl = new M.LidarControl({
+      collapsed: true, className: "fm-hidden-control", autoZoom: false, pickable: true,
+      showColorbar: false, shareUrl: false, restoreFromUrl: false, closeOnOutsideClick: false,
+      pointSize: s.point_size ?? 2, colorScheme: s.color_scheme ?? "elevation",
+      colormap: pcColormap(s.colormap),
+    });
+    map.addControl(ctl, "top-left");
+    r.lidar = ctl;
+    // Some failures only arrive as an event, never as a rejection.
+    const failed = new Promise((_, reject) => ctl.on("loaderror", e => reject(e.error || new Error("could not read this point cloud"))));
+    r.info = await Promise.race([ctl.loadPointCloud(httpUrl(plan.path)), failed]);
+    r.streaming = ctl.isStreaming(r.info.id);
+    // Streamed nodes bring classes that were not there at load: hide them too.
+    ctl.on("streamingprogress", () => {
+      const current = docLayer(layer.id);
+      if (current && r.status === "ready" && current.style.hidden_classes) this.update(current, r);
+      scheduleUi();
+    });
+    r.applied = {};
+    r.kind = "pointcloud";
+  },
+  update(layer, r) {
+    const s = layer.style, ctl = r.lidar, a = r.applied;
+    const scheme = this.scheme(layer, r);
+    if (scheme !== a.scheme) { ctl.setColorScheme(scheme); a.scheme = scheme; }
+    const colormap = pcColormap(s.colormap);
+    if (colormap !== a.colormap) { ctl.setColormap(colormap); a.colormap = colormap; }
+    const size = s.point_size ?? 2;
+    if (size !== a.size) { ctl.setPointSize(size); a.size = size; }
+    const clim = JSON.stringify(s.clim || null);
+    if (clim !== a.clim) {
+      ctl.setColorRange(s.clim
+        ? { mode: "absolute", percentileLow: 2, percentileHigh: 98, absoluteMin: s.clim[0], absoluteMax: s.clim[1] }
+        : { mode: "percentile", percentileLow: 2, percentileHigh: 98 });
+      a.clim = clim;
+    }
+    const range = JSON.stringify(s.elevation_range || null);
+    if (range !== a.range) {
+      if (s.elevation_range) ctl.setElevationRange(...s.elevation_range); else ctl.clearElevationRange();
+      a.range = range;
+    }
+    const hidden = new Set(s.hidden_classes || []), shown = new Set(ctl.getHiddenClassifications());
+    for (const code of ctl.getAvailableClassifications())
+      if (hidden.has(code) !== shown.has(code)) ctl.setClassificationVisibility(code, !hidden.has(code));
+    // Without a z_offset the control lifts the ground to zero: there is no
+    // terrain under the cloud to sit on.
+    const z = s.z_offset ?? null;
+    if (z !== a.z) {
+      const base = ctl.getState().zOffsetBase;
+      ctl.setZOffsetEnabled(true);
+      ctl.setZOffset(z ?? (Number.isFinite(base) ? -base : 0));
+      a.z = z;
+    }
+    const manager = ctl._pointCloudManager;
+    if (manager) {
+      manager.setPointCloudVisibility(r.info.id, layer.visible);
+      manager.setPointCloudOpacity(r.info.id, layer.opacity);
+    } else ctl.setOpacity(layer.visible ? layer.opacity : 0);
+  },
+  // The scheme asked for, if the file has what it colours by.
+  scheme(layer, r) {
+    const want = layer.style.color_scheme || "elevation", i = r.info;
+    if ((want === "rgb" && !i.hasRGB) || (want === "intensity" && !i.hasIntensity)
+        || (want === "classification" && !i.hasClassification)) return "elevation";
+    return want;
+  },
+  remove(r) {
+    if (!r.lidar) return;
+    try { r.lidar.unloadPointCloud(); } catch (_) { /* never loaded */ }
+    try { map.removeControl(r.lidar); } catch (_) { /* already gone */ }
+    r.lidar = null;
+  },
+  // Drawn on deck.gl's own canvas, above every map layer.
+  setBefore() {},
+  bounds(r) {
+    const b = (r.lidar && r.lidar._pointCloudManager && r.lidar._pointCloudManager.getPointCloudBounds(r.info.id))
+      || r.info.bounds;
+    if (!b || ![b.minX, b.minY, b.maxX, b.maxY].every(Number.isFinite) || Math.abs(b.minY) > 90 || Math.abs(b.maxX) > 360) return null;
+    return [b.minX, b.minY, b.maxX, b.maxY];
+  },
+};
+
+const ENGINES = { raster, vector, zarr: zarrEngine, pmtiles: pmtilesEngine, pointcloud: pointcloudEngine };
 
 /* ---- loading ------------------------------------------------------------------ */
 // When the first reader fails, the one retry that can succeed: Python
@@ -1420,6 +1670,9 @@ const ENGINES = { raster, vector, zarr: zarrEngine, pmtiles: pmtilesEngine };
 // vector DuckDB-WASM could not (its wasm comes from a CDN; offline, it can't).
 async function fallbackPlan(plan) {
   if (plan.fallback) return null;
+  // LAS 1.4 or a CRS the browser cannot read: Python rewrites the file.
+  if (plan.load === "pointcloud" && !isEpt(plan.path) && !/\.copc\.laz$/i.test(String(plan.path).split(/[?#]/)[0]))
+    return { ...(await python(plan.path, "pointcloud")), fallback: true };
   if (plan.load === "raster") {
     const action = isRemote(plan.path) ? "localize" : plan.converted ? null : "convert";
     return action && { ...(await python(plan.path, action)), fallback: true };
@@ -1435,6 +1688,13 @@ async function fallbackPlan(plan) {
 async function loadLayer(layer, r) {
   try {
     let plan = quickPlan(layer);
+    if (plan && plan.convert) {
+      r.note = "Converting…"; scheduleUi();
+      plan = { ...(await python(layer.source, "pointcloud", { crs: plan.convert })), fallback: true };
+      r.note = plan.note || "";
+    }
+    if (!plan && isRemote(layer.source) && !extOf(layer.source) && layer.kind === "auto"
+        && await looksLikeZarr(layer.source)) plan = { load: "zarr", path: zarrRoot(layer.source) };
     if (!plan) {
       r.note = "Preparing…"; scheduleUi();
       plan = await python(layer.source);
@@ -1445,8 +1705,11 @@ async function loadLayer(layer, r) {
       await ENGINES[plan.load].add(layer, plan, r);
     } catch (error) {
       ENGINES[plan.load].remove(r);
-      const retry = await fallbackPlan(plan).catch(() => null);
-      if (!retry) throw error;
+      if (plan.load === "pointcloud") { r.note = "Converting…"; scheduleUi(); }
+      let fallbackError = null;
+      const retry = await fallbackPlan(plan).catch(e => { fallbackError = e; return null; });
+      // A point cloud's conversion explains a failure better than the reader.
+      if (!retry) throw (plan.load === "pointcloud" && fallbackError) || error;
       r.plan = retry; r.note = retry.note || "";
       await ENGINES[retry.load].add(layer, retry, r);
     }
@@ -1465,6 +1728,7 @@ async function loadLayer(layer, r) {
   } catch (error) {
     if (runtime.get(layer.id) !== r) return;
     r.status = "error";
+    r.note = "";
     r.message = error && error.message || String(error);
     r.traceback = error && error.traceback;
     console.warn("[map] could not load", layer.source, error);
@@ -1475,6 +1739,19 @@ async function loadLayer(layer, r) {
 async function refreshSwatch(layer, r) {
   let name = null, reversed = !!layer.style.reversed;
   if (r.engine === "zarr") name = layer.style.colormap || "viridis";
+  else if (r.engine === "pointcloud") {
+    const scheme = pointcloudEngine.scheme(layer, r);
+    if (scheme === "rgb") { r.swatchStops = ["#d64545", "#45a845", "#4565d6"]; return; }
+    if (scheme === "classification") {
+      const styles = r.lidar.getClassificationStyles();
+      const colors = r.lidar.getAvailableClassifications().sort((a, b) => a - b).slice(0, 8)
+        .map(code => "#" + M.getClassificationColor(code, styles).map(v => v.toString(16).padStart(2, "0")).join(""));
+      r.swatchStops = colors.length > 1 ? colors : ["#9ca3af", "#9ca3af"];
+      scheduleUi();
+      return;
+    }
+    name = pcColormap(layer.style.colormap); reversed = false;
+  }
   else if (r.engine === "raster") {
     const st = (raster.info(r) || {}).state || {};
     if (st.mode === "rgb") { r.swatchStops = ["#d64545", "#45a845", "#4565d6"]; return; }
@@ -1786,6 +2063,16 @@ function layerFacts(layer) {
   } else if (r.engine === "pmtiles") {
     facts.tiles = r.pm.vector ? "vector" : "raster";
     facts.source_layers = r.pm.layers;
+  } else if (r.engine === "pointcloud") {
+    const st = r.lidar.getState(), i = r.info;
+    facts.points = i.pointCount;
+    facts.streaming = r.streaming;
+    if (r.streaming && st.streamingProgress) facts.loaded_points = st.streamingProgress.loadedPoints;
+    facts.has_rgb = i.hasRGB; facts.has_intensity = i.hasIntensity; facts.has_classification = i.hasClassification;
+    facts.color_scheme = pointcloudEngine.scheme(layer, r);
+    facts.classes = r.lidar.getAvailableClassifications().sort((a, b) => a - b);
+    facts.elevation = [i.bounds.minZ, i.bounds.maxZ];
+    if (st.computedColorBounds) facts.color_range = [st.computedColorBounds.min, st.computedColorBounds.max];
   }
   return facts;
 }
@@ -1800,6 +2087,7 @@ function whenIdle(timeout = 120000) {
         if (!r || r.status === "loading") return true;
         if (r.status !== "ready") return false;
         if (r.engine === "zarr") return !!r.zarrLoading;
+        if (r.engine === "pointcloud") return r.lidar.isStreamingLoading(r.info.id);
         if (r.engine === "raster") { const info = raster.info(r) || {}; return !info.bounds && !info.error; }
         return false;
       });
@@ -1885,6 +2173,10 @@ function statusLine(layer, r) {
   } else if (r.engine === "zarr") {
     bits.push(r.variable);
   } else if (r.engine === "pmtiles") bits.push(`${f.tiles} tiles`);
+  else if (r.engine === "pointcloud") {
+    bits.push(`${Number(f.points).toLocaleString()} points`);
+    if (f.streaming) bits.push(f.loaded_points ? `${Number(f.loaded_points).toLocaleString()} streamed` : "streamed");
+  }
   if (r.note) bits.push(r.note);
   return { cls: "note", html: esc(bits.join(" · ")) };
 }
@@ -1892,7 +2184,7 @@ function swatchCss(layer, r) {
   const s = layer.style;
   if (r && r.engine === "vector" && r.colorBy && r.colorBy.legend && r.colorBy.legend.type === "ramp")
     return gradientCss(r.colorBy.legend.stops);
-  if (r && (r.engine === "raster" || r.engine === "zarr")) {
+  if (r && (r.engine === "raster" || r.engine === "zarr" || r.engine === "pointcloud")) {
     const stops = r.swatchStops;
     if (stops) return gradientCss(stops);
     return "linear-gradient(135deg,#9ca3af,#e5e7eb)";
@@ -1930,7 +2222,7 @@ function renderLayerCards() {
       if (cancel) cancel.onclick = e => { e.stopPropagation(); const dl = downloads.get(layer.id); if (dl) dl.cancel(); };
       card.appendChild(msg);
     }
-    card.onclick = () => selectLayer(layer.id);
+    card.onclick = () => { selectLayer(layer.id); showStylePanel(); };
     card.ondblclick = () => fitLayer(layer.id);
     card.querySelector(".lc-eye").onclick = e => {
       e.stopPropagation();
@@ -1944,6 +2236,12 @@ function selectLayer(id) {
   selected = id;
   renderUi();
   refreshCode();
+}
+// Picking or adding a layer brings up its settings.
+function showStylePanel() {
+  if (!qs("stylepanel").classList.contains("hidden")) return;
+  setPanel("stylepanel", "btn-style", true);
+  renderStyleDock();
 }
 let menuEl = null;
 function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
@@ -2077,9 +2375,21 @@ function renderStyleDock() {
   if (!layer) { body.innerHTML = `<div class="sp-empty">Select a layer to style it.</div>`; return; }
   if (!r || r.status !== "ready") {
     body.innerHTML = `<div class="sp-empty">${r && r.status === "error" ? esc(r.message) : "Loading…"}</div>`;
+    // A point cloud that could not be placed needs its CRS named.
+    const plan = quickPlan(layer);
+    if (r && r.status === "error" && plan && plan.load === "pointcloud" && !isEpt(layer.source)) {
+      section(body, "Coordinate system");
+      const c = ctl("CRS of this file", layer.options.crs || "");
+      const input = document.createElement("input");
+      input.type = "text"; input.placeholder = "EPSG:2992"; input.value = layer.options.crs || "";
+      input.onchange = () => setOptions(layer.id, { crs: input.value.trim() || null });
+      c.appendChild(input);
+      body.appendChild(c);
+    }
     return;
   }
-  ({ raster: rasterControls, vector: vectorControls, zarr: zarrControls, pmtiles: pmtilesControls })[r.engine](body, layer, r);
+  ({ raster: rasterControls, vector: vectorControls, zarr: zarrControls, pmtiles: pmtilesControls,
+     pointcloud: pointcloudControls })[r.engine](body, layer, r);
   body.scrollTop = scroll;
 }
 
@@ -2209,42 +2519,71 @@ function vectorControls(body, layer, r) {
 
 const mdPlayers = new Map();
 function zarrControls(body, layer, r) {
-  const s = layer.style, a = r.meta.arrays[r.variable];
+  const s = layer.style, a = r.meta.arrays[r.variable], sp = r.meta.spatial[r.variable];
   section(body, "Data");
   if (r.meta.variables.length > 1)
-    body.appendChild(selectCtl("Variable", r.meta.variables, r.variable, v => {
+    body.appendChild(selectCtl("Variable", r.meta.variables.map(v => {
+      const attrs = r.meta.arrays[v].attrs || {};
+      return [v, attrs.long_name && attrs.long_name !== v ? `${v} · ${attrs.long_name}` : v];
+    }), r.variable, v => {
       tryExecute({ op: "update_layer", id: layer.id, options: { variable: v, selector: null }, style: { clim: null } });
     }));
+  // Each non-map dimension (time, band, depth…): a list, step buttons, play.
+  const dims = sliceDims(r.meta, r.variable);
+  if (dims.length) section(body, "Dimensions");
   const selector = layer.options.selector || {};
-  a.dims.forEach((dim, i) => {
-    if (SPATIAL.has(dim.toLowerCase()) || a.shape[i] <= 1) return;
-    const size = a.shape[i], index = Math.min(size - 1, Math.max(0, selector[dim] ?? 0));
+  const setIndex = (dim, v, quiet) => {
+    const current = docLayer(layer.id);
+    if (!current) return;
+    tryExecute({ op: "update_layer", id: layer.id,
+                 options: { selector: Object.assign({}, current.options.selector || {}, { [dim]: v }) } }, { quiet });
+  };
+  for (const { dim, size } of dims) {
+    const index = Math.min(size - 1, Math.max(0, selector[dim] ?? 0));
     const labels = r.meta.coords[dim] && r.meta.coords[dim].labels;
     const label = k => labels ? labels[k] : String(k);
-    const c = sliderCtl(dim, 0, size - 1, 1, index, label, (v, dragging) => {
-      const next = Object.assign({}, layer.options.selector || {}, { [dim]: v });
-      tryExecute({ op: "update_layer", id: layer.id, options: { selector: next } }, { quiet: dragging });
-    });
-    const play = document.createElement("button");
-    play.className = "md-btn" + (mdPlayers.has(layer.id + dim) ? " on" : "");
-    play.textContent = mdPlayers.has(layer.id + dim) ? "❚❚" : "▶";
-    play.title = "Play through " + dim;
-    play.onclick = () => {
-      const key = layer.id + dim;
+    if (size <= 1) { body.appendChild(ctl(dim, `${label(0)} (only step)`)); continue; }
+    const c = sliderCtl(dim, 0, size - 1, 1, index, k => `${label(k)} · ${k + 1}/${size}`,
+                        (v, dragging) => setIndex(dim, v, dragging));
+    c.classList.add("md-dim");
+    if (size <= 5000) {
+      const pick = document.createElement("select");
+      for (let k = 0; k < size; k++) {
+        const o = document.createElement("option");
+        o.value = k; o.textContent = label(k);
+        if (k === index) o.selected = true;
+        pick.appendChild(o);
+      }
+      pick.onchange = () => setIndex(dim, +pick.value, false);
+      c.querySelector(".ctl-lbl").after(pick);
+    }
+    const button = (text, title, onclick, on) => {
+      const b = document.createElement("button");
+      b.className = "md-btn" + (on ? " on" : ""); b.textContent = text; b.title = title; b.onclick = onclick;
+      return b;
+    };
+    const key = layer.id + "|" + dim, playing = mdPlayers.has(key);
+    const prev = button("‹", `Previous ${dim}`, () => setIndex(dim, (index - 1 + size) % size, false));
+    const next = button("›", `Next ${dim}`, () => setIndex(dim, (index + 1) % size, false));
+    const play = button(playing ? "❚❚" : "▶", `Play through ${dim}`, () => {
       if (mdPlayers.has(key)) { clearInterval(mdPlayers.get(key)); mdPlayers.delete(key); renderStyleDock(); return; }
       mdPlayers.set(key, setInterval(() => {
         const current = docLayer(layer.id);
-        if (!current) { clearInterval(mdPlayers.get(key)); mdPlayers.delete(key); return; }
-        const at = ((current.options.selector || {})[dim] ?? 0) + 1;
-        tryExecute({ op: "update_layer", id: layer.id, options: { selector: Object.assign({}, current.options.selector || {}, { [dim]: at % size }) } }, { quiet: true });
+        if (!current || (current.options.variable && current.options.variable !== r.variable)) {
+          clearInterval(mdPlayers.get(key)); mdPlayers.delete(key); return;
+        }
+        setIndex(dim, (((current.options.selector || {})[dim] ?? 0) + 1) % size, true);
       }, 900));
       renderStyleDock();
-    };
-    const row = document.createElement("div"); row.className = "row";
+    }, playing);
+    const row = document.createElement("div"); row.className = "row md-row";
     const slider = c.querySelector("input[type=range]");
-    slider.replaceWith(row); row.append(play, slider);
+    slider.replaceWith(row); row.append(prev, play, next, slider);
     body.appendChild(c);
-  });
+  }
+  const axes = document.createElement("div"); axes.className = "md-axes";
+  axes.textContent = `Map axes: ${sp.lon} → x, ${sp.lat} → y`;
+  body.appendChild(axes);
   section(body, "Colour");
   body.appendChild(colormapCtl(layer, s.colormap || "viridis"));
   body.appendChild(checkCtl("Reverse colormap", !!s.reversed, v => setStyle(layer.id, { reversed: v || null })));
@@ -2260,7 +2599,8 @@ function zarrControls(body, layer, r) {
   const units = a.attrs && a.attrs.units;
   const stat = document.createElement("div"); stat.className = "stat";
   stat.textContent = [`${r.variable}: ${a.dims.map((d, i) => `${d}=${a.shape[i]}`).join(" × ")}`,
-                      units ? `Units: ${units}` : "", "Chunks read by the browser", r.note || ""].filter(Boolean).join("\n");
+                      units ? `Units: ${units}` : "", r.meta.multiscale ? "Multiscale pyramid" : "",
+                      "Chunks read by the browser", r.note || ""].filter(Boolean).join("\n");
   body.appendChild(stat);
 }
 
@@ -2276,6 +2616,81 @@ function pmtilesControls(body, layer, r) {
   body.appendChild(opacityCtl(layer));
   const stat = document.createElement("div"); stat.className = "stat";
   stat.textContent = `${r.pm.vector ? "Vector" : "Raster"} tiles${r.pm.layers.length ? "\nLayers: " + r.pm.layers.join(", ") : ""}`;
+  body.appendChild(stat);
+}
+
+function pointcloudControls(body, layer, r) {
+  const s = layer.style, i = r.info, ctl = r.lidar, st = ctl.getState();
+  const scheme = pointcloudEngine.scheme(layer, r);
+  const has = { elevation: true, intensity: i.hasIntensity, classification: i.hasClassification, rgb: i.hasRGB };
+  section(body, "Colour");
+  body.appendChild(selectCtl("Colour by", PC_SCHEMES.filter(([v]) => has[v]), scheme,
+    v => setStyle(layer.id, { color_scheme: v, clim: null })));
+  if (scheme === "elevation" || scheme === "intensity") {
+    body.appendChild(selectCtl("Colormap", M.LIDAR_COLORMAPS.map(n => [n, cmapLabel(n)]),
+      pcColormap(s.colormap), v => setStyle(layer.id, { colormap: v })));
+    const auto = st.computedColorBounds ? [st.computedColorBounds.min, st.computedColorBounds.max] : null;
+    body.appendChild(rangeCtl(scheme === "elevation" ? "Elevation range (colour)" : "Intensity range", s.clim, auto,
+      v => setStyle(layer.id, { clim: v })));
+    const legend = document.createElement("div");
+    body.appendChild(legend);
+    ramp(pcColormap(s.colormap), 9).then(stops => {
+      r.swatchStops = stops;
+      const [lo, hi] = s.clim || auto || [0, 1];
+      legend.replaceWith(legendBar(stops, lo, hi));
+    });
+  }
+  const codes = ctl.getAvailableClassifications().sort((a, b) => a - b);
+  if (i.hasClassification && codes.length) {
+    section(body, "Classes");
+    const hidden = new Set(s.hidden_classes || []);
+    const list = document.createElement("div"); list.className = "pc-classes";
+    const styles = ctl.getClassificationStyles();
+    for (const code of codes) {
+      const [cr, cg, cb] = M.getClassificationColor(code, styles);
+      const row = checkCtl(`${code} · ${M.getClassificationName(code, styles)}`, !hidden.has(code), on => {
+        const next = new Set(docLayer(layer.id).style.hidden_classes || []);
+        if (on) next.delete(code); else next.add(code);
+        setStyle(layer.id, { hidden_classes: next.size ? [...next].sort((a, b) => a - b) : null });
+      });
+      const sw = document.createElement("i"); sw.className = "pc-sw"; sw.style.background = `rgb(${cr},${cg},${cb})`;
+      row.insertBefore(sw, row.querySelector("span"));
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+    const row = document.createElement("div"); row.className = "row pc-allnone";
+    const all = document.createElement("button"), none = document.createElement("button");
+    all.className = none.className = "md-btn";
+    all.textContent = "Show all"; none.textContent = "Hide all";
+    all.onclick = () => setStyle(layer.id, { hidden_classes: null });
+    none.onclick = () => setStyle(layer.id, { hidden_classes: codes });
+    row.append(all, none); body.appendChild(row);
+  }
+  section(body, "Points");
+  body.appendChild(sliderCtl("Point size", 0.5, 10, 0.5, s.point_size ?? 2, v => v.toFixed(1),
+    (v, dragging) => setStyle(layer.id, { point_size: v === 2 ? null : v }, dragging)));
+  body.appendChild(rangeCtl("Show elevations", s.elevation_range, [i.bounds.minZ, i.bounds.maxZ],
+    v => setStyle(layer.id, { elevation_range: v })));
+  const base = st.zOffsetBase;
+  body.appendChild(sliderCtl("Height offset (m)", -500, 500, 1, s.z_offset ?? (Number.isFinite(base) ? Math.round(-base) : 0),
+    v => `${v} m`, (v, dragging) => setStyle(layer.id, { z_offset: v }, dragging)));
+  body.appendChild(opacityCtl(layer));
+  const tilt = document.createElement("button");
+  tilt.className = "md-btn pc-tilt";
+  tilt.textContent = map.getPitch() > 5 ? "Flat view" : "Tilt to 3D";
+  tilt.onclick = () => { map.easeTo({ pitch: map.getPitch() > 5 ? 0 : 60, duration: 700 }); setTimeout(renderStyleDock, 750); };
+  body.appendChild(tilt);
+  section(body, "Source");
+  const stat = document.createElement("div"); stat.className = "stat";
+  const progress = st.streamingProgress;
+  stat.textContent = [
+    `${Number(i.pointCount).toLocaleString()} points`,
+    r.streaming ? `Streamed by viewport (COPC/EPT octree)${progress ? ` · ${Number(progress.loadedPoints).toLocaleString()} loaded` : ""}` : "Read whole by the browser",
+    `Elevation ${fmtNum(i.bounds.minZ)} – ${fmtNum(i.bounds.maxZ)}`,
+    [i.hasRGB && "RGB", i.hasIntensity && "intensity", i.hasClassification && "classification"].filter(Boolean).join(", "),
+    "Drag with the right mouse button (or Ctrl) to tilt",
+    r.note || "",
+  ].filter(Boolean).join("\n");
   body.appendChild(stat);
 }
 
@@ -2325,7 +2740,7 @@ function addSource(value, name) {
   const existing = doc.layers.find(l => l.source === source);
   if (existing) { selectLayer(existing.id); fitLayer(existing.id); return existing.id; }
   const result = tryExecute({ op: "add_layer", source, ...(name ? { name } : {}) }, { fit: true });
-  if (result) refreshCode();
+  if (result) { refreshCode(); showStylePanel(); }
   return result && result.id;
 }
 
@@ -2336,6 +2751,7 @@ const KIND_ICON = {
   vector: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/></svg>',
   table:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>',
   pmtiles:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>',
+  pointcloud: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="15" r="1.6"/><circle cx="9" cy="10" r="1.6"/><circle cx="12" cy="16" r="1.6"/><circle cx="15" cy="8" r="1.6"/><circle cx="18" cy="13" r="1.6"/><circle cx="8" cy="19" r="1.3"/><circle cx="17" cy="19" r="1.3"/><circle cx="12" cy="5" r="1.3"/></svg>',
   map:    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></svg>',
   dir:    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   other:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',

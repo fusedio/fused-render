@@ -261,3 +261,79 @@ def test_degrees_without_a_crs_are_taken_as_wgs84(prepare, tmp_path):
     assert result["status"] == "ok"
     x, y = json.loads(Path(result["path"]).read_text())["features"][0]["geometry"]["coordinates"][0][0]
     assert 10 <= x <= 11 and 45 <= y <= 46
+
+
+# ---- point clouds ------------------------------------------------------------------
+
+def _cloud(path, *, n=5000, crs="EPSG:32633", version="1.4", classes=(2, 5, 70)):
+    laspy = pytest.importorskip("laspy")
+    from pyproj import CRS
+    rng = np.random.default_rng(0)
+    header = laspy.LasHeader(point_format=6 if version == "1.4" else 3, version=version)
+    header.scales = [0.01, 0.01, 0.01]
+    header.offsets = [500000, 5000000, 0]
+    if crs:
+        header.add_crs(CRS.from_user_input(crs))
+    cloud = laspy.LasData(header)
+    cloud.x = rng.uniform(500000, 500500, n)
+    cloud.y = rng.uniform(5000000, 5000500, n)
+    cloud.z = rng.uniform(100, 140, n)
+    cloud.classification = rng.choice(classes, n).astype(np.uint8)
+    if version == "1.4":
+        cloud.number_of_returns = np.full(n, 15, np.uint8)
+        cloud.return_number = rng.integers(1, 16, n).astype(np.uint8)
+    cloud.write(str(path))
+    return str(path)
+
+
+def test_a_las_14_cloud_becomes_las_12_in_longitude_latitude(prepare, tmp_path):
+    laspy = pytest.importorskip("laspy")
+    result = prepare.main(_cloud(tmp_path / "survey.laz"), action="pointcloud")
+    assert result["status"] == "ok" and result["load"] == "pointcloud"
+    out = laspy.read(result["path"])
+    assert str(out.header.version) == "1.2"
+    # UTM 33N around (500250, 5000250) is about 15°E, 45.15°N.
+    assert 14.99 < out.x.min() <= out.x.max() < 15.01 and 45.1 < out.y.min() <= out.y.max() < 45.2
+    assert 100 <= out.z.min() and out.z.max() <= 140
+    # LAS 1.2 holds codes 0-31: a user code above that reads as unclassified.
+    assert set(np.unique(out.classification)) <= {1, 2, 5} and 1 in set(np.unique(out.classification))
+    # LAS 1.4 counts up to 15 returns; LAS 1.2 holds 7.
+    assert out.return_number.max() == 7 and out.number_of_returns.max() == 7
+    assert prepare.main(str(tmp_path / "survey.laz"), action="pointcloud")["path"] == result["path"]
+
+
+def test_a_cloud_is_thinned_to_the_point_budget(prepare, tmp_path, monkeypatch):
+    laspy = pytest.importorskip("laspy")
+    monkeypatch.setattr(prepare, "POINTCLOUD_BUDGET", 1000)
+    result = prepare.main(_cloud(tmp_path / "big.las", n=4500), action="pointcloud")
+    assert result["status"] == "ok" and "every 5th point" in result["note"]
+    assert laspy.read(result["path"]).header.point_count == 900
+    # Reopened from the cache, it still says how much was kept.
+    assert prepare.main(str(tmp_path / "big.las"), action="pointcloud")["note"] == result["note"]
+
+
+def test_a_cloud_without_a_crs_is_refused_until_one_is_named(prepare, tmp_path):
+    laspy = pytest.importorskip("laspy")
+    path = _cloud(tmp_path / "bare.las", crs=None, version="1.2", classes=(2,))
+    refused = prepare.main(path, action="pointcloud")
+    assert refused["status"] == "error" and "no coordinate system" in refused["message"]
+    placed = prepare.main(path, action="pointcloud", crs="EPSG:32633")
+    assert placed["status"] == "ok" and 14.99 < laspy.read(placed["path"]).x.min() < 15.01
+
+
+def test_inspect_and_plan_know_point_clouds(prepare, tmp_path):
+    path = _cloud(tmp_path / "survey.las")
+    info = prepare.main(path, action="inspect")
+    assert info["kind"] == "pointcloud" and info["points"] == 5000 and info["version"] == "1.4"
+    assert prepare.main(path)["load"] == "pointcloud"
+    assert prepare.plan("https://example.com/survey/ept.json")["load"] == "pointcloud"
+    concept = tmp_path / "concept.json"
+    concept.write_text('{"type": "FeatureCollection", "features": []}')
+    assert prepare.plan(str(concept))["load"] == "vector"
+
+
+def test_a_projected_zarr_grid_gets_proj4_and_lonlat_bounds(prepare):
+    out = prepare.main("grid", action="crs", crs="EPSG:32633", bounds=[500000, 5000000, 510000, 5010000])
+    assert out["status"] == "ok" and "+proj=utm" in out["proj4"] and out["epsg"] == 32633
+    west, south, east, north = out["bounds"]
+    assert 14.99 < west < east < 15.2 and 45.1 < south < north < 45.3

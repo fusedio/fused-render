@@ -17,7 +17,7 @@ signature = "describe_map(map_path: str)"
 
 [[tool]]
 name = "map_add_layer"
-description = "Add a data layer on top of the map. source is a local path or URL: GeoTIFF/COG, GeoJSON, GeoParquet, Shapefile, GeoPackage, FlatGeobuf, CSV, KML, NetCDF, HDF5, Zarr, PMTiles, or a .py script returning geodata. kind is auto|raster|vector|zarr|pmtiles. See map_style_reference for style and options keys. Creates the map file if it does not exist. Returns the new layer's id, which the other layer tools take."
+description = "Add a data layer on top of the map. source is a local path or URL: GeoTIFF/COG, GeoJSON, GeoParquet, Shapefile, GeoPackage, FlatGeobuf, CSV, KML, NetCDF, HDF5, Zarr, PMTiles, LAS/LAZ/COPC point clouds (or an EPT ept.json), or a .py script returning geodata. kind is auto|raster|vector|zarr|pmtiles|pointcloud. See map_style_reference for style and options keys. Creates the map file if it does not exist. Returns the new layer's id, which the other layer tools take."
 file = "map_tools.py"
 entrypoint = "add_layer"
 signature = "add_layer(map_path: str, source: str, name: str='', kind: str='auto', style: dict | None=None, options: dict | None=None, visible: bool=True, opacity: float=1.0)"
@@ -80,7 +80,7 @@ signature = "download_source(source: str, dest_dir: str)"
 
 [[tool]]
 name = "map_style_reference"
-description = "Every style and options key a layer accepts, by layer kind, with its type. Colors are \"#rrggbb\"; unit means 0-1; range is [min, max]."
+description = "Every style and options key a layer accepts, by layer kind, with its type. Colors are \"#rrggbb\"; unit means 0-1; range is [min, max]; codes is a list of integers 0-255."
 file = "map_tools.py"
 entrypoint = "style_reference"
 signature = "style_reference()"
