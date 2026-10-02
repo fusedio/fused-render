@@ -380,7 +380,8 @@ def test_a_run_and_the_walk_agree_about_a_package_directory(tmp_path):
     assert corpus == walked == {"a.txt", "Cool.app"}
 
 
-def test_the_fsevents_path_does_not_walk_into_a_package(tmp_path, monkeypatch):
+def test_the_fsevents_path_does_not_walk_into_a_package(tmp_path, monkeypatch,
+                                                        home_outside_tmp):
     """The leaf rule has to hold on BOTH scan paths, and the journal one does not
     arrive by descent: it visits whatever directories the OS names, and what the
     OS names inside a package is always a descendant (an app update writes

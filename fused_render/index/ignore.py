@@ -260,7 +260,15 @@ def default_ignore() -> list[str]:
     key. A user who ever pressed Save in the Indexing panel carries a frozen
     list from whenever they saved it and does not receive this pattern
     retroactively. Changing how saved configs merge in new defaults is a
-    separate change."""
+    separate change.
+
+    On Windows `~/AppData` is the analogue, and it has to be the whole tree:
+    the churn is spread across Local and Roaming alike (browser profiles,
+    Teams, Electron apps' IndexedDB and crash reporters), and none of it is
+    a user's own files — Explorer hides the folder by default. Left walkable,
+    the live watcher turned that churn into ~450 scan runs an hour on one
+    machine, each a full store compaction. Windows-only so the other
+    platforms' ignore fingerprint, and with it their indexes, stay as-is."""
     seen, out = set(), []
     for base in default_home_dirs():
         pattern = norm(os.path.join(base, "**", "mounts"))
@@ -268,6 +276,8 @@ def default_ignore() -> list[str]:
             seen.add(pattern)
             out.append(pattern)
     out.append(norm(os.path.expanduser("~/Library/Caches")))
+    if WINDOWS:
+        out.append(norm(os.path.expanduser("~/AppData")))
     return DEFAULT_IGNORE_NAMES + out
 
 

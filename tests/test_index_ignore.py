@@ -6,6 +6,7 @@ compiled to a regex (fnmatch's `*` crosses `/`, which would be wrong here).
 """
 import os
 
+from fused_render.index import ignore as ignore_mod
 from fused_render.index.ignore import (
     IgnoreRules,
     clean_patterns,
@@ -83,6 +84,20 @@ def test_default_ignore_covers_library_caches_but_not_the_rest_of_library():
     assert r.is_ignored_tree(norm(os.path.expanduser("~/Library/Caches/com.example.app")))
     assert not r.is_ignored(norm(os.path.expanduser("~/Library/Documents")))
     assert not r.is_ignored_tree(norm(os.path.expanduser("~/Library/Application Support/foo")))
+
+
+def test_default_ignore_covers_appdata_on_windows_only(monkeypatch):
+    """`~/AppData` is Windows' machine-generated churn: left walkable, the live
+    watcher turned browser and Electron-app writes there into hundreds of scan
+    runs an hour. Elsewhere it must not change the ignore fingerprint."""
+    appdata = norm(os.path.expanduser("~/AppData"))
+    monkeypatch.setattr(ignore_mod, "WINDOWS", True)
+    r = IgnoreRules(default_ignore())
+    assert r.is_ignored(appdata)
+    assert r.is_ignored_tree(appdata + "/Local/Google/Chrome/User Data")
+    assert not r.is_ignored(norm(os.path.expanduser("~/Documents")))
+    monkeypatch.setattr(ignore_mod, "WINDOWS", False)
+    assert appdata not in default_ignore()
 
 
 def test_ignore_sig_is_order_sensitive_and_stable():

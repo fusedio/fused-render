@@ -551,7 +551,8 @@ def test_flipping_the_gate_on_mid_run_opens_the_watch_on_the_next_poll():
 # ----------------------------------------------- the real forward callable
 
 
-def test_a_real_flush_actually_reaches_the_rescan_queue(tmp_path, monkeypatch):
+def test_a_real_flush_actually_reaches_the_rescan_queue(tmp_path, monkeypatch,
+                                                        home_outside_tmp):
     """`_make_loop` wires `forward=index_touch.note_index_folders`, the REAL
     callable — not a fake with a friendlier shape. `note_index_folders` is
     `def note_index_folders(*folders: str | None)`; a `WatchLoop` that calls
@@ -669,7 +670,7 @@ def test_the_real_sleep_is_interruptible_by_stop_event():
 
 # --------------------------------------------------------- real filesystem
 
-def test_a_real_change_arrives_through_the_real_filter(tmp_path):
+def test_a_real_change_arrives_through_the_real_filter(tmp_path, home_outside_tmp):
     """One end-to-end check against the real `watchfiles.watch`, generously
     timed: the Windows CI lane is starved and flaky on main already."""
     import watchfiles
