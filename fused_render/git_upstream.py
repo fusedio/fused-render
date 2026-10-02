@@ -273,8 +273,10 @@ def _brief(result):
     return " ".join((diagnostic or lines)[:3])
 
 
-def _refuse(reason, message):
-    return {"ok": False, "reason": reason, "message": message}
+def _refuse(reason, message, **extra):
+    # `extra` carries `command` + `output` (git's COMPLETE text) for a failed
+    # mutation, so Fix with Claude can quote what git really said.
+    return {"ok": False, "reason": reason, "message": message, **extra}
 
 
 def _is_clean(root, *, include_untracked=True):
@@ -541,7 +543,9 @@ def update_repo(root):
         result = _run(root, "pull", "--ff-only", "--", "origin",
                       default_branch, timeout=TIMEOUT_S)
         if not _ok(result):
-            return _refuse("git-failed", _brief(result) or "git pull failed.")
+            return _refuse("git-failed", _brief(result) or "git pull failed.",
+                           command=f"git pull --ff-only -- origin {default_branch}",
+                           output=_text(result))
         _refresh_after_mutation(root)
         return {"ok": True, "op": "update", "root": root,
                 "message": f"Updated to origin/{default_branch}."}
@@ -654,7 +658,9 @@ def _switch_repo_locked(root):
                 f"{default_branch} is already checked out in another "
                 f"worktree of this repository ({worktree}) - git will not "
                 "check out the same branch twice.")
-        return _refuse("git-failed", brief or "git checkout failed.")
+        return _refuse("git-failed", brief or "git checkout failed.",
+                       command=f"git checkout {default_branch} --",
+                       output=_text(result))
     # `keep_on_failure=True` + `known_update`: see `_refresh_after_mutation`'s
     # own docstring for why switch alone survives a failed re-check, and why
     # these two fields (not ahead/behind) are what it patches in that case —

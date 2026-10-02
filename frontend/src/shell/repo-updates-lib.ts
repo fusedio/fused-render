@@ -169,18 +169,108 @@ function workingTreeClause(reason?: string): string {
  * component so it is testable without a DOM, same as everything else in
  * this file.
  */
-export function repoFixPrompt(row: RepoRow, message: string, reason?: string): string {
+export function repoFixPrompt(
+  row: RepoRow,
+  message: string,
+  reason?: string,
+  details: FixDetails = {},
+): string {
   const repo = row.repo;
-  const parts = [`A git operation failed in a GUI. The error was:\n${message}`];
   const branch = repo.branch || "(detached)";
-  parts.push(
-    `Repository state: branch ${branch}, tracking origin/${repo.default_branch}, ` +
-      `${repo.ahead} ahead / ${repo.behind} behind${workingTreeClause(reason)}.`
-  );
-  parts.push(`This repository/working directory is ${repo.root}.`);
-  parts.push(
-    "Explain what the error means, then fix it: run whatever is needed to " +
-      "get this repository out of the failure and back to a good state."
-  );
+  return buildFixPrompt({
+    ...details,
+    message,
+    state:
+      `Repository state: branch ${branch}, tracking origin/${repo.default_branch}, ` +
+      `${repo.ahead} ahead / ${repo.behind} behind${workingTreeClause(reason)}.`,
+    root: repo.root,
+  });
+}
+
+/** What a failed git step can tell Claude beyond its one-line message. */
+export interface FixDetails {
+  /** The action taken, e.g. "Clicked Update", "Auto-push after Claude commit". */
+  action?: string;
+  /** The actual git command that failed. */
+  command?: string;
+  /** git's COMPLETE output (never truncated). */
+  output?: string;
+}
+
+/**
+ * The confirm-first protocol every Fix with Claude entry point carries
+ * (git view toast, notification dock, auto-sync failure rows). The same text
+ * is mirrored in templates/git/template.html (a template cannot import this
+ * module), and tests on both sides pin the key sentences. Nothing here
+ * changes anything itself: it TELLS Claude to overview, wait for approval,
+ * apply, then ask about pushing.
+ */
+export const FIX_PROTOCOL =
+  "Work in this order, and do not skip a step:\n" +
+  "1. OVERVIEW FIRST. Change nothing yet (read-only git commands are fine). " +
+  "Tell me the strategy (merge vs rebase), a one-line verdict per file " +
+  "(keep mine / keep theirs / combine / new from remote / new locally; file " +
+  "names only, no diffs), and whether you intend to push.\n" +
+  "2. CONFIRM. Ask me to approve that plan (use the plan-approval or " +
+  "question tool) and wait. Make no change to the repository before I approve.\n" +
+  "3. APPLY the plan once I approve.\n" +
+  "4. Then ask me whether to push. Never push without my explicit yes.";
+
+/** The shared body: action, command, complete output, state, root, protocol. */
+export function buildFixPrompt(p: FixDetails & { message: string; state: string; root: string }): string {
+  const parts = ["A git operation failed in a GUI."];
+  if (p.action) parts.push(`Action taken: ${p.action}`);
+  if (p.command) parts.push(`Git command: ${p.command}`);
+  const full = (p.output || "").trim();
+  parts.push(`Git's complete output:\n${full || p.message}`);
+  if (full && p.message && !full.includes(p.message)) parts.push(`The app summarised it as: ${p.message}`);
+  parts.push(p.state);
+  parts.push(`This repository/working directory is ${p.root}.`);
+  parts.push(FIX_PROTOCOL);
   return parts.join("\n\n");
+}
+
+/** A standing auto-sync failure as served by GET /api/git-upstream. */
+export interface SyncFailure {
+  id: string;
+  root: string;
+  name: string;
+  reason: string;
+  title: string;
+  action: string;
+  command: string;
+  output: string;
+  push: boolean;
+  at: number;
+}
+
+/** A recent auto-pull that brought commits in (the transient popup). */
+export interface SyncPull {
+  id: string;
+  root: string;
+  name: string;
+  count: number;
+  at: number;
+}
+
+/** The Fix with Claude prompt for an auto-sync failure row. */
+export function syncFixPrompt(f: SyncFailure): string {
+  return buildFixPrompt({
+    action: f.action,
+    command: f.command,
+    output: f.output,
+    message: f.title,
+    state: `Failure: ${f.title}.`,
+    root: f.root,
+  });
+}
+
+/** "Updated <app> with N changes" — singular for one. */
+export function pullPopupTitle(p: SyncPull): string {
+  return `Updated ${p.name} with ${p.count} ${p.count === 1 ? "change" : "changes"}`;
+}
+
+/** Pulls not yet announced, given the ids already seen. */
+export function newPulls(pulls: SyncPull[], seen: ReadonlySet<string>): SyncPull[] {
+  return pulls.filter((p) => !seen.has(p.id));
 }

@@ -243,8 +243,38 @@ function fullProps(
     onDone: props.onDone ?? (() => {}),
     onTerminalPatch: props.onTerminalPatch,
     onPairingGone: props.onPairingGone,
+    syncFailures: props.syncFailures ?? [],
+    onSyncGone: props.onSyncGone,
   };
 }
+
+// An auto-sync failure is a persistent "Needs you" row: repo name, the reason
+// as its status line, Retry, Fix with Claude and a dismiss.
+test("an auto-sync failure draws a Needs-you row with Retry and Fix with Claude", () => {
+  const tree = renderView({
+    rows: [],
+    syncFailures: [
+      {
+        id: "/a/widget::diverged",
+        root: "/a/widget",
+        name: "widget",
+        reason: "diverged",
+        title: "Local and remote have diverged",
+        action: "Auto-update on app open",
+        command: "git pull --ff-only -- origin main",
+        output: "fatal: Not possible to fast-forward, aborting.",
+        push: false,
+        at: 1,
+      },
+    ],
+  });
+  const all = text(tree);
+  expect(all).toContain("widget");
+  expect(all).toContain("Local and remote have diverged");
+  expect(all).toContain("Retry");
+  expect(all).toContain("Fix with Claude");
+  expect(numeral(tree)).toBe("1");
+});
 
 function renderInstance(
   props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},

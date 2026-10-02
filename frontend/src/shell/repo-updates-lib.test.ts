@@ -2,6 +2,11 @@
 // the pure half of RepoUpdatesDock.tsx.
 import { describe, expect, it } from "bun:test";
 import {
+  FIX_PROTOCOL,
+  newPulls,
+  pullPopupTitle,
+  syncFixPrompt,
+  type SyncFailure,
   repoActionLabel,
   repoFixPrompt,
   repoName,
@@ -195,5 +200,61 @@ describe("repoFixPrompt", () => {
       const prompt = repoFixPrompt(row, "err", reason);
       expect(prompt).not.toContain("working tree");
     }
+  });
+
+  it("carries the action, the command and git's complete output", () => {
+    const [row] = repoRows([status()]);
+    const output = "From github.com:a/b\n ! [rejected] main -> main (fetch first)\nhint: Updates were rejected";
+    const prompt = repoFixPrompt(row, "rejected", "git-failed", {
+      action: "Clicked Update (git pull --ff-only)",
+      command: "git pull --ff-only -- origin main",
+      output,
+    });
+    expect(prompt).toContain("Action taken: Clicked Update (git pull --ff-only)");
+    expect(prompt).toContain("Git command: git pull --ff-only -- origin main");
+    expect(prompt).toContain(output);
+  });
+
+  it("tells Claude to overview, confirm, apply, then ask before pushing", () => {
+    const [row] = repoRows([status()]);
+    const prompt = repoFixPrompt(row, "err");
+    expect(prompt).toContain(FIX_PROTOCOL);
+    expect(FIX_PROTOCOL).toContain("OVERVIEW FIRST");
+    expect(FIX_PROTOCOL).toContain("merge vs rebase");
+    expect(FIX_PROTOCOL).toContain("keep mine / keep theirs / combine / new from remote / new locally");
+    expect(FIX_PROTOCOL).toContain("Make no change to the repository before I approve");
+    expect(FIX_PROTOCOL).toContain("Never push without my explicit yes");
+  });
+});
+
+describe("auto-sync rows", () => {
+  const failure: SyncFailure = {
+    id: "/a/widget::diverged",
+    root: "/a/widget",
+    name: "widget",
+    reason: "diverged",
+    title: "Local and remote have diverged",
+    action: "Auto-update on app open",
+    command: "git pull --ff-only -- origin main",
+    output: "fatal: Not possible to fast-forward, aborting.",
+    push: false,
+    at: 1,
+  };
+
+  it("builds the Fix prompt from the stored action, command and output", () => {
+    const prompt = syncFixPrompt(failure);
+    expect(prompt).toContain("Action taken: Auto-update on app open");
+    expect(prompt).toContain("Git command: git pull --ff-only -- origin main");
+    expect(prompt).toContain("fatal: Not possible to fast-forward, aborting.");
+    expect(prompt).toContain("/a/widget");
+    expect(prompt).toContain(FIX_PROTOCOL);
+  });
+
+  it("titles the pull popup and dedups by id", () => {
+    const pull = { id: "p1", root: "/a/widget", name: "widget", count: 2, at: 1 };
+    expect(pullPopupTitle(pull)).toBe("Updated widget with 2 changes");
+    expect(pullPopupTitle({ ...pull, count: 1 })).toBe("Updated widget with 1 change");
+    expect(newPulls([pull], new Set())).toHaveLength(1);
+    expect(newPulls([pull], new Set(["p1"]))).toHaveLength(0);
   });
 });
