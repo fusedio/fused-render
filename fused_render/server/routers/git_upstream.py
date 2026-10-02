@@ -83,7 +83,19 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
         if result["status"] == "failed":
             f = result["failure"]
             return {"ok": False, "reason": f["reason"], "message": f["title"]}
-        return {"ok": True, "op": "sync", "root": root, "status": result["status"]}
+        if result["status"] != "synced":
+            # offline / busy / skipped: nothing was cleared server-side, so
+            # reporting ok would hide a row that the next poll brings back.
+            if result["status"] == "skipped":
+                why = result.get("why") or "skipped"
+                return {"ok": False, "reason": why,
+                        "message": "Nothing was synced (%s); this failure still stands." % why}
+            if result.get("busy"):
+                return {"ok": False, "reason": "busy",
+                        "message": "Another sync is running; try again in a moment."}
+            return {"ok": False, "reason": "offline",
+                    "message": "Still offline; try again when you are connected."}
+        return {"ok": True, "op": "sync", "root": root, "status": "synced"}
     if action == "sync-dismiss":
         git_upstream.dismiss_sync_failure(root, str(body.get("reason") or ""))
         return {"ok": True, "op": "dismiss", "root": root}

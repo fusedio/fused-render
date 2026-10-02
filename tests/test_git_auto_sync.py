@@ -320,3 +320,41 @@ def test_get_reports_failures_and_pulls_and_post_retries_and_dismisses(tmp_path,
                                                "reason": "dirty"}, headers=_FUSED).json()
     assert r["ok"] is True
     assert client.get("/api/git-upstream").json()["sync_failures"] == []
+
+
+def test_retry_that_did_not_sync_is_not_ok(tmp_path, monkeypatch):
+    """Retry returns ok only when the sync really cleared the failure; offline,
+    busy and skipped leave the row standing, so the UI must keep it."""
+    client = _client(tmp_path, monkeypatch)
+    local, _remote, other = _make(tmp_path)
+    _advance_remote(other)
+    write(local, "a.txt", "edited\n")
+    root = os.path.realpath(local)
+    git_upstream.sync_repo(root, action="Auto-update on app open", push=False)
+    body = {"action": "sync-retry", "root": root, "reason": "dirty"}
+
+    for result in ({"ok": True, "status": "offline"},
+                   {"ok": True, "status": "offline", "busy": True},
+                   {"ok": True, "status": "skipped", "why": "not-default"}):
+        monkeypatch.setattr(git_upstream, "retry_sync", lambda r, why, _x=result: _x)
+        r = client.post("/api/git-upstream", json=body, headers=_FUSED).json()
+        assert r["ok"] is False, result
+        assert r["message"]
+    failures = client.get("/api/git-upstream").json()["sync_failures"]
+    assert [f["reason"] for f in failures] == ["dirty"]
+
+
+def test_auth_failure_on_open_fetch_records_a_row_offline_stays_silent(tmp_path, monkeypatch):
+    local, _remote, _other = _make(tmp_path)
+    root = os.path.realpath(local)
+    git(local, "remote", "set-head", "origin", "--auto")
+    os.rename(_remote, _remote + ".moved")
+    monkeypatch.setattr(git_upstream, "_classify", lambda *a, **k: "auth")
+    git_upstream.note_app_opened(local, _runner=_sync)
+    assert [f["reason"] for f in git_upstream.sync_failures()] == ["auth"]
+    monkeypatch.setattr(git_upstream, "_sync_failures", {})
+    monkeypatch.setattr(git_upstream, "_checked", {})
+    monkeypatch.setattr(git_upstream, "_classify", lambda *a, **k: "offline")
+    git_upstream.note_app_opened(local, _runner=_sync)
+    assert git_upstream.sync_failures() == []
+    assert root
