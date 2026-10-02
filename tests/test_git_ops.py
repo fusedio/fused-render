@@ -765,6 +765,10 @@ def test_pull_refuses_a_non_fast_forward_instead_of_merging(ops, wired):
     # Nothing was merged, nothing was rebased.
     assert git(root, "log", "-1", "--format=%s").strip() == "mine"
     assert git(root, "rev-list", "--count", "HEAD").strip() == "2"
+    # The refusal also carries the command and git's COMPLETE output, which the
+    # "Fix with AI" prompt quotes (the toast sentence above is only a summary).
+    assert got["command"].startswith("git pull --ff-only")
+    assert "fast-forward" in got["output"].lower()
 
 
 def test_a_repository_with_no_remote_refuses_the_network_ops(ops, repo):

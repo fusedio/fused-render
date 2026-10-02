@@ -227,9 +227,20 @@ MAX_CONTENT_BYTES = 2_000_000
 class _Refused(Exception):
     """A situation the view renders in place. Carries its own payload."""
 
-    def __init__(self, reason, message):
+    def __init__(self, reason, message, with_output=False):
         super().__init__(message)
         self.payload = {"ok": False, "reason": reason, "message": message}
+        if with_output and _LAST_RUN:
+            # The failed git command and git's COMPLETE output (hints
+            # included), for the "Fix with AI" prompt. `message` stays the
+            # short sentence the toast shows; this is what the model reads.
+            self.payload["command"] = _LAST_RUN["command"]
+            self.payload["output"] = _LAST_RUN["output"]
+
+
+# The most recent `_run`: its command line and everything git printed. Read only
+# by `_Refused(with_output=True)`, immediately after the call that failed.
+_LAST_RUN = {}
 
 
 # ------------------------------------------------------------------ invocation
@@ -354,6 +365,10 @@ def _run(root, *args):
             "repository has slow hooks, run the command in a terminal.") from exc
     except OSError as exc:
         raise _Refused("no-git", f"git could not be started: {exc}") from exc
+    _LAST_RUN.clear()
+    _LAST_RUN["command"] = "git " + " ".join(str(a) for a in args)
+    _LAST_RUN["output"] = (proc.stderr.decode("utf-8", "replace")
+                           + proc.stdout.decode("utf-8", "replace")).strip()
     return proc.returncode, proc.stdout, _clean(proc.stderr)
 
 
@@ -380,7 +395,8 @@ def _git_ok(root, *args, allow=(0,)):
     """
     code, out, err = _run(root, *args)
     if code not in allow:
-        raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
+        raise _Refused("git-failed", _brief(err) or f"git exited {code}.",
+                       with_output=True)
     return out
 
 
@@ -1588,8 +1604,9 @@ def _pull(root):
             "not-fast-forward",
             "Your branch and its upstream have diverged, so this cannot "
             "fast-forward. Merging or rebasing is a decision this view will not "
-            "make for you — do it in a terminal.")
-    raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
+            "make for you — do it in a terminal.", with_output=True)
+    raise _Refused("git-failed", _brief(err) or f"git exited {code}.",
+                   with_output=True)
 
 
 def _push(root):
