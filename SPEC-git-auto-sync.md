@@ -184,3 +184,24 @@ indexing pref `indexing_enabled()`) and follow that pattern for the new toggle +
 - **Spec pointer note.** The two-call-site claim for close_fds was not relied
   on; every new subprocess follows the git_upstream `_run` pattern.
 
+
+### Code-review round 1
+- **sync-retry ok (real, fixed).** The route returned `ok: True` for every
+  non-`failed` status, so offline / busy / skipped hid a row the server still
+  held. Now only `synced` is ok; the others return `ok: False` with a
+  reason (`offline`, `busy`, or the skip `why`) and a message the row shows
+  in place. Test: `test_retry_that_did_not_sync_is_not_ok`.
+- **_background_check auth/git-failed (not real).** `_sync_locked` calls
+  `_record_failure` before returning `failed`, so an auth failure on the
+  open-time fetch already produces a persistent row; only `state` is absent,
+  and `check_repo` would fail on the same fetch anyway. Pinned by
+  `test_auth_failure_on_open_fetch_records_a_row_offline_stays_silent`
+  (passed with no code change). Offline: no row, no state lost: `_state`
+  keeps the last known entry, `_checked` is stamped, and the next trigger
+  (after CHECK_TTL_S, or any app-made commit sync) re-fetches. Consistent
+  with "offline stays silent, retried at the next trigger".
+- **ops._LAST_RUN (real in principle, fixed).** The built-in executor is one
+  subprocess per call (moot there), but the `fused` engine path's process
+  model is not guaranteed one-per-request, so `_LAST_RUN` is now a
+  `threading.local` set whole by `_run`. Test:
+  `test_refusal_output_is_per_call_not_shared_across_threads`.

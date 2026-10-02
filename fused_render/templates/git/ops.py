@@ -87,6 +87,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 
 # Under the fused local execution backend a script is exec'd with its own
 # directory first on sys.path but no __file__; rebuild it from there so the
@@ -230,17 +231,20 @@ class _Refused(Exception):
     def __init__(self, reason, message, with_output=False):
         super().__init__(message)
         self.payload = {"ok": False, "reason": reason, "message": message}
-        if with_output and _LAST_RUN:
+        last = getattr(_LAST_RUN, "value", None)
+        if with_output and last:
             # The failed git command and git's COMPLETE output (hints
             # included), for the "Fix with AI" prompt. `message` stays the
             # short sentence the toast shows; this is what the model reads.
-            self.payload["command"] = _LAST_RUN["command"]
-            self.payload["output"] = _LAST_RUN["output"]
+            self.payload["command"] = last["command"]
+            self.payload["output"] = last["output"]
 
 
-# The most recent `_run`: its command line and everything git printed. Read only
-# by `_Refused(with_output=True)`, immediately after the call that failed.
-_LAST_RUN = {}
+# The most recent `_run` ON THIS THREAD: its command line and everything git
+# printed. Read only by `_Refused(with_output=True)`, immediately after the call
+# that failed. Thread-local so two ops running at once in one process (a shared
+# engine worker) cannot quote each other's git output.
+_LAST_RUN = threading.local()
 
 
 # ------------------------------------------------------------------ invocation
@@ -365,10 +369,11 @@ def _run(root, *args):
             "repository has slow hooks, run the command in a terminal.") from exc
     except OSError as exc:
         raise _Refused("no-git", f"git could not be started: {exc}") from exc
-    _LAST_RUN.clear()
-    _LAST_RUN["command"] = "git " + " ".join(str(a) for a in args)
-    _LAST_RUN["output"] = (proc.stderr.decode("utf-8", "replace")
-                           + proc.stdout.decode("utf-8", "replace")).strip()
+    _LAST_RUN.value = {
+        "command": "git " + " ".join(str(a) for a in args),
+        "output": (proc.stderr.decode("utf-8", "replace")
+                   + proc.stdout.decode("utf-8", "replace")).strip(),
+    }
     return proc.returncode, proc.stdout, _clean(proc.stderr)
 
 
