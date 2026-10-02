@@ -21,6 +21,14 @@ from fused_render.server.routers import tasks as tasks_mod
 SID = "11111111-1111-1111-1111-111111111111"
 SID2 = "22222222-2222-2222-2222-222222222222"
 
+# Captured at collection time, before the autouse `_no_tasks_watch_thread`
+# fixture (conftest.py) replaces `tasks_watch.start` with a no-op for every
+# test in the suite — the one place in this file that needs the REAL
+# implementation back (B3's lazy-start test) grabs it from here rather than
+# from `tasks_watch.start` at test-body time, which would already be the
+# patched no-op.
+_REAL_TASKS_WATCH_START = tasks_watch.start
+
 
 @pytest.fixture(autouse=True)
 def claude_home(tmp_path, monkeypatch):
@@ -793,3 +801,92 @@ def test_a_tick_with_no_card_does_not_ring(claude_home, carded, rings):
     _transcript(claude_home, SID, lines=2)
     assert tasks_watch.tick() == {SID}, "the transcript grew"
     assert rings == []
+
+
+# -------------------------------------------------------- lean on-demand (B3)
+
+
+def test_a_lean_requests_the_watcher_on_its_first_tasks_request(
+        claude_home, tmp_path, monkeypatch):
+    """`lean` registers no `_startup_tasks_watch` hook at all (it's an
+    `@on_startup`), so without this the watcher thread never starts and
+    `/api/tasks/changes` blocks out its full wait with nothing to report.
+    `routers/tasks._ensure_duties` — a dependency on every `/api/tasks*`
+    route — must bring it up lazily instead, on an ORDINARY request, no
+    lifespan involved.
+
+    `tasks_watch.start()` is called on EVERY request (see `_ensure_duties`),
+    not just the first — its own `_started` flag is what makes repeating
+    that call free, so this only has to prove the dependency reaches it at
+    all under `lean`, not re-derive `start`'s own idempotence (covered
+    elsewhere). A spy that never calls through to the real `start` — this
+    test is only about the dependency wiring, and the real function spawns
+    a daemon thread this test would otherwise have to join or leak."""
+    calls = []
+
+    def recording_start():
+        calls.append(True)
+        # Mirror the one observable effect a real `start()` call would have
+        # had, without spawning its never-ending `_loop` thread.
+        tasks_watch._started = True
+
+    monkeypatch.setattr(tasks_watch, "start", recording_start)
+    monkeypatch.setattr(tasks_watch, "_started", False)
+
+    app = create_app(start_dir=str(tmp_path), lean=True)
+    assert "_startup_tasks_watch" not in [
+        f.__name__ for f in app.state.startup_handlers], (
+        "lean must not register the startup hook for this test to prove "
+        "anything")
+
+    with TestClient(app) as client:
+        assert calls == [], "must not start before any request lands"
+        resp = client.get("/api/tasks")
+        assert resp.status_code == 200
+        assert calls == [True]
+        assert tasks_watch._started is True
+
+
+def test_concurrent_first_calls_start_the_loop_exactly_once(monkeypatch):
+    """Two threads calling `start()` for the first time at once (the race this
+    guards against: two near-simultaneous requests under `lean`, which calls
+    `start()` on every request) must not both pass the `_started` check and
+    each spawn a watcher thread. A sequential call proves idempotence but
+    never exercises the window between the check and the set — this pins
+    threads at a `Barrier` so they all call `start()` at the same instant.
+
+    `_loop` is replaced with a no-op (count the calls, return immediately)
+    so the spawned thread is both harmless and joinable, rather than the
+    real forever-loop a leaked thread would otherwise run past this test."""
+    monkeypatch.setattr(tasks_watch, "_started", False)
+    monkeypatch.setattr(tasks_watch, "tick", lambda: None)
+    loop_calls = []
+
+    def fake_loop():
+        loop_calls.append(1)
+
+    monkeypatch.setattr(tasks_watch, "_loop", fake_loop)
+
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def call_start():
+        barrier.wait(timeout=5)
+        _REAL_TASKS_WATCH_START()
+
+    threads = [threading.Thread(target=call_start) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+        assert not t.is_alive(), "a start() caller never returned"
+
+    # The spawned watcher thread(s) run `fake_loop` and return immediately;
+    # give them a beat to finish before counting.
+    deadline = time.monotonic() + 2
+    while len(loop_calls) < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert loop_calls == [1], (
+        f"expected exactly one watcher thread to start, got {len(loop_calls)}")
+    assert tasks_watch._started is True

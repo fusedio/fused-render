@@ -121,7 +121,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlencode
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from fused_render import (
@@ -141,7 +141,40 @@ from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
 from fused_render.shell import prefs as shell_prefs
 
-router = APIRouter()
+
+def _ensure_duties() -> None:
+    """FastAPI dependency, attached to every route below — the one place
+    that brings up everything a `/api/tasks*` request needs to be CORRECT
+    but `lean` skips as a startup hook (create_app's rule: skip only
+    BACKGROUND/WARM-UP work).
+
+    Ensures THIS process's machine-duties waiter thread is running (B2 —
+    scheduler + project-queue resume), lazily, on the first request reaching
+    it. `serve` already starts that waiter from `_startup_queue_manager`, so
+    here it is normally a no-op repeat of a thread this process already
+    has — one lock-guarded `is_alive()` check, nothing else.
+    `queue_manager.ensure_duties_waiter()` itself never blocks: it only
+    starts (or confirms it already started) a dedicated daemon thread that
+    does the actual, potentially long, lease-acquire wait, so calling this
+    on every request's handling thread is cheap and never holds the request
+    up. `open` (lean) runs no startup hooks at all, so this is the only
+    place it ever starts that thread — which is what lets a lean process end
+    up with a waiter parked and ready to take over the moment a `serve` that
+    was holding the lease exits, with no separate retry/polling mechanism of
+    its own.
+
+    Also starts the Tasks page's change watcher (B3 — `tasks_watch.start()`,
+    otherwise only run from `_startup_tasks_watch`): read-only and safe to
+    run in every process at once, unlike the waiter above, so this is a
+    plain idempotent start rather than anything gated. Without it `lean`'s
+    `/api/tasks/changes` had nothing to `wait()` on and always blocked the
+    full 25s with nothing to report — and `generation()`/`live_from_registry`
+    and every other route above read from the same registry this primes."""
+    queue_manager.ensure_duties_waiter()
+    tasks_watch.start()
+
+
+router = APIRouter(dependencies=[Depends(_ensure_duties)])
 
 logger = logging.getLogger(__name__)
 

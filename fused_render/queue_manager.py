@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import json
 import logging
 import os
 import threading
@@ -33,6 +34,15 @@ from fused_render import tasks_store
 logger = logging.getLogger(__name__)
 
 INDEX_FILE = "queue_index.json"
+
+# `_write_locked`'s retry budget for `os.replace` raising `PermissionError`
+# (Windows, when another process still has the index open) — a handful of
+# short retries, not a long wait: the holder is a brief open-read-close, so
+# if it hasn't cleared in under half a second something else is wrong and
+# this falls through to the same "could not write, in-memory state is still
+# right" handling every other write failure gets.
+_REPLACE_MAX_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_S = 0.1
 
 # The store the derived-holder layer kept its parked card decisions in, migrated
 # into the index the first time a manager loads and then renamed out of the way
@@ -64,6 +74,20 @@ PLACEHOLDER_TTL = 30.0
 # has a run id is asked about properly (its run dir has a pid in it) and needs no
 # grace at all.
 SPAWN_GRACE = 10.0
+
+# THE CEILING ON "STILL SPAWNING" (B1b/review). `_spawn_in_flight` trusts a
+# `starting` owner's `spawner_pid` for as long as that pid stays alive — but a
+# pid is not a name, it is a number the OS reuses, and a spawner that crashed
+# can hand its pid to some unrelated process that happens to start later.
+# Without a ceiling that unrelated process's mere existence would keep this
+# owner "in flight" forever, and nothing is left to ever clear `starting` —
+# the folder wedges for good. `dispatch_entry`/`_send` (the call `_spawn`
+# wraps) can legitimately block up to 60s; this gives it generous headroom
+# past that and then stops trusting the pid check regardless of what it
+# answers. An owner still `starting` at this age is dead, hung, or being lied
+# to by pid reuse, and every one of those is `reconcile`'s problem to pop and
+# retry, not a reason to wedge the folder forever.
+SPAWN_MAX = 120.0
 
 # A PER-SEND CLAIM, MINTED ON EVERY SUCCESSFUL `claim_took` (2026-09-17, Bugbot
 # PR #1194). Admit and the run gate used to answer the same question twice —
@@ -157,7 +181,34 @@ def _owner_rec(raw) -> dict | None:
             # which is right: nothing claimed against a build that minted none
             # can ever present one back.
             "claims": [t for t in (raw.get("claims") or [])
-                      if isinstance(t, str) and t][-CLAIM_CAP:]}
+                      if isinstance(t, str) and t][-CLAIM_CAP:],
+            # WHETHER THE ADMITTED SEND'S OWN TOKEN HAS BEEN PRESENTED BACK
+            # (`consume_claim`) — distinct from `claims` (follow-up sends
+            # absorbed into this owner, still outstanding). Exposed by B1:
+            # once a transaction re-reads the index from disk instead of
+            # trusting the in-memory copy forever, a field `_owner_rec`
+            # dropped on load was a field every transaction after the first
+            # silently lost.
+            "consumed": bool(raw.get("consumed")),
+            # THE PROCESS CURRENTLY SPAWNING THIS OWNER (B1b) — 0 unless
+            # `starting` is also true. `_spawning` (`__init__`) is this
+            # process's own in-flight set and answers "is MY spawn still
+            # running" for free; a `starting` owner another process pumped
+            # is not in it at all, so without this field `reconcile` there
+            # had nothing but `SPAWN_GRACE` (10s) to go on — far short of
+            # the 60s a `dispatch_entry`/`_send` call can legitimately take
+            # — and would pop an owner out from under a spawn that was
+            # still working. See `_spawn_in_flight`.
+            "spawner_pid": int(_number(raw.get("spawner_pid"))),
+            # WHEN THE SPAWN NAMED BY `spawner_pid` ACTUALLY STARTED
+            # (finding 2, review) — a `time.time()` wall-clock stamp, 0
+            # unless `spawner_pid` is too. `_spawn_in_flight` ages the
+            # cross-process pid probe off this, never off `since`: `since`
+            # is when `_pump` decided to hand the folder over, which can
+            # predate the real spawn by as long as `_flush` takes to reach
+            # it, and coupling the `SPAWN_MAX` ceiling to the wrong moment
+            # is what let a still-spawning owner get popped early.
+            "spawn_started": _number(raw.get("spawn_started"))}
 
 
 def _answer_rec(raw) -> dict | None:
@@ -190,6 +241,13 @@ def _answer_list(raw) -> list[dict]:
 
 def _empty_folder() -> dict:
     return {"owner": None, "line": [], "blocked": []}
+
+
+def _empty_state() -> dict:
+    """The shape `_load()` builds from an empty/missing index file — also
+    `__init__`'s fallback when the very first load finds a file that exists
+    but will not parse, since there is no prior in-memory state to keep."""
+    return {"folders": {}, "answers": {}, "forced": set()}
 
 
 def _nowhere() -> dict:
@@ -244,6 +302,33 @@ def _busy_class() -> tuple:
     return _BUSY
 
 
+def _stat_tuple(path: str) -> tuple | None:
+    """`(mtime_ns, size, st_ino)` for `path`, or None if it is not there (or
+    not readable). `st_ino` changes on every atomic replace (`_write_locked`
+    renames a fresh temp file onto `path`), so two writes close enough to
+    share an `mtime_ns` and a `size` still compare unequal."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is a process with this pid still running — `os.kill(pid, 0)` sends no
+    signal, it only probes. `ProcessLookupError` means the pid is gone;
+    `PermissionError` (owned by someone else) and anything else still means a
+    process is there, so the safe guess is "alive" whenever the probe itself
+    can't be trusted."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 class QueueManager:
     """All state moves through the event methods below, under one lock, and
     each one persists the index. Spawning, answer delivery and status reads are
@@ -282,16 +367,30 @@ class QueueManager:
         self._starting: list[tuple[str, str, dict]] = []
         # TASK KEYS WHOSE SPAWN IS STILL IN FLIGHT (2026-09-17, Bugbot PR
         # #1194) — added in `_pump` (phase 1, under the lock, the same moment
-        # the job is queued) and removed in `_start_one` (phase 2, the moment
-        # the injected `spawn` call has actually returned). `dispatch_entry`/
-        # `_send` can block up to 60s; `SPAWN_GRACE` is only 10s, so
-        # `reconcile` used to pop a `starting` owner mid-spawn and start a
-        # second task beside it. An owner in this set is never popped for age
-        # alone; not in it, `SPAWN_GRACE` still applies (e.g. a crash mid-spawn,
-        # where a fresh process's set starts empty). Not persisted: it
-        # describes THIS process's in-flight calls, nothing a restart inherits.
+        # the job is queued) and removed in `_start_one` (phase 2, as the
+        # FIRST act inside the `_locked_state()` block that patches the owner
+        # once the injected `spawn` call has actually returned) — the same
+        # critical section, so there is no window where this set has
+        # forgotten the key but the owner still reads `starting` unpatched.
+        # `dispatch_entry`/`_send` can block up to 60s; `SPAWN_GRACE` is only
+        # 10s, so `reconcile` used to pop a `starting` owner mid-spawn and
+        # start a second task beside it. An owner in this set is never popped
+        # for age alone; not in it, `SPAWN_GRACE` still applies (e.g. a crash
+        # mid-spawn, where a fresh process's set starts empty). Not
+        # persisted: it describes THIS process's in-flight calls, nothing a
+        # restart inherits.
         self._spawning: set[str] = set()
-        self._state = self._load()
+        # The `(mtime_ns, size, st_ino)` of whatever `_load()` last actually
+        # read off disk, kept up to date by `_load()` itself (and by
+        # `_write_locked()` after a successful write) — what
+        # `_refresh_if_stale()` compares a fresh `os.stat()` against to
+        # decide whether a read-only call needs to reload at all.
+        self._loaded_stat: tuple | None = None
+        loaded = self._load()
+        # A corrupt file at construction time has nothing in memory to fall
+        # back to, so this is the one call site where `None` still has to
+        # become the empty-default shape.
+        self._state = loaded if loaded is not None else _empty_state()
         self._migrate_legacy()
         # NOT RECONCILED HERE, and that absence is load-bearing. `reconcile`
         # pumps, and pumping SPAWNS — so a manager built by whatever happened to
@@ -303,8 +402,74 @@ class QueueManager:
 
     # -------------------------------------------------------------- the file
 
-    def _load(self) -> dict:
-        raw = tasks_store.load_state(INDEX_FILE)
+    def _load(self) -> dict | None:
+        """Read `INDEX_FILE` fresh off disk and rebuild the in-memory shape.
+
+        Reads the file itself rather than going through
+        `tasks_store.load_state` (which answers `{}` for both "missing" and
+        "corrupt" alike): a folder index that fails to parse is not the same
+        fact as an empty one, and every call site below needs to tell the
+        two apart. A missing file is "no index yet" and proceeds through the
+        normal empty-default construction. A file that exists but will not
+        parse — truncated, corrupted, caught mid-write by something other
+        than `_write_locked`'s own atomic replace — returns None instead: the
+        sentinel that tells every call site "could not load; keep whatever
+        `self._state` already holds" rather than let `{}` stand in for it and
+        get written back as the real state on the next transaction.
+
+        Either way, `self._loaded_stat` ends up holding the stat tuple of
+        the HANDLE actually read (`os.fstat`, not a fresh `os.stat(path)`
+        taken after the fact — a concurrent `os.replace` can land a new
+        file at `path` in the gap between this call's read finishing and a
+        path-stat running, which would record the new file's stat beside
+        the old file's parsed contents and leave `_refresh_if_stale()`
+        comparing a current stat that happens to already match, so the new
+        content never gets picked up) — or None, if nothing was there.
+        That is what `_refresh_if_stale()` compares a fresh `os.stat()`
+        against, and also what keeps this from re-parsing the same corrupt
+        bytes on every call once a corrupt file has been seen once.
+
+        Valid JSON whose top level is not an object (`null`, a list, a bare
+        string/number/bool) is not an index either — it parses fine, so it
+        cannot take the `except` branch above, but building an index out of
+        it would be indistinguishable from "the file was genuinely empty"
+        and the next transaction would persist `{}` over whatever was
+        really on disk. Treated the same as corrupt/unparseable: the None
+        sentinel, not an empty default."""
+        path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
+        try:
+            f = open(path, "r", encoding="utf-8")
+        except FileNotFoundError:
+            self._loaded_stat = None
+            raw = {}
+        except OSError:
+            logger.warning("queue: %s is unreadable; keeping in-memory state",
+                            INDEX_FILE, exc_info=True)
+            self._loaded_stat = _stat_tuple(path)
+            return None
+        else:
+            with f:
+                # `os.fstat` on the handle we actually read, taken before
+                # anything else can touch `path` — not `os.stat(path)`
+                # afterward, which a concurrent `os.replace` could beat us
+                # to (see the docstring above).
+                fstat = os.fstat(f.fileno())
+                stat_tuple = (fstat.st_mtime_ns, fstat.st_size, fstat.st_ino)
+                try:
+                    raw = json.load(f)
+                except ValueError:
+                    logger.warning(
+                        "queue: %s is unreadable; keeping in-memory state",
+                        INDEX_FILE, exc_info=True)
+                    self._loaded_stat = stat_tuple
+                    return None
+                if not isinstance(raw, dict):
+                    logger.warning(
+                        "queue: %s does not hold a JSON object; keeping "
+                        "in-memory state", INDEX_FILE)
+                    self._loaded_stat = stat_tuple
+                    return None
+                self._loaded_stat = stat_tuple
         folders: dict[str, dict] = {}
         source = raw.get("folders")
         for key, value in (source if isinstance(source, dict) else {}).items():
@@ -334,25 +499,121 @@ class QueueManager:
                 forced.add(name)
         return {"folders": folders, "answers": answers, "forced": forced}
 
-    def _save(self) -> None:
-        """Whole-index write through `tasks_store._update` — the same sibling
-        `.lock` every other store in that directory uses, held for the whole
-        read-modify-write. An unwritable state dir costs the write and nothing
-        else: the in-memory index is still right and `reconcile` rebuilds it."""
+    def _refresh_if_stale(self) -> None:
+        """Best-effort freshness for a read that does not want to pay for the
+        cross-process `flock` on every call — `owner`, `is_forced` and the
+        other read-only methods below, which a lean `open` process (no
+        background writer of its own) can otherwise call forever against the
+        snapshot it happened to load at start-up.
+
+        Stats the index file and compares against `self._loaded_stat` (kept
+        current by `_load()` and by `_write_locked()`); a mismatch reloads
+        under `self._lock` alone — `_locked_state()`/`_txn()` already own the
+        flock-protected reload for anything that mutates. A missing file
+        compares equal to a `self._loaded_stat` of None, so "nothing there
+        yet" never forces a reload on every call."""
+        current = _stat_tuple(os.path.join(tasks_store.STATE_DIR, INDEX_FILE))
+        if current == self._loaded_stat:
+            return
+        loaded = self._load()
+        if loaded is not None:
+            self._state = loaded
+
+    def _write_locked(self) -> None:
+        """Write `self._state` to disk. The caller already holds
+        `tasks_store.locked(INDEX_FILE)` — via `_locked_state` or `_txn`,
+        the only two places this is called — so this never acquires the
+        lock itself; `flock` is per open file description, not reentrant,
+        and a second acquire from the same process would block forever.
+
+        Writes to a temp file beside `path` and `os.replace()`s it in:
+        `open(path, "w")` truncates in place, so a reader that reloads from
+        disk on every call (`_refresh_if_stale`) could catch the file
+        half-written. The rename is atomic, so every reader only ever sees
+        either the old complete document or the new one.
+
+        An unwritable state dir costs the write and nothing else: the
+        in-memory index is still right and `reconcile` rebuilds it.
+
+        On Windows, `os.replace` can raise `PermissionError` when another
+        process still has `path` open (even just for reading) — unlike
+        POSIX, where a rename can land on top of an open file with no
+        complaint. That window is usually brief — a reader's own
+        open-read-close around `_load` — so a `PermissionError` here is
+        retried a few times on a short backoff before being treated as the
+        generic "could not write" case every other `OSError` already is."""
         snapshot = copy.deepcopy(self._state)
         # `forced` is a set in memory and a sorted list on disk — the only
         # field of the index that is not already json.
         snapshot["forced"] = sorted(self._state.get("forced") or ())
-
-        def mutate(data: dict):
-            data.clear()
-            data.update(snapshot)
-            return None, True
-
+        path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
+        tmp_path = path + f".tmp-{os.getpid()}"
         try:
-            tasks_store._update(INDEX_FILE, mutate)
+            os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            attempt = 0
+            while True:
+                try:
+                    os.replace(tmp_path, path)
+                    break
+                except PermissionError:
+                    attempt += 1
+                    if attempt >= _REPLACE_MAX_ATTEMPTS:
+                        raise
+                    time.sleep(_REPLACE_RETRY_DELAY_S)
+            self._loaded_stat = _stat_tuple(path)
+        except PermissionError:
+            logger.warning(
+                "queue: could not replace %s after %d attempt(s); another "
+                "process still had it open", INDEX_FILE,
+                _REPLACE_MAX_ATTEMPTS, exc_info=True)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         except OSError:
             logger.debug("could not write %s", INDEX_FILE, exc_info=True)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    @contextlib.contextmanager
+    def _locked_state(self):
+        """Hold this process's lock AND the cross-process file lock
+        together, refresh `self._state` from whatever is on disk under
+        both, let the caller mutate it, then write the result back before
+        releasing either.
+
+        **Cross-process correctness (also a bug with ANY two servers, not
+        just two `open` processes).** `_state` used to be loaded once in
+        `__init__` and never refreshed; `_save()` always persisted THIS
+        PROCESS's whole in-memory snapshot. Two processes against the same
+        state dir clobbered each other's folders outright, and could both
+        pump the same folder's head into a double spawn. Every critical
+        section that mutates `_state` now goes through here — directly, or
+        through `_txn`, which layers its diff/notify bookkeeping on top —
+        so "decide" always starts from a fresh read and "persist" always
+        carries forward whatever anyone else wrote in between.
+
+        `self._lock` outermost, `tasks_store.locked(INDEX_FILE)` inside it,
+        and NEVER NESTED: `self._lock` is an `RLock` (tolerates a handler
+        that calls another locked method on `self`), but the file lock is
+        not — a second `flock()` from this same process on the same open
+        file would block on itself. Nothing below calls into a second
+        `_locked_state()`/`_txn()` while already inside one; `_pump` (what
+        handlers nested inside a transaction actually call) only ever
+        touches `self._state` directly."""
+        with self._lock:
+            with tasks_store.locked(INDEX_FILE):
+                loaded = self._load()
+                if loaded is not None:
+                    self._state = loaded
+                yield
+                self._write_locked()
 
     def _migrate_legacy(self) -> None:
         """Fold the derived-holder layer's `held_answers.json` into the index,
@@ -385,47 +646,44 @@ class QueueManager:
             logger.exception("queue: could not read %s; leaving it alone",
                              LEGACY_ANSWERS_FILE)
             return
-        known: set[str] = set()
-        for rec in self._state["folders"].values():
-            if rec["owner"] is not None:
-                known.add(rec["owner"]["task"])
-            known.update(i["task"] for i in rec["line"] + rec["blocked"])
-        heads: dict[str, int] = {}
-        changed = False
-        for record in sorted(records, key=lambda r: _number(r.get("at"))):
-            session_id = _text(record.get("session_id"))
-            if not session_id:
-                continue
-            payload = record.get("payload")
-            raw = payload.get("raw") if isinstance(payload, dict) else None
-            run_id = _text(record.get("run_id"))
-            # A DECISION FOR A RUN THAT IS GONE IS NOT A DECISION. The old store
-            # outlived the runs it was about, so an upgrade on a machine that has
-            # been off for a week would re-own a folder for a process that died
-            # days ago and replay a verdict into an empty run dir. The status
-            # sync is asked; an unreadable one KEEPS the record, because dropping
-            # a live decision is the expensive direction of that guess.
-            if not self._alive({"task": session_id, "run_id": run_id,
-                                "session_id": session_id}):
-                continue
-            if not self._add_answer(session_id, {
-                    "run_id": run_id,
-                    "request_id": _text(record.get("request_id")),
-                    "raw": copy.deepcopy(raw) if isinstance(raw, dict) else {},
-                    "at": _number(record.get("at"))}):
-                continue
-            changed = True
-            folder = _text(record.get("queue_key"))
-            if not folder or session_id in known:
-                continue
-            slot = heads.get(folder, 0)
-            self._folder(folder)["line"].insert(
-                slot, {"task": session_id, "entry_id": "", "promoted": True,
-                       "resumed": False})
-            heads[folder] = slot + 1
-            known.add(session_id)
-        if changed:
-            self._save()
+        with self._locked_state():
+            known: set[str] = set()
+            for rec in self._state["folders"].values():
+                if rec["owner"] is not None:
+                    known.add(rec["owner"]["task"])
+                known.update(i["task"] for i in rec["line"] + rec["blocked"])
+            heads: dict[str, int] = {}
+            for record in sorted(records, key=lambda r: _number(r.get("at"))):
+                session_id = _text(record.get("session_id"))
+                if not session_id:
+                    continue
+                payload = record.get("payload")
+                raw = payload.get("raw") if isinstance(payload, dict) else None
+                run_id = _text(record.get("run_id"))
+                # A DECISION FOR A RUN THAT IS GONE IS NOT A DECISION. The old store
+                # outlived the runs it was about, so an upgrade on a machine that has
+                # been off for a week would re-own a folder for a process that died
+                # days ago and replay a verdict into an empty run dir. The status
+                # sync is asked; an unreadable one KEEPS the record, because dropping
+                # a live decision is the expensive direction of that guess.
+                if not self._alive({"task": session_id, "run_id": run_id,
+                                    "session_id": session_id}):
+                    continue
+                if not self._add_answer(session_id, {
+                        "run_id": run_id,
+                        "request_id": _text(record.get("request_id")),
+                        "raw": copy.deepcopy(raw) if isinstance(raw, dict) else {},
+                        "at": _number(record.get("at"))}):
+                    continue
+                folder = _text(record.get("queue_key"))
+                if not folder or session_id in known:
+                    continue
+                slot = heads.get(folder, 0)
+                self._folder(folder)["line"].insert(
+                    slot, {"task": session_id, "entry_id": "", "promoted": True,
+                           "resumed": False})
+                heads[folder] = slot + 1
+                known.add(session_id)
         try:
             os.replace(path, path + MIGRATED_SUFFIX)
         except OSError:
@@ -481,28 +739,39 @@ class QueueManager:
         the new key is already `keys.add()`-ed by the handler — so this never
         over-fires on the common case. A REORDER of the very same set of line
         tasks (skip's `⤒`) touches the owner too, since what its row would
-        call "up next" just changed name."""
+        call "up next" just changed name.
+
+        Re-reads `self._state` from disk under BOTH locks before the body
+        runs, same as `_locked_state` (see its own docstring on cross-process
+        correctness) — inlined here rather than wrapping that helper because
+        the before/after fingerprint diff has to sit between the reload and
+        the write, which two separately-yielding context managers cannot
+        express cleanly."""
         with self._lock:
-            keys: set[str] = set()
-            before = self._folder_fingerprints()
-            yield keys
-            after = self._folder_fingerprints()
-            for folder, after_snap in after.items():
-                before_snap = before.get(folder, ("", ()))
-                if before_snap == after_snap:
-                    continue
-                before_facts = self._line_facts(before_snap)
-                after_facts = self._line_facts(after_snap)
-                for task in set(before_facts) | set(after_facts):
-                    if before_facts.get(task) != after_facts.get(task):
-                        keys.add(task)
-                if (set(before_snap[1]) == set(after_snap[1])
-                        and before_snap[1] != after_snap[1]):
-                    if before_snap[0]:
-                        keys.add(before_snap[0])
-                    if after_snap[0]:
-                        keys.add(after_snap[0])
-            self._save()
+            with tasks_store.locked(INDEX_FILE):
+                loaded = self._load()
+                if loaded is not None:
+                    self._state = loaded
+                keys: set[str] = set()
+                before = self._folder_fingerprints()
+                yield keys
+                after = self._folder_fingerprints()
+                for folder, after_snap in after.items():
+                    before_snap = before.get(folder, ("", ()))
+                    if before_snap == after_snap:
+                        continue
+                    before_facts = self._line_facts(before_snap)
+                    after_facts = self._line_facts(after_snap)
+                    for task in set(before_facts) | set(after_facts):
+                        if before_facts.get(task) != after_facts.get(task):
+                            keys.add(task)
+                    if (set(before_snap[1]) == set(after_snap[1])
+                            and before_snap[1] != after_snap[1]):
+                        if before_snap[0]:
+                            keys.add(before_snap[0])
+                        if after_snap[0]:
+                            keys.add(after_snap[0])
+                self._write_locked()
         self._flush(keys)
 
     def _flush(self, keys: set) -> None:
@@ -595,7 +864,16 @@ class QueueManager:
                         "task": item["task"],
                         "entry_id": item.get("entry_id", ""),
                         "since": float(self._clock()), "starting": False,
-                        "turns": turns}
+                        "turns": turns,
+                        # Same shape `_owner_rec` loads from disk (B1: a
+                        # transaction now reloads through there before every
+                        # mutation, so a freshly-minted owner has to match
+                        # that shape from the start, not just after a round
+                        # trip). `spawner_pid`/`spawn_started` are set
+                        # separately, by `_pump`, the moment it marks this
+                        # owner `starting`.
+                        "claims": [], "consumed": False, "spawner_pid": 0,
+                        "spawn_started": 0.0}
         return rec["owner"]
 
     @staticmethod
@@ -667,6 +945,57 @@ class QueueManager:
         if owner is None or not owner.get("starting"):
             return None
         return owner if owner["task"] == item["task"] else None
+
+    def _spawn_in_flight(self, owner: dict, now: float) -> bool:
+        """Is somebody still actively spawning this `starting` owner — in
+        which case it is never popped for age alone, whatever `SPAWN_GRACE`
+        says (B1b, and `_spawning`'s docstring in `__init__`).
+
+        THIS PROCESS'S OWN `self._spawning` IS AUTHORITATIVE AND NEVER AGED
+        OUT (review, finding 2). `SPAWN_MAX` used to be checked first, aged
+        from `owner["since"]` — the moment `_pump` handed the folder over,
+        which is the WRONG clock: `_pump`'s decision and `_start_one`'s
+        actual spawn can be seconds apart inside one `_flush` pass when
+        several folders spawn serially, so a slow-but-legitimate in-flight
+        spawn in THIS process could cross the ceiling and get popped while
+        `_start_one` was still mid-call — the exact window that let two
+        tasks land in one folder. `self._spawning` already answers "is MY
+        spawn still running" with certainty (it is this process's own
+        bookkeeping, set and cleared around the one call that matters), so
+        nothing about it needs to age out: a membership check here is
+        always correct and is asked first, unconditionally.
+
+        ONLY THE CROSS-PROCESS PID PROBE IS BOUNDED BY `SPAWN_MAX`, and aged
+        from `owner["spawn_started"]` — the wall-clock moment `_pump`
+        actually marked this owner `starting` and stamped `spawner_pid`
+        (not `since`, which predates it by nothing in the common case but is
+        the wrong field to couple this to) — because a live `spawner_pid`
+        does not prove it is still OUR spawner: pid reuse after a crash
+        hands that pid to an unrelated process, and trusting liveness alone
+        would read this owner as in-flight forever with nothing left to
+        ever clear `starting`. `spawn_started` is a `time.time()` stamp
+        (POSIX cross-process correctness needs wall time; `time.monotonic`
+        means nothing to another process) — a negative or backwards age
+        (clock stepped back, or a stamp somehow after `now`) is treated as
+        fresh (age 0) rather than as "infinitely old", since a backwards
+        clock says nothing trustworthy about how long the spawn has
+        actually been running.
+
+        POSIX only: `tasks_store` already treats cross-process locking as
+        POSIX-only, and a `spawner_pid` nothing can check on Windows is
+        worth less than falling back to the `SPAWN_GRACE` backstop every
+        caller already has."""
+        if owner["task"] in self._spawning:
+            return True
+        if os.name != "posix":
+            return False
+        pid = int(_number(owner.get("spawner_pid")))
+        if not pid or pid == os.getpid() or not _pid_alive(pid):
+            return False
+        age = now - _number(owner.get("spawn_started"))
+        if age < 0:
+            age = 0.0
+        return age < SPAWN_MAX
 
     # -- identity ---------------------------------------------------------
     #
@@ -893,6 +1222,16 @@ class QueueManager:
             # (phase 2, lock released) removes this the moment the injected
             # `spawn` call returns — see `_spawning`'s docstring in `__init__`.
             self._spawning.add(key)
+            # PERSISTED so another process's `reconcile` can tell this spawn
+            # is still in flight too (B1b) — `self._spawning` only answers
+            # for THIS process. Written now, inside the same transaction
+            # that just set `starting`, so the two reach disk together.
+            # `spawn_started` is the wall-clock moment this happens — the
+            # cross-process `SPAWN_MAX` ceiling in `_spawn_in_flight` ages
+            # off this stamp, not off `owner["since"]` (set earlier, when
+            # `_pump` only decided to spawn, not when it actually did).
+            rec["owner"]["spawner_pid"] = os.getpid()
+            rec["owner"]["spawn_started"] = float(self._clock())
         self._starting.append((kind, folder, item))
 
     def _start_one(self, kind: str, folder: str, item: dict, keys: set) -> None:
@@ -907,10 +1246,21 @@ class QueueManager:
             started = self._spawn(folder, key)
         except Exception as exc:  # noqa: BLE001 — every outcome is handled below
             failure = exc
-        with self._lock:
-            # PHASE 2: the injected `spawn` call has returned (or raised), so
-            # whatever it is doing to the world it has finished doing. From
-            # here `reconcile` may treat this owner as an ordinary one again.
+        # PHASE 2: the injected `spawn` call has returned (or raised), so
+        # whatever it is doing to the world it has finished doing. From here
+        # `reconcile` may treat this owner as an ordinary one again — but
+        # ONLY once the owner below is actually patched to say so, which is
+        # why the discard is the lock's first act rather than something done
+        # before it. A discard left outside the lock opened a window where
+        # `_spawn_in_flight` had already forgotten `key` for THIS process
+        # while the owner still read `starting` with nothing to show for it
+        # — exactly the gap `reconcile` can land in and pop the owner for age
+        # under `SPAWN_GRACE`, right as this call is about to patch it in.
+        # `_spawning` is process-local bookkeeping (see its docstring in
+        # `__init__`), not part of `self._state`, so discarding from it
+        # anywhere inside `_locked_state()`'s `with` block is safe — the
+        # reload in there only ever touches `self._state`.
+        with self._locked_state():
             self._spawning.discard(key)
             rec = self._folder(folder)
             owner = self._still_starting(rec, item)
@@ -921,7 +1271,6 @@ class QueueManager:
                 # folder's state now.
                 logger.debug("queue: %s in %s was reassigned mid-spawn", key,
                              folder)
-                self._save()
                 return
             if failure is not None:
                 busy = _busy_class()
@@ -942,7 +1291,6 @@ class QueueManager:
                 owner["run_id"] = _text(started.get("run_id"))
                 owner["session_id"] = _text(started.get("session_id"))
                 owner["starting"] = False
-            self._save()
 
     def _deliver_answers(self, folder: str, item: dict, keys: set) -> None:
         """Replay every decision this task is owed, oldest first.
@@ -956,14 +1304,13 @@ class QueueManager:
         is its own first-writer-wins latch)."""
         key = item["task"]
         while True:
-            with self._lock:
+            with self._locked_state():
                 answers = self._answers_of(key)
                 if not answers:
                     rec = self._folder(folder)
                     owner = self._still_starting(rec, item)
                     if owner is not None:
                         owner["starting"] = False
-                    self._save()
                     return
                 answer = copy.deepcopy(answers[0])
             try:
@@ -971,15 +1318,13 @@ class QueueManager:
             except Exception:
                 logger.exception("queue: delivering the held answer for %s failed",
                                  key)
-                with self._lock:
+                with self._locked_state():
                     rec = self._folder(folder)
                     if self._still_starting(rec, item) is not None:
                         self._resign(rec, item, promoted=True)
-                    self._save()
                 return
-            with self._lock:
+            with self._locked_state():
                 self._drop_answer(key, answer)
-                self._save()
 
     def _place(self, task_key: str) -> dict:
         """``{"key", "position", "ahead_key"}`` for one task.
@@ -1578,6 +1923,7 @@ class QueueManager:
     # ------------------------------------------------------------- reads
     def owner(self, folder: str) -> dict | None:
         with self._lock:
+            self._refresh_if_stale()
             rec = self._state["folders"].get(folder)
             owner = rec["owner"] if rec else None
             return copy.deepcopy(owner) if owner else None
@@ -1645,6 +1991,7 @@ class QueueManager:
         the endpoints that have just moved a line, and its dict is the reply
         those endpoints return."""
         with self._lock:
+            self._refresh_if_stale()
             out: dict[str, dict] = {}
             for folder, rec in self._state["folders"].items():
                 ahead = self._ahead_label(rec["owner"])
@@ -1663,12 +2010,14 @@ class QueueManager:
         """``{"key", "position", "ahead_key"}`` for one task; position 0 = not
         queued, and `key` is the FOLDER (see `_place`)."""
         with self._lock:
+            self._refresh_if_stale()
             return self._place(task_key)
 
     def held_answer(self, task_key: str) -> dict | None:
         """The OLDEST decision this task is owed, or None. One question of the
         several a run may have raised — `held_answers` is the whole list."""
         with self._lock:
+            self._refresh_if_stale()
             rows = self._answers_of(task_key)
             return copy.deepcopy(rows[0]) if rows else None
 
@@ -1701,23 +2050,24 @@ class QueueManager:
         keep = {str(name) for name in names if name}
         if not keep:
             return
-        with self._lock:
+        with self._locked_state():
             forced = self._state.setdefault("forced", set())
             if keep <= forced:
                 return
             forced |= keep
-            self._save()
 
     def is_forced(self, *names: str) -> bool:
         """Does any of these names belong to a task that was force-started —
         the one question the two doors, the gate and the tick ask."""
         with self._lock:
+            self._refresh_if_stale()
             forced = self._state.get("forced") or set()
             return any(str(name) in forced for name in names if name)
 
     def forced_names(self) -> set:
         """The whole set, for a test and for the listing's sake. A copy."""
         with self._lock:
+            self._refresh_if_stale()
             return set(self._state.get("forced") or ())
 
     def learn_forced(self, *names: str) -> bool:
@@ -1733,8 +2083,12 @@ class QueueManager:
             return False
         # CHEAP NO UNLESS SOMETHING IS FORCED: this runs on every queue event
         # and every admit, and `_txn` writes the whole index on exit (review,
-        # 2026-09-21). Read under the plain lock first.
+        # 2026-09-21). Read under the plain lock first — refreshed, since
+        # this pre-check's whole point is answering False cheaply without
+        # ever entering `_txn()`, which it can only do honestly if it is
+        # looking at what is actually on disk right now.
         with self._lock:
+            self._refresh_if_stale()
             forced = self._state.get("forced") or set()
             if not any(n in forced for n in clean):
                 return False
@@ -1812,6 +2166,7 @@ class QueueManager:
         if not key:
             return False
         with self._lock:
+            self._refresh_if_stale()
             now = float(self._clock())
             records: list[dict] = []
             for rec in self._state["folders"].values():
@@ -1821,7 +2176,7 @@ class QueueManager:
                             and self._stale_placeholder(owner, now)):
                         pass
                     elif owner.get("starting") and (
-                            owner["task"] in self._spawning
+                            self._spawn_in_flight(owner, now)
                             or (not _text(owner.get("run_id"))
                                 and now - _number(owner.get("since")) < SPAWN_GRACE)):
                         return True
@@ -1924,16 +2279,21 @@ class QueueManager:
                         keys.add(owner["task"])
                         rec["owner"] = None
                     continue
-                if owner.get("starting") and owner["task"] in self._spawning:
-                    # THE SPAWN IS STILL IN FLIGHT. `dispatch_entry`/`_send`
-                    # can block up to 60s (the subprocess timeout) — far
-                    # longer than `SPAWN_GRACE` — and there is nothing the
-                    # status sync can be asked about a process with no run id
-                    # yet, so an owner known to still be spawning is never
-                    # popped for being dead, whatever its age (Bugbot, PR
-                    # #1194). `SPAWN_GRACE` below is the backstop for a
-                    # `starting` owner NOT in this set — e.g. after a crash
-                    # mid-spawn, where a fresh process's set starts empty.
+                if owner.get("starting") and self._spawn_in_flight(owner, now):
+                    # THE SPAWN IS STILL IN FLIGHT, in this process or
+                    # another one (B1b: `owner["spawner_pid"]`).
+                    # `dispatch_entry`/`_send` can block up to 60s (the
+                    # subprocess timeout) — far longer than `SPAWN_GRACE` —
+                    # and there is nothing the status sync can be asked
+                    # about a process with no run id yet, so an owner known
+                    # to still be spawning is never popped for being dead,
+                    # whatever its age (Bugbot, PR #1194), short of
+                    # `SPAWN_MAX` — `_spawn_in_flight` itself stops trusting
+                    # a live pid that old, since pid reuse after a crash
+                    # would otherwise wedge the folder forever. `SPAWN_GRACE`
+                    # below is the backstop for a `starting` owner this
+                    # process never spawned and whose spawner has died —
+                    # e.g. a crash mid-spawn.
                     continue
                 if (not _text(owner.get("run_id"))
                         and now - _number(owner.get("since")) < SPAWN_GRACE):
@@ -2017,5 +2377,170 @@ def get() -> QueueManager:
 
 
 def reset_for_tests(manager: QueueManager | None = None) -> None:
-    global _manager
+    global _manager, _duties_waiter_thread, _duties_state
     _manager = manager
+    # Forget any waiter thread a prior test started. `tasks_store`'s own
+    # `reset_leases_for_tests()` fixture (conftest.py) releases the lease
+    # handle itself; this just drops the stale `Thread` object and resets
+    # `_duties_state` to idle so the next test's `ensure_duties_waiter()`
+    # starts fresh rather than short-circuiting on `_DUTIES_DONE` left over
+    # from a `STATE_DIR` no longer in use. A test that started a
+    # still-blocked waiter is responsible for joining it (with a timeout)
+    # before it ends — this does not join.
+    _duties_waiter_thread = None
+    _duties_state = _DUTIES_IDLE
+
+
+# ----------------------------------------------------------- machine duties
+
+
+# The lease file's name under `tasks_store.STATE_DIR` (B2). Not `INDEX_FILE`
+# or anything else this module already locks — a duties winner and a `_txn`
+# writer are unrelated critical sections and must never share a lock name,
+# or one would block on the other for no reason.
+_DUTIES_LEASE = "machine-duties.lock"
+
+
+_duties_waiter_thread: threading.Thread | None = None
+# Guards `ensure_duties_waiter`'s check-create-assign so two concurrent
+# callers (two requests landing on a lean process at once, say) can't both
+# pass the "is there already a live waiter" check and each start one — the
+# same idiom `ai/supervisor.py`'s `start_reaper`/`start_hardware_refresh`
+# use for the same reason.
+_duties_waiter_lock = threading.Lock()
+
+# `ensure_duties_waiter`'s own state — NOT the thread's `is_alive()`
+# (finding 1, review). The waiter thread is not a loop: it blocks on
+# `acquire_lease_blocking`, then runs `schedule.start()` plus an optional
+# one-shot `reconcile()`, then RETURNS — `is_alive()` goes False the moment
+# that work finishes, win or lose. Keying "once per process" off `is_alive()`
+# meant every `/api/tasks*` request after the first one landed on an
+# already-finished thread and started a brand new waiter, which re-ran
+# `reconcile()` on every single request. `_duties_state` tracks intent
+# instead of thread liveness: `_DUTIES_IDLE` (nothing started yet) is the
+# only state a call may start a new thread from; `_DUTIES_WAITING` (a
+# thread is parked in `acquire_lease_blocking`, still working, possibly
+# retrying after a failure) and `_DUTIES_DONE` (the one-time startup work
+# has already run to completion — TERMINAL for the life of this process,
+# since there is nothing left for a second thread to do once this process
+# holds the lease and has already run `schedule.start()`/`reconcile()`) are
+# both no-ops.
+_DUTIES_IDLE = "idle"
+_DUTIES_WAITING = "waiting"
+_DUTIES_DONE = "done"
+_duties_state = _DUTIES_IDLE
+
+# Backoff for the waiter thread's own retry loop (finding 7): a raise from
+# `acquire_lease_blocking`/`schedule.start()` used to kill the thread
+# silently, leaving `_duties_state` stuck at `_DUTIES_WAITING` forever with
+# nothing left trying — not even a crash, just a thread that quietly
+# stopped mattering. 5s on the first retry, doubling up to a 60s cap.
+_DUTIES_RETRY_MIN_S = 5.0
+_DUTIES_RETRY_MAX_S = 60.0
+
+
+def ensure_duties_waiter() -> threading.Thread:
+    """Start, once per process, a daemon thread that BLOCKS until this
+    process becomes the one process on this machine that runs the scheduler
+    (`schedule.start()`) and resumes the project queue (`reconcile()` over
+    whatever a restart left queued) — B2's "one process runs machine-wide
+    duties". Now that B1/B1b make every process's queue index correct on its
+    own, these two are the pieces that must still run in exactly one place:
+    the scheduler ticking in two processes would send every scheduled
+    message twice, and two resumes would race each other's reconcile the
+    same way two `serve`s used to (B1's bug) before anyone had taken a lease
+    at all.
+
+    The thread parks in `tasks_store.acquire_lease_blocking(_DUTIES_LEASE)`
+    for as long as it takes — potentially forever, if another live process
+    already holds the lease — which is fine and intended, because this runs
+    on its own dedicated daemon thread, never on a request-handling one.
+    Once it returns, this process holds the lease, and the thread runs
+    `schedule.start()` plus, only with the project-queue flag on, a one-shot
+    `reconcile()` resume, then ends — it does not loop. Whichever process
+    holds the lease keeps it for as long as it lives; the OS drops the flock
+    on exit or crash, which is what wakes whichever OTHER process's waiter
+    thread is still parked in `acquire_lease_blocking` and lets it take
+    over. Only a process whose waiter was already started before the holder
+    died can ever take over this way — which is why this is called from
+    both `serve`'s startup (`_startup_queue_manager`) and a lean process's
+    very first `/api/tasks*` request (`routers/tasks.py`'s `_ensure_duties`):
+    between the two, every process that can ever run ends up with a waiter
+    parked and ready, with no separate polling/retry mechanism anywhere.
+
+    A raise from `acquire_lease_blocking` or `schedule.start()` (finding 7)
+    does not kill the thread: it is logged at warning with a traceback,
+    waited out on a capped exponential backoff, and retried from the top —
+    `_duties_state` stays `_DUTIES_WAITING` through every retry, so a later
+    call in the same process still sees "already working on it" rather than
+    starting a second thread. `reconcile()`'s own failure is unchanged: it
+    is swallowed where it already was, because the scheduler's next tick
+    (now running in this process, since `schedule.start()` already
+    succeeded by the time `reconcile()` runs) retries the resume on its own.
+
+    Safe to call from every process, any number of times, at any moment:
+    idempotent via `_duties_state`/`_duties_waiter_lock` the same way
+    `ai/supervisor.py`'s `start_reaper` is idempotent via its own module
+    handle — only a call made while `_duties_state` is `_DUTIES_IDLE`
+    actually starts the thread; every other call (every `/api/tasks*`
+    request after the first, say, whether the thread is still retrying or
+    has already finished for good) is a fast no-op check.
+
+    Always returns the waiter thread — `_duties_waiter_thread`, never None
+    once any call has run — so a caller that wants a test seam
+    (`_startup_queue_manager` keeps it on `app.state`, the same pattern
+    `_startup_tasks_warm` leaves) has one to `.join(timeout=...)`. A plain
+    `.join()` with no timeout can hang forever, legitimately, if another
+    live process still holds the lease or this one is mid-retry.
+
+    Deferred imports: `schedule` reaches back into this module (`_qm()`'s
+    fallback wiring, and each tick's `reconcile()`), so importing it at
+    module level here would cycle."""
+    global _duties_waiter_thread, _duties_state
+    with _duties_waiter_lock:
+        if _duties_state != _DUTIES_IDLE:
+            return _duties_waiter_thread
+
+        def run() -> None:
+            global _duties_state
+            backoff = _DUTIES_RETRY_MIN_S
+            while True:
+                try:
+                    tasks_store.acquire_lease_blocking(_DUTIES_LEASE)
+
+                    from fused_render import schedule
+
+                    schedule.start()
+                except Exception:  # noqa: BLE001 — this thread is the only
+                    # thing that will ever try to win the lease for this
+                    # process; dying silently here means this process never
+                    # runs machine duties again, even once whatever is
+                    # failing clears up (a rival lease holder exiting, a
+                    # transient filesystem error). Retry forever instead.
+                    logger.warning(
+                        "queue: machine-duties waiter failed; retrying in "
+                        "%.0fs", backoff, exc_info=True)
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, _DUTIES_RETRY_MAX_S)
+                    continue
+                break
+
+            from fused_render import project_queue
+
+            if project_queue.enabled():
+                try:
+                    get().reconcile()
+                except Exception:  # noqa: BLE001 — a queue that cannot
+                    # resume must not take the server down with it; the
+                    # scheduler's next tick (now running in this process)
+                    # tries again.
+                    logger.exception("could not resume the project queue")
+
+            with _duties_waiter_lock:
+                _duties_state = _DUTIES_DONE
+
+        _duties_state = _DUTIES_WAITING
+        _duties_waiter_thread = threading.Thread(
+            target=run, daemon=True, name="fused-queue-duties-waiter")
+        _duties_waiter_thread.start()
+        return _duties_waiter_thread

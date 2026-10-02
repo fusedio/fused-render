@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from fused_render.ai import fit, hw_detect
+from fused_render.ai import fit, hw_detect, supervisor
 
 
 @pytest.fixture(autouse=True)
@@ -509,6 +509,74 @@ def test_bandwidth_lookup_prefers_the_more_specific_match():
 
 def test_cached_hardware_is_none_before_anything_has_ever_detected():
     assert hw_detect.cached_hardware() is None
+
+
+def test_cached_hardware_never_probes_a_missing_cache_on_this_thread(monkeypatch):
+    """`cached_hardware()` stays a pure, synchronous read from its caller's
+    point of view — a missing cache file must answer `None` immediately,
+    never fall through to running the probe ITSELF. `fit.py`/`speed.py`
+    call this on every verdict/estimate (the module docstring's own rule),
+    so running the probe synchronously on a cache miss would put a
+    50-500ms subprocess spawn back on that path exactly as if
+    `detect_hardware` were called directly. It is allowed (and expected) to
+    kick the BACKGROUND refresh thread awake — see
+    `test_cached_hardware_starts_the_background_refresh_on_a_miss` — which
+    does not run the probe on this thread either."""
+    def _boom(*args, **kwargs):
+        raise AssertionError("cached_hardware() must not probe on a cache miss")
+
+    monkeypatch.setattr(hw_detect, "detect_hardware", _boom)
+    monkeypatch.setattr(hw_detect, "refresh_hardware", _boom)
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: None)
+    assert hw_detect.cached_hardware() is None
+
+
+def test_cached_hardware_starts_the_background_refresh_on_a_miss(monkeypatch):
+    """The cache-miss path (`_probe_once_if_missing`) is the one thing that
+    makes `start_hardware_refresh()` reachable at all once the route-level
+    call sites are gone: every reader of `cached_hardware()` — a route
+    handler, or `supervisor._child_env`'s budget computation at worker-spawn
+    time — now kicks the background thread awake itself on a cold cache,
+    including a `lean` process that skips `server/app.py`'s `@on_startup`
+    hook entirely."""
+    calls = []
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
+    assert hw_detect.cached_hardware() is None
+    assert calls == [1]
+
+
+def test_cached_hardware_does_not_start_a_refresh_once_the_cache_is_warm(monkeypatch):
+    """A hit must not pay for even the idempotency check inside
+    `start_hardware_refresh()` — the whole point of the lazy-start seam is
+    that a warm cache costs nothing beyond the one disk read this function
+    already did."""
+    gpus = [hw_detect.GpuDevice(name="RTX 4090", vram_gb=24.0)]
+    monkeypatch.setattr(hw_detect, "detect_hardware", lambda ram_gb=None: hw_detect.HardwareInfo(
+        gpus=gpus, total_vram_gb=24.0, bandwidth_gb_s=1008.0, detected_at=time.time()))
+    hw_detect.refresh_hardware(ram_gb=32.0)
+
+    calls = []
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
+    assert hw_detect.cached_hardware() is not None
+    assert calls == []
+
+
+def test_cached_hardware_starts_the_background_refresh_on_a_corrupt_cache(tmp_path, monkeypatch):
+    """A corrupt cache is treated the same as a missing one (SPEC AI-18's
+    own "no measurement yet" contract) — including kicking the background
+    refresh awake so a corrupt file gets overwritten rather than sitting
+    there forever."""
+    import os
+
+    path = hw_detect._path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("{not json")
+
+    calls = []
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
+    assert hw_detect.cached_hardware() is None
+    assert calls == [1]
 
 
 def test_refresh_hardware_writes_a_cache_that_cached_hardware_then_reads(monkeypatch):

@@ -17,6 +17,7 @@ import json
 import os
 import threading
 import time
+from unittest import mock
 
 import pytest
 
@@ -25,6 +26,14 @@ from fused_render import tasks_store
 
 F1 = "/tmp/proj-one"
 F2 = "/tmp/proj-two"
+INDEX_PATH_NAME = qm.INDEX_FILE
+
+#: The real `ensure_duties_waiter`, captured at import — before the autouse
+#: `_no_duties_waiter_thread` fixture (conftest.py) replaces it with a no-op
+#: for every test in the suite. The tests below are ABOUT this function, so
+#: they call it from here rather than from `qm.ensure_duties_waiter` at
+#: test-body time, which would already be the patched no-op.
+_REAL_ENSURE_DUTIES_WAITER = qm.ensure_duties_waiter
 
 
 @pytest.fixture(autouse=True)
@@ -1172,6 +1181,38 @@ def test_the_index_persists_across_a_fresh_instance(state):
     assert fresh.held_answer("c")["raw"] == {"answer": "allow"}
 
 
+def test_two_live_managers_do_not_clobber_each_others_folder(state):
+    """Two processes against the same state dir (`fused-render open` and
+    `serve`, or two `open`s) — not a before/after `second.manager()` read,
+    but both managers ALIVE AT ONCE, each claiming a different folder.
+
+    Before B1, `_state` was loaded once in `__init__` and `_save()` always
+    wrote this process's whole in-memory snapshot — so `m2`, built before
+    `m1` ever wrote, had no F1 in its own `_state`, and its own `started()`
+    would persist an index with F2 but WITHOUT F1, erasing the folder `m1`
+    had just claimed. `_txn` now re-reads the index from disk before
+    mutating, so `m2`'s write must carry `m1`'s F1 forward."""
+    world1 = idle_world()
+    world2 = idle_world()
+    m1 = world1.manager()
+    m2 = world2.manager()
+
+    m1.started(F1, "a", "run-a", "sess-a")
+    m2.started(F2, "b", "run-b", "sess-b")
+
+    on_disk = json.loads((state / qm.INDEX_FILE).read_text())
+    folders = on_disk["folders"]
+    assert folders[F1]["owner"]["task"] == "a"
+    assert folders[F2]["owner"]["task"] == "b"
+
+    # A fresh manager loading that index sees both.
+    world3 = idle_world()
+    world3.running_keys.update({"a", "b"})
+    fresh = world3.manager()
+    assert fresh.owner(F1)["task"] == "a"
+    assert fresh.owner(F2)["task"] == "b"
+
+
 def test_blocked_list_round_trips(state):
     m = World().manager()
     m.enqueue(F1, "a")
@@ -1513,12 +1554,16 @@ def test_claim_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
     the item this call takes may be the only thing ever going to unstick it."""
     world = World()
     m = world.manager()
-    m._state["folders"][F1] = {
-        "owner": None, "blocked": [],
-        "line": [{"task": "b", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False},
-                {"task": "c", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False}]}
+    # Written through `_locked_state` (B1: a transaction re-reads `_state`
+    # from disk before mutating, so a direct in-memory poke here would be
+    # overwritten by `claim`'s own reload rather than seen by it).
+    with m._locked_state():
+        m._state["folders"][F1] = {
+            "owner": None, "blocked": [],
+            "line": [{"task": "b", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False},
+                    {"task": "c", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False}]}
     world.spawned.clear()
 
     assert m.claim(F2, "b", "run-b", "sess-b") is True
@@ -1532,12 +1577,16 @@ def test_claim_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
 def test_started_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
     world = World()
     m = world.manager()
-    m._state["folders"][F1] = {
-        "owner": None, "blocked": [],
-        "line": [{"task": "b", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False},
-                {"task": "c", "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": "", "resumed": False}]}
+    # Written through `_locked_state` (B1: a transaction re-reads `_state`
+    # from disk before mutating, so a direct in-memory poke here would be
+    # overwritten by `started`'s own reload rather than seen by it).
+    with m._locked_state():
+        m._state["folders"][F1] = {
+            "owner": None, "blocked": [],
+            "line": [{"task": "b", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False},
+                    {"task": "c", "entry_id": "", "promoted": False,
+                     "run_id": "", "session_id": "", "resumed": False}]}
     world.spawned.clear()
 
     m.started(F2, "b", "run-b", "sess-b")
@@ -2292,6 +2341,69 @@ def test_reconcile_keeps_a_pending_owner_the_registry_knows_by_its_session():
     assert owner_key(m) == "pending:e1"
 
 
+def test_start_one_discards_spawning_and_patches_owner_in_one_critical_section():
+    """Code review finding: `_start_one` used to discard a spawn's key from
+    `self._spawning` BEFORE entering `_locked_state()`, leaving a window
+    where `reconcile()` could see `_spawn_in_flight` answer False for an
+    owner this call had not patched yet — and pop a `starting` owner for age
+    under `SPAWN_GRACE` right as its spawn was about to land. The discard is
+    now the lock's first act, in the same critical section as the owner
+    patch, so nothing else can observe the key missing from `_spawning`
+    while the owner it names still reads `starting=True` unpatched —
+    `reconcile()` wants the very same `self._lock`, through its own
+    `_txn()`, and cannot make progress until this section is done."""
+    world = World()
+    m = world.manager()
+
+    entered = threading.Event()
+    proceed = threading.Event()
+    real_still_starting = m._still_starting
+
+    def watched_still_starting(rec, item):
+        # Called right after the discard, still inside `_locked_state()`.
+        entered.set()
+        assert proceed.wait(5)
+        return real_still_starting(rec, item)
+
+    m._still_starting = watched_still_starting
+
+    thread = threading.Thread(target=m.enqueue, args=(F1, "a"))
+    thread.start()
+    assert entered.wait(5)
+
+    # A real intermediate state — the discard (the section's first
+    # statement) has run but the owner patch has not — yet nothing outside
+    # this thread can observe it: these reads only see it because the test
+    # is peeking past the lock, not because anyone else could acquire it.
+    assert "a" not in m._spawning
+    assert m._state["folders"][F1]["owner"]["starting"] is True
+    assert m._state["folders"][F1]["owner"]["run_id"] == ""
+    world.running_keys.add("run")            # so the status sync keeps it once patched
+
+    reconciled = threading.Event()
+
+    def run_reconcile():
+        m.reconcile()
+        reconciled.set()
+
+    watcher = threading.Thread(target=run_reconcile)
+    watcher.start()
+    # `reconcile()` wants the same `self._lock` this thread is sitting
+    # inside (via its own `_txn()`) — it cannot run, let alone pop this
+    # owner, until the critical section above closes.
+    assert not reconciled.wait(0.3)
+
+    proceed.set()
+    thread.join(5)
+    watcher.join(5)
+    assert reconciled.is_set()
+
+    # The owner landed clean: `reconcile` never got a window to pop a
+    # `starting` owner whose spawn had, in fact, already succeeded.
+    assert owner_key(m) == "a"
+    assert m.owner(F1)["run_id"] == "run"
+
+
 def test_reconcile_never_pops_a_spawn_that_has_not_landed_yet():
     """An owner whose spawn has not come back with a run has nothing the status
     sync can be asked about — no run dir, no registry row, no mark — so every
@@ -2342,6 +2454,177 @@ def test_reconcile_never_pops_an_in_flight_spawn_past_the_grace():
     world.running_keys.discard("run-slow")   # landed: the status sync decides now
     m.reconcile()
     assert owner_key(m) is None
+
+
+def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
+    """B1b: `self._spawning` only answers "is MY spawn still running" — a
+    SECOND manager over the same state dir (another `open` process, or
+    `serve`) has its own, empty `_spawning`, so without `owner["spawner_pid"]`
+    its `reconcile` had nothing but `SPAWN_GRACE` (10s) to go on, far short of
+    the 60s `dispatch_entry`/`_send` can legitimately take, and would start a
+    second spawn beside one that was still going.
+
+    `spawner_pid` names a REAL other process (a `sleep`, kept alive for the
+    assertion) — a fake/self pid would not exercise the cross-process liveness
+    probe `_spawn_in_flight` actually falls back to."""
+    import subprocess
+
+    other = subprocess.Popen(["sleep", "5"])
+    try:
+        assert qm._pid_alive(other.pid) is True
+        world = idle_world()
+        index = {"folders": {F1: {
+            "owner": {"task": "slow", "run_id": "", "session_id": "",
+                      # Recent enough to stay well under `SPAWN_MAX` — this
+                      # test is about the grace, not the ceiling.
+                      "entry_id": "", "since": world.now, "starting": True,
+                      "turns": 1, "claims": [], "consumed": False,
+                      "spawner_pid": other.pid, "spawn_started": world.now},
+            "line": [], "blocked": []}}, "answers": {}, "forced": []}
+        os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+        with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+            json.dump(index, f)
+
+        world.now += qm.SPAWN_GRACE + 5      # far older than the grace
+        m = loaded(world)
+        m.reconcile()
+        assert owner_key(m) == "slow"        # not popped: the spawner is still alive
+    finally:
+        other.terminate()
+        other.wait(5)
+
+
+def test_reconcile_pops_a_starting_owner_whose_spawner_process_died():
+    """The other half of B1b: a `starting` owner whose `spawner_pid` names a
+    process that is actually gone (crashed mid-spawn) is NOT treated as
+    in-flight forever — it falls back to the ordinary `SPAWN_GRACE` backstop,
+    same as an owner with no `spawner_pid` at all."""
+    import subprocess
+
+    proc = subprocess.Popen(["true"])
+    proc.wait(5)
+    dead_pid = proc.pid                      # exited; this pid is not reused yet
+    assert qm._pid_alive(dead_pid) is False
+
+    world = idle_world()
+    index = {"folders": {F1: {
+        "owner": {"task": "stuck", "run_id": "", "session_id": "",
+                  "entry_id": "", "since": 0.0, "starting": True,
+                  "turns": 1, "claims": [], "consumed": False,
+                  "spawner_pid": dead_pid, "spawn_started": 0.0},
+        "line": [], "blocked": []}}, "answers": {}, "forced": []}
+    os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+    with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+        json.dump(index, f)
+
+    world.now += qm.SPAWN_GRACE + 5
+    m = loaded(world)
+    m.reconcile()
+    assert owner_key(m) is None
+
+
+def test_reconcile_pops_another_processs_starting_owner_past_spawn_max_despite_a_live_pid():
+    """Finding 9 (first review round): a live `spawner_pid` does not prove it
+    is still OUR spawner — the OS reuses pids, so a spawner that crashed can
+    hand its pid to a later, unrelated process, and trusting liveness alone
+    would read this owner as in-flight forever with nothing left to ever
+    clear `starting`. Past `SPAWN_MAX`, measured from `spawn_started` (finding
+    2, second review round — not from `since`, which is when the OTHER
+    process's `_pump` decided to spawn, a fact this process has no clock
+    relationship to anyway), `_spawn_in_flight` stops trusting the pid probe
+    for a CROSS-PROCESS spawn, so `reconcile` is willing to pop and retry
+    even with the pid still alive."""
+    import subprocess
+
+    other = subprocess.Popen(["sleep", "5"])
+    try:
+        assert qm._pid_alive(other.pid) is True
+        world = idle_world()
+        index = {"folders": {F1: {
+            "owner": {"task": "stuck", "run_id": "", "session_id": "",
+                      "entry_id": "", "since": world.now, "starting": True,
+                      "turns": 1, "claims": [], "consumed": False,
+                      "spawner_pid": other.pid, "spawn_started": world.now},
+            "line": [], "blocked": []}}, "answers": {}, "forced": []}
+        os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+        with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+            json.dump(index, f)
+
+        world.now += qm.SPAWN_MAX + 5        # past the ceiling, pid still alive
+        m = loaded(world)
+        m.reconcile()
+        assert owner_key(m) is None          # popped: too old to trust, live pid or not
+    finally:
+        other.terminate()
+        other.wait(5)
+
+
+def test_reconcile_never_pops_this_processs_own_in_flight_spawn_past_spawn_max():
+    """Finding 2 (second review round): `self._spawning` is THIS process's
+    own bookkeeping, set and cleared around the one `_start_one` call that
+    actually spawns — there is no clock it needs to be aged against, because
+    it is never wrong about whether a spawn is still running in this
+    process. The ceiling used to be checked first and aged off
+    `owner["since"]` (when `_pump` decided to hand the folder over, not when
+    `_start_one` actually began spawning), so a slow spawn that crossed
+    `SPAWN_MAX` while genuinely still in flight got popped out from under
+    itself — the next pump then started a SECOND task in the same folder.
+    `self._spawning` membership is asked first, unconditionally, and answers
+    True no matter how old the owner is."""
+    world = World()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def slow(folder, key):
+        inside.set()
+        assert release.wait(5)
+        return {"run_id": "run-" + key, "session_id": "sess-" + key}
+
+    world.spawn = slow
+    m = world.manager()
+    thread = threading.Thread(target=m.enqueue, args=(F1, "slow"))
+    thread.start()
+    assert inside.wait(5)                    # the spawn is in flight
+
+    world.now += qm.SPAWN_MAX + 5            # past the ceiling, still spawning
+    m.reconcile()
+    assert owner_key(m) == "slow"            # not popped: self._spawning says so
+    assert line_of(m) == []
+
+    release.set()
+    thread.join(5)
+    assert owner_key(m) == "slow"
+    assert m.owner(F1)["run_id"] == "run-slow"
+
+
+def test_reconcile_still_trusts_a_fresh_in_flight_spawn_under_spawn_max():
+    """The ordinary case the ceiling must not touch: a `starting` owner well
+    under `SPAWN_MAX`, past only `SPAWN_GRACE`, with a live spawner pid is
+    still reported in-flight — same behavior as before the ceiling existed
+    for an owner this young."""
+    import subprocess
+
+    other = subprocess.Popen(["sleep", "5"])
+    try:
+        world = idle_world()
+        index = {"folders": {F1: {
+            "owner": {"task": "slow", "run_id": "", "session_id": "",
+                      "entry_id": "", "since": world.now, "starting": True,
+                      "turns": 1, "claims": [], "consumed": False,
+                      "spawner_pid": other.pid, "spawn_started": world.now},
+            "line": [], "blocked": []}}, "answers": {}, "forced": []}
+        os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+        with open(os.path.join(tasks_store.STATE_DIR, qm.INDEX_FILE), "w") as f:
+            json.dump(index, f)
+
+        world.now += qm.SPAWN_GRACE + 5      # old enough to need the pid check...
+        assert qm.SPAWN_GRACE + 5 < qm.SPAWN_MAX  # ...young enough the ceiling does not fire
+        m = loaded(world)
+        m.reconcile()
+        assert owner_key(m) == "slow"
+    finally:
+        other.terminate()
+        other.wait(5)
 
 
 def test_reconcile_trusts_the_status_sync_once_a_spawn_has_a_run():
@@ -2562,3 +2845,474 @@ def test_restore_claim_refuses_a_folder_whose_owner_changed():
     m.claim_took(F1, "b", "run-b", "sess-b")
     assert m.restore_claim(F1, token) is False
     assert m.consume_claim(F1, token) is False
+
+
+# ----------------------------------------------------- ensure_duties_waiter (B2)
+
+
+def test_ensure_duties_waiter_starts_exactly_one_daemon_thread(monkeypatch):
+    """A single call starts a daemon thread named `fused-queue-duties-waiter`.
+    A second call while that thread is still alive (here: still blocked
+    behind a rival holder of the lease) is a no-op — same thread object
+    back, nothing new started."""
+    import fcntl
+
+    from fused_render import project_queue, schedule
+
+    monkeypatch.setattr(schedule, "start", lambda: None)
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+
+    path = os.path.join(str(tasks_store.STATE_DIR), qm._DUTIES_LEASE)
+    os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+    with open(path, "w") as rival:
+        fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        first = _REAL_ENSURE_DUTIES_WAITER()
+        assert first.name == "fused-queue-duties-waiter"
+        assert first.daemon is True
+        assert first.is_alive()
+
+        second = _REAL_ENSURE_DUTIES_WAITER()
+        assert second is first
+
+    first.join(timeout=5)
+    assert not first.is_alive()
+
+
+def test_ensure_duties_waiter_runs_startup_work_once_it_wins_the_lease(
+        monkeypatch):
+    """Once the thread acquires the lease (here: uncontended, so immediately)
+    it runs `schedule.start()` and, with the project-queue flag on, a
+    one-shot `reconcile()` resume — then the thread ends."""
+    from fused_render import project_queue, schedule
+
+    started = []
+    monkeypatch.setattr(schedule, "start", lambda: started.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+
+    reconciled = []
+
+    class _Manager:
+        def reconcile(self):
+            reconciled.append(True)
+
+    qm.reset_for_tests(_Manager())
+    thread = _REAL_ENSURE_DUTIES_WAITER()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert started == [True]
+    assert reconciled == [True]
+
+
+def test_ensure_duties_waiter_skips_resume_when_the_flag_is_off(monkeypatch):
+    from fused_render import project_queue, schedule
+
+    started = []
+    monkeypatch.setattr(schedule, "start", lambda: started.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+
+    thread = _REAL_ENSURE_DUTIES_WAITER()
+    thread.join(timeout=5)
+    # Still the machine's scheduler holder — the flag only gates the resume.
+    assert started == [True]
+
+
+def test_ensure_duties_waiter_blocks_behind_a_rival_then_takes_over(state,
+                                                                     monkeypatch):
+    """A second OPEN FILE DESCRIPTION holding the lease stands in for another
+    live process. The waiter thread parks behind it — `schedule.start()` and
+    `reconcile()` must not run while the rival holds the lease — and wakes
+    the instant the rival releases it, same as a real holder's process
+    exiting drops its flock with it."""
+    import fcntl
+
+    from fused_render import project_queue, schedule
+
+    started = []
+    monkeypatch.setattr(schedule, "start", lambda: started.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+
+    path = os.path.join(str(state), qm._DUTIES_LEASE)
+    rival = open(path, "w")
+    fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        thread = _REAL_ENSURE_DUTIES_WAITER()
+        # Give the thread a moment to actually park on the blocking acquire;
+        # it must not have run the startup work while the rival holds it.
+        thread.join(timeout=0.2)
+        assert thread.is_alive()
+        assert started == []
+    finally:
+        fcntl.flock(rival, fcntl.LOCK_UN)
+        rival.close()
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert started == [True]
+
+
+def test_ensure_duties_waiter_does_not_restart_once_done(monkeypatch):
+    """A thread that finished its one-shot startup work — `is_alive()` is
+    already False by then — must not be mistaken for "never started" by a
+    later call. Before this, keying idempotence off `is_alive()` meant every
+    `/api/tasks*` request after the first one restarted the waiter and
+    re-ran `reconcile()`; keying it off `_duties_state` instead, `_DUTIES_DONE`
+    is terminal for the life of the process."""
+    from fused_render import project_queue, schedule
+
+    starts = []
+    reconciles = []
+    monkeypatch.setattr(schedule, "start", lambda: starts.append(True))
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+
+    class _Manager:
+        def reconcile(self):
+            reconciles.append(True)
+
+    qm.reset_for_tests(_Manager())
+    first = _REAL_ENSURE_DUTIES_WAITER()
+    first.join(timeout=5)
+    assert not first.is_alive()
+    assert starts == [True]
+    assert reconciles == [True]
+    assert qm._duties_state == qm._DUTIES_DONE
+
+    second = _REAL_ENSURE_DUTIES_WAITER()
+    assert second is first
+    assert starts == [True]
+    assert reconciles == [True]
+
+
+def test_ensure_duties_waiter_retries_with_backoff_after_a_failure(
+        monkeypatch):
+    """A raise out of `acquire_lease_blocking` (standing in for any failure
+    in the lease-acquire-then-schedule-start sequence) does not kill the
+    thread: it is logged and retried on a backoff, staying in
+    `_DUTIES_WAITING` the whole time, until it succeeds."""
+    from fused_render import project_queue, schedule
+
+    attempts = []
+
+    def flaky_acquire(name):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OSError("simulated lease failure")
+
+    monkeypatch.setattr(tasks_store, "acquire_lease_blocking", flaky_acquire)
+    monkeypatch.setattr(schedule, "start", lambda: None)
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+
+    slept = []
+    monkeypatch.setattr(qm.time, "sleep", lambda s: slept.append(s))
+
+    qm.reset_for_tests(None)
+    thread = _REAL_ENSURE_DUTIES_WAITER()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert len(attempts) == 3
+    assert slept == [qm._DUTIES_RETRY_MIN_S, qm._DUTIES_RETRY_MIN_S * 2]
+    assert qm._duties_state == qm._DUTIES_DONE
+
+
+# ------------------------------------------------ cross-process freshness
+
+
+def test_owner_sees_a_change_another_process_wrote(state):
+    """Two `QueueManager`s over the same state dir, standing in for a lean
+    `open` process and the `serve` process: a read-only call on one must see
+    what the other just wrote, with no transaction and no manual refresh on
+    the reader's side."""
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    assert a.owner(F1) is None
+
+    b.started(F1, "task-1", "run-1", "sess-1")
+    assert a.owner(F1)["task"] == "task-1"
+
+
+def test_is_forced_sees_a_mark_another_process_wrote(state):
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    assert a.is_forced("x") is False
+
+    b.mark_forced("x")
+    assert a.is_forced("x") is True
+    assert a.forced_names() == {"x"}
+
+
+def test_positions_and_place_see_a_line_another_process_wrote(state):
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    b.started(F1, "owner-1", "run-1", "sess-1")
+    b.enqueue(F1, "task-2", "e2")
+
+    assert a.positions()["task-2"]["key"] == F1
+    assert a.place("task-2")["position"] == 1
+
+
+def test_learn_forced_fast_path_sees_a_mark_another_process_wrote(state):
+    """`learn_forced`'s pre-check reads `forced` under the plain lock before
+    ever entering `_txn()`; it has to see a mark another process just wrote,
+    or it returns False on data that is already stale."""
+    world_a, world_b = World(), World()
+    a = qm.QueueManager(spawn=world_a.spawn, deliver=world_a.deliver,
+                        running=world_a.running, blocked=world_a.blocked,
+                        pending_due=world_a.pending_due, notify=world_a.notify,
+                        clock=world_a.clock)
+    b = qm.QueueManager(spawn=world_b.spawn, deliver=world_b.deliver,
+                        running=world_b.running, blocked=world_b.blocked,
+                        pending_due=world_b.pending_due, notify=world_b.notify,
+                        clock=world_b.clock)
+    b.mark_forced("sess-1")
+
+    assert a.learn_forced("sess-1", "run-1") is True
+    assert a.is_forced("run-1") is True
+
+
+# ------------------------------------------------------ atomic index writes
+
+
+def test_a_write_leaves_no_stray_temp_file_and_a_parseable_index(state):
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a", "e1")
+    m.enqueue(F1, "b", "e2")
+
+    names = os.listdir(str(state))
+    assert INDEX_PATH_NAME in names
+    assert not any(".tmp-" in name for name in names)
+    with open(os.path.join(str(state), INDEX_PATH_NAME), encoding="utf-8") as f:
+        json.load(f)  # does not raise: always a complete, valid document
+
+
+def test_write_locked_replaces_a_temp_file_in_the_same_directory(state, monkeypatch):
+    world = World()
+    m = world.manager()
+
+    calls = []
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        calls.append((src, dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy_replace)
+    m.enqueue(F1, "a", "e1")
+
+    # `enqueue` both decides (one write) and patches the owner once the
+    # injected spawn returns (`_flush`'s second write) — every one of them
+    # has to go through the same temp-file-then-replace mechanics.
+    assert calls
+    for src, dst in calls:
+        assert dst == os.path.join(str(state), INDEX_PATH_NAME)
+        assert src != dst
+        assert os.path.dirname(src) == os.path.dirname(dst)
+
+
+def test_write_locked_retries_os_replace_through_a_transient_permission_error(
+        state, monkeypatch):
+    """On Windows, `os.replace` can raise `PermissionError` while another
+    process still has the index open for reading — a brief window, not a
+    real failure. `_write_locked` retries a few times on a short backoff
+    instead of treating the very first `PermissionError` as "could not
+    write" (finding 5)."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")  # one real write, sets up state
+
+    real_replace = os.replace
+    calls = []
+
+    def flaky_replace(src, dst):
+        calls.append((src, dst))
+        if len(calls) < 3:
+            raise PermissionError("simulated rival holding it open")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    slept = []
+    monkeypatch.setattr(qm.time, "sleep", lambda s: slept.append(s))
+
+    m.mark_forced("z")  # the one write this test is actually about
+
+    assert len(calls) == 3
+    assert slept == [qm._REPLACE_RETRY_DELAY_S, qm._REPLACE_RETRY_DELAY_S]
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, encoding="utf-8") as f:
+        json.load(f)  # the retried write actually landed
+
+
+def test_write_locked_gives_up_after_the_retry_budget_and_keeps_in_memory_state(
+        state, monkeypatch):
+    """Once `_REPLACE_MAX_ATTEMPTS` is exhausted, a still-failing
+    `PermissionError` is swallowed the same way any other write failure is
+    — the in-memory index stays right, nothing crashes — but it is logged
+    at warning (not debug), since by then it's no longer a brief window."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    monkeypatch.setattr(
+        os, "replace",
+        lambda src, dst: (_ for _ in ()).throw(
+            PermissionError("simulated rival holding it open")))
+    monkeypatch.setattr(qm.time, "sleep", lambda s: None)
+
+    with mock.patch.object(qm.logger, "warning") as warning:
+        m.mark_forced("z")  # a transaction; must not raise
+    assert warning.called
+
+    # The in-memory state is still right even though nothing landed on disk.
+    assert owner_key(m) == "a"
+
+
+# --------------------------------------------------- corrupt index on disk
+
+
+def test_a_corrupt_index_file_does_not_wipe_in_memory_state(state):
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a", "e1")
+    assert owner_key(m) == "a"
+
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("{not valid json at all")
+
+    # A read-only call must not let the corrupt file erase what is already
+    # held in memory.
+    assert owner_key(m) == "a"
+
+
+def test_a_transaction_after_corruption_never_persists_an_empty_index(state):
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("{not valid json at all")
+
+    # A transaction still has to run and write SOMETHING back — but it must
+    # carry forward the in-memory state it already had, not the `{}` a
+    # corrupt read would otherwise have produced.
+    m.mark_forced("z")
+
+    with open(index_path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk["folders"][F1]["owner"]["task"] == "a"
+    assert on_disk["forced"] == ["z"]
+    assert owner_key(m) == "a"
+
+
+@pytest.mark.parametrize("top_level", [None, [], "a string", 5, True])
+def test_valid_json_that_is_not_an_object_is_treated_as_unreadable(state, top_level):
+    """`null`, `[]`, a bare string/number/bool are all valid JSON — `json.load`
+    raises nothing — but none of them is an index. Treating one as "empty" is
+    the exact bug (finding 10): the next transaction would persist `{}` over
+    whatever was really on disk, same as a corrupt file wiping it. It has to
+    be the SAME None-sentinel path a parse failure already takes, so an
+    in-memory owner survives it."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump(top_level, f)
+
+    # A read-only call must not let the non-object JSON erase what is
+    # already held in memory — exactly like a corrupt/unparseable file.
+    assert owner_key(m) == "a"
+
+    # And a transaction still has to carry the in-memory state forward
+    # rather than persist the `{}` a "non-object means empty" bug would
+    # have produced.
+    m.mark_forced("z")
+    with open(index_path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk["folders"][F1]["owner"]["task"] == "a"
+    assert on_disk["forced"] == ["z"]
+    assert owner_key(m) == "a"
+
+
+def test_load_stats_the_handle_it_actually_read_not_the_path_afterward(state):
+    """`_load()` has to record the stat of the BYTES it parsed, not whatever
+    happens to be at `path` by the time it gets around to calling `os.stat`.
+
+    A concurrent writer (another process's `os.replace`) can land a brand
+    new file at `path` in the gap between this process finishing its read
+    and it stat-ing the path — finding 3. If `_load` stats the path
+    afterward, `self._loaded_stat` ends up describing the NEW file while
+    `self._state` was built from the OLD one, and `_refresh_if_stale()`
+    (which compares a fresh `os.stat()` against `self._loaded_stat`) sees
+    them match and never reloads — the new content is silently stuck
+    unread until something else happens to touch `_state`.
+
+    Fixed, `_load` stats the open file descriptor it actually read
+    (`os.fstat`) before anything else can replace `path` out from under
+    it, so the recorded stat always describes the bytes `self._state` was
+    built from, and a later `os.stat(path)` genuinely differs once another
+    writer has landed."""
+    world = idle_world()
+    m = world.manager()
+    index_path = os.path.join(str(state), INDEX_PATH_NAME)
+
+    # First write: forces m to load real content off disk once.
+    m.started(F1, "a", "run-a", "sess-a")
+    assert owner_key(m) == "a"
+
+    # Simulate a concurrent `os.replace` landing a second folder's index
+    # the instant after `_load`'s `open(...).read()` returns, by swapping
+    # `json.load` for a wrapper that does the replace before returning.
+    real_json_load = qm.json.load
+    replaced = {"done": False}
+
+    def racing_load(f):
+        raw = real_json_load(f)
+        if not replaced["done"]:
+            replaced["done"] = True
+            tmp = index_path + ".racer"
+            with open(tmp, "w", encoding="utf-8") as g:
+                json.dump({"folders": {F2: {"owner": {"task": "b"},
+                                             "line": [], "blocked": []}},
+                           "answers": {}, "forced": []}, g)
+            os.replace(tmp, index_path)
+        return raw
+
+    import unittest.mock as mock
+    with mock.patch.object(qm.json, "load", side_effect=racing_load):
+        loaded = m._load()
+    assert loaded is not None
+
+    # The stat `_load` recorded must describe the file it actually read
+    # (the ORIGINAL content, owner "a"), not the racer's replacement that
+    # landed mid-call — so comparing it against the CURRENT on-disk stat
+    # (the racer's file) must come up different, which is what lets
+    # `_refresh_if_stale` notice and reload.
+    current = qm._stat_tuple(index_path)
+    assert m._loaded_stat != current

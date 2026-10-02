@@ -344,7 +344,26 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
     return lifespan
 
 
-def create_app(start_dir: str) -> FastAPI:
+def create_app(start_dir: str, lean: bool = False) -> FastAPI:
+    """Build the FastAPI app. ``lean=True`` (``fused-render open``) wires every
+    router so requests still work, but skips every BACKGROUND and WARM-UP
+    side effect below (and the two started directly in this body: mount
+    automount + health monitor) — nothing here runs beyond what a single
+    render/runPython/AI request needs. The rule `lean` follows throughout:
+    anything a request needs in order to be CORRECT is always set up;
+    anything that only makes a later request faster, or keeps something
+    running/current in the background with no request asking for it, is
+    skipped. See `on_startup`/`on_startup_always` just below for the two
+    registration points that split it.
+
+    Shutdown cleanup is gated the same way, not by `lean`: an engine, a
+    local AI worker, a terminal session, a capture and the pooled fs/raw
+    client can all still start ON DEMAND from an ordinary request in a lean
+    app — the pooled client always does, since it is `on_startup_always` —
+    even when their eager `@on_startup` warm-up was skipped, so their
+    `@on_shutdown_always` cleanup always runs too, lean or not, and is a
+    no-op when nothing was started. See `on_shutdown_always` just below.
+    """
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
     # `=fused` when the package is missing, and logs the choice. Dispatch
@@ -371,12 +390,50 @@ def create_app(start_dir: str) -> FastAPI:
     startup_handlers: list = []
     shutdown_handlers: list = []
 
+    # The one switch `lean` acts through: every `@on_startup`/`@on_shutdown`
+    # below is still DEFINED (so the decorated function stays a normal name
+    # in this scope, readable and testable), just never collected — so
+    # `_lifespan` iterates an empty list and runs nothing. Registration
+    # points, not sprinkled `if lean` checks inside 19 handler bodies.
     def on_startup(func):
-        startup_handlers.append(func)
+        if not lean:
+            startup_handlers.append(func)
         return func
 
     def on_shutdown(func):
+        if not lean:
+            shutdown_handlers.append(func)
+        return func
+
+    # `lean` only ever skips STARTUP work. A handful of things below start on
+    # demand from an ordinary request — regardless of `lean` — rather than
+    # from an `@on_startup` hook: an engine (runPython/render spawn a
+    # template daemon or a background-app child), a local AI worker
+    # (`/api/ai_runtime`'s load route), a status-bar terminal session, a
+    # screen/mic capture, and the pooled fs/raw HTTP client. `lean` skipping
+    # their STARTUP hooks only ever skips an eager warm-up — none of them are
+    # the only way to start the thing they clean up. Their `@on_shutdown`
+    # cleanup has to run in every app, lean included, or a lean server that
+    # ever ran Python/AI leaves child processes (an engine, a local model
+    # worker, a shell, a capture's recorder) behind when it exits. Each of
+    # these cleanup functions is already a safe no-op when nothing was
+    # started (`tests/test_app_lifespan.py` covers this for lean).
+    def on_shutdown_always(func):
         shutdown_handlers.append(func)
+        return func
+
+    # The other half of that same rule: `lean` skips WARM-UP, never anything a
+    # request needs to be CORRECT rather than merely fast. `open_pooled_client`
+    # just builds an `httpx.AsyncClient` — no network I/O, no meaningful cost —
+    # and without it a lean app's bearer-mount/`?pooled=1` reads raise
+    # `AttributeError` on `app.state.pooled_client` instead of serving the
+    # file (`tests/test_app_lifespan.py` covers this). So it is not optional
+    # warm-up the way `_startup_warm_engine`/`_startup_prewarm_ai` are —
+    # skipping it would make a request behave differently, not just slower —
+    # and it is registered unconditionally, pairing with the already-always
+    # `_shutdown_pooled_client`.
+    def on_startup_always(func):
+        startup_handlers.append(func)
         return func
 
     app = FastAPI(title="fused-render",
@@ -395,11 +452,11 @@ def create_app(start_dir: str) -> FastAPI:
     # unhandled-exception/access-log middleware — bodies live in
     # _server_common.py / _server_ai.py; only the app-bound registration
     # stays here (an on_event hook needs the actual `app` it's attached to).
-    @on_startup
+    @on_startup_always
     async def _startup_pooled_client():
         await open_pooled_client(app)
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_pooled_client():
         await close_pooled_client(app)
 
@@ -474,56 +531,46 @@ def create_app(start_dir: str) -> FastAPI:
     # and which of them happens to be first must not decide whether this process
     # has one at all. `schedule._qm()` still self-wires as a FALLBACK (and the
     # scheduler's tests rely on that path); this is the rule, said once, at the
-    # moment the process is brought up.
+    # moment the process is brought up. Wiring runs in EVERY process — it only
+    # registers how to build this process's own manager, nothing machine-wide.
     #
-    # Then, and ONLY with the flag on, build the manager and reconcile once so a
-    # restart resumes every folder's line immediately rather than on whatever
-    # event happens to arrive first. That is deliberate work: building reconciles
-    # and reconciling PUMPS, which SPAWNS (see `queue_manager.peek`) — which is
-    # exactly why it is a startup event and not the create_app body (tests build
-    # apps without lifespan and must never start a turn), and why it runs on a
-    # daemon thread like `_startup_tasks_warm`: resuming a line can spawn several
-    # Claude processes and must not hold up the first page paint.
+    # Then start this process's machine-duties waiter (B2): a dedicated
+    # daemon thread that blocks on the machine-duties lease until it holds
+    # it, then runs the scheduler (`schedule.start()`, which also SENDS
+    # whatever is already overdue on its first tick) and a reconcile resume
+    # so a restart picks every folder's line back up immediately rather than
+    # on whatever event happens to arrive first.
+    # `queue_manager.ensure_duties_waiter()` starts that thread idempotently
+    # — `serve` and every lean process both call it (here, and again from
+    # `routers/tasks.py`'s `_ensure_duties` on a lean process's first
+    # `/api/tasks*` request), so every process that can ever run ends up
+    # with a waiter parked and ready. Whichever waiter's lease-acquire
+    # unblocks first runs the startup work; if that process later exits or
+    # crashes, the OS drops its flock with it and another already-parked
+    # waiter wakes and takes over — no separate retry mechanism anywhere.
+    #
+    # A startup event and not the create_app body for the usual reason — tests
+    # build apps without running lifespan, and claiming the lease or reconciling
+    # must never happen just because a test constructed an app (reconciling
+    # PUMPS, which SPAWNS; see `queue_manager.peek`). Resuming runs on a daemon
+    # thread like `_startup_tasks_warm`: it can spawn several Claude processes
+    # and must not hold up the first page paint.
     @on_startup
     async def _startup_queue_manager():
-        from fused_render import project_queue, queue_manager
+        from fused_render import queue_manager
         from fused_render.server.routers import tasks as tasks_router_mod
 
         tasks_router_mod._wire_manager()
-        if not project_queue.enabled():
-            return
-
-        def resume():
-            try:
-                queue_manager.get().reconcile()
-            except Exception:  # noqa: BLE001 — a queue that cannot resume must
-                # not take the server down with it; the next tick tries again.
-                logger.exception("could not resume the project queue at startup")
-
-        thread = threading.Thread(target=resume, daemon=True,
-                                  name="fused-queue-resume")
-        thread.start()
-        # For tests, the same seam `_startup_tasks_warm` leaves.
-        app.state.queue_resume = thread
-
-    # Scheduled Claude messages (schedule.py). A startup event and emphatically
-    # NOT the create_app body: this loop SENDS things, and its first tick fires
-    # everything already overdue. Tests build the app without running lifespan,
-    # so under the create_app body every test that constructs an app would spawn
-    # whatever the developer's own store happened to hold.
-    #
-    # The first tick is also the catch-up pass — it is what sends a message that
-    # came due while the app was closed — so nothing here waits for a due time
-    # that has already gone by.
-    @on_startup
-    async def _startup_schedule():
-        from fused_render import schedule
-
-        schedule.start()
+        # For tests, the same seam `_startup_tasks_warm` leaves. Always a
+        # `Thread`, never `None` — it may still be blocked on the lease when
+        # this returns, so a test joining it needs a timeout; a plain
+        # `.join()` can legitimately hang forever if another live process
+        # still holds the lease.
+        app.state.queue_resume = queue_manager.ensure_duties_waiter()
 
     # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
     # Claude Code's live-session registry, prompt history and live transcripts.
-    # A startup event for the same reason as `_startup_schedule`: it is a
+    # A startup event for the same reason as `_startup_queue_manager`: it is a
     # thread for the life of the process that reads the user's real ~/.claude,
     # and tests build apps without lifespan.
     @on_startup
@@ -549,46 +596,41 @@ def create_app(start_dir: str) -> FastAPI:
         # before they count listings of their own.
         app.state.tasks_warm = thread
 
-    @on_shutdown
+    # `_AI_SESSION` is constructed at import time and can be started by the
+    # first `/api/ai` request even under `lean` (its prewarm startup hook is
+    # lean-skipped, but the session object itself is not gated on it) — so
+    # this cleanup has to run regardless of `lean` too. `shutdown_ai_session`
+    # is a no-op when nothing was ever spawned.
+    @on_shutdown_always
     async def _startup_shutdown_ai():
         await shutdown_ai_session(app)
 
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
     # nothing has used it for the configured window (default 5 min, 0 = off).
-    # A startup event and deliberately not the create_app body, for the same
-    # reason as `_startup_schedule` above: tests build apps with no lifespan,
-    # and this starts a thread that lives for the process — building one per
-    # test-constructed app would leak a thread per test.
-    @on_startup
-    async def _startup_ai_idle_reaper():
-        from fused_render.ai import supervisor
-
-        supervisor.start_reaper()
+    # No startup hook for it — `supervisor._start_resident` calls
+    # `start_reaper()` itself the moment a worker actually becomes resident,
+    # idempotently, which starts it in `lean` mode too (where this hook would
+    # have been skipped) and never starts it at all on a process that never
+    # loads a local model.
 
     # GPU/VRAM detection (SPEC AI-18, D519): `hw_detect.detect_hardware` is a
     # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),
     # 50-500ms cold — the same cost `fit._wired_limit_mb` refuses on the
     # per-request verdict path, which is why `fit.py`/`speed.py` only ever
-    # read `hw_detect.cached_hardware()`. Without this hook nothing ever
-    # calls the probe, and both modules take their no-GPU-known branch
-    # forever (code review, 2026-08-27) — a background daemon thread, same
-    # shape as the idle reaper above, not the create_app body: it fires one
-    # probe immediately and then re-probes every few hours for the rest of
-    # the process's life.
-    @on_startup
-    async def _startup_ai_hardware_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hardware_refresh()
+    # read `hw_detect.cached_hardware()`. No startup hook for it — like the
+    # idle reaper above, `hw_detect.cached_hardware()` itself calls
+    # `supervisor.start_hardware_refresh()` the moment ANY reader (a route
+    # handler, or `_child_env`'s budget computation at worker-spawn time)
+    # first hits a cold cache, idempotently, which starts it in `lean` mode
+    # too (where a startup hook would have been skipped) and never starts
+    # it at all on a process that never touches an AI route.
 
     # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
     # `ai_runtime._accepts_image`/`_capability_tags` used to call
     # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
     # 8-second timeout — straight from `describe_catalog`, a route the AI
     # Models picker polls. They now read `hub_metadata.cached()` only (a
-    # plain disk read), and this background thread is the sole writer,
-    # mirroring the hardware-refresh hook immediately above for the
-    # identical reason.
+    # plain disk read), and this background thread is the sole writer.
     @on_startup
     async def _startup_ai_hub_metadata_refresh():
         from fused_render.ai import supervisor
@@ -609,17 +651,24 @@ def create_app(start_dir: str) -> FastAPI:
     # event at all — a stale file there is exactly the case `resolve_origin()`
     # is required to connect-probe before trusting, so it is a correctness gap
     # this side does not need to close.
+    #
+    # Kept behind `on_shutdown` (skipped in `lean`), not `on_shutdown_always`:
+    # a lean `open` server never calls `write_server_json` in the first
+    # place, so it has nothing of its own to undo — and `remove_server_json`
+    # is pid-checked (see its docstring) so even calling it here unconditionally
+    # could only ever remove a file THIS process wrote, never the desktop
+    # server's.
     @on_shutdown
     async def _shutdown_server_json():
         remove_server_json()
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_captures():
         from fused_render import capture
 
         capture.stop_all()
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_ai_workers():
         from fused_render.ai import supervisor
 
@@ -627,7 +676,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     # Every managed engine dies with the app: template daemons and
     # background/daemon children alike (stop_all clears both).
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_engines():
         from fused_render.server import engine_host
 
@@ -733,13 +782,20 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.shell import onboarding as shell_onboarding
 
     app.include_router(shell_onboarding.router)
-    shell_mounts.startup()
-    # Background mount-health monitor (shell/mounts.py): polls every mount on a
-    # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect
-    # episode, and records an event log the Mounts panel polls. Started AFTER
-    # startup() so the automount thread owns the initial attach — the monitor
-    # only acts on a later healthy->disconnected transition.
-    shell_mounts.start_health_monitor()
+    # Automount + its health monitor are the two side effects this body starts
+    # directly rather than through `@on_startup` above, so `lean` has to gate
+    # them here too — a lean server serves the mounts router (requests still
+    # work against whatever a mount already has attached) but reconnects none
+    # and polls none.
+    if not lean:
+        shell_mounts.startup()
+        # Background mount-health monitor (shell/mounts.py): polls every mount
+        # on a timer, auto-reconnects a wedged/disconnected NFS mount ONCE per
+        # disconnect episode, and records an event log the Mounts panel polls.
+        # Started AFTER startup() so the automount thread owns the initial
+        # attach — the monitor only acts on a later healthy->disconnected
+        # transition.
+        shell_mounts.start_health_monitor()
 
     # Mount-health telemetry (api_mounts_health), /api/config, and
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
@@ -755,7 +811,7 @@ def create_app(start_dir: str) -> FastAPI:
     # shell running.
     app.include_router(terminal_router)
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_terminal_sessions():
         from fused_render import pty_session as _pty_session
 
@@ -931,9 +987,13 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_warm_share_rules():
         from fused_render import share_file
 
-        thread = threading.Thread(target=share_file.warm_rules_cache, daemon=True,
-                                  name="fused-share-file-rules-warm")
-        thread.start()
+        # `share_file._kick_warm_once` is the same guarded entry point a
+        # lean app's first `_cached_rules()` read falls back to — sharing it
+        # means the two can never both spawn the shim subprocess for the
+        # same process. `None` back means either a lazy read already won
+        # the race (a startup hook running behind the very first request it
+        # warms for) or nobody is signed in yet; nothing to join either way.
+        thread = share_file._kick_warm_once()
         # For tests, the same seam `_startup_tasks_warm`/`_startup_queue_manager`
         # leave: join this instead of racing the background fetch.
         app.state.share_rules_warm = thread

@@ -1028,7 +1028,10 @@ def _catalog_with_downloads() -> list[dict]:
     # this is a per-request reading, not a process-wide cache: `hw_detect.
     # start_hardware_refresh()` rewrites that file on a 6-hour tick (an
     # eGPU plugged in mid-session), and a permanently memoized reading
-    # would never see that.
+    # would never see that. `cached_hardware()` itself kicks the background
+    # refresh awake on a cache miss, so a lean process (which skips
+    # `server/app.py`'s `@on_startup` hook) still gets the thread started
+    # by this very read.
     hardware = hw_detect.cached_hardware()
     for row in rows:
         curated = [

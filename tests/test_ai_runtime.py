@@ -49,6 +49,14 @@ _IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 #: about what it DOES has no other way back to it.
 _REAL_ENSURE_VENV = supervisor._ensure_venv
 
+#: The real `start_reaper`, captured at import — before the autouse
+#: `_no_ai_idle_reaper_thread` fixture (conftest.py) replaces it with a no-op
+#: for every test in this module. The one test here that needs the REAL
+#: idempotency guard (the concurrent-first-call race) grabs it from here
+#: rather than from `supervisor.start_reaper` at test-body time, which would
+#: already be the patched no-op.
+_REAL_START_REAPER = supervisor.start_reaper
+
 # A worker that loads instantly, answers /health, streams two chunks and quits.
 # Deliberately stdlib-only and tiny: it stands in for mlx_text/worker.py's
 # CONTRACT, not its behaviour.
@@ -542,6 +550,22 @@ def _clean_jobs():
     jobs.reset()
     yield
     jobs.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_hardware_cache_wait(monkeypatch):
+    """`_child_env`'s budget computation waits up to `hw_detect.
+    _PROBE_TIMEOUT_S` for a cold hardware cache to land before giving up
+    (`supervisor._await_hardware_cache`) — covered directly in
+    `tests/test_ai_supervisor_hardware_refresh.py`. Every `_child_env` call
+    in THIS file is testing something else entirely, and this file's
+    isolated `FUSED_RENDER_HOME` means the cache is always cold with no
+    real probe thread ever landing one, so left unpatched every one of
+    those tests would burn the full bound. Reduced to the single immediate
+    read `_await_hardware_cache` already does on a warm cache."""
+    from fused_render.ai import hw_detect
+
+    monkeypatch.setattr(supervisor, "_await_hardware_cache", hw_detect.cached_hardware)
 
 
 @pytest.fixture()
@@ -3667,6 +3691,74 @@ def test_cancel_check_is_not_tied_to_the_tightened_health_poll_cadence(
     # ~2-3 calls at the intended 0.5s cadence over a ~1s load; tying it to the
     # tightened 0.1s health-poll cadence would have made it ~10.
     assert calls["n"] <= 5, f"_cancel_requested called {calls['n']} times over a ~1s load"
+
+
+def test_a_resident_load_starts_the_idle_reaper(fake_runner, monkeypatch):
+    # The reaper is normally only started by the app's `@on_startup` hook,
+    # which lean mode skips — so a lean process that loads a local model on
+    # demand must start it itself, or the model never idles out. `load` must
+    # reach the real `start_reaper`, not the no-op `tests/conftest.py`
+    # installs for every other test in this module.
+    calls = []
+    monkeypatch.setattr(supervisor, "start_reaper", lambda: calls.append(1))
+    supervisor.load("org/reaped", registry.TEXT_GENERATION)
+    assert calls, "_start_resident did not call supervisor.start_reaper()"
+
+
+def test_concurrent_first_calls_to_start_reaper_start_exactly_one_thread(monkeypatch):
+    """`start_reaper()` is reached from `_start_resident`, which plenty of
+    code paths can hit at once in a real process (a burst of concurrent
+    loads, each finishing resident-load `_start_resident` around the same
+    moment). Two callers racing the `is_alive()` check before either has
+    created a thread must not both create and start one — a sequential
+    idempotency check never exercises that window, so this pins threads at a
+    `Barrier` so every caller reaches `start_reaper()` at the same instant.
+
+    Counts actual `threading.Thread(..., name="ai-idle-reaper")`
+    instantiations (not just the surviving `_reaper_starter` handle, which
+    would only show whichever thread a race assigned LAST, hiding an earlier
+    one that was also created and started). The reaper's `run` body is never
+    exercised — the thread this test spawns is joined before returning so
+    nothing outlives the test."""
+    supervisor._reaper_starter.reset_for_tests()
+    real_thread_cls = threading.Thread
+    created = []
+
+    class CountingThread(real_thread_cls):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            if self.name == "ai-idle-reaper":
+                created.append(self)
+
+    monkeypatch.setattr(supervisor.threading, "Thread", CountingThread)
+
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def call_start_reaper():
+        barrier.wait(timeout=5)
+        _REAL_START_REAPER()
+
+    callers = [real_thread_cls(target=call_start_reaper) for _ in range(n)]
+    for t in callers:
+        t.start()
+    for t in callers:
+        t.join(timeout=5)
+        assert not t.is_alive(), "a start_reaper() caller never returned"
+
+    assert len(created) == 1, (
+        f"expected exactly one reaper thread to be created, got {len(created)}")
+    reaper_thread = created[0]
+    assert supervisor._reaper_starter._thread is reaper_thread
+    try:
+        assert reaper_thread.is_alive()
+    finally:
+        # The real `run` sleeps _REAPER_TICK_S (30s) between ticks and never
+        # exits; it's a daemon so there is nothing to join. Reset the
+        # starter so later tests in this file see a clean slate, matching
+        # how every other test here gets `start_reaper` no-op'd by the
+        # autouse conftest fixture.
+        supervisor._reaper_starter.reset_for_tests()
 
 
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):
@@ -11751,16 +11843,35 @@ def test_a_worker_with_no_model_gets_no_permission(monkeypatch, tmp_path):
 
 def test_child_env_carries_the_computed_budget(monkeypatch, tmp_path):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 12_345_678_901.0)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda hardware=None: 12_345_678_901.0)
     env = supervisor._child_env("t")
     assert env["FUSED_AI_MEMORY_BUDGET_BYTES"] == "12345678901"
 
 
 def test_child_env_omits_the_budget_when_it_cannot_be_computed(monkeypatch, tmp_path):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda hardware=None: None)
     env = supervisor._child_env("t")
     assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
+
+
+def test_child_env_threads_the_awaited_hardware_reading_into_the_budget_call(
+        monkeypatch, tmp_path):
+    """`_child_env` must not let `fit.available_budget_bytes()` re-read
+    `hw_detect.cached_hardware()` itself — the whole point of
+    `_await_hardware_cache()` (SPEC AI-18's bounded spawn-time wait) is to
+    give the budget computation a reading that already waited for an
+    in-flight probe, so the two must be the SAME object, not two
+    independent reads of a cache that could have changed between them."""
+    sentinel = object()
+    monkeypatch.setattr(supervisor, "_await_hardware_cache", lambda: sentinel)
+    received = []
+    monkeypatch.setattr(
+        fit, "available_budget_bytes",
+        lambda hardware=None: (received.append(hardware), 1.0)[1])
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    supervisor._child_env("t")
+    assert received == [sentinel]
 
 
 def test_an_inherited_budget_is_stripped_rather_than_passed_on(monkeypatch, tmp_path):
@@ -11770,7 +11881,7 @@ def test_an_inherited_budget_is_stripped_rather_than_passed_on(monkeypatch, tmp_
     produce it fresh on every spawn."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", "999")
-    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda hardware=None: None)
     env = supervisor._child_env("t")
     assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
 

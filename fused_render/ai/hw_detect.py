@@ -62,6 +62,7 @@ up to read it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import re
@@ -73,6 +74,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fused_render.shell import storage
+
+logger = logging.getLogger(__name__)
 
 #: A cold vendor-tool spawn is slow (see module docstring) — this caps how
 #: long ANY one of them is allowed to hang before it is treated as absent,
@@ -745,22 +748,53 @@ def _from_json(data: dict) -> HardwareInfo | None:
                         bandwidth_gb_s=bandwidth, detected_at=float(detected_at))
 
 
+def _probe_once_if_missing() -> None:
+    """The cache-miss seam `cached_hardware()` calls so SOMETHING kicks the
+    background probe awake instead of every reader silently taking the
+    no-GPU-known branch forever — the same gap route-level callers used to
+    paper over by calling `supervisor.start_hardware_refresh()` themselves
+    right before a `cached_hardware()` read, which missed any caller
+    reaching this module some other way (worker spawn, a lean process's
+    first request). This is that call made once, from the read itself.
+
+    Deferred import: `supervisor` imports `hw_detect`/`fit`, so importing it
+    at module level here would be a cycle. `start_hardware_refresh()` is
+    itself idempotent (a module-level thread handle), so calling it on
+    every miss costs nothing once the thread is already running, and it
+    only ever STARTS the background thread — it never runs the probe on
+    this (the caller's) thread — so `cached_hardware()` stays a pure,
+    synchronous read as far as its caller is concerned."""
+    try:
+        from fused_render.ai import supervisor
+
+        supervisor.start_hardware_refresh()
+    except Exception:  # noqa: BLE001 - a cache read must never raise
+        logger.exception("failed to start background hardware refresh")
+
+
 def cached_hardware() -> HardwareInfo | None:
     """The last `refresh_hardware()`'s result, straight off disk — a plain
-    `storage.read_json` and nothing else, so this is cheap enough to call on
-    every verdict/estimate. None before anything has ever been detected, or
-    when the file is corrupt/unreadable — the same "no measurement yet"
-    contract `footprints.read` and `bench_store.read` already give their own
-    callers.
+    `storage.read_json`, cheap enough to call on every verdict/estimate.
+    None when the cache has never been written, or is corrupt/unreadable —
+    the same "no measurement yet" contract `footprints.read` and
+    `bench_store.read` already give their own callers.
+
+    A miss also kicks the background hardware-refresh thread awake
+    (`_probe_once_if_missing`) so the cache stops being permanently cold —
+    this function still never runs the probe itself, only starts the
+    background one, so it keeps its synchronous, side-effect-free-to-the-
+    caller contract; the return value is unaffected and still answers
+    `None` for THIS call.
 
     **This is the ONLY function in this module `fit.py` and `benchmark.py`
     may call.** `detect_hardware`/`refresh_hardware` spawn subprocesses; see
     the module docstring.
     """
     data = storage.read_json(_path())
-    if not isinstance(data, dict):
-        return None
-    return _from_json(data)
+    info = _from_json(data) if isinstance(data, dict) else None
+    if info is None:
+        _probe_once_if_missing()
+    return info
 
 
 def refresh_hardware(ram_gb: float | None = None) -> HardwareInfo:

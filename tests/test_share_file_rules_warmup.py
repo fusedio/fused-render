@@ -17,9 +17,24 @@ function, or never actually persisted what the shim returned, this fails.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import fused_render.share_app as share_app_mod
+import fused_render.share_file as share_file_mod
+import fused_render.share_file_rules as share_file_rules_mod
 from fused_render.server import create_app
+
+
+def _isolate_state_dir(tmp_path, monkeypatch):
+    """`share_file_rules.STATE_DIR` (unlike `share_app.STATE_DIR`) is read
+    from `FUSED_RENDER_HOME` once at import time, not re-read per call — so
+    `monkeypatch.setenv("FUSED_RENDER_HOME", ...)` alone does not stop
+    `_write_cache`/`_read_cache` from hitting the REAL `~/.fused-render`
+    (this is a pre-existing gap, not something this test file's env-var
+    patching alone can close). Every test here that actually warms the
+    cache needs this patched too, or it pollutes — and reads stale state
+    left behind by — the machine's real share-rules cache file."""
+    monkeypatch.setattr(share_file_rules_mod, "STATE_DIR", str(tmp_path / "home"))
 
 
 def _find_handler(app, name):
@@ -39,10 +54,15 @@ def _sign_in(tmp_path, monkeypatch):
 def _run_warmup(app):
     """Invoke the real registered handler, then join the daemon thread it
     starts (the seam `app.state.share_rules_warm` leaves for tests) so the
-    background fetch has actually finished before we assert anything."""
+    background fetch has actually finished before we assert anything.
+    `None` is a legitimate result now too — nobody signed in, so
+    `_kick_warm_once` never spawned anything — and there is nothing to join
+    in that case."""
     handler = _find_handler(app, "_startup_warm_share_rules")
     asyncio.run(handler())
     thread = app.state.share_rules_warm
+    if thread is None:
+        return
     thread.join(timeout=5)
     assert not thread.is_alive(), "warm_rules_cache did not finish in time"
 
@@ -51,6 +71,7 @@ def test_startup_warms_the_rule_cache_so_a_markdown_file_becomes_shareable(
         tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    _isolate_state_dir(tmp_path, monkeypatch)
     _sign_in(tmp_path, monkeypatch)
 
     # The stubbed shim: what a real `{"action": "rules"}` call would print,
@@ -74,10 +95,17 @@ def test_startup_warms_the_rule_cache_so_a_markdown_file_becomes_shareable(
     path.write_text("# hello\n")
 
     # Before the startup handler runs, the cache is genuinely empty on disk
-    # — this reproduces the confirmed-live bug exactly.
+    # — this reproduces the confirmed-live bug exactly. `_cached_rules` now
+    # ALSO kicks a lazy background warm the first time it sees an empty
+    # cache (see share_file.py) — pin that off for this one read with the
+    # same guard the eager handler uses, so this test proves the EAGER
+    # handler warms the cache, undisturbed by the lazy fallback racing it
+    # (both would spawn instantly against this stubbed, in-process shim).
+    monkeypatch.setattr(share_file_mod, "_warm_kicked", True)
     before = client.get("/api/share/file/status", params={"path": str(path)}).json()
     assert before["can_share"] is False
     assert before["viewer"] is None
+    monkeypatch.setattr(share_file_mod, "_warm_kicked", False)
 
     _run_warmup(app)
 
@@ -102,6 +130,7 @@ def test_warmup_is_a_no_op_when_not_signed_in(tmp_path, monkeypatch):
     `.fused` rule only, same as before this fix."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    _isolate_state_dir(tmp_path, monkeypatch)
     monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(tmp_path / "no-credentials"))
 
     called = []
@@ -111,3 +140,154 @@ def test_warmup_is_a_no_op_when_not_signed_in(tmp_path, monkeypatch):
     app = create_app(start_dir=str(tmp_path))
     _run_warmup(app)
     assert called == []
+
+
+def test_lean_app_with_no_prior_full_server_run_shares_a_markdown_file(
+        tmp_path, monkeypatch):
+    """A lean server (`fused-render open`) never runs `_startup_warm_share_
+    rules` — this is exactly "a machine that has never run a full server"
+    (the coordinator's own phrasing): the on-disk cache is genuinely empty,
+    not just unread. `share_file._cached_rules` now kicks a background warm
+    the first time it sees that, so sharing still ends up working rather
+    than staying stuck on the built-in `.fused` rule forever, as it did
+    before that lazy-warm fix."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    _isolate_state_dir(tmp_path, monkeypatch)
+    _sign_in(tmp_path, monkeypatch)
+
+    def fake_run_shim(request, timeout):
+        assert request["action"] == "rules"
+        return {"rules": [
+            {"name": "Markdown_File", "token": "UDF_Markdown_File",
+             "extensions": ["md"], "file_name": None, "regex": None, "order": 1},
+        ]}, None
+
+    monkeypatch.setattr(share_app_mod, "_run_shim", fake_run_shim)
+
+    app = create_app(start_dir=str(tmp_path), lean=True)
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        path = tmp_path / "README.md"
+        path.write_text("# hello\n")
+
+        # First read: the cache is empty (fresh state dir, no prior full
+        # server run) — served from the built-in rules alone for THIS call,
+        # but it also kicks the lazy background warm. Whether that thread
+        # finishes before this very first response comes back is a race,
+        # not a contract (this stubbed, in-process shim is fast enough that
+        # it sometimes does) — so poll from the start rather than asserting
+        # a synchronous "before" state. What this test actually proves is
+        # the eventual state: a state dir that never ran a full server still
+        # ends up shareable.
+        deadline = time.monotonic() + 5.0
+        after = client.get("/api/share/file/status", params={"path": str(path)}).json()
+        while time.monotonic() < deadline and not after["can_share"]:
+            time.sleep(0.05)
+            after = client.get("/api/share/file/status", params={"path": str(path)}).json()
+
+    assert after["can_share"] is True
+    assert after["refusal"] is None
+    assert after["viewer"] == "Markdown_File"
+
+
+def test_warmup_retries_after_a_signed_out_read_and_then_signing_in(tmp_path, monkeypatch):
+    """Bugbot finding: the lazy kick in `_cached_rules()` must not be a true
+    one-shot across a sign-in. Before the fix, a reader's very first
+    empty-cache read — while signed out — set `_warm_kicked` even though
+    `warm_rules_cache` immediately no-opped on `_logged_in()`, so no read
+    for the rest of the process's life, even long after the user signed in,
+    ever tried to build the real rule table again. Drives this end to end
+    through the real `/api/share/file/status` route, same as the sibling
+    lean/no-prior-server test above, rather than calling `_kick_warm_once`
+    directly."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    _isolate_state_dir(tmp_path, monkeypatch)
+
+    creds = tmp_path / "credentials"
+    # Signed OUT to start: the credentials file does not exist yet.
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(creds))
+
+    called = []
+
+    def fake_run_shim(request, timeout):
+        called.append(1)
+        assert request["action"] == "rules"
+        return {"rules": [
+            {"name": "Markdown_File", "token": "UDF_Markdown_File",
+             "extensions": ["md"], "file_name": None, "regex": None, "order": 1},
+        ]}, None
+
+    monkeypatch.setattr(share_app_mod, "_run_shim", fake_run_shim)
+
+    app = create_app(start_dir=str(tmp_path), lean=True)
+    from fastapi.testclient import TestClient
+
+    path = tmp_path / "README.md"
+    path.write_text("# hello\n")
+
+    with TestClient(app) as client:
+        # First read, signed out: the lazy kick sees nobody signed in and
+        # must not spend the guard — no shim call, cache stays empty (only
+        # the built-in rule resolves).
+        before = client.get("/api/share/file/status", params={"path": str(path)}).json()
+        assert before["can_share"] is False
+        assert called == [], "a signed-out read must not touch the shim at all"
+
+        # Sign in, THEN read again — this is the read that must actually
+        # kick a real warm, proving the earlier signed-out read never spent
+        # the one-shot guard.
+        creds.write_text("{}")
+
+        deadline = time.monotonic() + 5.0
+        after = client.get("/api/share/file/status", params={"path": str(path)}).json()
+        while time.monotonic() < deadline and not after["can_share"]:
+            time.sleep(0.05)
+            after = client.get("/api/share/file/status", params={"path": str(path)}).json()
+
+    assert called, "signing in never triggered a retry of the rules warm"
+    assert after["can_share"] is True
+    assert after["refusal"] is None
+    assert after["viewer"] == "Markdown_File"
+
+
+def test_warmup_retries_after_the_warm_itself_raises(tmp_path, monkeypatch):
+    """Bugbot finding: `_run_warm_and_untrack` only cleared `_warm_kicked`
+    when `warm_rules_cache` returned `False` — an exception out of it (e.g.
+    `share_file_rules._write_cache` raising `OSError` on a full disk or an
+    unwritable state dir) skipped that `if not wrote` line entirely, so the
+    guard stuck `True` for the rest of the process and no later empty-cache
+    read ever retried. Drives `_kick_warm_once` directly (rather than
+    through a route) so the background thread's exception is deterministic
+    and this test doesn't depend on hitting the real filesystem to trigger
+    an `OSError`."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    _isolate_state_dir(tmp_path, monkeypatch)
+    _sign_in(tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(share_file_mod, "warm_rules_cache", boom)
+
+    thread = share_file_mod._kick_warm_once(name="test-boom")
+    assert thread is not None, "signed in with an empty guard should have kicked a thread"
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    assert share_file_mod._warm_kicked is False, (
+        "an exception out of warm_rules_cache must still release the guard")
+
+    # And the release actually enables a retry, not just the internal flag:
+    # a second kick (past the backoff, forced open here since the test
+    # doesn't want to sleep 5s) must be allowed to fire again.
+    monkeypatch.setattr(share_file_mod, "_warm_last_attempt", 0.0)
+    called = []
+    monkeypatch.setattr(share_file_mod, "warm_rules_cache", lambda: called.append(1) or True)
+    thread2 = share_file_mod._kick_warm_once(name="test-retry")
+    assert thread2 is not None
+    thread2.join(timeout=5)
+    assert called == [1]

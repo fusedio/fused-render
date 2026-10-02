@@ -178,6 +178,9 @@ _perm_stamps: dict[str, tuple] = {}
 # watching further back would ring about news no page could draw.
 PERM_SCAN_LIMIT = 120
 _started = False
+# Guards `start()`'s check-then-set so two concurrent first callers can't both
+# see `_started` as False and both spawn a watcher thread.
+_start_lock = threading.Lock()
 
 
 # ------------------------------------------------------------------ the reads
@@ -1087,11 +1090,21 @@ def _loop() -> None:
 def start() -> None:
     """Start the watcher thread, once per process. From the app's startup
     event, never from create_app — tests build apps without lifespan and must
-    not spawn a thread that reads the developer's real ~/.claude."""
+    not spawn a thread that reads the developer's real ~/.claude.
+
+    Two near-simultaneous first callers (e.g. two requests landing together
+    under `lean`, which calls this on every request) must not both pass the
+    `_started` check and each spawn a watcher thread — `_start_lock` guards
+    only the check-then-set so that whichever caller wins publishes
+    `_started = True` before the other's check runs. `tick()` and the thread
+    spawn stay OUTSIDE the lock: they only need to happen once, which the
+    guard above already ensures, and keeping them out means a slow first
+    `tick()` never blocks a second caller from returning promptly."""
     global _started
-    if _started:
-        return
-    _started = True
+    with _start_lock:
+        if _started:
+            return
+        _started = True
     try:
         tick()  # prime synchronously so the first request has the registry
     except Exception:  # noqa: BLE001
