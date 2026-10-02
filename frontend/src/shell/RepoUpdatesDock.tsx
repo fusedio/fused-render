@@ -101,12 +101,14 @@ import {
   repoGitHref,
   repoRows,
   repoStatusText,
+  syncFailureActions,
   syncFixPrompt,
   visibleRepoRows,
   type RepoAction,
   type RepoRow,
   type RepoStatus,
   type SyncFailure,
+  type SyncFailureActionId,
   type SyncPull,
 } from "@shell/repo-updates-lib";
 
@@ -298,9 +300,11 @@ function PairingRowView({
 // the sixth row kind. Persistent until the user dismisses it or a later sync
 // of the same repo succeeds (the server drops it then); one row per repo,
 // updated in place. Nothing was changed on disk: the title says why. The row
-// goes somewhere (the repo's git view), offers Retry (re-runs the same sync)
-// and Fix with Claude (the overview-then-confirm prompt, with the action,
-// command and git's complete output).
+// goes somewhere (the repo's git view). Its buttons depend on the failure
+// reason (`syncFailureActions`): Retry only where re-running can help, Open git
+// view / Sign in where the user must act in the git view, Fix with Claude (the
+// overview-then-confirm prompt, with the action, command and git's complete
+// output).
 function SyncFailureRowView({
   failure,
   onGone,
@@ -353,6 +357,25 @@ function SyncFailureRowView({
     navigate(failure.root, { isDir: true });
     void dismiss();
   };
+  // Open git view / Sign in: the same hop the row body makes (the git side
+  // pane, where the sign-in panel lives). Neither retries nor dismisses.
+  const openGit = () => {
+    navigateUrl(repoGitHref(failure.root), { isDir: true });
+    onOpen?.();
+  };
+  const handlers: Record<SyncFailureActionId, () => void> = {
+    "open-git": openGit,
+    "sign-in": openGit,
+    retry,
+    fix: fixWithClaude,
+  };
+  // First action takes the head slot beside the dismiss, second the line
+  // below the status; a one-action reason simply has no second line.
+  const [first, second] = syncFailureActions(failure.reason).map((a) => ({
+    label: a.id === "retry" && busy ? "Retrying…" : a.label,
+    onClick: handlers[a.id],
+    disabled: a.id === "retry" && busy,
+  }));
   return (
     <NotificationCard
       className="dl-row-attention"
@@ -364,14 +387,11 @@ function SyncFailureRowView({
       }
       age={age}
       status={retryNote ? `${failure.title} (${retryNote})` : failure.title}
-      navAction={{ label: busy ? "Retrying…" : "Retry", onClick: retry, disabled: busy }}
-      extraAction={{ label: "Fix with Claude", onClick: fixWithClaude }}
+      navAction={first}
+      extraAction={second}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${failure.name} sync failure` }}
       rowClick={{
-        onClick: () => {
-          navigateUrl(repoGitHref(failure.root), { isDir: true });
-          onOpen?.();
-        },
+        onClick: openGit,
         ariaLabel: `Open ${failure.name} in Git`,
         title: `Open ${failure.name} in Git`,
       }}

@@ -250,7 +250,7 @@ function fullProps(
 
 // An auto-sync failure is a persistent "Needs you" row: repo name, the reason
 // as its status line, Retry, Fix with Claude and a dismiss.
-test("an auto-sync failure draws a Needs-you row with Retry and Fix with Claude", () => {
+test("an auto-sync failure draws a Needs-you row with Fix with Claude and no Retry", () => {
   const tree = renderView({
     rows: [],
     syncFailures: [
@@ -271,9 +271,46 @@ test("an auto-sync failure draws a Needs-you row with Retry and Fix with Claude"
   const all = text(tree);
   expect(all).toContain("widget");
   expect(all).toContain("Local and remote have diverged");
-  expect(all).toContain("Retry");
+  expect(all).not.toContain("Retry");
   expect(all).toContain("Fix with Claude");
   expect(numeral(tree)).toBe("1");
+});
+
+function failureRow(reason: string) {
+  return renderView({
+    rows: [],
+    syncFailures: [
+      {
+        id: `/a/widget::${reason}`,
+        root: "/a/widget",
+        name: "widget",
+        reason,
+        title: "some failure",
+        action: "Auto-update on app open",
+        command: "git pull",
+        output: "x",
+        push: false,
+        at: 1,
+      },
+    ],
+  });
+}
+
+test("failure rows offer actions by reason", () => {
+  const dirty = text(failureRow("dirty"));
+  expect(dirty).toContain("Open git view");
+  expect(dirty).toContain("Fix with Claude");
+  expect(dirty).not.toContain("Retry");
+  const diverged = text(failureRow("diverged"));
+  expect(diverged).toContain("Fix with Claude");
+  expect(diverged).not.toContain("Retry");
+  const auth = text(failureRow("auth"));
+  expect(auth).toContain("Sign in");
+  expect(auth).toContain("Retry");
+  expect(auth).not.toContain("Fix with Claude");
+  const rejected = text(failureRow("rejected"));
+  expect(rejected).toContain("Retry");
+  expect(rejected).toContain("Fix with Claude");
 });
 
 function renderInstance(

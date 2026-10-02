@@ -274,3 +274,35 @@ export function pullPopupTitle(p: SyncPull): string {
 export function newPulls(pulls: SyncPull[], seen: ReadonlySet<string>): SyncPull[] {
   return pulls.filter((p) => !seen.has(p.id));
 }
+
+/** The buttons a failure row offers, in display order (first = the head
+ *  slot beside the dismiss, second = the line below the status). Keyed on the
+ *  server's failure `reason` vocabulary (git_upstream._FAILURE_TITLES); Retry
+ *  is offered only where re-running the sync can change the outcome: a dirty
+ *  tree or a diverged branch stays that way until the user acts. "sign-in"
+ *  lands on the git view, the only place the sign-in flow lives. */
+export type SyncFailureActionId = "open-git" | "sign-in" | "retry" | "fix";
+
+export interface SyncFailureAction {
+  id: SyncFailureActionId;
+  label: string;
+}
+
+const ACTION_LABELS: Record<SyncFailureActionId, string> = {
+  "open-git": "Open git view",
+  "sign-in": "Sign in",
+  retry: "Retry",
+  fix: "Fix with Claude",
+};
+
+export function syncFailureActions(reason: string): SyncFailureAction[] {
+  const ids: SyncFailureActionId[] =
+    reason === "dirty"
+      ? ["open-git", "fix"]
+      : reason === "diverged"
+        ? ["fix"]
+        : reason === "auth"
+          ? ["sign-in", "retry"]
+          : ["retry", "fix"];
+  return ids.map((id) => ({ id, label: ACTION_LABELS[id] }));
+}

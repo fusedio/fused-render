@@ -185,6 +185,19 @@ indexing pref `indexing_enabled()`) and follow that pattern for the new toggle +
   on; every new subprocess follows the git_upstream `_run` pattern.
 
 
+### Failure-row actions by reason (user: "a retry button definitely won't be helping")
+- `syncFailureActions(reason)` in `repo-updates-lib.ts` is the single source:
+  dirty = Open git view + Fix; diverged = Fix; auth = Sign in + Retry;
+  rejected / git-failed / unknown = Retry + Fix. Dismiss stays on every row.
+  First action takes the head slot, second the line below the status, so a
+  one-action row has no empty slot.
+- **Sign in** has no shell-level entry point: the gh login flow
+  (`/api/github/login`) is driven only from the git template's own panel
+  (`ghLoginClick`, inside the iframe). So Sign in and Open git view both do
+  what the row body already did: `navigateUrl(repoGitHref(root))`
+  (`?_side=git`) and close the panel. Navigation, not an in-place URL write,
+  so the mount-only `_side` read is honored.
+
 ### Code-review round 1
 - **sync-retry ok (real, fixed).** The route returned `ok: True` for every
   non-`failed` status, so offline / busy / skipped hid a row the server still

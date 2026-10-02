@@ -6,6 +6,7 @@ import {
   newPulls,
   pullPopupTitle,
   syncFixPrompt,
+  syncFailureActions,
   type SyncFailure,
   repoActionLabel,
   repoFixPrompt,
@@ -256,5 +257,30 @@ describe("auto-sync rows", () => {
     expect(pullPopupTitle({ ...pull, count: 1 })).toBe("Updated widget with 1 change");
     expect(newPulls([pull], new Set())).toHaveLength(1);
     expect(newPulls([pull], new Set(["p1"]))).toHaveLength(0);
+  });
+});
+
+describe("syncFailureActions", () => {
+  const ids = (reason: string) => syncFailureActions(reason).map((a) => a.id);
+
+  it("dirty tree: Open git view + Fix, never Retry", () => {
+    expect(ids("dirty")).toEqual(["open-git", "fix"]);
+  });
+  it("diverged: Fix only", () => {
+    expect(ids("diverged")).toEqual(["fix"]);
+  });
+  it("auth: Sign in + Retry", () => {
+    expect(ids("auth")).toEqual(["sign-in", "retry"]);
+  });
+  it("rejected: Retry + Fix", () => {
+    expect(ids("rejected")).toEqual(["retry", "fix"]);
+  });
+  it("git-failed and unknown reasons: Retry + Fix", () => {
+    expect(ids("git-failed")).toEqual(["retry", "fix"]);
+    expect(ids("something-new")).toEqual(["retry", "fix"]);
+  });
+  it("labels", () => {
+    expect(syncFailureActions("auth").map((a) => a.label)).toEqual(["Sign in", "Retry"]);
+    expect(syncFailureActions("dirty").map((a) => a.label)).toEqual(["Open git view", "Fix with Claude"]);
   });
 });
