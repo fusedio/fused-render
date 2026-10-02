@@ -222,6 +222,27 @@ def test_indexing_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeyp
     assert body["indexing"]["enabled"] is False
 
 
+def test_git_auto_sync_defaults_on_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["git"]["auto_sync"] is True
+    body = client.put("/api/prefs", json={"git_auto_sync_enabled": False}, headers=FUSED).json()
+    assert body["git"]["auto_sync"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "git_auto_sync_enabled"
+    ] is False
+    assert client.put("/api/prefs", json={"git_auto_sync_enabled": True}, headers=FUSED).json()[
+        "git"
+    ]["auto_sync"] is True
+
+
+def test_put_rejects_bad_git_auto_sync(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"git_auto_sync_enabled": "yes"}, headers=FUSED
+    ).status_code == 400
+    assert not (home / "prefs.json").exists()
+
+
 def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
     """The behavior contract: a scan running at the moment of toggle-off is
     cancelled outright, using the same `cancel` sentinel `runner.cancel`

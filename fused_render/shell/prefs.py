@@ -423,6 +423,17 @@ def indexing_enabled() -> bool:
     return read_prefs().get("indexing_enabled") is not False
 
 
+def git_auto_sync_enabled() -> bool:
+    """Whether the app pulls and pushes its own git commits (default ON).
+
+    Same idiom as `indexing_enabled`: absence and any non-`false` stored value
+    read as enabled. Read per call by `git_upstream`'s auto-sync, so a toggle
+    applies to the very next trigger with no restart. Off means today's
+    behaviour exactly: the "Update" card for behind repos and manual flows.
+    """
+    return read_prefs().get("git_auto_sync_enabled") is not False
+
+
 def ranked_search_enabled() -> bool:
     """Whether index-backed search orders hits by relevance score (default ON
     — D720). Off means the SQL branch that drops scoring entirely: hits come
@@ -648,6 +659,9 @@ def _prefs_response() -> dict:
         # whether index-backed search orders hits by relevance score (default
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
         "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled()},
+        # Whether app-made git commits are auto-pushed and behind repos are
+        # auto fast-forwarded on app open (default ON).
+        "git": {"auto_sync": git_auto_sync_enabled()},
         # Which local-model backend serves each capability (D302). The STORED
         # choice, what is actually resolving, and — when those differ — why, in
         # the registry's own words. Same discipline as `engine` above and
@@ -920,6 +934,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                 status_code=400)
         prefs["ranked_search_enabled"] = value
         changed = True
+    if "git_auto_sync_enabled" in body:
+        value = body.get("git_auto_sync_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'git_auto_sync_enabled' must be a boolean"},
+                                status_code=400)
+        prefs["git_auto_sync_enabled"] = value
+        changed = True
     if "calls_enabled" in body:
         value = body.get("calls_enabled")
         if not isinstance(value, bool):
@@ -986,6 +1007,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                       "'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
+                      "'git_auto_sync_enabled', "
                       "'calls_enabled', "
                       "'calls_params', 'calls_retention_days', "
                       "'ai_idle_unload_minutes', 'launcher_hotkey' and/or "
