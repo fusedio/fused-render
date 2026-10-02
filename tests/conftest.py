@@ -291,6 +291,20 @@ def _no_queue_manager_across_tests():
 
 
 @pytest.fixture(autouse=True)
+def _no_share_rules_warm_guard_across_tests():
+    """`share_file._kick_warm_once`'s "already kicked" flag is process state,
+    not per-`create_app()` state — the same leak shape `_no_queue_manager_
+    across_tests` above guards against, for the same reason (no `app` to key
+    it off from `_cached_rules()`, which a lean server's first request calls
+    with no startup hook having run first)."""
+    from fused_render import share_file
+
+    share_file.reset_for_tests()
+    yield
+    share_file.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_appenv_contract_vars():
     """Every test starts with the contract vars UNSET and cannot leak them.
 

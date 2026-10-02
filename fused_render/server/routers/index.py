@@ -29,7 +29,7 @@ import time
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, Body, Header, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from fused_render import jobs
@@ -57,11 +57,13 @@ from fused_render.index.store import (
 from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
+from fused_render.extras import requires_extra
 from fused_render.shell import index_gate
 from fused_render.shell.prefs import indexing_enabled
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# Every route here reads or writes the parquet index through duckdb/pyarrow.
+router = APIRouter(dependencies=[Depends(requires_extra("index", "The file index"))])
 
 # Bounds how many index reads run their duckdb call at once. `asyncio.to_thread`
 # alone dispatches onto the default executor (min(32, cpu+4) workers) with no

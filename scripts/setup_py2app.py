@@ -136,7 +136,7 @@ ALREADY_IN_INCLUDES = {"_duckdb", "_cffi_backend"}
 # Staging it explicitly is the same pattern as rclone and uv (steps 4d/4d-bis):
 # a plain copy, no modulegraph involvement, and the namespace parent comes along
 # by construction. `[bundled]`'s own comment is the authority for shipping it at
-# all — the cloud-auth chain was folded into the bundled app precisely because
+# all — the cloud credential chain was folded into the bundled app precisely because
 # "DMG users cannot pip install". Its dependencies (pyasn1, pyasn1-modules,
 # cryptography) are ordinary packages and stay in the derived list.
 STAGED_PACKAGES = ["google"]
@@ -153,32 +153,57 @@ def _req_name(requirement):
     return _norm_dist(name.strip())
 
 
-def _bundled_distributions():
-    """The distributions the app's own interpreter must provide, minus exclusions.
+def declared_requirements(extra="bundled"):
+    """The requirement strings `pip install fused-render[<extra>]` asks for.
 
-    `[bundled]` AND `[project] dependencies` — both, because that pair is exactly
-    what SPEC PY-17 promises a header-less script (pyarrow and duckdb are *core*
-    deps, not part of the extra, and the tabular readers are unusable without
-    them). Reading only the extra is how an earlier version of this change
-    silently dropped them from the bundle.
+    `[project] dependencies` plus the extra, with every self-reference
+    (`fused-render[all]`, and the `fused-render[index,...]` that `[all]` is)
+    expanded into the extras it names, recursively. `[bundled]` reaches the
+    feature extras only through `fused-render[all]`, so reading its lines
+    literally would leave duckdb, pyarrow, the cloud chains and the full engine
+    out of the force-list. tests/test_bundle_contents.py and
+    tests/test_engine_requirements.py read the declared set through this too.
     """
-    # tomllib is 3.11+ stdlib, and requires-python is now >=3.11, so the `tomli`
-    # arm below cannot be reached and `tomli` is no longer a declared dependency.
-    # Kept as a one-failed-import fallback rather than deleted: this module is
-    # imported by tests/test_bundle_contents.py and by the py2app build, and a
-    # bare `import tomllib` at module scope is the shape that errored a whole
-    # test module out once already.
+    # tomllib is 3.11+ stdlib and requires-python is >=3.11; the `tomli` arm is
+    # a one-failed-import fallback because this module is imported by tests
+    # and by the py2app build, and a bare module-scope `import tomllib` is the
+    # shape that errored a whole test module out once already.
     try:
         import tomllib
     except ImportError:
         import tomli as tomllib
 
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as fh:
-        pyproject = tomllib.load(fh)
-    declared = list(pyproject["project"]["optional-dependencies"]["bundled"])
-    declared += list(pyproject["project"]["dependencies"])
+        project = tomllib.load(fh)["project"]
+    extras_table = project["optional-dependencies"]
+    own = _norm_dist(project["name"])
+    out = list(project["dependencies"])
+    seen = set()
+    pending = [extra]
+    while pending:
+        name = pending.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        for req in extras_table[name]:
+            if _req_name(req) == own:
+                pending.extend(sorted(_req_extras(req)))
+            elif req not in out:
+                out.append(req)
+    return out
+
+
+def _bundled_distributions():
+    """The distributions the app's own interpreter must provide, minus exclusions.
+
+    Everything `fused-render[bundled]` installs (`declared_requirements`): the
+    base dependencies, `[bundled]`'s own lines and, through its `[all]`, every
+    feature extra. That is what SPEC PY-17 promises a header-less script (the
+    tabular readers need pyarrow and duckdb from `[index]`/`[data]`), and what
+    a DMG user, who cannot pip install, must find already there.
+    """
     excluded = {_norm_dist(n) for n in BUNDLED_EXCLUDED}
-    return [(_req_name(d), _req_extras(d)) for d in declared
+    return [(_req_name(d), _req_extras(d)) for d in declared_requirements("bundled")
             if _req_name(d) not in excluded]
 
 

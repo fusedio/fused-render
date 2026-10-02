@@ -78,10 +78,11 @@ import itertools
 import logging
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.extras import requires_extra
 from fused_render.index import runner
 from fused_render.index.config import load_config
 from fused_render.index.ignore import MountGuard
@@ -91,7 +92,8 @@ from fused_render.server.common import _error
 from fused_render.server.walk import junk_path
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# The repo list is a duckdb query over the index's dirs.parquet.
+router = APIRouter(dependencies=[Depends(requires_extra("index", "The Repos tab"))])
 
 # The leaf directory whose presence marks a repository. Deliberately spelled out
 # here rather than derived from LEAF_DIR_NAMES: that tuple is "directories the

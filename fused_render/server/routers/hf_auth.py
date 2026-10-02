@@ -61,7 +61,9 @@ import time
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Header
+from fastapi.responses import JSONResponse
 
+from fused_render import extras
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -149,9 +151,8 @@ def token() -> str | None:
     in place when it nears expiry, so a cached copy here would go stale exactly
     when it mattered.
 
-    None when `huggingface_hub` cannot be imported at all, which is not a state
-    a shipped build has (it is a core dependency) but is one a stripped
-    environment can produce — and an anonymous request is a much better answer
+    None when `huggingface_hub` cannot be imported at all, which is an install
+    without the `[hf]` extra — and an anonymous request is a much better answer
     there than a 500.
     """
     try:
@@ -373,11 +374,10 @@ def api_hf_login(x_fused: str | None = Header(default=None)):
             # Joined, not restarted: a second device code is a second code on
             # the Hub's page, only one of which is being polled.
             return {"joined": True, **_state()}
-        try:
-            from huggingface_hub.utils._oauth_device import request_device_code
-        except Exception as e:  # noqa: BLE001
-            return _error(f"huggingface_hub is not available here ({e.__class__.__name__})",
-                          status=503)
+        if not extras.available("hf"):
+            return JSONResponse(extras.payload("hf", "Signing in to Hugging Face"),
+                                status_code=503)
+        from huggingface_hub.utils._oauth_device import request_device_code
         try:
             device_info = request_device_code()
         except Exception as e:  # noqa: BLE001 - offline, DNS, TLS, a Hub that is down

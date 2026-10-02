@@ -12,11 +12,17 @@ every test run then has to load.
 """
 
 import asyncio
+import os
+import time
 
 import pytest
 
 from fused_render.server import create_app
 from fused_render.server.app import _lifespan
+
+#: Same real, spawnable fixture daemon test_background_apps.py uses — stdlib
+#: only, binds :0, publishes {port, token, pid} (see its own docstring).
+FIXTURE_APP = os.path.join(os.path.dirname(__file__), "fixtures", "background_app")
 
 
 def _drive(startup, shutdown, body=None):
@@ -180,3 +186,160 @@ def test_create_app_registers_nothing_on_the_deprecated_path():
     app = create_app(start_dir=".")
     assert app.router.on_startup == []
     assert app.router.on_shutdown == []
+
+
+#: The one startup handler registered even in `lean` — building the pooled
+#: httpx client is not warm-up, it's what makes a bearer-mount/`?pooled=1`
+#: read CORRECT rather than merely fast: without `app.state.pooled_client`
+#: that route raises `AttributeError` instead of serving the file. See
+#: `on_startup_always` in app.py.
+EXPECTED_STARTUP_LEAN = [
+    "_startup_pooled_client",
+]
+
+#: The shutdown handlers registered even in `lean` — anything that can start
+#: from an ordinary request (an engine, a local AI worker, a terminal
+#: session, a capture, the pooled fs/raw client) rather than only from the
+#: `@on_startup` warm-up `lean` skips. Order matches their position in
+#: EXPECTED_SHUTDOWN above. `_startup_shutdown_ai` moved in here too: the
+#: `_AI_SESSION` it tears down is constructed at import time and can be
+#: started by an ordinary `/api/ai` request regardless of `lean` — only its
+#: `@on_startup` PREWARM is lean-skipped, not the session object itself.
+EXPECTED_SHUTDOWN_LEAN = [
+    "_shutdown_pooled_client",
+    "_startup_shutdown_ai",
+    "_shutdown_captures",
+    "_shutdown_ai_workers",
+    "_shutdown_engines",
+    "_shutdown_terminal_sessions",
+]
+
+
+def test_lean_registers_no_startup_handlers_but_always_runs_cleanup():
+    """`fused-render open`'s server (`create_app(..., lean=True)`): every one
+    of the 19 startup handlers is still DEFINED (so a lean build stays
+    otherwise identical code), and all but one are never collected —
+    `_lifespan` then iterates a near-empty startup list and starts nothing in
+    the background. The one exception, `_startup_pooled_client`, is not
+    warm-up: without it a bearer-mount/`?pooled=1` read in a lean app can't
+    be served AT ALL (see EXPECTED_STARTUP_LEAN's docstring).
+
+    Shutdown is NOT symmetric: `lean` only ever skips STARTUP (eager warm-up)
+    work. An engine, a local AI worker, a terminal session, a capture and the
+    pooled fs/raw client can all still start ON DEMAND from an ordinary
+    request in a lean app even though their `@on_startup` warm-up never ran
+    — so their cleanup (`on_shutdown_always`) is registered regardless of
+    `lean`, and everything else (paired only with a startup hook that lean
+    skips, so nothing of theirs can have started) stays skipped."""
+    app = create_app(start_dir=".", lean=True)
+    assert [f.__name__ for f in app.state.startup_handlers] == EXPECTED_STARTUP_LEAN
+    assert [f.__name__ for f in app.state.shutdown_handlers] == EXPECTED_SHUTDOWN_LEAN
+
+
+def test_lean_still_serves_ordinary_routes():
+    """The routers are wired regardless of `lean` — only the background
+    side effects are skipped — so a request against a lean app still gets a
+    real response rather than a 404."""
+    from starlette.testclient import TestClient
+
+    app = create_app(start_dir=".", lean=True)
+    with TestClient(app) as client:
+        resp = client.get("/api/config")
+    assert resp.status_code == 200
+
+
+def test_lean_app_leaves_no_engine_process_after_a_request_starts_one(tmp_path, monkeypatch):
+    """The proof for the shutdown-leak fix: `_startup_resurrect_background_apps`
+    (`@on_startup`) never runs in a lean server — nothing is brought back at
+    boot — but `/api/apps/background/start` is an ORDINARY request, wired
+    whether or not `lean`, and it spawns a real child process the same way a
+    template daemon or a `runPython`/`fused.run` call against a `main =` app
+    would. That child must not survive lifespan shutdown just because `lean`
+    skipped the warm-up that would have started it a different way — this is
+    exactly the leak `_shutdown_engines` moving to `on_shutdown_always` fixes.
+
+    Drives the real ASGI lifespan (TestClient's context manager), not a fake
+    handler list, so a regression in the real registration — not just in the
+    unit-level handler-list assertions above — would be caught here too."""
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    app = create_app(start_dir=str(tmp_path), lean=True)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/apps/background/start",
+            json={"html": os.path.join(FIXTURE_APP, "index.html")},
+            headers={"X-Fused": "1"},
+        )
+        assert resp.status_code == 200, resp.text
+        pid = resp.json()["pid"]
+
+        def _alive(p: int) -> bool:
+            try:
+                os.kill(p, 0)
+            except (ProcessLookupError, PermissionError):
+                return False
+            return True
+
+        assert _alive(pid), "the fixture daemon never actually started"
+
+    # TestClient's `with` block has now run ASGI shutdown for real. Reaping a
+    # just-killed child can lag a beat behind SIGTERM, so poll briefly rather
+    # than asserting instantly and risking a flaky false failure.
+    deadline = time.monotonic() + 5.0
+    while _alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _alive(pid), (
+        f"pid {pid} (the fixture background-app daemon) outlived lifespan "
+        "shutdown in a lean app")
+
+
+def test_lean_shutdown_is_a_noop_when_no_ai_session_ever_started(tmp_path, monkeypatch):
+    """`_startup_shutdown_ai` now runs in every lean app (EXPECTED_SHUTDOWN_LEAN
+    above), including the common case where nothing ever touched `/api/ai`.
+    `_AiSession.shutdown()` must tolerate that — no process, no spawn task —
+    rather than raising and breaking an otherwise-ordinary lean server's
+    teardown."""
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    app = create_app(start_dir=str(tmp_path), lean=True)
+
+    with TestClient(app) as client:
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+    # No AssertionError/exception escaping the `with` block is the assertion:
+    # lifespan shutdown (including _startup_shutdown_ai) completed cleanly.
+
+
+def test_lean_app_shuts_down_an_ai_session_started_by_an_ordinary_request(tmp_path, monkeypatch):
+    """The AI-cleanup analogue of
+    `test_lean_app_leaves_no_engine_process_after_a_request_starts_one`:
+    `_startup_prewarm_ai` (`@on_startup`) never runs in a lean server, but
+    `app.state.ai_session` can still come alive from an ordinary request —
+    here simulated directly, since driving a real `/api/ai` call would spawn
+    an actual `claude` CLI process. Lifespan shutdown must reach and close it
+    even though its warm-up hook never ran."""
+    from starlette.testclient import TestClient
+
+    from fused_render.server.ai import _AiSession
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    app = create_app(start_dir=str(tmp_path), lean=True)
+
+    shutdown_calls = []
+    session = _AiSession()
+
+    async def fake_shutdown():
+        shutdown_calls.append(True)
+
+    session.shutdown = fake_shutdown
+
+    with TestClient(app) as client:
+        app.state.ai_session = session
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+
+    assert shutdown_calls, (
+        "lean shutdown never reached the on-demand AI session's shutdown()")

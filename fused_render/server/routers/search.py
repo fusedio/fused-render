@@ -50,7 +50,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from fused_render.index.config import load_config
@@ -67,10 +67,12 @@ from fused_render.server.common import _error
 # the pre-existing private name here because this module's callers (and its
 # tests) already know it as that.
 from fused_render.server.walk import junk_path as _junk_path
+from fused_render.extras import requires_extra
 from fused_render.server.walk import WALK_IGNORE_DIRS
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# File search answers from the duckdb-read index and has no other engine.
+router = APIRouter(dependencies=[Depends(requires_extra("index", "File search"))])
 
 # Rows a search may return. A broad query can match tens of thousands of index
 # rows; the client shows ~60, so 400 leaves plenty of ranking headroom.
