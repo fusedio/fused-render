@@ -2136,13 +2136,15 @@ when one exists, else the folder itself.
   (D884) so every link to one app updates one file and one Apps-hub row;
   `<name>-<url sha 8>.fused` for files that predate the id — and opens the
   saved file **as an app**, the Finder double-click shape (D390), never the
-  explorer's view of it: inside a native window the app gets a window of its
-  own (`POST /api/windows/open`, the title-bar Edit button is the way into
-  the explorer; the window that took the redirect stays on Home, as after an
-  app-card click), elsewhere the top document hard-loads the file's embed URL
+  explorer's view of it: the top document hard-loads the file's embed URL
   (a full load, since the embed/view prefix is read once at module init),
-  where the `fusedapp` template runs it under the EmbedStrip's "Open in
-  explorer" and `exported_apps.record_open` lists it under recents. A re-click on a link to
+  where the `fusedapp` template runs it and `exported_apps.record_open`
+  lists it under recents. Deliberately not `POST /api/windows/open`: a deep
+  link always arrives in a fresh native window parked on Home by the 303, and
+  loading the embed there makes that window the app's own (the URL observer
+  re-keys it, the title-bar Edit button is the way into the explorer) instead
+  of leaving it orphaned beside a second one. In a browser tab the same load
+  lands under the EmbedStrip, whose "Open in explorer" is the way out. A re-click on a link to
   a NEW version of the same app overwrites the one saved file, extracts the
   new bytes, and keeps everything the app saved in `.fused` (AF-13's shared
   state dir): app files replaced, state retained. Recorded cost of the

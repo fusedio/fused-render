@@ -34,11 +34,12 @@ GET (D3), and nothing the user edited is replaced without the modal's Overwrite.
 a hosted `.fused`. Same no-page shape as `file=`: `GET /clone` answers a 303
 to Home with the link as `?_fetch_appfile=`; the shell's `FetchAppFileBoot`
 reads it once, downloads through the X-Fused `POST /api/appfile/fetch`
-(appfetch.py, into `~/.fused-render/downloads/<app_id>.fused`) and opens the
-saved file as an app, like a Finder double-click (D390): its own native
-window where there is one (title-bar Edit leads to the explorer), else the
-file's chrome-free embed URL (the EmbedStrip's "Open in explorer" does). No
-confirm step (owner call, mirrors lite PR #30): the link click is the gesture.
+(appfetch.py, into `~/.fused-render/downloads/<app_id>.fused`) and hard-loads
+the file's chrome-free embed URL in the same document — the app, like a
+Finder double-click (D390). In a native window that window becomes the app's
+own (the URL observer re-keys it; title-bar Edit leads to the explorer); in
+a browser tab the EmbedStrip's "Open in explorer" does. No confirm step
+(owner call, mirrors lite PR #30): the link click is the gesture.
 
 Ref parsing caveat: a GitHub tree URL does not delimit where the ref ends and
 the subpath begins (`/tree/feature/x/docs` is ambiguous). The first segment
