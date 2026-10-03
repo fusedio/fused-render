@@ -638,7 +638,7 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
 
 // Shortcuts: the macOS launcher (fused_render/launcher_panel.py) — the
 // global hotkey that drops the Search Apps panel, and the modifier that with
-// a digit opens the Nth desk app from anywhere. Rendered only when the server
+// a digit opens the Nth recently opened app from anywhere. Rendered only when the server
 // says the launcher exists on this platform (`prefs.launcher.available`).
 // The hotkey is RECORDED, not typed: click the keycap, press the combination,
 // and the browser's `KeyboardEvent.code` becomes the spec — what maps to a
@@ -673,7 +673,7 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
   useEffect(() => {
     if (!recording) return;
     // The live bindings are Carbon's, not the page's: with them up, the
-    // combination being recorded would open the panel or a desk app instead
+    // combination being recorded would open the panel or an app instead
     // of arriving here. Suspended for the recording, restored on its end —
     // whichever way it ends (a key, Esc, unmount).
     postLauncherSuspend(true).catch(() => undefined);
@@ -769,7 +769,7 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
             <span className={rowsUnbound ? "prefs-shortcut-warn" : undefined}>
               {rowsUnbound
                 ? `Some of ${launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.`
-                : "Hold this and press 1–9: anywhere, the Nth app in the sidebar's Projects list (newest first); in the search, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
+                : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
             </span>
           </div>
           <div className="prefs-seg" role="radiogroup" aria-label="Row shortcut modifier">

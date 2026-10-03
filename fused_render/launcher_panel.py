@@ -18,10 +18,12 @@ monitor: a non-activating panel gets no resignKey for clicks in the app
 that IS active), or the shortcut again (toggle).
 
 Row shortcuts: ``<rowModifier>+1`` … ``+9`` (⌥ by default) are global
-shortcuts too, opening the Nth DESK app from anywhere; ``+0`` opens the
-shell home. Which app is resolved at press time from the desk, so adding
-and removing apps needs no rebind. They are suspended while the panel is
-up, so the same digits mean "the Nth row" there.
+shortcuts too, opening the Nth app of the launcher's empty-query list
+(recently opened first, then the desk — `launcher.nth_pinned`) from
+anywhere; ``+0`` opens the shell home. Which app is resolved at press
+time, so an open or a desk change needs no rebind. They are suspended
+while the panel is up, so the same digits mean "the Nth row" there — the
+same list until the user types.
 
 The shortcut is Carbon's ``RegisterEventHotKey`` (``hotkey.py``), bound
 after the server is up and rebound from ``PUT /api/prefs`` through
@@ -319,7 +321,7 @@ class LauncherController:
         if path:
             self._open_app(path)
         else:
-            logger.info("row shortcut %d: no such desk app", n)
+            logger.info("row shortcut %d: no such row", n)
 
     def _suspend_pinned(self) -> None:
         if self._pinned is not None:

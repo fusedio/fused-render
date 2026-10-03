@@ -19,11 +19,12 @@ Settings live in ``prefs.json`` (shell/prefs.py), two keys::
 
 ``launcher_hotkey`` opens the launcher (``hotkey.py`` spec syntax).
 ``launcher_row_modifier`` is the modifier (or ``+``-joined modifiers) that,
-with a digit 1–9, opens the Nth app: from anywhere, the Nth DESK app (nine
-global shortcuts — a stable target, the desk reorders only by hand); while
-the launcher is up, the Nth row of whatever it lists. ``<modifier>+0`` opens
-the shell home. One knob from the user's point of view. Missing or corrupt
-→ the defaults.
+with a digit 1–9, opens the Nth app of the empty-query list (nine global
+shortcuts, resolved at press time — the Nth recently opened app, the desk
+behind them); while the launcher is up, the Nth row shown. The SAME list
+when the query is empty, by design (owner, 2026-10-03). ``<modifier>+0``
+opens the shell home. One knob from the user's point of view. Missing or
+corrupt → the defaults.
 
 ``search`` is pure and ranks by match quality then by registry order: a
 name that starts with the query, then a word inside the name that does,
@@ -237,9 +238,9 @@ def recent_rows(limit: int = MAX_RESULTS) -> list[dict]:
 def desk_rows() -> list[dict]:
     """The sidebar's desk (``current_apps``), NEWEST-ADDED FIRST — the order
     the sidebar seeds before any drag (a drag reorder lives in the browser's
-    localStorage and is not visible here). The GLOBAL ``<modifier>+N`` opens
-    the Nth of these (`nth_pinned`); in the panel they trail the recents.
-    Folders that are gone are skipped."""
+    localStorage and is not visible here). In the launcher's empty-query
+    list they trail the recently opened apps (`search`). Folders that are
+    gone are skipped."""
     from fused_render import app_listing, current_apps
 
     rows = []
@@ -330,8 +331,12 @@ def invalidate() -> None:
 
 
 def nth_pinned(n: int) -> str | None:
-    """The folder of the ``n``-th desk app (1-based, newest first), or None."""
-    rows = desk_rows()
+    """The path the global ``<modifier>+n`` opens (1-based): the ``n``-th row
+    of the empty-query list — exactly what the panel shows before any typing,
+    so the digit means the same app whether or not the panel is up. Through
+    `registry`, so the per-keystroke cache serves a press too. None past the
+    end."""
+    rows = search("", registry())
     return rows[n - 1]["path"] if 1 <= n <= len(rows) else None
 
 
