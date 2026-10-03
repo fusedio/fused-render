@@ -63,9 +63,8 @@ function joinPath(dir: string, name: string): string {
 export function LivePreview({ src }: { src: string }) {
   const [previewRef, nearViewport] = useNearViewport<HTMLSpanElement>();
   // Whether live thumbnails are allowed at all — the `live_previews_enabled`
-  // preference (live-previews-flag.ts). `null` holds the scheduler request
-  // until the one shared read lands (nothing boots for a reader who turned
-  // previews off); `false` swaps the whole iframe for the placeholder mark,
+  // preference (live-previews-flag.ts; opt-in, and off until the one shared
+  // read lands). `false` swaps the whole iframe for the placeholder mark,
   // below. Read before the early returns: hook order.
   const liveAllowed = useLivePreviewsFeature();
   const { started, settled } = usePreviewStart(liveAllowed === true && nearViewport);

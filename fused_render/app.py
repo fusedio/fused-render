@@ -1544,8 +1544,8 @@ def main() -> None:
         # The windows (mac_window.py) need the AppKit run loop — the manager
         # installs the main menu and sets the activation policy — so they
         # are built here, on the first timer tick, and never at import time.
-        # OPT-IN (`native_windows_enabled`, shell/prefs.py, default off): with
-        # the preference off the app runs the way it always did, every
+        # ON BY DEFAULT (`native_windows_enabled`, shell/prefs.py, opt-out):
+        # with the preference off the app runs the way it used to, every
         # surface a browser tab (`_open_target` and friends fall back on
         # `state["windows"] is None`). The Preferences checkbox applies live
         # through `window_policy.native_hooks["apply"]`: on builds the

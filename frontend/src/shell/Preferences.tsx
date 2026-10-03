@@ -432,18 +432,18 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
 
 // Thumbnails: whether the /apps cards and the explorer's bookmark, recent and
 // folder cards may render the live app in a scaled iframe — the body of a card
-// with no preview.png, and the hover swap on one that has it. ON by default;
+// with no preview.png, and the hover swap on one that has it. OFF by default;
 // the checkbox is worded the way the reader thinks of it ("hide"), so checked
-// means the stored `live_previews_enabled` is FALSE — the inversion lives in
-// this one component and the positive `enabled` flows everywhere else. Same
-// one-checkbox section shape and publish-after-PUT as App sharing above, so a
-// grid already mounted in a split swaps its iframes for stills and marks the
-// moment the checkbox settles. `?.enabled !== false` because the key is
-// optional on the wire (an older server) and absence means on.
+// means the stored `live_previews_enabled` is not TRUE — the inversion lives
+// in this one component and the positive `enabled` flows everywhere else.
+// Same one-checkbox section shape and publish-after-PUT as App sharing above,
+// so a grid already mounted in a split swaps its iframes for stills and marks
+// the moment the checkbox settles. `?.enabled === true` because the key is
+// optional on the wire (an older server) and absence means off.
 function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.live_previews?.enabled !== false;
+  const enabled = prefs.live_previews?.enabled === true;
 
   const toggle = async () => {
     if (busy) return;
@@ -452,7 +452,7 @@ function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
     try {
       const next = await putLivePreviewsEnabled(!enabled);
       onChange(next);
-      publishLivePreviewsEnabled(next.live_previews?.enabled !== false);
+      publishLivePreviewsEnabled(next.live_previews?.enabled === true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -464,9 +464,9 @@ function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
     <section className="prefs-section">
       <h2>Thumbnails</h2>
       <p className="deploy-muted">
-        App and bookmark cards show the live page in their thumbnail when there is no{" "}
-        <code>preview.png</code>, and swap it in on hover when there is one. Each live thumbnail
-        is a whole page booting in the background.
+        With live previews on, app and bookmark cards show the live page in their thumbnail when
+        there is no <code>preview.png</code>, and swap it in on hover when there is one. Each live
+        thumbnail is a whole page booting in the background, so they are off by default.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={!enabled} disabled={busy} onChange={toggle} />
@@ -644,8 +644,8 @@ function TaskNotifyTerminalSection({
 // listener is up it shows the QR code a phone scans to pair (the ONLY way in —
 // no PIN, no approval dialog), and the devices that have, with revoke.
 // Native windows (macOS, fused_render/mac_window.py): the shell in the app's
-// own windows instead of browser tabs. Off by default; this is the only place
-// it turns on, and it applies live — on, the next open is a window; off, every
+// own windows instead of browser tabs. On by default; this is the only place
+// it turns off, and it applies live — on, the next open is a window; off, every
 // window closes and opens go back to the browser. The launcher below is not
 // behind it. Rendered only where the running app can honour it
 // (`prefs.native_windows.available`).
@@ -674,8 +674,8 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
       <h2>Native windows</h2>
       <p className="deploy-muted">
         Open Fused Render in its own macOS windows instead of browser tabs: a window per app, the
-        Dock icon, ⌘N and the View menu. Off by default — the app opens everything in your default
-        browser. Turning it off closes the open windows.
+        Dock icon, ⌘N and the View menu. On by default. Turning it off closes the open windows and
+        the app opens everything in your default browser instead.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />

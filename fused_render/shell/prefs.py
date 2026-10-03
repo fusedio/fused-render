@@ -25,7 +25,7 @@ offered at all — opt-in, default off; see ``canvases_enabled``),
 **app_sharing_enabled** (whether the unified Share sheet replaces the plain
 Export action — opt-in, default off; see ``app_sharing_enabled``),
 **live_previews_enabled** (whether card thumbnails may render the live app
-in a scaled iframe — default ON; see ``live_previews_enabled``),
+in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -170,15 +170,17 @@ def canvases_enabled() -> bool:
 
 def native_windows_enabled() -> bool:
     """Whether the macOS app shows the shell in its own native windows
-    (mac_window.py) instead of browser tabs (default off — opt-in).
+    (mac_window.py) instead of browser tabs (default ON — opt-out).
 
-    Same idiom as `canvases_enabled`: only a stored `true` turns it on, so an
-    existing install keeps the browser it always had. The launcher (⌥Space)
-    is NOT behind this switch — it stays on either way and simply opens its
-    pick in a browser tab while this is off. Read by `app.py` at boot and
-    applied live through `window_policy.native_hooks["apply"]` on a PUT.
+    Same idiom as `indexing_enabled`: absence and any non-`false` stored
+    value both read as ON, so a fresh install and one that never touched the
+    checkbox get windows; only a stored `false` keeps the browser. The
+    launcher (⌥Space) is NOT behind this switch — it stays on either way and
+    simply opens its pick in a browser tab while this is off. Read by
+    `app.py` at boot and applied live through
+    `window_policy.native_hooks["apply"]` on a PUT.
     """
-    return read_prefs().get("native_windows_enabled") is True
+    return read_prefs().get("native_windows_enabled") is not False
 
 
 def app_sharing_enabled() -> bool:
@@ -203,24 +205,24 @@ def app_sharing_enabled() -> bool:
 
 
 def live_previews_enabled() -> bool:
-    """Whether card thumbnails may render the LIVE app (default ON).
+    """Whether card thumbnails may render the LIVE app (default off — opt-in).
 
     The /apps hub's cards (AppPreviewCard) and the explorer's bookmark, recent
-    and folder cards (BookmarkCards) show a scaled-down iframe of the page
+    and folder cards (BookmarkCards) can show a scaled-down iframe of the page
     itself when there is no authored `preview.png` — and a still-thumbed app
     card swaps that iframe in on hover. Each one is a whole sandboxed page plus
-    its JS runtime, so a reader who finds a grid of them slow, noisy or
-    distracting can turn them off here: every thumbnail is then a still or a
-    plain placeholder mark, nothing boots on scroll or hover.
+    its JS runtime, so by default every thumbnail is a still or a plain
+    placeholder mark and nothing boots on scroll or hover; a reader who wants
+    the live grid turns it on here.
 
-    Same idiom as `indexing_enabled`: absence and any non-`false` stored value
-    both read as ON, so a preference file that predates this setting keeps the
-    previews every install has had. Read by the client once per page load and
+    Same idiom as `canvases_enabled`: only a stored `true` turns it on, so a
+    preference file that predates this setting, or one that never touched the
+    checkbox, reads as off. Read by the client once per page load and
     republished by the Preferences page on toggle — not consulted by any
     server route; the /render and embed URLs the thumbnails point at keep
     answering regardless.
     """
-    return read_prefs().get("live_previews_enabled") is not False
+    return read_prefs().get("live_previews_enabled") is True
 
 
 NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
@@ -626,11 +628,11 @@ def _prefs_response() -> dict:
         # Not a route guard; see `app_sharing_enabled`.
         "app_sharing": {"enabled": app_sharing_enabled()},
         # Whether card thumbnails may render the live app in a scaled iframe
-        # (default ON). Off, every thumbnail is a still or a placeholder mark;
-        # see `live_previews_enabled`.
+        # (opt-in, default off). Off, every thumbnail is a still or a
+        # placeholder mark; see `live_previews_enabled`.
         "live_previews": {"enabled": live_previews_enabled()},
         # Whether the macOS app opens the shell in native windows rather than
-        # browser tabs (opt-in, default off). `available` says whether THIS
+        # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
