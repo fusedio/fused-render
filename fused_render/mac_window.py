@@ -499,11 +499,25 @@ class _WebDelegate(NSObject):
         # image / link / media URL the item would act on. Without one (an
         # older WebKit) the menu is left exactly as proposed — never curate
         # blind, a wrongly dropped item is worse than a mislabelled one.
+        # Whatever happens, the completion runs: a raise here would leave
+        # the right-click with NO menu at all, worse than an uncurated one.
+        try:
+            self._curate_context_menu(menu, element)
+        except Exception:  # noqa: BLE001 — private API, shapes may shift
+            logger.exception("context menu curation failed; showing WebKit's")
+        completion(menu)
+
+    def _curate_context_menu(self, menu, element) -> None:
         urls = _hit_test_urls(element)
         if urls is None or menu is None:
-            completion(menu)
             return
-        for item in list(menu.itemArray()):
+        items = list(menu.itemArray())
+        # The identifiers are WebKit-source knowledge (the SDK ships no
+        # WKMenuItemIdentifiersPrivate.h): log what actually arrived so a
+        # miss is a one-line fix read off Show Logs, not a guess.
+        logger.debug("context menu %s: %s", urls,
+                     [(str(i.identifier() or ""), str(i.title())) for i in items])
+        for item in items:
             ident = item.identifier()
             verdict, title = window_policy.context_menu_item(
                 str(ident) if ident else None, self._manager.port, **urls)
@@ -511,7 +525,6 @@ class _WebDelegate(NSObject):
                 menu.removeItem_(item)
             elif verdict == "retitle":
                 item.setTitle_(title)
-        completion(menu)
 
     # ---- window.close() (WKUIDelegate) -------------------------------------
 
