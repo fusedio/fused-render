@@ -87,6 +87,13 @@
 // (`--status-bar-gutter` in notifications.css), so all three panels open at
 // the same edge and the chips end where the header controls above them do.
 //
+// ONE EXCEPTION, ON THE LEFT: the System chip (`shell/SystemDock.tsx`, Akshil:
+// "move this to bottom left") is machine status, not part of the right-packed
+// run, so it renders FIRST inside `.status-bar-start`, which takes
+// `margin-right: auto` and pushes every other chip to the right as before. Its
+// panel mirrors the rule above and anchors to the bar's LEFT gutter instead;
+// it draws no `|` divider, since there is no neighbour beside it to separate.
+//
 // `models`/`activity`/`repoUpdates` are handed in rather than imported, for
 // the exact layering reason NotificationHost.tsx's own header comment states
 // for the entries this bar took over: a queue row has to offer "Open in
@@ -110,6 +117,7 @@ import DownloadManager from "@platform/ui/DownloadManager";
 
 export default function StatusBar({
   terminalDock,
+  system,
   models,
   activity,
   repoUpdates,
@@ -120,12 +128,16 @@ export default function StatusBar({
    *  Optional so a caller/test with no terminal feature wired up (or a
    *  Windows build, where the chip is hidden) renders nothing here. */
   terminalDock?: ReactNode;
+  /** fused-render's own CPU and memory (`shell/SystemDock.tsx`): alone at the
+   *  bar's LEFT edge, everything else stays packed right. */
+  system?: ReactNode;
   models?: ReactNode;
   activity?: ReactNode;
   repoUpdates?: ReactNode;
 }) {
   return (
     <div className="status-bar">
+      {system && <div className="status-bar-start">{system}</div>}
       {terminalDock}
       {models}
       {activity ?? <DownloadManager />}

@@ -31,7 +31,7 @@ test("shared explorer previews enter the scheduler only near the viewport", () =
     "utf8",
   );
   expect(cards).toContain("useNearViewport<HTMLSpanElement>()");
-  expect(cards).toContain("usePreviewStart(nearViewport)");
+  expect(cards).toContain("usePreviewStart(liveAllowed === true && nearViewport)");
 });
 
 test("Home requests the recent-first app row instead of the exhaustive catalog", () => {

@@ -1,0 +1,859 @@
+/* ---- /monitor — whole-machine process monitor (shell/monitor) -----------
+   The settings pages' density (13px body, 12px secondary, --border hairlines,
+   --bg-alt cards) on a page that fills #content top to bottom: meters and
+   toolbar stay put, the TABLE scrolls on its own, and the selection dock sits
+   under it so choosing rows never moves the rows under the pointer. Every
+   colour is a token (tests/test_theme.py), so light and dark both repaint. */
+.monitor-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 22px 12px;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.monitor-head {
+  flex: 0 0 auto;
+}
+
+.monitor-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.monitor-subtitle {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* ---- meters ---- */
+.monitor-meters {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.monitor-meters.has-stat {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(150px, 0.45fr);
+}
+
+.monitor-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 12px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.monitor-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.monitor-card-head h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.monitor-card-figure {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.monitor-card-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-membar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.monitor-membar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(var(--tint), 0.08);
+}
+
+.monitor-membar-seg {
+  height: 100%;
+  background: var(--mem-color);
+}
+
+.monitor-memlegend,
+.monitor-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-memlegend li,
+.monitor-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.monitor-swatch {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--mem-color, var(--series));
+}
+
+.monitor-mem-app {
+  --mem-color: var(--series-1);
+}
+
+.monitor-mem-wired {
+  --mem-color: var(--series-2);
+}
+
+.monitor-mem-compressed {
+  --mem-color: var(--series-4);
+}
+
+.monitor-card-stat {
+  justify-content: flex-start;
+}
+
+.monitor-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.monitor-stat > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.monitor-stat-k {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.monitor-stat-v {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- charts (shell/monitor/Charts.tsx) ---- */
+.monitor-chart {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  height: 120px;
+  /* Room for the top label's half-height above the plot. */
+  padding-top: 6px;
+}
+
+.monitor-chart-lines {
+  height: 96px;
+}
+
+.monitor-axis {
+  position: relative;
+  min-width: 34px;
+  font-size: 10px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-axis span {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.monitor-plot {
+  position: relative;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.monitor-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.monitor-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.monitor-area {
+  fill: var(--accent);
+  opacity: 0.16;
+}
+
+.monitor-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.monitor-series {
+  fill: none;
+  stroke: var(--series);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.monitor-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-alt);
+  pointer-events: none;
+}
+
+.monitor-dot-series {
+  background: var(--series);
+}
+
+.monitor-chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+/* ---- toolbar ---- */
+.monitor-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+
+.monitor-search {
+  width: min(320px, 100%);
+  height: 28px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.monitor-toggle {
+  font: inherit;
+  font-size: 12px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.monitor-toggle:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.monitor-toggle.is-on {
+  color: var(--fg);
+  background: var(--row-bg-selected);
+  border-color: var(--fg-muted);
+}
+
+.monitor-toggle:focus-visible,
+.monitor-sort:focus-visible,
+.monitor-link-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.monitor-count,
+.monitor-updated {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.monitor-spacer {
+  flex: 1 1 auto;
+}
+
+/* ---- table ---- */
+.monitor-table-wrap {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.monitor-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-w-check {
+  width: 32px;
+}
+
+.monitor-w-pid {
+  width: 70px;
+}
+
+.monitor-w-user {
+  width: 120px;
+}
+
+.monitor-w-cpu {
+  width: 72px;
+}
+
+.monitor-w-mem {
+  width: 96px;
+}
+
+.monitor-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0;
+  text-align: left;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+.monitor-sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.monitor-sort:hover {
+  color: var(--fg);
+}
+
+th[aria-sort="ascending"] .monitor-sort,
+th[aria-sort="descending"] .monitor-sort {
+  color: var(--fg);
+}
+
+.monitor-c-num .monitor-sort {
+  justify-content: flex-end;
+}
+
+.monitor-sort-mark {
+  font-size: 8px;
+  min-width: 8px;
+}
+
+.monitor-table td {
+  height: 26px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-table th.monitor-c-check,
+.monitor-table td.monitor-c-check {
+  padding: 0 0 0 10px;
+}
+
+.monitor-c-check input {
+  margin: 0;
+  display: block;
+  cursor: pointer;
+}
+
+.monitor-c-check input:disabled {
+  cursor: default;
+}
+
+.monitor-row {
+  cursor: default;
+}
+
+.monitor-row:hover {
+  background: var(--row-bg-hover);
+}
+
+.monitor-row.is-selected {
+  background: var(--row-bg-selected);
+}
+
+.monitor-c-name {
+  display: table-cell;
+}
+
+.monitor-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-kind {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.08);
+  vertical-align: 1px;
+}
+
+.monitor-kind-app {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.18);
+}
+
+.monitor-c-num {
+  text-align: right;
+}
+
+.monitor-c-user {
+  color: var(--fg-muted);
+}
+
+.monitor-cpu-warm {
+  color: var(--warning);
+}
+
+.monitor-cpu-hot {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.monitor-muted {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.monitor-denied {
+  font-size: 12px;
+  color: var(--error);
+}
+
+/* A row's state after an action from the toolbar, beside its name. */
+.monitor-rowtag {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.monitor-rowtag.is-error {
+  color: var(--error);
+}
+
+.monitor-rowtag.is-warn {
+  color: var(--warning);
+}
+
+.monitor-link-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.monitor-link-btn:hover {
+  text-decoration: underline;
+}
+
+.monitor-btn,
+.prefs-section .monitor-btn {
+  height: 22px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.monitor-btn-danger {
+  color: var(--error);
+}
+
+.monitor-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ---- selection dock ---- */
+.monitor-dock {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* The selection's actions, at the toolbar's right end: always in the same
+   place, so nothing in the table has to hold a button still under the
+   pointer. */
+.monitor-selbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 28px;
+  padding-left: 10px;
+  border-left: 1px solid var(--monitor-hairline, var(--border));
+  font-size: 12px;
+  animation: monitor-selbar-in 150ms var(--monitor-ease, ease-out);
+}
+
+@keyframes monitor-selbar-in {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+}
+
+.monitor-selq {
+  max-width: min(52ch, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.monitor-btn-danger.is-suggested {
+  border-color: var(--error);
+}
+
+/* "order held": quiet, it explains why the rows stopped re-sorting. */
+.monitor-held {
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.monitor-selcount {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.monitor-graphs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(140px, 0.6fr);
+  gap: 12px;
+}
+
+.monitor-graph {
+  min-width: 0;
+}
+
+.monitor-graph-title {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-bottom: 2px;
+}
+
+.monitor-graph-legend {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 14px;
+}
+
+.monitor-graph-legend .monitor-legend {
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+
+.monitor-graph-legend .monitor-legend li {
+  display: flex;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A short window gives the TABLE the height: the meters' charts shrink first. */
+@media (max-height: 820px) {
+  .monitor-chart {
+    height: 80px;
+  }
+
+  .monitor-chart-lines {
+    height: 64px;
+  }
+
+  .monitor-page {
+    gap: 10px;
+    padding-top: 14px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .monitor-meters.has-stat {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .monitor-meters.has-stat .monitor-card-stat {
+    grid-column: 1 / -1;
+  }
+
+  .monitor-card-stat .monitor-stat {
+    flex-direction: row;
+    gap: 20px;
+  }
+
+  .monitor-graphs {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .monitor-graph-legend {
+    grid-column: 1 / -1;
+    padding-top: 0;
+  }
+
+  .monitor-graph-legend .monitor-legend {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+/* ==== Polish: glass, hairlines, motion ======================================
+   Akshil: "pretty, glass effect, minimal, good animations". A productivity
+   surface, so motion is restraint-first: 150–250 ms, ease-out, one shot per
+   event, nothing looping, and every animation below goes instant under
+   prefers-reduced-motion (the block at the end, on top of the app-wide
+   reduced-motion.css). Only transform, opacity and clip-path animate. */
+.monitor-page {
+  --monitor-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --monitor-hairline: color-mix(in srgb, var(--fg) 12%, transparent);
+  --monitor-rule: color-mix(in srgb, var(--fg) 7%, transparent);
+  --monitor-glass: color-mix(in srgb, var(--bg-alt) 72%, transparent);
+  /* Something for the glass to blur: a faint accent wash behind the meters,
+     fading out well before the table so rows keep a flat, quiet ground. */
+  background:
+    radial-gradient(60% 280px at 18% -40px, rgba(var(--accent-rgb), 0.1), transparent 70%),
+    radial-gradient(50% 240px at 85% -60px, rgba(var(--tint), 0.05), transparent 70%),
+    var(--bg);
+}
+
+/* ---- glass ---- */
+.monitor-card,
+.monitor-dock {
+  background: var(--monitor-glass);
+  border: 1px solid var(--monitor-hairline);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 1px 2px var(--shadow-sm);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .monitor-card,
+  .monitor-dock {
+    background: var(--bg-alt);
+  }
+}
+
+.monitor-card-head h2 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+/* ---- minimal table ---- */
+.monitor-table-wrap {
+  border-color: var(--monitor-hairline);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.monitor-table th {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-bottom-color: var(--monitor-hairline);
+}
+
+.monitor-table td {
+  border-bottom-color: var(--monitor-rule);
+}
+
+.monitor-row {
+  transition: background-color 120ms var(--monitor-ease), opacity 150ms var(--monitor-ease);
+}
+
+.monitor-row:hover {
+  background: rgba(var(--tint), 0.035);
+}
+
+.monitor-row.is-selected {
+  background: rgba(var(--tint), 0.075);
+}
+
+.monitor-toggle {
+  border-color: var(--monitor-hairline);
+  transition: color 120ms var(--monitor-ease), border-color 120ms var(--monitor-ease),
+    background-color 120ms var(--monitor-ease);
+}
+
+.monitor-search {
+  border-color: var(--monitor-hairline);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+
+.monitor-count,
+.monitor-updated {
+  color: var(--fg-faint);
+}
+
+/* ---- motion ---- */
+
+/* The chart's fill arrives with the chart, not before the line. */
+.monitor-area {
+  animation: monitor-fade-area 240ms var(--monitor-ease) both;
+}
+
+@keyframes monitor-fade-area {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The newest reading's dot: one small swell per sample (it is re-keyed on
+   each one), never a loop. */
+.monitor-dot {
+  animation: monitor-dot-pulse 300ms var(--monitor-ease);
+}
+
+@keyframes monitor-dot-pulse {
+  40% {
+    transform: scale(1.3);
+  }
+}
+
+/* A process that appears between two readings fades in; the first load and
+   re-sorts do not (MonitorPage marks only a snapshot's NEW pids). */
+.monitor-row.is-new {
+  animation: monitor-row-in 150ms var(--monitor-ease);
+}
+
+@keyframes monitor-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+/* Being ended: recedes while the signal lands (the exit is the row
+   dropping out on the next reading). */
+.monitor-row.is-ending {
+  opacity: 0.45;
+}
+
+/* The selection dock rises into place the moment there is a selection. */
+.monitor-dock {
+  animation: monitor-dock-in 180ms var(--monitor-ease);
+}
+
+@keyframes monitor-dock-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .monitor-area,
+  .monitor-dot,
+  .monitor-row.is-new,
+  .monitor-selbar,
+  .monitor-dock {
+    animation: none;
+  }
+
+  .monitor-row,
+  .monitor-toggle {
+    transition: none;
+  }
+}
