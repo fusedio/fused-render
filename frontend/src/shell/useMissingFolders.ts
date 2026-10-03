@@ -15,7 +15,7 @@
 // folder appears. Only a 404 counts as missing — a network blip or a 500 must
 // not repaint every row on the page as "gone" for the twenty seconds until the
 // next poll; those folders simply stay un-asked and are asked again next time.
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import { statPath } from "@platform/lib/api";
 import { getRetainedNotifications, notify } from "@platform/lib/notifications";
 import type { HttpError, Task } from "@platform/lib/api";
@@ -68,6 +68,11 @@ export function toastMissingFolder(): void {
  *  it is asked again — the page's own poll interval. */
 const RETRY_MS = 20_000;
 
+/** How long landed 404s are gathered before they are written as one set —
+ *  long enough that a batch of stats answering together becomes a handful of
+ *  renders, short enough that nobody notices the rows catching up. */
+const FLUSH_MS = 300;
+
 export function useMissingFolders(
   tasks: readonly Pick<Task, "target" | "project">[],
 ): ReadonlySet<string> {
@@ -96,26 +101,76 @@ export function useMissingFolders(
   // time, which re-runs the effect over the folders `settled` no longer holds.
   const [retry, setRetry] = useState(0);
   useEffect(() => {
+    const asked: string[] = [];
     for (const dir of key.split("\u0000")) {
       if (!dir || settled.current.has(dir)) continue;
       settled.current.add(dir);
-      void statPath(dir)
-        .then(() => {
-          /* present: nothing to record */
-        })
-        .catch((e: HttpError) => {
-          if (!alive.current) return;
-          if (e?.status === 404) {
-            setMissing((cur) => (cur.has(dir) ? cur : new Set([...cur, dir])));
-          } else {
-            // Not an answer about the folder; ask again in a poll's time.
-            settled.current.delete(dir);
-            setTimeout(() => {
-              if (alive.current) setRetry((n) => n + 1);
-            }, RETRY_MS);
-          }
-        });
+      asked.push(dir);
     }
+    if (!asked.length) return;
+    // ONE ANSWER FOR THE WHOLE BATCH, AS A TRANSITION — not one state write per
+    // folder as its stat lands (2026-10-03, macOS 14 native windows). Every
+    // write here re-renders the whole page: `missing` is a prop of every row,
+    // and a row whose folder is gone changes SHAPE (role, tabindex, its action
+    // strip), so the 404s used to arrive as a run of separate full-list renders
+    // right after the page opened — on a 700-row list that was two seconds of
+    // frozen pointer on Safari 17's engine, where a full style pass of this
+    // page costs ~3× Chromium's. Gathering the batch makes it one render, and
+    // `startTransition` lets React yield that render to hover, scroll and
+    // typing instead of holding the main thread until it is done. The rows say
+    // "Folder missing" a beat later than they could; nothing waits on them.
+    //
+    // FLUSHED EVERY `FLUSH_MS`, NOT ONCE AT THE END: `getJson` has no timeout,
+    // and a stat of a mount-backed folder can take seconds cold — one slow
+    // answer must not hold every other folder's "Folder missing" hostage. The
+    // 404s that have landed are written together on a short timer, so a batch
+    // of 434 stats answering over ~1 s becomes three or four renders, not 434
+    // and not one that waits for the straggler.
+    const gone: string[] = [];
+    let blipped = false;
+    let flush: ReturnType<typeof setTimeout> | null = null;
+    const write = () => {
+      flush = null;
+      if (!alive.current || !gone.length) return;
+      const batch = gone.splice(0);
+      startTransition(() => {
+        setMissing((cur) => {
+          const next = batch.filter((d) => !cur.has(d));
+          return next.length ? new Set([...cur, ...next]) : cur;
+        });
+      });
+    };
+    const settle = (dir: string, e: HttpError | undefined) => {
+      if (!alive.current) return;
+      if (e?.status === 404) {
+        gone.push(dir);
+        if (flush === null) flush = setTimeout(write, FLUSH_MS);
+      } else {
+        // Not an answer about the folder; ask again in a poll's time.
+        settled.current.delete(dir);
+        blipped = true;
+      }
+    };
+    void Promise.allSettled(
+      asked.map((dir) =>
+        statPath(dir).then(
+          () => {
+            /* present: nothing to record */
+          },
+          (e: HttpError) => settle(dir, e),
+        ),
+      ),
+    ).then(() => {
+      if (flush !== null) clearTimeout(flush);
+      write();
+      // One timer for the batch, not one per blipped folder: each bump re-runs
+      // this effect over everything `settled` no longer holds.
+      if (blipped && alive.current) {
+        setTimeout(() => {
+          if (alive.current) setRetry((n) => n + 1);
+        }, RETRY_MS);
+      }
+    });
   }, [key, retry]);
   return missing;
 }
