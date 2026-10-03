@@ -2372,6 +2372,13 @@ export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
   return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
 }
 
+// Download the `.fused` at an http(s) `url` into ~/.fused-render/downloads
+// (keyed on the app id, so a re-click updates one file) and answer the saved
+// absolute path (DL-8). Caller opens it like any other .fused. No confirm.
+export function fetchAppFile(url: string): Promise<{ file: string }> {
+  return postJson<{ file: string }>("/api/appfile/fetch", { url });
+}
+
 // Re-copy the `.fused` OVER its existing local copy: payload files replace
 // their counterparts; `.venv`, `.fused`, `.git` and anything the export left
 // home stay. Destroys the user's edits to those files — callers confirm first.

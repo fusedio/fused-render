@@ -2117,6 +2117,28 @@ when one exists, else the folder itself.
   and files the payload does not carry stay; then a reload of the copy's
   entry page) and *Cancel* / close (nothing written, keep working on the
   copy). `/api/clone/info` and `POST /api/clone` stay git-only.
+- **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
+  a .fused>`, the link percent-encoded once by the sender and decoded once
+  here, verbatim to end-of-string like `git=`/`file=`. Render App's
+  `render-app://open?url=` ported one-to-one (fused-render-lite PRs #27/#30):
+  a web page's "Open in fused-render" link. Same no-page shape as DL-7:
+  `GET /clone` answers a 303 to Home with the link as `?_fetch_appfile=`
+  (nothing is on disk yet, and nothing is written on the GET, D3; a non-http(s)
+  payload rides along verbatim so the shell reports it). The shell's
+  `FetchAppFileBoot` (top document, `!IS_EMBED`, beside `EditAppFileBoot`)
+  reads the param once, strips it before any async work, then **downloads
+  without a confirm step** (owner call; the link click is the gesture) through
+  the X-Fused `POST /api/appfile/fetch {url} → {file}` (`appfetch.py`: http(s)
+  only, every redirect hop re-checked, 1 GB cap by `Content-Length` and while
+  streaming, temp file validated with `appfile.read_manifest` then
+  `os.replace`d, nothing left on disk on failure) into
+  `~/.fused-render/downloads/<app_id>.fused` — keyed on the app's stable id
+  (D884) so every link to one app updates one file and one Apps-hub row;
+  `<name>-<url sha 8>.fused` for files that predate the id — and moves to the
+  saved file's view, where the `fusedapp` template opens it (D390) and
+  `exported_apps.record_open` lists it under recents. Recorded cost of the
+  missing gate: a web page that can navigate the browser to this origin with
+  `?_fetch_appfile=` gets a remote `.fused` downloaded and opened unprompted.
 
 ---
 
