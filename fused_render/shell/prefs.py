@@ -24,6 +24,8 @@ listen-to-files accessibility mode is offered — opt-in, default off; see
 offered at all — opt-in, default off; see ``canvases_enabled``),
 **app_sharing_enabled** (whether the unified Share sheet replaces the plain
 Export action — opt-in, default off; see ``app_sharing_enabled``),
+**live_previews_enabled** (whether card thumbnails may render the live app
+in a scaled iframe — default ON; see ``live_previews_enabled``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -198,6 +200,27 @@ def app_sharing_enabled() -> bool:
     value (missing/legacy) reads as off, so every install has to opt in.
     """
     return read_prefs().get("app_sharing_enabled") is True
+
+
+def live_previews_enabled() -> bool:
+    """Whether card thumbnails may render the LIVE app (default ON).
+
+    The /apps hub's cards (AppPreviewCard) and the explorer's bookmark, recent
+    and folder cards (BookmarkCards) show a scaled-down iframe of the page
+    itself when there is no authored `preview.png` — and a still-thumbed app
+    card swaps that iframe in on hover. Each one is a whole sandboxed page plus
+    its JS runtime, so a reader who finds a grid of them slow, noisy or
+    distracting can turn them off here: every thumbnail is then a still or a
+    plain placeholder mark, nothing boots on scroll or hover.
+
+    Same idiom as `indexing_enabled`: absence and any non-`false` stored value
+    both read as ON, so a preference file that predates this setting keeps the
+    previews every install has had. Read by the client once per page load and
+    republished by the Preferences page on toggle — not consulted by any
+    server route; the /render and embed URLs the thumbnails point at keep
+    answering regardless.
+    """
+    return read_prefs().get("live_previews_enabled") is not False
 
 
 NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
@@ -602,6 +625,10 @@ def _prefs_response() -> dict:
         # in place of the plain Export / Download action (opt-in, default off).
         # Not a route guard; see `app_sharing_enabled`.
         "app_sharing": {"enabled": app_sharing_enabled()},
+        # Whether card thumbnails may render the live app in a scaled iframe
+        # (default ON). Off, every thumbnail is a still or a placeholder mark;
+        # see `live_previews_enabled`.
+        "live_previews": {"enabled": live_previews_enabled()},
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (opt-in, default off). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
@@ -836,6 +863,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'app_sharing_enabled' must be a boolean"}, status_code=400)
         prefs["app_sharing_enabled"] = value
         changed = True
+    if "live_previews_enabled" in body:
+        value = body.get("live_previews_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'live_previews_enabled' must be a boolean"}, status_code=400)
+        prefs["live_previews_enabled"] = value
+        changed = True
     if "native_windows_enabled" in body:
         value = body.get("native_windows_enabled")
         if not isinstance(value, bool):
@@ -1001,7 +1034,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'native_chat_enabled', "
                       "'native_windows_enabled', "
                       "'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "

@@ -1201,6 +1201,13 @@ export interface Prefs {
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
   app_sharing: { enabled: boolean };
+  // Whether card thumbnails may render the LIVE app in a scaled iframe
+  // (default ON — shell/prefs.py `live_previews_enabled`). Off, the /apps
+  // cards and the explorer's bookmark/recent/folder cards show a still or a
+  // placeholder mark and nothing boots on scroll or hover. OPTIONAL: an older
+  // server answers without it, and the reader (live-previews-flag.ts) treats
+  // absence as on.
+  live_previews?: { enabled: boolean };
   // Whether chat embeds render the native React chat (default ON) instead of the
   // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
   // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
@@ -1512,6 +1519,10 @@ export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { app_sharing_enabled: enabled });
+}
+
+export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { live_previews_enabled: enabled });
 }
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {

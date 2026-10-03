@@ -53,6 +53,7 @@ import {
   hfLogout,
   putAppSharingEnabled,
   putCanvasesEnabled,
+  putLivePreviewsEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
   putProjectQueueEnabled,
@@ -73,6 +74,7 @@ import type { UpdateStatus } from "@platform/lib/api";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
+import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
@@ -421,6 +423,56 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
         <span>
           <b>Enable Fused app sharing</b> — replace Export with a Share button offering a public
           link or a file.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Thumbnails: whether the /apps cards and the explorer's bookmark, recent and
+// folder cards may render the live app in a scaled iframe — the body of a card
+// with no preview.png, and the hover swap on one that has it. ON by default;
+// the checkbox is worded the way the reader thinks of it ("hide"), so checked
+// means the stored `live_previews_enabled` is FALSE — the inversion lives in
+// this one component and the positive `enabled` flows everywhere else. Same
+// one-checkbox section shape and publish-after-PUT as App sharing above, so a
+// grid already mounted in a split swaps its iframes for stills and marks the
+// moment the checkbox settles. `?.enabled !== false` because the key is
+// optional on the wire (an older server) and absence means on.
+function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.live_previews?.enabled !== false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putLivePreviewsEnabled(!enabled);
+      onChange(next);
+      publishLivePreviewsEnabled(next.live_previews?.enabled !== false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Thumbnails</h2>
+      <p className="deploy-muted">
+        App and bookmark cards show the live page in their thumbnail when there is no{" "}
+        <code>preview.png</code>, and swap it in on hover when there is one. Each live thumbnail
+        is a whole page booting in the background.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={!enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Hide live previews in thumbnails</b> — show only authored stills; a card without one
+          gets a placeholder image, and hovering never loads the app.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1479,6 +1531,7 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
                 <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
                 <ShortcutsSection prefs={prefs} onChange={setPrefs} />
                 <UpdatesSection />
