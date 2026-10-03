@@ -11022,7 +11022,7 @@ else: no editor, no Claude, no explorer chrome.
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
 - **AF-13** Shared `.fused` state per app id (port of Render App's lite PR
-  #32). Extracts are content-addressed (AF-5), so every re-export of an app
+  #32). Extracts are content-addressed (AF-6), so every re-export of an app
   lands in a fresh dir and the state the app saved under `<extract>/.fused`
   (D548, §47) used to stay behind. Now `open_app_file` makes
   `<extract>/.fused` a symlink (a directory junction on Windows) to
