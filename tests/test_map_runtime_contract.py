@@ -83,6 +83,11 @@ def test_the_page_renders_from_the_vendored_bundle_not_a_tile_server():
         "the GeoTIFF decoder worker the bundle points at is missing")
     bundle = (VENDOR / "map.bundle.mjs").read_text(encoding="utf-8", errors="replace")
     assert 'new URL("./map.worker.bundle.mjs",import.meta.url)' in bundle
+    # The point-cloud LAZ decoder ships beside the bundle rather than coming
+    # from a CDN, so a LAZ/COPC file opens offline.
+    assert (VENDOR / "laz-perf.wasm").exists(), "the LAZ decoder the bundle points at is missing"
+    assert 'new URL("./laz-perf.wasm",import.meta.url)' in bundle
+    assert "unpkg.com/laz-perf" not in bundle
     # The engine-host proxy and its tile URLs belonged to the old daemon.
     for stale in ("api/engines", "map_render.py", "vtile_url", "tile_url"):
         assert stale not in html, f"template still references the tile server: {stale}"

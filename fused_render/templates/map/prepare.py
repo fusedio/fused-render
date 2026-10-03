@@ -18,6 +18,11 @@ is never called at all. This module is asked only about the rest:
              read by GDAL over /vsicurl/.
   convert    a TIFF the browser reader failed on even though it is tiled (a
              codec the reader lacks) -> re-encoded as a DEFLATE COG.
+  pointcloud a LAS/LAZ the browser reader refused (LAS 1.4, a GeoTIFF-key or
+             missing CRS) -> LAS 1.2 in longitude/latitude, thinned to a
+             point budget; `crs` names the CRS of a file that has none.
+  crs        `crs` (WKT or EPSG code) -> proj4 and `bounds` in lon/lat, for a
+             Zarr grid in projected units.
   inspect    what a source holds (bands, CRS, fields, variables...), for the
              MCP `describe_source` tool and the code panel.
 
@@ -32,10 +37,12 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -251,6 +258,111 @@ def _download(url: str) -> Path:
     return final
 
 
+# ---- point clouds -------------------------------------------------------------------
+
+POINTCLOUD_FILES = (".las", ".laz")
+POINTCLOUD_BUDGET = 5_000_000
+
+
+def _pointcloud_plan(path: str, crs: str = "") -> dict:
+    """A LAS/LAZ the browser refused (it reads LAS <= 1.3 with a WKT CRS) as
+    LAS 1.2 in longitude/latitude, thinned to POINTCLOUD_BUDGET points. `crs`
+    names the CRS of a file whose header has none."""
+    import laspy
+    import numpy as np
+    from pyproj import CRS, Transformer
+
+    local = str(_download(path)) if is_remote_path(path) else path
+    final = _cache_path(_cache_key(local, "pointcloud", crs), ".las")
+    if final.exists():
+        with laspy.open(local) as source, laspy.open(str(final)) as cached:
+            total, kept = source.header.point_count, cached.header.point_count
+        return _pointcloud_result(final, total, kept)
+    with laspy.open(local) as reader:
+        header = reader.header
+        source_crs = CRS.from_user_input(crs) if crs else header.parse_crs()
+        mins, maxs = header.mins, header.maxs
+        if source_crs is None:
+            if -180 <= mins[0] <= maxs[0] <= 180 and -90 <= mins[1] <= maxs[1] <= 90:
+                source_crs = CRS.from_epsg(4326)
+            else:
+                raise Refusal(
+                    "This point cloud has no coordinate system in its header and its "
+                    f"coordinates are not longitude/latitude (x {mins[0]:g}…{maxs[0]:g}, "
+                    f"y {mins[1]:g}…{maxs[1]:g}). Set its coordinate system (an EPSG "
+                    "code such as EPSG:2992) in the layer's style panel.")
+        horizontal = source_crs.sub_crs_list[0] if source_crs.is_compound else source_crs
+        vertical = source_crs.sub_crs_list[1] if source_crs.is_compound else horizontal
+        # Elevations in metres: US surveys often state both axes in feet.
+        z_factor = 1.0
+        if vertical.axis_info and not vertical.is_geographic:
+            z_factor = vertical.axis_info[-1].unit_conversion_factor or 1.0
+        to_wgs84 = Transformer.from_crs(horizontal, 4326, always_xy=True)
+        names = set(header.point_format.dimension_names)
+        rgb = {"red", "green", "blue"} <= names
+        step = max(1, -(-header.point_count // POINTCLOUD_BUDGET))
+        out_header = laspy.LasHeader(point_format=3 if rgb else 1, version="1.2")
+        out_header.scales = np.array([1e-7, 1e-7, 0.001])
+        lon0, lat0 = to_wgs84.transform((mins[0] + maxs[0]) / 2, (mins[1] + maxs[1]) / 2)
+        out_header.offsets = np.array([round(lon0, 2), round(lat0, 2), 0.0])
+        tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
+        with laspy.open(str(tmp), mode="w", header=out_header) as writer:
+            seen = kept = 0
+            for chunk in reader.chunk_iterator(2_000_000):
+                # Every step-th point of the whole file, across chunk edges.
+                pick = slice((-seen) % step, None, step)
+                seen += len(chunk)
+                x, y = np.asarray(chunk.x[pick]), np.asarray(chunk.y[pick])
+                if not len(x):
+                    continue
+                kept += len(x)
+                lon, lat = to_wgs84.transform(x, y)
+                points = laspy.ScaleAwarePointRecord.zeros(len(x), header=out_header)
+                points.x, points.y = lon, lat
+                points.z = np.asarray(chunk.z[pick]) * z_factor
+                for name in ("intensity", "gps_time"):
+                    if name in names:
+                        points[name] = np.asarray(chunk[name][pick])
+                # LAS 1.4 counts up to 15 returns; LAS 1.2 holds 7.
+                for name in ("return_number", "number_of_returns"):
+                    if name in names:
+                        points[name] = np.minimum(np.asarray(chunk[name][pick]), 7)
+                if "classification" in names:
+                    # LAS 1.2 holds codes 0-31; higher user codes read as unclassified.
+                    codes = np.asarray(chunk.classification[pick])
+                    points.classification = np.where(codes > 31, 1, codes)
+                if rgb:
+                    for name in ("red", "green", "blue"):
+                        points[name] = np.asarray(chunk[name][pick])
+                writer.write_points(points)
+    _publish(tmp, final)
+    return _pointcloud_result(final, header.point_count, kept)
+
+
+def _pointcloud_result(final: Path, total: int, kept: int) -> dict:
+    thinned = f": every {-(-total // kept)}th point ({kept:,} of {total:,})" if kept < total else ""
+    return {"load": "pointcloud", "path": str(final), "converted": True,
+            "note": "converted by Python" + thinned}
+
+
+def _pointcloud_info(path: str) -> dict:
+    import laspy
+
+    local = str(_download(path)) if is_remote_path(path) else path
+    with laspy.open(local) as reader:
+        header = reader.header
+        crs = header.parse_crs()
+        return {
+            "kind": "pointcloud",
+            "points": int(header.point_count),
+            "version": str(header.version),
+            "point_format": int(header.point_format.id),
+            "dimensions": list(header.point_format.dimension_names),
+            "crs": crs.to_string() if crs else None,
+            "native_bounds": [float(v) for v in (*header.mins, *header.maxs)],
+        }
+
+
 # ---- vectors ----------------------------------------------------------------------
 
 def shapefile_companions(path: str) -> list[str]:
@@ -414,7 +526,10 @@ def inspect(path: str) -> dict:
                 "variables": {
                     name: {"dims": dict(zip(dataset[name].dims, map(int, dataset[name].shape))),
                            "dtype": str(dataset[name].dtype),
-                           "units": str(dataset[name].attrs.get("units", ""))}
+                           "units": str(dataset[name].attrs.get("units", "")),
+                           # The CF array that names the CRS, for the browser to open.
+                           "grid_mapping": str(dataset[name].attrs.get("grid_mapping")
+                                               or dataset[name].encoding.get("grid_mapping") or "")}
                     for name in _gridded_vars(dataset)
                 },
             }
@@ -435,6 +550,8 @@ def inspect(path: str) -> dict:
                 raise
     if suffix == ".pmtiles":
         return {"kind": "pmtiles"}
+    if suffix in POINTCLOUD_FILES:
+        return _pointcloud_info(path)
     if suffix == ".py":
         return {"kind": "python", "note": "a script; its result is drawn"}
     import rasterio
@@ -485,6 +602,8 @@ def plan(target: str, entrypoint: str = "") -> dict:
         return _multidim_plan(target)
     if suffix == ".pmtiles":
         return {"load": "pmtiles", "path": target}
+    if suffix in POINTCLOUD_FILES or re.search(r"(^|[/\\])ept\.json$", target.split("?", 1)[0]):
+        return {"load": "pointcloud", "path": target}
     if suffix in BROWSER_VECTOR:
         out = {"load": "vector", "path": target, "format": suffix.lstrip(".")}
         if suffix == ".shp" and not remote:
@@ -503,7 +622,27 @@ def plan(target: str, entrypoint: str = "") -> dict:
     raise Refusal(f"The map viewer does not know how to read {suffix} files.")
 
 
-def main(target: str = "", action: str = "plan", entrypoint: str = "", layer: str = ""):
+def _crs_info(crs: str, bounds: list | None = None) -> dict:
+    """A CRS as a Zarr store wrote it (WKT, or an EPSG code) as the proj4
+    string the browser reprojects with, plus a grid extent in lon/lat."""
+    from pyproj import CRS, Transformer
+
+    parsed = CRS.from_user_input(crs)
+    # Geographic or not is the horizontal part's call: unwrap datum shifts and heights.
+    horizontal = parsed.source_crs if parsed.is_bound else parsed
+    horizontal = horizontal.sub_crs_list[0] if horizontal.is_compound else horizontal
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # "lose projection information"
+        out = {"proj4": parsed.to_proj4(), "epsg": parsed.to_epsg(), "geographic": horizontal.is_geographic}
+    if bounds and len(bounds) == 4:
+        west, south, east, north = Transformer.from_crs(parsed, 4326, always_xy=True) \
+            .transform_bounds(*map(float, bounds))
+        out["bounds"] = [max(west, -180.0), max(south, -90.0), min(east, 180.0), min(north, 90.0)]
+    return out
+
+
+def main(target: str = "", action: str = "plan", entrypoint: str = "", layer: str = "",
+         crs: str = "", bounds: list | None = None):
     try:
         target = str(target or "").strip()
         if not target:
@@ -520,6 +659,10 @@ def main(target: str = "", action: str = "plan", entrypoint: str = "", layer: st
             # A tiled TIFF the browser still could not decode (a codec its
             # reader lacks): re-encode it rather than trusting the layout.
             result = _localize(target) if is_remote_path(target) else _raster_plan(target)
+        elif action == "pointcloud":
+            result = _pointcloud_plan(target, crs)
+        elif action == "crs":
+            result = _crs_info(crs, bounds)
         elif action == "inspect":
             result = inspect(target)
         else:

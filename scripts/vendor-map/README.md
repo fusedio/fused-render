@@ -14,9 +14,15 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
     FlatGeobuf, CSV, KML… through DuckDB-WASM, tiled in the browser
   - `@carbonplan/zarr-layer` + `zarrita` — Zarr v2/v3 as a MapLibre custom layer
   - `pmtiles` — the `pmtiles://` protocol
+  - `maplibre-gl-lidar` — LAS/LAZ/COPC/EPT point clouds through deck.gl's
+    PointCloudLayer; COPC and EPT stream by viewport (octree nodes by range
+    read), LAS/LAZ (<= 1.3) are read whole. The page makes one control per
+    layer and hides its panel
 - `map.worker.bundle.mjs` — the GeoTIFF tile decoder the raster reader runs off
   the main thread.
-- `map.bundle.css` — MapLibre's stylesheet.
+- `laz-perf.wasm` — the LAZ decoder the point-cloud library loads; `build.sh`
+  points the bundle at this copy instead of unpkg, so LAZ/COPC opens offline.
+- `map.bundle.css` — MapLibre's and the point-cloud library's stylesheets.
 
 ## Why the map renders in the browser
 
@@ -42,8 +48,9 @@ page falls back to `prepare.py`'s GeoJSON conversion for vectors.
 ```
 
 Needs `bun` on PATH. Versions are pinned in `package.json`; the `overrides`
-block holds every `@luma.gl/*` package at the version deck.gl 9.3.10 was built
-against — a mixed luma.gl fails at bundle time (missing shader-plugin exports)
+block holds every `@deck.gl/*` package at 9.4.0 (the point-cloud library needs
+9.4; the raster library accepts it) and every `@luma.gl/*` package at the
+version deck.gl 9.4 was built against — a mixed luma.gl fails at bundle time (missing shader-plugin exports)
 or at run time ("luma.gl has already been initialized"). Only the built files
 are committed; `node_modules/` is git-ignored.
 

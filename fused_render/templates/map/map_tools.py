@@ -96,10 +96,11 @@ def add_layer(map_path: str, source: str, name: str = "", kind: str = "auto",
               visible: bool = True, opacity: float = 1.0) -> dict:
     """Add a data layer on top of the map. source is a local path or URL:
     GeoTIFF/COG, GeoJSON, GeoParquet, Shapefile, GeoPackage, FlatGeobuf, CSV,
-    KML, NetCDF, HDF5, Zarr, PMTiles, or a .py script returning geodata.
-    kind is auto|raster|vector|zarr|pmtiles. See map_style_reference for style
-    and options keys. Creates the map file if it does not exist. Returns the
-    new layer's id, which the other layer tools take."""
+    KML, NetCDF, HDF5, Zarr, PMTiles, LAS/LAZ/COPC point clouds (or an EPT
+    ept.json), or a .py script returning geodata. kind is
+    auto|raster|vector|zarr|pmtiles|pointcloud. See map_style_reference for
+    style and options keys. Creates the map file if it does not exist. Returns
+    the new layer's id, which the other layer tools take."""
     try:
         command = _drop_none(op="add_layer", source=source, name=name or None,
                              kind=kind, style=_json_arg(style),
@@ -208,7 +209,8 @@ def download_source(source: str, dest_dir: str) -> dict:
 
 def style_reference() -> dict:
     """Every style and options key a layer accepts, by layer kind, with its
-    type. Colors are "#rrggbb"; unit means 0-1; range is [min, max]."""
+    type. Colors are "#rrggbb"; unit means 0-1; range is [min, max]; codes
+    is a list of integers 0-255."""
     return {
         "status": "ok",
         "style": map_doc.STYLE_KEYS,
