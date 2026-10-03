@@ -113,14 +113,15 @@ def test_pinned_specs_and_home_spec():
 # ---- search ------------------------------------------------------------------
 
 
-def rows(*names, pinned=()):
-    return [{"path": f"/x/{n}", "name": n, "title": n, "pinned": n in pinned} for n in names]
+def rows(*names, pinned=(), recent=()):
+    return [{"path": f"/x/{n}", "name": n, "title": n, "pinned": n in pinned,
+             "recent": n in recent} for n in names]
 
 
-def test_empty_query_lists_pinned_in_order():
-    r = rows("A", "B", "C", "D", pinned=("C", "A"))
-    assert [x["name"] for x in launcher.search("", r)] == ["A", "C"]
-    assert [x["name"] for x in launcher.search("   ", r)] == ["A", "C"]
+def test_empty_query_lists_recent_then_pinned_in_order():
+    r = rows("A", "B", "C", "D", "E", pinned=("C", "A"), recent=("D", "A"))
+    assert [x["name"] for x in launcher.search("", r)] == ["A", "C", "D"]
+    assert [x["name"] for x in launcher.search("   ", r)] == ["A", "C", "D"]
 
 
 def test_search_ranks_prefix_then_word_then_substring_then_subsequence():
@@ -159,7 +160,8 @@ def test_registry_desk_first_newest_first_then_workspace(home, tmp_path):
     launcher.invalidate()
     reg = launcher.registry(running={b})
     paths = [r["path"] for r in reg]
-    assert paths[:2] == [b, a]  # desk, newest-added first
+    assert paths[:2] == [b, a]  # nothing opened yet: desk, newest-added first
+    assert not reg[0]["recent"] and not reg[1]["recent"]
     assert reg[0]["pinned"] and reg[0]["running"] and reg[1]["pinned"] and not reg[1]["running"]
     assert reg[1]["title"] == "Alpha One" and reg[1]["url"].startswith("/apps/")
     assert len(paths) == len(set(paths))

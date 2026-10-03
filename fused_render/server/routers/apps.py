@@ -186,18 +186,16 @@ def _app_recency(app: dict) -> float:
     return opened if isinstance(opened, (int, float)) else (app.get("updated_at") or 0)
 
 
-@router.get("/api/apps/home")
-def api_home_apps(limit: int = HOME_APPS_LIMIT):
-    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+def recent_apps(limit: int) -> list[dict]:
+    """At most ``limit`` recently OPENED apps, newest open first — the one
+    definition of "recently opened" on this machine, merged from the three
+    stores that record an open (every one written by GET /render, D301): the
+    workspace recents (``app_recents.json``), the linked apps' own
+    ``openedAt`` and the opened ``.fused`` files (D396). Every row carries
+    ``opened_at``. Home's strip and the launcher's empty query both read
+    this, so an app opened anywhere lands at the top of both."""
+    from fused_render import exported_apps, registered_apps
 
-    A warm Home visit touches only explicit paths from the two recents stores.
-    When those do not fill its single row, the ordinary workspace listing runs
-    once and fills the holes; because showcase is an ordinary workspace tag,
-    that fallback preserves unopened showcase cards as well as new local apps.
-    """
-    from fused_render import registered_apps
-
-    limit = max(1, min(limit, HOME_APPS_LIMIT))
     recent = _recent_workspace_apps(limit)
     recent.extend(
         registered_apps.registered_apps(
@@ -206,13 +204,25 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT):
     )
     # Opened .fused files (D396): their recents store is already newest-first
     # and every entry carries openedAt, so they merge exactly as the other two.
-    from fused_render import exported_apps
-
     recent.extend(exported_apps.recent_exported_apps(limit))
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )
-    recent = recent[:limit]
+    return recent[:limit]
+
+
+@router.get("/api/apps/home")
+def api_home_apps(limit: int = HOME_APPS_LIMIT):
+    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+
+    A warm Home visit touches only explicit paths from the recents stores
+    (`recent_apps`). When those do not fill its single row, the ordinary
+    workspace listing runs once and fills the holes; because showcase is an
+    ordinary workspace tag, that fallback preserves unopened showcase cards
+    as well as new local apps.
+    """
+    limit = max(1, min(limit, HOME_APPS_LIMIT))
+    recent = recent_apps(limit)
     if len(recent) >= limit:
         return {"apps": recent}
 
