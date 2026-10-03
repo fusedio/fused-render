@@ -37,6 +37,10 @@ What the browser used to do for a page, the delegates here do instead
   origin → granted (the system TCC prompt still gates the hardware);
   `requestFullscreen` enabled; `requestPointerLock` granted;
   `window.close()` closes the window.
+- the right-click menu is WebKit's, curated (`window_policy.context_menu_item`):
+  "Open … in New Window" says "in Browser" when that is where the URL goes
+  and vanishes for a `blob:`/`data:` URL that goes nowhere; "Download Image"
+  and friends save like any other download instead of silently dropping.
 
 A window's IDENTITY — the app folder or file it shows, what focus-or-open
 and the launcher's running dot key on — is read LIVE from the web view's
@@ -149,6 +153,26 @@ def _downloads_dir() -> str:
     return str(found[0]) if found else os.path.expanduser("~/Downloads")
 
 
+def _hit_test_urls(element) -> dict | None:
+    """The image / link / media URLs under a right-click, from the private
+    `_WKContextMenuElementInfo.hitTestResult` (`_WKHitTestResult`). None when
+    WebKit offers no hit test — the caller then leaves the menu alone."""
+    if element is None or not element.respondsToSelector_(b"hitTestResult"):
+        return None
+    hit = element.hitTestResult()
+    if hit is None:
+        return None
+    out = {}
+    for key, sel in (("image_url", b"absoluteImageURL"),
+                     ("link_url", b"absoluteLinkURL"),
+                     ("media_url", b"absoluteMediaURL")):
+        if not hit.respondsToSelector_(sel):
+            return None
+        url = getattr(hit, sel.decode())()
+        out[key] = str(url.absoluteString()) if url is not None else None
+    return out
+
+
 # ---- private WKUIDelegate selectors ------------------------------------------
 #
 # Pointer lock and geolocation have no public WKUIDelegate method on macOS:
@@ -169,6 +193,15 @@ _SEL_POINTER_LOCK_LOST = b"_webViewDidLosePointerLock:"
 _SEL_GEOLOCATION = (b"_webView:requestGeolocationPermissionForOrigin:"
                     b"initiatedByFrame:decisionHandler:")
 _SEL_DID_CLOSE = b"webViewDidClose:"
+# The right-click menu (WKUIDelegatePrivate): WebKit proposes its default
+# NSMenu and takes back the one to show. Context-menu downloads ("Download
+# Image", "Download Linked File") never pass the public didBecomeDownload
+# hooks; WKNavigationDelegatePrivate hands them over through the second
+# selector, and a WKDownload nobody adopts has no delegate to pick a
+# destination, so it silently goes nowhere.
+_SEL_CONTEXT_MENU = (b"_webView:getContextMenuFromProposedMenu:forElement:"
+                     b"userInfo:completionHandler:")
+_SEL_CONTEXT_MENU_DOWNLOAD = b"_webView:contextMenuDidCreateDownload:"
 
 objc.registerMetaDataForSelector(
     b"NSObject",
@@ -202,6 +235,27 @@ objc.registerMetaDataForSelector(
                 "callable": {
                     "retval": {"type": b"v"},
                     "arguments": {0: {"type": b"^v"}, 1: {"type": b"q"}},
+                },
+                "type": b"@?",
+            },
+        },
+    },
+)
+objc.registerMetaDataForSelector(
+    b"NSObject",
+    _SEL_CONTEXT_MENU,
+    {
+        "required": False,
+        "retval": {"type": b"v"},
+        "arguments": {
+            2: {"type": b"@"},
+            3: {"type": b"@"},
+            4: {"type": b"@"},
+            5: {"type": b"@"},
+            6: {
+                "callable": {
+                    "retval": {"type": b"v"},
+                    "arguments": {0: {"type": b"^v"}, 1: {"type": b"@"}},
                 },
                 "type": b"@?",
             },
@@ -300,6 +354,12 @@ class _WebDelegate(NSObject):
         self._adopt_download(download)
 
     def webView_navigationResponse_didBecomeDownload_(self, webview, response, download):
+        self._adopt_download(download)
+
+    @_private(_SEL_CONTEXT_MENU_DOWNLOAD, b"v@:@@")
+    def webView_contextMenuDidCreateDownload_(self, webview, download):
+        # Right-click → Download Image / Download Linked File / Download
+        # Media. Same WKDownload as a link's; same ~/Downloads destination.
         self._adopt_download(download)
 
     def _adopt_download(self, download) -> None:
@@ -429,6 +489,42 @@ class _WebDelegate(NSObject):
         # Esc / focus loss. WebKit restores the cursor itself; nothing to do
         # but keep the selector present so the callback has a home.
         logger.debug("pointer lock lost")
+
+    # ---- private WKUIDelegate: the right-click menu --------------------------
+
+    @_private(_SEL_CONTEXT_MENU, b"v@:@@@@@?")
+    def webView_getContextMenuFromProposedMenu_forElement_userInfo_completionHandler_(
+            self, webview, menu, element, user_info, completion):
+        # `element` is a _WKContextMenuElementInfo; its hit test carries the
+        # image / link / media URL the item would act on. Without one (an
+        # older WebKit) the menu is left exactly as proposed — never curate
+        # blind, a wrongly dropped item is worse than a mislabelled one.
+        # Whatever happens, the completion runs: a raise here would leave
+        # the right-click with NO menu at all, worse than an uncurated one.
+        try:
+            self._curate_context_menu(menu, element)
+        except Exception:  # noqa: BLE001 — private API, shapes may shift
+            logger.exception("context menu curation failed; showing WebKit's")
+        completion(menu)
+
+    def _curate_context_menu(self, menu, element) -> None:
+        urls = _hit_test_urls(element)
+        if urls is None or menu is None:
+            return
+        items = list(menu.itemArray())
+        # The identifiers are WebKit-source knowledge (the SDK ships no
+        # WKMenuItemIdentifiersPrivate.h): log what actually arrived so a
+        # miss is a one-line fix read off Show Logs, not a guess.
+        logger.debug("context menu %s: %s", urls,
+                     [(str(i.identifier() or ""), str(i.title())) for i in items])
+        for item in items:
+            ident = item.identifier()
+            verdict, title = window_policy.context_menu_item(
+                str(ident) if ident else None, self._manager.port, **urls)
+            if verdict == "drop":
+                menu.removeItem_(item)
+            elif verdict == "retitle":
+                item.setTitle_(title)
 
     # ---- window.close() (WKUIDelegate) -------------------------------------
 

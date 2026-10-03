@@ -241,6 +241,50 @@ def navigation_action(
     return "allow"
 
 
+#: Right-click menu items WebKit proposes that would open a URL "in a new
+#: window" (`WKMenuItemIdentifiersPrivate.h`), keyed by which URL of the
+#: element they act on. The dictionary is what `context_menu_item` knows.
+_OPEN_IN_NEW_WINDOW_ITEMS = {
+    "WKMenuItemIdentifierOpenImageInNewWindow": ("image", "Open Image in Browser"),
+    "WKMenuItemIdentifierOpenLinkInNewWindow": ("link", "Open Link in Browser"),
+    "WKMenuItemIdentifierOpenMediaInNewWindow": ("media", "Open Media in Browser"),
+}
+
+
+def context_menu_item(
+    identifier: str | None,
+    port: int,
+    *,
+    image_url: str | None = None,
+    link_url: str | None = None,
+    media_url: str | None = None,
+) -> tuple[str, str | None]:
+    """What to do with one item of the right-click menu WebKit proposes:
+    ``("keep", None)``, ``("drop", None)`` or ``("retitle", "<title>")``.
+
+    WebKit's default menu is a browser's. Its "Open … in New Window" items
+    all go through the popup delegate, which does for the URL what it does
+    for `window.open`: a page of ours gets a window, so the label is true;
+    an external http(s) URL goes to the default browser, so the label is a
+    lie — say "in Browser"; anything else (a generated image as a `blob:`
+    or `data:` URL) has nowhere to go and the item would do nothing — drop
+    it, Copy Image and Download Image are still there. Every other item
+    stays: Copy, Copy Image, Look Up, Share, Inspect Element and the
+    downloads, which `mac_window` adopts the way it adopts link downloads.
+    """
+    entry = _OPEN_IN_NEW_WINDOW_ITEMS.get(identifier or "")
+    if entry is None:
+        return ("keep", None)
+    which, browser_title = entry
+    url = {"image": image_url, "link": link_url, "media": media_url}[which]
+    kind = classify(url, port)
+    if kind == "app":
+        return ("keep", None)
+    if kind == "external":
+        return ("retitle", browser_title)
+    return ("drop", None)
+
+
 def response_action(
     *,
     is_main_frame: bool,
