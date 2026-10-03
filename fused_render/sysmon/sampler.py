@@ -430,14 +430,14 @@ class StopRefused(Exception):
         self.status = status
 
 
-def _check_started(b, pid: int, started_at) -> None:
+def _check_started(current: float | None, started_at) -> None:
     """The client names a process by (pid, startedAt); refuse if that pid now
-    belongs to a different process (404 "process changed")."""
+    belongs to a different process (404 "process changed"). `current` is the
+    pid's start stamp as the caller read it now."""
     try:
         claimed = float(started_at)
     except (TypeError, ValueError):
         raise StopRefused("startedAt is required") from None
-    current = b.start_time(pid) if b is not None else None
     if current is None:
         raise StopRefused("process already exited", 404)
     if abs(current - claimed) > _STAMP_TOLERANCE_S:
@@ -460,7 +460,7 @@ def stop(sampler: Sampler, pid: int, started_at=None) -> str:
     current = b.proc_sample(pid) if b is not None else None
     if current is None or current.start != start:
         raise StopRefused("process already exited", 404)
-    _check_started(b, pid, started_at)
+    _check_started(b.start_time(pid), started_at)
 
     if ref.get("engine_id"):
         from fused_render.server import engine_host
@@ -508,7 +508,9 @@ def kill(sampler: Sampler, pid: int, force: bool = False, started_at=None) -> di
     current = b.proc_ident(pid) if b is not None else None
     if current is None or current.zombie or abs(current.start - stamp) > _STAMP_TOLERANCE_S:
         raise StopRefused("process already exited", 404)
-    _check_started(b, pid, started_at)
+    # From the KERN_PROC ident, not b.start_time(): that reads proc_pidinfo,
+    # which macOS refuses for another user's pid.
+    _check_started(current.start, started_at)
     sig = signal.SIGKILL if force else signal.SIGTERM
     try:
         _kill(pid, sig)

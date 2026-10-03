@@ -60,8 +60,9 @@ class FakeBackend:
         return self.args.get(pid)
 
     def start_time(self, pid):
+        # proc_pidinfo, like the real one: refused for another user's pid.
         ident = self.idents.get(pid)
-        return ident.start if ident else None
+        return ident.start if ident and ident.uid == self.uid else None
 
     def host_memory(self):
         return {"total": 16 << 30, "used": 10 << 30, "app": 6 << 30,
