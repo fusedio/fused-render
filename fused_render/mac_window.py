@@ -631,7 +631,10 @@ class _Window:
         actions as the ⌘⇧E / ⌘⇧L / ⌘⇧H menu items. Edit means something only
         while the window runs an app (`sync_edit_button`)."""
         specs = (  # left to right
-            ("square.and.pencil", "Edit", "Edit (⌘⇧E)", b"editApp:"),
+            # Folder, not a pencil: the native twin of MenuIcons.folder — the
+            # glyph "Open in Explorer" wears in the sidebar/app-card menus,
+            # since Edit opens that same explorer view.
+            ("folder", "Edit", "Edit (⌘⇧E)", b"editApp:"),
             ("safari", "Open in Browser", "Open in Browser (⌘⇧L)", b"openInBrowser:"),
             ("house", "Home", "Home (⌘⇧H)", b"goHome:"),
         )
