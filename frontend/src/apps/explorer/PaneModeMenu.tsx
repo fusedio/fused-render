@@ -13,6 +13,7 @@
 //         lives INSIDE the tab's <button>, where a nested <button> would be
 //         invalid HTML and a labelled control would not fit anyway.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { resolveConditions, statPath, type TemplateEntry } from "@platform/lib/api";
 import {
   isModePending,
@@ -52,6 +53,10 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   const [conditions, setConditions] = useState<Record<string, boolean> | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null); // non-null = open
   const rootRef = useRef<HTMLSpanElement | null>(null);
+  // The dropdown is portaled to <body> (see BarMenu.tsx / ContextMenu.tsx):
+  // a fixed box left under the pane bar is pinned to any ancestor that is a
+  // containing block for fixed descendants. So "inside" is either subtree.
+  const popupRef = useRef<HTMLSpanElement | null>(null);
 
   // Re-stat on every path change (pane navigation) so the menu tracks the
   // live location's modes. Sentinel paths (/_panel, /_tab) and stat errors
@@ -95,7 +100,8 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   useEffect(() => {
     if (!pos) return;
     const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setPos(null);
+      const t = e.target as Node;
+      if (!rootRef.current?.contains(t) && !popupRef.current?.contains(t)) setPos(null);
     };
     const onBlur = () => setPos(null);
     document.addEventListener("pointerdown", onDown);
@@ -173,8 +179,9 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
       <span className="pane-mode-btn" title={"Mode: " + modeTitle(active.mode)} onClick={toggle}>
         {templateModeIcon(active)}
       </span>
-      {pos && (
-        <span className="pane-mode-dropdown" style={{ top: pos.top, left: pos.left }}>
+      {pos &&
+        createPortal(
+        <span ref={popupRef} className="pane-mode-dropdown" style={{ top: pos.top, left: pos.left }}>
           {visible.map((t) => (
             <span
               key={t.mode}
@@ -191,7 +198,8 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
               <span>{modeTitle(t.mode)}</span>
             </span>
           ))}
-        </span>
+        </span>,
+        document.body
       )}
     </span>
   );
