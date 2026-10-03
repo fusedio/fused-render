@@ -2,12 +2,14 @@
 
 The launcher (``static/launcher.html`` in ``launcher_panel.py``) is a
 Spotlight-like panel on a global shortcut (⌥Space by default): an empty
-query lists the apps on the sidebar's desk (``current_apps``, newest first),
-and typing searches every app this machine knows — the desk, every app in
-the workspace (``app_listing.workspace_apps``, which covers the ``showcase``
-and ``local`` tags), the linked folders (``registered_apps``) and the
-exported ``.fused`` files the index knows (``exported_apps``). The same set
-the /apps hub shows. Under the app rows, a non-empty query also lists files
+query lists the RECENTLY OPENED apps (``routers.apps.recent_apps`` — the
+clock Home's strip reads, stamped whenever an app page renders, D301),
+newest open first, with the sidebar's desk (``current_apps``, newest-added
+first) filling any gap below them; typing searches every app this machine
+knows — those, every app in the workspace (``app_listing.workspace_apps``,
+which covers the ``showcase`` and ``local`` tags), the linked folders
+(``registered_apps``) and the exported ``.fused`` files the index knows
+(``exported_apps``). The same set the /apps hub shows. Under the app rows, a non-empty query also lists files
 and folders from the file index (``file_results``): the home search box's
 engine, a handful of rows, opened in the explorer.
 
@@ -17,10 +19,12 @@ Settings live in ``prefs.json`` (shell/prefs.py), two keys::
 
 ``launcher_hotkey`` opens the launcher (``hotkey.py`` spec syntax).
 ``launcher_row_modifier`` is the modifier (or ``+``-joined modifiers) that,
-with a digit 1–9, opens the Nth app: from anywhere, the Nth DESK app (nine
-global shortcuts); while the launcher is up, the Nth row — the same list
-when the query is empty. ``<modifier>+0`` opens the shell home. One knob from
-the user's point of view. Missing or corrupt → the defaults.
+with a digit 1–9, opens the Nth app of the empty-query list (nine global
+shortcuts, resolved at press time — the Nth recently opened app, the desk
+behind them); while the launcher is up, the Nth row shown. The SAME list
+when the query is empty, by design (owner, 2026-10-03). ``<modifier>+0``
+opens the shell home. One knob from the user's point of view. Missing or
+corrupt → the defaults.
 
 ``search`` is pure and ranks by match quality then by registry order: a
 name that starts with the query, then a word inside the name that does,
@@ -153,7 +157,7 @@ def notify_settings_changed(hotkey_spec: str | None) -> None:
 
 HOME_ROW = {"home": True, "path": "", "url": "/", "name": "Fused Render",
             "title": "Fused Render", "kind": "home", "pinned": False,
-            "running": False, "icon": None}
+            "recent": False, "running": False, "icon": None}
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
@@ -167,7 +171,7 @@ def _icon_url(icon: str | None, mtime) -> str | None:
             + "&v=" + urllib.parse.quote(str(mtime or "")))
 
 
-def _folder_row(a: dict, *, pinned: bool) -> dict:
+def _folder_row(a: dict, *, pinned: bool, recent: bool = False) -> dict:
     path = canonical_fs_path(os.path.abspath(a["path"])).rstrip("/") or a["path"]
     return {
         "path": path,
@@ -176,16 +180,67 @@ def _folder_row(a: dict, *, pinned: bool) -> dict:
         "title": a.get("title") or a.get("name") or os.path.basename(path),
         "kind": "app",
         "pinned": pinned,
+        "recent": recent,
         "running": False,
         "icon": _icon_url(a.get("icon"), a.get("icon_mtime")),
     }
 
 
+def _appfile_row(a: dict, *, recent: bool = False) -> dict:
+    path = a["path"]
+    return {
+        "path": path,
+        "url": embed_url_path(path),
+        "name": a.get("name") or os.path.basename(path),
+        "title": a.get("name") or os.path.basename(path),
+        "kind": "appfile",
+        "pinned": False,
+        "recent": recent,
+        "running": False,
+        "icon": None,
+    }
+
+
+def recent_rows(limit: int = MAX_RESULTS) -> list[dict]:
+    """The recently opened apps, newest open first — Home's definition
+    (`routers.apps.recent_apps`), so the panel and the Home strip never
+    disagree about what was opened last. Folders carry the page's title the
+    way desk rows do; ``pinned`` says whether the row is also on the desk.
+    Never raises: a store that cannot be read is zero rows, and the desk
+    still fills the empty query."""
+    from fused_render import app_listing, current_apps
+
+    try:
+        from fused_render.server.routers.apps import recent_apps
+
+        apps = recent_apps(limit)
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.debug("recent apps failed", exc_info=True)
+        return []
+    # realpath on both sides: the desk stores canonical abspaths, `app_dict`
+    # hands back realpaths, and a symlinked workspace spells them apart.
+    try:
+        desk = {os.path.realpath(a["path"]) for a in current_apps.read_state()["apps"]}
+    except Exception:  # noqa: BLE001
+        desk = set()
+    rows = []
+    for a in apps:
+        if a.get("kind") == "appfile":
+            rows.append(_appfile_row(a, recent=True))
+            continue
+        entry = a.get("entry")
+        title = app_listing.entry_title(entry) if entry else None
+        pinned = os.path.realpath(a["path"]) in desk
+        rows.append(_folder_row({**a, "title": title}, pinned=pinned, recent=True))
+    return rows
+
+
 def desk_rows() -> list[dict]:
     """The sidebar's desk (``current_apps``), NEWEST-ADDED FIRST — the order
     the sidebar seeds before any drag (a drag reorder lives in the browser's
-    localStorage and is not visible here). ``<modifier>+N`` opens the Nth of
-    these. Folders that are gone are skipped."""
+    localStorage and is not visible here). In the launcher's empty-query
+    list they trail the recently opened apps (`search`). Folders that are
+    gone are skipped."""
     from fused_render import app_listing, current_apps
 
     rows = []
@@ -208,7 +263,7 @@ def _registry_uncached() -> list[dict]:
     def key_of(path: str) -> str:
         return os.path.realpath(path)
 
-    for r in desk_rows():
+    for r in recent_rows() + desk_rows():
         k = key_of(r["path"])
         if k in seen:
             continue
@@ -237,31 +292,24 @@ def _registry_uncached() -> list[dict]:
         logger.debug("exported apps failed", exc_info=True)
         files = []
     for a in files:
-        path = a["path"]
-        k = key_of(path)
+        k = key_of(a["path"])
         if k in seen:
             continue
         seen.add(k)
-        rows.append({
-            "path": path,
-            "url": embed_url_path(path),
-            "name": a.get("name") or os.path.basename(path),
-            "title": a.get("name") or os.path.basename(path),
-            "kind": "appfile",
-            "pinned": False,
-            "running": False,
-            "icon": None,
-        })
+        rows.append(_appfile_row(a))
     return rows
 
 
 def registry(running=frozenset()) -> list[dict]:
-    """Every app the launcher can open, desk first (newest first), then the
-    workspace + linked apps, then exported ``.fused`` files. Cached for a
-    couple of seconds: the workspace walk is not free and a query arrives
-    per keystroke. ``running`` marks the rows whose path a window shows.
+    """Every app the launcher can open: the recently opened ones first
+    (newest open first), then the rest of the desk (newest-added first),
+    then the workspace + linked apps, then exported ``.fused`` files. Cached
+    for a couple of seconds: the workspace walk is not free and a query
+    arrives per keystroke. ``running`` marks the rows whose path a window
+    shows. Ties in a search keep this order, so a recent app outranks a
+    never-opened one with the same match.
 
-    Rows: ``{path, url, name, title, kind, pinned, running, icon}``.
+    Rows: ``{path, url, name, title, kind, pinned, recent, running, icon}``.
     """
     global _cache
     now = time.monotonic()
@@ -283,8 +331,12 @@ def invalidate() -> None:
 
 
 def nth_pinned(n: int) -> str | None:
-    """The folder of the ``n``-th desk app (1-based, newest first), or None."""
-    rows = desk_rows()
+    """The path the global ``<modifier>+n`` opens (1-based): the ``n``-th row
+    of the empty-query list — exactly what the panel shows before any typing,
+    so the digit means the same app whether or not the panel is up. Through
+    `registry`, so the per-keystroke cache serves a press too. None past the
+    end."""
+    rows = search("", registry())
     return rows[n - 1]["path"] if 1 <= n <= len(rows) else None
 
 
@@ -319,11 +371,14 @@ def _score(q: str, row: dict) -> int | None:
 
 
 def search(query: str, rows: list[dict], limit: int = MAX_RESULTS) -> list[dict]:
-    """An empty query → the pinned (desk) rows, in order. Otherwise every
-    row that matches, best match first, ties in registry order."""
+    """An empty query → the recently opened rows, then the desk rows, in
+    registry order (recents are already newest first, the desk newest-added
+    first, and a row on both lists appears once, where its open put it).
+    Otherwise every row that matches, best match first, ties in registry
+    order."""
     q = str(query or "").strip().lower()
     if not q:
-        return [r for r in rows if r.get("pinned")][:limit]
+        return [r for r in rows if r.get("recent") or r.get("pinned")][:limit]
     scored = []
     for i, r in enumerate(rows):
         s = _score(q, r)
@@ -363,6 +418,7 @@ def _file_row(path: str, is_dir: bool) -> dict:
         "title": os.path.basename(path) or path,
         "kind": "folder" if is_dir else "file",
         "pinned": False,
+        "recent": False,
         "running": False,
         "icon": None,
     }

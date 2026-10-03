@@ -269,7 +269,7 @@
     const rows = state.rows;
     if (!rows.some(a => !a.home)) {
       const text = q.value.trim();
-      empty.textContent = text ? `No app or file matches “${text}”` : "Nothing on your desk yet";
+      empty.textContent = text ? `No app or file matches “${text}”` : "Nothing opened yet";
       const tip = document.createElement("span");
       tip.className = "tip";
       if (!text) {
@@ -373,7 +373,7 @@
     state.recording = false;
     shortcut.classList.remove("rec");
     if (state.settings) setSettings(state.settings);
-    // Drop the last search now: until the desk list arrives, Enter or a
+    // Drop the last search now: until the recents list arrives, Enter or a
     // click must not launch a stale row from the previous query.
     state.apps = [];
     state.files = [];
