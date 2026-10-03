@@ -69,7 +69,7 @@ def _apple(out: dict[int, Owner]) -> None:
         procs = list(host._text_children)
     for p in procs:
         if getattr(p, "pid", None) and p.poll() is None:
-            out[int(p.pid)] = Owner("model", "Model: Apple on-device", {})
+            out[int(p.pid)] = Owner("model", "Model: Apple on-device", {"apple": True})
 
 
 def _terminals(out: dict[int, Owner]) -> None:

@@ -471,6 +471,10 @@ def stop(sampler: Sampler, pid: int, started_at=None) -> str:
         supervisor.unload(model=ref["model"], capability=ref.get("capability"),
                           reason="Stopped from Monitor")
         return "model"
+    if ref.get("apple"):
+        from fused_render.ai.apple import host
+        if host.cancel_pid(int(pid)):
+            return "model"
     if ref.get("run_id"):
         try:
             from fused_render import project_queue

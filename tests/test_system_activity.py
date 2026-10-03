@@ -243,6 +243,33 @@ def test_stop_routes_through_the_owner(client, fake, monkeypatch):
     assert (stopped, unloaded, killed) == (["bg_abc"], ["org/qwen2.5-7b"], [203])
 
 
+def test_stop_routes_an_apple_on_device_child_through_its_host(client, fake, monkeypatch):
+    from fused_render.ai.apple import host as apple_host
+
+    class FakeProc:
+        pid = 206
+
+        def poll(self):
+            return None
+
+    backend, _, _ = fake
+    backend.tree[206] = ROOT
+    backend.cpu_ns[206] = 0
+    backend.mem[206] = 50
+    backend.idents[206] = ProcIdent(206, ROOT, backend.uid, 1_700_000_206.0, "afm-text", False)
+    proc = FakeProc()
+    cancelled, killed = [], []
+    monkeypatch.setattr(apple_host, "_text_children", {proc})
+    monkeypatch.setattr(apple_host, "cancel", lambda p: cancelled.append(p))
+    monkeypatch.setattr(sysmon_sampler, "_kill", lambda pid, sig: killed.append(pid))
+
+    procs = {r["pid"]: r for r in client.get("/api/system/activity").json()["procs"]}
+    assert (procs[206]["kind"], procs[206]["label"]) == ("model", "Model: Apple on-device")
+    assert client.post("/api/system/activity/stop", json=at(206),
+                       headers=HDRS).json() == {"ok": True, "via": "model"}
+    assert (cancelled, killed) == ([proc], [])
+
+
 def test_stop_rejects_a_bad_pid(client, fake):
     r = client.post("/api/system/activity/stop", json={"pid": "nope"}, headers=HDRS)
     assert r.status_code == 400

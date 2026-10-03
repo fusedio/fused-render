@@ -148,16 +148,15 @@ test("the sparkline draws only the last 60 s of a 120 s history", () => {
   expect(line.startsWith("M0.0,")).toBe(true);
 });
 
-test("unsupported platform draws no chip at all", () => {
-  const tree = create(
-    <SystemCardView
-      data={{ ...PAYLOAD, supported: false }}
-      collapsed
-      onToggle={() => {}}
-      onOpenMonitor={() => {}}
-    />,
-  ).toJSON();
-  expect(tree).toBeNull();
+test("no chip until the first payload says the platform is supported", () => {
+  const view = (data: SystemActivity | null) =>
+    create(
+      <SystemCardView data={data} collapsed onToggle={() => {}} onOpenMonitor={() => {}} />,
+    ).toJSON();
+  // Loading: nothing painted, so an unsupported platform never flashes "System".
+  expect(view(null)).toBeNull();
+  expect(view({ ...PAYLOAD, supported: false })).toBeNull();
+  expect(texts(view(PAYLOAD) as ReactTestRendererJSON)).toContain("CPU 60% · 1.4 GB");
 });
 
 test("topProcs orders unknown CPU last, memory breaking ties", () => {

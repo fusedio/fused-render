@@ -70,15 +70,17 @@ export function SystemCardView({
   hostProps?: StatusChipState["hostProps"];
   onOpenMonitor: () => void;
 }) {
-  if (data && !data.supported) return null;
+  // Nothing until the first payload says the platform is supported: an idle
+  // "System" chip painted while loading would vanish again where it is not.
+  if (!data || !data.supported) return null;
   const label = chipLabel(data);
-  const top = data ? topProcs(data.procs) : [];
-  const cpuNow = data?.totals.cpuPct ?? null;
+  const top = topProcs(data.procs);
+  const cpuNow = data.totals.cpuPct;
   return (
     <div className="dl-host sys-chip" {...hostProps}>
       <StatusChip
         label={label}
-        tone={data ? "on" : "idle"}
+        tone="on"
         open={!collapsed}
         pinned={pinned}
         title={collapsed ? "Show what fused-render is using" : "Hide"}
@@ -95,14 +97,14 @@ export function SystemCardView({
             </div>
             <div className="sys-spark-wrap">
               <Sparkline
-                points={(data?.history ?? []).map((h) => ({ t: h.t, v: h.appCpuPct }))}
+                points={data.history.map((h) => ({ t: h.t, v: h.appCpuPct }))}
                 label="fused-render CPU, last 60 seconds"
               />
             </div>
           </div>
           <div className="dl-section">
             <div className="dl-section-head">
-              Processes <span className="dl-section-count">{data?.procs.length ?? 0}</span>
+              Processes <span className="dl-section-count">{data.procs.length}</span>
             </div>
             <div className="sys-rows" role="table" aria-label="Top processes by CPU">
               {top.map((p) => (
