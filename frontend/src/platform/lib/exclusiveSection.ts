@@ -30,9 +30,11 @@ import { useEffect, useRef } from "react";
  *  Activity (`platform/ui/DownloadManager.tsx`) since only Models' filled/
  *  outlined dot is load-bearing for the user. So there are three entries now:
  *  one for Models, one for Activity (jobs + engines), one for Notifications.
+ *  `system` (shell/SystemDock.tsx, CPU and memory) comes last: it never
+ *  auto-opens, so it never takes part in a tie.
  *  Named rather than inferred so the tie-break cannot silently change if the
  *  bar's markup is reordered for visual reasons. */
-export const SECTION_ORDER = ["models", "activity", "notifications"] as const;
+export const SECTION_ORDER = ["models", "activity", "notifications", "system"] as const;
 export type SectionKey = (typeof SECTION_ORDER)[number];
 
 interface Entry {

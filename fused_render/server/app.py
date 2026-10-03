@@ -64,6 +64,7 @@ from fused_render.server.routers.git_upstream import router as git_upstream_rout
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
+from fused_render.server.routers.system import router as system_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
@@ -770,6 +771,9 @@ def create_app(start_dir: str) -> FastAPI:
     # dead child under the URLs the page holds (engine_host.py). The map
     # template's tile daemon is the first user.
     app.include_router(engines_router)
+    # Live CPU/memory of fused-render's own processes (routers/system.py,
+    # fused_render/sysmon): the status bar's System chip and the /monitor page.
+    app.include_router(system_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)

@@ -131,6 +131,10 @@
      the user having touched nothing (D574). */
   --status-item-hover: rgba(255, 255, 255, 0.12);
   --status-item-active: rgba(255, 255, 255, 0.18);
+  /* A glass surface's top-edge highlight (styles/monitor.css): the light
+     catching the rim of a translucent card. White in both palettes — a rim
+     reads as light, never as shadow — but far fainter on the dark ground. */
+  --glass-highlight: rgba(255, 255, 255, 0.06);
 
   /* -- the AI models grid's have / not-have axis (ai-models.css) -------------
      One model, at two ends of one question: this machine HAS it, or it does
@@ -461,6 +465,7 @@
      two tokens in a light theme. A white overlay on a light bar is invisible. */
   --status-item-hover: rgba(0, 0, 0, 0.1);
   --status-item-active: rgba(0, 0, 0, 0.16);
+  --glass-highlight: rgba(255, 255, 255, 0.7);
 
   /* The same axis, and the reason it is a token at all. The mix these replace
      was 14% of --fg-muted over --bg-alt, which on this palette is a warm

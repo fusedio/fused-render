@@ -9,6 +9,7 @@
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates|/mounts" -> settings pages
+//   "/monitor"               -> whole-machine process monitor (shell/monitor)
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
 // The active view is keyed by the nav epoch: every navigation remounts it,
@@ -61,6 +62,7 @@ import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
+import SystemDock from "@shell/SystemDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import TerminalDock from "@shell/TerminalDock";
@@ -109,6 +111,7 @@ const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
+const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 
 /** Params that belong to a PAGE rather than to a route — see `useNavEpoch`.
  *  Module-level so the array identity is stable across renders. */
@@ -754,6 +757,9 @@ export default function App({ config }: { config: Config }) {
   // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
   // pattern as Mounts.
   const isTasks = pathname === "/tasks";
+  // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
+  // the System chip's "Open Monitor".
+  const isMonitor = pathname === "/monitor";
   // The AI Models page (apps/ai_models/) — a PREFIX, not one path: its five
   // tabs are sub-paths beneath it (`/ai-models/local`, …), and the bare prefix
   // has already been rewritten to the default tab above. Asked through the
@@ -797,6 +803,7 @@ export default function App({ config }: { config: Config }) {
     isTemplates ||
     isMounts ||
     isTasks ||
+    isMonitor ||
     isAiModels ||
     isApps ||
     appPagePath !== null ||
@@ -820,6 +827,8 @@ export default function App({ config }: { config: Config }) {
               ? "Mounts"
               : isTasks
                 ? "Tasks"
+                : isMonitor
+                ? "Monitor"
                 : isAiModels
                   ? "AI Models"
                   : isApps
@@ -945,6 +954,16 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Scheduled key={epoch} scope={tasksScopeFromUrl()} />
+        </Suspense>
+      </div>
+    );
+  } else if (isMonitor) {
+    // Whole-machine process monitor — chrome-free like Mounts; keyed on epoch
+    // so a re-navigation is a fresh read (its poll stops on unmount).
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <MonitorPage key={epoch} />
         </Suspense>
       </div>
     );
@@ -1146,6 +1165,7 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             terminalDock={!isWindows && <TerminalDock />}
+            system={<SystemDock />}
             models={<ModelsDock />}
             /* D586/D662: every terminal job is re-routed from Activity to
                Notifications, and this is the one place both sections are in
