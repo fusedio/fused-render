@@ -68,6 +68,11 @@ export function toastMissingFolder(): void {
  *  it is asked again — the page's own poll interval. */
 const RETRY_MS = 20_000;
 
+/** How long landed 404s are gathered before they are written as one set —
+ *  long enough that a batch of stats answering together becomes a handful of
+ *  renders, short enough that nobody notices the rows catching up. */
+const FLUSH_MS = 300;
+
 export function useMissingFolders(
   tasks: readonly Pick<Task, "target" | "project">[],
 ): ReadonlySet<string> {
@@ -114,31 +119,53 @@ export function useMissingFolders(
     // `startTransition` lets React yield that render to hover, scroll and
     // typing instead of holding the main thread until it is done. The rows say
     // "Folder missing" a beat later than they could; nothing waits on them.
-    void Promise.allSettled(asked.map((dir) => statPath(dir))).then((results) => {
-      if (!alive.current) return;
-      const gone: string[] = [];
-      let blipped = false;
-      results.forEach((r, i) => {
-        if (r.status === "fulfilled") return; // present: nothing to record
-        const e = r.reason as HttpError | undefined;
-        if (e?.status === 404) gone.push(asked[i]);
-        else {
-          // Not an answer about the folder; ask again in a poll's time.
-          settled.current.delete(asked[i]);
-          blipped = true;
-        }
-      });
-      if (gone.length) {
-        startTransition(() => {
-          setMissing((cur) => {
-            const next = gone.filter((d) => !cur.has(d));
-            return next.length ? new Set([...cur, ...next]) : cur;
-          });
+    //
+    // FLUSHED EVERY `FLUSH_MS`, NOT ONCE AT THE END: `getJson` has no timeout,
+    // and a stat of a mount-backed folder can take seconds cold — one slow
+    // answer must not hold every other folder's "Folder missing" hostage. The
+    // 404s that have landed are written together on a short timer, so a batch
+    // of 434 stats answering over ~1 s becomes three or four renders, not 434
+    // and not one that waits for the straggler.
+    const gone: string[] = [];
+    let blipped = false;
+    let flush: ReturnType<typeof setTimeout> | null = null;
+    const write = () => {
+      flush = null;
+      if (!alive.current || !gone.length) return;
+      const batch = gone.splice(0);
+      startTransition(() => {
+        setMissing((cur) => {
+          const next = batch.filter((d) => !cur.has(d));
+          return next.length ? new Set([...cur, ...next]) : cur;
         });
+      });
+    };
+    const settle = (dir: string, e: HttpError | undefined) => {
+      if (!alive.current) return;
+      if (e?.status === 404) {
+        gone.push(dir);
+        if (flush === null) flush = setTimeout(write, FLUSH_MS);
+      } else {
+        // Not an answer about the folder; ask again in a poll's time.
+        settled.current.delete(dir);
+        blipped = true;
       }
+    };
+    void Promise.allSettled(
+      asked.map((dir) =>
+        statPath(dir).then(
+          () => {
+            /* present: nothing to record */
+          },
+          (e: HttpError) => settle(dir, e),
+        ),
+      ),
+    ).then(() => {
+      if (flush !== null) clearTimeout(flush);
+      write();
       // One timer for the batch, not one per blipped folder: each bump re-runs
       // this effect over everything `settled` no longer holds.
-      if (blipped) {
+      if (blipped && alive.current) {
         setTimeout(() => {
           if (alive.current) setRetry((n) => n + 1);
         }, RETRY_MS);
