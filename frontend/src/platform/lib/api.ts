@@ -1202,11 +1202,11 @@ export interface Prefs {
   // the five share surfaces, not the /api/share routes.
   app_sharing: { enabled: boolean };
   // Whether card thumbnails may render the LIVE app in a scaled iframe
-  // (default ON — shell/prefs.py `live_previews_enabled`). Off, the /apps
-  // cards and the explorer's bookmark/recent/folder cards show a still or a
-  // placeholder mark and nothing boots on scroll or hover. OPTIONAL: an older
-  // server answers without it, and the reader (live-previews-flag.ts) treats
-  // absence as on.
+  // (opt-in, default off — shell/prefs.py `live_previews_enabled`). Off, the
+  // /apps cards and the explorer's bookmark/recent/folder cards show a still
+  // or a placeholder mark and nothing boots on scroll or hover. OPTIONAL: an
+  // older server answers without it, and the reader (live-previews-flag.ts)
+  // treats absence as off.
   live_previews?: { enabled: boolean };
   // Whether chat embeds render the native React chat (default ON) instead of the
   // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
@@ -1309,7 +1309,7 @@ export interface Prefs {
   // an older server answers without it.
   launcher?: LauncherPrefs;
   // macOS native windows (fused_render/mac_window.py): the shell in the
-  // app's own windows instead of browser tabs. Opt-in, default off.
+  // app's own windows instead of browser tabs. On by default, opt-out.
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };

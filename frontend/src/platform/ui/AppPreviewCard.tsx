@@ -158,12 +158,10 @@ export function AppPreviewCard({
       ? embedUrlForFsPath(app.path)
       : null;
   // Whether live thumbnails are allowed at all — the `live_previews_enabled`
-  // preference (live-previews-flag.ts). Tri-state: `null` until the one
-  // shared read lands, and the card mounts NO iframe while it is null (the
-  // module comment there says why holding beats guessing on); `false` turns
-  // both live branches off for good — the body below and the hover swap — and
-  // puts the placeholder where the live body would have been. Called every
-  // render, before any early return: hook order.
+  // preference (live-previews-flag.ts; opt-in, and off until the one shared
+  // read lands). `false` turns both live branches off — the body below and
+  // the hover swap — and puts the placeholder where the live body would have
+  // been. Called every render, before any early return: hook order.
   const liveAllowed = useLivePreviewsFeature();
   const wantsLive = Boolean(
     liveAllowed === true &&

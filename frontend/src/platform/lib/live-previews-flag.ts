@@ -3,21 +3,22 @@
 // thumbnail iframe: the /apps hub card (AppPreviewCard: the live body of a
 // card with no preview.png, and the hover swap on a card that has one) and
 // the explorer's bookmark / recent / folder-peek cards (BookmarkCards'
-// LivePreview). Default ON.
+// LivePreview). Default OFF — opt-in.
 //
 // OFF, no thumbnail iframe mounts anywhere: a still-thumbed card keeps its
 // still and ignores hover, and a card with nothing authored shows the
 // placeholder mark (ThumbPlaceholder) instead of the empty box or the app.
 //
 // Same shape as share-app-flag.ts — ONE FETCH, NOT A POLL, with the
-// `generation` counter for the same in-flight-read race — but the answer is
-// TRI-STATE. The other flags default off, so "not asked yet" can safely render
-// as off. This one defaults ON, and rendering `null` as on would boot every
-// live iframe in view on each cold load of /apps for a reader who turned them
-// off — the exact cost they opted out of — only to tear them all down when the
-// GET lands. So `null` means "hold": the cards mount nothing until the one
-// shared read answers, which is one local round-trip behind the grid's own
-// data and shorter than the preview scheduler's idle wait anyway.
+// `generation` counter for the same in-flight-read race. The store is
+// tri-state internally (`null` = nobody has asked yet) but the hook hands
+// out a plain boolean: "not asked yet" renders as the default, OFF, exactly
+// like the other opt-in flags. While this defaulted ON the hook returned the
+// `null` too and the cards held an empty box until the read landed, because
+// guessing on would have booted every live iframe for a reader who had
+// turned them off; with off as the default the only cost of guessing is one
+// placeholder→iframe swap for a reader who opted IN, one local round-trip
+// after mount and shorter than the preview scheduler's idle wait anyway.
 import { useEffect, useState } from "react";
 import { getPrefs } from "@platform/lib/api";
 
@@ -38,17 +39,15 @@ function read(): Promise<void> {
   const departed = generation;
   reading = getPrefs()
     .then((p) => {
-      // `!== false`: default on, so a server that predates the field reads as
-      // on — the same rule the server applies to a prefs file without the key.
-      if (generation === departed) set(p.live_previews?.enabled !== false);
+      // `=== true`: opt-in, so a server that predates the field reads as
+      // off — the same rule the server applies to a prefs file without the key.
+      if (generation === departed) set(p.live_previews?.enabled === true);
     })
     .catch(() => {
-      // A failed read is not an answer. Unlike the opt-in flags, holding at
-      // `null` forever would hide every live thumbnail for the session over
-      // one lost GET, so fall back to the default (on) and let the next mount
-      // try again.
+      // A failed read is not an answer. Fall back to the default (off) so the
+      // cards stop holding, and let the next mount try again.
       reading = null;
-      if (generation === departed && enabled === null) set(true);
+      if (generation === departed && enabled === null) set(false);
     })
     .then(() => {});
   return reading;
@@ -63,9 +62,9 @@ export function publishLivePreviewsEnabled(next: boolean) {
   set(next);
 }
 
-/** Subscribe. `null` until the one shared read lands — callers mount nothing
- *  live while it is null (see the module comment); `true`/`false` after. */
-export function useLivePreviewsFeature(): boolean | null {
+/** Subscribe. Off until the one shared read lands (see the module comment),
+ *  then the stored answer. */
+export function useLivePreviewsFeature(): boolean {
   const [current, setCurrent] = useState<boolean | null>(enabled);
   useEffect(() => {
     listeners.add(setCurrent);
@@ -75,5 +74,5 @@ export function useLivePreviewsFeature(): boolean | null {
       listeners.delete(setCurrent);
     };
   }, []);
-  return current;
+  return current ?? false;
 }
