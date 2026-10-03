@@ -2117,6 +2117,31 @@ when one exists, else the folder itself.
   and files the payload does not carry stay; then a reload of the copy's
   entry page) and *Cancel* / close (nothing written, keep working on the
   copy). `/api/clone/info` and `POST /api/clone` stay git-only.
+- **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
+  a .fused>`, the link percent-encoded once by the sender and decoded once
+  here, verbatim to end-of-string like `git=`/`file=`. Render App's
+  `render-app://open?url=` ported one-to-one (fused-render-lite PRs #27/#30):
+  a web page's "Open in fused-render" link. Same no-page shape as DL-7:
+  `GET /clone` answers a 303 to Home with the link as `?_fetch_appfile=`
+  (nothing is on disk yet, and nothing is written on the GET, D3; a non-http(s)
+  payload rides along verbatim so the shell reports it). The shell's
+  `FetchAppFileBoot` (top document, `!IS_EMBED`, beside `EditAppFileBoot`)
+  reads the param once, strips it before any async work, then **downloads
+  without a confirm step** (owner call; the link click is the gesture) through
+  the X-Fused `POST /api/appfile/fetch {url} → {file}` (`appfetch.py`: http(s)
+  only, every redirect hop re-checked, 1 GB cap by `Content-Length` and while
+  streaming, temp file validated with `appfile.read_manifest` then
+  `os.replace`d, nothing left on disk on failure) into
+  `~/.fused-render/downloads/<app_id>.fused` — keyed on the app's stable id
+  (D884) so every link to one app updates one file and one Apps-hub row;
+  `<name>-<url sha 8>.fused` for files that predate the id — and moves to the
+  saved file's view, where the `fusedapp` template opens it (D390) and
+  `exported_apps.record_open` lists it under recents. A re-click on a link to
+  a NEW version of the same app overwrites the one saved file, extracts the
+  new bytes, and keeps everything the app saved in `.fused` (AF-13's shared
+  state dir): app files replaced, state retained. Recorded cost of the
+  missing gate: a web page that can navigate the browser to this origin with
+  `?_fetch_appfile=` gets a remote `.fused` downloaded and opened unprompted.
 
 ---
 
@@ -10996,6 +11021,23 @@ else: no editor, no Claude, no explorer chrome.
   Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
+- **AF-13** Shared `.fused` state per app id (port of Render App's lite PR
+  #32). Extracts are content-addressed (AF-6), so every re-export of an app
+  lands in a fresh dir and the state the app saved under `<extract>/.fused`
+  (D548, §47) used to stay behind. Now `open_app_file` makes
+  `<extract>/.fused` a symlink (a directory junction on Windows) to
+  `~/.fused-render/fused_data/<app_id>` for every file carrying a stable id
+  (D884): every extract of one app reads and writes one state dir, and
+  `app_fused_dir.ensure` scaffolds `data`/`cache`/`meta.json` through the
+  link on render exactly as before. **An update to the same app replaces the
+  app's files and keeps everything inside `.fused`** — the DL-8 contract. An
+  older extract that holds a real `.fused` dir is migrated on its next
+  non-preview open: its contents move into the shared dir when that is still
+  the bare scaffold, else the shared state wins and the local copy goes.
+  Files without an id keep local state, as before. Best-effort: a link that
+  cannot be made leaves the state local rather than failing the open.
+  `rmtree` of a damaged extract does not follow the link, so a rebuild never
+  touches the shared dir.
 
 ## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 
