@@ -1531,7 +1531,6 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
-                <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
                 <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
                 <ShortcutsSection prefs={prefs} onChange={setPrefs} />
                 <UpdatesSection />
@@ -1542,6 +1541,7 @@ export default function Preferences() {
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
+                <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}
