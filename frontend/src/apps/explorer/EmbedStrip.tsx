@@ -90,7 +90,7 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
             title="Open this page in the explorer, with the sidebar and toolbar"
             onClick={() => void openInExplorer()}
           >
-            {MenuIcons.open}
+            {MenuIcons.folder}
             Open in explorer
           </button>
         )}
