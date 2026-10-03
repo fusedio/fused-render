@@ -6,8 +6,20 @@
 // (so a reload mid-download or a Back never re-runs the hand-off), then
 // downloads through the guarded POST /api/appfile/fetch — into
 // ~/.fused-render/downloads/<app_id>.fused, one file per app however many
-// links point at it — and moves to the saved file's view, where the
-// `fusedapp` preview template opens it like any other `.fused`.
+// links point at it — and opens the saved file AS AN APP, the way a Finder
+// double-click on a `.fused` does (D390): THIS document hard-loads the file's
+// chrome-free EMBED url, where the `fusedapp` template runs it. Never the
+// explorer's view page: the link said "open the app", not "show me its file".
+//
+// Deliberately NOT native-window.ts's openAppWindow, even inside a native
+// window. A deep link always arrives in a FRESH window (app.py `_open_target`
+// → `WindowManager.open`), which the 303 parked on Home; loading the embed
+// into that same window turns it INTO the app's window — the URL observer
+// re-keys it (mac_window.py KVO) and the title-bar Edit button lights up as
+// the way into the explorer — exactly the Finder-open shape. Asking the
+// server for a second window would leave this one orphaned on Home per
+// click. In a browser tab the same load lands under the EmbedStrip
+// (IS_TOP_EMBED), whose "Open in explorer" is the way out there.
 //
 // No confirm step, by owner decree (Render App's lite PR #30 is the
 // reference): the link click is the gesture, and the page the user lands on
@@ -21,7 +33,7 @@ import { useEffect } from "react";
 
 import { fetchAppFile } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
-import { currentUrl, navigateUrl, replaceSearch, viewUrlForFsPath } from "@platform/lib/router";
+import { currentUrl, embedUrlForFsPath, replaceSearch } from "@platform/lib/router";
 
 import { fetchAppFileFromSearch, withoutFetchAppFile } from "./edit-appfile-lib";
 
@@ -49,7 +61,11 @@ export default function FetchAppFileBoot() {
         const r = await fetchAppFile(url);
         if (!alive) return;
         notify({ title: "Opening app", tone: "info" }, toast);
-        navigateUrl(viewUrlForFsPath(r.file), { isDir: false });
+        // A full load, not navigateUrl: the embed-vs-view prefix (IS_EMBED,
+        // IS_TOP_EMBED) is read once at module init, so a pushState from Home
+        // onto the embed url would keep the shell's chrome and never mount
+        // the EmbedStrip — the same rule EmbedStrip applies going back.
+        location.assign(embedUrlForFsPath(r.file));
       } catch (e) {
         if (!alive) return;
         notify(
