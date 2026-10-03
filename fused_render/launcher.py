@@ -216,8 +216,10 @@ def recent_rows(limit: int = MAX_RESULTS) -> list[dict]:
     except Exception:  # noqa: BLE001 — see docstring
         logger.debug("recent apps failed", exc_info=True)
         return []
+    # realpath on both sides: the desk stores canonical abspaths, `app_dict`
+    # hands back realpaths, and a symlinked workspace spells them apart.
     try:
-        desk = {a["path"] for a in current_apps.read_state()["apps"]}
+        desk = {os.path.realpath(a["path"]) for a in current_apps.read_state()["apps"]}
     except Exception:  # noqa: BLE001
         desk = set()
     rows = []
@@ -227,8 +229,8 @@ def recent_rows(limit: int = MAX_RESULTS) -> list[dict]:
             continue
         entry = a.get("entry")
         title = app_listing.entry_title(entry) if entry else None
-        folder = canonical_fs_path(os.path.abspath(a["path"])).rstrip("/")
-        rows.append(_folder_row({**a, "title": title}, pinned=folder in desk, recent=True))
+        pinned = os.path.realpath(a["path"]) in desk
+        rows.append(_folder_row({**a, "title": title}, pinned=pinned, recent=True))
     return rows
 
 
