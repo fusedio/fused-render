@@ -144,8 +144,8 @@ describe("the markup adds nothing when the feature is off", () => {
   });
 
   it("draws no quick-open door", () => {
-    expect(VIEWS).toContain("{peekOn && page && !openDraft && (");
-    expect(VIEWS).toContain("{peekOn && page && !isDraftTask(task) && (");
+    expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !openDraft && (");
+    expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !isDraftTask(task) && (");
     // …and the card's hover strip is not drawn FOR one either.
     expect(VIEWS).toContain("{((peekOn && page) || file || folderMissing");
   });
