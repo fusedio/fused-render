@@ -675,7 +675,12 @@ export function TextStage({
       {/* Examples first, under the box they fill; hidden once there is a
           reply to read, which is what that space is then for. */}
       {!reply && !status && (
-        <StarterCards key={useCase.id} samples={starters} onPick={(s) => void send(s.prompt)} />
+        <StarterCards
+          key={useCase.id}
+          samples={starters}
+          disabled={blockedImage}
+          onPick={(s) => void send(s.prompt)}
+        />
       )}
 
       {status && <p className="pg-status">{status}</p>}
