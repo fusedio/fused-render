@@ -1604,7 +1604,7 @@ const pointcloudEngine = {
     r.streaming = ctl.isStreaming(r.info.id);
     // Filters are GPU lookups, including classes that arrive in later nodes.
     ctl.on("streamingprogress", () => {
-      scheduleUi();
+      scheduleUi(false);
     });
     r.applied = {};
     r.kind = "pointcloud";
@@ -2168,13 +2168,20 @@ const EYEOFF = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stro
 const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
 
 let uiTimer = null;
-function scheduleUi() {
+let uiNeedsStyle = false;
+function scheduleUi(refreshStyle = true) {
+  uiNeedsStyle ||= refreshStyle;
   if (uiTimer) return;
-  uiTimer = requestAnimationFrame(() => { uiTimer = null; renderUi(); });
+  uiTimer = requestAnimationFrame(() => {
+    uiTimer = null;
+    const refresh = uiNeedsStyle; uiNeedsStyle = false;
+    renderUi(refresh);
+  });
 }
-function renderUi() {
+function renderUi(refreshStyle = true) {
   renderLayerCards();
-  renderStyleDock();
+  if (refreshStyle) renderStyleDock();
+  else if (!qs("stylepanel").classList.contains("hidden")) runtime.get(selected)?.refreshPointcloudDock?.();
   qs("map-title").innerHTML = doc.title ? esc(doc.title) : "Map viewer <small>· fused</small>";
   applyBasemap(doc.basemap);
 }
@@ -2362,6 +2369,10 @@ function rangeCtl(label, current, auto, onChange) {
     wrap.appendChild(input);
   }
   c.appendChild(wrap);
+  c.setAutoRange = value => {
+    auto = value;
+    c.querySelector(".ctl-lbl b").textContent = auto ? `auto ${fmtNum(auto[0])} – ${fmtNum(auto[1])}` : "";
+  };
   return c;
 }
 function legendBar(stops, lo, hi) {
@@ -2643,6 +2654,7 @@ function pmtilesControls(body, layer, r) {
 
 function pointcloudControls(body, layer, r) {
   const s = layer.style, i = r.info, ctl = r.lidar, st = ctl.getState();
+  let colorRangeControl, colorLegend;
   const scheme = pointcloudEngine.scheme(layer, r);
   const has = { elevation: true, intensity: i.hasIntensity, classification: i.hasClassification, rgb: i.hasRGB };
   section(body, "Colour");
@@ -2652,40 +2664,48 @@ function pointcloudControls(body, layer, r) {
     body.appendChild(selectCtl("Colormap", M.LIDAR_COLORMAPS.map(n => [n, cmapLabel(n)]),
       pcColormap(s.colormap), v => setStyle(layer.id, { colormap: v })));
     const auto = st.computedColorBounds ? [st.computedColorBounds.min, st.computedColorBounds.max] : null;
-    body.appendChild(rangeCtl(scheme === "elevation" ? "Elevation range (colour)" : "Intensity range", s.clim, auto,
-      v => setStyle(layer.id, { clim: v })));
-    const legend = document.createElement("div");
-    body.appendChild(legend);
+    colorRangeControl = rangeCtl(scheme === "elevation" ? "Elevation range (colour)" : "Intensity range", s.clim, auto,
+      v => setStyle(layer.id, { clim: v }));
+    body.appendChild(colorRangeControl);
+    const [lo, hi] = s.clim || auto || [0, 1];
+    colorLegend = legendBar(r.swatchStops || [], lo, hi);
+    body.appendChild(colorLegend);
     ramp(pcColormap(s.colormap), 9).then(stops => {
       r.swatchStops = stops;
-      const [lo, hi] = s.clim || auto || [0, 1];
-      legend.replaceWith(legendBar(stops, lo, hi));
+      colorLegend.querySelector(".bar").style.background = gradientCss(stops);
     });
   }
-  const codes = ctl.getAvailableClassifications().sort((a, b) => a - b);
-  if (i.hasClassification && codes.length) {
+  let refreshClasses = () => {};
+  if (i.hasClassification) {
     section(body, "Classes");
-    const hidden = new Set(s.hidden_classes || []);
     const list = document.createElement("div"); list.className = "pc-classes";
     const styles = ctl.getClassificationStyles();
-    for (const code of codes) {
-      const [cr, cg, cb] = M.getClassificationColor(code, styles);
-      const row = checkCtl(`${code} · ${M.getClassificationName(code, styles)}`, !hidden.has(code), on => {
-        const next = new Set(docLayer(layer.id).style.hidden_classes || []);
-        if (on) next.delete(code); else next.add(code);
-        setStyle(layer.id, { hidden_classes: next.size ? [...next].sort((a, b) => a - b) : null });
-      });
-      const sw = document.createElement("i"); sw.className = "pc-sw"; sw.style.background = `rgb(${cr},${cg},${cb})`;
-      row.insertBefore(sw, row.querySelector("span"));
-      list.appendChild(row);
-    }
+    const rows = new Map();
+    refreshClasses = () => {
+      const hidden = new Set(docLayer(layer.id)?.style.hidden_classes || []);
+      for (const code of ctl.getAvailableClassifications().sort((a, b) => a - b)) {
+        if (rows.has(code)) continue;
+        const [cr, cg, cb] = M.getClassificationColor(code, styles);
+        const row = checkCtl(`${code} · ${M.getClassificationName(code, styles)}`, !hidden.has(code), on => {
+          const next = new Set(docLayer(layer.id).style.hidden_classes || []);
+          if (on) next.delete(code); else next.add(code);
+          setStyle(layer.id, { hidden_classes: next.size ? [...next].sort((a, b) => a - b) : null });
+        });
+        const sw = document.createElement("i"); sw.className = "pc-sw"; sw.style.background = `rgb(${cr},${cg},${cb})`;
+        row.insertBefore(sw, row.querySelector("span"));
+        rows.set(code, row);
+        const next = [...rows.keys()].filter(c => c > code).sort((a,b) => a-b)[0];
+        list.insertBefore(row, next === undefined ? null : rows.get(next));
+      }
+    };
+    refreshClasses();
     body.appendChild(list);
     const row = document.createElement("div"); row.className = "row pc-allnone";
     const all = document.createElement("button"), none = document.createElement("button");
     all.className = none.className = "md-btn";
     all.textContent = "Show all"; none.textContent = "Hide all";
     all.onclick = () => setStyle(layer.id, { hidden_classes: null });
-    none.onclick = () => setStyle(layer.id, { hidden_classes: codes });
+    none.onclick = () => setStyle(layer.id, { hidden_classes: ctl.getAvailableClassifications() });
     row.append(all, none); body.appendChild(row);
   }
   section(body, "Points");
@@ -2694,8 +2714,9 @@ function pointcloudControls(body, layer, r) {
   body.appendChild(rangeCtl("Show elevations", s.elevation_range, [i.bounds.minZ, i.bounds.maxZ],
     v => setStyle(layer.id, { elevation_range: v })));
   const base = st.zOffsetBase;
-  body.appendChild(sliderCtl("Height offset (m)", -500, 500, 1, s.z_offset ?? (Number.isFinite(base) ? Math.round(-base) : 0),
-    v => `${v} m`, (v, dragging) => setStyle(layer.id, { z_offset: v }, dragging)));
+  const heightControl = sliderCtl("Height offset (m)", -500, 500, 1, s.z_offset ?? (Number.isFinite(base) ? Math.round(-base) : 0),
+    v => `${v} m`, (v, dragging) => setStyle(layer.id, { z_offset: v }, dragging));
+  body.appendChild(heightControl);
   body.appendChild(opacityCtl(layer));
   const tilt = document.createElement("button");
   tilt.className = "md-btn pc-tilt";
@@ -2704,17 +2725,34 @@ function pointcloudControls(body, layer, r) {
   body.appendChild(tilt);
   section(body, "Source");
   const stat = document.createElement("div"); stat.className = "stat";
-  const progress = st.streamingProgress;
-  stat.textContent = [
-    `${Number(i.pointCount).toLocaleString()} points`,
-    r.streaming ? `Streamed by viewport (COPC/EPT octree) · 2M point budget${progress ? ` · ${Number(progress.loadedPoints).toLocaleString()} loaded` : ""}` : "Read whole by the browser",
-    "GPU colour and class/elevation filters · automatic colour ranges use a sample",
-    `Elevation ${fmtNum(i.bounds.minZ)} – ${fmtNum(i.bounds.maxZ)}`,
-    [i.hasRGB && "RGB", i.hasIntensity && "intensity", i.hasClassification && "classification"].filter(Boolean).join(", "),
-    "Drag with the right mouse button (or Ctrl) to tilt",
-    r.note || "",
-  ].filter(Boolean).join("\n");
+  r.refreshPointcloudDock = () => {
+    if (!stat.isConnected) return;
+    refreshClasses();
+    const state = ctl.getState(), progress = state.streamingProgress;
+    if (colorRangeControl && state.computedColorBounds) {
+      const auto = [state.computedColorBounds.min, state.computedColorBounds.max];
+      colorRangeControl.setAutoRange(auto);
+      colorLegend.querySelectorAll(".ends span").forEach((span, index) => { span.textContent = fmtNum((s.clim || auto)[index]); });
+    }
+    if (s.z_offset == null && Number.isFinite(state.zOffsetBase)) {
+      const input = heightControl.querySelector("input");
+      if (input !== document.activeElement) {
+        input.value = Math.round(-state.zOffsetBase);
+        heightControl.querySelector(".ctl-lbl b").textContent = `${input.value} m`;
+      }
+    }
+    stat.textContent = [
+      `${Number(i.pointCount).toLocaleString()} points`,
+      r.streaming ? `Streamed by viewport (COPC/EPT octree) · 2M point budget${progress ? ` · ${Number(progress.loadedPoints).toLocaleString()} loaded` : ""}` : "Read whole by the browser",
+      "GPU colour and class/elevation filters · automatic colour ranges use a sample",
+      `Elevation ${fmtNum(i.bounds.minZ)} – ${fmtNum(i.bounds.maxZ)}`,
+      [i.hasRGB && "RGB", i.hasIntensity && "intensity", i.hasClassification && "classification"].filter(Boolean).join(", "),
+      "Drag with the right mouse button (or Ctrl) to tilt",
+      r.note || "",
+    ].filter(Boolean).join("\n");
+  };
   body.appendChild(stat);
+  r.refreshPointcloudDock();
 }
 
 /* ---- inspect on click ------------------------------------------------------------------ */

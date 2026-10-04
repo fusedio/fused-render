@@ -331,7 +331,7 @@ def _pointcloud_plan(path: str, crs: str = "") -> dict:
                 points = laspy.ScaleAwarePointRecord.zeros(len(x), header=out_header)
                 points.x, points.y = lon, lat
                 points.z = np.asarray(chunk.z[pick]) * z_factor
-                for name in ("intensity", "gps_time"):
+                for name in ("intensity", "gps_time") + (("red", "green", "blue") if rgb else ()):
                     if name in names:
                         points[name] = np.asarray(chunk[name][pick])
                 # LAS 1.4 counts up to 15 returns; LAS 1.2 holds 7.
@@ -342,9 +342,6 @@ def _pointcloud_plan(path: str, crs: str = "") -> dict:
                     # LAS 1.2 holds codes 0-31; higher user codes read as unclassified.
                     codes = np.asarray(chunk.classification[pick])
                     points.classification = np.where(codes > 31, 1, codes)
-                if rgb:
-                    for name in ("red", "green", "blue"):
-                        points[name] = np.asarray(chunk[name][pick])
                 writer.write_points(points)
     _publish(tmp, final)
     return _pointcloud_result(final, header.point_count, kept)

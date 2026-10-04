@@ -1,4 +1,4 @@
-"""Exercise the page's height updates before and after streamed points arrive."""
+"""Exercise point-cloud placement, styling and streaming UI updates."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -6,11 +6,19 @@ import subprocess
 import pytest
 
 
-def test_streaming_height_default_waits_for_ground():
+TEMPLATE = Path(__file__).resolve().parents[1] / "fused_render/templates/map/template.html"
+
+
+def _run_js(script):
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required to drive the template's JS")
-    html = (Path(__file__).resolve().parents[1] / "fused_render/templates/map/template.html").read_text()
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+def test_streaming_height_default_waits_for_ground():
+    html = TEMPLATE.read_text()
     engine = html.split("const pointcloudEngine = ", 1)[1].split("\nconst ENGINES =", 1)[0]
     harness = "const pointcloudEngine = " + engine + r'''
 const assert = require("node:assert/strict");
@@ -67,5 +75,32 @@ assert.equal(colormap, "plasma");
 assert.equal(colorRange.absoluteMin, 5);
 assert.equal(colorRange.absoluteMax, 10);
 '''
-    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=15)
-    assert result.returncode == 0, result.stderr
+    _run_js(harness)
+
+
+def test_streaming_refresh_preserves_controls_and_style_edits_take_priority():
+    html = TEMPLATE.read_text()
+    scheduling = html.split("let uiTimer = null;", 1)[1].split("function statusLine", 1)[0]
+    harness = "let uiTimer = null;" + scheduling + r'''
+const assert = require("node:assert/strict");
+let frame, rebuilds = 0, refreshes = 0;
+const selected = "cloud", doc = {title: "Test", basemap: "light"};
+const runtime = new Map([[selected, {refreshPointcloudDock: () => refreshes++}]]);
+const qs = () => ({classList: {contains: () => false}});
+const esc = s => s;
+const renderLayerCards = () => {};
+const renderStyleDock = () => rebuilds++;
+const applyBasemap = () => {};
+const requestAnimationFrame = callback => {frame = callback; return 1;};
+scheduleUi(false);
+scheduleUi(false);
+frame();
+assert.equal(rebuilds, 0, "streamed batches must leave dropdown DOM intact");
+assert.equal(refreshes, 1);
+scheduleUi(false);
+scheduleUi();
+scheduleUi(false);
+frame();
+assert.equal(rebuilds, 1, "a style edit must take priority over batched progress");
+'''
+    _run_js(harness)

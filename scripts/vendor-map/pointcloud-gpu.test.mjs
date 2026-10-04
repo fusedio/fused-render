@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {GpuPointCloudManager} from './pointcloud-gpu.mjs';
+import {GpuPointCloudManager, LidarControl} from './pointcloud-gpu.mjs';
 import {sampledBounds, colorLookup, classLookup} from './pointcloud-data.mjs';
 
 test('lookups preserve ramp endpoints and hide all 256 class codes', () => {
@@ -11,6 +11,20 @@ test('lookups preserve ramp endpoints and hide all 256 class codes', () => {
   assert.equal(classes[2 * 4 + 3], 0);
   assert.equal(classes[255 * 4 + 3], 0);
   assert.equal(classes[64 * 4 + 3], 255);
+});
+
+test('queued picking results cannot show tooltips over controls', () => {
+  const control = Object.create(LidarControl.prototype);
+  control._tooltip = {style: {}, innerHTML: ''};
+  control._state = {pickable: true, pickInfoFields: ['X']};
+  const point = {longitude: -123, latitude: 44, elevation: 10, x: 5, y: 6};
+  control._pointerOverCloud = true;
+  control._handlePointHover(point);
+  assert.equal(control._tooltip.style.display, 'block');
+  control._pointerOverCloud = false;
+  control._handlePointHover(null);
+  control._handlePointHover(point);
+  assert.equal(control._tooltip.style.display, 'none');
 });
 
 test('range sampling is bounded and respects explicit ranges', () => {

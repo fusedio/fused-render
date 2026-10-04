@@ -177,7 +177,26 @@ export class LidarControl extends BaseControl {
   onAdd(map) {
     const element = super.onAdd(map);
     this._pointCloudManager = new GpuPointCloudManager(this._deckOverlay, this._pointCloudManager.getOptions());
+    this._pointerOverCloud = false;
+    this._cloudPointerMove = event => {
+      this._pointerOverCloud = event.target?.tagName === 'CANVAS' && this._mapContainer.contains(event.target);
+      if (!this._pointerOverCloud) this._handlePointHover(null);
+    };
+    this._cloudPointerLeave = () => { this._pointerOverCloud = false; this._handlePointHover(null); };
+    document.addEventListener('pointermove', this._cloudPointerMove, true);
+    document.addEventListener('pointerleave', this._cloudPointerLeave);
+    map.on('movestart', this._cloudPointerLeave);
     return element;
+  }
+  _handlePointHover(info) {
+    // Ignore a queued picking result after the pointer entered an overlay.
+    super._handlePointHover(this._pointerOverCloud ? info : null);
+  }
+  onRemove() {
+    document.removeEventListener('pointermove', this._cloudPointerMove, true);
+    document.removeEventListener('pointerleave', this._cloudPointerLeave);
+    this._map?.off('movestart', this._cloudPointerLeave);
+    super.onRemove();
   }
   setHiddenClassifications(codes) {
     const hidden = new Set(codes);
