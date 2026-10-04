@@ -871,3 +871,42 @@ def test_backend_calls_never_overlap(backend, monkeypatch, tmp_path):
     for t in threads:
         t.join()
     assert inside["peak"] == 1
+
+
+def test_an_ending_does_not_wait_forever_behind_a_prompting_start(
+        backend, monkeypatch, tmp_path, caplog):
+    """A `start` can hold the native lock for the whole OS permission prompt
+    (up to WAIT_S). A `stop` — user, cap, death or quit — waits a bounded
+    time and then ends the recording unserialised rather than leaving a
+    microphone on or a quit hanging."""
+    import threading
+    import time
+
+    monkeypatch.setattr(capture, "STOP_LOCK_WAIT_S", 0.05)
+    rec = capture.start("audio", {"path": str(tmp_path / "r.m4a")})
+
+    prompting = threading.Event()
+    release = threading.Event()
+
+    def slow_start():
+        with capture._native():
+            prompting.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=slow_start, daemon=True)
+    holder.start()
+    assert prompting.wait(2)
+
+    t0 = time.monotonic()
+    result = capture.stop(rec["id"])
+    elapsed = time.monotonic() - t0
+    release.set()
+    holder.join(2)
+
+    assert result["state"] == "stopped"
+    assert backend.handles[0].stopped
+    assert elapsed < 1.0
+    assert "native lock busy" in caplog.text
+    # The lock was never released by the loser: it is back to free now.
+    assert capture._native_lock.acquire(timeout=1)
+    capture._native_lock.release()

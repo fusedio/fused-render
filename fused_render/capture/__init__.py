@@ -131,7 +131,8 @@ def sources() -> dict:
     separate booleans rather than one.
     """
     try:
-        return _backend().probe()
+        with _native():
+            return _backend().probe()
     except Unsupported as e:
         return _unavailable(str(e))
     except Exception as e:                       # noqa: BLE001 - see below
@@ -244,7 +245,42 @@ _sessions: dict[str, _Session] = {}
 # and the sessions share no objects today, so nothing has crashed here yet;
 # a screenshot is milliseconds and a start is rare, so serialising costs
 # nothing and closes the class.
+#
+# Endings are BOUNDED, not blocking. A first `start` or `screenshot` can sit
+# inside the backend for up to `WAIT_S` (120 s) while the OS shows its Screen
+# Recording / portal prompt. A `stop` — the user's, the `maxSeconds` cap, a
+# death, `stop_all` on quit — must not wait behind that: a microphone would
+# stay on past its cap and quit would hang past its drain. So an ending
+# waits `STOP_LOCK_WAIT_S` for the lock and then proceeds WITHOUT it, which
+# is exactly the pre-lock behaviour for that one pathological overlap, and
+# strictly better than a hot mic or a wedged quit.
 _native_lock = threading.Lock()
+STOP_LOCK_WAIT_S = 5.0
+
+
+class _native:
+    """`with _native():` serialises a backend call. `with _native(timeout):`
+    waits at most that long and then runs unserialised (logged)."""
+
+    def __init__(self, timeout: float | None = None):
+        self.timeout = timeout
+        self.held = False
+
+    def __enter__(self):
+        if self.timeout is None:
+            _native_lock.acquire()
+            self.held = True
+        else:
+            self.held = _native_lock.acquire(timeout=self.timeout)
+            if not self.held:
+                logger.warning("capture: native lock busy for %.0fs; ending "
+                               "the recording unserialised", self.timeout)
+        return self
+
+    def __exit__(self, *exc):
+        if self.held:
+            _native_lock.release()
+        return False
 
 
 def active() -> list[dict]:
@@ -433,7 +469,7 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
         if why:
             raise CaptureError(why)
 
-    with _native_lock:
+    with _native():
         handle = (backend.start_screen(out, spec) if mode == "screen"
                   else backend.start_audio(out, spec))
     session = _Session(cid, mode, out, handle, spec, page=page)
@@ -486,7 +522,8 @@ def _failure(session: _Session) -> str | None:
     if hook is None:
         return None
     try:
-        return hook(session.handle)
+        with _native(STOP_LOCK_WAIT_S):
+            return hook(session.handle)
     except Exception:                            # noqa: BLE001 - a probe
         return None
 
@@ -585,7 +622,8 @@ def _tick(session: _Session) -> bool:
         session.state = "error"
         _report(session, state="error", message=died)
         try:
-            _backend().stop(session.handle)
+            with _native(STOP_LOCK_WAIT_S):
+                _backend().stop(session.handle)
         except Exception:                        # noqa: BLE001 - already failed
             pass
         return True
@@ -652,7 +690,7 @@ def stop(cid: str, *, discard: bool = False) -> dict:
 
     error = ""
     try:
-        with _native_lock:
+        with _native(STOP_LOCK_WAIT_S):
             _backend().stop(session.handle)
     except Exception as e:                      # noqa: BLE001 - reported, not raised
         error = f"{e.__class__.__name__}: {e}".strip().rstrip(":")
@@ -778,7 +816,7 @@ def screenshot(body: dict) -> dict:
         why = refuse("screenshot", spec)
         if why:
             raise CaptureError(why)
-    with _native_lock:
+    with _native():
         shot = backend.screenshot(out, spec)
     result = _describe(out)
     result.update(shot)
@@ -822,7 +860,7 @@ def shot_region(body: dict) -> bytes:
     backend = _backend()
     locate = getattr(backend, "locate", None)
     if locate is not None:
-        with _native_lock:
+        with _native():
             display, local = locate(rect, dpr)
     else:
         display, local = None, rect
