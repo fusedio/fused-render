@@ -63,6 +63,13 @@ export interface ModelRowModel {
   curated: boolean;
   /** "Our pick" chip. */
   ourPick: boolean;
+  /** "sees images" badge (text models with a vision tower — `acceptsImage`).
+   *  Optional: only a text row ever sets it, and a vision tower is a fact about
+   *  the model, not a use case (SPEC AI-28b). */
+  sees?: boolean;
+  /** "thinks" badge (the server's `thinks` tag): the model reasons before it
+   *  answers. Optional for the same reason. */
+  thinks?: boolean;
   /** A warning chip's text (e.g. "needs 32GB"), or null for none. */
   warnChip: string | null;
   /** D814 (item Q): this Mac's fit verdict for the row, or null when the
@@ -333,6 +340,16 @@ export function ModelRow({
   if (model.ourPick) chips.push(
     <span key="rec" className="chip rec-chip">
       Our pick
+    </span>,
+  );
+  if (model.thinks) chips.push(
+    <span key="thinks" className="chip" title="Reasons step by step before it answers">
+      thinks
+    </span>,
+  );
+  if (model.sees) chips.push(
+    <span key="sees" className="chip" title="Can be asked about a picture">
+      sees images
     </span>,
   );
   // D814 (item Q): a fit chip for every row that carries a verdict — absent

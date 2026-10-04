@@ -36,7 +36,12 @@
 // pending, and what a delete that failed had to say.
 import { useEffect, useState } from "react";
 import { CapabilityNav, type CapabilityNavEntry } from "./CapabilityNav";
-import { CapabilityPane, EngineFilesPane, type EngineFilePart } from "./CapabilityPane";
+import {
+  CapabilityPane,
+  EngineFilesPane,
+  type EngineFilePart,
+  type UseCaseRow,
+} from "./CapabilityPane";
 import { DeleteDialogs } from "./DeleteDialogs";
 import { HubSearchScreen, type SettledQuery } from "./HubSearchScreen";
 import { type ModelRowHandlers, type ModelRowModel, type ModelRowProgress } from "./ModelRow";
@@ -52,6 +57,7 @@ import {
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { activeFitLevel, activeParamsBand, activeSort, type ResultSort } from "@apps/ai_models/lib/hubSearchView";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
+import { USE_CASES } from "@apps/ai_models/lib/useCases";
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import {
   deleteAiModels,
@@ -140,7 +146,9 @@ function diskRow(
     id: repo.id,
     name: cat?.nickname || cat?.label || repoName(repo.id),
     curated: curated.has(repo.id),
-    ourPick: !!cat?.recommended,
+    ourPick: !!cat?.recommended || !!cat?.useCasePicks?.length,
+    sees: !!cat?.acceptsImage,
+    thinks: !!cat?.tags?.includes("thinks"),
     warnChip: resumable(repo)
       ? PARTIAL_TAG
       : cat?.fit?.verdict === "no"
@@ -168,7 +176,9 @@ function catalogRow(m: AiCatalogModel, engine: string | null): ModelRowModel {
     id: m.id,
     name: m.nickname || m.label,
     curated: true,
-    ourPick: m.recommended,
+    ourPick: m.recommended || !!m.useCasePicks?.length,
+    sees: !!m.acceptsImage,
+    thinks: !!m.tags?.includes("thinks"),
     warnChip: m.fit?.verdict === "no" ? `Needs ${formatSize(m.fit.footprintBytes)}` : null,
     fit: m.fit?.verdict ?? null,
     have: false,
@@ -480,6 +490,25 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   const downloadProgress = downloadingId ? progressFor(jobByModel.get(downloadingId)) : null;
   const offReason = section?.runner && !section.runner.available ? section.runner.reason : null;
 
+  // The text pane opens with one starred model per use case (SPEC AI-28b). The
+  // star is the SERVER's (`useCasePicks`), so the reasoning pick follows this
+  // machine's fit; the row is whichever of the pane's own rows already stands
+  // for that model (on disk, or suggested), so a download started here is
+  // reported by the same row below. A use case with no star here is omitted.
+  const textCatalog = catalog?.find((c) => c.capability === "text-generation") ?? null;
+  const useCaseRows: UseCaseRow[] =
+    selected === "text-generation" && section && textCatalog && !offReason
+      ? USE_CASES.flatMap((useCase) => {
+          const pick = textCatalog.models.find((m) => m.useCasePicks?.includes(useCase.id));
+          if (!pick) return [];
+          const row =
+            have.find((r) => r.id === (pick.repo ?? pick.id)) ??
+            recommended.find((r) => r.id === pick.id) ??
+            catalogRow(pick, section.runner?.shortLabel ?? null);
+          return [{ useCase, row: { ...row, ourPick: true } }];
+        })
+      : [];
+
   const parts: EngineFilePart[] = grouped.components.repos.map((r) => ({
     id: r.id,
     name: r.component?.file ?? repoName(r.id),
@@ -549,6 +578,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
                 have={have}
                 lastUsedId={lastUsedId}
                 recommended={recommended}
+                useCaseRows={useCaseRows}
                 downloadingId={downloadingId}
                 downloadProgress={downloadProgress}
                 openInfoId={openInfoId}

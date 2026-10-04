@@ -13,10 +13,18 @@ import { useState } from "react";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { capabilityMeta, PARTS_ICON } from "@apps/ai_models/lib/capabilityMeta";
 import { formatSize } from "@platform/lib/format";
+import type { UseCase } from "@apps/ai_models/lib/useCases";
 import { ModelRow, type ModelRowHandlers, type ModelRowModel, type ModelRowProgress } from "@apps/ai_models/local/ModelRow";
 
 function pluralModel(n: number): string {
   return `model${n > 1 ? "s" : ""}`;
+}
+
+/** One use-case section of the text pane (SPEC AI-28b): the use case and the
+ *  row of ITS starred model — whichever of the pane's own rows stands for it. */
+export interface UseCaseRow {
+  useCase: UseCase;
+  row: ModelRowModel;
 }
 
 export interface CapabilityPaneProps {
@@ -28,6 +36,10 @@ export interface CapabilityPaneProps {
   lastUsedId: string | null;
   /** Curated models not yet downloaded, in the catalog's order. */
   recommended: ModelRowModel[];
+  /** The text pane's three use-case sections, each with its starred model, or
+   *  empty/absent for every other capability (and for an off pane). They sit
+   *  above the full list, which then reads "All text models". */
+  useCaseRows?: UseCaseRow[];
   /** The id of a `recommended` row a download is in flight for, or null. */
   downloadingId: string | null;
   downloadProgress: ModelRowProgress | null;
@@ -56,6 +68,7 @@ export function CapabilityPane({
   have,
   lastUsedId,
   recommended,
+  useCaseRows = [],
   downloadingId,
   downloadProgress,
   openInfoId,
@@ -140,6 +153,28 @@ export function CapabilityPane({
   return (
     <div className="tp-pane" data-part="pane">
       {head}
+      {useCaseRows.map(({ useCase, row }) => (
+        <div className="tp-group" data-part={`pane.usecase.${useCase.id}`} key={useCase.id}>
+          <h5>
+            {useCase.label} <span className="note">{useCase.blurb}</span>
+          </h5>
+          <ModelRow
+            model={row}
+            paneLabel={paneLabel}
+            opts={
+              row.id === downloadingId
+                ? { downloading: true, progress: downloadProgress ?? undefined }
+                : { last: false, info: openInfoId === row.id }
+            }
+            handlers={handlers}
+          />
+        </div>
+      ))}
+      {useCaseRows.length > 0 && (
+        <h5 className="tp-all" data-part="pane.all">
+          All text models
+        </h5>
+      )}
       {have.length > 0 && (
         <div className="tp-group" data-part="pane.have">
           <h5>
