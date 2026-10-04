@@ -1,7 +1,12 @@
-// /monitor — a whole-machine process monitor in the shell's own theme
-// (Akshil: "a shell interface with pytop data, but our theme UI ... memory and
-// cpu for now, and give me actions like kill process"). Entered from the
-// System chip's "Open Monitor".
+// /monitor — a process monitor in the shell's own theme (Akshil: "a shell
+// interface with pytop data, but our theme UI ... memory and cpu for now, and
+// give me actions like kill process"). Entered from the System chip's "Open
+// Monitor"; offered only with the `monitor_enabled` pref on (App.tsx).
+//
+// OPENS ON FUSED-RENDER'S OWN PROCESSES — the app and everything it runs —
+// with "fused-render only" pressed (Akshil 2026-10-04: "show only fused render
+// apps and processes by default"); the toggle widens to the whole machine. The
+// data is the whole machine either way (`?scope=all`), so widening is instant.
 //
 // Top to bottom: CPU and Memory meters (real charts, last two minutes) and,
 // with "fused-render only" on, what fused-render itself costs; a toolbar
@@ -429,7 +434,10 @@ export default function MonitorPage({
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
   const [query, setQuery] = useState("");
-  const [fusedOnly, setFusedOnly] = useState(false);
+  // fused-render's own processes by default (Akshil 2026-10-04: "show only
+  // fused render apps and processes by default"); the toolbar toggle widens
+  // to the whole machine.
+  const [fusedOnly, setFusedOnly] = useState(true);
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [sel, setSel] = useState<Selection>(EMPTY_SELECTION);
   const [rows, setRows] = useState<Record<number, RowState>>({});
@@ -704,7 +712,11 @@ export default function MonitorPage({
       <header className="monitor-head">
         <div>
           <h1 className="monitor-title">Monitor</h1>
-          <p className="monitor-subtitle">Every process on {machine}: live CPU and memory.</p>
+          <p className="monitor-subtitle">
+            {fusedOnly
+              ? "fused-render and the processes it runs: live CPU and memory."
+              : `Every process on ${machine}: live CPU and memory.`}
+          </p>
         </div>
       </header>
 

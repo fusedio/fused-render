@@ -181,6 +181,37 @@ def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_monitor_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: the System chip and /monitor page are opt-in.
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    body = client.put("/api/prefs", json={"monitor_enabled": True}, headers=FUSED).json()
+    assert body["monitor"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["monitor_enabled"] is True
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is True
+    assert client.put("/api/prefs", json={"monitor_enabled": False}, headers=FUSED).json()[
+        "monitor"
+    ]["enabled"] is False
+
+
+def test_monitor_enabled_reads_a_hand_edited_junk_value_as_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"monitor_enabled": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    assert prefs_mod.monitor_enabled() is False
+
+
+def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"monitor_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.

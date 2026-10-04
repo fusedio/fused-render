@@ -857,3 +857,10 @@ th[aria-sort="descending"] .monitor-sort {
     transition: none;
   }
 }
+
+/* /monitor while the `monitor_enabled` pref is off (App.tsx): one line, same
+   quiet voice as the page's own empty states. */
+.monitor-off {
+  padding: 24px;
+  font-size: 13px;
+}
