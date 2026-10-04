@@ -2083,6 +2083,13 @@
   padding: 8px 0;
 }
 
+/* WebKit's native menu can stay light even when the control is dark.
+   Give the options their own contrasting pair instead of inherited text. */
+[data-slot="rail-select"] option {
+  color: #111;
+  background-color: #fff;
+}
+
 .pg-speech-result {
   display: flex;
   flex-direction: column;
