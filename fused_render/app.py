@@ -466,6 +466,23 @@ def hard_exit(code: int = 0, *, exit_process=os._exit,
 
 QUIT_SERVER_DRAIN_S = 2.0
 
+# Budget for the "children" rung below. The server's lifespan shutdown
+# handlers (engine_host.stop_all, ai supervisor.unload_all, the pty registry,
+# index_watch.stop, remove_server_json) are what kill every child the server
+# spawned — and on the packaged app they NEVER RUN: uvicorn's graceful shutdown
+# waits on open connections with no timeout, the shell's SSE/websocket
+# connections never close, so the 2s drain above always gives up and `os._exit`
+# then skips the lifespan entirely. Measured on the owner's machine
+# (2026-10-05): an engine worker 29h old and an MLX embed worker older than the
+# running app, both with ppid 1. Across an update that means OLD-version
+# workers survive into the new version's session. So the quit runs the same
+# killers itself, each on its own daemon thread, joined against this budget.
+# Each killer starts signalling at once but walks its own children in sequence
+# with confirmation waits (SIGKILL lands at 3 s), so the budget bounds how long
+# we wait for those confirmations, not whether the first signal is sent; a
+# straggler is reparented and dies on its own escalation or with the process.
+QUIT_CHILDREN_BUDGET_S = 5.0
+
 # Ceiling on the whole teardown, after which the app terminates regardless. It
 # has to exist: a wedged `umount -f` blocks in the kernel and cannot be
 # cancelled, and an app that can never be quit is worse than one that quits with
@@ -485,15 +502,79 @@ QUIT_DEADLINE_MARGIN_S = 2.0
 
 QUIT_HARD_DEADLINE_S = (
     QUIT_SERVER_DRAIN_S
+    + QUIT_CHILDREN_BUDGET_S
     + _QUIT_UNMOUNT_BUDGET_S
     + RCD_REAP_WORST_CASE_S
     + QUIT_DEADLINE_MARGIN_S
 )
 
 
+def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
+    """Kill every child process the server owns, in parallel, under `budget_s`.
+
+    The same work the server's lifespan shutdown does (server/app.py's
+    `on_shutdown` handlers), run here because the lifespan never gets to run on
+    the packaged app — see QUIT_CHILDREN_BUDGET_S. One daemon thread per
+    killer: each is sequential over its own children with multi-second
+    confirmation waits, and a wedged one must not hold the others back. Also
+    tells any live index worker to stop (it polls a `cancel` file; the runner
+    does not keep its Popen) and removes the discovery file a successor would
+    otherwise read with a dead pid in it."""
+    def engines():
+        from fused_render.server import engine_host
+
+        engine_host.stop_all()
+
+    def ai_workers():
+        from fused_render.ai import supervisor
+
+        supervisor.unload_all()
+
+    def terminals():
+        from fused_render import pty_session
+
+        pty_session.REGISTRY.shutdown_all()
+
+    def index_runs():
+        from fused_render.index.config import load_config
+        from fused_render.index import runner
+        from fused_render.server import index_watch
+
+        index_watch.stop()
+        cfg = load_config()
+        for run in runner.list_runs(cfg).get("runs", []):
+            if run.get("running"):
+                runner.cancel(cfg, run["run_id"])
+
+    def discovery():
+        from fused_render.server.app import remove_server_json
+
+        remove_server_json()
+
+    threads = []
+    for name, step in (("engines", engines), ("ai", ai_workers),
+                       ("terminals", terminals), ("index", index_runs),
+                       ("discovery", discovery)):
+        def _run(step=step, name=name):
+            try:
+                step()
+            except Exception:
+                logger.warning("quit: stopping %s failed", name, exc_info=True)
+
+        t = threading.Thread(target=_run, daemon=True, name=f"quit-children-{name}")
+        t.start()
+        threads.append((name, t))
+    deadline = time.monotonic() + budget_s
+    for name, t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+        if t.is_alive():
+            logger.warning("quit: %s did not stop within %.1fs; leaving the rest "
+                           "to the process exit", name, budget_s)
+
+
 def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DRAIN_S,
                   close_duckdb=None, unmount_mounts=None, stop_rcd=None,
-                  stop_captures=None) -> list[str]:
+                  stop_captures=None, stop_children=None) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
 
     The order is the point, and each rung is a precondition of the next:
@@ -502,6 +583,10 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
          `drain_s`. A live /api/fs/raw read holds files open under a mount, which
          is a measured cause of a busy-mount unmount failure (see
          detach_mount/_quit_tile_daemons), so this comes before the unmounts.
+      1b. "children" — kill every child the server spawned (engines, AI
+         workers, terminal shells, the index worker). The lifespan handlers
+         that normally do this never run here (QUIT_CHILDREN_BUDGET_S), and
+         children hold files open under mounts too, so before the unmounts.
       2. "capture" — finalise every live native recording (SPEC §45). Here and
          not in an `atexit` handler because THIS FUNCTION IS THE ONLY THING THAT
          RUNS: quit ends in `os._exit` (see the DM-9 note above), which skips
@@ -538,6 +623,8 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
             from fused_render import capture
 
             capture.stop_all()
+    if stop_children is None:
+        stop_children = _stop_children
 
     started = time.monotonic()
     if server is not None:
@@ -553,8 +640,9 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
                                    "continuing teardown", drain_s)
         except Exception:
             logger.warning("stopping the server on quit failed", exc_info=True)
-    for name, step in (("capture", stop_captures), ("duckdb", close_duckdb),
-                       ("unmount", unmount_mounts), ("rcd", stop_rcd)):
+    for name, step in (("children", stop_children), ("capture", stop_captures),
+                       ("duckdb", close_duckdb), ("unmount", unmount_mounts),
+                       ("rcd", stop_rcd)):
         steps.append(name)
         try:
             step()
@@ -638,7 +726,7 @@ def _quit_ready_event_locked(state: dict) -> threading.Event:
 
 
 def begin_quit(state: dict, *, terminate=None, start=None,
-               remove_pidfile=None, on_claim=None) -> bool:
+               remove_pidfile=None, on_claim=None, surface: str = "menu") -> bool:
     """Start THE teardown unless one is already running; True if this call
     started it.
 
@@ -677,9 +765,14 @@ def begin_quit(state: dict, *, terminate=None, start=None,
     with _quit_lock:
         ready = _quit_ready_event_locked(state)
         if state.get("quitting"):
-            logger.info("quit already in progress; joining it")
+            logger.info("quit already in progress; joining it (via %s)", surface)
             return False
         state["quitting"] = True
+    # THE press, timestamped. Until this line the log showed only how long the
+    # teardown took, never when it was asked for — so a field report of "quit
+    # took two minutes" could not be split into press-to-teardown (the restart
+    # dialog's own wait) and teardown-to-exit.
+    logger.info("quit requested via %s (pid %s)", surface, os.getpid())
     remove_pidfile()
     if on_claim is not None:
         try:
@@ -761,8 +854,8 @@ RELAUNCH_RETRY_AFTER_S = 5.0
 # The relauncher's overall deadline, COUNTED FROM ITS OWN START — which is the
 # press, not the pid's death: it is spawned by `begin_quit`'s `on_claim`, at the
 # very start of the teardown. That distinction is load-bearing. The teardown may
-# take up to QUIT_HARD_DEADLINE_S (34 s), so a deadline counted from the pid's
-# death could still be running 84 s after the press, long after the page gave up
+# take up to QUIT_HARD_DEADLINE_S (39 s), so a deadline counted from the pid's
+# death could still be running 89 s after the press, long after the page gave up
 # at RESTART_GIVE_UP_MS (60 s, frontend/src/platform/lib/restart-flow.ts) and
 # told the user the app is not running. Counted from the press it is under that
 # cap whatever the teardown does (bugbot, PR #1214).
@@ -1050,7 +1143,8 @@ def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None)
         # `on_claim` so it happens before anything can exit. The menu/popover
         # surfaces pass nothing and ignore the bool.
         return begin_quit(state, terminate=terminate, start=start,
-                          remove_pidfile=remove_pidfile, on_claim=on_claim)
+                          remove_pidfile=remove_pidfile, on_claim=on_claim,
+                          surface="relaunch" if on_claim is not None else "menu/popover")
 
     return _do_quit
 
@@ -1142,7 +1236,8 @@ def make_appkit_terminate_hook(state: dict, *, reply, start=None,
             # back: NSTerminateNow is what this branch meant before the hard exit.
             _exit()
             return NS_TERMINATE_NOW
-        begin_quit(state, start=start, remove_pidfile=remove_pidfile)
+        begin_quit(state, start=start, remove_pidfile=remove_pidfile,
+                   surface="appkit (Dock/⌘Q/logout)")
         threading.Thread(target=_exit_when_ready, args=(ready,), daemon=True,
                          name="quit-appkit-exit").start()
         return NS_TERMINATE_LATER

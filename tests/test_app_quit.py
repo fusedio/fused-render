@@ -574,6 +574,11 @@ def quit_ctx(ladder, monkeypatch):
     monkeypatch.setattr(
         app_mod, "_close_duckdb_stash",
         lambda: ladder["calls"].append(("duckdb", None)))
+    # The children rung would reach the real engine/AI/pty registries and the
+    # server discovery file; record it instead.
+    monkeypatch.setattr(
+        app_mod, "_stop_children",
+        lambda: ladder["calls"].append(("children", None)))
     return ladder
 
 
@@ -585,7 +590,8 @@ def test_teardown_order_capture_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx)
     calls = quit_ctx["calls"]
     kinds = [c[0] for c in calls]
     assert server.should_exit is True          # step 1: stop serving requests
-    assert kinds[0] == "duckdb"                # step 3: while the GIL is held
+    assert kinds[0] == "children"              # step 1b: nothing outlives the app
+    assert kinds[1] == "duckdb"                # step 3: while the GIL is held
     first_kill = kinds.index("kill")
     unmounts = [i for i, c in enumerate(calls) if c[0] in ("rc", "force")]
     assert unmounts, "the mounts must actually be torn down"
@@ -597,7 +603,7 @@ def test_teardown_order_capture_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx)
     # recording writing under a mount holds it busy, and this ladder is the ONLY
     # thing that finalises one — quit ends in os._exit, which runs no atexit
     # handler (see the DM-9 note in app.py).
-    assert steps == ["server", "capture", "duckdb", "unmount", "rcd"]
+    assert steps == ["server", "children", "capture", "duckdb", "unmount", "rcd"]
 
 
 def test_teardown_drains_the_server_thread_within_a_bounded_wait(quit_ctx):
@@ -624,7 +630,7 @@ def test_teardown_closes_the_duckdb_stash_even_when_rcd_persists(quit_ctx,
 
     app_mod.quit_teardown(_FakeServer())
 
-    assert [c[0] for c in quit_ctx["calls"]] == ["duckdb"]
+    assert [c[0] for c in quit_ctx["calls"]] == ["children", "duckdb"]
 
 
 def test_start_quit_returns_promptly_and_terminates_afterwards():
@@ -713,6 +719,7 @@ def test_the_quit_action_works_before_the_server_has_booted():
 
 def test_the_hard_deadline_exceeds_the_sum_of_the_bounded_steps():
     inner = (app_mod.QUIT_SERVER_DRAIN_S
+             + app_mod.QUIT_CHILDREN_BUDGET_S
              + mounts_mod._QUIT_UNMOUNT_BUDGET_S
              + mounts_mod.RCD_REAP_WORST_CASE_S)
 
