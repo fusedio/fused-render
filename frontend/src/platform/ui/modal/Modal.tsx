@@ -177,7 +177,12 @@ export function Modal({
   // prefer the first focusable in the body/footer so focus doesn't land on the
   // header ✕.
   useEffect(() => {
-    restoreRef.current = ownerDoc.activeElement;
+    // The trigger lives in THIS script's document, not necessarily the portal
+    // target's: with `getContainer` pointing at a parent document, that
+    // document's `activeElement` is the <iframe> element, and closing would
+    // return focus to the frame instead of the Open control. Same document
+    // (the default) -> `document === ownerDoc`, so nothing changes.
+    restoreRef.current = document.activeElement;
     const dialog = dialogRef.current;
     if (initialFocus?.current) {
       initialFocus.current.focus();

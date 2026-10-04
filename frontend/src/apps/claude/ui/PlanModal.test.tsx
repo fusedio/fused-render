@@ -412,3 +412,28 @@ test("the historical chip also shows the Saved-to line, in the chip AND its popu
   const modalLine = withClass(dialogs(r)[0], "plan-saved-path")[0];
   expect(textOf(modalLine)).toBe("Saved to /tmp/plans/hist.md");
 });
+
+// PR #1336 review (Bugbot, "Chip hides path without a plan"): the Saved-to line
+// is rendered only by PlanChipBody (usable plan), so with no usable plan the
+// path must stay in the leftover dump instead of vanishing.
+test("a historical chip with a planFilePath but no usable plan still discloses the path", () => {
+  const key = "k" + Math.random();
+  const policy = createCardPolicy();
+  policy.overrides.set(key, true);
+  const seg = {
+    kind: "tool",
+    id: key,
+    name: "ExitPlanMode",
+    status: "ok",
+    input: { plan: 42, planFilePath: "/tmp/plans/lost.md" },
+    output: null,
+    images: [],
+  } as unknown as ToolSegment;
+  const r = mount(
+    <CardPolicyProvider value={policy}>
+      <ToolChip seg={seg} cardKey={key} />
+    </CardPolicyProvider>,
+  );
+  expect(withClass(r, "plan-saved-path")).toHaveLength(0);
+  expect(all(r, "pre").map((p) => textOf(p)).join("")).toContain("/tmp/plans/lost.md");
+});

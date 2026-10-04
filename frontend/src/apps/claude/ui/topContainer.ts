@@ -25,10 +25,55 @@ export function topDocumentBody(): Element | null {
     const top = window.top;
     if (!top || top === window) return null; // not framed
     const body = top.document?.body;
-    return body ?? null;
+    if (!body) return null;
+    mirrorStylesheets(document, top.document);
+    return body;
   } catch {
     return null; // cross-origin (or a test shim with no `.top`) — cannot see it
   }
+}
+
+const MIRRORED_ATTR = "data-c-mirrored";
+
+// The chat's CSS (`.chat-root`, `.c-tokens`, the plan-modal layout, hljs) is
+// loaded into the document this bundle runs in — the IFRAME. A dialog portaled
+// into the top document would render unstyled there unless that document
+// happens to have loaded the same sheets (a lazy chunk's CSS lands only in the
+// document that imported it). So copy this document's stylesheets across,
+// idempotently: a `<link>` is skipped when the target already has one with the
+// same href, an inline `<style>` (dev server) when one with identical text
+// exists. The copies are tagged and left in place — they are the same rules the
+// top document would otherwise lack, and re-opening finds them already there.
+export function mirrorStylesheets(from: Document, to: Document): void {
+  const target = to.head ?? to.documentElement;
+  if (!target) return;
+  const seenHref = new Set<string>();
+  const seenText = new Set<string>();
+  to.querySelectorAll("link[rel~='stylesheet'], style").forEach((n) => {
+    if (n.tagName === "LINK") seenHref.add((n as HTMLLinkElement).href);
+    else seenText.add(n.textContent ?? "");
+  });
+  from.querySelectorAll("link[rel~='stylesheet'], style").forEach((n) => {
+    if (n.hasAttribute(MIRRORED_ATTR)) return;
+    if (n.tagName === "LINK") {
+      const href = (n as HTMLLinkElement).href;
+      if (!href || seenHref.has(href)) return;
+      seenHref.add(href);
+      const link = to.createElement("link");
+      link.rel = "stylesheet";
+      link.href = href;
+      link.setAttribute(MIRRORED_ATTR, "");
+      target.appendChild(link);
+    } else {
+      const text = n.textContent ?? "";
+      if (!text || seenText.has(text)) return;
+      seenText.add(text);
+      const style = to.createElement("style");
+      style.textContent = text;
+      style.setAttribute(MIRRORED_ATTR, "");
+      target.appendChild(style);
+    }
+  });
 }
 
 export default topDocumentBody;

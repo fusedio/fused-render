@@ -187,12 +187,12 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
     case PLAN_TOOL:
       // ...and when `plan` is not a usable string it stays UNUSED, so it falls
       // into the dump: a chip must never imply a plan was read.
-      // `PLAN_HIDDEN_INPUT_KEYS` (`planFilePath`) is covered either way — the
-      // CLI's own scratch path, rendered as its own quiet line instead
-      // (D890 code review, finding 4), never as raw JSON in this dump.
-      return typeof inp.plan === "string" && inp.plan
-        ? ["plan", ...PLAN_HIDDEN_INPUT_KEYS]
-        : [...PLAN_HIDDEN_INPUT_KEYS];
+      // `PLAN_HIDDEN_INPUT_KEYS` (`planFilePath`) is hidden from the dump ONLY
+      // when `PlanChipBody` (the sole renderer of the "Saved to" line, mounted
+      // only for a usable plan) actually shows it instead (D890 code review,
+      // finding 4). Without a usable plan nothing renders it, so it must stay
+      // in the dump rather than vanish.
+      return typeof inp.plan === "string" && inp.plan ? ["plan", ...PLAN_HIDDEN_INPUT_KEYS] : [];
     case ANSWERABLE_TOOL:
       return Array.isArray(inp.questions) ? ["questions"] : [];
     default:
