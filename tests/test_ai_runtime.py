@@ -2178,8 +2178,7 @@ def test_every_suggestion_list_offers_between_two_and_five_models():
     """
     # SIX, not five, for the two TEXT lists only (SPEC AI-28b): the use-case
     # sections need a code-tuned row (Qwen3-Coder-30B-A3B) and no existing row
-    # was worth cutting for it. The Models page reads text as three picks plus
-    # "All text models", so the list is no longer swept as one flat page.
+    # was worth cutting for it.
     for code, entries in catalog.SUGGESTIONS.items():
         cap = 6 if code in ("mlx-text", "llamacpp-text") else 5
         assert 2 <= len(entries) <= cap, (
