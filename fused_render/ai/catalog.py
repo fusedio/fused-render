@@ -1443,7 +1443,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
-            "recommended": True,
             "params": "0.6B",
             "quantization": "MLX bf16",
             "label": "Qwen3-TTS 0.6B Base (MLX bf16)",
