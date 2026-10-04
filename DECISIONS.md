@@ -6275,39 +6275,6 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
 
 ## Text models grouped by use case (2026-10-04, worktree-text-use-cases)
 
-- **Use cases are a UI and catalog grouping, not an SDK concept.** Three ids -
-  `writing` (thinking off), `coding` (thinking off), `reasoning` (thinking on) -
-  ride the catalog payload as `useCases` and `useCasePicks`. `fused.ai.text`,
-  its verbs and the wire `thinking` flag are unchanged; the Playground just
-  sends the use case's default for `thinking`.
-- **Vision is not a use case.** `acceptsImage` becomes a "sees images" badge and
-  an image-incompatible notice in the Playground. A fourth tab would have
-  split one model's strengths across two lists.
-- **The reasoning star is computed on the server** (`catalog.reasoning_pick`:
-  the largest capable model whose fit is not "no"; "tight" is accepted), so the
-  Models page and the Playground read one payload and agree. Writing and coding
-  stars are curated.
-- **Qwen3-Coder-30B-A3B is the coding pick on both text engines.** Its mirror
-  publish was NOT done (AWS credentials expired in the builder's session), so
-  until it is published downloads fall back to the Hub; see the
-  changing-suggested-models skill.
-- **The six-row cap on the text lists was relaxed from five** so the extra pick
-  fits without evicting a curated row.
-- **Selection is URL-driven, written only by a click.** `?uc=` joins `?cap=` and
-  `?model=`; only the switch handler writes it (a push). No effect writes the
-  URL, so there is no render loop (see url-write-in-effect).
-- **Home's Text card is a div with a main link plus three chip links**, to avoid
-  nested anchors; the other Playground cards stay a single anchor.
-
-- **The Playground use-case switch is replaced by sidebar grouping (same
-  branch).** The segmented switch in the prompt card was unintuitive: it sat
-  away from the model list and swapped the model silently. The Text generation
-  sidebar section is now three sub-sections (Writing & chat, Coding, Deep
-  reasoning, from `USE_CASES`), each starred pick first, and the selected model
-  determines the use case (starters, placeholder, thinking default). A model
-  sits in one group only. `?uc=` is still read on arrival to select that use
-  case's pick; a click on a row clears it, and nothing writes it from an effect.
-- **Use-case groups are top-level sidebar sections (same branch).** The small
-  uppercase sub-headings inside a "Text generation" section looked odd, so the
-  wrapper is gone: Writing & chat, Coding and Deep reasoning are peers of Image
-  generation (same `.pg-group` markup, own icon, no count), first in the rail.
+- **Scope is categorization only.** Three use cases (`writing`, `coding`, `reasoning`) tag curated text rows by hand and any other text model by a name heuristic; they ride the catalog and Hub search rows as `useCases`, and the Models text pane and Playground sidebar group by them. An earlier cut of this branch also added starred picks (a per-machine reasoning pick), a `thinks` tag with a per-use-case thinking default, per-use-case starters and placeholders, an image-incompatible notice, a "sees images" badge, a `?uc=` URL param and Home chips; all were removed as out of scope and main behaviour restored.
+- **Qwen3-Coder-30B-A3B is a plain curated coding row** on both text engines (MLX and GGUF). Its mirror publish is still owed (AWS credentials had expired); until then downloads fall back to the Hub, see the changing-suggested-models skill. The text lists may hold six rows (cap was five).
+- **A model sits in the section of its first `useCases` entry**, so a model tagged writing, coding and reasoning lists under Writing & chat.
