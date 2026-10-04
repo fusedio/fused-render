@@ -153,3 +153,35 @@ test("nothing offered anywhere is null, not a crash", () => {
   expect(pickPlaygroundModel([], null, null)).toBe(null);
   expect(pickPlaygroundModel([row("text-generation", [model("huge")])], "huge", null)).toBe(null);
 });
+
+// -- use cases (SPEC AI-28b) ---------------------------------------------------
+
+test("a use case's starred model is offered even when nothing else marks it", () => {
+  const offered = playgroundModels(
+    row("text-generation", [
+      model("small", { recommended: true }),
+      model("coder", { useCasePicks: ["coding"] }),
+      model("huge"),
+    ]),
+  );
+  expect(offered.map((m) => m.id)).toEqual(["small", "coder"]);
+});
+
+test("?uc= opens text generation on that use case's starred model", () => {
+  const rows = [
+    row("text-to-image", [model("flux", { recommended: true })]),
+    row("text-generation", [
+      model("chat", { recommended: true, useCasePicks: ["writing"] }),
+      model("coder", { useCasePicks: ["coding"] }),
+      model("big", { useCasePicks: ["reasoning"] }),
+    ]),
+  ];
+  expect(pickPlaygroundModel(rows, null, null, "coding")?.model.id).toBe("coder");
+  expect(pickPlaygroundModel(rows, null, "text-generation", "reasoning")?.model.id).toBe("big");
+  // An explicit model still wins; the use case then only labels the switch.
+  expect(pickPlaygroundModel(rows, "chat", null, "coding")?.model.id).toBe("chat");
+  // An unknown use case falls through silently to the ordinary fallback.
+  expect(pickPlaygroundModel(rows, null, null, "vision")?.model.id).toBe("flux");
+  // A use case with no star here leaves the fallback alone.
+  expect(pickPlaygroundModel([rows[1]], null, null, "coding")?.model.id).toBe("coder");
+});

@@ -22,7 +22,7 @@
 // no webcam here — a screenshot or a saved photo is the ordinary "what is
 // this" ask, and the picker alone covers it without a second capture UI to
 // keep in step with the image stage's own.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import {
   cancelGeneration,
@@ -52,6 +52,15 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
 import { saveToCache, useWebcam, WebcamOverlay } from "./webcam";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
+import {
+  USE_CASES,
+  alternativeThatSees,
+  modelThinks,
+  useCaseById,
+  type UseCase,
+  type UseCaseId,
+} from "@apps/ai_models/lib/useCases";
 
 // The three formats `ImageStage`'s own picker restricts to (`ATTACH_EXTENSIONS`
 // there) — kept identical here for one reason only: consistency with the
@@ -85,72 +94,19 @@ const LIMITS = {
 // set. A model that rambles or thinks out loud without one is telling the reader
 // something true about itself, which is what they came to find out.
 
-// Eight authored examples — two pages of four (D465). Each is a real ask with
-// its constraints spelled out, not a topic: what to write, how long, what to
-// leave out. A one-line "write a haiku" tests that the model answers; these
-// test what the reader actually came to find out, which is whether it follows
-// the shape it was given.
-const STARTERS: Starter[] = [
-  {
-    name: "How it guesses",
-    icon: StarterIcons.bulb,
-    prompt:
-      "Explain how a language model picks the next word to someone who has never written " +
-      "code. Use one everyday analogy, stay under 150 words, and end with the thing people " +
-      "most often get wrong about it.",
-  },
-  {
-    name: "Decline a meeting",
-    icon: StarterIcons.mail,
-    prompt:
-      "Write a short, warm email declining Thursday's design review because I am shipping a " +
-      "release that day. Offer to read the notes and send comments, keep it to four " +
-      "sentences, and do not apologise twice.",
-  },
-  {
-    name: "Dinner from this",
-    icon: StarterIcons.bowl,
-    prompt:
-      "I have rice, two eggs, spinach and a lemon. Give me three dinners I can cook in under " +
-      "20 minutes — a title and three steps each, ordered from least to most effort.",
-  },
-  {
-    name: "Explain an error",
-    icon: StarterIcons.code,
-    prompt:
-      "Explain what a Python KeyError means, the three most common ways it happens in real " +
-      "code, and how to fix each one. One short snippet per fix, no preamble.",
-  },
-  {
-    name: "Regex, in parts",
-    icon: StarterIcons.list,
-    prompt:
-      "Write a regular expression that matches an ISO date (YYYY-MM-DD) and nothing else, " +
-      "then explain it token by token as a bullet list, including why each anchor is there.",
-  },
-  {
-    name: "One day in Lisbon",
-    icon: StarterIcons.plane,
-    prompt:
-      "Plan one day in Lisbon for someone who would rather walk and drink coffee than queue " +
-      "for museums. Morning, afternoon, evening — one line each, plus the walk between them.",
-  },
-  {
-    name: "Three haiku",
-    icon: StarterIcons.pen,
-    prompt:
-      "Write three haiku about running a large AI model on a laptop that gets hot. Give each " +
-      "a different mood: proud, tired, funny. Nothing about clouds.",
-  },
-  {
-    name: "Argue both sides",
-    icon: StarterIcons.chart,
-    prompt:
-      "I am choosing between a laptop with 16GB of memory and one with 32GB for running AI " +
-      "models locally. Argue both sides in a short table, then commit to one recommendation " +
-      "and say what would change your mind.",
-  },
-];
+// The starter prompts live with the use cases (lib/useCases.ts, shared with the
+// Models page): the eight authored examples of D465 were split by use case
+// there and grown to a few per case. This only dresses one up with its glyph.
+// The one-line subline rides the hover title: the pill row is MEASURED to fit,
+// and a second line in every pill would shrink the page of examples.
+function startersFor(useCase: UseCase): Starter[] {
+  return useCase.starters.map((s) => ({
+    name: s.name,
+    icon: StarterIcons[s.icon],
+    prompt: s.prompt,
+    detail: `${s.hint} — ${s.prompt}`,
+  }));
+}
 
 function replyStats(usage: ChatUsage | null | undefined, seconds?: number | null): string | null {
   if (!usage?.outputTokens) return null;
@@ -168,15 +124,47 @@ interface Reply {
 
 export function TextStage({
   model,
-  modelLabel,
   downloaded,
   entry,
+  useCase: useCaseId,
+  models,
+  catalog,
+  attachment,
+  onAttachment,
+  onUseCase,
+  onModel,
 }: {
   model: string;
-  modelLabel: string;
   downloaded: boolean;
   entry: AiCatalogModel;
+  /** The selected use case — the tab owns it (the URL's `uc`) because the
+   *  model picker below and the sidebar must agree about it. */
+  useCase: UseCaseId;
+  /** The text models this tab draws, for the picker under the switch. */
+  models: AiCatalogModel[];
+  /** The whole text row, for "the closest model that can see images" — which
+   *  may be one the sidebar does not draw. */
+  catalog: AiCatalogModel[];
+  /** The attached picture lives in the TAB, not here: this stage is keyed by
+   *  model, and "Switch to <a model that can see it>" must not throw away the
+   *  picture it is switching for. */
+  attachment: AttachedImage | null;
+  onAttachment: (image: AttachedImage | null) => void;
+  onUseCase: (id: UseCaseId) => void;
+  onModel: (id: string) => void;
 }) {
+  const useCase = useCaseById(useCaseId) ?? USE_CASES[0];
+  const starters = useMemo(() => startersFor(useCase), [useCase]);
+  // "Think first" starts from the use case's own default and the person can
+  // flip it. The default is re-applied when the USE CASE changes, adjusted
+  // during render rather than in an effect so no frame shows the old one.
+  const [thinking, setThinking] = useState(useCase.thinking);
+  const [seenUseCase, setSeenUseCase] = useState(useCase.id);
+  if (seenUseCase !== useCase.id) {
+    setSeenUseCase(useCase.id);
+    setThinking(useCase.thinking);
+  }
+  const thinks = modelThinks(entry);
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
   const [reply, setReply] = useState<Reply | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -188,15 +176,25 @@ export function TextStage({
   // (AI-11j), read through `imageInput.ts` so the row drawn here and the
   // `images` field a send actually carries cannot come to disagree, exactly
   // as `ImageStage` already keeps `editable`/`base` in step.
-  const attachable = canAttachImage(entry.acceptsImage);
+  //
+  // The attach controls are drawn for EVERY model now: a model that cannot see
+  // used to hide them, which read as "this app has no picture feature". A
+  // picture held against a model that cannot see it gets the notice below
+  // instead — and `attachedImage`, what a send actually carries, stays empty.
+  const canSee = canAttachImage(entry.acceptsImage);
   // Deliberately NOT persisted to the URL, unlike `ImageStage`'s `img` param:
   // an image here rides the CURRENT turn only (`mlx_text/worker.py`'s own
   // boundary) and this stage already sends `history: []` on every send — a
   // picture surviving a reload would model a permanence the request itself
   // never had, and a stale path pointing at a picture the user has since
-  // moved would silently 400 the next send.
-  const [attachment, setAttachment] = useState<AttachedImage | null>(null);
+  // moved would silently 400 the next send. It is held by the tab (a prop),
+  // which survives a model switch but not a reload.
+  const setAttachment = onAttachment;
   const attachedImage = usableAttachment(entry.acceptsImage, attachment);
+  // The picture is held but this model cannot see it: say so, and offer the
+  // closest curated model that can.
+  const blockedImage = !!attachment && !canSee;
+  const seer = blockedImage ? alternativeThatSees(catalog, entry) : null;
   const [attaching, setAttaching] = useState(false);
   // Is the attached picture open at full size? A thumbnail 28px on a side is a
   // reminder of WHICH picture, not a look at it — the same rule ImageStage's
@@ -322,11 +320,14 @@ export function TextStage({
     ...(topP !== DEFAULTS.top_p ? { topP } : {}),
     ...(maxTokens !== DEFAULTS.max_tokens ? { maxTokens } : {}),
     ...(system.trim() ? { systemPrompt: system.trim() } : {}),
+    // Only a model that thinks has anything to switch; for one that does not,
+    // leaving it unset keeps the request what a bare `fused.ai.text` call is.
+    ...(thinks ? { thinking } : {}),
   });
 
   const send = async (asked?: string) => {
     const wanted = (asked ?? prompt).trim();
-    if (!wanted || streaming) return;
+    if (!wanted || streaming || blockedImage) return;
     if (asked) setPrompt(asked);
     setError(null);
     setStreaming(true);
@@ -406,8 +407,12 @@ export function TextStage({
     <button
       type="button"
       className="btn btn-primary pg-send"
-      disabled={!prompt.trim()}
-      title="Enter to run · Shift+Enter for a new line"
+      disabled={!prompt.trim() || blockedImage}
+      title={
+        blockedImage
+          ? "This model can't see the picture — switch model or remove it"
+          : "Enter to run · Shift+Enter for a new line"
+      }
       onClick={() => void send()}
     >
       Run <kbd className="pg-kbd">⏎</kbd>
@@ -419,30 +424,77 @@ export function TextStage({
       <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
+      {/* The use case: what the person is trying to do. Choosing one selects
+          that use case's recommended model, its starters and its thinking
+          default; the model and Think first below stay theirs to override. */}
+      <Tabs value={useCase.id} onValueChange={(id) => onUseCase(id as UseCaseId)}>
+        <TabsList aria-label="Use case">
+          {USE_CASES.map((u) => (
+            <TabsTrigger key={u.id} value={u.id} className="px-3">
+              {u.shortLabel}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+
       <StageHeader
         title="Try a prompt"
         configOpen={configOpen}
         onToggleConfig={toggleConfig}
       />
 
-      {/* Two shapes, one composer. Without an attachment this stage is the
-          plain row every other text-in stage is: [prompt | Clear-over-Run].
-          The moment the model can be asked about a picture (AI-11j) it becomes
-          `ImageStage`'s STACKED composer instead — prompt across the whole box,
+      <div className="m-0 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+        <label className="flex items-center gap-2">
+          <span className="text-muted-foreground">Model</span>
+          <select
+            className="h-8 max-w-64 rounded-md border border-input bg-background px-2 text-sm"
+            value={model}
+            disabled={streaming}
+            onChange={(e) => onModel(e.target.value)}
+          >
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.useCasePicks?.includes(useCase.id) ? "★ " : ""}
+                {m.nickname ?? m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {thinks && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={thinking}
+            disabled={streaming}
+            title="Let the model reason before it answers: slower, and better on hard problems"
+            className="flex items-center gap-2 rounded-md border border-input bg-background px-2 py-1 text-sm"
+            onClick={() => setThinking(!thinking)}
+          >
+            <span
+              aria-hidden="true"
+              className={
+                "inline-block size-3 rounded-full border " +
+                (thinking ? "border-primary bg-primary" : "border-muted-foreground")
+              }
+            />
+            Think first
+          </button>
+        )}
+      </div>
+
+      {/* The STACKED composer — `ImageStage`'s own: prompt across the whole box,
           a floor holding the attach pill beside Run, Clear floating in the
-          corner. The attach row used to be a third child of the ROW flex,
-          which laid it out BESIDE the prompt: the pill took the left of the
-          box, the placeholder was squeezed into the middle, and neither read as
-          belonging to the other. Same classes as the image stage throughout, so
-          the two are one feature wearing one layout. */}
-      <div className={"pg-composer" + (attachable ? " pg-composer-stack" : "")}>
+          corner. It is the one shape now that every model gets the attach
+          controls (a model that cannot see gets the notice below instead). The
+          attach row used to be a third child of a ROW flex, which laid it out
+          BESIDE the prompt; same classes as the image stage throughout, so the
+          two are one feature wearing one layout. */}
+      <div className="pg-composer pg-composer-stack">
         <textarea
           ref={boxRef}
           value={prompt}
           rows={3}
-          placeholder={
-            attachedImage ? "Ask about the attached picture…" : `Ask ${modelLabel} something…`
-          }
+          placeholder={attachment ? "Ask about the attached picture…" : useCase.placeholder}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -451,12 +503,10 @@ export function TextStage({
             }
           }}
         />
-        {/* Stacked, Clear floats in the box's top-right corner rather than
-            taking a slot above Run: on this shape the two are not sharing a row
-            with the prompt, so a slot of its own would cost the box a permanent
-            40px of height for a button that only exists once there is a reply.
-            The row shape keeps the stack — see the column below. */}
-        {attachable && !streaming && reply && (
+        {/* Clear floats in the box's top-right corner rather than taking a
+            slot above Run: a slot of its own would cost the box a permanent
+            40px of height for a button that only exists once there is a reply. */}
+        {!streaming && reply && (
           <button
             type="button"
             className="pg-ghost-btn pg-clear pg-clear-corner"
@@ -466,12 +516,11 @@ export function TextStage({
             Clear
           </button>
         )}
-        {attachable ? (
-          /* The composer's floor: the way to attach a picture, the picture
-             itself once there is one, then Run — one cluster in the
-             bottom-right corner, exactly as the image stage arranges its own. */
-          <div className="pg-composer-foot">
-            {attachedImage && (
+        {/* The composer's floor: the way to attach a picture, the picture
+            itself once there is one, then Run — one cluster in the
+            bottom-right corner, exactly as the image stage arranges its own. */}
+        <div className="pg-composer-foot">
+            {attachment && (
               <span className="pg-attach">
                 <button
                   type="button"
@@ -480,7 +529,7 @@ export function TextStage({
                   aria-label="See this picture"
                   onClick={() => setShowAttachment(true)}
                 >
-                  <img src={rawUrl(attachedImage.path)} alt="" />
+                  <img src={rawUrl(attachment.path)} alt="" />
                 </button>
                 <button
                   type="button"
@@ -502,7 +551,7 @@ export function TextStage({
                 onClick={() => void choose()}
               >
                 {StarterIcons.landscape}
-                <span>{attachedImage ? "Replace" : "Add an image"}</span>
+                <span>{attachment ? "Replace" : "Add an image"}</span>
               </button>
               <button
                 type="button"
@@ -518,28 +567,31 @@ export function TextStage({
             </div>
             <div className="pg-composer-side">{runButton}</div>
           </div>
-        ) : (
-          /* Clear at the top of this column, Run at the bottom — not inline with
-             the prompt. Inline, Clear appeared and disappeared BESIDE the text,
-             narrowing the box by its own width and rewrapping the prompt taller
-             than the height the grow already wrote. The column's width is set by
-             Run, the wider of the two, so nothing moves when Clear comes and
-             goes. */
-          <div className="pg-composer-side">
-            {!streaming && reply && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Clear the prompt and reply"
-                onClick={clear}
-              >
-                Clear
-              </button>
-            )}
-            {runButton}
-          </div>
-        )}
       </div>
+
+      {blockedImage && (
+        <div
+          role="status"
+          className="m-0 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-input bg-muted px-3 py-2 text-sm"
+        >
+          <p className="m-0 flex-1">
+            This model can&rsquo;t see images.
+            {seer ? ` ${seer.nickname ?? seer.label} can, and fits on this machine.` : ""}
+          </p>
+          {seer && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => onModel(seer.id)}
+            >
+              Switch to {seer.nickname ?? seer.label}
+            </button>
+          )}
+          <button type="button" className="btn btn-secondary" onClick={() => setAttachment(null)}>
+            Remove image
+          </button>
+        </div>
+      )}
 
       {/* The attached picture at full size — the whole modal, no title bar, no
           filename, no actions: the ✕ above already removes it, and this only
@@ -550,14 +602,14 @@ export function TextStage({
         <WebcamOverlay videoRef={webcam.videoRef} onCapture={capture} onClose={webcam.stop} />
       )}
 
-      {attachedImage && showAttachment && (
+      {attachment && showAttachment && (
         <div
           className="pg-lightbox"
           role="dialog"
           aria-label="The attached picture"
           onClick={() => setShowAttachment(false)}
         >
-          <img src={rawUrl(attachedImage.path)} alt="" onClick={(e) => e.stopPropagation()} />
+          <img src={rawUrl(attachment.path)} alt="" onClick={(e) => e.stopPropagation()} />
           <button
             type="button"
             className="pg-lightbox-close"
@@ -623,7 +675,7 @@ export function TextStage({
       {/* Examples first, under the box they fill; hidden once there is a
           reply to read, which is what that space is then for. */}
       {!reply && !status && (
-        <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
+        <StarterCards key={useCase.id} samples={starters} onPick={(s) => void send(s.prompt)} />
       )}
 
       {status && <p className="pg-status">{status}</p>}

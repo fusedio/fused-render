@@ -42,6 +42,13 @@ import { capabilityIcon, unsupportedIcon } from "@apps/ai_models/lib/capabilityI
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
+import {
+  parseUseCase,
+  pickForUseCase,
+  useCasesOf,
+  type UseCaseId,
+} from "@apps/ai_models/lib/useCases";
+import type { AttachedImage } from "./imageInput";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { activeJobByModel, cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
 import {
@@ -333,6 +340,11 @@ export default function PlaygroundTab() {
   // here with only a task in mind. It only steers the fallback: an explicit
   // `model` always wins, and an unknown cap value falls through silently.
   const askedCap = useMemo(() => readParam("cap"), [urlVersion]);
+  // `?uc=` is a text use case (SPEC AI-28b): the Home card's Writing / Coding /
+  // Reasoning links land here with it, and the stage's switch writes it. It is
+  // read from the URL, never written by an effect — only the switch's click
+  // writes it, so no render can loop through it.
+  const askedUseCase = useMemo(() => parseUseCase(readParam("uc")), [urlVersion]);
   // Only a row the SIDEBAR ACTUALLY DRAWS is selectable — which since D425 is
   // narrower than "in the catalog": an unavailable capability renders its
   // reason in place of its model buttons (HF-8), and an unrecommended model
@@ -340,9 +352,35 @@ export default function PlaygroundTab() {
   // `pick.ts`, with the sidebar reading the same `playgroundModels` below, so
   // the drawn list and the selectable list cannot come apart.
   const selected = useMemo(
-    () => pickPlaygroundModel(railRows, asked, askedCap),
-    [railRows, asked, askedCap],
+    () => pickPlaygroundModel(railRows, asked, askedCap, askedUseCase),
+    [railRows, asked, askedCap, askedUseCase],
   );
+
+  // The picture a text prompt is about. Held here rather than in the text
+  // stage, which is keyed by model: "Switch to a model that can see it" remounts
+  // the stage and must not drop the picture it switched for.
+  const [textAttachment, setTextAttachment] = useState<AttachedImage | null>(null);
+  // The use case the text stage shows: the URL's, else the first one the
+  // selected model suits (its star first), else Writing — so a bare visit and a
+  // hand-picked model still have a switch with a segment lit.
+  const activeUseCase: UseCaseId =
+    askedUseCase ??
+    (selected
+      ? (["writing", "coding", "reasoning"] as const).find((id) =>
+          selected.model.useCasePicks?.includes(id),
+        ) ?? useCasesOf(selected.model)[0]
+      : undefined) ??
+    "writing";
+
+  /** The use-case switch: select that use case's recommended model, and let the
+   *  stage reset its starters and thinking default off the new `uc`. A PUSH, as
+   *  every model change is. When no model here is starred for it the model is
+   *  left alone — the switch still changes the starters and the thinking default. */
+  const chooseUseCase = (id: UseCaseId) => {
+    if (!selected) return;
+    const pick = pickForUseCase(playgroundModels(selected.row), id);
+    writeParams({ uc: id, cap: null, ...(pick ? { model: pick.id } : {}) }, "push");
+  };
 
   // What the URL asked for, when this machine cannot give it. Home's strip is
   // the STATIC `PLAYGROUND_GROUPS` list, not the catalog, so every machine
@@ -396,6 +434,7 @@ export default function PlaygroundTab() {
     // places, and Back should return to the one before — with the settings it
     // had, since a stage's slider rewrites edit the entry it is on.
     if (nextCapability && selected && nextCapability !== selected.row.capability) {
+      setTextAttachment(null);
       resetParams({ model: id }, "push");
       return;
     }
@@ -986,9 +1025,15 @@ export default function PlaygroundTab() {
               <TextStage
                 key={selected.model.id}
                 model={selected.model.id}
-                modelLabel={modelName(selected.model)}
                 downloaded={selected.model.downloaded}
                 entry={selected.model}
+                useCase={activeUseCase}
+                models={playgroundModels(selected.row)}
+                catalog={selected.row.models}
+                attachment={textAttachment}
+                onAttachment={setTextAttachment}
+                onUseCase={chooseUseCase}
+                onModel={select}
               />
             ) : selected.row.capability === "text-to-image" ? (
               <ImageStage

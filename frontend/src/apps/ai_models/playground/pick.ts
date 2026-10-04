@@ -16,6 +16,7 @@
 // playable whether or not a curator ever marked it; hiding a model somebody
 // already spent 8GB fetching would be the one unforgivable outcome here.
 import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
+import { parseUseCase, pickForUseCase } from "@apps/ai_models/lib/useCases";
 
 /** The rows this tab draws for one capability: recommended, or on this disk.
  *
@@ -30,7 +31,13 @@ import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
  *  filter, never a sort.
  */
 export function playgroundModels(row: AiCatalogCapability): AiCatalogModel[] {
-  return row.models.filter((m) => m.recommended || m.downloaded || m.loaded);
+  // A use case's star (SPEC AI-28b) is offered even when `recommended` is not
+  // set: the coding pick and the machine-dependent reasoning pick are the
+  // models the use-case switch selects, and a switch that lands on a model the
+  // sidebar does not draw would select invisibly.
+  return row.models.filter(
+    (m) => m.recommended || m.downloaded || m.loaded || !!m.useCasePicks?.length,
+  );
 }
 
 /** Which model the tab is on: the URL's `?model=`, else a fallback.
@@ -49,6 +56,10 @@ export function playgroundModels(row: AiCatalogCapability): AiCatalogModel[] {
  *     different things on two machines.
  *  2. `?cap=` — the Home strip's cards arrive with a task and no model — moves
  *     its capability to the front of the fallback search, never further.
+ *     `?uc=` (a text use case, SPEC AI-28b) is the same kind of hint and
+ *     implies text generation: within that capability it picks the use case's
+ *     starred model instead of `default`. An unknown use case, or one with no
+ *     star on this machine, changes nothing.
  *  3. Within a capability, `default` if it is drawn, else the first drawn row.
  *     `default` is the catalog's smallest entry and owes nothing to the
  *     `recommended` flag, so it can perfectly well be a row this tab does not
@@ -59,7 +70,10 @@ export function pickPlaygroundModel(
   capabilities: AiCatalogCapability[],
   asked: string | null,
   askedCap: string | null,
+  askedUseCase: string | null = null,
 ): { row: AiCatalogCapability; model: AiCatalogModel } | null {
+  const useCase = parseUseCase(askedUseCase);
+  const capHint = askedCap ?? (useCase ? "text-generation" : null);
   const usable: { row: AiCatalogCapability; models: AiCatalogModel[] }[] = [];
   for (const row of capabilities) {
     if (!row.available) continue;
@@ -70,9 +84,11 @@ export function pickPlaygroundModel(
     const hit = models.find((m) => m.id === asked);
     if (hit) return { row, model: hit };
   }
-  const ordered = [...usable.filter((u) => u.row.capability === askedCap), ...usable];
+  const ordered = [...usable.filter((u) => u.row.capability === capHint), ...usable];
   for (const { row, models } of ordered) {
-    const fallback = models.find((m) => m.id === row.default) ?? models[0];
+    const starred =
+      useCase && row.capability === "text-generation" ? pickForUseCase(models, useCase) : null;
+    const fallback = starred ?? models.find((m) => m.id === row.default) ?? models[0];
     if (fallback) return { row, model: fallback };
   }
   return null;

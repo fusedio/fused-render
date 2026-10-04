@@ -49,6 +49,9 @@ export interface ChatSettings {
   topP?: number;
   maxTokens?: number;
   systemPrompt?: string;
+  /** Think before answering (server/ai.py's `thinking`; the worker's
+   *  `enable_thinking`). Unset leaves it to the model's own default. */
+  thinking?: boolean;
 }
 
 /** The AI SDK's token counts (D632) — `totalTokens` is the sum the server
