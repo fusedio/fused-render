@@ -4,6 +4,7 @@ import type { AiCatalogModel } from "@platform/lib/api";
 import {
   USE_CASES,
   alternativeThatSees,
+  groupByUseCase,
   modelThinks,
   parseUseCase,
   pickForUseCase,
@@ -119,4 +120,30 @@ test("pickRow finds a GGUF-shaped pick on disk by its repo, and a suggested one 
   expect(pickRow(gguf, [other], [suggested])).toBe(suggested);
   expect(pickRow(gguf, [other], [{ id: gguf.repo as string, have: false }])?.have).toBe(false);
   expect(pickRow(gguf, [other], [])).toBeNull();
+});
+
+test("groupByUseCase: three groups in USE_CASES order, the pick first, one group per model", () => {
+  const models = [
+    model("note", { useCases: ["writing"] }),
+    model("coder-b", { useCases: ["coding"] }),
+    model("coder-pick", { useCases: ["coding"], useCasePicks: ["coding"] }),
+    model("chat-pick", { useCases: ["writing"], useCasePicks: ["writing"] }),
+    model("big", { useCases: ["reasoning", "writing"], useCasePicks: ["reasoning"] }),
+    model("untagged"),
+  ];
+  const groups = groupByUseCase(models);
+  expect(groups.map((g) => g.useCase.id)).toEqual(USE_CASES.map((u) => u.id));
+  expect(groups[0].models.map((m) => m.id)).toEqual(["chat-pick", "note", "untagged"]);
+  expect(groups[0].pick?.id).toBe("chat-pick");
+  expect(groups[1].models.map((m) => m.id)).toEqual(["coder-pick", "coder-b"]);
+  expect(groups[2].models.map((m) => m.id)).toEqual(["big"]);
+  const all = groups.flatMap((g) => g.models.map((m) => m.id));
+  expect(all.sort()).toEqual(models.map((m) => m.id).sort());
+});
+
+test("groupByUseCase: empty groups are dropped; a pick that is also another pick is placed once", () => {
+  const both = model("both", { useCases: ["coding", "reasoning"], useCasePicks: ["coding", "reasoning"] });
+  const groups = groupByUseCase([both]);
+  expect(groups.map((g) => g.useCase.id)).toEqual(["coding"]);
+  expect(groups[0].models).toHaveLength(1);
 });

@@ -178,7 +178,7 @@ test("?uc= opens text generation on that use case's starred model", () => {
   ];
   expect(pickPlaygroundModel(rows, null, null, "coding")?.model.id).toBe("coder");
   expect(pickPlaygroundModel(rows, null, "text-generation", "reasoning")?.model.id).toBe("big");
-  // An explicit model still wins; the use case then only labels the switch.
+  // An explicit model still wins; the use case only steers the arrival pick.
   expect(pickPlaygroundModel(rows, "chat", null, "coding")?.model.id).toBe("chat");
   // An unknown use case falls through silently to the ordinary fallback.
   expect(pickPlaygroundModel(rows, null, null, "vision")?.model.id).toBe("flux");

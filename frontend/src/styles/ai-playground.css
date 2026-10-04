@@ -132,6 +132,37 @@
   font-weight: 600;
 }
 
+/* Sub-sections of Text generation: one per use case. Margins, not gap, as
+ * with the groups above. */
+.pg-group > .pg-sub {
+  margin: 14px 0 0;
+}
+
+.pg-group > .pg-sub:first-of-type {
+  margin-top: 8px;
+}
+
+.pg-sub-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  padding: 0 2px;
+}
+
+.pg-sub-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.pg-sub-count {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 .pg-group-off {
   margin: 0;
   font-size: 12px;

@@ -52,7 +52,6 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
 import { saveToCache, useWebcam, WebcamOverlay } from "./webcam";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
-import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import {
   USE_CASES,
   alternativeThatSees,
@@ -131,16 +130,14 @@ export function TextStage({
   catalog,
   attachment,
   onAttachment,
-  onUseCase,
   onModel,
 }: {
   model: string;
   downloaded: boolean;
   entry: AiCatalogModel;
-  /** The selected use case — the tab owns it (the URL's `uc`) because the
-   *  model picker below and the sidebar must agree about it. */
+  /** The use case the selected model is listed under in the sidebar. */
   useCase: UseCaseId;
-  /** The text models this tab draws, for the picker under the switch. */
+  /** The text models this tab draws, for the model picker. */
   models: AiCatalogModel[];
   /** The whole text row, for "the closest model that can see images" — which
    *  may be one the sidebar does not draw. */
@@ -150,7 +147,6 @@ export function TextStage({
    *  picture it is switching for. */
   attachment: AttachedImage | null;
   onAttachment: (image: AttachedImage | null) => void;
-  onUseCase: (id: UseCaseId) => void;
   onModel: (id: string) => void;
 }) {
   const useCase = useCaseById(useCaseId) ?? USE_CASES[0];
@@ -424,19 +420,6 @@ export function TextStage({
       <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
-      {/* The use case: what the person is trying to do. Choosing one selects
-          that use case's recommended model, its starters and its thinking
-          default; the model and Think first below stay theirs to override. */}
-      <Tabs value={useCase.id} onValueChange={(id) => onUseCase(id as UseCaseId)}>
-        <TabsList aria-label="Use case">
-          {USE_CASES.map((u) => (
-            <TabsTrigger key={u.id} value={u.id} className="px-3">
-              {u.shortLabel}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-
       <StageHeader
         title="Try a prompt"
         configOpen={configOpen}

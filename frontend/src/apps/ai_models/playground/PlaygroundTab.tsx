@@ -44,9 +44,8 @@ import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
 import {
   parseUseCase,
-  pickForUseCase,
+  groupByUseCase,
   USE_CASES,
-  useCasesOf,
   type UseCaseId,
 } from "@apps/ai_models/lib/useCases";
 import type { AttachedImage } from "./imageInput";
@@ -342,9 +341,8 @@ export default function PlaygroundTab() {
   // `model` always wins, and an unknown cap value falls through silently.
   const askedCap = useMemo(() => readParam("cap"), [urlVersion]);
   // `?uc=` is a text use case (SPEC AI-28b): the Home card's Writing / Coding /
-  // Reasoning links land here with it, and the stage's switch writes it. It is
-  // read from the URL, never written by an effect — only the switch's click
-  // writes it, so no render can loop through it.
+  // Reasoning links land here with it, and it only steers the arrival pick (that
+  // use case's star). It is read from the URL and never written by an effect.
   const askedUseCase = useMemo(() => parseUseCase(readParam("uc")), [urlVersion]);
   // Only a row the SIDEBAR ACTUALLY DRAWS is selectable — which since D425 is
   // narrower than "in the catalog": an unavailable capability renders its
@@ -361,27 +359,17 @@ export default function PlaygroundTab() {
   // stage, which is keyed by model: "Switch to a model that can see it" remounts
   // the stage and must not drop the picture it switched for.
   const [textAttachment, setTextAttachment] = useState<AttachedImage | null>(null);
-  // The use case the text stage shows: the URL's, else the first one the
-  // selected model suits (its star first), else Writing — so a bare visit and a
-  // hand-picked model still have a switch with a segment lit.
-  const activeUseCase: UseCaseId =
-    askedUseCase ??
-    (selected
-      ? USE_CASES.map((u) => u.id).find((id) =>
-          selected.model.useCasePicks?.includes(id),
-        ) ?? useCasesOf(selected.model)[0]
-      : undefined) ??
-    "writing";
-
-  /** The use-case switch: select that use case's recommended model, and let the
-   *  stage reset its starters and thinking default off the new `uc`. A PUSH, as
-   *  every model change is. When no model here is starred for it the model is
-   *  left alone — the switch still changes the starters and the thinking default. */
-  const chooseUseCase = (id: UseCaseId) => {
-    if (!selected) return;
-    const pick = pickForUseCase(playgroundModels(selected.row), id);
-    writeParams({ uc: id, cap: null, ...(pick ? { model: pick.id } : {}) }, "push");
-  };
+  // The use case the text stage shows is the one the SELECTED MODEL is listed
+  // under in the sidebar, so the starters, the placeholder and the thinking
+  // default follow the model and nothing swaps the model behind the user.
+  const activeUseCase: UseCaseId = useMemo(() => {
+    if (!selected || selected.row.capability !== "text-generation") return USE_CASES[0].id;
+    return (
+      groupByUseCase(playgroundModels(selected.row)).find((g) =>
+        g.models.some((m) => m.id === selected.model.id),
+      )?.useCase.id ?? USE_CASES[0].id
+    );
+  }, [selected]);
 
   // What the URL asked for, when this machine cannot give it. Home's strip is
   // the STATIC `PLAYGROUND_GROUPS` list, not the catalog, so every machine
@@ -441,7 +429,7 @@ export default function PlaygroundTab() {
     }
     // cap dies with the first explicit pick — leaving it would make a shared
     // URL claim a task the user has since clicked away from.
-    writeParams({ model: id, cap: null }, "push");
+    writeParams({ model: id, cap: null, uc: null }, "push");
   };
 
   const residentRow = selected
@@ -579,7 +567,7 @@ export default function PlaygroundTab() {
           // provided rather than chosen, and never a download.
           const system = offered.filter((m) => m.source === "apple");
           const cached = offered.filter((m) => m.source !== "curated" && m.source !== "apple");
-          const draw = (model: AiCatalogModel) => {
+          const draw = (model: AiCatalogModel, starred = false) => {
             const active = selected?.model.id === model.id;
             const downloading = runtime.downloading.some((d) => d.model === model.id);
             const name = modelName(model);
@@ -620,6 +608,7 @@ export default function PlaygroundTab() {
                     {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
                       <span className="pg-model-live" title="Loaded — answering from memory" />
                     )}
+                    {starred ? "★ " : ""}
                     {name}
                   </span>
                   {model.source === "apple" ? (
@@ -713,9 +702,32 @@ export default function PlaygroundTab() {
                   a Download button and a fetched one does not, so which half
                   is on this disk is legible from the cards themselves, and the
                   heading was a second answer to a question already answered. */}
-              {row.available && curated.map(draw)}
-              {row.available && system.map(draw)}
-              {row.available && cached.map(draw)}
+              {row.available && row.capability !== "text-generation" && (
+                <>
+                  {curated.map((m) => draw(m))}
+                  {system.map((m) => draw(m))}
+                  {cached.map((m) => draw(m))}
+                </>
+              )}
+              {/* Text generation is split by use case (SPEC AI-28b): the star
+                  leads each sub-section, and the selected model's sub-section
+                  is what the stage's starters and thinking default follow. */}
+              {row.available &&
+                row.capability === "text-generation" &&
+                groupByUseCase([...curated, ...system, ...cached]).map((g) => (
+                  <div
+                    key={g.useCase.id}
+                    className="pg-sub"
+                    role="group"
+                    aria-label={g.useCase.shortLabel}
+                  >
+                    <div className="pg-sub-head">
+                      <span className="pg-sub-title">{g.useCase.shortLabel}</span>
+                      <span className="pg-sub-count">{g.models.length}</span>
+                    </div>
+                    {g.models.map((m) => draw(m, m === g.pick))}
+                  </div>
+                ))}
               {appleNote &&
                 (row.capability === "text-generation" ||
                   (row.capability === "automatic-speech-recognition" &&
@@ -1033,7 +1045,6 @@ export default function PlaygroundTab() {
                 catalog={selected.row.models}
                 attachment={textAttachment}
                 onAttachment={setTextAttachment}
-                onUseCase={chooseUseCase}
                 onModel={select}
               />
             ) : selected.row.capability === "text-to-image" ? (

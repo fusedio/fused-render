@@ -228,6 +228,37 @@ export function pickForUseCase(models: AiCatalogModel[], id: UseCaseId): AiCatal
   return models.find((m) => useCasesOf(m).includes(id)) ?? null;
 }
 
+export interface UseCaseGroup {
+  useCase: UseCase;
+  /** The starred pick, listed first in `models`; null when the group has none. */
+  pick: AiCatalogModel | null;
+  models: AiCatalogModel[];
+}
+
+/** Split text models into one group per use case, in USE_CASES order. A use
+ *  case's pick (the pick logic of `pickForUseCase`) leads its group; every
+ *  other model sits in its first use case, or Writing when it has none. A model
+ *  appears in exactly one group; groups with no models are dropped. */
+export function groupByUseCase(models: AiCatalogModel[]): UseCaseGroup[] {
+  const placed = new Map<string, UseCaseId>();
+  const picks = new Map<UseCaseId, AiCatalogModel>();
+  for (const u of USE_CASES) {
+    const pick = pickForUseCase(models, u.id);
+    if (pick && !placed.has(pick.id)) {
+      placed.set(pick.id, u.id);
+      picks.set(u.id, pick);
+    }
+  }
+  for (const m of models) {
+    if (!placed.has(m.id)) placed.set(m.id, useCasesOf(m)[0] ?? USE_CASES[0].id);
+  }
+  return USE_CASES.map((u) => {
+    const pick = picks.get(u.id) ?? null;
+    const rest = models.filter((m) => placed.get(m.id) === u.id && m !== pick);
+    return { useCase: u, pick, models: pick ? [pick, ...rest] : rest };
+  }).filter((g) => g.models.length > 0);
+}
+
 /** The closest CURATED model that can see images and fits this machine, for the
  *  Playground's "this model can't see images" notice. Closest by download size
  *  to the model being left: the swap should feel like the same tier of model,

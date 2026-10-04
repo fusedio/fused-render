@@ -6298,3 +6298,12 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
   URL, so there is no render loop (see url-write-in-effect).
 - **Home's Text card is a div with a main link plus three chip links**, to avoid
   nested anchors; the other Playground cards stay a single anchor.
+
+- **The Playground use-case switch is replaced by sidebar grouping (same
+  branch).** The segmented switch in the prompt card was unintuitive: it sat
+  away from the model list and swapped the model silently. The Text generation
+  sidebar section is now three sub-sections (Writing & chat, Coding, Deep
+  reasoning, from `USE_CASES`), each starred pick first, and the selected model
+  determines the use case (starters, placeholder, thinking default). A model
+  sits in one group only. `?uc=` is still read on arrival to select that use
+  case's pick; a click on a row clears it, and nothing writes it from an effect.

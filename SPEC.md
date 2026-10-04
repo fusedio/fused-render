@@ -10072,13 +10072,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   definition in `apps/ai_models/lib/useCases.ts` (labels, blurbs, default
   thinking, starters); the Models text pane opens with three headed sections
   (each its starred model, with the fit pill) above an "All text models" list
-  carrying "thinks" / "sees images" chips; the Playground has a segmented
-  switch (`?uc=`), per-use-case starters, a "Think first" toggle defaulted by
+  carrying "thinks" / "sees images" chips; the Playground's Text generation
+  sidebar section is split into three sub-sections in USE_CASES order (starred
+  pick first with a star, then the rest; empty ones hidden; `groupByUseCase`),
+  and the SELECTED MODEL's sub-section drives the per-use-case starters, a "Think first" toggle defaulted by
   the use case, and an image notice with "Switch to X" / "Remove image" when
   the chosen model cannot see (the attachment lives in `PlaygroundTab`, so a
   switch keeps the picture); Home's Text card links Writing / Reasoning /
-  Coding. Notes for the next builder: only the switch handler writes `uc`
-  (never an effect); `pickPlaygroundModel` falls back to the use case's star;
+  Coding. Notes for the next builder: `?uc=` is read on arrival only (it picks that
+  use case's star; a row click clears it) and is never written by an effect; `pickPlaygroundModel` falls back to the use case's star;
   `playgroundModels` includes any model with a non-empty `useCasePicks`; tests
   pin literal source text in `CapabilityPane.tsx` and `ModelRow.tsx`; the
   Qwen3-Coder mirror publish is still owed.
