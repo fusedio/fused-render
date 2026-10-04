@@ -512,3 +512,69 @@ def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(m
 
     assert calls == ["release", "respawn"]
     assert tray_handles[0].update_calls == ["9.9.9"]
+
+
+# ---- native-window host routing (Linux backend only; core._window_host) ----
+
+class _FakeHost:
+    def __init__(self, shows):
+        self.shows, self.opened = shows, []
+
+    def open(self, url):
+        self.opened.append(url)
+        return self.shows
+
+
+def test_open_browser_prefers_the_window_host(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    host = _FakeHost(True)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", host)
+    monkeypatch.setattr(core.ui, "open_url", tabs.append)
+    core._open_browser("http://127.0.0.1:1/")
+    assert host.opened == ["http://127.0.0.1:1/"] and tabs == []
+
+
+def test_open_browser_falls_back_when_the_host_declines(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", _FakeHost(False))
+    monkeypatch.setattr(core.ui, "open_url", tabs.append)
+    core._open_browser("http://127.0.0.1:1/")
+    assert tabs == ["http://127.0.0.1:1/"]
+
+
+def test_open_browser_without_a_host_is_the_old_behaviour(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", None)
+    monkeypatch.setattr(core.ui, "open_url", tabs.append)
+    core._open_browser("http://x/")
+    assert tabs == ["http://x/"]
+
+
+def test_a_crashing_host_start_never_escapes_run(monkeypatch):
+    paths = _Paths()
+
+    class Boom:
+        class WindowHost:
+            def __init__(self, *a):
+                raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(core._backend, "windows", Boom, raising=False)
+    monkeypatch.setattr(core, "_window_host", None)
+    core._start_window_host(paths, 1)
+    assert core._window_host is None and "kaboom" in paths.messages[0]
+
+
+def test_stop_window_host_stops_and_clears(monkeypatch):
+    stopped = []
+
+    class H:
+        def stop(self):
+            stopped.append(1)
+
+    monkeypatch.setattr(core, "_window_host", H())
+    core._stop_window_host()
+    core._stop_window_host()
+    assert stopped == [1] and core._window_host is None

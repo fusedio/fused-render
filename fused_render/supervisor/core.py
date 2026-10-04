@@ -34,6 +34,11 @@ Job = _backend.Job
 instance = _backend.instance
 startup = _backend.startup
 ui = _backend.ui
+
+# Optional backend hook (Linux): the native-window host. None elsewhere, and on
+# Linux until `run()` has started one successfully — `_open_browser` then uses
+# the browser, exactly as before native windows existed.
+_window_host = None
 update = getattr(_backend, "update", None)  # optional hook (Windows only)
 deintegrate = getattr(_backend, "deintegrate", None)  # optional hook (Linux only)
 
@@ -111,6 +116,7 @@ def run(initial: protocol.Command) -> None:
     _spawn_desktop_integration(paths)
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
+    _start_window_host(paths, port)
 
     # Dispatched off-thread like every other open: a hung Path.exists()/
     # os.startfile (disconnected UNC path) must not stall run() before the
@@ -290,6 +296,7 @@ def _teardown(
     tray stops first, then the pipe, then the server — and job.close() runs
     exactly once before this function returns or raises."""
     tray_handle.stop()
+    _stop_window_host()
 
     if reason is not _ExitReason.UPGRADE:
         # UPGRADE: the pipe thread is parked in its ShutdownForUpgrade
@@ -558,7 +565,39 @@ def _view_url(port: int, path: Path) -> str:
 def _open_browser(url: str) -> None:
     if "FUSED_RENDER_SUPERVISOR_NO_BROWSER" in os.environ:
         return
+    host = _window_host
+    if host is not None and host.open(url):
+        return
     ui.open_url(url)
+
+
+def _start_window_host(paths: DesktopPaths, port: int) -> None:
+    """Linux: bring up the native-window host. Never fatal — any failure leaves
+    `_window_host` unset and every open goes to the browser as it always did."""
+    global _window_host
+    module = getattr(_backend, "windows", None)
+    if module is None:
+        return
+    try:
+        host = module.WindowHost(paths, port)
+        if host.start():
+            _window_host = host
+    except Exception as error:  # noqa: BLE001 - windows are an enhancement
+        paths.log(f"native windows unavailable, using browser tabs: {error}")
+
+
+def _stop_window_host() -> None:
+    global _window_host
+    host, _window_host = _window_host, None
+    if host is not None:
+        host.stop()
+
+
+def _window_host_environment(paths: DesktopPaths) -> dict[str, str]:
+    module = getattr(_backend, "windows", None)
+    if module is None:
+        return {}
+    return module.WindowHost(paths, 0).server_environment()
 
 
 def _respawn_after_relaunch(paths: DesktopPaths) -> None:
@@ -661,7 +700,10 @@ def _start_server(job: Job, paths: DesktopPaths, port: int, token: str):
     return job.spawn(
         python,
         arguments,
-        environment=paths.child_environment(_INSTANCE_ID, token, python_dir),
+        environment={
+            **paths.child_environment(_INSTANCE_ID, token, python_dir),
+            **_window_host_environment(paths),
+        },
         output=paths.logs / "server-console.log",
     )
 
