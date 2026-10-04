@@ -359,8 +359,9 @@ export function SpeechStage({ model, entry, transcribeModel }: {
           {mode === "preset" && (
             <>
               <RailField label="Voice">
-                <RailSelect aria-label="Voice" value={voice} onValueChange={setVoice} options={[
-                  { value: "", label: voices.length ? `Default (${nameOf(voices[0])})` : "Default" },
+                <RailSelect aria-label="Voice" value={voice || "__default_voice__"}
+                  onValueChange={(value) => setVoice(value === "__default_voice__" ? "" : value)} options={[
+                  { value: "__default_voice__", label: voices.length ? `Default (${nameOf(voices[0])})` : "Default" },
                   ...voices.map((v) => ({ value: v, label: nameOf(v) })),
                   ...(voice && !voices.includes(voice) ? [{ value: voice, label: nameOf(voice) }] : []),
                 ]} />
