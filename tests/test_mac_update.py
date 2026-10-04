@@ -1407,3 +1407,55 @@ def test_the_running_download_row_is_untouched_by_the_removal(monkeypatch, tmp_p
     gate.set()
     manager._install_thread.join(timeout=5)
     assert jobs.list_jobs() == []
+
+
+# ---- auto-download setting ------------------------------------------------------
+
+
+def _auto_download(monkeypatch, enabled: bool):
+    import fused_render.shell.prefs as prefs_mod
+
+    monkeypatch.setattr(prefs_mod, "auto_download_updates_enabled", lambda: enabled)
+
+
+def test_auto_install_downloads_a_found_update_when_the_setting_is_on(monkeypatch):
+    _auto_download(monkeypatch, True)
+    manager = _manager(monkeypatch, available="9.9.9")
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.check()
+    manager.maybe_auto_install()
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.9"
+    assert manager.status()["state"] == "installed"
+
+
+def test_auto_install_does_nothing_when_the_setting_is_off(monkeypatch):
+    _auto_download(monkeypatch, False)
+    manager = _manager(monkeypatch, available="9.9.9")
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.check()
+    manager.maybe_auto_install()
+    assert not done
+    assert manager.status()["state"] == "available"
+
+
+def test_auto_install_never_retries_a_failed_install(monkeypatch):
+    # "error" is user-retry territory: an unattended loop re-downloading
+    # hundreds of MB every five minutes against a broken artifact would run away.
+    _auto_download(monkeypatch, True)
+    manager = _manager(monkeypatch, available="9.9.9")
+    calls = []
+
+    def boom(manifest):
+        calls.append(1)
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(manager, "_install_dmg", boom)
+    manager.check()
+    manager.maybe_auto_install()
+    manager._install_thread.join(timeout=5)
+    assert manager.status()["state"] == "error"
+    manager.maybe_auto_install()
+    assert calls == [1]

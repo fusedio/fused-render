@@ -1464,3 +1464,24 @@ def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
         == 400
     )
     assert not (home / "prefs.json").exists()
+
+
+def test_auto_download_updates_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["update"]["auto_download"] is False
+    body = client.put("/api/prefs", json={"auto_download_updates": True}, headers=FUSED).json()
+    assert body["update"]["auto_download"] is True
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "auto_download_updates"
+    ] is True
+    assert client.put("/api/prefs", json={"auto_download_updates": False}, headers=FUSED).json()[
+        "update"
+    ]["auto_download"] is False
+
+
+def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
+    ).status_code == 400
+    assert not (home / "prefs.json").exists()

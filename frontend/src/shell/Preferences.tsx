@@ -56,6 +56,7 @@ import {
   putLivePreviewsEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
+  putAutoDownloadUpdates,
   putProjectQueueEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putLanEnabled,
@@ -157,8 +158,24 @@ function AppearanceSection() {
 // in a while. The DECISION that follows an answer (download it? restart for
 // it?) is `UpdateNotifier`'s job now; this section only ever fires the check
 // and reports what it learned, never a download/restart button of its own.
-function UpdatesSection() {
+function UpdatesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const status = useUpdateStatus();
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoError, setAutoError] = useState<string | null>(null);
+  // Default OFF: absence (an older server) reads as off.
+  const autoDownload = prefs.update?.auto_download === true;
+  const toggleAutoDownload = async () => {
+    if (autoBusy) return;
+    setAutoBusy(true);
+    setAutoError(null);
+    try {
+      onChange(await putAutoDownloadUpdates(!autoDownload));
+    } catch (e) {
+      setAutoError((e as Error).message);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
   const [version, setVersion] = useState<string | null>(null);
   // This row's own phase — local, not the shared store: it is about THIS
   // press ("Checking…", then the answer for a few seconds), same split
@@ -283,6 +300,27 @@ function UpdatesSection() {
         <p className="deploy-muted">
           Updates aren&rsquo;t managed from inside the app on this build.
         </p>
+      )}
+      {hasUpdater && (
+        <>
+          <label className="prefs-radio">
+            <input
+              type="checkbox"
+              checked={autoDownload}
+              disabled={autoBusy}
+              onChange={toggleAutoDownload}
+            />
+            <span>
+              <b>Automatically download updates</b>
+              <span className="deploy-muted">
+                {" "}
+                When a new version is found it downloads in the background; you still
+                choose when to restart.
+              </span>
+            </span>
+          </label>
+          {autoError && <ErrorBanner>{autoError}</ErrorBanner>}
+        </>
       )}
     </section>
   );
@@ -1533,7 +1571,7 @@ export default function Preferences() {
                 <AppearanceSection />
                 <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
                 <ShortcutsSection prefs={prefs} onChange={setPrefs} />
-                <UpdatesSection />
+                <UpdatesSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />

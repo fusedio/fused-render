@@ -264,12 +264,29 @@ class UpdateManager:
                     # swallowed by MIN_CHECK_GAP_S because a focus flip
                     # happened to fetch a minute ago.
                     self.check(force=True)
+                    self.maybe_auto_install()
                 except Exception:  # noqa: BLE001 - a tick must never kill the loop
                     logger.exception("auto update tick failed")
                 time.sleep(common.CHECK_INTERVAL_S)
 
         threading.Thread(target=loop, daemon=True,
                          name="fused-render-update-auto").start()
+
+    def maybe_auto_install(self) -> None:
+        """Start the download when the "Automatically download updates"
+        pref is on and a check has just found one. Only from "available": an
+        "error" is the user's to retry (an unattended loop re-fetching a broken
+        artifact every tick would run away), and install() itself refuses for
+        a check-only manager. Restart is never triggered from here."""
+        from fused_render.shell import prefs  # lazy: prefs imports half the app
+
+        if not prefs.auto_download_updates_enabled():
+            return
+        with self._lock:
+            if self._state != "available" or self._latest is None:
+                return
+            expected = self._latest["version"]
+        self.install(expected_version=expected)
 
     def check(self, force: bool = False) -> dict:
         """Fetch + verify the manifest and update state. Never touches state

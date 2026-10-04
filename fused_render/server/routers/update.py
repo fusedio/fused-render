@@ -28,7 +28,12 @@ def api_update_check(x_fused: str | None = Header(default=None)):
     # Throttled (mac_update.MIN_CHECK_GAP_S): the client fires this when the
     # app comes back to the front, and a run of focus flips must not become a
     # run of CDN fetches. The auto loop's own tick passes force=True.
-    return _manager().check()
+    manager = _manager()
+    manager.check()
+    # A check on return/press that finds a release starts the download too
+    # when "Automatically download updates" is on, not only the 5-min tick.
+    manager.maybe_auto_install()
+    return manager.status()
 
 
 class InstallRequest(BaseModel):
