@@ -12178,7 +12178,7 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
   `boot_id` (DG-7). Lines stay plain text — the reading recipe (DG-22) is
   greps; a JSONL app log stays on the SV-3 backlog.
 - **DG-3 Retention.** `prune_log_home` runs at boot and keeps the newest 10
-  sessions within 50 MB total, oldest out first. This answers D68's reason for
+  sessions within 150 MB total, oldest out first (both caps evict the oldest session; 150 MB holds at least two full 30 MB sessions, so the one that just crashed survives its own relaunch). This answers D68's reason for
   using temp ("nothing prunes the directory").
 - **DG-4 uvicorn reaches the root logger.** uvicorn's default
   `LOGGING_CONFIG` sets `propagate=False` on `uvicorn` and gives it its own

@@ -218,13 +218,15 @@ export function reduceProbe(
     // A timeout below the threshold is "slow", not "down": the request went
     // out and the server has not answered YET. Any other kind below the
     // threshold leaves the banner where it was — one refused probe is as
-    // often a waking laptop's network as a dead server.
+    // often a waking laptop's network as a dead server. "slow" only ever
+    // replaces a banner that says nothing (hidden) or a transient one
+    // (reconnected, or slow itself): the update dialogs are statements
+    // about a version mismatch that a busy probe does not change, and a
+    // blocking refresh dialog must not blink out for one poll (bugbot,
+    // PR #1399).
+    const quiet = state.banner === "hidden" || state.banner === "slow" || state.banner === "reconnected";
     const banner: ServerBanner =
-      fails >= FAIL_THRESHOLD
-        ? "down"
-        : kind === "timeout" && state.banner !== "down"
-          ? "slow"
-          : state.banner;
+      fails >= FAIL_THRESHOLD ? "down" : kind === "timeout" && quiet ? "slow" : state.banner;
     return {
       state: {
         ...state,

@@ -47,9 +47,12 @@ LOG_NAME_PREFIX = "fused-render"
 ROTATE_BYTES = 10_000_000
 ROTATE_BACKUPS = 2
 
-#: Retention for the whole home, swept at boot by `prune_log_home()`.
+#: Retention for the whole home, swept at boot by `prune_log_home()`. The
+#: byte cap must hold at least two FULL sessions (rotation above is 30 MB per
+#: session): after a crash and relaunch, the crashed session's log is the
+#: one that matters, and a cap under 2 × 30 MB would evict it at once.
 KEEP_SESSIONS = 10
-KEEP_BYTES = 50_000_000
+KEEP_BYTES = 150_000_000
 
 FORMAT = "%(asctime)s %(levelname)s [%(process)d %(threadName)s] %(name)s: %(message)s"
 
@@ -137,15 +140,14 @@ def prune_log_home(directory: str | None = None, *, keep_sessions: int = KEEP_SE
         stem = os.path.basename(path).split(".log", 1)[0]
         key = stem.rsplit("-", 1)[-1]
         sessions.setdefault(key, []).append((mtime, size, path))
+    # Newest first, so index i is "the i-th most recent session".
     ordered = sorted(sessions.items(),
                      key=lambda kv: max(m for m, _, _ in kv[1]), reverse=True)
     removed: list[str] = []
     total = sum(s for files in sessions.values() for _, s, _ in files)
-    for i, (key, files) in enumerate(ordered):
-        if key == str(live_pid):
-            continue
-        if i < keep_sessions and total <= keep_bytes:
-            continue
+
+    def drop(files) -> None:
+        nonlocal total
         for _, size, path in files:
             try:
                 os.unlink(path)
@@ -153,6 +155,24 @@ def prune_log_home(directory: str | None = None, *, keep_sessions: int = KEEP_SE
                 total -= size
             except OSError:
                 pass
+
+    # Pass 1: the count cap takes the OLDEST sessions beyond keep_sessions.
+    survivors = []
+    for i, (key, files) in enumerate(ordered):
+        if key != str(live_pid) and i >= keep_sessions:
+            drop(files)
+        else:
+            survivors.append((key, files))
+    # Pass 2: the byte cap also takes the OLDEST first — never the session
+    # that just crashed, which is the newest non-live one and the evidence
+    # this prune exists to keep (bugbot, PR #1399). Walk survivors from the
+    # tail (oldest) and stop as soon as the total fits.
+    for key, files in reversed(survivors):
+        if total <= keep_bytes:
+            break
+        if key == str(live_pid):
+            continue
+        drop(files)
     removed.extend(_prune_crash_dir(os.path.join(directory, "crash")))
     return removed
 
