@@ -2083,12 +2083,41 @@
   padding: 8px 0;
 }
 
-/* WebKit's native menu can stay light even when the control is dark.
-   Give the options their own contrasting pair instead of inherited text. */
-[data-slot="rail-select"] option {
-  color: #111;
-  background-color: #fff;
+.pg-rail-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-size: 14px;
 }
+.pg-rail-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.pg-rail-select-positioner { z-index: 100; }
+.pg-rail-select-popup {
+  min-width: var(--anchor-width);
+  max-height: var(--available-height);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+.pg-rail-select-option {
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+}
+.pg-rail-select-option[data-highlighted] { background: var(--row-bg-hover); }
 
 .pg-speech-result {
   display: flex;

@@ -359,11 +359,11 @@ export function SpeechStage({ model, entry, transcribeModel }: {
           {mode === "preset" && (
             <>
               <RailField label="Voice">
-                <RailSelect value={voice} onChange={(e) => setVoice(e.target.value)}>
-                  <option value="">{voices.length ? `Default (${nameOf(voices[0])})` : "Default"}</option>
-                  {voices.map((v) => <option key={v} value={v}>{nameOf(v)}</option>)}
-                  {voice && !voices.includes(voice) && <option value={voice}>{nameOf(voice)}</option>}
-                </RailSelect>
+                <RailSelect aria-label="Voice" value={voice} onValueChange={setVoice} options={[
+                  { value: "", label: voices.length ? `Default (${nameOf(voices[0])})` : "Default" },
+                  ...voices.map((v) => ({ value: v, label: nameOf(v) })),
+                  ...(voice && !voices.includes(voice) ? [{ value: voice, label: nameOf(voice) }] : []),
+                ]} />
               </RailField>
               <RailField label="Delivery">
                 <Input value={instruct} placeholder="Natural delivery" onChange={(e) => setInstruct(e.target.value)} />
@@ -377,17 +377,11 @@ export function SpeechStage({ model, entry, transcribeModel }: {
             </RailField>
           )}
           <RailField label="Language" hint="Auto finds the language from the text.">
-            <RailSelect value={language} onChange={(e) => setLanguage(e.target.value)}>
-              <option value={AUTO}>Auto</option>
-              {languages.map((l) => (
-                <option key={l} value={l}>
-                  {nameOf(l)}
-                </option>
-              ))}
-              {language !== AUTO && !languages.includes(language) && (
-                <option value={language}>{nameOf(language)}</option>
-              )}
-            </RailSelect>
+            <RailSelect aria-label="Language" value={language} onValueChange={setLanguage} options={[
+              { value: AUTO, label: "Auto" },
+              ...languages.map((l) => ({ value: l, label: nameOf(l) })),
+              ...(language !== AUTO && !languages.includes(language) ? [{ value: language, label: nameOf(language) }] : []),
+            ]} />
           </RailField>
         </ConfigPanel>
 
