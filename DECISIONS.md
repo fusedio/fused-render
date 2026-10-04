@@ -6307,3 +6307,7 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
   determines the use case (starters, placeholder, thinking default). A model
   sits in one group only. `?uc=` is still read on arrival to select that use
   case's pick; a click on a row clears it, and nothing writes it from an effect.
+- **Use-case groups are top-level sidebar sections (same branch).** The small
+  uppercase sub-headings inside a "Text generation" section looked odd, so the
+  wrapper is gone: Writing & chat, Coding and Deep reasoning are peers of Image
+  generation (same `.pg-group` markup, own icon, no count), first in the rail.

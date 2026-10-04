@@ -38,7 +38,7 @@ import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { buildAppAnnotation, modelName } from "./appSeed";
-import { capabilityIcon, unsupportedIcon } from "@apps/ai_models/lib/capabilityIcons";
+import { capabilityIcon, unsupportedIcon, useCaseIcon } from "@apps/ai_models/lib/capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
@@ -46,6 +46,7 @@ import {
   parseUseCase,
   groupByUseCase,
   USE_CASES,
+  type UseCaseGroup,
   type UseCaseId,
 } from "@apps/ai_models/lib/useCases";
 import type { AttachedImage } from "./imageInput";
@@ -331,6 +332,22 @@ export default function PlaygroundTab() {
     return [...capabilities].sort((a, b) => rank(a.capability) - rank(b.capability));
   }, [capabilities]);
 
+  // The sidebar's sections. Text generation is not one section but one per use
+  // case (Writing & chat, Coding, Deep reasoning, SPEC AI-28b), each a peer of
+  // Image generation and the rest; its other rows keep their order after them.
+  // A text row with no groups (unavailable, or nothing offered) stays a single
+  // section so its reason or "nothing to try" line still has somewhere to show.
+  const sections = useMemo<Array<{ row: (typeof railRows)[number]; group: UseCaseGroup | null }>>(
+    () =>
+      railRows.flatMap((row): Array<{ row: typeof row; group: UseCaseGroup | null }> => {
+        if (row.capability !== "text-generation" || !row.available) return [{ row, group: null }];
+        const groups = groupByUseCase(playgroundModels(row));
+        return groups.length ? groups.map((group) => ({ row, group })) : [{ row, group: null }];
+      }),
+    [railRows],
+  );
+  const firstTextGroup = sections.find((s) => s.group)?.group ?? null;
+
   // The selection lives in the URL. An unknown or absent id falls back to the
   // TOP SECTION's default silently (PT-9's posture: a stale link opens the
   // page, not an error) — and the fallback is `default`, never models[0], which
@@ -548,7 +565,7 @@ export default function PlaygroundTab() {
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
-        {railRows.map((row) => {
+        {sections.map(({ row, group }) => {
           // The catalog's curated half, in its own smallest-first order — but
           // the RECOMMENDED subset of it (D425), because this tab is where
           // someone types a sentence rather than shops for a download: see
@@ -672,10 +689,18 @@ export default function PlaygroundTab() {
             );
           };
           return (
-            <details key={row.capability} className="pg-group" open>
+            <details
+              key={group ? `${row.capability}:${group.useCase.id}` : row.capability}
+              className="pg-group"
+              open
+            >
               <summary className="pg-group-head">
-                <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
-                <span className="pg-group-title">{groupLabel(row.capability)}</span>
+                <span className="pg-group-icon">
+                  {group ? useCaseIcon(group.useCase.id) : capabilityIcon(row.capability)}
+                </span>
+                <span className="pg-group-title">
+                  {group ? group.useCase.shortLabel : groupLabel(row.capability)}
+                </span>
               </summary>
               {!row.available && (
                 // Visible with its reason, never hidden: an absent group and a
@@ -702,34 +727,20 @@ export default function PlaygroundTab() {
                   a Download button and a fetched one does not, so which half
                   is on this disk is legible from the cards themselves, and the
                   heading was a second answer to a question already answered. */}
-              {row.available && row.capability !== "text-generation" && (
+              {row.available && !group && (
                 <>
                   {curated.map((m) => draw(m))}
                   {system.map((m) => draw(m))}
                   {cached.map((m) => draw(m))}
                 </>
               )}
-              {/* Text generation is split by use case (SPEC AI-28b): the star
-                  leads each sub-section, and the selected model's sub-section
-                  is what the stage's starters and thinking default follow. */}
-              {row.available &&
-                row.capability === "text-generation" &&
-                groupByUseCase([...curated, ...system, ...cached]).map((g) => (
-                  <div
-                    key={g.useCase.id}
-                    className="pg-sub"
-                    role="group"
-                    aria-label={g.useCase.shortLabel}
-                  >
-                    <div className="pg-sub-head">
-                      <span className="pg-sub-title">{g.useCase.shortLabel}</span>
-                      <span className="pg-sub-count">{g.models.length}</span>
-                    </div>
-                    {g.models.map((m) => draw(m, m === g.pick))}
-                  </div>
-                ))}
+              {/* Text generation is split into one top-level section per use
+                  case (SPEC AI-28b): the star leads each section, and the
+                  selected model's section is what the stage's starters and
+                  thinking default follow. */}
+              {group && group.models.map((m) => draw(m, m === group.pick))}
               {appleNote &&
-                (row.capability === "text-generation" ||
+                ((row.capability === "text-generation" && (!group || group === firstTextGroup)) ||
                   (row.capability === "automatic-speech-recognition" &&
                     apple?.speechAvailable === false)) && (
                   // Where the apple row WOULD be, when it is not: the reason,
