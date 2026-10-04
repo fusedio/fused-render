@@ -24,16 +24,17 @@ export interface StarterPrompt {
   capability: string | null;
 }
 
-// The six capabilities a Playground annotation can carry — the same strings
+// The seven capabilities a Playground annotation can carry — the same strings
 // `buildAppAnnotation` puts in the chip. Spelled out here rather than imported
 // from `@apps/ai_models` because an app may only import platform + itself; the
 // test asserts the pool uses exactly these, so a typo cannot quietly create a
-// sixth bucket nothing ever filters to.
+// new bucket nothing ever filters to.
 export const STARTER_CAPABILITIES = [
   "text-generation",
   "text-to-image",
   "text-to-video",
   "automatic-speech-recognition",
+  "text-to-speech",
   "embeddings",
   "text-classification",
 ] as const;
@@ -77,6 +78,11 @@ const VIDEO =
   "Before anything else read fused.ai.models.catalog(): if the text-to-video row's " +
   "default is null this machine cannot run video, so say so plainly and hide the " +
   "render button instead of offering one that always fails. ";
+
+const SPEECH =
+  "Before anything else read fused.ai.models.catalog(): if the text-to-speech row's " +
+  "default is null this machine cannot make speech, so say so plainly and hide the " +
+  "speak button instead of offering one that always fails. ";
 
 export const STARTER_PROMPTS: StarterPrompt[] = [
   // -- No AI -----------------------------------------------------------------
@@ -591,6 +597,82 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       "is saved to <file>.speakers.json beside the audio. An audio player syncs with the " +
       "highlighted segment. Each segment has a star toggle; a Quotes panel lists starred " +
       "segments and Copy yields '\"text\" — Name, mm:ss'. " +
+      LOCAL,
+  },
+
+  {
+    label: "Read aloud",
+    capability: "text-to-speech",
+    glyph: S(
+      <>
+        <path d="M4 9.5h3l4-3.5v12l-4-3.5H4z" />
+        <path d="M15 9.5a3.5 3.5 0 0 1 0 5M17.5 7a7 7 0 0 1 0 10" />
+      </>,
+    ),
+    prompt:
+      "A read-aloud page. A large textarea for any text, a voice select filled from the " +
+      "text-to-speech model's voices in fused.ai.models.catalog(), an optional style line, " +
+      "and a Speak button. Split the text into sentences and call fused.ai.speech({text, " +
+      "voice, instruct}) for each one, so the first sentence plays while the rest are still " +
+      "made. Highlight the sentence that is playing. Save writes the clips as numbered WAV " +
+      "files into a speech/ folder beside the app. " +
+      SPEECH +
+      LOCAL,
+  },
+  {
+    label: "Voice copy",
+    capability: "text-to-speech",
+    glyph: S(
+      <>
+        <rect x="9" y="2.5" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0M12 18.5V22" />
+        <path d="M19 4.5v4M21 6.5h-4" />
+      </>,
+    ),
+    prompt:
+      "A voice copy studio. Step one: pick a short WAV clip of one speaker (or record one " +
+      "with fused.capture.audio when fused.capture.sources() says it is available), and type " +
+      "the exact words in it. Step two: type new text and press Speak, which calls " +
+      "fused.ai.speech({text, refAudio, refText}) with a Base (voice clone) model from the " +
+      "catalog. Show the clip and each result in an audio player side by side, and keep a " +
+      "list of past results with their text. " +
+      SPEECH +
+      LOCAL,
+  },
+  {
+    label: "Voice designer",
+    capability: "text-to-speech",
+    glyph: S(
+      <>
+        <path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2" />
+      </>,
+    ),
+    prompt:
+      "A voice designer. Left: a textarea to describe a voice (age, tone, pace, accent) and " +
+      "a short test line. Speak calls fused.ai.speech({text, instruct}) with a VoiceDesign " +
+      "model from the catalog. Right: a list of saved voices, each with its description, an " +
+      "audio player, and buttons to play again or delete. Save the list as voices.json in " +
+      "the app folder and the clips as WAV files beside it. " +
+      SPEECH +
+      LOCAL,
+  },
+  {
+    label: "Language drill",
+    capability: "text-to-speech",
+    glyph: S(
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z" />
+      </>,
+    ),
+    prompt:
+      "A phrase drill for language learners. A table of phrases (phrase, translation, " +
+      "language) loaded from phrases.json in the app folder, with Add and Delete. Each row " +
+      "has a play button that calls fused.ai.speech({text, language}) once and caches the " +
+      "WAV beside the app, so the next play is instant. A Drill mode plays each phrase, " +
+      "waits three seconds, then shows the translation. Take the language list from the " +
+      "model's languages in fused.ai.models.catalog(). " +
+      SPEECH +
       LOCAL,
   },
 

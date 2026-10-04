@@ -75,6 +75,7 @@ export const CAPABILITY_ORDER = [
   "text-generation",
   "text-to-image",
   "automatic-speech-recognition",
+  "text-to-speech",
   "embeddings",
   // Decisions (Laya, `text-classification`) sits after embeddings: like
   // embeddings it is a sub-second encoder call rather than a generator, and
@@ -691,7 +692,7 @@ export function noEngineReason(repo: AiModelRepo): string {
   if (repo.capability === null) {
     // **The server's own sentence when it has one.** A null capability is three
     // different facts (`AiModelRepo.support`), and this page used to print one
-    // line for all of them: a text-to-speech model, a video pipeline and a repo
+    // line for all of them: an audio-tagging model, a video pipeline and a repo
     // carrying a tag we have never heard of each read "the model type is not
     // supported", which is true and tells a reader nothing about which of those
     // they are looking at. `supportReason` is written per task, server-side,

@@ -51,6 +51,11 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: capabilityLabel("automatic-speech-recognition"),
     blurb: "Turn speech into written words.",
   },
+  {
+    capability: "text-to-speech",
+    label: capabilityLabel("text-to-speech"),
+    blurb: "Turn written words into speech.",
+  },
   // Third from last: Apple Silicon only, with no fallback anywhere else — the
   // one card here that can be genuinely unusable on the machine looking at
   // it, which is a reason to let a narrow window drop it before the three

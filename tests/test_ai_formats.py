@@ -128,6 +128,10 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names={formats.LAYA_AGENT_CONFIG},
         dirnames={formats.LAYA_ENCODER_DIR}, config={}, torch_weights=False))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={"config.json", "model.safetensors"},
+        dirnames={formats.QWEN3_TTS_TOKENIZER_DIR},
+        config={"model_type": formats.QWEN3_TTS_MODEL_TYPE}, torch_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -1304,3 +1308,67 @@ def test_the_curated_row_survives_the_hint():
     discharge that, so the row must still be there."""
     assert ("mlx-community/nomicai-modernbert-embed-base-bf16"
             in formats.TEXT_EMBED_SCHEMES)
+
+
+def test_a_qwen3_tts_snapshot_needs_its_speech_tokenizer():
+    kwargs = dict(repo_id="x/y", names={"config.json", "model.safetensors"},
+                  config={"model_type": "qwen3_tts"}, torch_weights=True)
+    assert formats.loaders(dirnames={"speech_tokenizer"}, **kwargs) == ("mlx-audio-tts",)
+    assert "mlx-audio-tts" not in formats.loaders(dirnames=set(), **kwargs)
+
+
+def test_speech_traits_read_the_qwen3_tts_config():
+    config = {"model_type": "qwen3_tts", "tts_model_type": "voice_design",
+              "talker_config": {"spk_id": {"serena": 0, "aiden": 1},
+                                "codec_language_id": {"english": 1, "beijing_dialect": 2}}}
+    assert formats.speech_traits(config) == {
+        "mode": "design", "voices": ["aiden", "serena"], "languages": ["english"]}
+    assert formats.speech_traits({**config, "tts_model_type": "other"}) is None
+    assert formats.speech_traits({"model_type": "kokoro"}) is None
+
+
+PRESET = {"mode": "preset", "voices": ["aiden", "ryan"], "languages": ["english"]}
+
+
+@pytest.mark.parametrize("traits, options, fragment", [
+    (PRESET, {"refAudio": "/a.wav", "refText": "hi"}, "takes 'voice', 'instruct', not 'refAudio', 'refText'"),
+    (PRESET, {"voice": "nobody"}, "has no voice 'nobody'; it has aiden, ryan"),
+    (PRESET, {"language": "klingon"}, "has no language 'klingon'"),
+    ({"mode": "clone"}, {"voice": "ryan", "refAudio": "/a.wav", "refText": "hi"}, "not 'voice'"),
+    ({"mode": "clone"}, {"refAudio": "/a.wav"}, "needs 'refText'"),
+    ({"mode": "design"}, {"refText": "hi", "instruct": "warm"}, "not 'refText'"),
+    ({"mode": "design"}, {}, "needs 'instruct'"),
+])
+def test_speech_options_refuse(traits, options, fragment):
+    with pytest.raises(ValueError, match="org/tts") as error:
+        formats.speech_options("org/tts", traits, options)
+    assert fragment in str(error.value)
+
+
+@pytest.mark.parametrize("traits, options, resolved", [
+    (PRESET, {"voice": "Ryan", "instruct": "calm", "language": "English"},
+     {"voice": "ryan", "instruct": "calm", "language": "english"}),
+    (PRESET, {"voice": None}, {"voice": "aiden", "language": "auto"}),
+    ({"mode": "preset"}, {"voice": "anyone"}, {"voice": "anyone", "language": "auto"}),
+    ({"mode": "clone"}, {"refAudio": "/a.wav", "refText": "hi", "language": "auto"},
+     {"refAudio": "/a.wav", "refText": "hi", "language": "auto"}),
+    ({"mode": "design"}, {"instruct": "warm", "text": "x"}, {"instruct": "warm", "language": "auto"}),
+])
+def test_speech_options_resolve(traits, options, resolved):
+    assert formats.speech_options("org/tts", traits, options) == resolved
+
+
+@pytest.mark.parametrize("language", ["English", "english", "ENGLISH"])
+def test_speech_options_preserve_the_catalog_language(language):
+    traits = formats.speech_traits({
+        "model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+        "talker_config": {"codec_language_id": {"English": 1}},
+    })
+    assert formats.speech_options("org/tts", traits, {"language": language}) == {
+        "language": "English"}
+
+
+def test_speech_options_auto_bypasses_the_language_catalog():
+    assert formats.speech_options("org/tts", {**PRESET, "languages": ["English"]},
+                                  {"language": "AUTO"}) == {
+        "voice": "aiden", "language": "auto"}

@@ -5280,7 +5280,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video", "laya-mlx"}
+        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -5296,7 +5296,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
                  "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe",
-                 "/api/ai/video"):
+                 "/api/ai/video", "/api/ai/speech"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
@@ -7532,7 +7532,7 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
 # -- a reference image (I2V) -----------------------------------------------------
 # One image, a single string, conditioning at frame 0 with strength 1.0 — the
 # same scope decision `/api/ai/image`'s own `image` option made for editing,
-# restated for video. `_resolve_reference_image` is the shared helper both
+# restated for video. `_resolve_reference_file` is the shared helper both
 # routes call; these tests exercise it through `/api/ai/video`, the same way
 # the block above exercises `_edit_default_size` through `/api/ai/image`.
 
@@ -10791,28 +10791,24 @@ def test_an_unrecognised_head_stays_unloadable_even_unmapped(client, hub, dispat
     assert dispatched == []
 
 
-def test_a_ruled_out_task_is_not_rescued_by_readable_weights(client, hub, dispatched):
-    """The TTS-under-TEXT bug, which is a DIFFERENT path from SymphonyGen below.
-
-    A real speech-synthesis repo has everything the text branch wants — a
-    `config.json` mlx-lm could resolve, a directory of safetensors — so
-    `formats.loaders` answers `('mlx-text',)` and the config guard never fires.
-    What stops it is the other gate: the card SAID what this is
-    (`text-to-speech`), that task is one we have ruled out, and a task we
-    recognise and do not serve is never overruled by what the weight files look
-    like. Without it the loaders-unanimity fallback files this under text
-    generation, which is how a Qwen3-TTS repo came to sit in the Playground's
-    chat section with a Load button.
-    """
-    repo = _cached_repo(hub, "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+def test_a_speech_card_on_a_format_no_runner_reads_is_not_a_chat_model(client, hub, dispatched):
+    repo = _cached_repo(hub, "org/other-tts",
                         files=("model.safetensors",), config={"model_type": "qwen3"})
     (repo / "snapshots" / "c0ffee" / "README.md").write_text(
         "---\npipeline_tag: text-to-speech\n---\n")
-    reading = ai_models.cached_capability("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
-    assert reading.cached and reading.capability is None
-    assert reading.support == "no-runner" and reading.reason
-    assert _load(client, {"model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base"}).status_code == 400
-    assert dispatched == []
+    reading = ai_models.cached_capability("org/other-tts")
+    assert reading.cached and reading.capability == registry.TEXT_TO_SPEECH
+    assert reading.runner_code is None
+    assert _load(client, {"model": "org/other-tts"}).status_code == 200
+    assert [call["capability"] for call in dispatched] == [registry.TEXT_TO_SPEECH]
+
+
+def test_a_qwen3_tts_snapshot_reads_as_speech_for_the_mlx_audio_runner(hub):
+    _cached_repo(hub, "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+                 files=("model.safetensors",), dirs=("speech_tokenizer",),
+                 config={"model_type": "qwen3_tts", "tts_model_type": "base"})
+    reading = ai_models.cached_capability("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
+    assert reading.cached and reading.capability == registry.TEXT_TO_SPEECH
 
 
 def test_weights_with_no_config_are_not_a_chat_model(client, hub, dispatched):
@@ -12253,3 +12249,142 @@ def test_download_refuses_a_sharded_quants_first_part(
         headers={"X-Fused": "1"})
     assert response.status_code == 400
     assert dispatched == []
+
+
+@pytest.fixture()
+def fake_speech_runner(tmp_path, monkeypatch):
+    folder = tmp_path / "fake_speech_runner"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code="fake-speech", capability=registry.TEXT_TO_SPEECH,
+        folder=str(folder), label="Fake speech",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-speech", [
+        {"id": "org/fake-preset", "label": "Fake preset", "size_gb": None, "note": "",
+         "voiceMode": "preset"},
+        {"id": "org/fake-clone", "label": "Fake clone", "size_gb": None, "note": "",
+         "voiceMode": "clone"},
+        {"id": "org/fake-design", "label": "Fake design", "size_gb": None, "note": "",
+         "voiceMode": "design"},
+    ])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+def _speech(client, body):
+    return client.post("/api/ai/speech", json=body, headers={"X-Fused": "1"})
+
+
+def test_speech_renders_to_disk_with_the_default_model(client, fake_speech_runner):
+    response = _speech(client, {"text": "Hello there."})
+    assert response.status_code == 200, response.json()
+    started = response.json()
+    assert started["jobId"].startswith(supervisor.SPEECH_JOB_PREFIX)
+    assert started["model"] == "org/fake-preset"
+    assert started["path"].endswith(".wav")
+    assert started["language"] == "auto" and started["text"] == "Hello there."
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    assert row["title"] == "Hello there."
+    assert os.path.isfile(started["path"])
+
+
+def test_speech_needs_text(client, fake_speech_runner):
+    for body in ({}, {"text": "   "}):
+        response = _speech(client, body)
+        assert response.status_code == 400, body
+        assert "'text'" in response.json()["error"]
+
+
+@pytest.mark.parametrize("provider", ["apple", "claude"])
+def test_speech_is_local_only(client, fake_speech_runner, provider):
+    assert _speech(client, {"text": "x", "provider": provider}).status_code == 409
+
+
+def test_speech_refuses_options_the_named_model_does_not_take(client, fake_speech_runner,
+                                                              base_photo):
+    page, _ = base_photo
+    clone = {"refAudio": "photo.png", "refText": "hi", "base": page}
+    cases = [
+        ({"model": "org/fake-clone"}, "needs 'refAudio', 'refText'"),
+        ({"model": "org/fake-clone", "refAudio": "photo.png", "base": page}, "needs 'refText'"),
+        ({"model": "org/fake-preset", **clone}, "not 'refAudio', 'refText'"),
+        ({"model": "org/fake-design"}, "needs 'instruct'"),
+    ]
+    for extra, fragment in cases:
+        response = _speech(client, {"text": "x", **extra})
+        assert response.status_code == 400 and fragment in response.json()["error"], extra
+
+
+def test_speech_ref_audio_resolves_beside_the_page(client, fake_speech_runner, base_photo):
+    page, sample = base_photo
+    response = _speech(client, {"text": "x", "model": "org/fake-clone",
+                                "refAudio": "photo.png", "refText": "hi", "base": page})
+    assert response.status_code == 200, response.json()
+    started = response.json()
+    assert os.path.samefile(started["refAudio"], sample)
+    assert started["refText"] == "hi"
+    _wait_job(started["jobId"])
+
+
+def test_speech_ref_audio_must_exist_and_be_resolvable(client, fake_speech_runner, tmp_path):
+    missing = _speech(client, {"text": "x", "model": "org/fake-clone",
+                               "refAudio": str(tmp_path / "nope.wav"), "refText": "hi"})
+    assert missing.status_code == 400 and "no such file" in missing.json()["error"]
+    relative = _speech(client, {"text": "x", "model": "org/fake-clone",
+                                "refAudio": "nope.wav", "refText": "hi"})
+    assert relative.status_code == 400
+    assert "'refAudio' must be absolute" in relative.json()["error"]
+
+
+def test_speech_checks_voices_and_languages_off_the_cached_config(client, fake_speech_runner,
+                                                                  hub):
+    _cached_repo(hub, "org/fake-preset", files=("model.safetensors",),
+                 dirs=("speech_tokenizer",),
+                 config={"model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+                         "talker_config": {"spk_id": {"serena": 1, "ryan": 2},
+                                           "codec_language_id": {"english": 1,
+                                                                 "sichuan_dialect": 2}}})
+    voice = _speech(client, {"text": "x", "voice": "nobody"})
+    assert voice.status_code == 400 and "ryan, serena" in voice.json()["error"]
+    language = _speech(client, {"text": "x", "language": "sichuan_dialect"})
+    assert language.status_code == 400 and "english" in language.json()["error"]
+    named = _speech(client, {"text": "x", "voice": "Ryan", "language": "English"}).json()
+    assert (named["voice"], named["language"]) == ("ryan", "english")
+    default = _speech(client, {"text": "x"}).json()
+    assert default["voice"] == "ryan"
+    _wait_job(named["jobId"])
+    _wait_job(default["jobId"])
+
+
+def test_the_catalog_carries_each_speech_models_voice_mode(client, fake_speech_runner, hub):
+    _cached_repo(hub, "org/fake-preset", files=("model.safetensors",),
+                 dirs=("speech_tokenizer",),
+                 config={"model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+                         "talker_config": {"spk_id": {"ryan": 1},
+                                           "codec_language_id": {"english": 1}}})
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    row = next(r for r in rows if r["capability"] == registry.TEXT_TO_SPEECH)
+    models = {m["id"]: m for m in row["models"]}
+    assert models["org/fake-preset"]["voiceMode"] == "preset"
+    assert models["org/fake-preset"]["voices"] == ["ryan"]
+    assert models["org/fake-preset"]["languages"] == ["english"]
+    assert models["org/fake-clone"]["voiceMode"] == "clone"
+    assert "voices" not in models["org/fake-clone"]
+
+
+def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_runner,
+                                                         base_photo):
+    page, _ = base_photo
+    started = _speech(client, {"text": "x", "model": "org/fake-clone",
+                               "refAudio": "photo.png", "refText": "hi", "base": page}).json()
+    fields = ((set(started) - {"jobId", "model", "path", "provider", "warnings"})
+              | {"audio", "url", "mediaType", "response", "providerMetadata", "usage"})
+    section = _skill_section("Speech: `fused.ai.speech({text, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])

@@ -666,6 +666,8 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         # thing, but a Laya repo mirrored without a card still deserves the
         # right label.
         return _ai_registry.DECISIONS, "its Laya decision-head config"
+    if formats.is_qwen3_tts_snapshot(config, dirnames):
+        return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
     return None
 
 
@@ -1542,6 +1544,13 @@ def has_vision_tower(repo_id: str) -> bool:
     if not config:
         return False
     return _VISION_CONFIG in config or "image_token_id" in config
+
+
+def speech_traits(repo_id: str) -> dict | None:
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
 
 
 def has_cached_snapshot(repo_id: str) -> bool:

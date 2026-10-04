@@ -136,6 +136,7 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
 VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
+SPEECH_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-speech:"
 #: And one row per GENERATION, same reasoning as `IMAGE_JOB_PREFIX`: two
 #: completions from the same resident model are two pieces of work with two
 #: answers, and a shared id would have the second overwrite the first's row
@@ -1627,7 +1628,7 @@ def image_job_id(uid: str) -> str:
 
 def _start_render(capability: str, model: str, request: dict, job: str,
                    generate, *, noun: str, thread_name: str, page: str = "",
-                   source: str = "") -> None:
+                   source: str = "", title: str | None = None) -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
@@ -1669,7 +1670,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     _runner_or_raise(capability)
     _require_build_tools()
 
-    title = str(request.get("prompt") or model).strip() or model
+    title = str(title or request.get("prompt") or model).strip() or model
     # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
     # JobRow draws after the title — never folded into `title` (that's the
     # prompt) or `detail` (that's the worker's progress ticks, which would
@@ -2865,6 +2866,16 @@ def _wait_ready(model: str, capability: str, job: str,
         _report(job, **final)
 
 
+def speech_job_id(uid: str) -> str:
+    return SPEECH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
+    _start_render(registry.TEXT_TO_SPEECH, model, request, job, generate_speech,
+                  noun="speech clip", thread_name="ai-speech", page=page, source=source,
+                  title=request.get("text"))
+
+
 def video_job_id(uid: str) -> str:
     """The download-manager row for one render. See `image_job_id`."""
     return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
@@ -2935,6 +2946,11 @@ def generate_video(model: str, request: dict, job: str) -> dict:
     """
     return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
+
+
+def generate_speech(model: str, request: dict, job: str) -> dict:
+    return _generate_via_worker(registry.TEXT_TO_SPEECH, model, request, job,
+                                timeout=GENERATE_TIMEOUT_S, noun="speech")
 
 
 def _await_turn(job: str, title: str, model: str = "", page: str = "") -> None:

@@ -5157,6 +5157,9 @@ export interface AiCatalogModel {
    *  client, a test literal, or an older cached response shape does not have
    *  to carry it. */
   tags?: string[];
+  voiceMode?: "preset" | "clone" | "design";
+  voices?: string[];
+  languages?: string[];
 }
 
 export interface AiCatalogCapability {

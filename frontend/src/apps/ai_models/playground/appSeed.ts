@@ -104,6 +104,29 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
         "path is an audio/video file on disk, segments stream through onChunk. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
+  } else if (capability === "text-to-speech") {
+    const mode = model.voiceMode ?? "preset";
+    const ref = mode === "clone" ? readParam("ref") : null;
+    const refText = mode === "clone" ? readParam("reftext")?.trim() || null : null;
+    const clip = ref && refText;
+    const extra = opts([
+      ["voice", mode === "preset" && readParam("voice") ? JSON.stringify(readParam("voice")) : null],
+      ["instruct", mode !== "clone" && readParam("instruct") ? JSON.stringify(readParam("instruct")) : null],
+      ["language", readParam("lang") ? JSON.stringify(readParam("lang")) : null],
+      ["refAudio", clip ? JSON.stringify(ref) : null],
+      ["refText", clip ? JSON.stringify(refText) : null],
+    ]);
+    const modeLine = {
+      preset: `Voices: ${model.voices?.join(", ") || "the catalog's voices list"}; instruct is an optional style line.`,
+      clone: "It copies a voice: refAudio (a short clip of one speaker) and refText (its exact words) are both required.",
+      design: "It makes a voice from a description: instruct (age, tone, pace, accent) is required.",
+    }[mode];
+    lines.push(
+      `It reads text aloud to a WAV file: await fused.ai.speech({ text, model: ${JSON.stringify(model.id)}${extra}, onProgress }) ` +
+        "resolves with audio[0].url for an <audio controls>. Apple Silicon only; check fused.ai.models.catalog() first. " +
+        modeLine +
+        (extra ? " The options above are the settings I tuned in the Playground." : ""),
+    );
   } else if (capability === "embeddings") {
     // **The prose is SPLIT by what this model declares, and the reason is that
     // the route refuses the other half** (SPEC §40). A seeded session that was

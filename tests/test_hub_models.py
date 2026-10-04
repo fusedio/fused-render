@@ -1829,7 +1829,8 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     assert "text-classification" in offered
     assert {ai_tasks.capability_for_tag(t) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
-        registry.EMBEDDINGS, registry.VIDEO_GENERATION, registry.DECISIONS}
+        registry.EMBEDDINGS, registry.VIDEO_GENERATION, registry.DECISIONS,
+        registry.TEXT_TO_SPEECH}
 
 
 def test_the_menu_follows_the_vocabulary_rather_than_a_second_list(client, monkeypatch):
@@ -1872,6 +1873,23 @@ def test_a_result_is_never_something_this_app_cannot_run(client, hub_cache, monk
     assert [m["id"] for m in models] == [
         "org/chat", "org/vlm", "org/pic", "org/ears",
         "sentence-transformers/all-MiniLM-L6-v2"]
+
+
+def test_a_speech_result_must_be_a_format_the_speech_runner_reads(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+         "pipeline_tag": "text-to-speech", "library_name": "mlx-audio",
+         "tags": ["mlx-audio", "qwen3_tts", "mlx"]},
+        {"id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16", "pipeline_tag": "text-to-speech"},
+        {"id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "pipeline_tag": "text-to-speech",
+         "library_name": "transformers", "tags": ["qwen3_tts"]},
+        {"id": "hexgrad/Kokoro-82M", "pipeline_tag": "text-to-speech"},
+    ]))
+    models = _search(client).json()["models"]
+    assert [m["id"] for m in models] == [
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+        "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"]
+    assert {m["capability"] for m in models} == {registry.TEXT_TO_SPEECH}
 
 
 def test_a_result_with_no_pipeline_tag_is_dropped(client, hub_cache, monkeypatch):

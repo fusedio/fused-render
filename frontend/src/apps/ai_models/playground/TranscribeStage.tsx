@@ -548,13 +548,12 @@ export function TranscribeStage({ model }: { model: string }) {
         <ConfigPanel open={configOpen} animated={configTouched.current}>
           {!appleModel && (
             <RailField label="Task">
-              <RailSelect
-                value={task}
-                onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
-              >
-                <option value="transcribe">Transcribe — same language</option>
-                <option value="translate">Translate into English</option>
-              </RailSelect>
+              <RailSelect aria-label="Task" value={task}
+                onValueChange={(value) => setTask(value as "transcribe" | "translate")}
+                options={[
+                  { value: "transcribe", label: "Transcribe — same language" },
+                  { value: "translate", label: "Translate into English" },
+                ]} />
             </RailField>
           )}
           <RailField label="Language" hint="Set it only when detection gets it wrong.">
