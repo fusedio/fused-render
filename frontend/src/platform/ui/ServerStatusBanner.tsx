@@ -211,7 +211,14 @@ function useServerStatus(): {
         // "reconnected" would paper over an update for a whole minute.
         const bootMoved = result.bootId !== undefined && result.bootId !== stateRef.current.bootId;
         if (result.ok && (forceConfig || cfg === null || probeCount % CONFIG_EVERY === 0 || bootMoved)) {
-          cfg = (await fetchVersionFacts()) ?? cfg;
+          const fresh = await fetchVersionFacts();
+          // A failed refresh keeps the cache — EXCEPT across a boot move. The
+          // cached facts describe the OLD process; merged onto the new one
+          // they would make a version-changing restart read as same-version
+          // "reconnected" and nothing would retry /api/config for a minute
+          // (bugbot, PR #1399). Dropping the cache makes the next probe ask
+          // again (`cfg === null`) and this one carry no version at all.
+          cfg = fresh ?? (bootMoved ? null : cfg);
         }
         probeCount += 1;
         if (result.ok && cfg) result = { ...result, ...cfg };

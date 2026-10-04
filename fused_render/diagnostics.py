@@ -59,11 +59,16 @@ logger = logging.getLogger(__name__)
 SCHEMA = 1
 TOTAL_CAP = 64 * 1024 * 1024
 TAIL_CAP = 512 * 1024
+#: Session logs always collected regardless of the window: the live one, the
+#: one before it (a crashed session) and one more for a restart loop.
+ALWAYS_SESSIONS = 3
 LOG_SHOW_CAP = 8 * 1024 * 1024
 LOG_SHOW_TIMEOUT_S = 45
 #: `log show` scans at a fixed cost per hour; past this span `resources.jsonl`
 #: is the cheaper witness for memory pressure.
 LOG_SHOW_MAX_SPAN_S = 2 * 3600
+#: Slice size for the newest-first read; one slice is ~8 s on a busy machine.
+LOG_SHOW_CHUNK_S = 30 * 60
 CMD_TIMEOUT_S = 5
 WINDOW_S = 24 * 3600
 INDEX_RUNS = 5
@@ -268,13 +273,28 @@ def _plan_app_logs(plan: _Plan) -> None:
             continue
         seen.add(real)
         legacy = label.startswith("legacy")
-        for e in plan.listdir(directory, label):
-            n = e.name
-            if not n.startswith(prefix) or ".log" not in n or not e.is_file():
+        entries = [e for e in plan.listdir(directory, label)
+                   if e.name.startswith(prefix) and ".log" in e.name and e.is_file()]
+        # THE NEWEST SESSIONS ARE ALWAYS IN, whatever the window. The window
+        # trims the bulky collectors; session logs are the join key the
+        # reading recipe greps first, and the one that matters most after a
+        # crash-and-relaunch is the DEAD session's — whose mtime is before
+        # "since the app started" by definition (bugbot, PR #1399).
+        always = set()
+        if not legacy:
+            by_mtime = sorted(entries, key=_mtime, reverse=True)
+            sessions_seen: list[str] = []
+            for e in by_mtime:
+                sid = e.name.split(".log", 1)[0].rsplit("-", 1)[-1]
+                if sid not in sessions_seen:
+                    sessions_seen.append(sid)
+                if len(sessions_seen) > ALWAYS_SESSIONS:
+                    break
+                always.add(e.path)
+        for e in entries:
+            if e.path not in always and not plan.in_window(e):
                 continue
-            if not plan.in_window(e):
-                continue
-            arc = f"app/legacy/{n}" if legacy else f"app/{n}"
+            arc = f"app/legacy/{e.name}" if legacy else f"app/{e.name}"
             plan.add(arc, e.path, tail=TAIL_CAP)
 
     try:
@@ -662,9 +682,12 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
       the app (App Nap), and the Swift helper. NOT `process == "python"` or a
       bare `process == "FusedRender"`: measured at 7 MB and 27 MB per 2 h of
       WebKit chatter that buried the dozen lines that matter.
-    * A timeout keeps what was written so far (`subprocess.Popen` + `kill`,
-      not `run`, which discards it) and marks the entry truncated — an hour
-      of partial log beats a "timed out" row with nothing attached.
+    * The window is read in `LOG_SHOW_CHUNK_S` slices, NEWEST FIRST, against
+      one shared deadline. `log show` emits oldest-first, so a single query
+      cut off by a timeout kept the start of the window and lost the recent
+      lines the bundle exists for (bugbot, PR #1399). Chunking the other way
+      round means a deadline costs the OLDEST slice. The file is still
+      written in chronological order.
     """
     source = "log show"
     predicate = ('(sender == "kernel" AND eventMessage CONTAINS "memorystatus") OR '
@@ -672,38 +695,62 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
                  '(process == "FusedRender" AND subsystem == "com.apple.runningboard") OR '
                  'process == "fused-apple-ai"')
     span = min(now - window_start, LOG_SHOW_MAX_SPAN_S)
-    minutes = max(5, int(math.ceil(span / 60)))
-    argv = ["log", "show", "--last", f"{minutes}m", "--style", "compact",
-            "--predicate", predicate]
-    fd, tmp = tempfile.mkstemp(prefix=".fused-render-logshow-", suffix=".txt", dir=tmp_dir)
+    deadline = time.monotonic() + LOG_SHOW_TIMEOUT_S
+
+    def fmt(t: float) -> str:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+
+    chunks: list[bytes] = []  # newest first
+    covered_from = now
     timed_out = False
+    end = now
+    while end > now - span:
+        start = max(end - LOG_SHOW_CHUNK_S, now - span)
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            timed_out = True
+            break
+        argv = ["log", "show", "--start", fmt(start), "--end", fmt(end),
+                "--style", "compact", "--predicate", predicate]
+        try:
+            proc = subprocess.run(argv, capture_output=True, timeout=remaining, check=False)
+        except FileNotFoundError:
+            w.skipped.append({"source": source, "reason": "`log` not found"})
+            return
+        except subprocess.TimeoutExpired as e:
+            # Keep what this slice produced — within one slice the loss is the
+            # slice's tail, bounded by LOG_SHOW_CHUNK_S.
+            if e.stdout:
+                chunks.append(e.stdout)
+            timed_out = True
+            break
+        except OSError as e:
+            w.skipped.append({"source": source, "reason": str(e)})
+            return
+        chunks.append(proc.stdout or b"")
+        covered_from = start
+        end = start
+
+    if not chunks:
+        w.skipped.append({"source": source, "reason": f"timed out after {LOG_SHOW_TIMEOUT_S}s "
+                                                      "before the first slice finished"})
+        return
+    fd, tmp = tempfile.mkstemp(prefix=".fused-render-logshow-", suffix=".txt", dir=tmp_dir)
     try:
         with os.fdopen(fd, "wb") as out:
-            try:
-                proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT)
-            except FileNotFoundError:
-                w.skipped.append({"source": source, "reason": "`log` not found"})
-                return
-            except OSError as e:
-                w.skipped.append({"source": source, "reason": str(e)})
-                return
-            try:
-                proc.wait(timeout=LOG_SHOW_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                proc.kill()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
+            header = (f"# log show, {fmt(covered_from)} -> {fmt(now)}"
+                      + (" (deadline hit: older slices not read)" if timed_out else "")
+                      + "\n").encode()
+            out.write(header)
+            for body in reversed(chunks):  # chronological
+                out.write(body)
         if w.add("os/unified-log.txt", tmp, LOG_SHOW_CAP):
-            w.collected[-1]["source"] = " ".join(argv[:-1]) + " '<predicate>'"
+            w.collected[-1]["source"] = "log show --start ... --end ... '<predicate>'"
+            w.collected[-1]["covered_from"] = covered_from
             if timed_out:
                 w.collected[-1]["truncated"] = True
-                w.collected[-1]["note"] = f"log show killed after {LOG_SHOW_TIMEOUT_S}s; partial"
-        elif timed_out:
-            w.skipped.append({"source": source,
-                              "reason": f"timed out after {LOG_SHOW_TIMEOUT_S}s with no output"})
+                w.collected[-1]["note"] = (f"deadline {LOG_SHOW_TIMEOUT_S}s hit; "
+                                           f"covers {fmt(covered_from)} onward only")
     finally:
         try:
             os.unlink(tmp)

@@ -233,7 +233,9 @@ class ResourceTrail:
         try:
             import resource  # noqa: PLC0415 — stdlib, POSIX only
             ru = resource.getrusage(resource.RUSAGE_SELF)
-            row["max_rss"] = ru.ru_maxrss if sys.platform != "darwin" else ru.ru_maxrss
+            # getrusage reports bytes on macOS and KILOBYTES on Linux; the
+            # trail is read beside sysmon's byte figures, so normalise.
+            row["max_rss"] = ru.ru_maxrss if sys.platform == "darwin" else ru.ru_maxrss * 1024
         except Exception:  # noqa: BLE001
             pass
         try:
