@@ -146,3 +146,48 @@ def test_write_of_nothing_is_a_no_op(backend):
     b = backend(_Backend())
     assert pasteboard.write_files([]) == ("", True)
     assert b.written is None
+
+
+# ------------------------------------------------------------------ serialisation
+
+def test_backend_calls_are_serialised(backend):
+    """Concurrent reads and writes never overlap inside the backend.
+
+    The native clipboard APIs are not thread-safe (macOS: two threads in
+    readObjectsForClasses:options: race in _updateTypeCacheIfNeeded and the
+    process segfaults). The contract module holds one lock across every
+    backend call, so a backend that records how many callers are inside it
+    at once must never see more than one.
+    """
+    import threading
+    import time
+
+    class Counting:
+        def __init__(self):
+            self.inside = 0
+            self.peak = 0
+            self.guard = threading.Lock()
+
+        def _enter(self):
+            with self.guard:
+                self.inside += 1
+                self.peak = max(self.peak, self.inside)
+            time.sleep(0.002)
+            with self.guard:
+                self.inside -= 1
+
+        def read_files(self):
+            self._enter()
+            return ["/a"]
+
+        def write_files(self, paths):
+            self._enter()
+
+    b = backend(Counting())
+    threads = [threading.Thread(target=pasteboard.read_files) for _ in range(8)]
+    threads += [threading.Thread(target=pasteboard.write_files, args=(["/a"],)) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert b.peak == 1
