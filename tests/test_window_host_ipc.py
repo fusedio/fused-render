@@ -14,6 +14,10 @@ import pytest
 
 from fused_render import window_host_ipc as ipc
 
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="Unix domain sockets required"
+)
+
 
 @pytest.fixture
 def sock_path():

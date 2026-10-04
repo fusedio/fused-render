@@ -4,6 +4,7 @@ available" (so core falls back to xdg-open) without ever raising."""
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -14,6 +15,10 @@ import pytest
 from fused_render import window_host_ipc as ipc
 from fused_render.supervisor._linux import windows
 from fused_render.supervisor.paths import DesktopPaths
+
+needs_unix = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="Unix domain sockets required"
+)
 
 
 @pytest.fixture
@@ -77,6 +82,7 @@ def make(paths, **kw):
     return windows.WindowHost(paths, 8123, job_factory=FakeJob, start_timeout=2.0, **kw)
 
 
+@needs_unix
 def test_spawn_command_follows_repo_conventions(paths):
     host = make(paths)
     stop = threading.Event()
@@ -96,6 +102,7 @@ def test_spawn_command_follows_repo_conventions(paths):
     assert out == paths.logs / "window-host.log"
 
 
+@needs_unix
 def test_start_then_open_goes_to_the_host(paths):
     seen = []
     host = make(paths)
@@ -109,6 +116,7 @@ def test_start_then_open_goes_to_the_host(paths):
     assert {"cmd": "open", "url": "http://127.0.0.1:8123/"} in seen
 
 
+@needs_unix
 def test_preference_off_starts_the_host_disabled(paths):
     (paths.state / "prefs.json").write_text(json.dumps({"native_windows_enabled": False}))
     host = make(paths)
@@ -121,6 +129,7 @@ def test_preference_off_starts_the_host_disabled(paths):
     assert "--disabled" in FakeJob.instances[0].spawned[0][1]
 
 
+@needs_unix
 def test_declined_open_returns_false_so_core_uses_the_browser(paths):
     host = make(paths)
     stop = threading.Event()
@@ -135,6 +144,7 @@ def test_declined_open_returns_false_so_core_uses_the_browser(paths):
         stop.set()
 
 
+@needs_unix
 def test_host_that_exits_early_is_unavailable_and_the_reason_is_logged_once(paths):
     logged = []
     host = make(paths)
@@ -163,6 +173,7 @@ def test_host_that_exits_early_is_unavailable_and_the_reason_is_logged_once(path
     assert FakeJob.instances[0].closed
 
 
+@needs_unix
 def test_socket_never_appearing_times_out_to_unavailable(paths):
     logged = []
     host = windows.WindowHost(paths, 8123, job_factory=FakeJob, start_timeout=0.3)
@@ -172,6 +183,7 @@ def test_socket_never_appearing_times_out_to_unavailable(paths):
     assert len(logged) == 1
 
 
+@needs_unix
 def test_open_after_the_host_dies_degrades_and_logs_once(paths):
     logged = []
     host = make(paths)
@@ -201,6 +213,7 @@ def test_not_wanted_never_spawns(paths, monkeypatch, setup):
     assert FakeJob.instances == [] and host.open("http://x/") is False
 
 
+@needs_unix
 def test_stop_asks_the_host_to_quit_then_kills_the_tree(paths):
     seen = []
     host = make(paths)

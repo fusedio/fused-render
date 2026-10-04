@@ -3,6 +3,7 @@ the `window_policy.native_hooks` it installs, how they fall back to a browser
 tab, and how the Preferences state reports `available`."""
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -11,6 +12,10 @@ import pytest
 
 from fused_render import linux_windows, window_policy
 from fused_render import window_host_ipc as ipc
+
+needs_unix = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="Unix domain sockets required"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +70,7 @@ def test_installs_the_three_hooks(sock):
     assert set(window_policy.native_hooks) == {"apply", "open_app", "usable"}
 
 
+@needs_unix
 def test_open_app_sends_the_apps_window_url_to_the_host(sock, host, tmp_path):
     seen, _ = host
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
@@ -74,6 +80,7 @@ def test_open_app_sends_the_apps_window_url_to_the_host(sock, host, tmp_path):
     assert opens[0]["url"] == "http://127.0.0.1:8123" + window_policy.app_window_path(str(tmp_path))
 
 
+@needs_unix
 def test_open_app_falls_back_to_a_browser_tab_when_declined(sock, host, tmp_path, monkeypatch):
     _, reply = host
     reply["open"] = {"ok": False, "reason": "disabled"}
@@ -84,6 +91,7 @@ def test_open_app_falls_back_to_a_browser_tab_when_declined(sock, host, tmp_path
     assert tabs == ["http://127.0.0.1:8123" + window_policy.app_window_path(str(tmp_path))]
 
 
+@needs_unix
 def test_open_app_falls_back_when_the_host_is_gone(sock, tmp_path, monkeypatch):
     tabs = []
     monkeypatch.setattr(linux_windows, "_open_in_browser", tabs.append)
@@ -92,6 +100,7 @@ def test_open_app_falls_back_when_the_host_is_gone(sock, tmp_path, monkeypatch):
     assert len(tabs) == 1
 
 
+@needs_unix
 def test_apply_forwards_the_preference(sock, host):
     seen, _ = host
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
@@ -101,16 +110,19 @@ def test_apply_forwards_the_preference(sock, host):
         {"cmd": "set_enabled", "on": False}, {"cmd": "set_enabled", "on": True}]
 
 
+@needs_unix
 def test_apply_never_raises_when_the_host_is_gone(sock):
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
     window_policy.native_hooks["apply"](False)  # must not raise: the pref still stores
 
 
+@needs_unix
 def test_usable_reflects_a_live_host(sock, host):
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
     assert window_policy.native_hooks["usable"]() is True
 
 
+@needs_unix
 def test_usable_is_false_when_the_host_is_gone(sock):
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
     assert window_policy.native_hooks["usable"]() is False
@@ -145,3 +157,9 @@ def test_prefs_unavailable_on_windows_even_with_a_stray_hook(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     window_policy.native_hooks.update({"apply": lambda on: None, "usable": lambda: True})
     assert prefs._native_windows_state()["available"] is False
+
+
+def test_install_is_a_noop_without_af_unix(monkeypatch):
+    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
+    assert linux_windows.install(1, environ={ipc.ENV_SOCKET: "/x/h.sock"}, platform="win32") is False
+    assert window_policy.native_hooks == {}
