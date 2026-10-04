@@ -25,6 +25,22 @@ recursive watch (`npm install` in a clean tree would otherwise put all of
 `node_modules` under the watch). Either one re-plans, after a short settle so
 a clone or install lands first.
 
+macOS does none of that planning. FSEvents is a per-volume kernel journal:
+one stream rooted at `~` costs the same as one rooted at `~/Documents`, and
+constructing it takes ~0.1 s. What is NOT cheap there is a watch with many
+paths: notify's FSEvents backend rebuilds its single stream every time a
+path is appended (`FSEventStreamCreate` plus a `realpath` of every path so
+far), so N paths cost O(N²) — a home directory's plan of ~16k non-recursive
+plus ~24k recursive directories was measured at tens of minutes of a full
+core, all of it inside `RustNotify.__init__` with the GIL held. That hold is
+also why those watchers outlived their server: the stdin-EOF thread below
+needs the GIL to read the EOF, and nothing in this process can notice a
+dead parent without it, so the only real fix is a construction that ends in
+well under a second. On darwin `serve` therefore watches the root with one
+recursive stream and leaves the pruning to `make_dropped` on each event
+(the same gate the FSEvents journal replay in `scan.py` applies to raw
+journal paths), and never re-plans: there is no plan to go stale.
+
 Protocol, one JSON object per stdout line:
 
   {"changes": [[<watchfiles.Change int>, "<path>"], ...]}
@@ -190,7 +206,7 @@ def plan_watch(root: str, pruner: Pruner, *, shallow: bool = False):
     root = norm(root)
     if shallow:
         kids, _ = _child_dirs(root)
-        return [], [root, *[k for k in kids if pruner.kept(k)]]
+        return [], [root, *sorted(k for k in kids if pruner.kept(k))]
 
     # Pass 1, pre-order: every kept directory, its kept children, and
     # whether anything beneath it directly was pruned.
@@ -249,6 +265,10 @@ class _Session:
     batches, and a `done` event set when the plan is stale or a watcher
     failed.
 
+    `replan=False` turns staleness off entirely: the session only ends on a
+    watcher failure. That is the darwin whole-tree watch (see the module
+    docstring); the plan there is the root itself, so nothing can go stale.
+
     `grows_under` is the set of directories a new kept folder directly
     inside of changes the plan. Normally that is every flat watch, since the
     next plan watches the new folder. The shallow plan only ever adds the
@@ -256,10 +276,14 @@ class _Session:
     would re-plan into the same watches, and each re-plan is a gap."""
 
     def __init__(self, recursive, flat, pruner: Pruner, out: _Out, *,
-                 grows_under=None):
+                 grows_under=None, replan: bool = True):
         self.recursive, self.flat = recursive, flat
         self.flat_set = set(flat)
         self.grows_under = self.flat_set if grows_under is None else set(grows_under)
+        # `replan=False` is the whole-tree watch: `[root]` recursive is also
+        # a legitimate planned shape (nothing pruned under the root), so the
+        # choice cannot be read off the plan — the caller states it.
+        self.replan = replan
         self.pruner = pruner
         self.out = out
         self.stop = threading.Event()
@@ -287,7 +311,8 @@ class _Session:
         return not self.pruner.rule_kept(p) and os.path.isdir(p)
 
     def _filter(self, change, path) -> bool:
-        if not self.done.is_set() and self.stale_by(change, path):
+        if (self.replan and not self.done.is_set()
+                and self.stale_by(change, path)):
             self.done.set()
         return not self.pruner.dropped(path)
 
@@ -321,20 +346,37 @@ class _Session:
             t.join(timeout=5.0)
 
 
+def watches_whole_tree() -> bool:
+    """Whether this platform watches the root with one recursive stream
+    instead of a planned cover. True on darwin: FSEvents makes the one
+    stream nearly free and the many-path cover ruinously expensive (module
+    docstring). inotify is the opposite — a recursive watch of `~` walks
+    and registers every directory, caches included — so Linux keeps the
+    plan, and Windows (`ReadDirectoryChangesW` per path) with it."""
+    return sys.platform == "darwin"
+
+
 def serve(root: str, pruner: Pruner, out: _Out) -> int:
     """Watch `root` until the process is killed; returns an exit code only
     when watching cannot continue."""
     shallow = False
     vanished = 0
+    whole = watches_whole_tree()
     while True:
         t0 = time.monotonic()
-        recursive, flat = plan_watch(root, pruner, shallow=shallow)
-        out.send(log=(f"watching {root}: {len(recursive)} recursive, "
-                      f"{len(flat)} non-recursive "
-                      f"(planned in {time.monotonic() - t0:.1f}s"
-                      f"{', shallow' if shallow else ''})"))
+        if whole:
+            recursive, flat = [norm(root)], []
+            out.send(log=(f"watching {root}: whole tree, one recursive "
+                          f"stream ({sys.platform}); pruning per event"))
+        else:
+            recursive, flat = plan_watch(root, pruner, shallow=shallow)
+            out.send(log=(f"watching {root}: {len(recursive)} recursive, "
+                          f"{len(flat)} non-recursive "
+                          f"(planned in {time.monotonic() - t0:.1f}s"
+                          f"{', shallow' if shallow else ''})"))
         session = _Session(recursive, flat, pruner, out,
-                           grows_under=[norm(root)] if shallow else None)
+                           grows_under=[norm(root)] if shallow else None,
+                           replan=not whole)
         session.start()
         session.done.wait()
         err = session.error
