@@ -60,7 +60,10 @@ SCHEMA = 1
 TOTAL_CAP = 64 * 1024 * 1024
 TAIL_CAP = 512 * 1024
 LOG_SHOW_CAP = 8 * 1024 * 1024
-LOG_SHOW_TIMEOUT_S = 60
+LOG_SHOW_TIMEOUT_S = 45
+#: `log show` scans at a fixed cost per hour; past this span `resources.jsonl`
+#: is the cheaper witness for memory pressure.
+LOG_SHOW_MAX_SPAN_S = 2 * 3600
 CMD_TIMEOUT_S = 5
 WINDOW_S = 24 * 3600
 INDEX_RUNS = 5
@@ -643,36 +646,64 @@ def _ps_text() -> str | None:
 
 
 def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> None:
-    """`log show` for our processes plus jetsam / memorystatus / App Nap.
-    Streamed to a temp file beside the zip (never held in memory), tail-capped."""
+    """`log show` for memory kills, App Nap and our native helper.
+    Streamed to a temp file beside the zip (never held in memory), tail-capped.
+
+    THIS IS THE SLOW STEP, and the only one: every other collector together
+    takes well under a second, while `log show` scans the unified log store
+    at a fixed ~15 s per hour of window on a busy machine (measured
+    2026-10-05: 17 s for 2 h, 35 s for 24 h). Three choices follow from that:
+
+    * The span is capped at `LOG_SHOW_MAX_SPAN_S` regardless of the bundle's
+      window — jetsam evidence older than that is in `resources.jsonl` anyway.
+    * The predicate names only what the app log cannot know: the kernel's
+      `memorystatus:` lines (jetsam kills — kernel sender, so `CONTAINS` is
+      unavoidable), the memorystatus subsystem, RunningBoard assertions for
+      the app (App Nap), and the Swift helper. NOT `process == "python"` or a
+      bare `process == "FusedRender"`: measured at 7 MB and 27 MB per 2 h of
+      WebKit chatter that buried the dozen lines that matter.
+    * A timeout keeps what was written so far (`subprocess.Popen` + `kill`,
+      not `run`, which discards it) and marks the entry truncated — an hour
+      of partial log beats a "timed out" row with nothing attached.
+    """
     source = "log show"
-    predicate = ('process == "FusedRender" OR process == "python" OR '
-                 'process == "fused-apple-ai" OR subsystem == "com.apple.memorystatus" '
-                 'OR eventMessage CONTAINS "jetsam" OR eventMessage CONTAINS "memorystatus"')
-    span = now - window_start
-    if span < WINDOW_S:
-        when = ["--last", f"{max(1, math.ceil(span / 3600))}h"]
-    else:
-        when = ["--start", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(window_start))]
-    argv = ["log", "show", *when, "--style", "compact", "--predicate", predicate]
+    predicate = ('(sender == "kernel" AND eventMessage CONTAINS "memorystatus") OR '
+                 'subsystem == "com.apple.memorystatus" OR '
+                 '(process == "FusedRender" AND subsystem == "com.apple.runningboard") OR '
+                 'process == "fused-apple-ai"')
+    span = min(now - window_start, LOG_SHOW_MAX_SPAN_S)
+    minutes = max(5, int(math.ceil(span / 60)))
+    argv = ["log", "show", "--last", f"{minutes}m", "--style", "compact",
+            "--predicate", predicate]
     fd, tmp = tempfile.mkstemp(prefix=".fused-render-logshow-", suffix=".txt", dir=tmp_dir)
+    timed_out = False
     try:
         with os.fdopen(fd, "wb") as out:
             try:
-                subprocess.run(argv, stdout=out, stderr=subprocess.STDOUT,
-                               timeout=LOG_SHOW_TIMEOUT_S, check=False)
+                proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT)
             except FileNotFoundError:
                 w.skipped.append({"source": source, "reason": "`log` not found"})
-                return
-            except subprocess.TimeoutExpired:
-                w.skipped.append({"source": source,
-                                  "reason": f"timed out after {LOG_SHOW_TIMEOUT_S}s"})
                 return
             except OSError as e:
                 w.skipped.append({"source": source, "reason": str(e)})
                 return
+            try:
+                proc.wait(timeout=LOG_SHOW_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
         if w.add("os/unified-log.txt", tmp, LOG_SHOW_CAP):
             w.collected[-1]["source"] = " ".join(argv[:-1]) + " '<predicate>'"
+            if timed_out:
+                w.collected[-1]["truncated"] = True
+                w.collected[-1]["note"] = f"log show killed after {LOG_SHOW_TIMEOUT_S}s; partial"
+        elif timed_out:
+            w.skipped.append({"source": source,
+                              "reason": f"timed out after {LOG_SHOW_TIMEOUT_S}s with no output"})
     finally:
         try:
             os.unlink(tmp)
@@ -732,8 +763,13 @@ def _installed_version() -> str | None:
 
 
 def build_bundle(since_s: float | None = None, out_dir: str | None = None, *,
-                 progress=None, reveal: bool = False) -> str:
-    """Write the diagnostics zip and return its path. See the module doc."""
+                 progress=None, reveal: bool = False, system_log: bool = True) -> str:
+    """Write the diagnostics zip and return its path. See the module doc.
+
+    `system_log=False` skips `log show` (macOS), the one step that costs
+    more than a second: the Preferences button defaults it off and offers a
+    checkbox, the menu-bar item and the CLI keep it on because a reporter's
+    bundle is the one that must carry the jetsam evidence."""
     def say(msg: str) -> None:
         if progress is not None:
             try:
@@ -782,9 +818,11 @@ def build_bundle(since_s: float | None = None, out_dir: str | None = None, *,
             else:
                 _add_text(w, "os/ps-tree.txt", ps, "ps -axo …")
 
-            if sys.platform == "darwin":
-                say("Reading the system log (up to a minute)…")
+            if sys.platform == "darwin" and system_log:
+                say("Reading the system log (15-45 s)…")
                 _unified_log(w, plan.window_start, now, out_dir)
+            elif sys.platform == "darwin":
+                w.skipped.append({"source": "log show", "reason": "system log not requested"})
 
             say("Writing manifest…")
             manifest = {

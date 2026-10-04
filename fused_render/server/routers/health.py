@@ -137,10 +137,13 @@ def api_diagnostics(
         return err
 
     since_s = _since_from_body(body)
+    # `system_log` (macOS `log show`) is the one slow step, 15-45 s; the
+    # Preferences button sends false unless its checkbox is on.
+    system_log = bool(body.get("system_log")) if isinstance(body, dict) else False
     try:
         from fused_render import diagnostics
 
-        path = diagnostics.build_bundle(since_s=since_s)
+        path = diagnostics.build_bundle(since_s=since_s, system_log=system_log)
     except Exception as exc:  # noqa: BLE001 — the user clicked a button; say why
         logger.exception("diagnostics bundle failed")
         return _error(f"could not write diagnostics bundle: {exc}", status=500)

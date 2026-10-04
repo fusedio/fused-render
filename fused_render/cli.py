@@ -95,6 +95,9 @@ def _build_parser() -> argparse.ArgumentParser:
                                "since the current server booted if longer)")
     diagnose.add_argument("--out", default=None, metavar="DIR",
                           help="directory to write the zip into (default: ~/Desktop)")
+    diagnose.add_argument("--no-system-log", action="store_true",
+                          help="skip the macOS unified log (`log show`, the slow step: "
+                               "15-45 s; it is where jetsam memory kills show up)")
     return parser
 
 
@@ -529,7 +532,8 @@ def _run_diagnose(args: argparse.Namespace) -> None:
     try:
         from fused_render import diagnostics
 
-        path = diagnostics.build_bundle(since_s=since_s, out_dir=args.out)
+        path = diagnostics.build_bundle(since_s=since_s, out_dir=args.out,
+                                        system_log=not args.no_system_log)
     except Exception as exc:  # noqa: BLE001 - a CLI says why, not a traceback
         print(f"could not write diagnostics bundle: {exc}", file=sys.stderr)
         raise SystemExit(1) from None

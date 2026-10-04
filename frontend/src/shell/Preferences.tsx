@@ -45,6 +45,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   buildDiagnostics,
   fetchDiagnosticsPlan,
+  fetchServerHealth,
   getConfig,
   getPrefs,
   putCallsEnabled,
@@ -574,23 +575,70 @@ function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
 // knows the size before pressing; the build itself can take up to a minute.
 // What it leaves OUT is stated up front because that is what decides whether
 // someone is willing to attach it to an issue.
+// WINDOW PRESETS, not a date picker. A reporter knows "a few minutes ago" or
+// "all day", never a clock time, and a wrong guess under-collects — so the
+// choices are the ones people actually say. The bulky collectors (calls
+// store, index runs, claude err logs, system log) honour the window; the
+// small join keys (session logs, crash files, outages, resources, state) are
+// always included regardless. `sinceS` is the absolute epoch the server
+// expects; "since app started" reads it off /api/health.
+type DiagnosticsWindow = "30m" | "2h" | "boot" | "24h";
+const DIAGNOSTICS_WINDOWS: { key: DiagnosticsWindow; label: string }[] = [
+  { key: "30m", label: "Last 30 minutes" },
+  { key: "2h", label: "Last 2 hours" },
+  { key: "boot", label: "Since the app started" },
+  { key: "24h", label: "Last 24 hours" },
+];
+
+function diagnosticsSince(win: DiagnosticsWindow, startedAt: number | null): number | undefined {
+  const now = Date.now() / 1000;
+  switch (win) {
+    case "30m":
+      return now - 30 * 60;
+    case "2h":
+      return now - 2 * 3600;
+    case "24h":
+      return now - 24 * 3600;
+    case "boot":
+      return startedAt ?? undefined;
+  }
+}
+
 function DiagnosticsSection() {
   const [plan, setPlan] = useState<DiagnosticsPlan | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<DiagnosticsResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [win, setWin] = useState<DiagnosticsWindow>("2h");
+  // The macOS unified log is the ONE slow collector (15-45 s, a fixed scan
+  // cost per hour of window). Off here by default; the menu-bar item and
+  // the CLI keep it on, because a reporter's bundle is the one that has to
+  // carry the jetsam evidence.
+  const [systemLog, setSystemLog] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
-    fetchDiagnosticsPlan()
+    fetchServerHealth()
+      .then((h) => alive && setStartedAt(h.started_at))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    setPlan(null);
+    fetchDiagnosticsPlan(diagnosticsSince(win, startedAt))
       .then((p) => alive && setPlan(p))
       // The plan is a nicety: without it the button still works.
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, []);
+  }, [win, startedAt]);
 
   const save = async () => {
     if (busy) return;
@@ -599,7 +647,12 @@ function DiagnosticsSection() {
     setResult(null);
     setCopied(false);
     try {
-      setResult(await buildDiagnostics());
+      setResult(
+        await buildDiagnostics({
+          since_s: diagnosticsSince(win, startedAt),
+          system_log: systemLog,
+        }),
+      );
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -618,17 +671,48 @@ function DiagnosticsSection() {
         Logs, crash reports, memory samples and the list of open apps, zipped to your Desktop. No
         chat transcripts, credentials or mount passwords.
       </p>
-      {plan && (
-        <p className="deploy-muted">
-          {plan.files} {plan.files === 1 ? "file" : "files"} · {formatBytes(plan.bytes)} ·{" "}
-          {plan.crash_reports} {plan.crash_reports === 1 ? "crash report" : "crash reports"}
-        </p>
-      )}
+      <div className="prefs-radio-group" role="radiogroup" aria-label="Diagnostics window">
+        {DIAGNOSTICS_WINDOWS.map((w) => (
+          <label key={w.key} className="prefs-radio">
+            <input
+              type="radio"
+              name="diagnostics-window"
+              id={`diagnostics-window-${w.key}`}
+              checked={win === w.key}
+              disabled={busy || (w.key === "boot" && startedAt === null)}
+              onChange={() => setWin(w.key)}
+            />
+            <span>{w.label}</span>
+          </label>
+        ))}
+      </div>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          id="diagnostics-system-log"
+          checked={systemLog}
+          disabled={busy}
+          onChange={() => setSystemLog((v) => !v)}
+        />
+        <span>
+          <b>Include the macOS system log</b> — memory kills and App Nap events. Adds 15–45
+          seconds.
+        </span>
+      </label>
+      <p className="deploy-muted">
+        {plan
+          ? `${plan.files} ${plan.files === 1 ? "file" : "files"} · ${formatBytes(plan.bytes)} · ${plan.crash_reports} ${plan.crash_reports === 1 ? "crash report" : "crash reports"}`
+          : "Measuring…"}
+      </p>
       <div className="prefs-actions">
         <button type="button" className="btn btn-secondary" disabled={busy} onClick={save}>
           {busy ? "Collecting…" : "Save diagnostics…"}
         </button>
-        {busy && <span className="deploy-muted">Collecting… this can take up to a minute</span>}
+        {busy && (
+          <span className="deploy-muted">
+            {systemLog ? "Reading the system log… 15–45 seconds" : "Collecting…"}
+          </span>
+        )}
       </div>
       {result && (
         <div className="prefs-actions" style={{ marginTop: 8 }}>

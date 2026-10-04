@@ -12302,7 +12302,7 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
   | `manifest.json` | schema, versions, install method, platform, RAM, `boot_id`s, window, files collected and files skipped with the reason |
   | `app/` | session logs and relaunch logs from the log home AND the legacy temp dir; `crash/`; `outages.jsonl`; `resources.jsonl` |
   | `os/DiagnosticReports/` | `*.ips` in the window matching `FusedRender`, `python`, `fused-apple-ai` or `rclone` |
-  | `os/unified-log.txt` | `log show` over our processes plus `com.apple.memorystatus`/jetsam; 60 s timeout, 8 MB cap |
+  | `os/unified-log.txt` | `log show` for kernel `memorystatus:` (jetsam) lines, the memorystatus subsystem, the app's RunningBoard assertions (App Nap) and the Swift helper — NOT every line our processes emit (27 MB per 2 h of WebKit chatter, measured). **The one slow step**: a fixed ~15 s per hour of window, so the span is capped at 2 h, the timeout is 45 s and a timeout keeps the partial output (marked `truncated`). Opt-in from Preferences (checkbox, off by default) and `fused-render diagnose --no-system-log`; the menu-bar item always includes it, because the reporter's bundle is the one that must carry the memory-kill evidence. 8 MB cap |
   | `os/memory.txt` | `sysctl hw.memsize vm.swapusage`, `memory_pressure`, `vm_stat` |
   | `os/ps-tree.txt` | the process tree at collection time |
   | `index/` | newest 5 index runs |
