@@ -123,7 +123,7 @@ import httpx
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import fit, footprints, hw_detect, speed
+from fused_render.ai import fit, footprints, hw_detect, registry, speed
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
 from fused_render.ai.registry import all_runners as _all_runners
@@ -1389,6 +1389,15 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # same thing on both tabs or it means nothing.
         "taskHelp": ai_tasks.help_for(reading.tag),
         "pipelineTag": raw.get("pipeline_tag"),
+        # Use case(s) by `registry.use_cases`' heuristic over the repo id, the
+        # pipeline tag and the Hub tags (SPEC AI-28b), and whether the model
+        # honours the think-first toggle — text generation only, `[]`/False
+        # for every other capability. A guess; curated models never come here.
+        "useCases": (list(registry.use_cases(
+            model_id, pipeline_tag=raw.get("pipeline_tag"),
+            hub_tags=tuple(t for t in (raw.get("tags") or ()) if isinstance(t, str))))
+            if capability == TEXT_GENERATION else []),
+        "thinks": capability == TEXT_GENERATION and registry.supports_thinking(model_id),
         # Never null, by the drop rule above — it is what the page hands to
         # `POST /api/ai/runtime/download`, which needs to know which runner is
         # being asked for.

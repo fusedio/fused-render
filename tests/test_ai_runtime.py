@@ -2112,6 +2112,7 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
         "gemma-4-E4B-it-Q4_K_M.gguf": 5.0,
         "LFM2.5-8B-A1B-Q4_K_M.gguf": 5.2,
         "Qwen3.8-27B-UD-Q3_K_XL.gguf": 13.1,
+        "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": 18.6,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
@@ -2175,12 +2176,17 @@ def test_every_suggestion_list_offers_between_two_and_five_models():
     a list is what ONE machine sees, and a total would let a one-row engine
     hide behind a well-stocked one.
     """
+    # SIX, not five, for the two TEXT lists only (SPEC AI-28b): the use-case
+    # sections need a code-tuned row (Qwen3-Coder-30B-A3B) and no existing row
+    # was worth cutting for it. The Models page reads text as three picks plus
+    # "All text models", so the list is no longer swept as one flat page.
     for code, entries in catalog.SUGGESTIONS.items():
-        assert 2 <= len(entries) <= 5, (
+        cap = 6 if code in ("mlx-text", "llamacpp-text") else 5
+        assert 2 <= len(entries) <= cap, (
             f"{code} suggests {len(entries)} models "
             f"({[e['id'] for e in entries]}); every engine's list carries two "
-            "to five — one row leaves a reader nowhere to go, six stops being "
-            "read")
+            f"to {cap} — one row leaves a reader nowhere to go, more stops "
+            "being read")
 
 
 def test_recommended_is_written_opt_in_and_never_as_a_false():
@@ -6973,7 +6979,7 @@ def test_capability_tags_uses_hub_metadata_family_evidence_when_uncached(hub, mo
     monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
                         lambda repo_id: {"modelType": "qwen3", "hasVisionTower": False})
     tags = ai_runtime._capability_tags(registry.TEXT_GENERATION, "org/my-finetune")
-    assert tags == ("tool-use",)
+    assert tags == ("tool-use", "thinks")
 
 
 def test_accepts_image_prefers_the_cached_reading_over_hub_metadata(hub, monkeypatch):
@@ -11882,3 +11888,61 @@ def test_neither_spawn_site_forgets_the_model(monkeypatch):
         assert ast.unparse(call.args[1]) in ("worker.model", "model"), (
             f"_child_env at line {call.lineno} passes "
             f"{ast.unparse(call.args[1])!r} as the model")
+
+
+# -- use cases + `thinks` on the text rows (SPEC AI-28b) ------------------------
+
+
+def _text_row(client, monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    return next(row for row in rows if row["capability"] == registry.TEXT_GENERATION)
+
+
+def test_text_entries_carry_use_cases_and_one_pick_per_use_case(client, hub, monkeypatch):
+    models = _text_row(client, monkeypatch)["models"]
+    assert models and all(isinstance(m["useCases"], list) and m["useCases"] for m in models)
+    assert all(isinstance(m["useCasePicks"], list) for m in models)
+    for case in registry.USE_CASES:
+        assert sum(case in m["useCasePicks"] for m in models) == 1, case
+    coder = next(m for m in models if m["id"] == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit")
+    assert coder["useCases"] == ["coding"] and "coding" in coder["useCasePicks"]
+    assert "thinks" not in coder["tags"]
+    qwen = next(m for m in models if m["id"] == "mlx-community/Qwen3.5-4B-OptiQ-4bit")
+    assert "thinks" in qwen["tags"] and "writing" in qwen["useCasePicks"]
+
+
+def test_a_cached_text_repo_gets_a_heuristic_use_case_and_never_a_pick(client, hub, monkeypatch):
+    _cached_repo(hub, "org/tiny-coder-7b", files=("model.safetensors",),
+                 config={"model_type": "llama"})
+    models = _text_row(client, monkeypatch)["models"]
+    cached = next(m for m in models if m["id"] == "org/tiny-coder-7b")
+    assert cached["useCases"] == ["coding"]
+    assert cached["useCasePicks"] == []
+
+
+def test_reasoning_pick_follows_the_machine_fit(client, hub, monkeypatch):
+    """The star moves with the machine: with every verdict over 5GB forced to
+    `no`, the reasoning pick is the 4B, not a 27B."""
+    real = fit.verdict
+
+    def only_small_fits(capability, model_id, size_gb=None, *a, **kw):
+        out = real(capability, model_id, size_gb, *a, **kw)
+        if out is not None and (size_gb or 0) > 5:
+            out = dict(out, verdict="no")
+        return out
+
+    monkeypatch.setattr(fit, "verdict", only_small_fits)
+    models = _text_row(client, monkeypatch)["models"]
+    picked = [m["id"] for m in models if "reasoning" in m["useCasePicks"]]
+    assert picked == ["mlx-community/Qwen3.5-4B-OptiQ-4bit"]
+
+
+def test_non_text_entries_have_no_use_cases(client, hub, monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    for row in client.get("/api/ai/catalog").json()["capabilities"]:
+        if row["capability"] == registry.TEXT_GENERATION:
+            continue
+        assert all(m["useCases"] == [] and m["useCasePicks"] == [] for m in row["models"])
