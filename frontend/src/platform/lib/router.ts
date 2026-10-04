@@ -68,9 +68,22 @@ const boot: { pathname: string; search: string } =
   if (next !== current) history.replaceState(history.state, "", next);
 })();
 
+// The QUERY spelling of embed mode, for shell routes that have no /embed/
+// prefix of their own: a fused app page frames `/tasks?embed=1` as a chrome-free
+// task UI. Same fixed-at-load contract as the prefix — the pages that honour it
+// carry it across their own replaceState writes (Scheduled's `?view=`, the peek
+// store's `?peek=`), so a refresh stays embedded.
+export const EMBED_PARAM = "embed";
+
+// The query spelling alone — a framed shell route (`/tasks?embed=1`), never an
+// explorer pane/tab. Lets such a route keep its outbound explorer links on the
+// embed prefix without changing what the prefix-embed panes already do.
+export const IS_QUERY_EMBED = new URLSearchParams(boot.search).get(EMBED_PARAM) === "1";
+
 export const IS_EMBED =
   boot.pathname.startsWith(EMBED_PREFIX) ||
-  boot.pathname === "/explorer/embed";
+  boot.pathname === "/explorer/embed" ||
+  IS_QUERY_EMBED;
 
 // The param a display-only card peek stamps on its embed URL (BookmarkCards'
 // LivePreview), and the flag GET /render takes to skip open recording (D301).
@@ -180,6 +193,19 @@ export const IS_SNAPSHOT =
 // practice, but the guards make the intent explicit and cost nothing. Read
 // once at module init like the flags above — a document cannot be re-parented.
 export const IS_TOP_EMBED = IS_EMBED && window === window.top && !IS_PREVIEW && !IS_SNAPSHOT;
+
+// AM I ONE OF THE MACOS APP'S NATIVE WINDOWS? — the shell as the whole of a
+// WKWebView the app owns (fused_render/mac_window.py), told apart from a
+// browser tab by the `FusedRender/<version>` marker that window's web views
+// add to the user agent. NOT the `native_windows_enabled` preference: that
+// is also on in a browser tab, which must keep navigating in place. Top
+// level only — a frame inside such a window carries the same user agent but
+// is never the surface an app click should leave. There, an app click opens
+// the app in a window of its own (platform/lib/native-window.ts) instead of
+// navigating this one.
+export const IS_NATIVE_WINDOW =
+  window === window.top && /\bFusedRender\/\S+/.test(navigator.userAgent) &&
+  !/\bLauncher\b/.test(navigator.userAgent);
 
 // Is this pathname panel mode's sentinel route? Both prefixes, because panel
 // mode lives under the page's own one (Panel.tsx's PANEL_PATH) so that

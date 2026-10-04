@@ -181,6 +181,37 @@ def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_monitor_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: the System chip and /monitor page are opt-in.
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    body = client.put("/api/prefs", json={"monitor_enabled": True}, headers=FUSED).json()
+    assert body["monitor"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["monitor_enabled"] is True
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is True
+    assert client.put("/api/prefs", json={"monitor_enabled": False}, headers=FUSED).json()[
+        "monitor"
+    ]["enabled"] is False
+
+
+def test_monitor_enabled_reads_a_hand_edited_junk_value_as_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"monitor_enabled": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    assert prefs_mod.monitor_enabled() is False
+
+
+def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"monitor_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.
@@ -220,6 +251,27 @@ def test_indexing_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeyp
     body = client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()
     assert body["reader"]["enabled"] is True
     assert body["indexing"]["enabled"] is False
+
+
+def test_git_auto_sync_defaults_on_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["git"]["auto_sync"] is True
+    body = client.put("/api/prefs", json={"git_auto_sync_enabled": False}, headers=FUSED).json()
+    assert body["git"]["auto_sync"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "git_auto_sync_enabled"
+    ] is False
+    assert client.put("/api/prefs", json={"git_auto_sync_enabled": True}, headers=FUSED).json()[
+        "git"
+    ]["auto_sync"] is True
+
+
+def test_put_rejects_bad_git_auto_sync(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"git_auto_sync_enabled": "yes"}, headers=FUSED
+    ).status_code == 400
+    assert not (home / "prefs.json").exists()
 
 
 def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
@@ -1442,4 +1494,25 @@ def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
                    headers=FUSED).status_code
         == 400
     )
+    assert not (home / "prefs.json").exists()
+
+
+def test_auto_download_updates_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["update"]["auto_download"] is False
+    body = client.put("/api/prefs", json={"auto_download_updates": True}, headers=FUSED).json()
+    assert body["update"]["auto_download"] is True
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "auto_download_updates"
+    ] is True
+    assert client.put("/api/prefs", json={"auto_download_updates": False}, headers=FUSED).json()[
+        "update"
+    ]["auto_download"] is False
+
+
+def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
+    ).status_code == 400
     assert not (home / "prefs.json").exists()

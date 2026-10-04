@@ -36,7 +36,7 @@
 import { useState } from "react";
 
 import { getAppEntry } from "@platform/lib/api";
-import { IS_TOP_EMBED, viewUrlForFsPath } from "@platform/lib/router";
+import { IS_NATIVE_WINDOW, IS_TOP_EMBED, viewUrlForFsPath } from "@platform/lib/router";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
 import { CloneAppFileButton } from "@apps/explorer/Preview";
@@ -45,6 +45,10 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
   const [dismissed, setDismissed] = useState(false);
   if (!IS_TOP_EMBED || dismissed) return null;
   const isFused = isDir === false && fsPath.toLowerCase().endsWith(".fused");
+  // A macOS native window running an app: its title bar's Edit button is
+  // "Open in explorer", so the strip would only repeat it. A `.fused` keeps
+  // the strip — Clone lives nowhere else.
+  if (IS_NATIVE_WINDOW && !isFused) return null;
   const name = fsPath.split("/").filter(Boolean).pop() || fsPath;
   // Full page load, not `navigate`: the prefix (embed vs view) is read once
   // at module init, so switching it IS a new document. The query rides along
@@ -86,7 +90,7 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
             title="Open this page in the explorer, with the sidebar and toolbar"
             onClick={() => void openInExplorer()}
           >
-            {MenuIcons.open}
+            {MenuIcons.folder}
             Open in explorer
           </button>
         )}

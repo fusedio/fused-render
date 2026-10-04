@@ -2408,7 +2408,7 @@ def test_marking_a_message_read_rings_the_long_poll(
     (state_dir / "read.json").write_text(json.dumps({tasks_store.INIT_KEY: 0.0}))
     _rows(client)
 
-    r = client.post("/api/tasks/read", json={"key": "sess-a", "all": True})
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "sess-a", "all": True})
     assert r.status_code == 200, r.text
     assert {"sess-a"} in rings
 

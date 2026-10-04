@@ -68,11 +68,11 @@ Why: Safari buttons/inputs don't inherit font or colour; Firefox dims placeholde
 
 ## Verify before "done"
 
-Same `/explorer/embed/<path>` URL in at least two engines. On macOS both are one command away:
+Same `/explorer/embed/<path>` URL (Render App: `/render?path=<abs entry html>`, the file not the folder) in at least two engines, under the running server's origin (`$FUSED_RENDER_ORIGIN`, else `server.json` — see `fused-render-authoring` › Testing; never hardcode a port). On macOS both are one command away:
 
 ```
-open -a Safari  "http://127.0.0.1:1777/explorer/embed/…"
-open -a Firefox "http://127.0.0.1:1777/explorer/embed/…"
+open -a Safari  "$FUSED_RENDER_ORIGIN/explorer/embed/…"
+open -a Firefox "$FUSED_RENDER_ORIGIN/explorer/embed/…"
 ```
 
 Look for: clipped text in flex rows, unstyled `<select>` arrow, scrollbar styling that vanished, blur panel with unreadable text, controls inheriting a different font. Layout differs by more than a pixel or two → an engine-specific rule is missing, not "Safari being Safari".

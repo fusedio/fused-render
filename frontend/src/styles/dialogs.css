@@ -361,20 +361,6 @@
   filter: none;
 }
 
-/* What the button will run, beside the button. Disclosure, not decoration: this
-   pipes a remote script into a shell, and doing that quietly behind a friendly
-   label is the part that would not be OK. */
-.claude-health-action-cmd {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  color: var(--fg-muted);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 3px 7px;
-  overflow-wrap: anywhere;
-}
-
 .claude-health-progress {
   margin: 0 0 8px;
   color: var(--fg-muted);
@@ -452,4 +438,29 @@
   font-size: 11px;
   color: var(--fg-muted);
   overflow-wrap: anywhere;
+}
+
+/* Restart-to-update overlay (RestartOverlay.tsx): spinner beside the wait text. */
+.restart-overlay-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.restart-overlay-body p {
+  margin: 0;
+}
+.restart-spinner {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: restart-spin 0.8s linear infinite;
+}
+@keyframes restart-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

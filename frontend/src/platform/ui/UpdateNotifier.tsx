@@ -23,6 +23,8 @@ import { useEffect, useRef } from "react";
 
 import { updateInstall, type UpdateStatus } from "@platform/lib/api";
 import {
+  UPDATE_DOWNLOAD_FAMILY_KEY,
+  UPDATE_RESTART_FAMILY_KEY,
   dismissNotification,
   notify,
   useRetainedNotifications,
@@ -145,9 +147,13 @@ export default function UpdateNotifier(): null {
     if (!status) return;
     if (status.state === "available" && !status.check_only) {
       const input: NotificationInput = {
-        title: `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`,
+        // Version-free: this title becomes the status chip's label, which
+        // always truncated it. The version lives in `detail` (and the chip's
+        // tooltip, RepoUpdatesDock.tsx).
+        title: "Update available",
         detail: status.latest_version ? `v${status.latest_version} is ready to download.` : undefined,
         tier: "attention",
+        familyKey: UPDATE_DOWNLOAD_FAMILY_KEY,
         action: {
           label: "Download",
           onClick: () => {
@@ -171,6 +177,7 @@ export default function UpdateNotifier(): null {
           detail: status.error ?? undefined,
           tone: "error",
           tier: "attention",
+          familyKey: UPDATE_DOWNLOAD_FAMILY_KEY,
           action: { label: "Try again", onClick: () => void install(status) },
         },
         downloadIdRef.current,
@@ -269,6 +276,7 @@ export default function UpdateNotifier(): null {
         title: "Update ready",
         detail: version ? `v${version} installed — restart to start using it.` : undefined,
         tier: "attention",
+        familyKey: UPDATE_RESTART_FAMILY_KEY,
         action: { label: "Restart now", onClick: () => requestRestart() },
         extraAction: {
           label: "Later",
@@ -299,6 +307,7 @@ export default function UpdateNotifier(): null {
           detail: "Try restarting again from here, or reopen the app yourself.",
           tone: "error",
           tier: "attention",
+          familyKey: UPDATE_RESTART_FAMILY_KEY,
           action: { label: "Restart now", onClick: () => requestRestart() },
         },
         restartIdRef.current,
@@ -310,6 +319,7 @@ export default function UpdateNotifier(): null {
         title: "Restarting fused-render",
         detail: inFlightLabel(flow.stage, status?.latest_version ?? null),
         tier: "attention",
+        familyKey: UPDATE_RESTART_FAMILY_KEY,
         // DROP THE ✕ WHILE IN FLIGHT (spec, `restartInFlight` is the exact
         // predicate it names) — there is nothing left for "later" to defer
         // once the app is actually going down for this.
@@ -347,6 +357,7 @@ export default function UpdateNotifier(): null {
           title: "Restarting fused-render",
           detail: inFlightLabel(stage, status?.latest_version ?? null),
           tier: "attention",
+          familyKey: UPDATE_RESTART_FAMILY_KEY,
           dismissible: false,
         },
         restartIdRef.current,

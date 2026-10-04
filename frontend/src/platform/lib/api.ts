@@ -207,13 +207,17 @@ export async function getJson<T>(
   return data as T;
 }
 
-// One mutating-request helper for both PUT and POST — they differ only in the
-// method. X-Fused forces a CORS preflight so a foreign page can't write blind
-// (the D3 guard the reveal/write/clone endpoints require).
-async function mutateJson<T>(
-  method: "PUT" | "POST",
+// One mutating-request helper for PUT, POST and DELETE — they differ only in
+// the method and (DELETE) in having no request body. X-Fused forces a CORS
+// preflight so a foreign page can't write blind (the D3 guard the
+// reveal/write/clone endpoints require). `body` is optional so a bodyless
+// DELETE shares this instead of duplicating the fetch/header/HttpError
+// plumbing in its own function — `Content-Type` is only sent when there
+// actually is a JSON body.
+export async function mutateJson<T>(
+  method: "PUT" | "POST" | "DELETE",
   url: string,
-  body: unknown,
+  body?: unknown,
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ): Promise<T> {
   const res = await fetch(url, {
@@ -226,10 +230,10 @@ async function mutateJson<T>(
     headers: {
       ...ambientSourceHeaders(),
       ...(opts?.headers ?? {}),
-      "Content-Type": "application/json",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       "X-Fused": "1",
     },
-    body: JSON.stringify(body),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: opts?.signal,
   });
   const data = await res.json();
@@ -1197,6 +1201,19 @@ export interface Prefs {
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
   app_sharing: { enabled: boolean };
+  // Whether card thumbnails may render the LIVE app in a scaled iframe
+  // (opt-in, default off — shell/prefs.py `live_previews_enabled`). Off, the
+  // /apps cards and the explorer's bookmark/recent/folder cards show a still
+  // or a placeholder mark and nothing boots on scroll or hover. OPTIONAL: an
+  // older server answers without it, and the reader (live-previews-flag.ts)
+  // treats absence as off.
+  live_previews?: { enabled: boolean };
+  // Whether the process Monitor is OFFERED (opt-in, default off —
+  // shell/prefs.py `monitor_enabled`): the status bar's System chip and the
+  // /monitor page. Gates the entry points, not /api/system/activity. OPTIONAL:
+  // an older server answers without it, and the reader (monitor-flag.ts)
+  // treats absence as off.
+  monitor?: { enabled: boolean };
   // Whether chat embeds render the native React chat (default ON) instead of the
   // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
   // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
@@ -1287,6 +1304,34 @@ export interface Prefs {
   // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
   // order instead (`ranked_search_enabled` server-side).
   indexing: { enabled: boolean; ranked: boolean };
+  // App git auto-sync (default ON; fused_render/shell/prefs.py's
+  // `git_auto_sync_enabled`). OPTIONAL: an older server answers without it.
+  git?: { auto_sync: boolean };
+  // Download a found app update without a click (default OFF; shell/prefs.py's
+  // `auto_download_updates`). Restart stays manual. OPTIONAL: older servers omit it.
+  update?: { auto_download: boolean };
+  // The macOS launcher's shortcuts (fused_render/launcher.py): the ⌥Space
+  // panel hotkey and the row modifier (`<modifier>+1…9` opens the Nth desk
+  // app, `+0` the shell). `available` is false off macOS, where the section
+  // is not rendered; `bound` / `pinned_bound` say whether the running app
+  // could register them (null until something tried). OPTIONAL like `chat`:
+  // an older server answers without it.
+  launcher?: LauncherPrefs;
+  // macOS native windows (fused_render/mac_window.py): the shell in the
+  // app's own windows instead of browser tabs. On by default, opt-out.
+  // `available` is false off macOS and under `fused-render serve`, where the
+  // section is not rendered. OPTIONAL like `launcher`.
+  native_windows?: { enabled: boolean; available: boolean };
+}
+
+export interface LauncherPrefs {
+  available: boolean;
+  hotkey: string;
+  display: string;
+  row_modifier: string;
+  row_modifier_display: string;
+  bound: boolean | null;
+  pinned_bound: boolean | null;
 }
 
 export interface AiIdlePrefs {
@@ -1458,8 +1503,39 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
+/** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
+ *  `"cmd+shift+KeyK"` — modifiers then a `KeyboardEvent.code`). The server
+ *  canonicalises it and rebinds; a spec with no modifier is a 400. */
+export function putLauncherHotkey(spec: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { launcher_hotkey: spec });
+}
+
+/** While Preferences records a new shortcut the app unbinds the live launcher
+ *  and row shortcuts (`on`), so the keys pressed reach the recorder instead of
+ *  opening the panel; `off` binds them back. A no-op where no panel exists. */
+export function postLauncherSuspend(on: boolean): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/launcher/suspend", { on });
+}
+
+/** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */
+export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { launcher_row_modifier: modifier });
+}
+
+export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
+}
+
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { app_sharing_enabled: enabled });
+}
+
+export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { live_previews_enabled: enabled });
+}
+
+export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
 }
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
@@ -1527,6 +1603,14 @@ export function putLanEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
+export function putAutoDownloadUpdates(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { auto_download_updates: enabled });
+}
+
+export function putGitAutoSyncEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { git_auto_sync_enabled: enabled });
 }
 
 export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
@@ -2303,6 +2387,13 @@ export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget>
 
 export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
   return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
+}
+
+// Download the `.fused` at an http(s) `url` into ~/.fused-render/downloads
+// (keyed on the app id, so a re-click updates one file) and answer the saved
+// absolute path (DL-8). Caller opens it like any other .fused. No confirm.
+export function fetchAppFile(url: string): Promise<{ file: string }> {
+  return postJson<{ file: string }>("/api/appfile/fetch", { url });
 }
 
 // Re-copy the `.fused` OVER its existing local copy: payload files replace
@@ -3461,7 +3552,10 @@ export interface Task {
   // not be listed as one (`sched/waiting-chats`: every future scheduled job
   // would otherwise appear in Recent chats).
   //
-  // Both "" on a task that has run, and on an older server.
+  // `entry_origin` is "" on a task that has run. `entry_id` survives the run
+  // when a scheduled or page-created message opened the session (it is the
+  // same id the task's `pending:<entry>` key carried, so `fused.tasks`'s
+  // handle can follow the rekey); "" for chat-born sessions and older servers.
   entry_id?: string;
   entry_origin?: string;
   // Skipped: this task's pending work jumped to the head of its folder's line
@@ -4357,6 +4451,10 @@ export interface HubModelLocal {
   state: "downloaded" | "partial" | "none";
   size?: number;
   files?: number;
+  /** The single GGUF filename on disk when exactly one is present; null for
+   *  a non-GGUF repo, an empty snapshot, or an ambiguous multi-GGUF case
+   *  (the server deliberately refuses to guess which file "is the one"). */
+  file?: string | null;
   lastUsed?: number | null;
   /** Ready for navigate(path, {isDir:true}) — absent unless it is here. */
   path?: string;
@@ -4385,6 +4483,15 @@ export interface HubModel {
   params: number | null;
   /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
   estimatedSize: number | null;
+  /** B (bugbot): where `fit`/`speedEstimate`'s footprint for a GGUF row
+   *  came from — `"cached"` (a real measured byte count, `hub/size`'s own
+   *  cache), `"estimated"` (`params x quant_bytes_per_param` off a
+   *  recognised quant token, no real bytes on hand yet), or `null` (an
+   *  unrecognised token, or params unknown — the row stays unjudgeable).
+   *  The lazy `hub/size` lookup, once it resolves, still supersedes
+   *  whatever this says with the real measured size. Optional: absent on a
+   *  response from a server that predates this field. */
+  sizeSource?: "cached" | "estimated" | null;
   /** Will this fit on THIS machine — the same judgement a downloaded model's
    *  card carries, over the same `fit.verdict` ladder server-side. Null when
    *  there is nothing to judge (no safetensors size, no params). */
@@ -4413,13 +4520,22 @@ export interface HubModel {
    *  safetensors republish of the same base, so the two get their own
    *  family rows instead of one swallowing the other. */
   format: string | null;
-  /** Item 9c (fix round 5): how many distinct weight variants this repo
-   *  ships — GGUF quant files (mmproj/vision-projector helpers excluded) or
-   *  bit-width/dtype subfolders, whichever the repo's own layout shows.
-   *  Best-effort and never 0; see `hub_models.py::_count_variants`'s own
-   *  docstring for the exact rule. Undefined only for a response shape that
-   *  predates this field — a running server always sends it. */
-  variants?: number;
+  /** Item 9c (fix round 5); renamed from `variants` in item 6, which now
+   *  names the array below. How many distinct weight variants this repo
+   *  ships — GGUF quant files (mmproj/vision-projector helpers excluded,
+   *  a shard set collapsed to one) or bit-width/dtype subfolders, whichever
+   *  the repo's own layout shows. Best-effort and never 0; see
+   *  `hub_models.py::_count_variants`'s own docstring for the exact rule.
+   *  Undefined only for a response shape that predates this field — a
+   *  running server always sends it. */
+  variantCount?: number;
+  /** Item 6: the actual GGUF files this repo ships — one entry per file
+   *  `formats.gguf_candidate_files` counted into `variantCount` above, each
+   *  with that file's own published quant token (`formats.gguf_quant_
+   *  token`, or null for an unsuffixed/full-precision file). `null` for
+   *  every non-GGUF row (no per-file listing to offer one for) and for a
+   *  response shape that predates this field. */
+  variants?: { file: string; quant: string | null; downloadable?: boolean }[] | null;
   /** The ONE GGUF file `formats.pick_gguf_file` chose for this row, or null
    *  for every other row (D412's own field). Threaded back into
    *  `getHubModelSize`/`lookupTotalSize` so the lazy size lookup can ask
@@ -4438,8 +4554,106 @@ export interface HubModel {
    *  every axis has an honest default for missing evidence, so this is
    *  never null the way `fit`/`speedEstimate` can be. */
   matchScore: number;
+  /** D1245: the per-axis story behind `matchScore` — one entry per weighted
+   *  axis (`fit`/`capability`/`speed`/`recency`/`popularity`), plus an
+   *  `onDisk` entry when the on-disk bonus applied, an `engineMatch` entry when
+   *  the row is in the active engine's native format, and a `runMode` entry
+   *  when the CPU-offload/CPU-only penalty did. The weights and axis
+   *  curves live only in `hub_models.py` (`_axis_scores`/`_score_
+   *  breakdown`), so this is the one way a tooltip can say why a row lost
+   *  points without re-deriving them. Optional: absent on a response from
+   *  a server that predates this field. */
+  matchBreakdown?: HubMatchAxis[];
   local: HubModelLocal;
   url: string;
+  /** Item 3: the on-disk weight format read off `siblings`
+   *  ("safetensors" | "gguf" | "npz" | "onnx" | "bin"), independent of
+   *  `format` above (which is a GGUF-republish grouping key, not a general
+   *  file-format fact). Null when nothing in `siblings` matched, or on a
+   *  response that predates this field. `formatToken()` combines this with
+   *  `library`. */
+  fileFormat?: "safetensors" | "gguf" | "npz" | "onnx" | "bin" | null;
+  /** Item 2 / item 3 (D1287/D1288): whether ANY runner AVAILABLE for
+   *  `capability` right now will actually be able to open this repo once
+   *  downloaded — never a reason to drop the row, only to flag it (a row
+   *  only a non-active but still-available runner can open is NOT flagged).
+   *  `true`/undefined on a response that predates this field, so an older
+   *  server's rows read exactly as they always have: nothing is flagged. */
+  loadable?: boolean;
+  /** The short clause the frontend's chip appends after "Won't run here · ".
+   *  Since D1288 this usually NAMES what would load it — "needs Diffusers
+   *  (MiniMaxH3Pipeline)", "needs Diffusers", "needs Sentence Transformers
+   *  — not supported yet", "no engine loads <name> yet" — falling back to
+   *  "no engine here loads this", or (unchanged) to mlx-vlm's own
+   *  "<model_type> not supported by mlx-vlm". Null/absent whenever
+   *  `loadable` is not `false`. */
+  loadableReason?: string | null;
+  /** D1287: the repo's own architecture name, resolved purely from its Hub
+   *  metadata (`diffusers:<PipelineClass>` tag, `config.diffusers.
+   *  _class_name`, `config.architectures[0]`, `config.model_type`, or bare
+   *  `library_name`, in that priority order) — present on EVERY row
+   *  (loadable or not), so the info drawer can always show it. Null when
+   *  nothing in the row's metadata resolved a name, or on a response that
+   *  predates this field. */
+  architecture?: string | null;
+  /** D1287: the engine this architecture maps to (e.g. "Diffusers",
+   *  "llama.cpp", "MLX", "ltx-2-mlx", "ONNX Runtime", "Sentence
+   *  Transformers"), independent of whether that engine is actually shipped
+   *  in this app or available right now — see `loadableReason` for that.
+   *  Null when `architecture` itself is null, or no engine mapping matched. */
+  engine?: string | null;
+  /** Follow-up review finding 1: distinct from `loadableReason` — this is a
+   *  NEUTRAL, informational field, never a warning. Set only when
+   *  `loadable` is `true`, the ACTIVE runner for this row's capability
+   *  itself refuses it, but another AVAILABLE runner would admit it (the
+   *  widened admission rule, D1287 item 3, made `loadable` true for this
+   *  case but dropped the fact that a download still needs the ACTIVE
+   *  runner — `supervisor.load`'s own `_runner_or_raise` — so downloading
+   *  this row means switching engines first). Names that other engine
+   *  (e.g. `"Diffusers"`) for a plain "Runs on <Engine>" chip, visually
+   *  distinct from the warning chip `loadableReason` drives. Null/absent
+   *  in every other case, including a row nothing admits (that is
+   *  `loadableReason`'s case) and a response that predates this field. */
+  runsOnEngine?: string | null;
+  /** Follow-up review finding 5: `true` when `architecture` above is
+   *  nothing more than the bare library name that ALSO produced `engine`
+   *  (e.g. `architecture: "diffusers"`, `engine: "Diffusers"`) — a stutter,
+   *  not two facts. The drawer's "<architecture> · <engine>" line should
+   *  suppress the ` · <engine>` suffix when this is true. `false`/absent
+   *  otherwise, including on a response that predates this field. */
+  architectureNameIsLibrary?: boolean;
+}
+
+/** One line of `HubModel.matchBreakdown` — see that field's own doc.
+ *  `gained`/`lost` are already in BLENDED points (weight applied), not the
+ *  axis's own raw 0-100, so they can be summed or compared directly
+ *  against `matchScore` itself. `gained + lost` is that axis's full
+ *  weight in blended points for every weighted axis; `onDisk`/`engineMatch`/
+ *  `runMode` are flat (never both nonzero) and only appear when they actually
+ *  applied. The remaining fields are the raw fact that drove ONE axis —
+ *  only the ones relevant to `axis` are set. */
+export interface HubMatchAxis {
+  axis: "fit" | "capability" | "speed" | "recency" | "popularity" | "onDisk" | "engineMatch" | "runMode";
+  /** Blended points this axis contributed toward `matchScore`. */
+  gained: number;
+  /** Blended points this axis cost versus a perfect score on it (0 for
+   *  `onDisk`/`engineMatch`; the flat penalty itself for `runMode`). */
+  lost: number;
+  /** `popularity` only — the raw download count (or null) behind it. */
+  downloads?: number | null;
+  /** `recency` only — how old `created` is, in days (or null). */
+  ageDays?: number | null;
+  /** `capability` only — the raw `params` (or null) behind it. */
+  params?: number | null;
+  /** `speed` only — the raw `tokensPerSecond`, or null when there was no
+   *  real estimate to score (same gate `speedLabel` prints a dash for). */
+  tokensPerSecond?: number | null;
+  /** `fit` only — this repo's own footprint, and the machine's available
+   *  pool, both in GB (or null when unknown). */
+  footprintGb?: number | null;
+  poolGb?: number | null;
+  /** `runMode` only — which penalty this entry is. */
+  runMode?: "cpu-offload" | "cpu-only";
 }
 
 /** One facet option — `HubSearchResult.facets`'s own row shape (fix round 6,
@@ -4469,6 +4683,15 @@ export interface HubSearchResult {
   endpoint?: string;
   authenticated?: boolean;
   facets?: HubSearchFacets;
+  /** On-device catalog build state for this response's `capability` (SPEC
+   *  docs/HUB_CATALOG_SPEC.md item 2): "ready" served from a built pool,
+   *  "building"/"blocked" served from the live-Hub fallback while a pool
+   *  builds or sits out a 429 backoff, "none" when there is no capability
+   *  filter or nothing has ever started. Optional so a response predating
+   *  this field still typechecks. */
+  poolState?: "ready" | "building" | "blocked" | "none";
+  /** Only present when `poolState === "building"` — pages fetched so far. */
+  poolPagesDone?: number;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own
@@ -4523,22 +4746,31 @@ export function searchHubModels(opts: {
    *  own `author` query parameter, a real narrowing of the WIRE request
    *  rather than a post-join filter (unlike the three above). */
   publisher?: string;
+  /** Round-7 wait-state work: `HubSearchScreen` cancels a slow in-flight
+   *  search (the 12s-and-counting "Cancel" link) by aborting this signal —
+   *  same `AbortSignal` contract `getJson`/`mutateJson` already carry, wired
+   *  through for the one caller that now needs it. */
+  signal?: AbortSignal;
 }): Promise<HubSearchResult> {
   // A POST, unlike every other read in this file. Search is the one that leaves
   // the machine — the server calls the Hub with the user's token — so it takes
   // the shape its effect deserves and carries the D3 guard with it. See the
   // endpoint's docstring.
-  return postJson<HubSearchResult>("/api/ai-models/hub/search", {
-    q: opts.q,
-    task: opts.task,
-    capability: opts.capability,
-    sort: opts.sort,
-    limit: opts.limit,
-    fitLevel: opts.fitLevel,
-    quant: opts.quant,
-    paramsBand: opts.paramsBand,
-    publisher: opts.publisher,
-  });
+  return postJson<HubSearchResult>(
+    "/api/ai-models/hub/search",
+    {
+      q: opts.q,
+      task: opts.task,
+      capability: opts.capability,
+      sort: opts.sort,
+      limit: opts.limit,
+      fitLevel: opts.fitLevel,
+      quant: opts.quant,
+      paramsBand: opts.paramsBand,
+      publisher: opts.publisher,
+    },
+    { signal: opts.signal },
+  );
 }
 
 /** One repo's size on the Hub — the whole repo's TOTAL by default, or one
@@ -5049,8 +5281,14 @@ export function loadAiModel(model: string, capability?: string): Promise<AiLoadS
   return postJson<AiLoadStarted>("/api/ai/runtime/load", { model, capability });
 }
 
-export function downloadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
-  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability });
+export function downloadAiModel(
+  model: string, capability?: string, file?: string,
+): Promise<AiLoadStarted> {
+  // `file` (item A, per-variant download): names one specific GGUF variant
+  // to fetch instead of whichever one the server would otherwise pick for
+  // this repo. Omitted for an ordinary row-level download, which stays
+  // byte-identical to the request this always sent.
+  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability, file });
 }
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {

@@ -193,7 +193,7 @@ describe("the two hosts", () => {
     expect(PAGE).toContain("{slot ? createPortal(panel, slot) : null}");
     // …and NEVER a frame of its own while scoped: the slot arrives one commit
     // late, and a frame drawn in that gap would nest inside the app page's.
-    expect(PAGE).toContain("if (scope) {\n    return (\n      <>\n        {page}\n        {slot ? createPortal(panel, slot) : null}");
+    expect(PAGE).toContain("if (scope && !scope.ownFrame) {\n    return (\n      <>\n        {page}\n        {slot ? createPortal(panel, slot) : null}");
     // …and ONE root shape whether or not the slot has arrived: a bare `page`
     // one commit and a fragment the next remounted the tasks tree (Bugbot).
     expect(PAGE).not.toContain("if (!slot) return page;");

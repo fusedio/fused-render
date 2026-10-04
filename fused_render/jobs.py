@@ -844,6 +844,12 @@ def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None =
             if state != job.state:
                 job.state = state
                 job.finished_at = now if state in TERMINAL_STATES else None
+                if state not in TERMINAL_STATES:
+                    # A row reopened under a reused id (the one stable index
+                    # row) starts a NEW attempt: its next terminal state needs
+                    # its own read-gated retention window, not the previous
+                    # outcome's already-expired stamp.
+                    job.first_read_at = None
                 if state in TERMINAL_STATES:
                     # A finished job cannot be cancelled, so the request is
                     # spent whether or not it was honored. Leaving it set would

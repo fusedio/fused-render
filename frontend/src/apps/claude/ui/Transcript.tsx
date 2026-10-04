@@ -79,6 +79,9 @@ export interface TranscriptProps {
    *  (`null`, not `""`) so a copied address carries no dangling `&msg=`. */
   onAnchorSpent?: () => void;
   onShowSent?: (turn: UserTurn) => void;
+  /** A queued / not-sent bubble was clicked: pull it back into the box
+   *  (`TurnProps.onPullPending`). */
+  onPullPending?: (key: string) => void;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
   onOpenShot?: (shot: Viewable) => void;
   /** "preview" / "app" — the word a receipt's nouns use (`PaneState.paneNoun`). */
@@ -109,6 +112,11 @@ export interface TranscriptProps {
    *  it scrolls with the conversation — Claude Code prints its `※ recap:` as
    *  the last line of the transcript, and so does this. */
   recap?: ReactNode;
+  /** The chat's working directory (ClaudeChat's `agentDir`), threaded down to
+   *  every `Turn` so a shell fence's or a Bash chip's "run" button `cd`'s
+   *  there first instead of running wherever the terminal drawer happens to
+   *  be. */
+  cwd?: string | null;
 }
 
 export const Transcript = memo(function Transcript({
@@ -120,12 +128,14 @@ export const Transcript = memo(function Transcript({
   msgAnchor,
   onAnchorSpent,
   onShowSent,
+  onPullPending,
   onOpenShot,
   paneNoun,
   what,
   comebackPending,
   followRef,
   recap,
+  cwd,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -699,9 +709,11 @@ export const Transcript = memo(function Transcript({
                   anchored={turn.role === "user" && !!flare && turn.uuid === flare}
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
+                  {...(onPullPending ? { onPullPending } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
+                  cwd={cwd}
                   collapsed={isFolded(folds.current.get(foldIds.current.get(turn.key) ?? turn.key))}
                   onToggleCollapse={onToggleCollapse}
                   {...(blocked === turn.key &&

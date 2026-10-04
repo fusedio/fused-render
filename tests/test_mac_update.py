@@ -731,21 +731,28 @@ def test_the_check_only_manager_never_sweeps_the_shared_updates_dir(monkeypatch)
     swept = []
     monkeypatch.setattr(manager, "_sweep_stale_downloads", lambda: swept.append(1))
     monkeypatch.setattr(manager, "check", lambda force=False: None)
+    # The loop's pref read (lazy `shell.prefs` import) is slow on some lanes and
+    # irrelevant here; stub it so the daemon reaches its sleeps promptly.
+    monkeypatch.setattr(manager, "maybe_auto_install", lambda: None)
     monkeypatch.setattr(mac, "MAC_STARTUP_DELAY_S", 0.0)
     ticks = []
+    done = threading.Event()
+    # `mac.time` IS the `time` module: patching mac.time.sleep patches it
+    # globally, so the main thread must wait on an Event, never time.sleep(),
+    # or its own polling would consume the loop's tick budget.
+    main_thread = threading.current_thread()
 
     def one_tick(seconds):
+        if threading.current_thread() is main_thread:
+            return  # never raise into the test's own thread
         ticks.append(seconds)
         if len(ticks) >= 2:
+            done.set()
             raise SystemExit  # ends the daemon loop after one check
     monkeypatch.setattr(mac.time, "sleep", one_tick)
     monkeypatch.delenv("FUSED_RENDER_NO_AUTO_UPDATE", raising=False)
     manager.start_auto_checks()
-    import time as _t
-    for _ in range(50):
-        if len(ticks) >= 2:
-            break
-        _t.sleep(0.02)
+    assert done.wait(5.0), "the auto-check loop never reached its second sleep"
     assert swept == []
 
 
@@ -1407,3 +1414,55 @@ def test_the_running_download_row_is_untouched_by_the_removal(monkeypatch, tmp_p
     gate.set()
     manager._install_thread.join(timeout=5)
     assert jobs.list_jobs() == []
+
+
+# ---- auto-download setting ------------------------------------------------------
+
+
+def _auto_download(monkeypatch, enabled: bool):
+    import fused_render.shell.prefs as prefs_mod
+
+    monkeypatch.setattr(prefs_mod, "auto_download_updates_enabled", lambda: enabled)
+
+
+def test_auto_install_downloads_a_found_update_when_the_setting_is_on(monkeypatch):
+    _auto_download(monkeypatch, True)
+    manager = _manager(monkeypatch, available="9.9.9")
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.check()
+    manager.maybe_auto_install()
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.9"
+    assert manager.status()["state"] == "installed"
+
+
+def test_auto_install_does_nothing_when_the_setting_is_off(monkeypatch):
+    _auto_download(monkeypatch, False)
+    manager = _manager(monkeypatch, available="9.9.9")
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.check()
+    manager.maybe_auto_install()
+    assert not done
+    assert manager.status()["state"] == "available"
+
+
+def test_auto_install_never_retries_a_failed_install(monkeypatch):
+    # "error" is user-retry territory: an unattended loop re-downloading
+    # hundreds of MB every five minutes against a broken artifact would run away.
+    _auto_download(monkeypatch, True)
+    manager = _manager(monkeypatch, available="9.9.9")
+    calls = []
+
+    def boom(manifest):
+        calls.append(1)
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(manager, "_install_dmg", boom)
+    manager.check()
+    manager.maybe_auto_install()
+    manager._install_thread.join(timeout=5)
+    assert manager.status()["state"] == "error"
+    manager.maybe_auto_install()
+    assert calls == [1]

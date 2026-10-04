@@ -154,6 +154,28 @@ export function timeAgo(epochSeconds: number | null | undefined): string | null 
   return `${Math.floor(mo / 12)}y ago`;
 }
 
+// Compact, right-aligned relative-time stamp (status-popovers R5) — "now",
+// "4m", "2h", "3d", no "ago" suffix: this sits in a notification row's meta
+// line, a glance rather than a sentence, unlike `timeAgo` above (which reads
+// fine standing alone in a sidebar but doubles the row's own width here).
+// Takes epoch MILLISECONDS — every R5 caller already has one
+// (`StoredNotification.updatedAt`, the seen store's `firstSeenAt`); a job's
+// `finished_at` is server SECONDS, so that one caller multiplies by 1000
+// first rather than this function growing a second unit convention.
+export function compactAge(epochMs: number, now: number = Date.now()): string {
+  const s = Math.max(0, Math.floor((now - epochMs) / 1000));
+  if (s < 60) return "now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo}mo`;
+  return `${Math.floor(mo / 12)}y`;
+}
+
 export function basename(fsPath: string): string {
   const parts = fsPath.split("/").filter((s) => s.length > 0);
   return parts.length ? parts[parts.length - 1] : "/";

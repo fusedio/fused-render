@@ -38,7 +38,10 @@ Actions
   reorder_pages(doc,order,...)                      |  {ok, mtime, doc:docinfo,
   insert_blank(doc,at,width,height,...)             |   dirty, undo_depth, redo_depth}
   compress(doc,level,...)                           |  or {conflict, mtime}
-  edit_text(doc,page,bbox,...,...)                 /
+  edit_text(doc,page,origin,old_text,...)          |
+  add_text(doc,page,origin,new_text,...)            |
+  add_image(doc,page,rect,src,...)                 |
+  edit_image(doc,page,index,rect,to_rect,...)      /
   extract_pages(doc,pages,name)            -> {name, path, size, dir}
   merge(sources,name,directory)            -> {name, path, dir}
   split(doc,mode,ranges,prefix,directory)  -> {files:[...], dir}
@@ -983,6 +986,10 @@ _CJK_FONTS = ((0x4E00, 0x9FFF, "china-s"), (0x3040, 0x30FF, "japan"),
               (0xAC00, 0xD7AF, "korea"))
 
 
+_BASE14 = {"helv", "heit", "hebo", "hebi", "cour", "coit", "cobo", "cobi",
+           "tiro", "tiit", "tibo", "tibi"}
+
+
 def _pick_font(fontname, flags, text):
     for lo, hi, fam in _CJK_FONTS:
         if any(lo <= ord(c) <= hi for c in text):
@@ -999,10 +1006,6 @@ def _pick_font(fontname, flags, text):
     return base[(2 if bold else 0) + (1 if italic else 0)]
 
 
-def _norm_ws(s):
-    return re.sub(r"\s+", " ", s or "").strip()
-
-
 def _page_text(doc, page):
     import fitz
 
@@ -1011,7 +1014,9 @@ def _page_text(doc, page):
         raise ValueError(f"no page {page}")
     p = d[page - 1]
     spans = []
-    for block in p.get_text("dict")["blocks"]:
+    # Same extraction flags as _find_span, so a span's text here is exactly
+    # the text edit_text looks for.
+    for block in p.get_text("dict", flags=fitz.TEXTFLAGS_DICT)["blocks"]:
         for line in block.get("lines", []):
             for s in line.get("spans", []):
                 txt = s["text"]
@@ -1026,44 +1031,222 @@ def _page_text(doc, page):
                     "flags": s["flags"],
                     "color": [(c >> 16) & 255, (c >> 8) & 255, c & 255],
                 })
+    images = _page_images(doc, page, fitz.Matrix(p.transformation_matrix))
     out = {"page": page, "width": round(p.rect.width, 2),
            "height": round(p.rect.height, 2), "rotation": p.rotation,
-           "spans": spans, "mtime": os.path.getmtime(doc)}
+           "spans": spans, "images": images, "mtime": os.path.getmtime(doc)}
     d.close()
     return out
 
 
-def _edit_text(doc, page, bbox, origin, old_text, new_text, font, size, flags, color):
+def _draw_text(p, origin, text, font, size, flags, color, line_height):
+    """Draw `text` with its first baseline at `origin` (page points); every
+    "\n" starts a new line `line_height` pt lower. The UI wraps long lines
+    itself (it sizes the box the reader sees), so each line lands exactly
+    where it was typed, at the size it was typed in."""
     import fitz
 
-    def fn(path):
-        d = fitz.open(path)
-        p = d[page - 1]
-        if p.rotation != 0:
-            raise ValueError("text editing on rotated pages isn't supported — "
-                             "rotate the page to 0° first")
-        rect = fitz.Rect(*json.loads(bbox))
-        got = _norm_ws(p.get_text("text", clip=rect + (-1, -1, 1, 1)))
-        if _norm_ws(old_text) not in got:
-            raise ValueError("the page text changed on disk — reload and retry")
-        fname = _pick_font(font, int(flags or 0), new_text)
-        fsize = float(size or 11)
-        if new_text:
-            while fsize > 6 and fitz.get_text_length(
-                    new_text, fontname=fname, fontsize=fsize) > rect.width + 2:
-                fsize -= 0.25
-        p.add_redact_annot(rect)
-        p.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
-                           graphics=fitz.PDF_REDACT_LINE_ART_NONE)
-        if new_text:
-            ox, oy = json.loads(origin)
-            col = [c / 255 for c in json.loads(color or "[0,0,0]")]
-            p.insert_text((ox, oy), new_text, fontname=fname, fontsize=fsize,
+    x, y = json.loads(origin)
+    fname = _pick_font(font, int(flags or 0), text)
+    fsize = float(size or 12)
+    lh = float(line_height or 0) or fsize * 1.25
+    col = [c / 255 for c in json.loads(color or "[0,0,0]")]
+    if fname in _BASE14 and any(ord(c) > 255 for c in text):
+        # A bare base-14 name only encodes Latin-1, so typographic characters
+        # (“ ” — – € •) come out as "·". Embed the face itself — once per page,
+        # under a fixed alias — only when the text actually needs it.
+        alias = "PS-" + fname
+        p.insert_font(fontname=alias, fontbuffer=fitz.Font(fname).buffer)
+        fname = alias
+    for i, line in enumerate(text.split("\n")):
+        if line.strip():
+            p.insert_text((x, y + i * lh), line, fontname=fname, fontsize=fsize,
                           color=col)
-        d.save(path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
-        d.close()
-        return {"used_font": fname, "used_size": round(fsize, 2)}
-    return fn(doc)
+
+
+def _editable_page(d, page):
+    if page < 1 or page > d.page_count:
+        raise ValueError(f"no page {page}")
+    p = d[page - 1]
+    if p.rotation != 0:
+        raise ValueError("editing rotated pages isn't supported — "
+                         "rotate the page to 0° first")
+    return p
+
+
+def _find_span(p, origin, old_text):
+    """The span the editor was opened on, found again by its baseline origin
+    and exact text — the glyphs it owns, not whatever overlaps its box."""
+    import fitz
+
+    ox, oy = origin
+    for block in p.get_text("rawdict", flags=fitz.TEXTFLAGS_DICT)["blocks"]:
+        for line in block.get("lines", []):
+            for s in line["spans"]:
+                if (abs(s["origin"][0] - ox) < 0.5 and abs(s["origin"][1] - oy) < 0.5
+                        and "".join(c["c"] for c in s["chars"]) == old_text):
+                    return s
+    raise ValueError("the page text changed on disk — reload and retry")
+
+
+def _remove_span(p, span):
+    """Remove exactly `span`'s characters. Each glyph gets its own redaction
+    rect, a band through the middle of that glyph, and nothing is painted over
+    it: a span's box is font-metric tall and can reach well into the lines
+    around it, and redacting that box (with the default white fill) erased
+    neighbouring text along with it."""
+    import fitz
+
+    sz = span["size"]
+    for ch in span["chars"]:
+        x0, _, x1, _ = ch["bbox"]
+        oy = ch["origin"][1]
+        inset = (x1 - x0) * 0.3
+        p.add_redact_annot(fitz.Rect(x0 + inset, oy - sz * 0.5, x1 - inset, oy - sz * 0.3),
+                           fill=False)
+    p.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                       graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+
+
+def _edit_text(doc, page, origin, old_text, new_text, font, size, flags,
+               color, line_height="", to_origin=""):
+    """Replace one text span, optionally moving it: the new text's first
+    baseline goes to `to_origin` (default: where the span was). Empty text
+    deletes the span."""
+    import fitz
+
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    _remove_span(p, _find_span(p, json.loads(origin), old_text))
+    _draw_text(p, to_origin or origin, new_text, font, size, flags, color, line_height)
+    d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    d.close()
+
+
+def _add_text(doc, page, origin, text, font, size, flags, color, line_height=""):
+    """New text whose first baseline sits at `origin` (page points, top-left)."""
+    import fitz
+
+    if not text.strip():
+        raise ValueError("nothing to add — type some text first")
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    ox, oy = json.loads(origin)
+    if not (0 <= ox <= p.rect.width and 0 <= oy <= p.rect.height):
+        raise ValueError("the text box is outside the page")
+    _draw_text(p, origin, text, font, size, flags, color, line_height)
+    d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    d.close()
+
+
+def _add_image(doc, page, rect, src):
+    """Place the image file `src` into `rect` (page points), aspect kept."""
+    import fitz
+
+    src = os.path.abspath(os.path.expanduser(src or ""))
+    if not os.path.isfile(src):
+        raise ValueError(f"no such image: {src}")
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    r = fitz.Rect(*json.loads(rect)) & p.rect
+    if r.is_empty or r.width < 2 or r.height < 2:
+        raise ValueError("the image box is outside the page")
+    p.insert_image(r, filename=src, keep_proportion=True)
+    to_page = fitz.Matrix(p.transformation_matrix)
+    # Written beside the working copy and read back from there: the new
+    # image's draw (insert_image draws on top, so it is the page's last) is
+    # what the UI selects for moving/resizing, and only once that read has
+    # succeeded does the result replace the working copy — a failure leaves
+    # the document exactly as _mutate's undo snapshot has it.
+    tmp = doc + ".tmp"
+    d.save(tmp, encryption=fitz.PDF_ENCRYPT_KEEP)
+    d.close()
+    boxes = _page_images(tmp, page, to_page)
+    placed = {"index": len(boxes) - 1, "bbox": boxes[-1]}
+    _replace(tmp, doc)
+    return {"image": placed}
+
+
+def _image_draws(pg, to_page):
+    """Each image the page's own content stream draws, in drawing order, as
+    (instruction index, box in page points, CTM at the draw). The CTM is
+    tracked through q/Q/cm here rather than taken from PyMuPDF, which names
+    an image by its content hash — two placements of the same file come
+    back as one xref and could not be told apart. Images inside a form
+    XObject or inline are not listed: they aren't one `Do` in this stream."""
+    import fitz
+    import pikepdf
+
+    images = {str(k) for k, v in pg.resources.get("/XObject", {}).items()
+              if v.get("/Subtype") == "/Image"}
+    ops = pikepdf.parse_content_stream(pg)
+    stack, draws = [fitz.Matrix(1, 0, 0, 1, 0, 0)], []
+    for i, ins in enumerate(ops):
+        op = str(ins.operator)
+        if op == "q":
+            stack.append(fitz.Matrix(stack[-1]))
+        elif op == "Q" and len(stack) > 1:
+            stack.pop()
+        elif op == "cm":
+            stack[-1] = fitz.Matrix(*[float(v) for v in ins.operands]) * stack[-1]
+        elif op == "Do" and str(ins.operands[0]) in images:
+            box = fitz.Rect(0, 0, 1, 1) * (stack[-1] * to_page)
+            draws.append((i, box, stack[-1]))
+    return ops, draws
+
+
+def _page_images(path, page, to_page):
+    """[bbox] of the page's movable images, indexed as edit_image takes them."""
+    import pikepdf
+
+    with pikepdf.open(path) as pdf:
+        _, draws = _image_draws(pdf.pages[page - 1], to_page)
+    return [[round(v, 2) for v in box] for _, box, _ in draws]
+
+
+def _edit_image(doc, page, index, rect, to_rect=""):
+    """Move/resize the page's `index`-th image draw (whose box is `rect`,
+    page points) into `to_rect`, or remove it when `to_rect` is empty. Only
+    that one `Do` changes — it is wrapped in a transform that maps its old
+    box onto the new one — so the image data, its transparency and every
+    other placement on the page are untouched."""
+    import fitz
+    import pikepdf
+
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    to_page, page_rect = fitz.Matrix(p.transformation_matrix), fitz.Rect(p.rect)
+    d.close()
+    old = fitz.Rect(json.loads(rect))
+    tmp = doc + ".tmp"
+    with pikepdf.open(doc) as pdf:
+        pg = pdf.pages[page - 1]
+        ops, draws = _image_draws(pg, to_page)
+        if not (0 <= index < len(draws)
+                and all(abs(a - b) < 0.5 for a, b in zip(draws[index][1], old))):
+            raise ValueError("the image changed on disk — reload and retry")
+        i, _, ctm = draws[index]
+        if to_rect:
+            new = fitz.Rect(json.loads(to_rect))
+            if new.is_empty or not new.intersects(page_rect):
+                raise ValueError("the image box is outside the page")
+            sx, sy = new.width / old.width, new.height / old.height
+            move = fitz.Matrix(sx, 0, 0, sy, new.x0 - sx * old.x0, new.y0 - sy * old.y0)
+            # The Do draws in its own space: the page-space move, expressed
+            # there, is placement · move · placement⁻¹.
+            place = ctm * to_page
+            local = place * move * ~place
+            ops[i:i + 1] = [
+                pikepdf.ContentStreamInstruction([], pikepdf.Operator("q")),
+                pikepdf.ContentStreamInstruction(list(local), pikepdf.Operator("cm")),
+                ops[i],
+                pikepdf.ContentStreamInstruction([], pikepdf.Operator("Q")),
+            ]
+        else:
+            del ops[i]
+        pg.Contents = pdf.make_stream(pikepdf.unparse_content_stream(ops))
+        pdf.save(tmp)
+    _replace(tmp, doc)
 
 
 # -------------------------------------------------------------------- library
@@ -1455,7 +1638,6 @@ def main(
     level: str = "lossless",
     kind: str = "",
     page: int = 1,
-    bbox: str = "",
     origin: str = "",
     old_text: str = "",
     new_text: str = "",
@@ -1463,6 +1645,11 @@ def main(
     size: str = "",
     flags: int = 0,
     color: str = "",
+    line_height: str = "",
+    rect: str = "",
+    to_origin: str = "",
+    index: int = 0,
+    to_rect: str = "",
     expected_mtime: str = "",
     force: int = 0,
     password: str = "",
@@ -1565,8 +1752,19 @@ def main(
                        lambda p: _compress(p, level))
     if action == "edit_text":
         return _mutate(doc, expected_mtime, "edit-text",
-                       lambda p: _edit_text(p, page, bbox, origin, old_text,
-                                            new_text, font, size, flags, color))
+                       lambda p: _edit_text(p, page, origin, old_text,
+                                            new_text, font, size, flags, color,
+                                            line_height, to_origin))
+    if action == "add_text":
+        return _mutate(doc, expected_mtime, "add-text",
+                       lambda p: _add_text(p, page, origin, new_text, font, size,
+                                           flags, color, line_height))
+    if action == "add_image":
+        return _mutate(doc, expected_mtime, "add-image",
+                       lambda p: _add_image(p, page, rect, src))
+    if action == "edit_image":
+        return _mutate(doc, expected_mtime, "edit-image",
+                       lambda p: _edit_image(p, page, index, rect, to_rect))
     if action == "extract_pages":
         return _extract_pages(doc, pages, name)
     if action == "merge":

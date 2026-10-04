@@ -16,12 +16,28 @@
 // wrapper over Base UI's forward-ref Panel, and React 18 drops a `ref` passed
 // to a plain function component. Silently. The count stayed 0 while a source-
 // reading test happily confirmed the wiring was "there".
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { createCardPolicy, CardPolicyProvider } from "./cardPolicy";
 import { ToolChip } from "./ToolChip";
 import type { ToolSegment } from "../protocol/types";
+import {
+  canRunInTerminal,
+  peekPendingTerminalRequest,
+  registerTerminalDrawerMounted,
+  resetTerminalDockForTests,
+} from "@platform/lib/terminalDockStore";
+
+// `canRunInTerminal()`/`useCanRunInTerminal()` also require a mounted
+// TerminalDrawer, which nothing in this file renders — registered once here
+// (so the `test.if(canRunInTerminal())` gates below read the same
+// !IS_EMBED && !isWindows value they always have) and re-registered before
+// every test, since `resetTerminalDockForTests()` below clears it again.
+registerTerminalDrawerMounted();
+beforeEach(() => {
+  registerTerminalDrawerMounted();
+});
 
 const mounted: Array<ReturnType<typeof create>> = [];
 function mount(el: React.ReactElement): ReturnType<typeof create> {
@@ -34,6 +50,7 @@ function mount(el: React.ReactElement): ReturnType<typeof create> {
 }
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  resetTerminalDockForTests();
 });
 
 type Json = ReactTestRendererJSON;
@@ -100,16 +117,51 @@ test("a Bash chip's command pre carries span.copywrap > button.copybtn, FIRST", 
   expect(pres.length).toBeGreaterThan(0);
   const first = pres[0]!;
   const wrap = first.children?.[0] as Json;
-  // FIRST child, not last: `.copywrap` is a zero-height anchor and the button
-  // inside it is `position: absolute` against the `pre`.
+  // FIRST child, not last: `.copywrap` is a zero-height anchor and the buttons
+  // inside it are `position: absolute` against the `pre`.
   expect(wrap.type).toBe("span");
   expect((wrap.props as { className?: string }).className).toBe("copywrap");
-  const btn = wrap.children?.[0] as Json;
+  // Where the drawer exists, the Bash command also gets a "run" pill AHEAD of
+  // copy — same command, typed rather than run, so copy is always last.
+  const btn = wrap.children?.[canRunInTerminal() ? 1 : 0] as Json;
   expect(btn.type).toBe("button");
   expect((btn.props as { className?: string }).className).toBe("copybtn");
   // `type="button"`, or a chip inside a form-bearing card would submit it.
   expect((btn.props as { type?: string }).type).toBe("button");
   expect(btn.children?.[0]).toBe("copy");
+});
+
+test.if(canRunInTerminal())(
+  "a Bash chip's command pre also gets a runbtn that types (execute: false) the command",
+  () => {
+    const json = chip({ name: "Bash", input: { command: "npm run build" } });
+    const pres = byType(json, "pre");
+    const wrap = pres[0]!.children?.[0] as Json;
+    const run = wrap.children?.[0] as Json;
+    expect(run.type).toBe("button");
+    expect((run.props as { className?: string }).className).toBe("runbtn");
+    expect(run.children?.[0]).toBe("run");
+  },
+);
+
+test.if(canRunInTerminal())("the runbtn hands the drawer the command untouched, execute: false", () => {
+  const json = chip({ name: "Bash", input: { command: "npm run build" } });
+  const run = byClass(json, "runbtn")[0]!;
+  act(() => {
+    (run.props as { onClick: () => void }).onClick();
+  });
+  expect(peekPendingTerminalRequest()).toEqual({ command: "npm run build", execute: false });
+});
+
+test("an output pre (not the command) never gets a runbtn, even where the drawer exists", () => {
+  const json = chip({ name: "Bash", input: { command: "echo hi" }, output: "hi\n" });
+  const pres = byType(json, "pre");
+  expect(pres).toHaveLength(2);
+  // The command pre is first (`canRunInTerminal()` gates whether IT gets one);
+  // the output pre, second, must never — `output` isn't a command.
+  const outputWrap = pres[1]!.children?.[0] as Json;
+  const outputChildren = (outputWrap.children ?? []) as Json[];
+  expect(outputChildren.some((c) => (c.props as { className?: string }).className === "runbtn")).toBe(false);
 });
 
 test("the label goes to `copied` on the press and the string is the pre's own", () => {

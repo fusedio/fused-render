@@ -3434,9 +3434,16 @@ function conflictPrompt(payload, entry) {
    branch/upstream/ahead-behind/dirty), because the model needs the same facts
    to fix the problem that it needed to explain it — only the ask at the end
    changed, from "what does this mean" to "explain it and fix it". */
-function askClaudeOnError(message) {
+function askClaudeOnError(message, details) {
   const repo = snapshot && snapshot.repo;
-  const parts = ["A git operation failed in a GUI. The error was:\n" + message];
+  const d = details || {};
+  const parts = ["A git operation failed in a GUI."];
+  if (d.action) parts.push("Action taken: " + d.action);
+  if (d.command) parts.push("Git command: " + d.command);
+  parts.push("Git's complete output:\n" + (d.output || message));
+  if (d.output && message && d.output.indexOf(message) === -1) {
+    parts.push("The app summarised it as: " + message);
+  }
   if (repo) {
     parts.push("Repository state: branch " + (repo.branch || "(detached)")
       + (repo.upstream ? ", tracking " + repo.upstream : ", no upstream")
@@ -3457,9 +3464,17 @@ function askClaudeOnError(message) {
   // it, and fall back to `file` only on the read failing entirely (no repo).
   const workingDir = (repo && repo.root) || file || ".";
   parts.push("This repository/working directory is " + workingDir + ".");
-  parts.push("Explain what the error means, then fix it: run whatever is "
-    + "needed to get this repository out of the failure and back to a good "
-    + "state.");
+  /* Mirrors FIX_PROTOCOL in frontend/src/shell/repo-updates-lib.ts (a template
+     cannot import it); tests on both sides pin these sentences. */
+  parts.push("Work in this order, and do not skip a step:\n"
+    + "1. OVERVIEW FIRST. Change nothing yet (read-only git commands are fine). "
+    + "Tell me the strategy (merge vs rebase), a one-line verdict per file "
+    + "(keep mine / keep theirs / combine / new from remote / new locally; file "
+    + "names only, no diffs), and whether you intend to push.\n"
+    + "2. CONFIRM. Ask me to approve that plan (use the plan-approval or "
+    + "question tool) and wait. Make no change to the repository before I approve.\n"
+    + "3. APPLY the plan once I approve.\n"
+    + "4. Then ask me whether to push. Never push without my explicit yes.");
   // `window._fusedAskClaude` (static/runtime.js's `noteAskClaude`) is NOT a
   // reliable "can this work" signal by itself — the runtime installs that
   // export unconditionally on every framed template, so `typeof … ===
@@ -4473,7 +4488,7 @@ function render(data, stashes, diff) {
           className: "ai",
           label: "Open Claude to explain and fix this error",
           title: "Open Claude to explain and fix this error",
-          onClick: () => askClaudeOnError(flash.message),
+          onClick: () => askClaudeOnError(flash.message, flash),
         }));
       }
     }
@@ -4575,6 +4590,17 @@ const chan = (op) => ({ key: READER + "#" + op });
  * DOM from the op's own reply, because git is the authority on what the
  * repository now looks like and a locally-guessed state is how a UI drifts out
  * of sync with the repo it claims to show. */
+/* How a button's `run` key reads in the Fix prompt's "Action taken" line. */
+function actionLabel(key) {
+  const named = {
+    pull: "Clicked Get latest (pull)",
+    push: "Clicked Send (push)",
+    fetch: "Clicked Check for updates (fetch)",
+    commit: "Clicked Commit",
+  };
+  return named[key] || "Clicked " + key;
+}
+
 async function run(key, args, then, context) {
   if (busy !== null) return;
   busy = key;
@@ -4598,6 +4624,13 @@ async function run(key, args, then, context) {
             message: payload.ok ? (payload.detail || "Done.")
                                 : (context ? context + ": " : "")
                                   + (payload.message || "git refused that.") };
+  if (!flash.ok) {
+    /* What the "Fix with AI" prompt carries beyond the sentence: the button
+       the user pressed, the git command, and git's COMPLETE output. */
+    flash.action = actionLabel(key);
+    if (payload.command) flash.command = payload.command;
+    if (payload.output) flash.output = payload.output;
+  }
   announce(flash.message);
   /* A SUCCESS receipt expires: the lists below already show the truth, and a
      "Fetched from origin." still on screen minutes later is stale furniture

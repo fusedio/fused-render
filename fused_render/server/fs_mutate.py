@@ -995,7 +995,7 @@ def _record_app_removal(path: str) -> None:
         ap = os.path.abspath(path)
         if app_git.app_dir_for(ap) == ap:
             app_git.commit(ap, f"Delete app {os.path.basename(ap)}",
-                           only_shared=True)
+                           only_shared=True, action="Auto-push after app delete")
     except Exception:
         pass
 
@@ -1403,14 +1403,16 @@ def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
         dst_is_app = app_git.app_dir_for(d) == d
         if src_is_app and dst_is_app:
             msg = f"Rename app {os.path.basename(s)} to {os.path.basename(d)}"
-            app_git.commit(s, msg, only_shared=True)
-            app_git.commit(d, msg, only_shared=True)
+            app_git.commit(s, msg, only_shared=True,
+                           action="Auto-push after app rename")
+            app_git.commit(d, msg, only_shared=True,
+                           action="Auto-push after app rename")
         elif src_is_app:
             app_git.commit(s, f"Move app {os.path.basename(s)} away",
-                           only_shared=True)
+                           only_shared=True, action="Auto-push after app move")
         elif dst_is_app:
             app_git.commit(d, f"Restore app {os.path.basename(d)}",
-                           only_shared=True)
+                           only_shared=True, action="Auto-push after app restore")
     except Exception:
         pass
     return _stat_payload(dst, os.path.isdir(dst))

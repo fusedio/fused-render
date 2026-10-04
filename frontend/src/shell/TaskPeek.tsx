@@ -34,6 +34,8 @@ import { shortTaskId } from "@platform/lib/task-id";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
+import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
+import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
@@ -41,7 +43,7 @@ import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount, useNativeChatFlag } from "@apps/claude";
-import { runAgent } from "@apps/claude/protocol/agent";
+import { fetchTerminalCommand as fetchAgentTerminalCommand } from "@apps/claude/protocol/agent";
 
 // THE HEADER IS THE PEEK'S OWN NOW, not the chat's (design.md, Header + list
 // state v2). It wore `@apps/claude/ui/Topbar` between 2026-09-13 and -09-14,
@@ -83,6 +85,7 @@ import {
   emptyPaneText,
   eraseBlocked,
   filingIntent,
+  SHOW_PAGE_DOOR,
   taskHref,
 } from "./tasks-lib";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
@@ -416,6 +419,7 @@ export function TaskPeek({
   const layout = useTaskPeekLayout();
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
+  const canRun = useCanRunInTerminal();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -979,27 +983,35 @@ export function TaskPeek({
   /**
    * CONTINUE THIS TASK IN A REAL TERMINAL — the chat's own door, not a new one
    * (`@apps/claude/ui/Kebab`'s `onTerminal`): ask the folder's `agent.py` for
-   * the exact `claude --resume …` line and put it on the clipboard. There is no
-   * API here for launching a terminal — the app cannot open one — so what the
-   * act actually does is hand the reader the command, which is what it does
+   * the exact `claude --resume …` line. Where the status-bar drawer exists
+   * (`canRunInTerminal()`) this runs it there directly; otherwise — an embed,
+   * or Windows, where the app has no terminal of its own to open — it falls
+   * back to putting the command on the clipboard, which is what it does
    * everywhere else it is offered.
    *
    * Needs the template's folder, which this panel has already resolved for the
    * chat it is framing (`template`), so no second stat.
    */
   const agentDir = template ? template.slice(0, template.lastIndexOf("/")) : null;
+  const fetchTerminalCommand = (): Promise<string> =>
+    fetchAgentTerminalCommand(agentDir!, task!.target || task!.project, task!.session_id ?? "");
   const toTerminal = async () => {
     if (!task || !agentDir) return;
     try {
-      const out = await runAgent(
-        agentDir,
-        "terminal_command",
-        { file: task.target || task.project, session_id: task.session_id ?? "" },
-        { key: null },
-      );
-      if ("error" in out && out.error) throw new Error(out.error);
-      if (!("command" in out)) throw new Error("agent.py returned no command");
-      const ok = await copyToClipboard(out.command);
+      const command = await fetchTerminalCommand();
+      await runOrCopyInTerminal(command, { ranMessage: "Opened in terminal" });
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+    }
+  };
+  /** THE SECONDARY DOOR, only where the primary one no longer copies: a reader
+   *  with their own terminal should not have to fight the drawer for the
+   *  string. */
+  const copyTerminalCommand = async () => {
+    if (!task || !agentDir) return;
+    try {
+      const command = await fetchTerminalCommand();
+      const ok = await copyToClipboard(command);
       notify({
         title: ok ? "Command copied — paste it in your terminal" : "Could not copy the command",
         tone: ok ? "info" : "error",
@@ -1028,11 +1040,11 @@ export function TaskPeek({
   const menuItems = (): MenuEntry[] => {
     if (!task) return [];
     const items: MenuEntry[] = [];
-    if (page && headFit >= PEEK_HEAD_DROPS.length) {
+    if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
       items.push({ label: "Open in Explorer", icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
     }
-    if (gone) {
+    if (SHOW_PAGE_DOOR && gone) {
       items.push({
         label: "Open in Explorer",
         icon: ICON_OPEN_DOOR,
@@ -1049,6 +1061,17 @@ export function TaskPeek({
       disabled: !agentDir || !task.session_id,
       onClick: () => void toTerminal(),
     });
+    // The row above now RUNS the command where it can — this is the clipboard
+    // fallback for a reader who would rather paste it into a terminal of
+    // their own.
+    if (canRun) {
+      items.push({
+        label: "Copy terminal command",
+        icon: ICON_TERMINAL,
+        disabled: !agentDir || !task.session_id,
+        onClick: () => void copyTerminalCommand(),
+      });
+    }
     if (filing) {
       items.push({
         label: filing.kind === "archive" ? "Archive task" : "Unarchive task",
@@ -1219,7 +1242,7 @@ export function TaskPeek({
 
                   A real link with a real href, so ⌘-click opens a tab, exactly
                   like the row's own door. */}
-              {page && (
+              {SHOW_PAGE_DOOR && page && (
                 <a
                   className="task-side-peek-open"
                   href={page}

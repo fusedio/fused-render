@@ -613,17 +613,17 @@ const page = await fused.runPython("./reader.py",
 
 ## 12. macOS Distribution (DMG) — M3
 
-Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
+Distribute as a DMG containing a menu-bar app. On macOS the UI lives in the app's own windows — `NSWindow` + `WKWebView` on the in-process server (`fused_render/mac_window.py`, decisions in `window_policy.py`): one shell window at launch, and a new window for what would have been a new tab (`target=_blank`, `window.open`, ⌘-click, a Finder open, a deep link). External links go to the default browser; "Open in Browser" (title bar, View menu, popover) still hands the current page to it. Windows and Linux stay browser-based. Should the window manager fail to build, every surface falls back to a browser tab.
 
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
 - **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and a documented library list may not promise a library the app lacks (`test_the_documented_library_list_only_promises_what_ships`, over `skills/fused-render-authoring/SKILL.md` — the Learn page's own table was the second copy that test pinned until the learn content left the app, D419). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
 - **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
-- **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open browser.
+- **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running (a second source run) ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open a Home window (`FUSED_RENDER_NO_BROWSER=1` suppresses it). A Dock click on the running app brings the front window forward, or opens a Home window when none is open.
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
 - **DM-9** **Quit is an ordered teardown that ends in `os._exit`, never in AppKit's termination (D357).** Every surface — the popover/tray Quit, the `fused-render://relaunch` deep link, and AppKit's own Dock-menu Quit / ⌘Q / logout-restart (via an `applicationShouldTerminate:` added to rumps' delegate class) — funnels through `app.begin_quit`, which claims exactly ONE teardown under `_quit_lock`, removes the pidfile on the calling thread, and runs `quit_teardown` off the AppKit main thread in a fixed order: drain the server → close duckdb (the reader's stashed HTTP connection AND duckdb's default connection) → detach every mount through the rc-unmount → force-unmount ladder → reap rcd. Each rung is a precondition of the next and each is independently guarded, and the whole thing is bounded by `QUIT_HARD_DEADLINE_S`, DERIVED from the imported budgets of the steps it waits on — an app that cannot be quit is worse than one that quits with a mount attached. When the teardown finishes (or that deadline fires) the shared `quit_ready` event is set and the process dies via `app.hard_exit` → a bounded log flush (`logging.shutdown()` on a daemon thread, joined for `QUIT_LOG_FLUSH_S`) + `os._exit`. Work that must complete before the process can die cannot be sequenced after `begin_quit` returns — a teardown with nothing to unmount can finish first — so it hangs off `begin_quit`'s `on_claim` hook, which runs inside the claim; the `fused-render://relaunch` spawn is the one caller. It must NOT die via `-[NSApplication terminate:]`/`exit()`: that runs `__cxa_finalize` over every dylib's static destructors with the GIL released (pyobjc drops it for the ObjC call), and a native extension's C++ global touching the Python C-API on the way out aborts the process after a teardown that fully succeeded (INCIDENT 2026-07-29 and 2026-08-19; D357 has the measurements). Skipping atexit and Python finalization is sound precisely because the teardown above is the shutdown. The AppKit hook still answers `NSTerminateLater` so the teardown stays off the main thread; `replyToApplicationShouldTerminate:` survives only as the last resort for a hard exit that somehow returned.
-- **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens a browser tab at `/view/<path>`. Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file view (no stray home tab).
+- **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens in a window of its own at `/explorer/view/<path>` (a `.fused` at its embed URL, D390). Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file window (no stray Home window). Each app and file remembers its own window frame (`window_policy.frame_autosave_name`); a second window of the same thing cascades from the first.
 
 ## 12b. Milestones
 
@@ -2117,6 +2117,39 @@ when one exists, else the folder itself.
   and files the payload does not carry stay; then a reload of the copy's
   entry page) and *Cancel* / close (nothing written, keep working on the
   copy). `/api/clone/info` and `POST /api/clone` stay git-only.
+- **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
+  a .fused>`, the link percent-encoded once by the sender and decoded once
+  here, verbatim to end-of-string like `git=`/`file=`. Render App's
+  `render-app://open?url=` ported one-to-one (fused-render-lite PRs #27/#30):
+  a web page's "Open in fused-render" link. Same no-page shape as DL-7:
+  `GET /clone` answers a 303 to Home with the link as `?_fetch_appfile=`
+  (nothing is on disk yet, and nothing is written on the GET, D3; a non-http(s)
+  payload rides along verbatim so the shell reports it). The shell's
+  `FetchAppFileBoot` (top document, `!IS_EMBED`, beside `EditAppFileBoot`)
+  reads the param once, strips it before any async work, then **downloads
+  without a confirm step** (owner call; the link click is the gesture) through
+  the X-Fused `POST /api/appfile/fetch {url} → {file}` (`appfetch.py`: http(s)
+  only, every redirect hop re-checked, 1 GB cap by `Content-Length` and while
+  streaming, temp file validated with `appfile.read_manifest` then
+  `os.replace`d, nothing left on disk on failure) into
+  `~/.fused-render/downloads/<app_id>.fused` — keyed on the app's stable id
+  (D884) so every link to one app updates one file and one Apps-hub row;
+  `<name>-<url sha 8>.fused` for files that predate the id — and opens the
+  saved file **as an app**, the Finder double-click shape (D390), never the
+  explorer's view of it: the top document hard-loads the file's embed URL
+  (a full load, since the embed/view prefix is read once at module init),
+  where the `fusedapp` template runs it and `exported_apps.record_open`
+  lists it under recents. Deliberately not `POST /api/windows/open`: a deep
+  link always arrives in a fresh native window parked on Home by the 303, and
+  loading the embed there makes that window the app's own (the URL observer
+  re-keys it, the title-bar Edit button is the way into the explorer) instead
+  of leaving it orphaned beside a second one. In a browser tab the same load
+  lands under the EmbedStrip, whose "Open in explorer" is the way out. A re-click on a link to
+  a NEW version of the same app overwrites the one saved file, extracts the
+  new bytes, and keeps everything the app saved in `.fused` (AF-13's shared
+  state dir): app files replaced, state retained. Recorded cost of the
+  missing gate: a web page that can navigate the browser to this origin with
+  `?_fetch_appfile=` gets a remote `.fused` downloaded and opened unprompted.
 
 ---
 
@@ -10996,6 +11029,23 @@ else: no editor, no Claude, no explorer chrome.
   Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
+- **AF-13** Shared `.fused` state per app id (port of Render App's lite PR
+  #32). Extracts are content-addressed (AF-6), so every re-export of an app
+  lands in a fresh dir and the state the app saved under `<extract>/.fused`
+  (D548, §47) used to stay behind. Now `open_app_file` makes
+  `<extract>/.fused` a symlink (a directory junction on Windows) to
+  `~/.fused-render/fused_data/<app_id>` for every file carrying a stable id
+  (D884): every extract of one app reads and writes one state dir, and
+  `app_fused_dir.ensure` scaffolds `data`/`cache`/`meta.json` through the
+  link on render exactly as before. **An update to the same app replaces the
+  app's files and keeps everything inside `.fused`** — the DL-8 contract. An
+  older extract that holds a real `.fused` dir is migrated on its next
+  non-preview open: its contents move into the shared dir when that is still
+  the bare scaffold, else the shared state wins and the local copy goes.
+  Files without an id keep local state, as before. Best-effort: a link that
+  cannot be made leaves the state local rather than failing the open.
+  `rmtree` of a damaged extract does not follow the link, so a rebuild never
+  touches the shared dir.
 
 ## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 
@@ -11986,3 +12036,69 @@ per-row fix.
   unrun on-demand row, since its findings would describe a folder that no
   longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
   findings real.
+
+## 49. App Python, Called Directly — Bots Run a Folder's `.py` Without the Page
+
+Goal: an app folder's `.py` files are the app's capability; the page is one UI
+over them. A bot (OpenBot's `py` action, a Claude-harness bot, any local
+script) can run one **without rendering the page**, with the page's own
+semantics, so a bot that builds an app can also drive it at the lowest level
+the app has. What a bot knows about those files is what the app's author
+wrote down in the app's `SKILL.md`, never something parsed out of the code.
+Design pages: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ (runner),
+https://claude.ai/artifact/PDhNwAeVBVfuAvNyrxicMz (SKILL.md discovery).
+
+- **AP-1 One runner.** Execution is `POST /api/run` `{py, html, params}`
+  (§PY-6) — the identical call the page's `fused.runPython` makes, with an
+  absolute `py` (`resolve_py` never needed the page). Nothing bot-specific
+  lives in that handler: engine preference, the missing-module diagnosis, the
+  folder-busy gate, the call log, git-status invalidation and the
+  `{ok, result, error:{type,message,traceback}, stdout, resolved_py,
+  duration_ms}` envelope are what the bot sees because they are what the page
+  sees. The 60 s bound (`DEFAULT_TIMEOUT`) is the bot's bound; there is no
+  bot-only budget, since a file that only works with one would then fail in
+  the page. There is no pre-flight arg check: `_binding.bind_params` drops a
+  key `main` does not take (silently, as it does for the page) and a missing
+  required one comes back as the runner's `ParamError` envelope — the bot's
+  cue to re-read the skill.
+  **Rejected:** a synthesized manifest-less tool through the openfused
+  `fused app serve` runner inside the bot's worker (a second semantics —
+  requirements venv instead of the engine pref, 180 s, no call log — and a
+  bundled `fused` import an exported copy of the bot lacks); a wrapper
+  endpoint that would add only a name.
+- **AP-2 Discovery is the app's `SKILL.md`, read by the caller.** One file
+  at the app root beside `index.html` (so it ships in a `.fused` export and
+  a clone), in Claude Code skill shape: YAML frontmatter `name` +
+  `description` (one line: what the app does for a bot), optional
+  `approve: [file.py, …]`, then prose for the model with one fixed
+  convention — a `## <file>.py` heading per callable file. That heading is
+  the only thing a caller parses out of the body: a file is callable only
+  when it exists AND has a section, so the approval card always has the
+  author's own line to show. The caller reads the file off disk (same Mac);
+  the server has **no** discovery route. An app without `SKILL.md` has no
+  bot-callable Python — a bot uses its page. **Rejected:** the AST listing
+  (`GET /api/apps/python` over `pyinspect.py`, PR #1359), removed: it showed
+  a signature but not what a call means or changes, and an author could not
+  correct it; a structured per-file `params:` schema in frontmatter (the
+  same drift as the AST, in YAML); a `GET /api/apps/skill` route (an
+  `open()` behind HTTP). `templates/mcp/inspect_app.py` keeps its own AST
+  read for the MCP panel's tool curation — a different feature.
+- **AP-3 Daemon apps.** A §46 resident process is not reachable through
+  `/api/run`; its `SKILL.md` says so in prose and documents only the
+  `main()` files a bot can run.
+- **AP-4 Author contract** — the "App SKILL.md" section of
+  `skills/fused-render-authoring/SKILL.md` (the skill every builder task
+  already loads; no separate skill): per file a top-level sync annotated
+  `main(**params)` (`_binding.coerce` still coerces by annotation inside
+  `/api/run`), JSON-native return, no argv/stdin, ≤ 60 s (longer →
+  `fused.trackJob` or a daemon), secrets never in params; per file a
+  `SKILL.md` section with what it does, what it changes, args, return shape
+  and one example call. Every change to a `.py` updates its section in the
+  same edit.
+- **AP-5 Approval is the caller's.** The server runs what it is asked; the
+  gate lives in the bot: OpenBot runs a `py` call at once when the folder is
+  one of that bot's own builds and pauses for the user otherwise, showing the
+  first line of the file's `SKILL.md` section. Frontmatter `approve:` can
+  only **add** a pause (an own build's destructive file); nothing in a
+  `SKILL.md` can remove one, since the author of a foreign app is not the
+  user.

@@ -39,6 +39,42 @@ One plain fn `main(**params)`. Rules:
 - **Fresh subprocess per call.** No globals survive. Import cost paid every call (pandas ≈ 1 s). Killed at **60 s** (`DEFAULT_TIMEOUT`, `fused_render/executor.py`), no override. Longer work → `fused-render-jobs`.
 - `print()` → browser console as `[python]`.
 
+### App SKILL.md — bot-callable files (SPEC §49)
+
+A bot (OpenBot's `py` action) can run a `.py` beside the page **without the page**, through the same `/api/run` the page uses. It learns what each file does from the app's **`SKILL.md`** at the folder root, beside `index.html` — nothing parses the code. No SKILL.md, or no section for a file → a bot cannot call it. Every app with a `.py` that has a `main` ships one.
+
+```markdown
+---
+name: expense-tracker
+description: Local expense ledger. Add an entry, total spend by category or month.
+approve: [add_entry.py]   # optional: own-build bots still ask before these
+---
+# Expense tracker
+
+Data lives in .fused/data/ledger.json; the page and these files share it.
+
+## summary.py
+Totals per category for one month. Reads the ledger; writes nothing.
+- Args: `month` (str, "YYYY-MM", default: current month)
+- Returns: `{"month": str, "total": float, "by_category": {name: float}}`
+- Example: `{"action":"py","app":"expense-tracker","file":"summary.py","args":{"month":"2026-09"}}`
+
+## add_entry.py
+Appends one expense to the ledger. Writes .fused/data/ledger.json.
+- Args: `amount` (float, required), `category` (str, required), `note` (str, default "")
+- Returns: `{"ok": true, "id": str}`
+- Example: `{"action":"py","app":"expense-tracker","file":"add_entry.py","args":{"amount":12.5,"category":"food"}}`
+```
+
+- **Frontmatter:** `name` (folder slug), `description` (one line a bot reads in its app list: what the app does for it). `approve:` lists files that change or delete something the user cares about; it only adds a pause, never removes one.
+- **One `## <file>.py` heading per callable file** — the exact filename; that heading is the only thing a bot parses. Helpers without `main` get no heading.
+- **First line under the heading** = what it does + what it changes ("Reads the ledger; writes nothing." / "Writes .fused/data/ledger.json"). A bot calling an app it did not build shows the user this line before running.
+- **Args with type, default, required; return shape; one example call** with real values. Keep them exactly in step with `main`'s signature — the runner silently drops an arg `main` does not take and fails a missing required one (`ParamError`), so a stale section means a bot call that quietly does the wrong thing.
+- **Edit the section in the same change as the `.py`.** Add, rename or delete a file → add, rename or delete its section.
+- The file side stays: **one top-level sync annotated `main(**params)`** (the runner binds only `main`; annotations coerce), defaults on every param, JSON-native return, ≤ 60 s, **secrets never in params** (read them from `.fused/data` or the keychain inside `main`). A resident daemon (`fused-render-background-apps`) is not callable this way — say so in prose.
+
+Run: the page's own `POST /api/run {py, html, params}` → `{ok, result, error, stdout, duration_ms}`.
+
 ### Available Python libraries
 
 A `pyproject.toml` is always expected — App Doctor's `pyproject` row fails a folder that lacks one. Without one, the app interpreter falls back to stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). `dependencies` should list the app's own third-party imports — NOT this bundled set; an app that only imports from it declares an empty `dependencies` list, which keeps it on that zero-install interpreter.
@@ -82,12 +118,16 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `await fused.writeFile(path, text, opts?)` | Atomic. `opts.expectedMtime` → rejects `.type==="conflict"` on stale disk; `opts.create` → rejects `.type==="exists"` (race-free create); readonly → `.type==="readonly"`. Resolves with fresh stat — keep its mtime. |
 | `fused.rawUrl(path)` | Sync URL for raw bytes — img/video/embed/download. Also resolves relative sibling assets (pitfall below). |
 | `fused.ai.*` | → `fused-render-ai`. |
-| `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. |
+| `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. Full fused-render only (Render App below). |
 | `fused.capture.*` | Native screen/mic/screenshot → `fused-render-capture`. |
 | `fused.trackJob(spec)` | Report long work to download manager; never rejects → `fused-render-jobs`. |
+| `fused.tasks.*` | List/create/follow up/cancel/watch the app's Claude tasks (headless, returns a handle); `ui()` gives an iframe URL of the shell's Tasks page → `fused-render-tasks`. |
 | `fused.daemon.*` | Folder's warm worker / resident daemon → `fused-render-background-apps`. |
+| `fused.terminal.open({cwd}?)` / `.run(command, {cwd}?)` | Opens the shell's terminal drawer, optionally `cd`'d into `cwd` and/or running `command`. Rejects (Error) with no shell host (standalone/embed page, hosted export) or on Windows (terminal unsupported). |
 | `fused.env` | `"local"` vs `"hosted"` (exported). |
-| `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). |
+| `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). Render App: `autoReload(true)` THROWS (no live reload there). |
+
+**Render App** (standalone `fused-render-app`: same bridge, subset runtime). Session is on it when the system prompt says so, the app is a `.fused` bundle or a folder under `~/Fused/local/`, or a call throws `<name> is not supported on Render App`. There: `fused.fileIndex` and `fused.snapshot` do not exist (no stubs — reading them throws that sentence); `fused.autoReload(true)` throws; `fused.capture` is macOS-only, no browser `client` recorder; `runPython` cap is 600 s, not 60; no `fused-render calls` CLI (Verifying below) — read the browser console. Everything else in the table is identical. App that needs the missing members belongs in full fused-render; don't polyfill.
 
 - Uncaught `runPython` rejection → red traceback overlay (good default). Catch for custom UI.
 - Filesystem ONLY via these helpers — never fetch `/api/fs/*` yourself (writes rejected, unstable contract).
@@ -143,17 +183,25 @@ Same html, opened FOR target file: read-only `_file` param carries path. Reader 
 
 ## Testing
 
-Real browser against running server (`fused-render --port 1777 --no-browser`):
+Real browser against the server that is ALREADY running. Never assume a port — `1777` is only a bare `fused-render` on main; the desktop app picks a free port, a worktree gets a per-branch one, Render App (fused-render-lite) uses `2777`. Find the origin:
+
+1. `$FUSED_RENDER_ORIGIN` — exported by both servers to every process they spawn (a session opened from the app has it).
+2. `~/.fused-render/server.json` (Render App: `~/.fused-render-app/server.json`) — `origin` field, for a terminal session. Probe `<origin>/api/config` before trusting it; a crashed server leaves the file behind.
+3. Neither → nothing is running; start one (`fused-render --no-browser --port <free>`; Render App: `open -a RenderApp`, it writes `server.json`).
+
+URLs under that origin:
 
 - `/explorer/embed/<abs path, leading slash dropped, segments URL-encoded>` — chrome-free. **Default for testing.**
 - `/explorer/view/<path>` — full shell chrome.
 - Templates: open TARGET file's path; or template html directly with `?_file=<abs target>`.
 
+Render App only (no fused-render installed — origin on `2777`, `server.json` under `~/.fused-render-app`): its embed equivalent is `/render?path=<abs html>` — `path` is the entry FILE (`<app dir>/index.html`), never the bare folder; any absolute `.html`, `runtime.js` injected, relative `.py` resolved against it, env picked from the folder's `pyproject.toml`, params after `path` in the URL. `/explorer/*` there is the chat shell, not a view. Same render → interact → refresh loop; verification is the browser console (see below).
+
 Loop: render → interact → URL updates → hard refresh → identical view.
 
 ## Verifying: call log
 
-Cannot run page JS from terminal. After user opens page:
+Cannot run page JS from terminal. Full fused-render only — Render App keeps no call log; there, ask the user for the browser console (uncaught errors and unhandled `runPython` rejections land there) and treat a blank page as JS died. After user opens page:
 
 ```
 fused-render calls --page <abs html> --since 15m   # --failed, --json, --follow
@@ -169,6 +217,6 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 - Plain `open(...,"w")` cache write; unversioned cache key; irreplaceable bytes in `cache/`.
 - Import outside bundled set, no `pyproject.toml`.
 - Slider + heavy import, no ~150 ms debounce → subprocess per tick.
-- Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
+- Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`). Render App has no index: walk in the `.py`, cache the result.
 - `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
-- Claiming "done" without `fused-render calls` — blank-JS and failing-Python look identical without log.
+- Claiming "done" without `fused-render calls` (Render App: without the console) — blank-JS and failing-Python look identical without log.

@@ -188,22 +188,25 @@ _IMPORT_TO_DIST = {
     # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but
     # exempt from the COMPLETENESS half below — see _COMPLETENESS_EXEMPT.
     "fused": "fused",
-    # A CONSTRAINT the engine drags in rather than a library any template of ours
-    # imports: `fused` depends on `mcp[cli]>=1.0.0`, whose 2.x line dropped
-    # `mcp.server.fastmcp` and so breaks `fused app serve` — the command the MCP
-    # panel registers globally (SPEC MC-5) — which is why `[bundled]`/`[fused]`
-    # pin `mcp<2`. Mapped so the completeness half stays honest; if a template
-    # ever does import it, the same declare-or-fail rule applies as to any other
-    # bundled distribution.
+    # No longer declared by fused-render: since fused 2.9.3b10 it arrives through
+    # the engine pin's `mcp` extra (which carries the `<2` ceiling `fused app
+    # serve` needs), so it is not an app distribution this map must cover. Kept
+    # mapped anyway so a template that imports `mcp` is still checked: it is not
+    # a declared app distribution, so such a template has to declare it.
     "mcp": "mcp",
-    # A CONSTRAINT `[bundled]`/`[fused]` add for the same reason as `mcp`
-    # above, not a library any template imports: mcp 1.30.0's metadata pulls
-    # in an unmarked `pyjwt[crypto]>=2.10.1`, which is where cryptography
-    # actually enters a real install, so the x86_64-macOS wheel ceiling
-    # (LEAN_WHEEL_SPEC.md item 1) is declared as a direct, platform-marked
-    # `cryptography` entry there. Mapped so the completeness half stays
-    # honest; if a template ever does import it, the same declare-or-fail
-    # rule applies as to any other bundled distribution.
+    # Declared directly next to the engine pin: fused 2.9.3b10 moved it into its
+    # `verify` extra, which also carries `ty`, and this app ships anthropic but
+    # not ty. Not a library any template imports; mapped so the completeness
+    # half stays honest, with the same declare-or-fail rule as any other
+    # bundled distribution if a template ever does import it.
+    "anthropic": "anthropic",
+    # A CONSTRAINT `[bundled]`/`[fused]` add, not a library any template
+    # imports: `fused[aws]` and mcp both pull in an unmarked `pyjwt[crypto]`,
+    # which is where cryptography actually enters a real install, so the
+    # x86_64-macOS wheel ceiling (LEAN_WHEEL_SPEC.md item 1) is declared as a
+    # direct, platform-marked `cryptography` entry there. Mapped so the
+    # completeness half stays honest; if a template ever does import it, the
+    # same declare-or-fail rule applies as to any other bundled distribution.
     "cryptography": "cryptography",
     # The live filesystem watcher (server/index_watch.py, index-live-watch):
     # core `dependencies` (uvicorn only pulls it in transitively, under an

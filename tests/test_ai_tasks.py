@@ -219,21 +219,33 @@ def test_a_flux_klein_repo_is_rescued_by_its_own_text_to_image_tag():
 def test_image_generation_is_read_as_the_same_claim():
     """`FLUX.2-klein-9B` spells it `image-generation` where its 4B sibling
     spells it `text-to-image` — one alias, because the Hub does not constrain
-    the vocabulary inside the `tags` LIST the way it does the slot."""
-    reading = tasks.classify_repo("image-to-image", [
+    the vocabulary inside the `tags` LIST the way it does the slot.
+
+    D1235: primary tag is `unconditional-image-generation` (still `None`),
+    not `image-to-image` — that tag no longer needs the tags fallback, and
+    since it is ALSO now supported, its own literal spelling in `tags` wins
+    the direct `supported_tags()` scan before the alias loop is ever
+    reached."""
+    reading = tasks.classify_repo("unconditional-image-generation", [
         "diffusers", "safetensors", "image-generation", "image-editing",
         "flux", "image-to-image", "license:other",
     ])
     assert reading.capability == registry.IMAGE_GENERATION
-    assert reading.tag == "text-to-image", "re-entered the table through a real row"
+    assert reading.tag == "image-to-image", "re-entered the table through a real row"
 
 
 def test_a_genuine_upscaler_is_still_dropped():
     """The discrimination the whole fallback rests on: a repo that only does
     the unsupported job does not claim the supported one. Checked against the
-    Hub's own answers for `esrgan`, where this rescues nothing at all."""
-    reading = tasks.classify_repo("image-to-image", [
-        "pytorch", "image-to-image", "super-resolution", "esrgan",
+    Hub's own answers for `esrgan`, where this rescues nothing at all.
+
+    D1235: `image-to-image` stopped being a usable example — tasks.py now
+    maps it to IMAGE_GENERATION directly (the FLUX.2-klein family and the
+    mflux edit path do take a base image), so a genuine `image-to-image`
+    upscaler now DOES get a capability, by design. `object-detection` is the
+    still-unsupported tag that keeps this test's original point alive."""
+    reading = tasks.classify_repo("object-detection", [
+        "pytorch", "object-detection", "yolo",
         "license:apache-2.0",
     ])
     assert reading.capability is None
@@ -264,10 +276,16 @@ def test_an_unknown_slot_can_still_be_rescued_but_stays_unknown_otherwise():
 def test_two_supported_claims_resolve_in_menu_order_not_hub_order():
     """The Hub does not promise an order within `tags`, so a classifier that
     read the repo's own order would give one repo two different answers. Menu
-    order (text first) is the tie-break, and it is stable under shuffling."""
+    order (text first) is the tie-break, and it is stable under shuffling.
+
+    D1235: `image-to-image` used to be the example unsupported primary tag
+    here, but tasks.py now maps it straight to IMAGE_GENERATION (it no longer
+    needs the tags-widening fallback at all), so `unconditional-image-
+    generation` — still `None` — takes its place as the fallback-triggering
+    primary."""
     tags = ["text-to-image", "text-generation"]
-    first = tasks.classify_repo("image-to-image", tags)
-    second = tasks.classify_repo("image-to-image", list(reversed(tags)))
+    first = tasks.classify_repo("unconditional-image-generation", tags)
+    second = tasks.classify_repo("unconditional-image-generation", list(reversed(tags)))
     assert first == second
     assert first.capability == registry.TEXT_GENERATION
 

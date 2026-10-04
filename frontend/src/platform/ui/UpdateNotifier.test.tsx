@@ -145,8 +145,9 @@ test("raises the Download notification on `available`, nothing on `check_only`",
   });
   const retained = getRetainedNotifications();
   expect(retained).toHaveLength(1);
-  expect(retained[0].title).toContain("Update available");
-  expect(retained[0].title).toContain("0.5.81");
+  // The version rides in the detail, never the title (the chip truncated it).
+  expect(retained[0].title).toBe("Update available");
+  expect(retained[0].detail).toContain("0.5.81");
 
   _resetNotificationsForTest();
   await act(async () => {
@@ -242,16 +243,16 @@ test("dismissing the restart card directly (the panel's own ✕) does not resurr
   await act(async () => r.unmount());
 });
 
-test("a genuine cap eviction still resurrects the restart card (finding #3)", async () => {
-  // The other half of finding #3: the fix must not turn a REAL eviction into
-  // a silent, permanent loss either. Filling the retained list past
-  // `MAX_RETAINED` pushes the restart card (the oldest row) out the same way
-  // a busy notification stream would. Note this resurrects WITHIN the same
-  // `act()` that causes the eviction, not on a later poke: the eviction
-  // itself changes `retained`, which is one of this effect's own
-  // dependencies, so React reruns it immediately — same-render eviction and
-  // recovery, exactly as it did before this fix (only the DISMISSAL path,
-  // tested above, now behaves differently).
+test("the restart card is never evicted by a busy notification stream (status-popovers R6)", async () => {
+  // `notifications.ts`'s `capRetained` never evicts a row `isUpdateNotification`
+  // matches (R6) — every `notify()` call this component makes for the update
+  // flow sets `familyKey` to one of the two update family keys (download or
+  // restart). So unlike before R6, filling the retained list past `MAX_RETAINED` with
+  // other attention notices no longer pushes the restart card out at all:
+  // `capRetained` evicts the OTHER (non-update) attention rows instead, and
+  // the restart card keeps its original id throughout — nothing here is left
+  // for finding #3's eviction-vs-dismissal detection to ever actually
+  // exercise for this card any more, since it can no longer be evicted.
   const r = await mount();
   await act(async () => {
     setUpdateStatus(status({ state: "installed", latest_version: "0.5.81" }));
@@ -266,10 +267,7 @@ test("a genuine cap eviction still resurrects the restart card (finding #3)", as
   });
   const restartCard = getRetainedNotifications().find((n) => n.title === "Update ready");
   expect(restartCard).toBeDefined();
-  // Resurrected as a FRESH row (a new id) — its old slot is the one that got
-  // sliced off by `capRetained`, so it comes back at the end like any other
-  // freshly-`notify()`'d card, not back in its original position.
-  expect(restartCard?.id).not.toBe(beforeId);
+  expect(restartCard?.id).toBe(beforeId);
   await act(async () => r.unmount());
 });
 

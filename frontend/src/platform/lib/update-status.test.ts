@@ -40,9 +40,9 @@ describe("updateRelevant", () => {
 });
 
 describe("updateLabel", () => {
-  it("names the version once one is available", () => {
+  it("never puts the version in the label (it truncated; the version lives in the tooltip)", () => {
     expect(updateLabel(status({ state: "available", latest_version: "0.5.10" }))).toBe(
-      "Update available — v0.5.10"
+      "Update available"
     );
   });
 
@@ -64,9 +64,9 @@ describe("updateLabel", () => {
     );
   });
 
-  it("falls to the available phrasing for error (still names the version)", () => {
+  it("falls to the available phrasing for error", () => {
     expect(updateLabel(status({ state: "error", latest_version: "0.5.10" }))).toBe(
-      "Update available — v0.5.10"
+      "Update available"
     );
   });
 });
