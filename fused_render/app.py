@@ -519,7 +519,21 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     confirmation waits, and a wedged one must not hold the others back. Also
     tells any live index worker to stop (it polls a `cancel` file; the runner
     does not keep its Popen) and removes the discovery file a successor would
-    otherwise read with a dead pid in it."""
+    otherwise read with a dead pid in it.
+
+    Arms the spawn latches FIRST, before any killer runs: the server is still
+    answering requests while this runs (the drain above is bounded and the
+    shell's SSE connections never close), so an in-flight engine or AI route
+    could otherwise call `ensure`/`load` after the registries were emptied and
+    spawn a replacement that `os._exit` then orphans — the exact process this
+    rung exists to kill (bugbot, PR #1400)."""
+    def refuse_spawns():
+        from fused_render.ai import supervisor
+        from fused_render.server import engine_host
+
+        engine_host.refuse_new_children()
+        supervisor.refuse_new_workers()
+
     def engines():
         from fused_render.server import engine_host
 
@@ -551,6 +565,10 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         remove_server_json()
 
+    try:
+        refuse_spawns()
+    except Exception:
+        logger.warning("quit: arming the spawn latches failed", exc_info=True)
     threads = []
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),

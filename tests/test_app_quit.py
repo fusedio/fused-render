@@ -717,6 +717,56 @@ def test_the_quit_action_works_before_the_server_has_booted():
 # becomes the bug it guards against.
 
 
+def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch):
+    # The server is still answering while the rung runs (bounded drain, SSE
+    # never closes), so an in-flight route could respawn what stop_all just
+    # killed. The latch must therefore be armed FIRST (bugbot, PR #1400). Every
+    # real killer is replaced: the latch must not be left set for later tests,
+    # and remove_server_json must not touch the real discovery file.
+    from fused_render.ai import supervisor
+    from fused_render.server import engine_host, index_watch
+    from fused_render.server import app as server_app
+    from fused_render import pty_session
+
+    order: list[str] = []
+    monkeypatch.setattr(engine_host, "refuse_new_children",
+                        lambda: order.append("latch-engines"))
+    monkeypatch.setattr(supervisor, "refuse_new_workers",
+                        lambda: order.append("latch-ai"))
+    monkeypatch.setattr(engine_host, "stop_all", lambda: order.append("engines"))
+    monkeypatch.setattr(supervisor, "unload_all", lambda: order.append("ai"))
+    monkeypatch.setattr(pty_session.REGISTRY, "shutdown_all",
+                        lambda: order.append("terminals"))
+    monkeypatch.setattr(index_watch, "stop", lambda: order.append("index"))
+    monkeypatch.setattr(server_app, "remove_server_json",
+                        lambda: order.append("discovery"))
+    import fused_render.index.runner as runner
+    monkeypatch.setattr(runner, "list_runs", lambda cfg: {"runs": []})
+
+    app_mod._stop_children(budget_s=2.0)
+
+    assert order[:2] == ["latch-engines", "latch-ai"]
+    assert set(order[2:]) == {"engines", "ai", "terminals", "index", "discovery"}
+
+
+def test_children_rung_is_bounded_by_its_budget(monkeypatch):
+    from fused_render.ai import supervisor
+    from fused_render.server import engine_host
+
+    never = threading.Event()
+    monkeypatch.setattr(engine_host, "refuse_new_children", lambda: None)
+    monkeypatch.setattr(supervisor, "refuse_new_workers", lambda: None)
+    monkeypatch.setattr(engine_host, "stop_all", lambda: never.wait(30))
+    monkeypatch.setattr(supervisor, "unload_all", lambda: None)
+    monkeypatch.setattr(app_mod, "QUIT_CHILDREN_BUDGET_S", 0.3)
+    try:
+        t0 = time.monotonic()
+        app_mod._stop_children(budget_s=0.3)
+        assert time.monotonic() - t0 < 3.0
+    finally:
+        never.set()
+
+
 def test_the_hard_deadline_exceeds_the_sum_of_the_bounded_steps():
     inner = (app_mod.QUIT_SERVER_DRAIN_S
              + app_mod.QUIT_CHILDREN_BUDGET_S

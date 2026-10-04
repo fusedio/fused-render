@@ -884,6 +884,25 @@ def _download_failure_text(stderr: str) -> str:
     return stderr.strip()
 
 
+#: Armed by the app's quit (app.py `_stop_children`) BEFORE `unload_all` runs.
+#: The quit kills workers while the server is still answering requests, so an
+#: in-flight AI route can `load` after `unload_all` emptied `_workers` and spawn
+#: a replacement that `os._exit` then orphans — holding gigabytes, with nothing
+#: left tracking it. Once armed, no worker or weights fetch is spawned again in
+#: this process. Not set by `unload_all` itself: tests unload and load again.
+_stopping = threading.Event()
+
+
+def refuse_new_workers() -> None:
+    """Quit path: no worker or fetch may be started from here on."""
+    _stopping.set()
+
+
+def _refuse_if_quitting() -> None:
+    if _stopping.is_set():
+        raise SupervisorError("fused-render is quitting; not starting a worker")
+
+
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     """Start worker.py and wait for it to publish its port.
 
@@ -892,6 +911,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     race, since anything this process reserves can be taken between the bind and
     the exec.
     """
+    _refuse_if_quitting()
     status = _status_path(worker)
     try:
         os.unlink(status)
@@ -1374,6 +1394,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
         argv = [python, runner.worker, "--model", model, "--job", job, "--download-only"]
         if file:
             argv += ["--file", file]
+        _refuse_if_quitting()
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
