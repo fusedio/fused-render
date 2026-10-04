@@ -4556,7 +4556,8 @@ export interface HubModel {
   matchScore: number;
   /** D1245: the per-axis story behind `matchScore` — one entry per weighted
    *  axis (`fit`/`capability`/`speed`/`recency`/`popularity`), plus an
-   *  `onDisk` entry when the on-disk bonus applied and a `runMode` entry
+   *  `onDisk` entry when the on-disk bonus applied, an `engineMatch` entry when
+   *  the row is in the active engine's native format, and a `runMode` entry
    *  when the CPU-offload/CPU-only penalty did. The weights and axis
    *  curves live only in `hub_models.py` (`_axis_scores`/`_score_
    *  breakdown`), so this is the one way a tooltip can say why a row lost
@@ -4627,16 +4628,16 @@ export interface HubModel {
  *  `gained`/`lost` are already in BLENDED points (weight applied), not the
  *  axis's own raw 0-100, so they can be summed or compared directly
  *  against `matchScore` itself. `gained + lost` is that axis's full
- *  weight in blended points for every weighted axis; `onDisk`/`runMode`
- *  are flat (never both nonzero) and only appear when they actually
+ *  weight in blended points for every weighted axis; `onDisk`/`engineMatch`/
+ *  `runMode` are flat (never both nonzero) and only appear when they actually
  *  applied. The remaining fields are the raw fact that drove ONE axis —
  *  only the ones relevant to `axis` are set. */
 export interface HubMatchAxis {
-  axis: "fit" | "capability" | "speed" | "recency" | "popularity" | "onDisk" | "runMode";
+  axis: "fit" | "capability" | "speed" | "recency" | "popularity" | "onDisk" | "engineMatch" | "runMode";
   /** Blended points this axis contributed toward `matchScore`. */
   gained: number;
   /** Blended points this axis cost versus a perfect score on it (0 for
-   *  `onDisk`; the flat penalty itself for `runMode`). */
+   *  `onDisk`/`engineMatch`; the flat penalty itself for `runMode`). */
   lost: number;
   /** `popularity` only — the raw download count (or null) behind it. */
   downloads?: number | null;

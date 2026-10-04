@@ -258,6 +258,16 @@ _WEIGHT_POPULARITY = 0.10
 # to out-rank a genuinely better-suited model that lives only on the Hub.
 _ON_DISK_BONUS = 6.0
 
+# D1305: a row in the native format of the capability's ACTIVE engine (the one
+# Preferences prefers) earns a flat nudge, because none of the five axes can
+# tell an MLX build from a GGUF build of the same model — the speed axis is a
+# machine-wide guess. Sized to decide between near-equal rows (the same model,
+# two builds) and no more: 5 points is what a ~14-point gap on the fit axis
+# (weight 0.35) is worth, so a materially better-fitting or larger model in
+# another format still wins, and it stays under `_ON_DISK_BONUS` so a model
+# already downloaded still outranks a not-yet-downloaded native build.
+_ENGINE_MATCH_BONUS = 5.0
+
 # D782: a row that only runs via CPU offload or CPU-only is a real cost the
 # ranking must reflect — the speed axis (`_speed_score`) does NOT already
 # cover this: it reads `speed.estimate_tok_s`'s `tokensPerSecond`, which is
@@ -486,7 +496,40 @@ def _popularity_score(downloads: int | None) -> float:
     return min(100.0, 100.0 * math.log1p(downloads) / math.log1p(_POPULARITY_ANCHOR_DOWNLOADS))
 
 
-def _axis_scores(row: dict, ram_gb: float | None) -> dict:
+def _row_native_format(row: dict) -> str | None:
+    """The engine-native format a built row is in — `"mlx"`, `"gguf"` — or
+    None for anything else (plain transformers safetensors, ONNX, unknown).
+
+    `fileFormat` alone cannot do this: `_file_format` reports `safetensors`
+    for an MLX repo exactly as for a plain transformers one, so MLX is read off
+    the Hub's own `library_name` (`row["library"]`), and GGUF off a resolved
+    `file`, the `format` flag, or `fileFormat`. The values are the ones
+    `Runner.native_format` declares."""
+    if isinstance(row.get("library"), str) and row["library"].lower() == "mlx":
+        return "mlx"
+    if row.get("file") or row.get("format") == "gguf" or row.get("fileFormat") == "gguf":
+        return "gguf"
+    return None
+
+
+def _active_engine_format(capability: str | None) -> str | None:
+    """`Runner.native_format` of `capability`'s ACTIVE runner
+    (`for_capability`, the Preferences choice — not merely an available one),
+    or None. Resolved once per request by the callers, never per row, and
+    never cached across requests: the engine can change live."""
+    if not capability:
+        return None
+    runner = for_capability(capability)
+    return (getattr(runner, "native_format", "") or None) if runner is not None else None
+
+
+def _engine_formats_for(models: list[dict]) -> dict[str, str | None]:
+    """`_active_engine_format` for every capability present in `models`."""
+    return {cap: _active_engine_format(cap)
+            for cap in {m.get("capability") for m in models} if isinstance(cap, str)}
+
+
+def _axis_scores(row: dict, ram_gb: float | None, engine_format: str | None = None) -> dict:
     """The five raw 0-100 axis scores plus the flat-adjustment facts, read
     off `row` exactly once — the single source both `_composite_raw_score`
     (the blend) and `_score_breakdown` (the per-axis explanation, D1245)
@@ -506,10 +549,12 @@ def _axis_scores(row: dict, ram_gb: float | None) -> dict:
         "popularity": _popularity_score(row.get("downloads")),
         "on_disk": (row.get("local") or {}).get("state", "none") != "none",
         "run_mode": fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None,
+        "engine_match": engine_format is not None and _row_native_format(row) == engine_format,
     }
 
 
-def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
+def _composite_raw_score(row: dict, ram_gb: float | None,
+                         engine_format: str | None = None) -> float:
     """The composite blend BEFORE the `[0, 100]` clamp `_composite_score`
     applies for display — see that function for the full description of the
     five axes and the bonus/penalties below.
@@ -526,7 +571,7 @@ def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
     downloads order for every tied-at-zero row. `_ON_DISK_BONUS` does the
     same at the ceiling. The fix is to compare on THIS unclamped figure and
     only clamp the number actually shown."""
-    axes = _axis_scores(row, ram_gb)
+    axes = _axis_scores(row, ram_gb, engine_format)
     blended = (
         _WEIGHT_FIT * axes["fit"]
         + _WEIGHT_CAPABILITY * axes["capability"]
@@ -536,6 +581,8 @@ def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
     )
     if axes["on_disk"]:
         blended += _ON_DISK_BONUS
+    if axes["engine_match"]:
+        blended += _ENGINE_MATCH_BONUS
     if axes["run_mode"] == "cpu-offload":
         blended -= _CPU_OFFLOAD_PENALTY
     elif axes["run_mode"] == "cpu-only":
@@ -571,7 +618,8 @@ def _age_days(created: str | None) -> float | None:
 
 
 def _score_breakdown(row: dict, ram_gb: float | None,
-                      pool_gb: float | None = None) -> list[dict]:
+                      pool_gb: float | None = None,
+                      engine_format: str | None = None) -> list[dict]:
     """D1245/D1246: `row["matchBreakdown"]` — one entry per axis (plus the
     on-disk bonus and any run-mode penalty) explaining, in the SAME blended
     points `matchScore` is made of, what this row gained and lost.
@@ -598,7 +646,7 @@ def _score_breakdown(row: dict, ram_gb: float | None,
     and are OMITTED entirely when they do not apply — a row that runs on
     the GPU has no run-mode entry at all, rather than a zero-cost one a
     frontend would have to know to ignore."""
-    axes = _axis_scores(row, ram_gb)
+    axes = _axis_scores(row, ram_gb, engine_format)
     entries: list[dict] = []
     for axis, weight in _AXIS_WEIGHTS.items():
         score = axes[axis]
@@ -645,6 +693,8 @@ def _score_breakdown(row: dict, ram_gb: float | None,
         entries.append(entry)
     if axes["on_disk"]:
         entries.append({"axis": "onDisk", "gained": _ON_DISK_BONUS, "lost": 0.0})
+    if axes["engine_match"]:
+        entries.append({"axis": "engineMatch", "gained": _ENGINE_MATCH_BONUS, "lost": 0.0})
     if axes["run_mode"] == "cpu-offload":
         entries.append({"axis": "runMode", "gained": 0.0, "lost": _CPU_OFFLOAD_PENALTY,
                          "runMode": "cpu-offload"})
@@ -2390,11 +2440,14 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     pool_bytes = fit.available_budget_bytes(hardware=hardware)
     pool_gb = pool_bytes / fit.GB_BYTES if pool_bytes else None
     raw_scores: dict[int, float] = {}
+    engine_formats = _engine_formats_for(models)
     for row in models:
-        raw_score = _composite_raw_score(row, ram_gb)
+        engine_format = engine_formats.get(row.get("capability"))
+        raw_score = _composite_raw_score(row, ram_gb, engine_format)
         raw_scores[id(row)] = raw_score
         row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
-        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb)
+        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb,
+                                                 engine_format=engine_format)
 
     sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
     if sort == _BEST_SORT:
@@ -2806,11 +2859,14 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     pool_bytes = fit.available_budget_bytes(hardware=hardware)
     pool_gb = pool_bytes / fit.GB_BYTES if pool_bytes else None
     raw_scores: dict[int, float] = {}
+    engine_formats = _engine_formats_for(models)
     for row in models:
-        raw_score = _composite_raw_score(row, ram_gb)
+        engine_format = engine_formats.get(row.get("capability"))
+        raw_score = _composite_raw_score(row, ram_gb, engine_format)
         raw_scores[id(row)] = raw_score
         row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
-        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb)
+        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb,
+                                                 engine_format=engine_format)
 
     if sort == _BEST_SORT:
         # D1268: tier first (easy/tight/unknown/no) — see `_fit_tier`'s own

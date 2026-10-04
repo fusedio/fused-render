@@ -187,7 +187,7 @@ def test_best_sort_ranks_fit_tier_before_composite_score(client, hub_cache, monk
                   safetensors={"parameters": {"BF16": tight_bytes // 2}, "total": tight_bytes // 2}),
     ])
 
-    def _fake_raw_score(row, ram_gb):
+    def _fake_raw_score(row, ram_gb, engine_format=None):
         return 90.0 if row.get("id") == "org/tight-fit" else 80.0
 
     monkeypatch.setattr(hub, "_composite_raw_score", _fake_raw_score)
@@ -257,7 +257,7 @@ def test_best_sort_pull_in_keeps_unclamped_raw_order_when_scores_clamp_equal(
         },
     ])
 
-    def _fake_raw_score(row, ram_gb):
+    def _fake_raw_score(row, ram_gb, engine_format=None):
         # Both clamp to matchScore 100.0 (min(100.0, max(0.0, raw))) despite
         # differing wildly before clamping.
         return 250.0 if row.get("id") == "org/variant" else 100.0
@@ -865,3 +865,38 @@ def test_returned_rows_are_never_the_cached_dict_objects(hub_cache, client):
     # scoring write must have landed on a private copy, not this object.
     assert "matchScore" not in cached_row
     assert "matchScore" in returned_row
+
+
+def test_switching_the_active_engine_reranks_the_cached_pool(client, hub_cache, monkeypatch):
+    """The active runner changes live (Preferences, no restart). Two otherwise
+    identical rows, one MLX and one GGUF: the order flips with the engine
+    even though the scored-pool cache stays warm between the two requests."""
+    _pin_hardware(monkeypatch)
+    cfg = hub_catalog.load_config()
+    mlx_row = _pool_row("mlx-community/Twin-4bit", downloads=100)
+    mlx_row["raw"]["library_name"] = "mlx"
+    gguf_row = _pool_row("org/Twin-GGUF", downloads=100)
+    gguf_row["raw"]["library_name"] = "gguf"
+    gguf_row["raw"]["siblings"] = [{"rfilename": "twin-Q4_K_M.gguf"}]
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION, [mlx_row, gguf_row])
+
+    state = {"runner": types.SimpleNamespace(hub_filter_tags=(), code="mlx-text", native_format="mlx")}
+    other = types.SimpleNamespace(hub_filter_tags=("gguf",), code="llamacpp-text", native_format="gguf")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: state["runner"])
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (state["runner"], other))
+
+    def ranked():
+        resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "best", "limit": 24})
+        assert resp.status_code == 200
+        return {m["id"]: m for m in resp.json()["models"]}
+
+    first = ranked()
+    assert first["mlx-community/Twin-4bit"]["matchScore"] > first["org/Twin-GGUF"]["matchScore"]
+    assert any(e["axis"] == "engineMatch" for e in first["mlx-community/Twin-4bit"]["matchBreakdown"])
+    assert not any(e["axis"] == "engineMatch" for e in first["org/Twin-GGUF"]["matchBreakdown"])
+
+    # (A tagless stand-in, so the D412 format drop does not remove the MLX row
+    # and the test isolates the ranking.)
+    state["runner"] = types.SimpleNamespace(hub_filter_tags=(), code="llamacpp-text", native_format="gguf")
+    second = ranked()
+    assert second["org/Twin-GGUF"]["matchScore"] > second["mlx-community/Twin-4bit"]["matchScore"]

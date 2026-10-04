@@ -166,7 +166,7 @@ export function matchTitle(
 // the most", not "the full ledger".
 
 /** One short, parenthetical-free word naming an axis — the vocabulary the
- *  loss line draws from. `fit`/`onDisk` never appear here: fit gets its own
+ *  loss line draws from. `fit`/`onDisk`/`engineMatch` never appear here: fit gets its own
  *  dedicated second line (the verdict + GB numbers), and the on-disk bonus
  *  is not a loss. */
 function axisShortName(axis: HubMatchAxis["axis"]): string {
@@ -233,7 +233,7 @@ export function matchRowTip(
   const entries = breakdown ?? [];
 
   const losses = entries
-    .filter((e) => e.axis !== "onDisk" && e.axis !== "fit" && e.lost > 0.05)
+    .filter((e) => e.axis !== "onDisk" && e.axis !== "engineMatch" && e.axis !== "fit" && e.lost > 0.05)
     .sort((a, b) => b.lost - a.lost)
     .slice(0, 2)
     .map((e) => axisShortName(e.axis));

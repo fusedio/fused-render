@@ -1616,7 +1616,7 @@ def test_best_sort_ranks_fit_tier_before_composite_score(client, hub_cache, monk
     ])
     monkeypatch.setattr(httpx, "get", fake)
 
-    def _fake_raw_score(row, ram_gb):
+    def _fake_raw_score(row, ram_gb, engine_format=None):
         return 90.0 if row.get("id") == "org/tight-fit" else 80.0
 
     monkeypatch.setattr(hub, "_composite_raw_score", _fake_raw_score)
@@ -3448,3 +3448,59 @@ def test_file_format_prefers_safetensors_over_a_coincidental_bin_sibling(client,
     ])]))
     row = _search(client).json()["models"][0]
     assert row["fileFormat"] == "safetensors"
+
+
+# -- engine-match bonus (D1305) -----------------------------------------------
+
+
+def _engine_row(**kw):
+    base = {"fit": {"score": 80}, "params": None, "speedEstimate": None, "created": None,
+            "downloads": None, "local": {"state": "none"}, "library": None,
+            "file": None, "format": None, "fileFormat": "safetensors"}
+    base.update(kw)
+    return base
+
+
+def test_row_native_format_tells_mlx_from_plain_safetensors_and_gguf():
+    assert hub._row_native_format(_engine_row(library="mlx")) == "mlx"
+    assert hub._row_native_format(_engine_row(library="transformers")) is None
+    assert hub._row_native_format(_engine_row(library="gguf", fileFormat="gguf")) == "gguf"
+    assert hub._row_native_format(_engine_row(file="m-Q4_K_M.gguf", fileFormat="safetensors")) == "gguf"
+    assert hub._row_native_format(_engine_row(library=None, fileFormat=None)) is None
+
+
+def test_engine_match_bonus_goes_to_the_active_engines_format_only():
+    mlx = _engine_row(library="mlx")
+    gguf = _engine_row(library="gguf", fileFormat="gguf")
+    on_mlx = lambda r: hub._composite_raw_score(r, 32.0, engine_format="mlx")
+    assert on_mlx(mlx) - on_mlx(gguf) == pytest.approx(hub._ENGINE_MATCH_BONUS)
+    on_gguf = lambda r: hub._composite_raw_score(r, 32.0, engine_format="gguf")
+    assert on_gguf(gguf) - on_gguf(mlx) == pytest.approx(hub._ENGINE_MATCH_BONUS)
+    # No active format known: no bonus anywhere, scores identical to before.
+    assert hub._composite_raw_score(mlx, 32.0) == hub._composite_raw_score(gguf, 32.0)
+
+
+def test_engine_match_does_not_override_a_large_fit_gap():
+    good_other = _engine_row(library="gguf", fileFormat="gguf", fit={"score": 100})
+    poor_native = _engine_row(library="mlx", fit={"score": 20})
+    assert (hub._composite_raw_score(good_other, 32.0, engine_format="mlx")
+            > hub._composite_raw_score(poor_native, 32.0, engine_format="mlx"))
+
+
+def test_score_breakdown_reports_engine_match_only_when_it_applies():
+    mlx = _engine_row(library="mlx")
+    plain = _engine_row(library="transformers")
+    entry = next(e for e in hub._score_breakdown(mlx, 32.0, engine_format="mlx")
+                 if e["axis"] == "engineMatch")
+    assert entry == {"axis": "engineMatch", "gained": hub._ENGINE_MATCH_BONUS, "lost": 0.0}
+    assert not any(e["axis"] == "engineMatch" for e in hub._score_breakdown(plain, 32.0, engine_format="mlx"))
+    assert not any(e["axis"] == "engineMatch" for e in hub._score_breakdown(mlx, 32.0))
+
+
+def test_active_engine_format_reads_the_runner_native_format_table(monkeypatch):
+    import types as _t
+    monkeypatch.setattr(hub, "for_capability",
+                        lambda cap: _t.SimpleNamespace(code="x", native_format="mlx"))
+    assert hub._active_engine_format("text-generation") == "mlx"
+    monkeypatch.setattr(hub, "for_capability", lambda cap: None)
+    assert hub._active_engine_format("text-generation") is None
