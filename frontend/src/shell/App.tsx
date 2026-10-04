@@ -53,6 +53,7 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import EditAppFileBoot from "@shell/EditAppFileBoot";
@@ -1110,6 +1111,7 @@ export default function App({ config }: { config: Config }) {
             say it the same way so the comment stays true regardless of how
             this branch's own condition might change later. */}
         {!IS_EMBED && <UpdateNotifier />}
+        {!IS_EMBED && <RestartOverlay />}
         {/* A fresh install routes Home to this wizard, and a Render App user's
             very first fused-render action can be its Edit button: the
             `?_edit_appfile=` hand-off must not die here unread. The boot
@@ -1210,6 +1212,7 @@ export default function App({ config }: { config: Config }) {
           notify() store, so a pane mounting its own instance can only
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
+      {!IS_EMBED && <RestartOverlay />}
       {/* Render App's Edit button hand-off (`?_edit_appfile=`, DL-7): clones
           the .fused into local/ or, over an existing copy, asks whether to
           overwrite it. Once, top document, same guard as UpdateNotifier. */}
