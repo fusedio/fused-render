@@ -55,6 +55,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
+from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
 from fused_render.ai import hub_catalog_builder
@@ -2576,12 +2577,35 @@ def _drop_gone(worker: Worker) -> None:
     Shared by `refresh_memory()` (the sidebar's poll, which decides with
     `_alive`) and `ready_worker()` (every generation request, which decides
     with the stricter `_exited`) so the two agree on what "gone" leaves behind.
+
+    The row also says HOW it went (SPEC §50, D5): "the model process is gone:
+    killed by SIGKILL: …" rather than the bare phrase, which is what turns a
+    memory kill and a native crash into two different bug reports. The bare
+    phrase stays the prefix — and the whole message when there is no real exit
+    code to read (no Popen attached, as in every test fixture and an adopted
+    process) — because callers and tests match on it. The death is logged once,
+    with the tail of the worker's stderr, by whichever caller actually removes
+    the slot; nothing on this path runs `_cleanup_files`, so that log is still
+    on disk to be read.
     """
     worker.state = "error"
     worker.error = "the model process is gone"
+    code = None
+    if worker.proc is not None:
+        try:
+            polled = worker.proc.poll()
+        except OSError:
+            polled = None
+        if isinstance(polled, int) and not isinstance(polled, bool):
+            code = polled
     with _lock:
-        if _workers.get(worker.capability) is worker:
+        owned = _workers.get(worker.capability) is worker
+        if owned:
             del _workers[worker.capability]
+    if code is not None:
+        desc = (report_child_exit("ai-worker", worker.pid, code, _log_path(worker))
+                if owned else describe_exit(code))
+        worker.error = f"the model process is gone: {desc}"
 
 
 def _exited(worker: Worker) -> bool:

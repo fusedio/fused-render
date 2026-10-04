@@ -579,6 +579,9 @@ def quit_ctx(ladder, monkeypatch):
     monkeypatch.setattr(
         app_mod, "_stop_children",
         lambda: ladder["calls"].append(("children", None)))
+    # The "exit-record" rung writes outages.jsonl in the real log home and
+    # releases this process's crash file — neither belongs in a unit test.
+    monkeypatch.setattr(app_mod, "_record_clean_exit", lambda: None)
     return ladder
 
 
@@ -603,7 +606,10 @@ def test_teardown_order_capture_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx)
     # recording writing under a mount holds it busy, and this ladder is the ONLY
     # thing that finalises one — quit ends in os._exit, which runs no atexit
     # handler (see the DM-9 note in app.py).
-    assert steps == ["server", "children", "capture", "duckdb", "unmount", "rcd"]
+    # "exit-record" (SPEC §50) is last: a teardown cut off by the hard deadline
+    # must leave its crash file behind, because that quit was not clean.
+    assert steps == ["server", "children", "capture", "duckdb", "unmount", "rcd",
+                     "exit-record"]
 
 
 def test_teardown_drains_the_server_thread_within_a_bounded_wait(quit_ctx):

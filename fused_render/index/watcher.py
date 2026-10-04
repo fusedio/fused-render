@@ -364,6 +364,16 @@ def _exit_on_stdin_eof() -> None:
             pass
     except (OSError, ValueError):
         pass
+    # `os._exit` skips atexit, so the crash file `main` opened would survive
+    # this — the ordinary way a watcher ends — and read as "did not exit
+    # cleanly" (crashlog's contract for a leftover empty file). Release it
+    # explicitly first.
+    try:
+        from fused_render.crashlog import release
+
+        release()
+    except Exception:  # noqa: BLE001
+        pass
     os._exit(0)
 
 
@@ -388,4 +398,13 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # Crash hooks first (SPEC §50, D4). In the __main__ block, not main(), so
+    # an in-process caller never gets process-wide hooks. Guarded: a watcher
+    # must never fail to start over diagnostics.
+    try:
+        from fused_render.crashlog import install as _install_crashlog
+
+        _install_crashlog("index-watcher")
+    except Exception:  # noqa: BLE001
+        pass
     sys.exit(main())

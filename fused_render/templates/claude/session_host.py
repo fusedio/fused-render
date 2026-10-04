@@ -286,7 +286,33 @@ def _send_event(url: str, body: dict) -> None:
             return
 
 
+def _enable_faulthandler() -> None:
+    """Native-crash stacks for this child (SPEC §50, D4), stdlib only.
+
+    Not `fused_render.crashlog.install`: this file never imports the package —
+    it is loaded by path from a template that has to keep working on its own.
+    So faulthandler goes to fd 2 instead, and that is the right place anyway:
+    `agent._start` appends this process's stderr to `<run_dir>/host.err.log`,
+    so a SIGSEGV out of native code leaves its Python stack in the very output
+    the parent already reads after a death.
+
+    No SIGTERM registration, unlike `crashlog.install`: a deliberate stop is
+    routine for this process, and a stack dump on every one would bury the
+    real failures in that same stderr. Uncaught Python exceptions need
+    nothing here — the default hooks already print them to stderr. Never
+    raises: a child must not fail to start over diagnostics.
+    """
+    try:
+        import faulthandler
+
+        if sys.stderr is not None:
+            faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> None:
+    _enable_faulthandler()
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     agent = _load_agent(req["agent"])
     run_dir = req["run_dir"]

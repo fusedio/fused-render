@@ -556,7 +556,8 @@ def test_the_quit_ladder_runs_the_capture_rung_before_the_unmounts(monkeypatch):
 
     steps = desktop_app.quit_teardown(
         None, stop_captures=lambda: None, close_duckdb=lambda: None,
-        unmount_mounts=lambda: None, stop_rcd=lambda: None)
+        unmount_mounts=lambda: None, stop_rcd=lambda: None,
+        stop_children=lambda: None, record_exit=lambda: None)
     assert steps.index("capture") < steps.index("unmount")
 
 

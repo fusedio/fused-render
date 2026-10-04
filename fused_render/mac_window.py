@@ -126,7 +126,7 @@ from WebKit import (
 
 from fused_render import __version__, window_policy
 from fused_render._view_url_codec import app_page_path, view_url_path
-from fused_render.logs import log_path
+from fused_render.logs import log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -975,7 +975,19 @@ class _MenuTarget(NSObject):
             w.ns, None, None, None)
 
     def showLogs_(self, _s):
-        subprocess.run(["open", "-R", log_path()], check=False)
+        # The log FOLDER, not `-R` on this pid's file (SPEC §50): after a crash
+        # and relaunch this pid's file is the new, nearly empty session; the
+        # folder holds the crashed session's log, crash/, outages.jsonl and
+        # resources.jsonl side by side. Same as app._open_logs.
+        subprocess.run(["open", log_dir()], check=False)
+
+    def saveDiagnostics_(self, _s):
+        # Lazy: app.py is the entry module and imports this one; importing it
+        # back at call time is safe (rumps is only imported inside app.main).
+        # Off the main thread — `build_bundle` runs `log show` (SPEC §50).
+        from fused_render.app import save_diagnostics_async
+
+        save_diagnostics_async()
 
     def quitApp_(self, _s):
         self._m.quit()
@@ -1329,6 +1341,7 @@ def _build_main_menu(target) -> NSMenu:
 
     help_menu = submenu("Help", [
         item("Show App Logs in Finder", b"showLogs:"),
+        item("Save Diagnostics…", b"saveDiagnostics:"),
     ], main)
     NSApp.setHelpMenu_(help_menu)
 

@@ -2181,6 +2181,32 @@ def _detach():
         pass
 
 
+def _enable_faulthandler() -> None:
+    """Native-crash stacks for this child (SPEC §50, D4), stdlib only.
+
+    Not `fused_render.crashlog.install`: this worker must not import the
+    package at all (D152 — a detached child that bootstraps it is a failure
+    mode that already shipped once). So faulthandler goes to fd 2 instead, and
+    that is the right place anyway: `envinstall` points this process's stdout
+    and stderr at the install's own log file, so a SIGSEGV out of native code
+    leaves its Python stack in the very output the parent already reads after a
+    death.
+
+    No SIGTERM registration, unlike `crashlog.install`: a deliberate stop is
+    routine for this process, and a stack dump on every one would bury the
+    real failures in that same stderr. Uncaught Python exceptions need
+    nothing here — the default hooks already print them to stderr. Never
+    raises: a child must not fail to start over diagnostics.
+    """
+    try:
+        import faulthandler
+
+        if sys.stderr is not None:
+            faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main(args):
     """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
     <python_executable> <acquire_python> <allow_build>`
@@ -2208,4 +2234,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # Here, not in main(), which the tests call in-process: faulthandler is
+    # process-wide and belongs to the spawned worker only.
+    _enable_faulthandler()
     main(sys.argv[1:])

@@ -54,6 +54,17 @@ _APP_USER_MODEL_ID = "Fused.FusedRender.Desktop"
 
 
 def main() -> None:
+    # Crash hooks (SPEC §50, D4). Here, not at the top of the module: the
+    # crash file lives under `FUSED_RENDER_LOG_DIR`, which only exists once
+    # `self_environment()` has been applied above — and this runs windowless
+    # (pythonw), so a native fault would otherwise leave no trace at all.
+    # Guarded: diagnostics must never stop the app starting.
+    try:
+        from fused_render.crashlog import install as _install_crashlog
+
+        _install_crashlog("supervisor")
+    except Exception:  # noqa: BLE001
+        pass
     if sys.platform == "win32":
         import ctypes
 
