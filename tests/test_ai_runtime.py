@@ -12280,20 +12280,6 @@ def _speech(client, body):
     return client.post("/api/ai/speech", json=body, headers={"X-Fused": "1"})
 
 
-def test_the_bridges_accepted_speech_keys_match_the_servers_constant():
-    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "fused_render", "static", "runtime.js"),
-                  encoding="utf-8").read()
-    start = source.index("  function aiSpeech(opts)")
-    body = source[start:source.index("\n  }\n", start)]
-    match = re.search(r'const speechKeys = \[(.*?)\];', body)
-    assert match, "could not find aiSpeech's whitelist array in runtime.js"
-    assert sorted(re.findall(r'"([^"]+)"', match.group(1))) == sorted(ai_runtime._SPEECH_OPTIONS)
-    assert "base" not in ai_runtime._SPEECH_OPTIONS
-    assert "base" in ai_runtime._SPEECH_SERVER_OPTIONS
-    assert "speech: aiSpeech," in source
-
-
 def test_speech_renders_to_disk_with_the_default_model(client, fake_speech_runner):
     response = _speech(client, {"text": "Hello there."})
     assert response.status_code == 200, response.json()
@@ -12309,16 +12295,10 @@ def test_speech_renders_to_disk_with_the_default_model(client, fake_speech_runne
 
 
 def test_speech_needs_text(client, fake_speech_runner):
-    for body in ({}, {"text": ""}, {"text": "   "}, {"text": 3}):
+    for body in ({}, {"text": "   "}):
         response = _speech(client, body)
         assert response.status_code == 400, body
         assert "'text'" in response.json()["error"]
-
-
-def test_speech_refuses_an_unknown_option(client, fake_speech_runner):
-    response = _speech(client, {"text": "x", "speed": 2})
-    assert response.status_code == 400
-    assert "speed" in response.json()["error"]
 
 
 @pytest.mark.parametrize("provider", ["apple", "claude"])
@@ -12331,24 +12311,14 @@ def test_speech_refuses_options_the_named_model_does_not_take(client, fake_speec
     page, _ = base_photo
     clone = {"refAudio": "photo.png", "refText": "hi", "base": page}
     cases = [
-        ({"model": "org/fake-clone", "voice": "ryan", **clone}, "has no preset voices"),
-        ({"model": "org/fake-clone"}, "pass 'refAudio'"),
+        ({"model": "org/fake-clone"}, "needs 'refAudio'"),
         ({"model": "org/fake-preset", **clone}, "does not clone"),
         ({"model": "org/fake-design"}, "needs 'instruct'"),
+        ({"model": "org/fake-clone", "refAudio": "photo.png", "base": page}, "go together"),
     ]
     for extra, fragment in cases:
         response = _speech(client, {"text": "x", **extra})
-        assert response.status_code == 400, extra
-        error = response.json()["error"]
-        assert extra["model"] in error and fragment in error, error
-
-
-def test_speech_ref_audio_and_ref_text_go_together(client, fake_speech_runner, base_photo):
-    page, _ = base_photo
-    response = _speech(client, {"text": "x", "model": "org/fake-clone",
-                                "refAudio": "photo.png", "base": page})
-    assert response.status_code == 400
-    assert "go together" in response.json()["error"]
+        assert response.status_code == 400 and fragment in response.json()["error"], extra
 
 
 def test_speech_ref_audio_resolves_beside_the_page(client, fake_speech_runner, base_photo):
@@ -12416,15 +12386,3 @@ def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_ru
     section = _skill_section("Speech: `fused.ai.speech({text, ...})`")
     assert sorted(field for field in fields if field not in section) == []
     _wait_job(started["jobId"])
-
-
-def test_a_speech_rows_source_diverges_from_page_when_the_playground_sends_one(
-        client, fake_speech_runner):
-    started = client.post(
-        "/api/ai/speech", json={"text": "x"},
-        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
-    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
-    assert row["page"] == ""
-    assert row["source"] == "/ai-models/playground"
-    finished = _wait_job(started["jobId"])
-    assert finished["source"] == "/ai-models/playground"

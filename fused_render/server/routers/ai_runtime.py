@@ -598,14 +598,6 @@ def _speech_dir() -> str:
     return directory
 
 
-def _speech_voice_facts(model: str) -> tuple[str | None, list, list]:
-    traits = speech_traits(model)
-    if traits is not None:
-        return traits["mode"], traits["voices"], traits["languages"]
-    entry = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
-    return entry.get("voiceMode"), [], []
-
-
 def _video_side(value, default: int) -> int:
     """One dimension, clamped to the video range and snapped DOWN to a
     multiple of 32 — `_side`'s rule, with video's own bounds."""
@@ -1175,12 +1167,11 @@ def _catalog_with_downloads() -> list[dict]:
                                                    entry["id"])
             entry["promptScheme"] = _prompt_scheme(row["capability"],
                                                    entry["id"])
-            if row["capability"] == registry.TEXT_TO_SPEECH:
-                traits = speech_traits(entry["id"])
-                if traits is not None:
-                    entry["voiceMode"] = traits["mode"]
-                    entry["voices"] = traits["voices"]
-                    entry["languages"] = traits["languages"]
+            traits = (speech_traits(entry["id"])
+                      if row["capability"] == registry.TEXT_TO_SPEECH else None)
+            if traits:
+                entry.update(voiceMode=traits["mode"], voices=traits["voices"],
+                             languages=traits["languages"])
     return rows
 
 
@@ -2247,8 +2238,7 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
             return rejection
         fields["refAudio"] = ref_path
     if ("refAudio" in fields) != ("refText" in fields):
-        return _error("'refAudio' and 'refText' go together: the sample and what it says",
-                      status=400)
+        return _error("'refAudio' and 'refText' go together", status=400)
     language = fields.pop("language", "auto")
 
     model = _model_of(body) or catalog.default_for(registry.TEXT_TO_SPEECH)
@@ -2256,14 +2246,14 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         return _error(registry.unavailable_reason(registry.TEXT_TO_SPEECH)
                       or "no speech model is configured", status=409)
 
-    mode, voices, languages = _speech_voice_facts(model)
-    if mode is not None:
-        problem = formats.speech_option_error(
-            model, mode, voices, languages, voice=fields.get("voice"),
-            instruct=fields.get("instruct"), ref_audio=fields.get("refAudio"),
-            ref_text=fields.get("refText"), language=language)
-        if problem:
-            return _error(problem, status=400)
+    traits = speech_traits(model) or {
+        "mode": (catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}).get("voiceMode")}
+    problem = traits["mode"] and formats.speech_option_error(
+        model, traits["mode"], traits.get("voices"), traits.get("languages"),
+        voice=fields.get("voice"), instruct=fields.get("instruct"),
+        ref_audio=fields.get("refAudio"), ref_text=fields.get("refText"), language=language)
+    if problem:
+        return _error(problem, status=400)
 
     uid = secrets.token_hex(6)
     job = supervisor.speech_job_id(uid)
@@ -2273,21 +2263,11 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         supervisor.start_speech(model, request, job, page=page, source=source)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
-    reply = {
-        "jobId": job,
-        "path": canonical_fs_path(path),
-        "model": model,
-        "provider": "local",
-        "warnings": [],
-        "text": request["text"],
-        "language": language,
-    }
-    for key in ("voice", "instruct", "refText"):
-        if key in fields:
-            reply[key] = fields[key]
     if "refAudio" in fields:
-        reply["refAudio"] = canonical_fs_path(fields["refAudio"])
-    return reply
+        fields["refAudio"] = canonical_fs_path(fields["refAudio"])
+    return {"jobId": job, "path": canonical_fs_path(path), "model": model,
+            "provider": "local", "warnings": [], "text": request["text"],
+            "language": language, **fields}
 
 
 #: Whisper's two directions. One flag to the model, so leaving `translate` out

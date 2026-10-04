@@ -1789,35 +1789,26 @@ def is_qwen3_tts_snapshot(config: dict, dirnames) -> bool:
 def speech_option_error(model_id: str, mode: str, voices, languages, *,
                         voice=None, instruct=None, ref_audio=None, ref_text=None,
                         language=None) -> str | None:
-    voices = [str(v).lower() for v in (voices or [])]
-    languages = [str(v).lower() for v in (languages or []) if str(v).lower() != "auto"]
+    voices = [str(v).lower() for v in voices or []]
+    languages = sorted(str(v).lower() for v in languages or [] if str(v).lower() != "auto")
+    clip = ref_audio or ref_text
     if mode == "preset":
-        if ref_audio or ref_text:
-            return (f"{model_id} speaks with preset voices and does not clone; "
-                    "drop 'refAudio'/'refText', or use a Qwen3-TTS Base model")
+        if clip:
+            return f"{model_id} does not clone; drop 'refAudio'/'refText'"
         if voices and voice and str(voice).lower() not in voices:
             return f"{model_id} has no voice {voice!r}; it has {', '.join(voices)}"
     elif mode == "clone":
-        if voice:
-            return (f"{model_id} has no preset voices; pass 'refAudio' and 'refText' "
-                    "to clone a voice, or use a Qwen3-TTS CustomVoice model")
-        if instruct:
-            return (f"{model_id} clones a voice and takes no 'instruct'; use a "
-                    "Qwen3-TTS CustomVoice or VoiceDesign model for a style line")
+        if voice or instruct:
+            return f"{model_id} clones a voice and takes no 'voice' or 'instruct'"
         if not ref_audio or not ref_text:
-            return (f"{model_id} clones a voice: pass 'refAudio' (a 10-30 s sample) "
-                    "and 'refText' (what the sample says)")
+            return f"{model_id} needs 'refAudio' (a 10-30 s sample) and 'refText' (its words)"
     elif mode == "design":
-        if voice or ref_audio or ref_text:
-            return (f"{model_id} makes a voice from a description; pass only "
-                    "'instruct', not 'voice', 'refAudio' or 'refText'")
+        if voice or clip:
+            return f"{model_id} takes only 'instruct', not 'voice', 'refAudio' or 'refText'"
         if not instruct:
-            return (f"{model_id} needs 'instruct' to describe the voice, for "
-                    "example 'warm baritone, light British accent'")
-    if (language and str(language).lower() != "auto" and languages
-            and str(language).lower() not in languages):
-        return (f"{model_id} has no language {language!r}; use 'auto' or one of "
-                f"{', '.join(sorted(languages))}")
+            return f"{model_id} needs 'instruct' to describe the voice"
+    if language and str(language).lower() not in ["auto", *languages] and languages:
+        return f"{model_id} has no language {language!r}; use 'auto' or {', '.join(languages)}"
     return None
 
 

@@ -1439,8 +1439,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "nickname": "Qwen3-TTS",
             "size_gb": 2.50,
             "voiceMode": "preset",
-            "note": "Nine preset speakers in ten languages, with an optional "
-                    "style line such as 'calm, slow'.",
+            "note": "Nine preset voices, ten languages, optional style line.",
         },
         {
             "id": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
@@ -1450,7 +1449,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "nickname": "Qwen3-TTS",
             "size_gb": 2.52,
             "voiceMode": "clone",
-            "note": "Clones a voice from a 10-30 s sample and its transcript.",
+            "note": "Clones a voice from a 10-30 s sample.",
         },
         {
             "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
@@ -1460,8 +1459,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "nickname": "Qwen3-TTS",
             "size_gb": 4.52,
             "voiceMode": "preset",
-            "note": "The same preset speakers as the 0.6B model, with more "
-                    "natural pacing and emphasis.",
+            "note": "Preset voices with more natural pacing.",
         },
         {
             "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
@@ -1471,8 +1469,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "nickname": "Qwen3-TTS",
             "size_gb": 4.52,
             "voiceMode": "design",
-            "note": "Makes a voice from a description, for example 'warm "
-                    "baritone, light British accent'.",
+            "note": "Makes a voice from a description.",
         },
         {
             "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
@@ -1482,8 +1479,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "nickname": "Qwen3-TTS",
             "size_gb": 4.54,
             "voiceMode": "clone",
-            "note": "Clones a voice with the highest likeness of the "
-                    "Qwen3-TTS models.",
+            "note": "Clones a voice with the highest likeness.",
         },
     ],
 }

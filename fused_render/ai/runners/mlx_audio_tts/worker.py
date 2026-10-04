@@ -46,65 +46,41 @@ def download(model_id):
     return worker_base.download_snapshot(model_id)
 
 
-def _mlx_audio_load():
+def load(model_id, path):
     try:
         from mlx_audio.tts.utils import load_model
     except ImportError as e:
-        raise RuntimeError(
-            f"mlx-audio could not be imported from the runner environment at "
-            f"{sys.prefix} ({e.__class__.__name__}: {e}). That is an "
-            "environment failure rather than a problem with this model."
-        ) from e
-    return load_model
-
-
-def load(model_id, path):
-    load_model = _mlx_audio_load()
+        raise RuntimeError(f"mlx-audio could not be imported from {sys.prefix}: {e}") from e
     _pin_stream()
     model = load_model(path)
     config = getattr(model, "config", None)
-    if getattr(config, "model_type", "qwen3_tts") != "qwen3_tts":
-        raise RuntimeError(f"{model_id} is not a Qwen3-TTS checkpoint")
     mode = formats.SPEECH_VOICE_MODES.get(str(getattr(config, "tts_model_type", "base")))
-    if mode is None:
-        raise RuntimeError(f"{model_id} has an unknown Qwen3-TTS variant")
+    if getattr(config, "model_type", None) != formats.QWEN3_TTS_MODEL_TYPE or mode is None:
+        raise RuntimeError(f"{model_id} is not a Qwen3-TTS checkpoint")
+    speakers = [str(v) for v in getattr(model, "supported_speakers", None) or []]
     _loaded.clear()
-    speakers = [str(v) for v in (getattr(model, "supported_speakers", None) or [])]
     _loaded.update(
-        model=model,
-        model_id=model_id,
-        mode=mode,
-        speakers=speakers,
-        voices=[v.lower() for v in speakers],
-        languages=[str(v).lower() for v in (getattr(model, "supported_languages", None) or [])],
-    )
+        model=model, model_id=model_id, mode=mode, speakers=speakers,
+        languages=[str(v) for v in getattr(model, "supported_languages", None) or []])
     worker_base.set_state(device="mps")
 
 
-def memory():
+def _mx_memory(name):
     import mlx.core as mx
 
-    for probe in (getattr(mx, "get_active_memory", None),
-                  getattr(getattr(mx, "metal", None), "get_active_memory", None)):
-        if probe is None:
-            continue
-        value = probe()
+    for probe in (getattr(mx, name, None), getattr(getattr(mx, "metal", None), name, None)):
+        value = probe() if probe else None
         if isinstance(value, int) and value > 0:
             return value
     return None
+
+
+def memory():
+    return _mx_memory("get_active_memory")
 
 
 def peak_memory():
-    import mlx.core as mx
-
-    for probe in (getattr(mx, "get_peak_memory", None),
-                  getattr(getattr(mx, "metal", None), "get_peak_memory", None)):
-        if probe is None:
-            continue
-        value = probe()
-        if isinstance(value, int) and value > 0:
-            return value
-    return None
+    return _mx_memory("get_peak_memory")
 
 
 def release():
@@ -113,21 +89,6 @@ def release():
     clear = getattr(mx, "clear_cache", None)
     if clear is not None:
         clear()
-
-
-def _assert_tqdm_hook_exists(module):
-    if not hasattr(module, "tqdm"):
-        raise RuntimeError(
-            "mlx_audio.tts.models.qwen3_tts.qwen3_tts has no module-level "
-            "`tqdm` to hook for progress; the pinned mlx-audio changed")
-
-
-class _TokenTicker:
-    def __init__(self, job):
-        self.job = job
-
-    def __call__(self, *_args, desc=None, **_kwargs):
-        return _TokenBar(self.job, desc)
 
 
 class _TokenBar:
@@ -148,18 +109,10 @@ class _TokenBar:
             detail="Segment %d/%d · %ds of audio" % (
                 self.segment, self.segments, self.tokens // TOKENS_PER_SECOND))
 
-    def set_description(self, *_args, **_kwargs):
+    def close(self, *_args, **_kwargs):
         pass
 
-    def close(self):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        self.close()
-        return False
+    set_description = close
 
 
 def _write_wav(path, samples, sample_rate):
@@ -178,78 +131,53 @@ def _write_wav(path, samples, sample_rate):
 
 def generate(body):
     _pin_stream()
-
     model = _loaded.get("model")
     if model is None:
         raise RuntimeError("no model is loaded")
-
     text = str(body.get("text") or "")
-    voice = body.get("voice") or None
-    instruct = body.get("instruct") or None
-    ref_audio = body.get("refAudio") or None
-    ref_text = body.get("refText") or None
-    language = str(body.get("language") or "auto")
     out = str(body.get("out") or "")
-    job = body.get("job") or None
-    if not text.strip():
-        raise ValueError("'text' must not be empty")
-    if not out:
-        raise ValueError("'out' must be the path to write the audio to")
+    if not text.strip() or not out:
+        raise ValueError("'text' and 'out' are required")
+    language = str(body.get("language") or "auto").lower()
+    opts = {k: body.get(k) or None for k in ("voice", "instruct", "refAudio", "refText")}
     problem = formats.speech_option_error(
-        _loaded["model_id"], _loaded["mode"], _loaded["voices"], _loaded["languages"],
-        voice=voice, instruct=instruct, ref_audio=ref_audio, ref_text=ref_text,
-        language=language)
+        _loaded["model_id"], _loaded["mode"], _loaded["speakers"], _loaded["languages"],
+        voice=opts["voice"], instruct=opts["instruct"], ref_audio=opts["refAudio"],
+        ref_text=opts["refText"], language=language)
     if problem:
         raise ValueError(problem)
-
-    if _loaded["mode"] == "preset" and not voice and _loaded["speakers"]:
-        voice = _loaded["speakers"][0]
+    if _loaded["mode"] == "preset" and not opts["voice"] and _loaded["speakers"]:
+        opts["voice"] = _loaded["speakers"][0]
 
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     started = time.time()
+    job = body.get("job") or None
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=1, detail="Speaking")
 
     import numpy as np
     from mlx_audio.tts.models.qwen3_tts import qwen3_tts
 
-    _assert_tqdm_hook_exists(qwen3_tts)
+    if not hasattr(qwen3_tts, "tqdm"):
+        raise RuntimeError("mlx-audio's qwen3_tts has no `tqdm` to hook for progress")
     original_tqdm = qwen3_tts.tqdm
-    qwen3_tts.tqdm = _TokenTicker(job)
+    qwen3_tts.tqdm = lambda *_a, desc=None, **_k: _TokenBar(job, desc)
     try:
-        kwargs = {"text": text, "lang_code": language.lower(),
-                  "split_pattern": SPLIT_PATTERN, "verbose": False}
-        if voice:
-            kwargs["voice"] = voice
-        if instruct:
-            kwargs["instruct"] = instruct
-        if ref_audio:
-            kwargs["ref_audio"] = ref_audio
-            kwargs["ref_text"] = ref_text
-        results = list(model.generate(**kwargs))
+        results = list(model.generate(
+            text=text, lang_code=language, split_pattern=SPLIT_PATTERN, verbose=False,
+            voice=opts["voice"], instruct=opts["instruct"],
+            ref_audio=opts["refAudio"], ref_text=opts["refText"]))
     finally:
         qwen3_tts.tqdm = original_tqdm
     if not results:
         raise RuntimeError(f"{_loaded['model_id']} returned no audio for this text")
 
-    sample_rate = int(getattr(results[0], "sample_rate", 0) or getattr(model, "sample_rate", 24000))
+    sample_rate = int(getattr(results[0], "sample_rate", 0) or model.sample_rate)
     audio = np.concatenate([np.asarray(r.audio, dtype=np.float32).reshape(-1) for r in results])
     _write_wav(out, audio, sample_rate)
-
-    reply = {
-        "path": out,
-        "seconds": round(time.time() - started, 2),
-        "sampleRate": sample_rate,
-        "audioSeconds": round(len(audio) / sample_rate, 2),
-        "segments": len(results),
-        "text": text,
-        "language": language,
-    }
-    for key, value in (("voice", voice), ("instruct", instruct),
-                       ("refAudio", ref_audio), ("refText", ref_text)):
-        if value is not None:
-            reply[key] = value
-    return reply
+    return {"path": out, "seconds": round(time.time() - started, 2),
+            "audioSeconds": round(len(audio) / sample_rate, 2), "segments": len(results),
+            **{k: v for k, v in opts.items() if v}}
 
 
 def main():

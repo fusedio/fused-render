@@ -2077,10 +2077,6 @@
   height: 40px;
 }
 
-.pg-speech-warning {
-  color: var(--warning-strong);
-}
-
 .pg-segments {
   position: relative;
   display: flex;

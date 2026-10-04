@@ -115,36 +115,17 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
       ["refAudio", clip ? JSON.stringify(ref) : null],
       ["refText", clip ? JSON.stringify(refText) : null],
     ]);
+    const modeLine = {
+      preset: `Voices: ${model.voices?.join(", ") || "the catalog's voices list"}; instruct is an optional style line.`,
+      clone: "It copies a voice: refAudio (a short clip of one speaker) and refText (its exact words) are both required.",
+      design: "It makes a voice from a description: instruct (age, tone, pace, accent) is required.",
+    }[mode];
     lines.push(
-      "It turns text into spoken audio, saved as a WAV file. Call it from the page with " +
-        `await fused.ai.speech({ text, model: ${JSON.stringify(model.id)}${extra}, onProgress }) — ` +
-        "it resolves once the WAV is on disk, with a url that plays in an <audio controls>. " +
-        "Apple Silicon only, with no fallback on other platforms — check fused.ai.models.catalog() " +
-        "before offering the feature. " +
-        (extra ? "The options above are the settings I tuned in the Playground." : ""),
+      `It reads text aloud to a WAV file: await fused.ai.speech({ text, model: ${JSON.stringify(model.id)}${extra}, onProgress }) ` +
+        "resolves with audio[0].url for an <audio controls>. Apple Silicon only; check fused.ai.models.catalog() first. " +
+        modeLine +
+        (extra ? " The options above are the settings I tuned in the Playground." : ""),
     );
-    if (mode === "clone") {
-      lines.push(
-        "This model copies a voice: pass refAudio (a short, clear clip of one speaker) and " +
-          "refText (the exact words in that clip). Both are required. It has no preset voices.",
-      );
-    } else if (mode === "design") {
-      lines.push(
-        "This model makes a new voice from a description: pass instruct (who speaks and how — " +
-          "age, tone, pace, accent). It is required. It has no preset voices.",
-      );
-    } else {
-      const voices = model.voices?.length ? ` (${model.voices.join(", ")})` : "";
-      lines.push(
-        `This model speaks in preset voices: pass voice as one speaker name${voices}, and an ` +
-          "optional instruct line for the speaking style.",
-      );
-    }
-    if (model.languages?.length) {
-      lines.push(
-        `language is optional and defaults to "auto"; it can be one of ${model.languages.join(", ")}.`,
-      );
-    }
   } else if (capability === "embeddings") {
     // **The prose is SPLIT by what this model declares, and the reason is that
     // the route refuses the other half** (SPEC §40). A seeded session that was

@@ -28,7 +28,7 @@ export interface StarterPrompt {
 // `buildAppAnnotation` puts in the chip. Spelled out here rather than imported
 // from `@apps/ai_models` because an app may only import platform + itself; the
 // test asserts the pool uses exactly these, so a typo cannot quietly create a
-// eighth bucket nothing ever filters to.
+// new bucket nothing ever filters to.
 export const STARTER_CAPABILITIES = [
   "text-generation",
   "text-to-image",

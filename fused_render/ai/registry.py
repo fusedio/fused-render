@@ -1888,8 +1888,7 @@ _RUNNERS: tuple[Runner, ...] = (
         label="MLX Audio (Apple Silicon)",
         short_label="MLX Audio",
         family_label="MLX Audio",
-        note="Reads text aloud with Qwen3-TTS: preset voices, a voice cloned "
-             "from a short sample, or a voice described in words. 2.5 to 4.5 GB per model.",
+        note="Reads text aloud with Qwen3-TTS. 2.5 to 4.5 GB per model.",
         hub_filter_tags=("qwen3_tts",),
         _available=_apple_silicon,
     ),

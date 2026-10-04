@@ -21,8 +21,7 @@ import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type VoiceMode = NonNullable<AiCatalogModel["voiceMode"]>;
 
-const REF_EXTENSIONS = [".wav", ".mp3", ".flac", ".m4a", ".ogg"] as const;
-const REF_TYPES = REF_EXTENSIONS.map((e) => e.slice(1));
+const REF_TYPES = ["wav", "mp3", "flac", "m4a", "ogg"];
 
 const AUTO = "auto";
 
@@ -52,40 +51,12 @@ const STARTERS: SpeechSample[] = [
     voice: "A gentle storyteller. She speaks softly and slowly, like a bedtime story.",
   },
   {
-    name: "Reminder",
-    icon: StarterIcons.list,
-    prompt: "Your meeting starts in ten minutes. Please bring the report and your notes.",
-    voice: "A short, bright assistant voice. Fast and precise.",
-  },
-  {
     name: "Recipe",
     icon: StarterIcons.bowl,
     prompt: "First, boil the water. Then add the pasta and stir. Cook it for nine minutes.",
     voice: "A cheerful chef with a light accent. He sounds happy and relaxed.",
   },
-  {
-    name: "Travel",
-    icon: StarterIcons.plane,
-    prompt: "The train to the airport leaves from platform four. Please keep your bags with you at all times.",
-    voice: "A calm announcer in a large station. Clear, even and polite.",
-  },
-  {
-    name: "Advert",
-    icon: StarterIcons.bulb,
-    prompt: "New and better. Our coffee is fresh every morning. Come in today and try a free cup.",
-    voice: "An energetic young man. He speaks fast, with a big smile in his voice.",
-  },
-  {
-    name: "Poem",
-    icon: StarterIcons.leaf,
-    prompt: "The river runs slow under the old stone bridge, and the leaves fall gold in the evening light.",
-    voice: "An older man with a low, soft voice. He reads slowly and with feeling.",
-  },
 ];
-
-function modeOf(entry: AiCatalogModel): VoiceMode {
-  return entry.voiceMode ?? "preset";
-}
 
 function nameOf(value: string): string {
   return value
@@ -116,7 +87,7 @@ interface Run {
 }
 
 export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
-  const mode = modeOf(entry);
+  const mode: VoiceMode = entry.voiceMode ?? "preset";
   const voices = entry.voices ?? [];
   const languages = entry.languages ?? [];
 
@@ -161,13 +132,7 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
     setPicking(true);
     try {
       const path = await pickFile({ title: "Choose a voice clip", types: REF_TYPES });
-      if (path === null || !aliveRef.current) return;
-      const name = path.split("/").pop() || path;
-      if (!REF_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))) {
-        setError(`${name} is not an audio file. Use WAV, MP3, FLAC, M4A or OGG.`);
-        return;
-      }
-      setRefAudio(path);
+      if (path !== null && aliveRef.current) setRefAudio(path);
     } catch (e) {
       if (aliveRef.current) setError((e as Error).message);
     } finally {
@@ -229,15 +194,9 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
   const missing = missingFor(mode, text, refAudio, refText, instruct);
   const refName = refAudio ? refAudio.split("/").pop() || refAudio : null;
 
-  const voiceLine = settled
-    ? settled.voice
-      ? nameOf(settled.voice)
-      : settled.refAudio
-        ? "Copied voice"
-        : settled.instruct && mode === "design"
-          ? "Designed voice"
-          : "Default voice"
-    : null;
+  const voiceLine = settled?.voice
+    ? nameOf(settled.voice)
+    : { preset: "Default voice", clone: "Copied voice", design: "Designed voice" }[mode];
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
@@ -392,14 +351,7 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
         </div>
 
         <ConfigPanel open={configOpen} animated={configTouched.current}>
-          <RailField
-            label="Language"
-            hint={
-              languages.length === 0
-                ? "Auto finds the language from the text. The list shows after the download."
-                : "Auto finds the language from the text."
-            }
-          >
+          <RailField label="Language" hint="Auto finds the language from the text.">
             <RailSelect value={language} onChange={(e) => setLanguage(e.target.value)}>
               <option value={AUTO}>Auto</option>
               {languages.map((l) => (
@@ -454,12 +406,6 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
                     {voiceLine} · {settled.language && settled.language !== AUTO ? nameOf(settled.language) : "Auto"}
                   </span>
                 ) : null}
-                {!busy &&
-                  settled?.warnings?.map((w, i) => (
-                    <span key={i} className="pg-speech-warning">
-                      {w.message}
-                    </span>
-                  ))}
               </div>
             </div>
           </div>
