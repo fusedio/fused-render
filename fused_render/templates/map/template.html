@@ -1637,9 +1637,14 @@ const pointcloudEngine = {
     const z = s.z_offset ?? null;
     if (z !== a.z) {
       const base = ctl.getState().zOffsetBase;
-      ctl.setZOffsetEnabled(true);
-      ctl.setZOffset(z ?? (Number.isFinite(base) ? -base : 0));
-      a.z = z;
+      // Streaming loads resolve before points arrive. Both setters mark the
+      // offset manual, so let the control find the ground before applying
+      // the default; keep it pending for a later update.
+      if (z !== null || Number.isFinite(base)) {
+        ctl.setZOffsetEnabled(true);
+        ctl.setZOffset(z ?? -base);
+        a.z = z;
+      }
     }
     const manager = ctl._pointCloudManager;
     if (manager) {
