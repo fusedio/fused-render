@@ -164,14 +164,24 @@ def _raster_plan(path: str) -> dict:
             "note": "converted to a Cloud-Optimized GeoTIFF for streaming"}
 
 
-def _localize(url: str) -> dict:
-    """A remote raster the browser could not read, fetched by GDAL instead."""
+def _fetchable(url: str) -> str:
     from blob_tokens import TOKENS, container_of
 
-    signed = TOKENS.sign(url) if container_of(url) else url
-    final = _cache_path(_cache_key(url, "localize"), ".tif")
+    if not container_of(url):
+        return url
+    try:
+        return TOKENS.sign(url)
+    except (OSError, ValueError, KeyError):
+        return url
+
+
+def _localize(url: str) -> dict:
+    """A remote raster the browser could not read, fetched by GDAL instead."""
+    from blob_tokens import unsigned
+
+    final = _cache_path(_cache_key(unsigned(url), "localize"), ".tif")
     if not final.exists():
-        _to_cog("/vsicurl/" + signed, final)
+        _to_cog("/vsicurl/" + _fetchable(url), final)
     return {"load": "raster", "path": str(final), "converted": True,
             "note": "copied locally (the server does not allow browser reads)"}
 
@@ -244,12 +254,13 @@ def _multidim_plan(path: str) -> dict:
 
 def _download(url: str) -> Path:
     import requests
+    from blob_tokens import unsigned
 
-    final = _cache_path(_cache_key(url, "download"), _suffix(url) or ".bin")
+    final = _cache_path(_cache_key(unsigned(url), "download"), _suffix(url) or ".bin")
     if final.exists():
         return final
     tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
-    with requests.get(url, stream=True, timeout=60) as response:
+    with requests.get(_fetchable(url), stream=True, timeout=60) as response:
         response.raise_for_status()
         with open(tmp, "wb") as handle:
             for block in response.iter_content(1 << 20):

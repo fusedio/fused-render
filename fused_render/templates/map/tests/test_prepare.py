@@ -87,6 +87,20 @@ def test_convert_reencodes_even_a_tiled_file(prepare, tmp_path):
     assert result["converted"] and result["path"] != source and _is_tiled(result["path"])
 
 
+def test_a_localized_copy_is_reused_under_a_fresh_token(prepare, monkeypatch):
+    made = []
+
+    def to_cog(source, final):
+        made.append(source)
+        final.write_bytes(b"cog")
+
+    monkeypatch.setattr(prepare, "_to_cog", to_cog)
+    url = "https://example.com/scene.tif"
+    first = prepare._localize(url + "?se=a&sig=a")
+    assert prepare._localize(url + "?se=b&sig=b")["path"] == first["path"]
+    assert made == ["/vsicurl/" + url + "?se=a&sig=a"]
+
+
 def test_other_gdal_rasters_are_converted(prepare, tmp_path):
     img = tmp_path / "scene.img"
     with rasterio.open(img, "w", driver="HFA", width=64, height=64, count=1, dtype="uint8",
