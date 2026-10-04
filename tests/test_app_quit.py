@@ -753,12 +753,22 @@ def test_children_rung_is_bounded_by_its_budget(monkeypatch):
     from fused_render.ai import supervisor
     from fused_render.server import engine_host
 
+    from fused_render.server import index_watch
+    from fused_render.server import app as server_app
+    from fused_render import pty_session
+    import fused_render.index.runner as runner
+
     never = threading.Event()
     monkeypatch.setattr(engine_host, "refuse_new_children", lambda: None)
     monkeypatch.setattr(supervisor, "refuse_new_workers", lambda: None)
     monkeypatch.setattr(engine_host, "stop_all", lambda: never.wait(30))
     monkeypatch.setattr(supervisor, "unload_all", lambda: None)
-    monkeypatch.setattr(app_mod, "QUIT_CHILDREN_BUDGET_S", 0.3)
+    # Every other killer stubbed too: the real index path would cancel live runs
+    # on this machine and remove_server_json would touch the real discovery file.
+    monkeypatch.setattr(pty_session.REGISTRY, "shutdown_all", lambda: None)
+    monkeypatch.setattr(index_watch, "stop", lambda: None)
+    monkeypatch.setattr(server_app, "remove_server_json", lambda: None)
+    monkeypatch.setattr(runner, "list_runs", lambda cfg: {"runs": []})
     try:
         t0 = time.monotonic()
         app_mod._stop_children(budget_s=0.3)

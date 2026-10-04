@@ -1119,6 +1119,10 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
     """
     from fused_render import envinstall, projectenv
 
+    # Before the install, not only before the spawn: `envinstall` launches a
+    # DETACHED `uv sync` worker that setsid()s itself, lives in no registry the
+    # quit empties, and would keep pulling gigabytes after `os._exit`.
+    _refuse_if_quitting()
     if envinstall.is_installed(runner.folder):
         return envinstall.venv_python_for(runner.folder)
 
