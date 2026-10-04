@@ -11,7 +11,17 @@ A URL is one of three kinds relative to the server this process owns:
                   raw-file URL. Loads inside a window.
 - ``"external"``  any other http(s) — the default browser's job.
 - ``"other"``     anything else (about:blank, data:, blob:, javascript:).
-                  Left to WebKit; never bounced out of the process.
+                  Left to WebKit; never bounced out of the process — EXCEPT a
+                  main-frame navigation to a scheme WebKit cannot load itself
+                  (``fused-render://``, ``mailto:``, ...). WKWebView on macOS
+                  does not hand those to LaunchServices the way Safari does:
+                  the load fails in-view with "unsupported URL" and nothing
+                  else happens. That is how the update dialog's Restart
+                  (``fused-render://relaunch``), the FDA strip's relaunch and
+                  the down card's launch link all did nothing inside a native
+                  window — the page sat at "Quitting…" until its two-minute
+                  cap. Those go out through NSWorkspace like an external link,
+                  which is what delivers them to `application:openURLs:`.
 
 Ported from Render App (fused-render-lite `window_policy.py`), where the
 same decisions ran a year of `.fused` windows.
@@ -238,7 +248,27 @@ def navigation_action(
         if is_main_frame or not has_target_frame:
             return "open_external"
         return "allow"
+    if is_main_frame and needs_launch_services(url):
+        return "open_external"
     return "allow"
+
+
+#: Schemes WebKit renders or resolves on its own. Anything else with a scheme
+#: is some other application's URL (a deep link, mailto:, tel:) and WKWebView
+#: will not open it — see the module docstring.
+WEBKIT_SCHEMES = frozenset({"http", "https", "about", "blob", "data",
+                            "javascript", "file"})
+
+
+def needs_launch_services(url: str | None) -> bool:
+    """True for a URL whose scheme only another app can handle."""
+    if not url:
+        return False
+    try:
+        scheme = (urlsplit(url).scheme or "").lower()
+    except ValueError:
+        return False
+    return bool(scheme) and scheme not in WEBKIT_SCHEMES
 
 
 #: Right-click menu items WebKit proposes that would open a URL "in a new
