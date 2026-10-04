@@ -1,6 +1,7 @@
 // The flag's contract (monitor-flag.ts): `null` until the one prefs read lands,
 // absence of the key reads as off, only `true` is on, a publish beats a read
-// still in flight, and a failed read leaves the answer alone. `fetch` is
+// still in flight, and a failed read leaves the answer alone but retries on a
+// timer. `fetch` is
 // stubbed directly (getPrefs is a plain getJson), same as the dock tests.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
@@ -62,4 +63,46 @@ test("null until the read lands; a payload without the key reads as off; true is
 
   await act(async () => publishMonitorEnabled(false));
   expect(last()).toBe(false);
+});
+
+test("a failed read retries on a timer while the flag is still unanswered, so a never-remounting reader is not parked on null", async () => {
+  // A fresh module instance (bun keys modules by specifier, query included):
+  // the test above settled the shared one. A variable so tsc does not try to
+  // resolve the query-string path.
+  const specifier = "./monitor-flag.ts?retry";
+  const fresh = (await import(specifier)) as typeof import("@platform/lib/monitor-flag");
+  const timers: (() => void)[] = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((fn: () => void) => {
+    timers.push(fn);
+    return 0;
+  }) as unknown as typeof setTimeout;
+  try {
+    const pending = stubFetch();
+    const values: (boolean | null)[] = [];
+    function FreshProbe() {
+      values.push(fresh.useMonitorFeature());
+      return null;
+    }
+    let r!: ReactTestRenderer;
+    await act(async () => {
+      r = create(createElement(FreshProbe));
+    });
+    expect(pending).toHaveLength(1);
+
+    await act(async () => pending[0].reject(new Error("offline")));
+    await flush();
+    expect(values[values.length - 1]).toBe(null);
+    expect(pending).toHaveLength(1); // no hot loop: the retry waits for its timer
+
+    await act(async () => timers.splice(0).forEach((fn) => fn()));
+    expect(pending).toHaveLength(2);
+    await act(async () => pending[1].resolve({ monitor: { enabled: true } }));
+    await flush();
+    expect(values[values.length - 1]).toBe(true);
+
+    r.unmount();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
 });

@@ -24,6 +24,8 @@ import { getPrefs } from "@platform/lib/api";
 let enabled: boolean | null = null;
 let reading: Promise<void> | null = null;
 let generation = 0;
+/** How long a failed read waits before the next try. */
+const RETRY_MS = 3000;
 const listeners = new Set<(v: boolean | null) => void>();
 
 function set(next: boolean) {
@@ -41,9 +43,15 @@ function read(): Promise<void> {
       if (generation === departed) set(p.monitor?.enabled === true);
     })
     .catch(() => {
-      // A failed read is not an answer: leave `enabled` as it was and let the
-      // next mount try again rather than pinning "off" for the session.
+      // A failed read is not an answer: leave `enabled` as it was rather than
+      // pinning "off" for the session. Its one reader (App) never remounts and
+      // `/monitor` holds on `null`, so waiting for "the next mount" would park
+      // that route on its loading fallback for good — retry on a timer instead,
+      // for as long as someone is still listening and nothing has answered.
       reading = null;
+      setTimeout(() => {
+        if (enabled === null && listeners.size > 0) void read();
+      }, RETRY_MS);
     })
     .then(() => {});
   return reading;
