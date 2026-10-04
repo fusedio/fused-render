@@ -1,0 +1,476 @@
+"""The Linux native-window host: one GTK3 + WebKitGTK process that shows the
+app's windows, the counterpart of macOS's `mac_window.WindowManager`.
+
+Run as ``python -I -m fused_render.supervisor._linux.window_host --port N
+--socket PATH --state DIR [--disabled]`` by the supervisor (`windows.py`),
+after the server is ready. It listens on a unix socket (`window_host_ipc`) for
+``open`` / ``set_enabled`` / ``quit``; the supervisor's own open path and the
+server's ``POST /api/windows/open`` / prefs hook all go through it.
+
+Why a separate process: GTK wants the main thread of a process that owns a
+display connection, the supervisor's main thread is its event loop, and a
+WebKit web-process abort (see "Known gap" in docs/LINUX_DESKTOP_SPEC.md) or a
+GTK crash must never take the supervisor and the server down with it. If this
+process cannot start (no PyGObject, no typelib, no display) it exits with
+`EXIT_UNAVAILABLE` and a one-line reason on stderr; the supervisor logs it once
+and falls back to ``xdg-open`` browser tabs for the rest of the session.
+
+WebKitGTK and GTK come from the system, never the bundle. Layout:
+
+* the top half of this file is pure logic (`Host`, `map_*`, `FrameStore`) with
+  no GTK import, unit-tested on every OS against a fake `Backend`;
+* `load_toolkit` and `GtkBackend` are the only code that imports ``gi``, always
+  lazily and only reached from `main()`.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import urlsplit
+
+from fused_render import window_host_ipc, window_policy
+
+EXIT_UNAVAILABLE = 3  # supervisor reads this as "fall back to the browser"
+
+_DEFAULT_SIZE = (1200, 800)
+_MIN_DIM, _MAX_DIM = 100, 20000
+
+
+class ToolkitUnavailable(RuntimeError):
+    """GTK/WebKitGTK cannot be used here (missing package, typelib or display)."""
+
+
+# ---------------------------------------------------------------------------
+# Pure logic
+# ---------------------------------------------------------------------------
+
+# Navigation types that are the *main frame* going somewhere on the user's
+# behalf. WebKit2 4.1's NavigationAction has no is_main_frame, so this stands in
+# for it: a sub-frame load (a map's tile iframe, an embed) arrives as OTHER and
+# is left to the page, exactly like `navigation_action(is_main_frame=False)`.
+_MAIN_FRAME_NAV = {"LINK_CLICKED", "FORM_SUBMITTED", "FORM_RESUBMITTED",
+                   "BACK_FORWARD", "RELOAD"}
+
+
+def map_navigation(url: str | None, port: int, nav_type: str, *,
+                   button: int = 0, ctrl: bool = False) -> str:
+    """allow | new_window | open_external for a navigation inside a window.
+    ``nav_type`` is WebKitNavigationType's nick upper-cased (``LINK_CLICKED``)."""
+    return window_policy.navigation_action(
+        url, port,
+        is_main_frame=nav_type in _MAIN_FRAME_NAV,
+        has_target_frame=True,
+        wants_download=False,
+        new_window_modifier=ctrl or button == 2,
+    )
+
+
+def map_new_window(url: str | None, port: int) -> str:
+    """new_window | open_external for `window.open` / ``target=_blank``."""
+    return "open_external" if window_policy.classify(url, port) == "external" else "new_window"
+
+
+def map_response(*, can_show: bool, content_disposition: str | None) -> str:
+    return window_policy.response_action(
+        is_main_frame=True, can_show_mime=can_show, content_disposition=content_disposition)
+
+
+class FrameStore:
+    """Remembers each window's size (and position, where the display server
+    honours one) per `window_policy.frame_autosave_name`. Best effort: a corrupt
+    or unwritable file means default placement, never an error."""
+
+    def __init__(self, path) -> None:
+        self._path = Path(path)
+        self._data: dict = {}
+        try:
+            loaded = json.loads(self._path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                self._data = loaded
+        except (OSError, ValueError):
+            pass
+
+    def get(self, name: str) -> dict | None:
+        entry = self._data.get(name)
+        return entry if isinstance(entry, dict) and self._sane(entry.get("w"), entry.get("h")) else None
+
+    @staticmethod
+    def _sane(w, h) -> bool:
+        return (isinstance(w, int) and isinstance(h, int)
+                and _MIN_DIM <= w <= _MAX_DIM and _MIN_DIM <= h <= _MAX_DIM)
+
+    def put(self, name: str, w: int, h: int, x, y) -> None:
+        if not self._sane(w, h):
+            return
+        self._data[name] = {"w": w, "h": h,
+                            "x": x if isinstance(x, int) else None,
+                            "y": y if isinstance(y, int) else None}
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_name(self._path.name + ".tmp")
+            tmp.write_text(json.dumps(self._data), encoding="utf-8")
+            os.replace(tmp, self._path)
+        except OSError:
+            pass
+
+
+class Host:
+    """Command dispatch plus the window book. Everything that touches a window
+    runs through ``backend.run_on_main`` so GTK only ever sees its own thread;
+    the book itself is only touched from there."""
+
+    def __init__(self, port: int, backend, *, enabled: bool = True) -> None:
+        self.port = port
+        self.backend = backend
+        self.enabled = enabled
+        self._windows: list = []  # handles, in creation order
+
+    # -- IPC entry point (runs on the ipc thread) --
+    def dispatch(self, command: dict) -> dict:
+        cmd = command.get("cmd")
+        if cmd == "ping":
+            return {"ok": True}
+        if cmd == "open":
+            url = command.get("url")
+            if not isinstance(url, str):
+                return {"ok": False, "reason": "'url' must be a string"}
+            return self.backend.run_on_main(lambda: self.open_url(url))
+        if cmd == "set_enabled":
+            on = command.get("on")
+            if not isinstance(on, bool):
+                return {"ok": False, "reason": "'on' must be a boolean"}
+            self.backend.run_on_main(lambda: self.set_enabled(on))
+            return {"ok": True}
+        if cmd == "quit":
+            self.backend.run_on_main(self.backend.quit)
+            return {"ok": True}
+        return {"ok": False, "reason": f"unknown command {cmd!r}"}
+
+    # -- main thread --
+    def open_url(self, url: str) -> dict:
+        kind = window_policy.classify(url, self.port)
+        if kind == "other":
+            return {"ok": False, "reason": "unsupported url"}
+        if not self.enabled:
+            return {"ok": False, "reason": "disabled"}
+        if kind == "external":
+            self.backend.open_external(url)
+            return {"ok": True}
+        self.focus_or_open(url)
+        return {"ok": True}
+
+    def focus_or_open(self, url: str):
+        existing = self._find(url)
+        if existing is not None:
+            self.backend.present(existing)
+            return existing
+        key, view = window_policy.window_key_of(url), window_policy.window_view_of(url)
+        handle = self.backend.new_window(url, window_policy.frame_autosave_name(key, view))
+        self._windows.append(handle)
+        self.backend.present(handle)
+        return handle
+
+    def _find(self, url: str):
+        key, view = window_policy.window_key_of(url), window_policy.window_view_of(url)
+        for handle in self._windows:
+            live = self.backend.current_url(handle)
+            if key is None:
+                if window_policy.window_key_of(live) is None and _is_home(live):
+                    return handle
+            elif (window_policy.window_key_of(live) == key
+                  and window_policy.window_view_of(live) == view):
+                return handle
+        return None
+
+    def window_closed(self, handle) -> None:
+        if handle in self._windows:
+            self._windows.remove(handle)
+
+    def set_enabled(self, on: bool) -> None:
+        self.enabled = on
+        if not on:
+            for handle in list(self._windows):
+                self.backend.close(handle)
+            self._windows.clear()
+
+    def popup(self, url: str, kind: str) -> None:
+        """A `new_window` / `open_external` decision from a window's own policy
+        (`map_navigation` / `map_new_window`)."""
+        if kind == "open_external":
+            self.backend.open_external(url)
+        elif kind == "new_window":
+            self.focus_or_open(url)
+
+
+def _is_home(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        return urlsplit(url).path in ("", "/")
+    except ValueError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# GTK / WebKitGTK (Linux desktop only; never imported at module level)
+# ---------------------------------------------------------------------------
+
+def load_toolkit() -> SimpleNamespace:
+    """Import GTK3 + WebKit2 4.1 through PyGObject or say exactly why not."""
+    try:
+        import gi
+    except ImportError as error:
+        raise ToolkitUnavailable(
+            "PyGObject (gi) is not installed (pip install 'fused-render[linux-desktop]')"
+        ) from error
+    try:
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("WebKit2", "4.1")
+        from gi.repository import Gdk, GLib, Gtk, WebKit2  # noqa: PLC0415
+    except (ValueError, ImportError) as error:
+        raise ToolkitUnavailable(
+            f"GTK 3 / WebKit2 4.1 typelib not found ({error}); install the system package "
+            "gir1.2-webkit2-4.1 (Debian/Ubuntu) or webkit2gtk-4.1 (Arch, Fedora)"
+        ) from error
+    result = Gtk.init_check(None)  # (bool, argv) in PyGObject's GTK3 overrides
+    ok = result[0] if isinstance(result, tuple) else bool(result)
+    if not ok or Gdk.Display.get_default() is None:
+        raise ToolkitUnavailable("no graphical display available (DISPLAY/WAYLAND_DISPLAY unset?)")
+    return SimpleNamespace(Gtk=Gtk, Gdk=Gdk, GLib=GLib, WebKit2=WebKit2)
+
+
+class _Win:
+    """One window: the opaque handle `Host` keeps."""
+
+    def __init__(self, window, view, frame_name: str) -> None:
+        self.window, self.view, self.frame_name = window, view, frame_name
+
+
+class GtkBackend:
+    def __init__(self, tk, host_getter, state_dir: Path, log) -> None:
+        from fused_render import __version__
+
+        self.tk, self._host, self._log = tk, host_getter, log
+        self._frames = FrameStore(state_dir / "window-frames.json")
+        data_dir = str(state_dir / "window-host")
+        wk = tk.WebKit2
+        manager = wk.WebsiteDataManager(base_data_directory=data_dir,
+                                        base_cache_directory=data_dir + "/cache")
+        self._context = wk.WebContext.new_with_website_data_manager(manager)
+        self._context.connect("download-started", self._on_download_started)
+        self._version = __version__
+
+    # -- threading --
+    def run_on_main(self, fn):
+        if threading.current_thread() is threading.main_thread():
+            return fn()
+        done, box = threading.Event(), {}
+
+        def run():
+            try:
+                box["value"] = fn()
+            except BaseException as error:  # noqa: BLE001 - re-raised on the caller
+                box["error"] = error
+            done.set()
+            return False  # GLib.SOURCE_REMOVE
+
+        self.tk.GLib.idle_add(run)
+        if not done.wait(10):
+            raise TimeoutError("GTK main loop did not respond")
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def quit(self) -> None:
+        self.tk.Gtk.main_quit()
+
+    # -- windows --
+    def new_window(self, url: str, frame_name: str) -> _Win:
+        Gtk, wk = self.tk.Gtk, self.tk.WebKit2
+        view = wk.WebView.new_with_context(self._context)
+        settings = view.get_settings()
+        settings.set_user_agent_with_application_details("FusedRender", self._version)
+        settings.set_enable_developer_extras(True)
+        window = Gtk.Window()
+        window.set_title("FusedRender")
+        size = self._frames.get(frame_name)
+        window.set_default_size(*( (size["w"], size["h"]) if size else _DEFAULT_SIZE))
+        if size and size.get("x") is not None and size.get("y") is not None:
+            window.move(size["x"], size["y"])  # honoured on X11; Wayland ignores it
+        window.add(view)
+        win = _Win(window, view, frame_name)
+        view.connect("decide-policy", self._on_decide_policy)
+        view.connect("create", self._on_create)
+        view.connect("close", lambda _v: window.destroy())
+        view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or "FusedRender"))
+        view.connect("permission-request", self._on_permission)
+        view.connect("web-process-terminated", self._on_web_process_terminated)
+        window.connect("delete-event", lambda _w, _e: self._save_frame(win) and False)
+        window.connect("destroy", lambda _w: self._host().window_closed(win))
+        window.connect("key-press-event", lambda _w, e: self._on_key(win, e))
+        view.load_uri(url)
+        return win
+
+    def present(self, win: _Win) -> None:
+        win.window.show_all()
+        win.window.present()
+
+    def close(self, win: _Win) -> None:
+        self._save_frame(win)
+        win.window.destroy()
+
+    def current_url(self, win: _Win):
+        return win.view.get_uri()
+
+    def open_external(self, url: str) -> None:
+        from fused_render.supervisor._linux import ui
+
+        ui.open_url(url)
+
+    def _save_frame(self, win: _Win) -> bool:
+        try:
+            w, h = win.window.get_size()
+            x, y = win.window.get_position()
+            self._frames.put(win.frame_name, w, h, x, y)
+        except Exception:  # noqa: BLE001 - a lost frame is cosmetic
+            pass
+        return True
+
+    # -- signals --
+    def _on_key(self, win: _Win, event) -> bool:
+        Gdk = self.tk.Gdk
+        ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+        alt = bool(event.state & Gdk.ModifierType.MOD1_MASK)
+        key = event.keyval
+        if key == Gdk.KEY_F5 or (ctrl and key == Gdk.KEY_r):
+            win.view.reload()
+        elif alt and key == Gdk.KEY_Left:
+            win.view.go_back()
+        elif alt and key == Gdk.KEY_Right:
+            win.view.go_forward()
+        elif ctrl and key == Gdk.KEY_w:
+            win.window.close()
+        else:
+            return False
+        return True
+
+    def _on_decide_policy(self, view, decision, decision_type) -> bool:
+        wk = self.tk.WebKit2
+        host = self._host()
+        T = wk.PolicyDecisionType
+        if decision_type in (T.NAVIGATION_ACTION, T.NEW_WINDOW_ACTION):
+            action = decision.get_navigation_action()
+            url = action.get_request().get_uri()
+            if decision_type == T.NEW_WINDOW_ACTION:
+                verdict = map_new_window(url, host.port)
+            else:
+                nick = action.get_navigation_type().value_nick.upper().replace("-", "_")
+                ctrl = bool(action.get_modifiers() & self.tk.Gdk.ModifierType.CONTROL_MASK)
+                verdict = map_navigation(url, host.port, nick,
+                                         button=action.get_mouse_button(), ctrl=ctrl)
+            if verdict == "allow":
+                decision.use()
+            else:
+                decision.ignore()
+                host.popup(url, verdict)
+            return True
+        if decision_type == T.RESPONSE:
+            if not decision.is_main_frame_main_resource():
+                decision.use()
+                return True
+            headers = decision.get_response().get_http_headers()
+            disposition = headers.get_one("Content-Disposition") if headers else None
+            if map_response(can_show=decision.is_mime_type_supported(),
+                            content_disposition=disposition) == "download":
+                decision.download()
+            else:
+                decision.use()
+            return True
+        return False
+
+    def _on_create(self, view, navigation_action):
+        # window.open() / target=_blank that did not pass through decide-policy:
+        # route it by the same rule, never hand WebKit a second web view.
+        url = navigation_action.get_request().get_uri()
+        if url and url != "about:blank":
+            self._host().popup(url, map_new_window(url, self._host().port))
+        return None
+
+    def _on_permission(self, view, request) -> bool:
+        parts = urlsplit(view.get_uri() or "")
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        if window_policy.is_own_origin(parts.hostname, port, self._host().port):
+            request.allow()
+        else:
+            request.deny()
+        return True
+
+    def _on_web_process_terminated(self, view, reason) -> None:
+        self._log(f"web process terminated ({reason.value_nick}) at {view.get_uri()}")
+        url = view.get_uri() or ""
+        media = ("<p>If this page plays audio or video, this system's WebKitGTK may "
+                 "lack GStreamer plugins (see the FusedRender Linux notes).</p>"
+                 if reason.value_nick == "crashed" else "")
+        safe = url.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+        view.load_html(
+            f'<body style="font:15px sans-serif;margin:3em"><h3>This page stopped unexpectedly</h3>'
+            f'{media}<p><a href="{safe}">Reload</a></p></body>', url or None)
+
+    # -- downloads --
+    def _on_download_started(self, _context, download) -> None:
+        download.connect("decide-destination", self._on_decide_destination)
+
+    def _on_decide_destination(self, download, suggested) -> bool:
+        GLib = self.tk.GLib
+        folder = (GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD)
+                  or os.path.expanduser("~/Downloads"))
+        os.makedirs(folder, exist_ok=True)
+        download.set_destination(
+            GLib.filename_to_uri(window_policy.download_destination(folder, suggested), None))
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="window_host")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--socket", required=True)
+    parser.add_argument("--state", required=True)
+    parser.add_argument("--disabled", action="store_true")
+    args = parser.parse_args(argv)
+
+    def log(message: str) -> None:
+        print(f"window-host: {message}", file=sys.stderr, flush=True)
+
+    try:
+        tk = load_toolkit()
+    except ToolkitUnavailable as error:
+        log(str(error))
+        return EXIT_UNAVAILABLE
+
+    holder: dict = {}
+    backend = GtkBackend(tk, lambda: holder["host"], Path(args.state), log)
+    holder["host"] = Host(args.port, backend, enabled=not args.disabled)
+    stop = threading.Event()
+    window_host_ipc.serve(args.socket, holder["host"].dispatch, stop, log)
+    try:
+        tk.Gtk.main()
+    finally:
+        stop.set()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
