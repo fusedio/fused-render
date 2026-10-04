@@ -30,8 +30,10 @@ export interface UseCase {
   id: UseCaseId;
   /** The Models page section heading. */
   label: string;
-  /** The Playground switch and the Home chip — short enough for a segment. */
+  /** The Playground switch — short enough for a segment. */
   shortLabel: string;
+  /** The Home card's chip: one word. */
+  chip: string;
   /** The one-line blurb under the section heading. */
   blurb: string;
   /** Does the Playground turn "Think first" on when this use case is chosen?
@@ -51,6 +53,7 @@ export const USE_CASES: UseCase[] = [
     id: "writing",
     label: "Writing & everyday chat",
     shortLabel: "Writing & chat",
+    chip: "Writing",
     blurb: "Emails, rewrites, quick questions",
     thinking: false,
     placeholder: "Ask anything, or paste something to rewrite…",
@@ -103,6 +106,7 @@ export const USE_CASES: UseCase[] = [
     id: "coding",
     label: "Coding",
     shortLabel: "Coding",
+    chip: "Coding",
     blurb: "Write, explain and fix code",
     thinking: false,
     placeholder: "Describe the code you need…",
@@ -147,6 +151,7 @@ export const USE_CASES: UseCase[] = [
     id: "reasoning",
     label: "Deep reasoning",
     shortLabel: "Deep reasoning",
+    chip: "Reasoning",
     blurb: "Hard problems, step by step",
     thinking: true,
     placeholder: "Describe the problem, with its constraints…",
