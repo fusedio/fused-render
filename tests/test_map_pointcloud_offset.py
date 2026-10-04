@@ -18,12 +18,16 @@ const pcColormap = name => name || "viridis";
 const layer = {style: {}, visible: true, opacity: 1};
 let base, manual = false, offset = 0;
 const writes = [];
+let colormap, colorRange;
 const ctl = {
   getState: () => ({zOffsetBase: base}),
   setZOffsetEnabled: value => { manual = true; writes.push(["enabled", value]); },
   setZOffset: value => { manual = true; offset = value; writes.push(["offset", value]); },
-  setColorScheme() {}, setColormap() {}, setPointSize() {}, setColorRange() {},
+  setColorScheme() { colormap = "gray"; colorRange = null; },
+  setColormap(value) { colormap = value; }, setPointSize() {},
+  setColorRange(value) { colorRange = value; },
   clearElevationRange() {}, getHiddenClassifications: () => [],
+  setHiddenClassifications() {},
   getAvailableClassifications: () => [], setOpacity() {},
 };
 const r = {lidar: ctl, applied: {}, info: {}};
@@ -53,6 +57,15 @@ base = 100;
 delete layer.style.z_offset;
 pointcloudEngine.update(layer, r);
 assert.equal(offset, -100);
+// A loader scheme transition must not replace the saved colormap/range.
+layer.style.colormap = "plasma";
+layer.style.clim = [5, 10];
+pointcloudEngine.update(layer, r);
+layer.style.color_scheme = "intensity";
+pointcloudEngine.update(layer, r);
+assert.equal(colormap, "plasma");
+assert.equal(colorRange.absoluteMin, 5);
+assert.equal(colorRange.absoluteMax, 10);
 '''
     result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr

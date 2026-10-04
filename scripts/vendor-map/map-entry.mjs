@@ -29,6 +29,7 @@ export { ZarrLayer } from '@carbonplan/zarr-layer';
 // The same zarrita the zarr layer reads with, for the page's own metadata pass
 // (variables, dimension labels) — one copy, and its stores are interchangeable.
 export * as zarr from 'zarrita';
-export { LidarControl, getClassificationName, getClassificationColor,
+export { LidarControl } from './pointcloud-gpu.mjs';
+export { getClassificationName, getClassificationColor,
          COLORMAP_NAMES as LIDAR_COLORMAPS } from 'maplibre-gl-lidar';
 export { Protocol as PMTilesProtocol, PMTiles, FetchSource } from 'pmtiles';

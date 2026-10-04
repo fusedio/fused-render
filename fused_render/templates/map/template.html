@@ -1592,6 +1592,8 @@ const pointcloudEngine = {
       showColorbar: false, shareUrl: false, restoreFromUrl: false, closeOnOutsideClick: false,
       pointSize: s.point_size ?? 2, colorScheme: s.color_scheme ?? "elevation",
       colormap: pcColormap(s.colormap),
+      streamingPointBudget: 2000000, streamingMaxConcurrentRequests: 2,
+      streamingViewportDebounceMs: 200,
     });
     map.addControl(ctl, "top-left");
     r.lidar = ctl;
@@ -1600,10 +1602,8 @@ const pointcloudEngine = {
     failed.catch(() => {}); // an error after the load settled is not a load failure
     r.info = await Promise.race([ctl.loadPointCloud(httpUrl(plan.path)), failed]);
     r.streaming = ctl.isStreaming(r.info.id);
-    // Streamed nodes bring classes that were not there at load: hide them too.
+    // Filters are GPU lookups, including classes that arrive in later nodes.
     ctl.on("streamingprogress", () => {
-      const current = docLayer(layer.id);
-      if (current && r.status === "ready" && current.style.hidden_classes) this.update(current, r);
       scheduleUi();
     });
     r.applied = {};
@@ -1612,7 +1612,12 @@ const pointcloudEngine = {
   update(layer, r) {
     const s = layer.style, ctl = r.lidar, a = r.applied;
     const scheme = this.scheme(layer, r);
-    if (scheme !== a.scheme) { ctl.setColorScheme(scheme); a.scheme = scheme; }
+    if (scheme !== a.scheme) {
+      ctl.setColorScheme(scheme); a.scheme = scheme;
+      // The loader resets its colormap/range on some scheme transitions.
+      // Reapply the document's values even when those values did not change.
+      delete a.colormap; delete a.clim;
+    }
     const colormap = pcColormap(s.colormap);
     if (colormap !== a.colormap) { ctl.setColormap(colormap); a.colormap = colormap; }
     const size = s.point_size ?? 2;
@@ -1629,16 +1634,18 @@ const pointcloudEngine = {
       if (s.elevation_range) ctl.setElevationRange(...s.elevation_range); else ctl.clearElevationRange();
       a.range = range;
     }
-    const hidden = new Set(s.hidden_classes || []), shown = new Set(ctl.getHiddenClassifications());
-    for (const code of ctl.getAvailableClassifications())
-      if (hidden.has(code) !== shown.has(code)) ctl.setClassificationVisibility(code, !hidden.has(code));
+    const hidden = JSON.stringify([...(s.hidden_classes || [])].sort((a, b) => a - b));
+    if (hidden !== a.hidden) {
+      ctl.setHiddenClassifications(s.hidden_classes || []);
+      a.hidden = hidden;
+    }
     // Without a z_offset the control lifts the ground to zero: there is no
     // terrain under the cloud to sit on.
     const z = s.z_offset ?? null;
     if (z !== a.z) {
       const base = ctl.getState().zOffsetBase;
-      // Streaming loads resolve before points arrive. Both setters mark the
-      // offset manual, so let the control find the ground before applying
+      // Streaming loads resolve before points arrive. Setting the offset
+      // marks it manual, so let the control find the ground before applying
       // the default; keep it pending for a later update.
       if (z !== null || Number.isFinite(base)) {
         ctl.setZOffsetEnabled(true);
@@ -1648,9 +1655,11 @@ const pointcloudEngine = {
     }
     const manager = ctl._pointCloudManager;
     if (manager) {
-      manager.setPointCloudVisibility(r.info.id, layer.visible);
-      manager.setPointCloudOpacity(r.info.id, layer.opacity);
-    } else ctl.setOpacity(layer.visible ? layer.opacity : 0);
+      if (layer.visible !== a.visible) manager.setPointCloudVisibility(r.info.id, layer.visible);
+      if (layer.opacity !== a.opacity) manager.setPointCloudOpacity(r.info.id, layer.opacity);
+    } else if (layer.visible !== a.visible || layer.opacity !== a.opacity) ctl.setOpacity(layer.visible ? layer.opacity : 0);
+    a.visible = layer.visible;
+    a.opacity = layer.opacity;
   },
   // The scheme asked for, if the file has what it colours by.
   scheme(layer, r) {
@@ -2698,7 +2707,8 @@ function pointcloudControls(body, layer, r) {
   const progress = st.streamingProgress;
   stat.textContent = [
     `${Number(i.pointCount).toLocaleString()} points`,
-    r.streaming ? `Streamed by viewport (COPC/EPT octree)${progress ? ` · ${Number(progress.loadedPoints).toLocaleString()} loaded` : ""}` : "Read whole by the browser",
+    r.streaming ? `Streamed by viewport (COPC/EPT octree) · 2M point budget${progress ? ` · ${Number(progress.loadedPoints).toLocaleString()} loaded` : ""}` : "Read whole by the browser",
+    "GPU colour and class/elevation filters · automatic colour ranges use a sample",
     `Elevation ${fmtNum(i.bounds.minZ)} – ${fmtNum(i.bounds.maxZ)}`,
     [i.hasRGB && "RGB", i.hasIntensity && "intensity", i.hasClassification && "classification"].filter(Boolean).join(", "),
     "Drag with the right mouse button (or Ctrl) to tilt",

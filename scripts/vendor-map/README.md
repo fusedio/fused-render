@@ -24,6 +24,35 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
   points the bundle at this copy instead of unpkg, so LAZ/COPC opens offline.
 - `map.bundle.css` — MapLibre's and the point-cloud library's stylesheets.
 
+## Point-cloud rendering
+
+`pointcloud-gpu.mjs` adapts the pinned lidar manager while keeping its COPC/EPT
+viewport loader. The viewer requests at most two octree nodes concurrently,
+debounces viewport requests by 200 ms, and uses a two-million-point streaming
+budget per cloud. Plain LAS/LAZ files still load whole.
+
+Positions, intensity, classification and optional RGB use binary deck.gl
+attributes, split into chunks of at most one million points. Style changes
+reuse those buffers: a 256-entry colormap texture and class colour/visibility
+texture drive the shaders, while elevation filtering and height offset are
+uniforms. Hidden points are discarded in the picking pass too. Multiple style
+updates are coalesced into one animation frame, and one bulk class mask covers
+new streamed batches. Automatic percentile ranges sample at most 16,384 points;
+their values may differ slightly from full-cloud percentiles.
+
+Extra attributes stay in the loader's CPU arrays and are read only for the
+picked point, rather than uploaded for rendering. The loader still decodes LAZ
+and merges streamed batches using its existing implementation; this adapter
+does not introduce worker decoding or lazy network reads of extra attributes.
+Streaming batches can therefore still require new GPU uploads. The budget is
+per cloud, so opening many clouds increases total memory use.
+
+Run the buffer reuse, lookup and picking tests with:
+
+```sh
+node --test pointcloud-gpu.test.mjs
+```
+
 ## Why the map renders in the browser
 
 The previous viewer tiled everything in a Python daemon: a describe call, then
