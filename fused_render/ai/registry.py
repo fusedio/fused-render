@@ -155,6 +155,16 @@ DECISIONS = "text-classification"
 #: text AND calls tools is still one `text-generation` entry, tagged.
 TOOL_USE_TAG = "tool-use"
 VISION_TAG = "vision"
+#: The model honours the Playground's think-first toggle (a hybrid thinking
+#: checkpoint). Tag-shaped for the same reason as the two above.
+THINKS_TAG = "thinks"
+
+#: The three end-user USE CASES a text-generation entry can belong to (SPEC
+#: AI-28b). Tags/fields on an entry, never capability rows — see the note
+#: above. A model may belong to several; curated entries say so by hand
+#: (`catalog.SUGGESTIONS[...]["useCases"]`), everything else gets exactly one
+#: from `use_cases`' heuristic.
+USE_CASES: tuple[str, ...] = ("writing", "coding", "reasoning")
 
 #: A KNOWN-FAMILY allowlist for tool-use support, not a regex reverse-
 #: engineered over an arbitrary repo id — the comparative study this build
@@ -176,6 +186,16 @@ TOOL_USE_FAMILIES: tuple[tuple[str, ...], ...] = (
     ("mistral", "instruct"),
     ("gemma-3", "-it"),
     ("gemma-4", "-it"),
+)
+
+
+#: Families whose chat template takes the think-first toggle — an allowlist
+#: like `TOOL_USE_FAMILIES`, for the same reason (a regex would confidently
+#: tag checkpoints nobody verified). Each row is (all-of tokens, none-of
+#: tokens): the Qwen3 line hybrid-thinks, but the Qwen3-Coder checkpoints
+#: are non-thinking-only and ignore the switch.
+THINKING_FAMILIES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("qwen3",), ("coder",)),
 )
 
 
@@ -208,6 +228,40 @@ def supports_tool_use(repo_id: str, *, model_type: str | None = None,
               for family in TOOL_USE_FAMILIES)
 
 
+def supports_thinking(repo_id: str, *, model_type: str | None = None,
+                      architecture: str | None = None) -> bool:
+    """Is `repo_id` in a family `THINKING_FAMILIES` lists? Same
+    dependency-light, evidence-from-the-caller shape as `supports_tool_use`."""
+    haystack = _tag_haystack(repo_id, model_type, architecture)
+    return any(all(t in haystack for t in need) and not any(t in haystack for t in deny)
+               for need, deny in THINKING_FAMILIES)
+
+
+# Heuristic evidence for `use_cases`. Letter-bounded so `decode`/`barcode`
+# do not read as code and `r10` does not read as R1; `code` may be followed
+# by letters (`coder`, `codellama`, `codestral`, `starcoder`).
+_CODING_RE = re.compile(r"(?<![a-z])(?:star|deepseek-)?cod(?:e|er|ing)")
+_REASONING_RE = re.compile(r"(?<![a-z0-9])r1(?![a-z0-9])|reason|(?<![a-z])qwq|thinking")
+
+
+def use_cases(repo_id: str, *, pipeline_tag: str | None = None,
+              hub_tags: tuple[str, ...] | list[str] = ()) -> tuple[str, ...]:
+    """The ONE use case a NON-curated text model gets, llmfit-style: coding
+    for coder/code/starcoder ids (or a `code` Hub tag), reasoning for
+    r1/reason/qwq/thinking ids, else writing. Coding wins a tie.
+
+    A guess, and it will sometimes be wrong — curated entries never go
+    through it. Dependency-light like `capability_tags`: the caller hands over
+    whatever evidence it holds (the Hub search row's `pipeline_tag`/`tags`)."""
+    tag_text = " ".join(t for t in hub_tags if isinstance(t, str))
+    haystack = _tag_haystack(repo_id, pipeline_tag, tag_text).replace("|", " ")
+    if _CODING_RE.search(haystack):
+        return ("coding",)
+    if _REASONING_RE.search(haystack):
+        return ("reasoning",)
+    return ("writing",)
+
+
 def capability_tags(repo_id: str, *, model_type: str | None = None,
                     architecture: str | None = None,
                     has_vision: bool = False) -> tuple[str, ...]:
@@ -223,6 +277,8 @@ def capability_tags(repo_id: str, *, model_type: str | None = None,
         tags.append(TOOL_USE_TAG)
     if has_vision:
         tags.append(VISION_TAG)
+    if supports_thinking(repo_id, model_type=model_type, architecture=architecture):
+        tags.append(THINKS_TAG)
     return tuple(tags)
 
 
