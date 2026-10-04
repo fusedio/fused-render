@@ -197,12 +197,14 @@ export const USER_DATA_DIR = "~/.fused-render";
 /** This session's log. Per-pid in the persistent log home (fused_render/logs.py:
     `~/Library/Logs/fused-render/` on macOS, where Console.app lists it;
     `~/.fused-render/logs/app/` on Linux and Windows), so it is a glob rather
-    than a path, and `-t` puts the live one first. Both homes are named and
-    the missing one is silenced, so the same command works on every platform.
+    than a path, and `-t` puts the live one first. `find` with a QUOTED pattern,
+    not a shell glob: zsh (the macOS default) aborts the whole line on an
+    unmatched glob (`NOMATCH`), so naming both homes as globs listed nothing
+    on either platform. `find` just skips the home that is absent.
     It used to live in the system temp dir, which macOS clears — the log of a
     crash was gone by the time anyone looked for it. */
 export const LOG_LIST_COMMAND =
-  "ls -t ~/Library/Logs/fused-render/fused-render-*.log ~/.fused-render/logs/app/fused-render-*.log 2>/dev/null | head -3";
+  "find ~/Library/Logs/fused-render ~/.fused-render/logs/app -name 'fused-render-*.log' 2>/dev/null | xargs ls -t 2>/dev/null | head -3";
 
 /** The "where to look" section of the agent brief. */
 function whereToLook(ctx: TroubleContext): string[] {

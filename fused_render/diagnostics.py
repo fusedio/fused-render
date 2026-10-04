@@ -703,6 +703,7 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
     chunks: list[bytes] = []  # newest first
     covered_from = now
     timed_out = False
+    failed = False
     end = now
     while end > now - span:
         start = max(end - LOG_SHOW_CHUNK_S, now - span)
@@ -727,19 +728,31 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
         except OSError as e:
             w.skipped.append({"source": source, "reason": str(e)})
             return
+        if proc.returncode != 0:
+            # A failed slice must not read as "no memory events": record the
+            # error and stop here — `covered_from` stays at the last slice
+            # that actually answered, so the header and manifest say so.
+            err = (proc.stderr or b"").decode("utf-8", "replace").strip()[-500:]
+            w.skipped.append({"source": f"{source} {fmt(start)}..{fmt(end)}",
+                              "reason": f"exit {proc.returncode}: {err or 'no stderr'}"})
+            failed = True
+            break
         chunks.append(proc.stdout or b"")
         covered_from = start
         end = start
 
     if not chunks:
-        w.skipped.append({"source": source, "reason": f"timed out after {LOG_SHOW_TIMEOUT_S}s "
-                                                      "before the first slice finished"})
+        if not failed:
+            w.skipped.append({"source": source,
+                              "reason": f"timed out after {LOG_SHOW_TIMEOUT_S}s "
+                                        "before the first slice finished"})
         return
     fd, tmp = tempfile.mkstemp(prefix=".fused-render-logshow-", suffix=".txt", dir=tmp_dir)
     try:
         with os.fdopen(fd, "wb") as out:
             header = (f"# log show, {fmt(covered_from)} -> {fmt(now)}"
                       + (" (deadline hit: older slices not read)" if timed_out else "")
+                      + (" (an older slice failed: see manifest skipped)" if failed else "")
                       + "\n").encode()
             out.write(header)
             for body in reversed(chunks):  # chronological
@@ -747,10 +760,11 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
         if w.add("os/unified-log.txt", tmp, LOG_SHOW_CAP):
             w.collected[-1]["source"] = "log show --start ... --end ... '<predicate>'"
             w.collected[-1]["covered_from"] = covered_from
-            if timed_out:
+            if timed_out or failed:
                 w.collected[-1]["truncated"] = True
-                w.collected[-1]["note"] = (f"deadline {LOG_SHOW_TIMEOUT_S}s hit; "
-                                           f"covers {fmt(covered_from)} onward only")
+                w.collected[-1]["note"] = (
+                    (f"deadline {LOG_SHOW_TIMEOUT_S}s hit" if timed_out else "a slice failed")
+                    + f"; covers {fmt(covered_from)} onward only")
     finally:
         try:
             os.unlink(tmp)
