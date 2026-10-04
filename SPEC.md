@@ -10058,6 +10058,30 @@ an AI Models page that could say what was on disk but not what was *running*.
   evidence for an uncached repo whose id alone says nothing. `registry.py`
   stays dependency-light: neither function reads a filesystem or the
   network itself, taking whatever evidence the caller already has instead.
+- **AI-28b** **Text models are grouped by use case (`writing`, `coding`,
+  `reasoning`); vision stays a badge.** `registry.py`/`catalog.py` carry a
+  per-entry `use_cases` list on the curated text rows and a heuristic for any
+  other text model (used for hub search rows and cached models); a `thinks` tag
+  marks models that reason before answering. `describe_catalog` exposes
+  `useCases: string[]`, `useCasePicks: string[]` (the use cases this model is
+  the star of) and `thinks` in `tags`. Writing and coding stars are curated
+  (`Qwen3-Coder-30B-A3B` is the coding pick on both `mlx-text` and
+  `llamacpp-text`); the reasoning star is `catalog.reasoning_pick`, the largest
+  capable model whose `fit.verdict` is not `no` (`tight` counts). The curated
+  text lists may now hold six rows (the cap was five). Frontend: one shared
+  definition in `apps/ai_models/lib/useCases.ts` (labels, blurbs, default
+  thinking, starters); the Models text pane opens with three headed sections
+  (each its starred model, with the fit pill) above an "All text models" list
+  carrying "thinks" / "sees images" chips; the Playground has a segmented
+  switch (`?uc=`), per-use-case starters, a "Think first" toggle defaulted by
+  the use case, and an image notice with "Switch to X" / "Remove image" when
+  the chosen model cannot see (the attachment lives in `PlaygroundTab`, so a
+  switch keeps the picture); Home's Text card links Writing / Reasoning /
+  Coding. Notes for the next builder: only the switch handler writes `uc`
+  (never an effect); `pickPlaygroundModel` falls back to the use case's star;
+  `playgroundModels` includes any model with a non-empty `useCasePicks`; tests
+  pin literal source text in `CapabilityPane.tsx` and `ModelRow.tsx`; the
+  Qwen3-Coder mirror publish is still owed.
 - **AI-29** **Path-hardening audit of the download paths** (`runners/
   worker_base.py`, `runners/mirror.py`, and items 13/14's own additions)
   **(D533).** Findings:

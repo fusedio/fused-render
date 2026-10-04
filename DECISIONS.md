@@ -6191,3 +6191,29 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
   document-level listener itself is registered with `{ capture: true }` so
   it fires before xterm's own (bubble-phase) handler regardless of DOM
   order.
+
+## Text models grouped by use case (2026-10-04, worktree-text-use-cases)
+
+- **Use cases are a UI and catalog grouping, not an SDK concept.** Three ids -
+  `writing` (thinking off), `coding` (thinking off), `reasoning` (thinking on) -
+  ride the catalog payload as `useCases` and `useCasePicks`. `fused.ai.text`,
+  its verbs and the wire `thinking` flag are unchanged; the Playground just
+  sends the use case's default for `thinking`.
+- **Vision is not a use case.** `acceptsImage` becomes a "sees images" badge and
+  an image-incompatible notice in the Playground. A fourth tab would have
+  split one model's strengths across two lists.
+- **The reasoning star is computed on the server** (`catalog.reasoning_pick`:
+  the largest capable model whose fit is not "no"; "tight" is accepted), so the
+  Models page and the Playground read one payload and agree. Writing and coding
+  stars are curated.
+- **Qwen3-Coder-30B-A3B is the coding pick on both text engines.** Its mirror
+  publish was NOT done (AWS credentials expired in the builder's session), so
+  until it is published downloads fall back to the Hub; see the
+  changing-suggested-models skill.
+- **The six-row cap on the text lists was relaxed from five** so the extra pick
+  fits without evicting a curated row.
+- **Selection is URL-driven, written only by a click.** `?uc=` joins `?cap=` and
+  `?model=`; only the switch handler writes it (a push). No effect writes the
+  URL, so there is no render loop (see url-write-in-effect).
+- **Home's Text card is a div with a main link plus three chip links**, to avoid
+  nested anchors; the other Playground cards stay a single anchor.
