@@ -1,0 +1,147 @@
+"""Server-side half of Linux native windows (`fused_render/linux_windows.py`):
+the `window_policy.native_hooks` it installs, how they fall back to a browser
+tab, and how the Preferences state reports `available`."""
+import os
+import shutil
+import sys
+import tempfile
+import threading
+
+import pytest
+
+from fused_render import linux_windows, window_policy
+from fused_render import window_host_ipc as ipc
+
+
+@pytest.fixture(autouse=True)
+def clean_hooks():
+    saved = dict(window_policy.native_hooks)
+    window_policy.native_hooks.clear()
+    yield
+    window_policy.native_hooks.clear()
+    window_policy.native_hooks.update(saved)
+
+
+@pytest.fixture
+def sock():
+    d = tempfile.mkdtemp(prefix="fr")
+    try:
+        yield os.path.join(d, "h.sock")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+def host(sock):
+    seen, stop = [], threading.Event()
+    reply = {"open": {"ok": True}}
+
+    def handler(cmd):
+        seen.append(cmd)
+        return reply.get(cmd["cmd"], {"ok": True})
+
+    ipc.serve(sock, handler, stop)
+    import time
+    for _ in range(100):
+        if os.path.exists(sock):
+            break
+        time.sleep(0.01)
+    yield seen, reply
+    stop.set()
+
+
+def test_installs_nothing_off_linux(sock):
+    assert linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="darwin") is False
+    assert window_policy.native_hooks == {}
+
+
+def test_installs_nothing_without_the_supervisor_env():
+    assert linux_windows.install(8123, {}, platform="linux") is False
+    assert window_policy.native_hooks == {}
+
+
+def test_installs_the_three_hooks(sock):
+    assert linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux") is True
+    assert set(window_policy.native_hooks) == {"apply", "open_app", "usable"}
+
+
+def test_open_app_sends_the_apps_window_url_to_the_host(sock, host, tmp_path):
+    seen, _ = host
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    window_policy.native_hooks["open_app"](str(tmp_path))
+    opens = [c for c in seen if c["cmd"] == "open"]
+    assert len(opens) == 1
+    assert opens[0]["url"] == "http://127.0.0.1:8123" + window_policy.app_window_path(str(tmp_path))
+
+
+def test_open_app_falls_back_to_a_browser_tab_when_declined(sock, host, tmp_path, monkeypatch):
+    _, reply = host
+    reply["open"] = {"ok": False, "reason": "disabled"}
+    tabs = []
+    monkeypatch.setattr(linux_windows, "_open_in_browser", tabs.append)
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    window_policy.native_hooks["open_app"](str(tmp_path))
+    assert tabs == ["http://127.0.0.1:8123" + window_policy.app_window_path(str(tmp_path))]
+
+
+def test_open_app_falls_back_when_the_host_is_gone(sock, tmp_path, monkeypatch):
+    tabs = []
+    monkeypatch.setattr(linux_windows, "_open_in_browser", tabs.append)
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")  # nothing listening
+    window_policy.native_hooks["open_app"](str(tmp_path))
+    assert len(tabs) == 1
+
+
+def test_apply_forwards_the_preference(sock, host):
+    seen, _ = host
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    window_policy.native_hooks["apply"](False)
+    window_policy.native_hooks["apply"](True)
+    assert [c for c in seen if c["cmd"] == "set_enabled"] == [
+        {"cmd": "set_enabled", "on": False}, {"cmd": "set_enabled", "on": True}]
+
+
+def test_apply_never_raises_when_the_host_is_gone(sock):
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    window_policy.native_hooks["apply"](False)  # must not raise: the pref still stores
+
+
+def test_usable_reflects_a_live_host(sock, host):
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    assert window_policy.native_hooks["usable"]() is True
+
+
+def test_usable_is_false_when_the_host_is_gone(sock):
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    assert window_policy.native_hooks["usable"]() is False
+
+
+# ---- Preferences "available" ------------------------------------------------
+
+def test_prefs_available_on_linux_only_with_a_live_host(monkeypatch):
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert prefs._native_windows_state()["available"] is False
+    window_policy.native_hooks["usable"] = lambda: True
+    window_policy.native_hooks["apply"] = lambda on: None
+    assert prefs._native_windows_state()["available"] is True
+    window_policy.native_hooks["usable"] = lambda: False
+    assert prefs._native_windows_state()["available"] is False
+
+
+def test_prefs_available_is_unchanged_on_macos(monkeypatch):
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert prefs._native_windows_state()["available"] is False
+    window_policy.native_hooks["apply"] = lambda on: None
+    assert prefs._native_windows_state()["available"] is True
+
+
+def test_prefs_unavailable_on_windows_even_with_a_stray_hook(monkeypatch):
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    window_policy.native_hooks.update({"apply": lambda on: None, "usable": lambda: True})
+    assert prefs._native_windows_state()["available"] is False

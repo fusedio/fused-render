@@ -768,8 +768,17 @@ def _native_windows_state() -> dict:
 
     from fused_render import window_policy
 
-    return {"enabled": native_windows_enabled(),
-            "available": sys.platform == "darwin" and "apply" in window_policy.native_hooks}
+    hooks = window_policy.native_hooks
+    if sys.platform == "darwin":
+        available = "apply" in hooks
+    elif sys.platform.startswith("linux"):
+        # The window host is a separate process that can be absent or have
+        # died; ask it, rather than trusting that the hooks were installed.
+        usable = hooks.get("usable")
+        available = "apply" in hooks and callable(usable) and bool(usable())
+    else:
+        available = False
+    return {"enabled": native_windows_enabled(), "available": available}
 
 
 def _launcher_state() -> dict:
