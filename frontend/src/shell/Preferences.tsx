@@ -54,6 +54,7 @@ import {
   putAppSharingEnabled,
   putCanvasesEnabled,
   putLivePreviewsEnabled,
+  putMonitorEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
   putProjectQueueEnabled,
@@ -75,6 +76,7 @@ import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
+import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
@@ -473,6 +475,50 @@ function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
         <span>
           <b>Hide live previews in thumbnails</b> — show only authored stills; a card without one
           gets a placeholder image, and hovering never loads the app.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Monitor: the status bar's System chip (this app's CPU and memory) and the
+// /monitor process page behind its "Open Monitor". Off by default, and this is
+// the only place it can be turned on. Same one-checkbox section shape and
+// publish-after-PUT as App sharing above, so the chip appears in the bar the
+// moment the checkbox settles. `?.enabled === true` because the key is optional
+// on the wire (an older server) and absence means off.
+function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.monitor?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putMonitorEnabled(!enabled);
+      onChange(next);
+      publishMonitorEnabled(next.monitor?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Monitor</h2>
+      <p className="deploy-muted">
+        A System chip in the status bar shows what fused-render and the processes it runs cost in
+        CPU and memory, with a Monitor page listing them live. Off by default.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable the process Monitor</b> — show the System chip and the Monitor page.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1542,6 +1588,7 @@ export default function Preferences() {
                 <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
+                <MonitorSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

@@ -74,7 +74,21 @@ async function flush(): Promise<void> {
   });
 }
 
+// Mounts the page and WIDENS it to the whole machine: the page opens on
+// fused-render's own processes (see "opens on fused-render only" below), and
+// every test here but that one is about the whole-machine table.
 async function mount(
+  payload: MachineSnapshot | (() => MachineSnapshot) = PAYLOAD,
+  confirmMs?: number,
+  pollMs = 1e9,
+): Promise<ReactTestRenderer> {
+  const r = await mountNarrow(payload, confirmMs, pollMs);
+  const toggle = r.root.find((n) => n.type === "button" && text(n) === "fused-render only");
+  click(toggle);
+  return r;
+}
+
+async function mountNarrow(
   payload: MachineSnapshot | (() => MachineSnapshot) = PAYLOAD,
   confirmMs?: number,
   pollMs = 1e9,
@@ -155,6 +169,19 @@ test("search matches name, command line, user and pid", async () => {
   search("500");
   expect(pidsOf(r)).toEqual([500]);
   expect(text(r.root)).toContain("1 of 6 processes");
+});
+
+test("opens on fused-render only: our rows, the app's cost, and the toggle pressed", async () => {
+  const r = await mountNarrow();
+  const toggle = r.root.find((n) => n.type === "button" && text(n) === "fused-render only");
+  expect(toggle.props["aria-pressed"]).toBe(true);
+  expect(pidsOf(r)).toEqual([201, 100]);
+  expect(text(r.root)).toContain("2 processes");
+  expect(text(r.root)).toContain("fused-render and the processes it runs");
+  click(toggle);
+  expect(pidsOf(r)).toEqual([400, 201, 100, 300, 1, 500]);
+  expect(text(r.root)).toContain("6 processes");
+  expect(text(r.root)).toContain("Every process on");
 });
 
 test("fused-render only narrows the table and shows what the app costs", async () => {

@@ -26,6 +26,8 @@ offered at all — opt-in, default off; see ``canvases_enabled``),
 Export action — opt-in, default off; see ``app_sharing_enabled``),
 **live_previews_enabled** (whether card thumbnails may render the live app
 in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
+**monitor_enabled** (whether the process Monitor — status-bar System chip
+and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -226,6 +228,25 @@ def live_previews_enabled() -> bool:
 
 
 NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
+
+
+def monitor_enabled() -> bool:
+    """Whether the process Monitor is offered (default off — opt-in).
+
+    ON, the status bar carries the System chip (shell/SystemDock.tsx: this
+    app's CPU and memory, a sparkline, the top processes, "Open Monitor") and
+    the shell answers `/monitor` with the process monitor page
+    (shell/monitor/MonitorPage.tsx). OFF, the chip is not rendered and
+    `/monitor` shows a one-line notice pointing at Preferences, so a bookmark
+    to it says what to do rather than opening a page the reader has not
+    turned on.
+
+    A SWITCH OVER THE ENTRY POINTS, like `app_sharing_enabled`: the
+    /api/system/activity routes keep answering regardless, and the sampler
+    costs nothing until something polls it. Any non-`true` stored value
+    (missing/legacy) reads as off, so every install has to opt in.
+    """
+    return read_prefs().get("monitor_enabled") is True
 
 
 def native_chat_enabled() -> bool:
@@ -631,6 +652,10 @@ def _prefs_response() -> dict:
         # (opt-in, default off). Off, every thumbnail is a still or a
         # placeholder mark; see `live_previews_enabled`.
         "live_previews": {"enabled": live_previews_enabled()},
+        # Whether the process Monitor (status-bar System chip + /monitor page)
+        # is offered (opt-in, default off). Not an API guard; see
+        # `monitor_enabled`.
+        "monitor": {"enabled": monitor_enabled()},
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
@@ -871,6 +896,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'live_previews_enabled' must be a boolean"}, status_code=400)
         prefs["live_previews_enabled"] = value
         changed = True
+    if "monitor_enabled" in body:
+        value = body.get("monitor_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'monitor_enabled' must be a boolean"}, status_code=400)
+        prefs["monitor_enabled"] = value
+        changed = True
     if "native_windows_enabled" in body:
         value = body.get("native_windows_enabled")
         if not isinstance(value, bool):
@@ -1036,7 +1067,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'native_chat_enabled', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'native_chat_enabled', "
                       "'native_windows_enabled', "
                       "'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "

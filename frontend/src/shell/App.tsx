@@ -24,6 +24,7 @@ import {
   fsPathFromLocation,
   isPanelPath,
   navHintIsDir,
+  navigateUrl,
 } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import {
@@ -64,6 +65,7 @@ import { onboardingUrl } from "@shell/onboarding/progress";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
+import { useMonitorFeature } from "@platform/lib/monitor-flag";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import TerminalDock from "@shell/TerminalDock";
@@ -759,7 +761,13 @@ export default function App({ config }: { config: Config }) {
   // pattern as Mounts.
   const isTasks = pathname === "/tasks";
   // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
-  // the System chip's "Open Monitor".
+  // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
+  // `monitor_enabled`, default off): off, the chip is not rendered and the
+  // route shows a one-line notice pointing at Preferences instead of the page.
+  // The route stays a sentinel either way — the flag is read async (`null`
+  // until the one prefs read lands), and a path that flipped from "file view"
+  // to "monitor" when the pref landed would flash a stat of ~/monitor first.
+  const monitorOn = useMonitorFeature();
   const isMonitor = pathname === "/monitor";
   // The AI Models page (apps/ai_models/) — a PREFIX, not one path: its five
   // tabs are sub-paths beneath it (`/ai-models/local`, …), and the bare prefix
@@ -960,12 +968,31 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (isMonitor) {
     // Whole-machine process monitor — chrome-free like Mounts; keyed on epoch
-    // so a re-navigation is a fresh read (its poll stops on unmount).
+    // so a re-navigation is a fresh read (its poll stops on unmount). Off
+    // (monitor-flag.ts), nothing polls: the notice is the whole page.
     main = (
       <div id="content" key={epoch}>
-        <Suspense fallback={<RouteFallback />}>
-          <MonitorPage key={epoch} />
-        </Suspense>
+        {monitorOn === null ? (
+          <RouteFallback />
+        ) : monitorOn ? (
+          <Suspense fallback={<RouteFallback />}>
+            <MonitorPage key={epoch} />
+          </Suspense>
+        ) : (
+          <div className="monitor-off deploy-muted">
+            The Monitor is off. Turn it on under{" "}
+            <a
+              href="/preferences"
+              onClick={(e) => {
+                e.preventDefault();
+                navigateUrl("/preferences");
+              }}
+            >
+              Preferences › Monitor
+            </a>
+            .
+          </div>
+        )}
       </div>
     );
   } else if (isCanvases) {
@@ -1167,7 +1194,7 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             terminalDock={!isWindows && <TerminalDock />}
-            system={<SystemDock />}
+            system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}
             /* D586/D662: every terminal job is re-routed from Activity to
                Notifications, and this is the one place both sections are in
