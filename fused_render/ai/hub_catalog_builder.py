@@ -113,13 +113,22 @@ def _formats_for_capability(capability: str) -> tuple[str, ...]:
     example) was silently missing from the catalog pool, even though the
     live path (which already calls `available_runners`) would have shown it.
 
+    A runner contributes its `hub_pool_tags`, else its `hub_filter_tags`
+    (D1304). Before `hub_pool_tags`, a tagless `mlx-text` contributed nothing
+    and the union collapsed to `("gguf",)`: "empty means unfiltered" only
+    ever applied when EVERY runner was tagless.
+
     Empty when no available runner declares any filter tag at all, in which
     case the build pages the tag with no format filter (every format the Hub
     returns for that pipeline tag) — same "empty means unfiltered" contract
     `hub_filter_tags`'s own docstring documents for the live path."""
     seen: dict[str, None] = {}
     for runner in available_runners(capability):
-        for tag in runner.hub_filter_tags:
+        # `hub_pool_tags` first (D1304): a runner whose live-search filter
+        # must stay empty (`mlx-text`) still has to contribute its format to
+        # the pool, or its repos silently never enter it. `getattr` because
+        # tests stand in bare namespaces for runners.
+        for tag in (getattr(runner, "hub_pool_tags", ()) or runner.hub_filter_tags):
             seen.setdefault(tag, None)
     return tuple(seen)
 

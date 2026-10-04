@@ -649,3 +649,45 @@ def test_ensure_build_started_skips_when_schema_version_is_current(monkeypatch):
 
     started = builder.ensure_build_started("text-generation", cfg=cfg)
     assert started is False
+
+
+# -- mlx-text declares its own pool tag (the tagless-runner hole) -------------
+
+
+def _real_text_runners(monkeypatch, *codes):
+    from fused_render.ai import registry
+    picked = tuple(r for r in registry.all_runners() if r.code in codes)
+    assert {r.code for r in picked} == set(codes)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: picked)
+
+
+def test_pool_formats_include_mlx_when_mlx_text_and_llamacpp_are_both_available(monkeypatch):
+    """The measured bug: `mlx-text` declared no tag, so the union over the
+    real registry was `("gguf",)` and the text-generation pool held 5
+    `mlx-community/*` rows out of ~45k. The pool must be fetched for EVERY
+    format an available runner loads."""
+    _real_text_runners(monkeypatch, "mlx-text", "llamacpp-text")
+    assert set(builder._formats_for_capability("text-generation")) == {"mlx", "gguf"}
+
+
+def test_pool_formats_include_mlx_on_a_mac_with_only_mlx_text(monkeypatch):
+    _real_text_runners(monkeypatch, "mlx-text")
+    assert builder._formats_for_capability("text-generation") == ("mlx",)
+
+
+def test_a_pool_built_with_only_gguf_is_stale_once_mlx_text_contributes_mlx(monkeypatch):
+    """An existing pool recorded `formats: ['gguf']`; the next search must see
+    it as a strict subset of the new union and rebuild exactly once."""
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "gguf", "raw": _hit("org/existing")},
+    ], formats=("gguf",))
+    _real_text_runners(monkeypatch, "mlx-text", "llamacpp-text")
+    assert builder._formats_are_stale(cfg, "text-generation") is True
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/existing")]))
+    assert builder.ensure_build_started("text-generation", cfg=cfg) is True
+    builder._building["text-generation"].join(timeout=5)
+    assert set(hub_catalog.pool_entry(cfg, "text-generation")["formats"]) == {"mlx", "gguf"}
+    assert builder._formats_are_stale(cfg, "text-generation") is False
+    assert builder.ensure_build_started("text-generation", cfg=cfg) is False
