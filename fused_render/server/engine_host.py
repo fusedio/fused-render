@@ -367,8 +367,26 @@ def _spawn_env(child: Child) -> dict:
     return env
 
 
+#: Armed by the app's quit (app.py `_stop_children`) BEFORE `stop_all` runs.
+#: The quit kills children while the server is still answering requests (its
+#: drain is bounded and the shell's SSE connections never close), so an
+#: in-flight engine route can call `ensure` after `stop_all` emptied the
+#: registry and spawn a replacement that `os._exit` then orphans — the exact
+#: process this rung exists to kill. Once armed, nothing is spawned again in
+#: this process. Not set by `stop_all` itself: a server restart under tests
+#: stops everything and spawns again.
+_stopping = threading.Event()
+
+
+def refuse_new_children() -> None:
+    """Quit path: no engine may be started from here on."""
+    _stopping.set()
+
+
 def _spawn(child: Child) -> None:
     """Start the daemon and wait for it to publish its port and answer /ping."""
+    if _stopping.is_set():
+        raise EngineError("fused-render is quitting; not starting an engine")
     os.makedirs(child.cache, exist_ok=True)
     status = os.path.join(child.cache, f"engine-{child.uid}.json")
     log = os.path.join(child.cache, "daemon.log")

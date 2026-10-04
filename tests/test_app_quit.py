@@ -574,6 +574,11 @@ def quit_ctx(ladder, monkeypatch):
     monkeypatch.setattr(
         app_mod, "_close_duckdb_stash",
         lambda: ladder["calls"].append(("duckdb", None)))
+    # The children rung would reach the real engine/AI/pty registries and the
+    # server discovery file; record it instead.
+    monkeypatch.setattr(
+        app_mod, "_stop_children",
+        lambda: ladder["calls"].append(("children", None)))
     # The "exit-record" rung writes outages.jsonl in the real log home and
     # releases this process's crash file — neither belongs in a unit test.
     monkeypatch.setattr(app_mod, "_record_clean_exit", lambda: None)
@@ -588,7 +593,8 @@ def test_teardown_order_capture_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx)
     calls = quit_ctx["calls"]
     kinds = [c[0] for c in calls]
     assert server.should_exit is True          # step 1: stop serving requests
-    assert kinds[0] == "duckdb"                # step 3: while the GIL is held
+    assert kinds[0] == "children"              # step 1b: nothing outlives the app
+    assert kinds[1] == "duckdb"                # step 3: while the GIL is held
     first_kill = kinds.index("kill")
     unmounts = [i for i, c in enumerate(calls) if c[0] in ("rc", "force")]
     assert unmounts, "the mounts must actually be torn down"
@@ -602,7 +608,8 @@ def test_teardown_order_capture_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx)
     # handler (see the DM-9 note in app.py).
     # "exit-record" (SPEC §50) is last: a teardown cut off by the hard deadline
     # must leave its crash file behind, because that quit was not clean.
-    assert steps == ["server", "capture", "duckdb", "unmount", "rcd", "exit-record"]
+    assert steps == ["server", "children", "capture", "duckdb", "unmount", "rcd",
+                     "exit-record"]
 
 
 def test_teardown_drains_the_server_thread_within_a_bounded_wait(quit_ctx):
@@ -629,7 +636,7 @@ def test_teardown_closes_the_duckdb_stash_even_when_rcd_persists(quit_ctx,
 
     app_mod.quit_teardown(_FakeServer())
 
-    assert [c[0] for c in quit_ctx["calls"]] == ["duckdb"]
+    assert [c[0] for c in quit_ctx["calls"]] == ["children", "duckdb"]
 
 
 def test_start_quit_returns_promptly_and_terminates_afterwards():
@@ -716,8 +723,69 @@ def test_the_quit_action_works_before_the_server_has_booted():
 # becomes the bug it guards against.
 
 
+def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch):
+    # The server is still answering while the rung runs (bounded drain, SSE
+    # never closes), so an in-flight route could respawn what stop_all just
+    # killed. The latch must therefore be armed FIRST (bugbot, PR #1400). Every
+    # real killer is replaced: the latch must not be left set for later tests,
+    # and remove_server_json must not touch the real discovery file.
+    from fused_render.ai import supervisor
+    from fused_render.server import engine_host, index_watch
+    from fused_render.server import app as server_app
+    from fused_render import pty_session
+
+    order: list[str] = []
+    monkeypatch.setattr(engine_host, "refuse_new_children",
+                        lambda: order.append("latch-engines"))
+    monkeypatch.setattr(supervisor, "refuse_new_workers",
+                        lambda: order.append("latch-ai"))
+    monkeypatch.setattr(engine_host, "stop_all", lambda: order.append("engines"))
+    monkeypatch.setattr(supervisor, "unload_all", lambda: order.append("ai"))
+    monkeypatch.setattr(pty_session.REGISTRY, "shutdown_all",
+                        lambda: order.append("terminals"))
+    monkeypatch.setattr(index_watch, "stop", lambda: order.append("index"))
+    monkeypatch.setattr(server_app, "remove_server_json",
+                        lambda: order.append("discovery"))
+    import fused_render.index.runner as runner
+    monkeypatch.setattr(runner, "list_runs", lambda cfg: {"runs": []})
+
+    app_mod._stop_children(budget_s=2.0)
+
+    assert order[:2] == ["latch-engines", "latch-ai"]
+    assert set(order[2:]) == {"engines", "ai", "terminals", "index", "discovery"}
+
+
+def test_children_rung_is_bounded_by_its_budget(monkeypatch):
+    from fused_render.ai import supervisor
+    from fused_render.server import engine_host
+
+    from fused_render.server import index_watch
+    from fused_render.server import app as server_app
+    from fused_render import pty_session
+    import fused_render.index.runner as runner
+
+    never = threading.Event()
+    monkeypatch.setattr(engine_host, "refuse_new_children", lambda: None)
+    monkeypatch.setattr(supervisor, "refuse_new_workers", lambda: None)
+    monkeypatch.setattr(engine_host, "stop_all", lambda: never.wait(30))
+    monkeypatch.setattr(supervisor, "unload_all", lambda: None)
+    # Every other killer stubbed too: the real index path would cancel live runs
+    # on this machine and remove_server_json would touch the real discovery file.
+    monkeypatch.setattr(pty_session.REGISTRY, "shutdown_all", lambda: None)
+    monkeypatch.setattr(index_watch, "stop", lambda: None)
+    monkeypatch.setattr(server_app, "remove_server_json", lambda: None)
+    monkeypatch.setattr(runner, "list_runs", lambda cfg: {"runs": []})
+    try:
+        t0 = time.monotonic()
+        app_mod._stop_children(budget_s=0.3)
+        assert time.monotonic() - t0 < 3.0
+    finally:
+        never.set()
+
+
 def test_the_hard_deadline_exceeds_the_sum_of_the_bounded_steps():
     inner = (app_mod.QUIT_SERVER_DRAIN_S
+             + app_mod.QUIT_CHILDREN_BUDGET_S
              + mounts_mod._QUIT_UNMOUNT_BUDGET_S
              + mounts_mod.RCD_REAP_WORST_CASE_S)
 
