@@ -10199,6 +10199,60 @@ an AI Models page that could say what was on disk but not what was *running*.
   worker reports every question whose sequence hit the ceiling as a D633-style
   entry in the reply's `warnings[]` (`{type: "other", message: "…state was cut to
   N tokens…"}`) — `usage.inputTokens` sitting at the ceiling is the other tell.
+- **AI-32** **A seventh capability, `text-to-speech`, and a seventh verb,
+  `fused.ai.speech({text, ...})` — Qwen3-TTS through `mlx-audio` (D1306).**
+  The capability constant IS the Hub tag, `registry.TEXT_TO_SPEECH =
+  "text-to-speech"`, kept separate from `SPEECH_TO_TEXT` because one capability
+  holds one resident model (AI-4). Served by one LOCAL-tier runner,
+  `mlx-audio-tts` (`_apple_silicon`, no fallback, own venv pinning
+  `mlx-audio>=0.5,<0.6` and `mlx>=0.32,<0.33`; `hub_filter_tags=("qwen3_tts",)`).
+  **The tag is FORMAT-GATED like `text-classification` (AI-31)**: Kokoro, Bark,
+  VITS and XTTS wear it too. A cached snapshot is claimed only when its root
+  `config.json` says `model_type: "qwen3_tts"` AND it ships a
+  `speech_tokenizer/` folder (`formats.is_qwen3_tts_snapshot`, in
+  `formats.DECISIVE`, an early return so the text branch never claims it); a
+  search hit passes `hub_models._passes_format_gate` only as a curated id or
+  with the `qwen3_tts` tag on a `library_name: mlx-audio` card.
+  **Each model has ONE voice mode**, read off `tts_model_type`
+  (`formats.SPEECH_VOICE_MODES`): `preset` (CustomVoice — `voice` from the
+  config's `talker_config.spk_id`, optional `instruct` style line), `clone`
+  (Base — `refAudio` + `refText`, both required) and `design` (VoiceDesign —
+  `instruct` describes the voice, required). `formats.speech_option_error` is
+  the ONE copy of these rules and their sentences; the route asks it with the
+  facts `hub_cache.speech_traits` reads off a cached config (voices, languages
+  minus `*_dialect`) or, before download, the curated row's `voiceMode`, and the
+  worker asks it again after load, so a page reads the same 400/`ai_error`
+  sentence either way. `language` is Qwen's own vocabulary (`english`,
+  `chinese`, …, default `"auto"`), not transcribe's ISO codes.
+  **`POST /api/ai/speech` is the video shape**: closed envelope (`text`,
+  `model`, `provider`, `voice`, `instruct`, `refAudio`, `refText`,
+  `language`; `base` bridge-injected), `_provider_rejection` 409 for
+  `apple`/`claude` (`afm-speech` is Apple's speech-TO-text id and unrelated),
+  `refAudio` resolved by the shared `_resolve_reference_image` (absolute, or
+  beside the page named by `base`; must be a regular file; echoed canonical),
+  job-backed through `supervisor.start_speech` → `_start_render` with its own
+  `SPEECH_JOB_PREFIX` row titled with the text, `GENERATE_TIMEOUT_S`, output
+  `<home>/ai/speech/<stamp>-<uid>.wav`. The worker hands `load_model` the
+  snapshot DIRECTORY (the D887 rule), writes mono 16-bit WAV at the model's
+  sample rate (24 kHz) with stdlib `wave`, asks for blank-line segments (only
+  the Base path honours them; CustomVoice and VoiceDesign read one pass), and
+  reports progress by swapping `qwen3_tts.tqdm` for a token counter for the
+  length of one call (`done/total` = segments, detail = seconds of audio,
+  one tick per 12 tokens = one second at 12 Hz; ✕ unwinds through
+  `report_or_cancel`; a missing hook fails loudly). The bridge resolves
+  `{audio: [{path, url, mediaType: "audio/wav"}], usage: {audioGenerated: 1},
+  providerMetadata.local: {text, language, voice?, instruct?, refAudio?,
+  refText?}}`; `fused_ai.speech(...)` is the Python twin (`ref_audio`
+  abspath'd client-side). **Catalog**: the five mlx-community bf16 repos,
+  smallest first so the bare default is
+  `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB, `recommended`), then
+  0.6B Base (2.52), 1.7B CustomVoice (4.52), 1.7B VoiceDesign (4.52, the only
+  VoiceDesign size), 1.7B Base (4.54); sizes are HF blob totals and include the
+  0.68 GB `speech_tokenizer/` every repo re-ships. Each row carries
+  `voiceMode`; once cached the catalog payload replaces it from the config and
+  adds `voices`/`languages`. Quantized 4–8 bit variants are reachable through
+  search, not curated. Onboarding EXCLUDES the capability like video and
+  decide; the benchmark lists it in `NO_WORKLOAD_YET`.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

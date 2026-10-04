@@ -1429,6 +1429,63 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "instructions and options.",
         },
     ],
+    "mlx-audio-tts": [
+        {
+            "id": "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
+            "recommended": True,
+            "params": "0.6B",
+            "quantization": "MLX bf16",
+            "label": "Qwen3-TTS 0.6B CustomVoice (MLX bf16)",
+            "nickname": "Qwen3-TTS",
+            "size_gb": 2.50,
+            "voiceMode": "preset",
+            "note": "Nine preset speakers in ten languages, with an optional "
+                    "style line such as 'calm, slow'.",
+        },
+        {
+            "id": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+            "params": "0.6B",
+            "quantization": "MLX bf16",
+            "label": "Qwen3-TTS 0.6B Base (MLX bf16)",
+            "nickname": "Qwen3-TTS",
+            "size_gb": 2.52,
+            "voiceMode": "clone",
+            "note": "Clones a voice from a 10-30 s sample and its transcript.",
+        },
+        {
+            "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
+            "params": "1.7B",
+            "quantization": "MLX bf16",
+            "label": "Qwen3-TTS 1.7B CustomVoice (MLX bf16)",
+            "nickname": "Qwen3-TTS",
+            "size_gb": 4.52,
+            "voiceMode": "preset",
+            "note": "The same preset speakers as the 0.6B model, with more "
+                    "natural pacing and emphasis.",
+        },
+        {
+            "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+            "params": "1.7B",
+            "quantization": "MLX bf16",
+            "label": "Qwen3-TTS 1.7B VoiceDesign (MLX bf16)",
+            "nickname": "Qwen3-TTS",
+            "size_gb": 4.52,
+            "voiceMode": "design",
+            "note": "Makes a voice from a description, for example 'warm "
+                    "baritone, light British accent'.",
+        },
+        {
+            "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+            "params": "1.7B",
+            "quantization": "MLX bf16",
+            "label": "Qwen3-TTS 1.7B Base (MLX bf16)",
+            "nickname": "Qwen3-TTS",
+            "size_gb": 4.54,
+            "voiceMode": "clone",
+            "note": "Clones a voice with the highest likeness of the "
+                    "Qwen3-TTS models.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`

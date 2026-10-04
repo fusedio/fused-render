@@ -41,6 +41,7 @@ from fused_render.ai.registry import (
     IMAGE_GENERATION,
     SPEECH_TO_TEXT,
     TEXT_GENERATION,
+    TEXT_TO_SPEECH,
     VIDEO_GENERATION,
 )
 
@@ -303,10 +304,9 @@ _TASKS: tuple[Task, ...] = (
     # transcription capability as a direction flag: one capability holds one
     # resident model (AI-4), so a shared "audio" capability would have a
     # synthesis model evict a Whisper model and back again on every alternation.
-    _t("text-to-speech", "text to speech", "audio", None,
+    _t("text-to-speech", "text to speech", "audio", TEXT_TO_SPEECH,
        "Reads text aloud as audio.",
-       "Speech synthesis is a separate capability from transcription — one resident model "
-       "per capability — and no runner ships for it yet."),
+       format_gated=True),
     _t("text-to-audio", "audio generation", "audio", None,
        "Generates sound — speech, music, effects.",
        "No audio-generation runner ships yet."),

@@ -128,6 +128,10 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names={formats.LAYA_AGENT_CONFIG},
         dirnames={formats.LAYA_ENCODER_DIR}, config={}, torch_weights=False))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={"config.json", "model.safetensors"},
+        dirnames={formats.QWEN3_TTS_TOKENIZER_DIR},
+        config={"model_type": formats.QWEN3_TTS_MODEL_TYPE}, torch_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -1304,3 +1308,52 @@ def test_the_curated_row_survives_the_hint():
     discharge that, so the row must still be there."""
     assert ("mlx-community/nomicai-modernbert-embed-base-bf16"
             in formats.TEXT_EMBED_SCHEMES)
+
+
+def test_a_qwen3_tts_snapshot_claims_mlx_audio_tts_and_nothing_else():
+    found = formats.loaders(
+        repo_id="mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
+        names={"config.json", "model.safetensors", "tokenizer_config.json"},
+        dirnames={formats.QWEN3_TTS_TOKENIZER_DIR},
+        config={"model_type": "qwen3_tts", "tts_model_type": "custom_voice"},
+        torch_weights=True)
+    assert found == ("mlx-audio-tts",)
+
+
+def test_a_qwen3_tts_config_without_its_speech_tokenizer_is_not_claimed():
+    found = formats.loaders(
+        repo_id="x/y", names={"config.json", "model.safetensors"}, dirnames=set(),
+        config={"model_type": "qwen3_tts"}, torch_weights=True)
+    assert "mlx-audio-tts" not in found
+
+
+@pytest.mark.parametrize("mode, kwargs, fragment", [
+    ("preset", {"ref_audio": "/a.wav", "ref_text": "hi"}, "does not clone"),
+    ("preset", {"voice": "nobody"}, "has no voice 'nobody'"),
+    ("clone", {"voice": "ryan", "ref_audio": "/a.wav", "ref_text": "hi"}, "has no preset voices"),
+    ("clone", {"instruct": "calm", "ref_audio": "/a.wav", "ref_text": "hi"}, "takes no 'instruct'"),
+    ("clone", {}, "pass 'refAudio'"),
+    ("design", {"voice": "ryan", "instruct": "warm"}, "pass only"),
+    ("design", {}, "needs 'instruct'"),
+    ("preset", {"voice": "ryan", "language": "klingon"}, "has no language 'klingon'"),
+])
+def test_speech_option_error_names_the_model_and_the_problem(mode, kwargs, fragment):
+    problem = formats.speech_option_error(
+        "org/tts", mode, ["ryan", "serena"], ["auto", "english", "chinese"], **kwargs)
+    assert problem is not None and "org/tts" in problem and fragment in problem
+
+
+@pytest.mark.parametrize("mode, kwargs", [
+    ("preset", {"voice": "Ryan", "instruct": "calm", "language": "English"}),
+    ("preset", {}),
+    ("clone", {"ref_audio": "/a.wav", "ref_text": "hi", "language": "auto"}),
+    ("design", {"instruct": "warm baritone"}),
+])
+def test_speech_option_error_accepts_what_each_variant_takes(mode, kwargs):
+    assert formats.speech_option_error(
+        "org/tts", mode, ["ryan", "serena"], ["auto", "english"], **kwargs) is None
+
+
+def test_speech_option_error_skips_lists_it_does_not_know_yet():
+    assert formats.speech_option_error(
+        "org/tts", "preset", [], [], voice="anyone", language="english") is None

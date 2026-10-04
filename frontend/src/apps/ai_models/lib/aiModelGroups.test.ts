@@ -442,6 +442,33 @@ describe("video generation's place in the reading order", () => {
     ]);
   });
 
+  it("places text to speech right after speech to text", () => {
+    const catalogWithSpeech: AiCatalogCapability[] = [
+      capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
+        runner: "ltx-video",
+        runnerShortLabel: "LTX-2.3",
+      }),
+      capability(
+        "text-to-speech",
+        [curated("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", { voiceMode: "preset" })],
+        { runner: "mlx-audio-tts", runnerShortLabel: "MLX Audio" },
+      ),
+      capability("embeddings", [curated("mlx-community/bge-small-en-v1.5")]),
+      capability("automatic-speech-recognition", [curated("mlx-community/whisper-tiny")]),
+      capability("text-generation", [curated("mlx-community/Qwen3.5-9B-OptiQ-4bit")]),
+    ];
+    const sections = mergeSections(
+      groupRepos([]).models.groups, catalogWithSpeech, resident(), new Map(),
+    );
+    expect(sections.map((s) => s.key)).toEqual([
+      "text-generation",
+      "automatic-speech-recognition",
+      "text-to-speech",
+      "embeddings",
+      "text-to-video",
+    ]);
+  });
+
   // `ltx-video` does not reach a machine that is not Apple Silicon — unlike
   // text generation or image generation, where a torch/diffusers row keeps
   // the capability alive on Windows and Linux. Video generation is therefore
@@ -831,16 +858,16 @@ describe("the short refusal on the card", () => {
   });
 
   it("leads with the server's own per-task sentence when it sent one", () => {
-    const tts = repo({
-      id: "coqui/tts",
+    const depth = repo({
+      id: "acme/depth",
       capability: null,
-      supportReason: "Text to speech is not supported yet, and nothing here can serve it",
+      supportReason: "Depth estimation is not supported yet, and nothing here can serve it",
     });
     // No trailing full stop: this is a label beside a button now, not prose
     // under one. The lead-in survives here because `capability` is null — there
     // is no field saying it is a restatement, and this function never guesses
     // that from the words.
-    expect(loadRefusalShort(tts)).toBe("Text to speech is not supported yet");
+    expect(loadRefusalShort(depth)).toBe("Depth estimation is not supported yet");
   });
 });
 
@@ -882,15 +909,15 @@ describe("the three surfaces on a no-engine card agree", () => {
   // and a repo carrying a tag nobody has heard of, and told a reader nothing
   // about which one they had downloaded.
   it("prefers the server's own sentence for a task nothing here runs", () => {
-    const tts = repo({
-      id: "org/voice",
-      task: "text to speech",
-      taskTag: "text-to-speech",
+    const depth = repo({
+      id: "org/depth",
+      task: "depth estimation",
+      taskTag: "depth-estimation",
       support: "no-runner",
-      supportReason: "Speech synthesis is a separate capability from transcription.",
+      supportReason: "Depth estimation is a separate capability from image generation.",
     });
-    expect(noEngineReason(tts)).toBe(
-      "Speech synthesis is a separate capability from transcription.",
+    expect(noEngineReason(depth)).toBe(
+      "Depth estimation is a separate capability from image generation.",
     );
   });
 

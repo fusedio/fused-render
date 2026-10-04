@@ -1594,6 +1594,7 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # card tag, so the claim settles the modality as surely as a
             # `weights.npz` does.
             "laya-mlx",
+            "mlx-audio-tts",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -1775,6 +1776,51 @@ def is_laya_snapshot(names, dirnames) -> bool:
     return LAYA_AGENT_CONFIG in names and LAYA_ENCODER_DIR in dirnames
 
 
+QWEN3_TTS_MODEL_TYPE = "qwen3_tts"
+QWEN3_TTS_TOKENIZER_DIR = "speech_tokenizer"
+SPEECH_VOICE_MODES = {"custom_voice": "preset", "base": "clone", "voice_design": "design"}
+
+
+def is_qwen3_tts_snapshot(config: dict, dirnames) -> bool:
+    return (config.get("model_type") == QWEN3_TTS_MODEL_TYPE
+            and QWEN3_TTS_TOKENIZER_DIR in dirnames)
+
+
+def speech_option_error(model_id: str, mode: str, voices, languages, *,
+                        voice=None, instruct=None, ref_audio=None, ref_text=None,
+                        language=None) -> str | None:
+    voices = [str(v).lower() for v in (voices or [])]
+    languages = [str(v).lower() for v in (languages or []) if str(v).lower() != "auto"]
+    if mode == "preset":
+        if ref_audio or ref_text:
+            return (f"{model_id} speaks with preset voices and does not clone; "
+                    "drop 'refAudio'/'refText', or use a Qwen3-TTS Base model")
+        if voices and voice and str(voice).lower() not in voices:
+            return f"{model_id} has no voice {voice!r}; it has {', '.join(voices)}"
+    elif mode == "clone":
+        if voice:
+            return (f"{model_id} has no preset voices; pass 'refAudio' and 'refText' "
+                    "to clone a voice, or use a Qwen3-TTS CustomVoice model")
+        if instruct:
+            return (f"{model_id} clones a voice and takes no 'instruct'; use a "
+                    "Qwen3-TTS CustomVoice or VoiceDesign model for a style line")
+        if not ref_audio or not ref_text:
+            return (f"{model_id} clones a voice: pass 'refAudio' (a 10-30 s sample) "
+                    "and 'refText' (what the sample says)")
+    elif mode == "design":
+        if voice or ref_audio or ref_text:
+            return (f"{model_id} makes a voice from a description; pass only "
+                    "'instruct', not 'voice', 'refAudio' or 'refText'")
+        if not instruct:
+            return (f"{model_id} needs 'instruct' to describe the voice, for "
+                    "example 'warm baritone, light British accent'")
+    if (language and str(language).lower() != "auto" and languages
+            and str(language).lower() not in languages):
+        return (f"{model_id} has no language {language!r}; use 'auto' or one of "
+                f"{', '.join(sorted(languages))}")
+    return None
+
+
 def has_ltx_split_layout(names) -> bool:
     """Is this an mlx-forge split conversion of LTX-2.3 — `ltx_video`'s own
     curated layout? `names` is the snapshot's TOP-LEVEL FILES (`loaders`'s
@@ -1929,6 +1975,9 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # `config` requirement there — Laya keeps its encoder config under
         # `encoder/`, not at the root — but the return states the intent
         # rather than leaning on that accident.)
+        return tuple(found)
+    if is_qwen3_tts_snapshot(config, dirnames):
+        found.append("mlx-audio-tts")
         return tuple(found)
     if has_ltx_split_layout(names):
         found.append("ltx-video")

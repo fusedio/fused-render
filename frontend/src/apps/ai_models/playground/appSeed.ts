@@ -104,6 +104,43 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
         "path is an audio/video file on disk, segments stream through onChunk. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
+  } else if (capability === "text-to-speech") {
+    const mode = model.voiceMode ?? "preset";
+    const extra = opts([
+      ["voice", mode === "preset" && readParam("voice") ? JSON.stringify(readParam("voice")) : null],
+      ["language", readParam("lang") ? JSON.stringify(readParam("lang")) : null],
+      ["refAudio", mode === "clone" && readParam("ref") ? JSON.stringify(readParam("ref")) : null],
+    ]);
+    lines.push(
+      "It turns text into spoken audio, saved as a WAV file. Call it from the page with " +
+        `await fused.ai.speech({ text, model: ${JSON.stringify(model.id)}${extra}, onProgress }) — ` +
+        "it resolves once the WAV is on disk, with a url that plays in an <audio controls>. " +
+        "Apple Silicon only, with no fallback on other platforms — check fused.ai.models.catalog() " +
+        "before offering the feature. " +
+        (extra ? "The options above are the settings I tuned in the Playground." : ""),
+    );
+    if (mode === "clone") {
+      lines.push(
+        "This model copies a voice: pass refAudio (a short, clear clip of one speaker) and " +
+          "refText (the exact words in that clip). Both are required. It has no preset voices.",
+      );
+    } else if (mode === "design") {
+      lines.push(
+        "This model makes a new voice from a description: pass instruct (who speaks and how — " +
+          "age, tone, pace, accent). It is required. It has no preset voices.",
+      );
+    } else {
+      const voices = model.voices?.length ? ` (${model.voices.join(", ")})` : "";
+      lines.push(
+        `This model speaks in preset voices: pass voice as one speaker name${voices}, and an ` +
+          "optional instruct line for the speaking style.",
+      );
+    }
+    if (model.languages?.length) {
+      lines.push(
+        `language is optional and defaults to "auto"; it can be one of ${model.languages.join(", ")}.`,
+      );
+    }
   } else if (capability === "embeddings") {
     // **The prose is SPLIT by what this model declares, and the reason is that
     // the route refuses the other half** (SPEC §40). A seeded session that was

@@ -61,7 +61,7 @@ from fused_render.server.common import (
 # nothing from here.
 from fused_render.ai.hub_cache import (
     CachedModel, cached_capability, cached_models, embed_family, has_cached_snapshot,
-    has_vision_tower, is_downloaded,
+    has_vision_tower, is_downloaded, speech_traits,
 )
 from fused_render.ai import hub_metadata
 
@@ -143,6 +143,9 @@ _VIDEO_OPTIONS = frozenset({
 # documents — video had no way to resolve a page-relative path at all until
 # `image` needed one, so this is also where `base` first reaches this route.
 _VIDEO_SERVER_OPTIONS = _VIDEO_OPTIONS | {"base"}
+_SPEECH_OPTIONS = frozenset({
+    "text", "model", "provider", "voice", "instruct", "refAudio", "refText", "language"})
+_SPEECH_SERVER_OPTIONS = _SPEECH_OPTIONS | {"base"}
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
     "speakers", "words", "provider"})
@@ -282,6 +285,7 @@ def _provider_rejection(body: dict, verb: str):
 _APPLE_VERB_CAPABILITY = {
     "image": registry.IMAGE_GENERATION,
     "video": registry.VIDEO_GENERATION,
+    "speech": registry.TEXT_TO_SPEECH,
     "transcribe": registry.SPEECH_TO_TEXT,
     "embed": registry.EMBEDDINGS,
     "decide": registry.DECISIONS,
@@ -295,6 +299,7 @@ _APPLE_VERB_REFUSALS = {
     "image": ("provider 'apple' does not serve image: Apple ships no programmatic image "
               "model (ImageCreator was removed in macOS 27); use a local model"),
     "video": "provider 'apple' does not serve video; use a local model",
+    "speech": "provider 'apple' does not serve speech in this build; use a local model",
     "embed": ("provider 'apple' does not serve embed in this build yet ('afm-embedding' "
               "is reserved for it); use a local model"),
     "decide": ("provider 'apple' does not serve decide: Apple ships no typed-decision "
@@ -459,7 +464,8 @@ def _edit_default_size(image_path: str) -> tuple[int, int] | None:
     return fitted_w, fitted_h
 
 
-def _resolve_reference_image(value, base, *, caller: str, verb: str):
+def _resolve_reference_image(value, base, *, caller: str, verb: str,
+                             option: str = "image", noun: str = "base image"):
     """Resolve an `image` option to `(path, None)`, or `(None, error)`.
 
     Shared by `/api/ai/image`'s edit image and `/api/ai/video`'s reference
@@ -482,15 +488,15 @@ def _resolve_reference_image(value, base, *, caller: str, verb: str):
     """
     if not isinstance(value, str) or not value.strip():
         return None, _error(
-            "'image' must be the path to one base image, as a single "
-            f"string — {caller}({{image}}) {verb}, so an "
+            f"'{option}' must be the path to one {noun}, as a single "
+            f"string — {caller}({{{option}}}) {verb}, so an "
             "array or any other type is rejected rather than guessed at",
             status=400)
     path = os.path.expanduser(value.strip())
     if not os.path.isabs(path):
         if not isinstance(base, str) or not os.path.isabs(base):
             return None, _error(
-                "'image' must be absolute, or relative to a page named by "
+                f"'{option}' must be absolute, or relative to a page named by "
                 "'base'", status=400)
         path = os.path.join(os.path.dirname(base), path)
     path = os.path.abspath(path)
@@ -582,6 +588,22 @@ def _videos_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "videos")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+def _speech_dir() -> str:
+    from fused_render.shell.storage import home_dir
+
+    directory = os.path.join(home_dir(), "ai", "speech")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def _speech_voice_facts(model: str) -> tuple[str | None, list, list]:
+    traits = speech_traits(model)
+    if traits is not None:
+        return traits["mode"], traits["voices"], traits["languages"]
+    entry = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
+    return entry.get("voiceMode"), [], []
 
 
 def _video_side(value, default: int) -> int:
@@ -1153,6 +1175,12 @@ def _catalog_with_downloads() -> list[dict]:
                                                    entry["id"])
             entry["promptScheme"] = _prompt_scheme(row["capability"],
                                                    entry["id"])
+            if row["capability"] == registry.TEXT_TO_SPEECH:
+                traits = speech_traits(entry["id"])
+                if traits is not None:
+                    entry["voiceMode"] = traits["mode"]
+                    entry["voices"] = traits["voices"]
+                    entry["languages"] = traits["languages"]
     return rows
 
 
@@ -2179,6 +2207,86 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # route's own reply echoes its `image`: a caller that passed a
         # relative path can see what it resolved to.
         reply["image"] = canonical_fs_path(image_path)
+    return reply
+
+
+@router.post("/api/ai/speech")
+def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                  x_fused_page: str | None = Header(default=None),
+                  x_fused_source: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    page = unquote(x_fused_page) if x_fused_page else ""
+    source = unquote(x_fused_source) if x_fused_source else page
+
+    rejection = _reject_unknown(body, _SPEECH_SERVER_OPTIONS, "/api/ai/speech")
+    if rejection is not None:
+        return rejection
+    tier = _provider_rejection(body, "speech")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
+
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return _error("'text' must be a non-empty string", status=400)
+    fields = {}
+    for key in ("voice", "instruct", "refText", "language"):
+        value = body.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            return _error(f"'{key}' must be a non-empty string", status=400)
+        fields[key] = value.strip()
+    ref_audio = body.get("refAudio")
+    if ref_audio is not None:
+        ref_path, rejection = _resolve_reference_image(
+            ref_audio, body.get("base"), caller="fused.ai.speech",
+            verb="clones exactly one voice", option="refAudio", noun="voice sample")
+        if rejection is not None:
+            return rejection
+        fields["refAudio"] = ref_path
+    if ("refAudio" in fields) != ("refText" in fields):
+        return _error("'refAudio' and 'refText' go together: the sample and what it says",
+                      status=400)
+    language = fields.pop("language", "auto")
+
+    model = _model_of(body) or catalog.default_for(registry.TEXT_TO_SPEECH)
+    if not model:
+        return _error(registry.unavailable_reason(registry.TEXT_TO_SPEECH)
+                      or "no speech model is configured", status=409)
+
+    mode, voices, languages = _speech_voice_facts(model)
+    if mode is not None:
+        problem = formats.speech_option_error(
+            model, mode, voices, languages, voice=fields.get("voice"),
+            instruct=fields.get("instruct"), ref_audio=fields.get("refAudio"),
+            ref_text=fields.get("refText"), language=language)
+        if problem:
+            return _error(problem, status=400)
+
+    uid = secrets.token_hex(6)
+    job = supervisor.speech_job_id(uid)
+    path = os.path.join(_speech_dir(), f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.wav")
+    request = {"text": text.strip(), "language": language, "out": path, **fields}
+    try:
+        supervisor.start_speech(model, request, job, page=page, source=source)
+    except supervisor.SupervisorError as e:
+        return _error(str(e), status=409)
+    reply = {
+        "jobId": job,
+        "path": canonical_fs_path(path),
+        "model": model,
+        "provider": "local",
+        "warnings": [],
+        "text": request["text"],
+        "language": language,
+    }
+    for key in ("voice", "instruct", "refText"):
+        if key in fields:
+            reply[key] = fields[key]
+    if "refAudio" in fields:
+        reply["refAudio"] = canonical_fs_path(fields["refAudio"])
     return reply
 
 
