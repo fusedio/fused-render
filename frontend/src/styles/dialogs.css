@@ -439,3 +439,28 @@
   color: var(--fg-muted);
   overflow-wrap: anywhere;
 }
+
+/* Restart-to-update overlay (RestartOverlay.tsx): spinner beside the wait text. */
+.restart-overlay-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.restart-overlay-body p {
+  margin: 0;
+}
+.restart-spinner {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: restart-spin 0.8s linear infinite;
+}
+@keyframes restart-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

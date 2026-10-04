@@ -147,7 +147,10 @@ export default function UpdateNotifier(): null {
     if (!status) return;
     if (status.state === "available" && !status.check_only) {
       const input: NotificationInput = {
-        title: `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`,
+        // Version-free: this title becomes the status chip's label, which
+        // always truncated it. The version lives in `detail` (and the chip's
+        // tooltip, RepoUpdatesDock.tsx).
+        title: "Update available",
         detail: status.latest_version ? `v${status.latest_version} is ready to download.` : undefined,
         tier: "attention",
         familyKey: UPDATE_DOWNLOAD_FAMILY_KEY,

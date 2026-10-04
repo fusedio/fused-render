@@ -145,8 +145,9 @@ test("raises the Download notification on `available`, nothing on `check_only`",
   });
   const retained = getRetainedNotifications();
   expect(retained).toHaveLength(1);
-  expect(retained[0].title).toContain("Update available");
-  expect(retained[0].title).toContain("0.5.81");
+  // The version rides in the detail, never the title (the chip truncated it).
+  expect(retained[0].title).toBe("Update available");
+  expect(retained[0].detail).toContain("0.5.81");
 
   _resetNotificationsForTest();
   await act(async () => {

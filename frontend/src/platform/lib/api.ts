@@ -1307,6 +1307,9 @@ export interface Prefs {
   // App git auto-sync (default ON; fused_render/shell/prefs.py's
   // `git_auto_sync_enabled`). OPTIONAL: an older server answers without it.
   git?: { auto_sync: boolean };
+  // Download a found app update without a click (default OFF; shell/prefs.py's
+  // `auto_download_updates`). Restart stays manual. OPTIONAL: older servers omit it.
+  update?: { auto_download: boolean };
   // The macOS launcher's shortcuts (fused_render/launcher.py): the ⌥Space
   // panel hotkey and the row modifier (`<modifier>+1…9` opens the Nth desk
   // app, `+0` the shell). `available` is false off macOS, where the section
@@ -1600,6 +1603,10 @@ export function putLanEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
+export function putAutoDownloadUpdates(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { auto_download_updates: enabled });
 }
 
 export function putGitAutoSyncEnabled(enabled: boolean): Promise<Prefs> {

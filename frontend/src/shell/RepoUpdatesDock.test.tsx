@@ -1613,6 +1613,23 @@ test("'N needs you' counts a waiting task and an attention-tier job together, no
   expect(text(findAll(tree, "dl-summary")[0])).toBe("2 needs you");
 });
 
+test("an update row alone: the chip label stays version-free, the version rides in the tooltip", () => {
+  _resetNotificationsForTest();
+  try {
+    notify({
+      title: "Update available",
+      detail: "v0.6.2 is ready to download.",
+      tier: "attention",
+      familyKey: UPDATE_DOWNLOAD_FAMILY_KEY,
+    });
+    const tree = renderView({ rows: [], messages: getRetainedNotifications() });
+    expect(text(findAll(tree, "dl-summary")[0])).toBe("Update available");
+    expect(findAll(tree, "dl-toggle")[0].props.title).toContain("v0.6.2");
+  } finally {
+    _resetNotificationsForTest();
+  }
+});
+
 test("a done (trail-tier) job alone never turns the label loud — only attention rows do", () => {
   const tree = renderView({ rows: [], terminal: [doneJob()] });
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");

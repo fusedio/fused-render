@@ -291,5 +291,7 @@ export function updateRelevant(status: UpdateStatus | null): boolean {
 export function updateLabel(status: UpdateStatus): string {
   if (status.state === "installing") return "Updating…";
   if (status.state === "installed") return "Ready to restart";
-  return `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`;
+  // No version in the label (it was always ellipsised in the status chip); the
+  // chip's tooltip and the notification's detail carry it instead.
+  return "Update available";
 }

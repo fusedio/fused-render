@@ -1425,7 +1425,14 @@ export function RepoUpdatesCardView({
         tone={tone}
         open={!collapsed}
         pinned={pinned}
-        title={collapsed ? "Show notifications" : "Hide notifications"}
+        title={
+          // The update row's label carries no version, so the tooltip does.
+          !hasOrdinaryAttention && updateMessages.length > 0 && updateMessages[0].detail
+            ? `${updateMessages[0].title} — ${updateMessages[0].detail}`
+            : collapsed
+              ? "Show notifications"
+              : "Hide notifications"
+        }
         ariaLabel={ariaLabel}
         onClick={onToggle}
       />

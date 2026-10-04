@@ -1656,7 +1656,7 @@
 }
 
 .prefs-shortcut-label .prefs-shortcut-warn {
-  color: var(--danger, #c62828);
+  color: var(--error);
 }
 
 /* Specificity: `.prefs-section button` styles every button on the page;
