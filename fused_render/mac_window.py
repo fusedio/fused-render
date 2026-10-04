@@ -74,8 +74,12 @@ from AppKit import (
     NSApp,
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
+    NSAppearance,
+    NSAppearanceNameAqua,
+    NSAppearanceNameDarkAqua,
     NSBezelStyleRecessed,
     NSButton,
+    NSColor,
     NSControlSizeLarge,
     NSImage,
     NSLayoutAttributeTrailing,
@@ -131,6 +135,68 @@ DEFAULT_SIZE = (1280, 840)
 MIN_SIZE = (560, 360)
 # Rides on WebKit's own UA so a page can tell "inside the app" from "a browser".
 USER_AGENT_MARKER = f"FusedRender/{__version__}"
+
+# The titlebar paints the app's `--bg` token (frontend/src/styles/tokens.css),
+# so the window chrome and the page read as one surface. Keep in step with it.
+TITLEBAR_BG = {"dark": (0x13, 0x14, 0x17), "light": (0xFF, 0xFF, 0xFF)}
+# Name of the WKScriptMessageHandler the shell posts its theme preference to.
+THEME_HANDLER_NAME = "fusedTheme"
+THEME_PREFS = ("system", "light", "dark")
+
+
+def _titlebar_color(dark: bool):
+    r, g, b = TITLEBAR_BG["dark" if dark else "light"]
+    return NSColor.colorWithSRGBRed_green_blue_alpha_(r / 255, g / 255, b / 255, 1.0)
+
+
+def _dynamic_titlebar_color():
+    """A colour that re-resolves per the window's effective appearance, so an
+    OS flip under the System preference needs no callback from us."""
+    def provider(appearance):
+        name = appearance.bestMatchFromAppearancesWithNames_(
+            [NSAppearanceNameAqua, NSAppearanceNameDarkAqua])
+        return _titlebar_color(name == NSAppearanceNameDarkAqua)
+    return NSColor.colorWithName_dynamicProvider_(None, provider)
+
+
+def appearance_for_pref(pref: str):
+    """NSAppearance forcing the in-app preference; None = follow the OS."""
+    if pref == "dark":
+        return NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua)
+    if pref == "light":
+        return NSAppearance.appearanceNamed_(NSAppearanceNameAqua)
+    return None
+
+
+class _ThemeBridge(NSObject):
+    """WKScriptMessageHandler for ``window.webkit.messageHandlers.fusedTheme``.
+    One per configuration (shared by every window); it finds the window from
+    the message's web view. Plain NSObject for the same reason as
+    `_WebDelegate` (no protocols=[...])."""
+
+    def initWithManager_(self, manager):
+        self = objc.super(_ThemeBridge, self).init()
+        if self is None:
+            return None
+        self._manager = manager
+        return self
+
+    def userContentController_didReceiveScriptMessage_(self, _controller, message):
+        try:
+            if not message.frameInfo().isMainFrame():
+                return  # embeds/iframes never drive the window chrome
+            pref = str(message.body())
+            manager = self._manager
+            if pref not in THEME_PREFS or manager is None:
+                return
+            webview = message.webView()
+            for win in manager._windows:
+                if win.webview is webview:
+                    win.set_theme_pref(pref)
+                    break
+        except Exception:  # noqa: BLE001 — a bad message must not hurt the app
+            logger.debug("theme message failed", exc_info=True)
+
 
 _SHIFT = 1 << 17
 _CTRL = 1 << 18
@@ -602,6 +668,12 @@ class _Window:
         self.ns.setMinSize_(NSMakeSize(*MIN_SIZE))
         self.ns.setTitle_(APP_NAME)
         self.ns.setTabbingMode_(2)  # NSWindowTabbingModeDisallowed: windows, not tabs
+        # Titlebar = the page's `--bg`. Transparent titlebar over a dynamic
+        # window background (no full-size content view: the web view stays
+        # below it). Appearance follows the OS until the page reports its
+        # preference (`set_theme_pref`), so a fresh window never flashes grey.
+        self.ns.setTitlebarAppearsTransparent_(True)
+        self.ns.setBackgroundColor_(_dynamic_titlebar_color())
 
         self.webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, w, h), configuration)
@@ -622,6 +694,12 @@ class _Window:
         # we hand the view back; loading here too would race it.
         if load:
             self.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
+
+    def set_theme_pref(self, pref: str) -> None:
+        """Apply the shell's light/dark/system preference to the window
+        appearance (nil = follow the OS). Main thread only."""
+        if self.ns is not None:
+            self.ns.setAppearance_(appearance_for_pref(pref))
 
     def _add_titlebar_buttons(self) -> None:
         """"Edit", "Open in Browser" and "Home" at the right end of the title
@@ -956,6 +1034,10 @@ class WindowManager:
             logger.debug("developerExtrasEnabled not settable", exc_info=True)
         # Autoplaying media did not need a click in a browser tab either.
         config.setMediaTypesRequiringUserActionForPlayback_(0)
+        # The shell reports its theme preference so the titlebar can match it.
+        self._theme_bridge = _ThemeBridge.alloc().initWithManager_(self)
+        config.userContentController().addScriptMessageHandler_name_(
+            self._theme_bridge, THEME_HANDLER_NAME)
         return config
 
     # ---- what app.py calls --------------------------------------------------
