@@ -1,0 +1,168 @@
+"""Wire protocol between the native-window host and whoever asks it for a window.
+
+Linux only in practice (the host is `supervisor/_linux/window_host.py`, a GTK +
+WebKitGTK process), but this module is stdlib-only and platform-neutral so the
+three parties that talk to it — the supervisor, the server (`linux_windows.py`),
+and the host itself — share one definition, and so it runs under pytest on any
+OS with AF_UNIX.
+
+One request per connection: a single JSON line in, a single JSON line out.
+
+    {"cmd": "ping"}                          -> {"ok": true}
+    {"cmd": "open", "url": "..."}            -> {"ok": true} | {"ok": false, "reason": "..."}
+    {"cmd": "set_enabled", "on": true}       -> {"ok": true}
+    {"cmd": "quit"}                          -> {"ok": true}
+
+``ok: false`` is an answer, not an error: the host is up but declines (windows
+switched off, nothing to show), and the caller falls back to a browser tab. A
+host that cannot be reached at all raises `HostUnavailable`, which callers treat
+the same way. Either way the app is never left with no way to show its UI.
+"""
+from __future__ import annotations
+
+import json
+import os
+import select
+import socket
+import threading
+import time
+from pathlib import Path
+
+#: The supervisor sets this in the SERVER's environment; the server installs its
+#: native hooks only when it is set, so `fused-render serve` and every other
+#: platform are untouched.
+ENV_SOCKET = "FUSED_RENDER_WINDOW_HOST_SOCKET"
+
+SOCKET_NAME = "window-host.sock"
+MAX_LINE = 64 * 1024
+_CLIENT_DEADLINE_S = 5.0
+_SELECT_TICK_S = 0.25
+
+
+class HostUnavailable(OSError):
+    """The window host could not be reached or did not answer in time."""
+
+
+def socket_path(runtime_dir: Path) -> Path:
+    return Path(runtime_dir) / SOCKET_NAME
+
+
+def request(path, payload: dict, timeout: float = 2.0) -> dict:
+    """Send one command and return the decoded reply. Raises `HostUnavailable`
+    for anything that is not a well-formed answer (no socket, refused,
+    timeout, bad JSON) — the caller never has to know which."""
+    data = json.dumps(payload).encode("utf-8") + b"\n"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sock.connect(os.fspath(path))
+        sock.sendall(data)
+        buf = bytearray()
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > MAX_LINE:
+                raise HostUnavailable("window host reply too large")
+        reply = json.loads(bytes(buf).split(b"\n", 1)[0] or b"null")
+    except HostUnavailable:
+        raise
+    except (OSError, ValueError) as error:  # timeout is an OSError subclass
+        raise HostUnavailable(str(error)) from error
+    finally:
+        sock.close()
+    if not isinstance(reply, dict):
+        raise HostUnavailable("window host sent a malformed reply")
+    return reply
+
+
+def ping(path, timeout: float = 0.3) -> bool:
+    try:
+        return bool(request(path, {"cmd": "ping"}, timeout).get("ok"))
+    except HostUnavailable:
+        return False
+
+
+def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
+    """Listen on ``path`` until ``stop`` is set, answering each connection with
+    ``handler(command_dict) -> reply_dict`` on the accept thread. A handler that
+    raises, or a client that sends junk or stalls, yields an ``ok: false``
+    reply for that client only — never a dead accept loop. The socket is
+    created 0600 (the runtime dir is 0700 already; this is belt and braces)."""
+    path = os.fspath(path)
+    try:
+        os.unlink(path)  # a crashed predecessor's leftover; bind would EADDRINUSE
+    except FileNotFoundError:
+        pass
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(path)
+    os.chmod(path, 0o600)
+    listener.listen(8)
+    listener.setblocking(False)
+
+    def loop() -> None:
+        try:
+            while not stop.is_set():
+                ready, _, _ = select.select([listener], [], [], _SELECT_TICK_S)
+                if not ready:
+                    continue
+                try:
+                    client, _addr = listener.accept()
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
+                    break
+                try:
+                    _serve_client(client, handler, log)
+                finally:
+                    client.close()
+        finally:
+            listener.close()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=loop, daemon=True, name="fused-render-window-host-ipc")
+    thread.start()
+    return thread
+
+
+def _serve_client(client: socket.socket, handler, log) -> None:
+    deadline = time.monotonic() + _CLIENT_DEADLINE_S
+    buf = bytearray()
+    try:
+        while b"\n" not in buf and len(buf) <= MAX_LINE:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            client.settimeout(remaining)
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        if len(buf) > MAX_LINE:
+            reply = {"ok": False, "reason": "request too large"}
+        else:
+            reply = _answer(bytes(buf).split(b"\n", 1)[0], handler, log)
+        client.settimeout(_CLIENT_DEADLINE_S)
+        client.sendall(json.dumps(reply).encode("utf-8") + b"\n")
+    except OSError:
+        return  # the client went away; nothing to answer
+
+
+def _answer(line: bytes, handler, log) -> dict:
+    try:
+        command = json.loads(line or b"null")
+    except ValueError:
+        return {"ok": False, "reason": "malformed request"}
+    if not isinstance(command, dict):
+        return {"ok": False, "reason": "malformed request"}
+    try:
+        reply = handler(command)
+    except Exception as error:  # noqa: BLE001 - one bad command must not end the loop
+        if log is not None:
+            log(f"window host command {command.get('cmd')!r} failed: {error}")
+        return {"ok": False, "reason": f"{type(error).__name__}: {error}"}
+    return reply if isinstance(reply, dict) else {"ok": bool(reply)}
