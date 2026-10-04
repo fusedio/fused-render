@@ -3,6 +3,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import contextlib  # noqa: E402
+import json  # noqa: E402
 import re  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -16,9 +18,11 @@ _loaded = {}
 _STREAMS = {}
 _STREAMS_LOCK = threading.Lock()
 
-SPLIT_PATTERN = "\n\n"
 TOKENS_PER_SECOND = 12
-_SEGMENT = re.compile(r"Segment (\d+)/(\d+)")
+CHUNK_CHARS = 600
+PARAGRAPH_PAUSE_S = 0.5
+_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
+_SENTENCE_END = re.compile(r"(?<=[.!?。！？])")
 
 
 def _pin_stream():
@@ -46,22 +50,27 @@ def download(model_id):
     return worker_base.download_snapshot(model_id)
 
 
+def _read_config(path):
+    try:
+        with open(os.path.join(path, "config.json"), encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
 def load(model_id, path):
+    traits = formats.speech_traits(_read_config(path))
+    if traits is None:
+        raise RuntimeError(f"{model_id} is not a Qwen3-TTS checkpoint")
     try:
         from mlx_audio.tts.utils import load_model
     except ImportError as e:
         raise RuntimeError(f"mlx-audio could not be imported from {sys.prefix}: {e}") from e
     _pin_stream()
     model = load_model(path)
-    config = getattr(model, "config", None)
-    mode = formats.SPEECH_VOICE_MODES.get(str(getattr(config, "tts_model_type", "base")))
-    if getattr(config, "model_type", None) != formats.QWEN3_TTS_MODEL_TYPE or mode is None:
-        raise RuntimeError(f"{model_id} is not a Qwen3-TTS checkpoint")
-    speakers = [str(v) for v in getattr(model, "supported_speakers", None) or []]
     _loaded.clear()
-    _loaded.update(
-        model=model, model_id=model_id, mode=mode, speakers=speakers,
-        languages=[str(v) for v in getattr(model, "supported_languages", None) or []])
+    _loaded.update(model=model, model_id=model_id, traits=traits)
     worker_base.set_state(device="mps")
 
 
@@ -91,28 +100,67 @@ def release():
         clear()
 
 
-class _TokenBar:
-    def __init__(self, job, desc):
+def _sentences(paragraph, limit):
+    for sentence in _SENTENCE_END.split(paragraph):
+        while len(sentence) > limit:
+            cut = sentence.rfind(" ", 0, limit) + 1 or limit
+            yield sentence[:cut]
+            sentence = sentence[cut:]
+        yield sentence
+
+
+def speech_chunks(text, limit=CHUNK_CHARS):
+    paragraphs = []
+    for block in _PARAGRAPH_BREAK.split(text):
+        chunks, current = [], ""
+        for sentence in _sentences(" ".join(block.split()), limit):
+            if current.strip() and len(current) + len(sentence) > limit:
+                chunks.append(current.strip())
+                current = ""
+            current += sentence
+        if current.strip():
+            chunks.append(current.strip())
+        if chunks:
+            paragraphs.append(chunks)
+    return paragraphs
+
+
+class _Progress:
+    def __init__(self, job, total):
         self.job = job
-        match = _SEGMENT.search(desc or "")
-        self.segment = int(match.group(1)) if match else 1
-        self.segments = int(match.group(2)) if match else 1
+        self.total = total
+        self.done = 0
         self.tokens = 0
 
+    def __call__(self, *_args, **_kwargs):
+        return self
+
     def update(self, n=1):
+        seconds = self.tokens // TOKENS_PER_SECOND
         self.tokens += n
-        if self.tokens % TOKENS_PER_SECOND:
+        if self.tokens // TOKENS_PER_SECOND == seconds:
             return
         worker_base.report_or_cancel(
-            job=self.job, kind="task", unit="", done=self.segment - 1,
-            total=self.segments,
-            detail="Segment %d/%d · %ds of audio" % (
-                self.segment, self.segments, self.tokens // TOKENS_PER_SECOND))
+            job=self.job, kind="task", unit="", done=self.done, total=self.total,
+            detail="Part %d/%d · %ds of audio" % (
+                self.done + 1, self.total, self.tokens // TOKENS_PER_SECOND))
 
     def close(self, *_args, **_kwargs):
         pass
 
-    set_description = close
+
+@contextlib.contextmanager
+def _progress_hook(progress):
+    from mlx_audio.tts.models.qwen3_tts import qwen3_tts
+
+    if not hasattr(qwen3_tts, "tqdm"):
+        raise RuntimeError("mlx-audio's qwen3_tts has no `tqdm` to hook for progress")
+    original = qwen3_tts.tqdm
+    qwen3_tts.tqdm = progress
+    try:
+        yield
+    finally:
+        qwen3_tts.tqdm = original
 
 
 def _write_wav(path, samples, sample_rate):
@@ -134,50 +182,42 @@ def generate(body):
     model = _loaded.get("model")
     if model is None:
         raise RuntimeError("no model is loaded")
-    text = str(body.get("text") or "")
     out = str(body.get("out") or "")
-    if not text.strip() or not out:
+    paragraphs = speech_chunks(str(body.get("text") or ""))
+    if not paragraphs or not out:
         raise ValueError("'text' and 'out' are required")
-    language = str(body.get("language") or "auto").lower()
-    opts = {k: body.get(k) or None for k in ("voice", "instruct", "refAudio", "refText")}
-    problem = formats.speech_option_error(
-        _loaded["model_id"], _loaded["mode"], _loaded["speakers"], _loaded["languages"],
-        voice=opts["voice"], instruct=opts["instruct"], ref_audio=opts["refAudio"],
-        ref_text=opts["refText"], language=language)
-    if problem:
-        raise ValueError(problem)
-    if _loaded["mode"] == "preset" and not opts["voice"] and _loaded["speakers"]:
-        opts["voice"] = _loaded["speakers"][0]
+    options = formats.speech_options(_loaded["model_id"], _loaded["traits"], body)
+
+    import numpy as np
 
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     started = time.time()
     job = body.get("job") or None
+    progress = _Progress(job, sum(len(chunks) for chunks in paragraphs))
     worker_base.report(job=job, state="running", kind="task", unit="",
-                       done=0, total=1, detail="Speaking")
-
-    import numpy as np
-    from mlx_audio.tts.models.qwen3_tts import qwen3_tts
-
-    if not hasattr(qwen3_tts, "tqdm"):
-        raise RuntimeError("mlx-audio's qwen3_tts has no `tqdm` to hook for progress")
-    original_tqdm = qwen3_tts.tqdm
-    qwen3_tts.tqdm = lambda *_a, desc=None, **_k: _TokenBar(job, desc)
-    try:
-        results = list(model.generate(
-            text=text, lang_code=language, split_pattern=SPLIT_PATTERN, verbose=False,
-            voice=opts["voice"], instruct=opts["instruct"],
-            ref_audio=opts["refAudio"], ref_text=opts["refText"]))
-    finally:
-        qwen3_tts.tqdm = original_tqdm
-    if not results:
+                       done=0, total=progress.total, detail="Speaking")
+    sample_rate = model.sample_rate
+    pause = np.zeros(int(sample_rate * PARAGRAPH_PAUSE_S), dtype=np.float32)
+    pieces = []
+    with _progress_hook(progress):
+        for index, chunks in enumerate(paragraphs):
+            if index and pieces:
+                pieces.append(pause)
+            for chunk in chunks:
+                for result in model.generate(
+                        text=chunk, lang_code=options["language"], split_pattern="",
+                        voice=options.get("voice"), instruct=options.get("instruct"),
+                        ref_audio=options.get("refAudio"), ref_text=options.get("refText"),
+                        verbose=False):
+                    pieces.append(np.asarray(result.audio, dtype=np.float32).reshape(-1))
+                progress.done += 1
+    if not any(piece is not pause and piece.size for piece in pieces):
         raise RuntimeError(f"{_loaded['model_id']} returned no audio for this text")
-
-    sample_rate = int(getattr(results[0], "sample_rate", 0) or model.sample_rate)
-    audio = np.concatenate([np.asarray(r.audio, dtype=np.float32).reshape(-1) for r in results])
+    audio = np.concatenate(pieces)
     _write_wav(out, audio, sample_rate)
     return {"path": out, "seconds": round(time.time() - started, 2),
-            "audioSeconds": round(len(audio) / sample_rate, 2), "segments": len(results),
-            **{k: v for k, v in opts.items() if v}}
+            "audioSeconds": round(audio.size / sample_rate, 2), "parts": progress.total,
+            **options}
 
 
 def main():

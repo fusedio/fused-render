@@ -464,27 +464,16 @@ def _edit_default_size(image_path: str) -> tuple[int, int] | None:
     return fitted_w, fitted_h
 
 
-def _resolve_reference_image(value, base, *, caller: str, verb: str,
-                             option: str = "image", noun: str = "base image"):
-    """Resolve an `image` option to `(path, None)`, or `(None, error)`.
+def _resolve_reference_file(value, base, *, caller: str, verb: str,
+                            option: str = "image", noun: str = "base image"):
+    """Resolve one input-file option to `(path, None)`, or `(None, error)`.
 
-    Shared by `/api/ai/image`'s edit image and `/api/ai/video`'s reference
-    image — the page-relative-to-`base` rule `/api/ai/transcribe`'s `path`
-    already follows (RH-1), factored out here because a third copy of it
-    for video would otherwise be exactly the kind of drift D413 keeps
-    catching: two routes independently retyping "absolute, or relative to a
-    page named by `base`" and one of them eventually getting it slightly
-    wrong.
-
-    `caller` names the bridge function in the one message that mentions it
-    (`fused.ai.image` or `fused.ai.video`); `verb` names what that call DOES
-    with the image (`"edits exactly one image"` for the image route,
-    `"conditions on exactly one image"` for video — a render conditioned on
-    a reference is not an edit of it). Every other word in every message
-    here is shared VERBATIM between the two routes, so the image route's
-    wording (pinned by tests and by SPEC) stays byte-identical and the video
-    route's reads naturally instead of borrowing "edits" for a call that
-    does not edit anything.
+    Shared by `/api/ai/image`'s edit image, `/api/ai/video`'s reference image
+    and `/api/ai/speech`'s voice sample, so all three follow the one
+    page-relative-to-`base` rule `/api/ai/transcribe`'s `path` uses (RH-1).
+    `option` and `noun` name the field and what it holds; `caller` and `verb`
+    name the bridge call and what it does with the file. The defaults keep
+    the image route's wording byte-identical.
     """
     if not isinstance(value, str) or not value.strip():
         return None, _error(
@@ -1798,7 +1787,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
                     "but not edit an existing image with it. Try "
                     "mlx-community/FLUX.2-Klein-4B-4bit.", status=400)
         # Page-relative, the same rule `/api/ai/transcribe`'s `path` follows
-        # (RH-1) — see `_resolve_reference_image`, shared with `/api/ai/
+        # (RH-1) — see `_resolve_reference_file`, shared with `/api/ai/
         # video`'s own `image` option. No allowlist, for the identical
         # reason `api_ai_transcribe` gives: `/api/fs/raw` already serves any
         # absolute path on this machine, so the only checks are the ones a
@@ -1806,7 +1795,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # here (the array/type check above), so this only re-derives the
         # PATH resolution — the shared function's own type check is a no-op
         # for a value that already passed it.
-        image_path, rejection = _resolve_reference_image(
+        image_path, rejection = _resolve_reference_file(
             image, body.get("base"), caller="fused.ai.image",
             verb="edits exactly one image")
         if rejection is not None:
@@ -2035,7 +2024,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     image = body.get("image")
     image_path = None
     if image is not None:
-        image_path, rejection = _resolve_reference_image(
+        image_path, rejection = _resolve_reference_file(
             image, body.get("base"), caller="fused.ai.video",
             verb="conditions on exactly one image")
         if rejection is not None:
@@ -2138,7 +2127,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     # this only changes the DEFAULT either falls back to. A base image this
     # reader cannot parse falls back to the engine's own default silently —
     # this is a convenience default, not a validation the request already
-    # passed (`_resolve_reference_image`, above).
+    # passed (`_resolve_reference_file`, above).
     default_width, default_height = traits.default_width, traits.default_height
     if image_path is not None:
         derived = _video_default_size(image_path, traits)
@@ -2229,36 +2218,31 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         if not isinstance(value, str) or not value.strip():
             return _error(f"'{key}' must be a non-empty string", status=400)
         fields[key] = value.strip()
-    ref_audio = body.get("refAudio")
-    if ref_audio is not None:
-        ref_path, rejection = _resolve_reference_image(
-            ref_audio, body.get("base"), caller="fused.ai.speech",
+    if body.get("refAudio") is not None:
+        fields["refAudio"], rejection = _resolve_reference_file(
+            body["refAudio"], body.get("base"), caller="fused.ai.speech",
             verb="clones exactly one voice", option="refAudio", noun="voice sample")
         if rejection is not None:
             return rejection
-        fields["refAudio"] = ref_path
-    if ("refAudio" in fields) != ("refText" in fields):
-        return _error("'refAudio' and 'refText' go together", status=400)
-    language = fields.pop("language", "auto")
 
     model = _model_of(body) or catalog.default_for(registry.TEXT_TO_SPEECH)
     if not model:
         return _error(registry.unavailable_reason(registry.TEXT_TO_SPEECH)
                       or "no speech model is configured", status=409)
-
-    traits = speech_traits(model) or {
-        "mode": (catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}).get("voiceMode")}
-    problem = traits["mode"] and formats.speech_option_error(
-        model, traits["mode"], traits.get("voices"), traits.get("languages"),
-        voice=fields.get("voice"), instruct=fields.get("instruct"),
-        ref_audio=fields.get("refAudio"), ref_text=fields.get("refText"), language=language)
-    if problem:
-        return _error(problem, status=400)
+    curated = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
+    traits = speech_traits(model) or (
+        {"mode": curated["voiceMode"]} if curated.get("voiceMode") else None)
+    if traits is not None:
+        try:
+            fields = formats.speech_options(model, traits, fields)
+        except ValueError as e:
+            return _error(str(e), status=400)
+    fields.setdefault("language", "auto")
 
     uid = secrets.token_hex(6)
     job = supervisor.speech_job_id(uid)
     path = os.path.join(_speech_dir(), f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.wav")
-    request = {"text": text.strip(), "language": language, "out": path, **fields}
+    request = {"text": text.strip(), "out": path, **fields}
     try:
         supervisor.start_speech(model, request, job, page=page, source=source)
     except supervisor.SupervisorError as e:
@@ -2266,8 +2250,7 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
     if "refAudio" in fields:
         fields["refAudio"] = canonical_fs_path(fields["refAudio"])
     return {"jobId": job, "path": canonical_fs_path(path), "model": model,
-            "provider": "local", "warnings": [], "text": request["text"],
-            "language": language, **fields}
+            "provider": "local", "warnings": [], "text": request["text"], **fields}
 
 
 #: Whisper's two directions. One flag to the model, so leaving `translate` out

@@ -7532,7 +7532,7 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
 # -- a reference image (I2V) -----------------------------------------------------
 # One image, a single string, conditioning at frame 0 with strength 1.0 — the
 # same scope decision `/api/ai/image`'s own `image` option made for editing,
-# restated for video. `_resolve_reference_image` is the shared helper both
+# restated for video. `_resolve_reference_file` is the shared helper both
 # routes call; these tests exercise it through `/api/ai/video`, the same way
 # the block above exercises `_edit_default_size` through `/api/ai/image`.
 
@@ -12311,10 +12311,10 @@ def test_speech_refuses_options_the_named_model_does_not_take(client, fake_speec
     page, _ = base_photo
     clone = {"refAudio": "photo.png", "refText": "hi", "base": page}
     cases = [
-        ({"model": "org/fake-clone"}, "needs 'refAudio'"),
-        ({"model": "org/fake-preset", **clone}, "does not clone"),
+        ({"model": "org/fake-clone"}, "needs 'refAudio', 'refText'"),
+        ({"model": "org/fake-clone", "refAudio": "photo.png", "base": page}, "needs 'refText'"),
+        ({"model": "org/fake-preset", **clone}, "not 'refAudio', 'refText'"),
         ({"model": "org/fake-design"}, "needs 'instruct'"),
-        ({"model": "org/fake-clone", "refAudio": "photo.png", "base": page}, "go together"),
     ]
     for extra, fragment in cases:
         response = _speech(client, {"text": "x", **extra})
@@ -12347,17 +12347,19 @@ def test_speech_checks_voices_and_languages_off_the_cached_config(client, fake_s
     _cached_repo(hub, "org/fake-preset", files=("model.safetensors",),
                  dirs=("speech_tokenizer",),
                  config={"model_type": "qwen3_tts", "tts_model_type": "custom_voice",
-                         "talker_config": {"spk_id": {"ryan": 1, "serena": 2},
+                         "talker_config": {"spk_id": {"serena": 1, "ryan": 2},
                                            "codec_language_id": {"english": 1,
                                                                  "sichuan_dialect": 2}}})
     voice = _speech(client, {"text": "x", "voice": "nobody"})
     assert voice.status_code == 400 and "ryan, serena" in voice.json()["error"]
     language = _speech(client, {"text": "x", "language": "sichuan_dialect"})
     assert language.status_code == 400 and "english" in language.json()["error"]
-    ok = _speech(client, {"text": "x", "voice": "Ryan", "language": "english"})
-    assert ok.status_code == 200, ok.json()
-    assert ok.json()["voice"] == "Ryan"
-    _wait_job(ok.json()["jobId"])
+    named = _speech(client, {"text": "x", "voice": "Ryan", "language": "English"}).json()
+    assert (named["voice"], named["language"]) == ("ryan", "english")
+    default = _speech(client, {"text": "x"}).json()
+    assert default["voice"] == "ryan"
+    _wait_job(named["jobId"])
+    _wait_job(default["jobId"])
 
 
 def test_the_catalog_carries_each_speech_models_voice_mode(client, fake_speech_runner, hub):

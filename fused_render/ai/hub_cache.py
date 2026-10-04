@@ -1548,19 +1548,9 @@ def has_vision_tower(repo_id: str) -> bool:
 
 def speech_traits(repo_id: str) -> dict | None:
     snapshot_dir = _embed_snapshot_dir(repo_id)
-    config = _read_json(os.path.join(snapshot_dir, "config.json")) if snapshot_dir else None
-    if not config or config.get("model_type") != formats.QWEN3_TTS_MODEL_TYPE:
+    if snapshot_dir is None:
         return None
-    mode = formats.SPEECH_VOICE_MODES.get(config.get("tts_model_type"))
-    talker = config.get("talker_config") or {}
-    if mode is None or not isinstance(talker, dict):
-        return None
-    return {
-        "mode": mode,
-        "voices": sorted(map(str, talker.get("spk_id") or {})),
-        "languages": sorted(str(n) for n in talker.get("codec_language_id") or {}
-                            if not str(n).endswith("_dialect")),
-    }
+    return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
 
 
 def has_cached_snapshot(repo_id: str) -> bool:

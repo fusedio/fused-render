@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import threading
@@ -13,6 +14,7 @@ WORKER_PATH = os.path.join(
 )
 
 MODEL = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+HOOK = "mlx_audio.tts.models.qwen3_tts.qwen3_tts"
 
 
 class FakeBase:
@@ -39,34 +41,20 @@ class FakeBase:
         return None
 
 
-class FakeResult:
-    def __init__(self, samples, sample_rate=24000):
-        self.audio = samples
-        self.sample_rate = sample_rate
-
-
 class FakeModel:
-    def __init__(self, tts_model_type="custom_voice", speakers=("Ryan", "Serena"),
-                 tokens_per_segment=30):
-        self.config = types.SimpleNamespace(model_type="qwen3_tts",
-                                            tts_model_type=tts_model_type)
-        self.supported_speakers = list(speakers)
-        self.supported_languages = ["auto", "english", "chinese"]
-        self.sample_rate = 24000
-        self.tokens_per_segment = tokens_per_segment
+    sample_rate = 24000
+
+    def __init__(self, tokens_per_chunk=30):
+        self.tokens_per_chunk = tokens_per_chunk
         self.calls = []
 
     def generate(self, **kwargs):
         self.calls.append(kwargs)
-        hook = sys.modules["mlx_audio.tts.models.qwen3_tts.qwen3_tts"].tqdm
-        segments = [s for s in kwargs["text"].split(kwargs["split_pattern"]) if s.strip()]
-        for index, _segment in enumerate(segments):
-            bar = hook(total=4096, desc=f"Segment {index + 1}/{len(segments)}",
-                       unit="tokens", disable=True, leave=False)
-            for _ in range(self.tokens_per_segment):
-                bar.update(1)
-            bar.close()
-            yield FakeResult([0.0, 0.5, -0.5, 1.5] * 600)
+        bar = sys.modules[HOOK].tqdm(total=4096, desc="Segment 1/1", disable=True)
+        for _ in range(self.tokens_per_chunk):
+            bar.update(1)
+        bar.close()
+        yield types.SimpleNamespace(audio=[0.0, 0.5, -0.5, 1.5] * 600)
 
 
 class FakeMlxCore(types.ModuleType):
@@ -74,7 +62,6 @@ class FakeMlxCore(types.ModuleType):
         super().__init__("mlx.core")
         self.cpu = "CPU"
         self.made = []
-        self.pinned = []
         self._lock = threading.Lock()
 
     def default_device(self):
@@ -86,125 +73,130 @@ class FakeMlxCore(types.ModuleType):
             return f"SHARED-{device}-STREAM"
 
     def set_default_stream(self, stream):
-        self.pinned.append(stream)
+        pass
 
+
+def snapshot(tmp_path, tts_model_type="custom_voice", speakers=("serena", "ryan")):
+    folder = tmp_path / f"snapshot-{tts_model_type}"
+    folder.mkdir(exist_ok=True)
+    (folder / "config.json").write_text(json.dumps({
+        "model_type": "qwen3_tts", "tts_model_type": tts_model_type,
+        "talker_config": {"spk_id": {name: i for i, name in enumerate(speakers)},
+                          "codec_language_id": {"english": 1, "chinese": 2,
+                                                "sichuan_dialect": 3}},
+    }), encoding="utf-8")
+    return str(folder)
 
 
 def load_worker(monkeypatch, base, model=None, with_tqdm=True):
     made = model if model is not None else FakeModel()
     loaded_from = []
-
     monkeypatch.setitem(sys.modules, "worker_base", base)
-    package = types.ModuleType("mlx_audio")
-    tts = types.ModuleType("mlx_audio.tts")
     utils = types.ModuleType("mlx_audio.tts.utils")
-
-    def load_model(path):
-        loaded_from.append(path)
-        return made
-
-    utils.load_model = load_model
-    models = types.ModuleType("mlx_audio.tts.models")
+    utils.load_model = lambda path: (loaded_from.append(path), made)[1]
     qwen_pkg = types.ModuleType("mlx_audio.tts.models.qwen3_tts")
-    qwen_mod = types.ModuleType("mlx_audio.tts.models.qwen3_tts.qwen3_tts")
+    qwen_mod = types.ModuleType(HOOK)
     if with_tqdm:
         qwen_mod.tqdm = object()
     qwen_pkg.qwen3_tts = qwen_mod
-    for name, module in (("mlx_audio", package), ("mlx_audio.tts", tts),
-                         ("mlx_audio.tts.utils", utils), ("mlx_audio.tts.models", models),
-                         ("mlx_audio.tts.models.qwen3_tts", qwen_pkg),
-                         ("mlx_audio.tts.models.qwen3_tts.qwen3_tts", qwen_mod)):
+    for name, module in (("mlx_audio", types.ModuleType("mlx_audio")),
+                         ("mlx_audio.tts", types.ModuleType("mlx_audio.tts")),
+                         ("mlx_audio.tts.utils", utils),
+                         ("mlx_audio.tts.models", types.ModuleType("mlx_audio.tts.models")),
+                         ("mlx_audio.tts.models.qwen3_tts", qwen_pkg), (HOOK, qwen_mod)):
         monkeypatch.setitem(sys.modules, name, module)
     mlx = types.ModuleType("mlx")
     core = FakeMlxCore()
     mlx.core = core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", core)
-
     spec = importlib.util.spec_from_file_location("mlx_audio_tts_worker_under_test", WORKER_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module, made, loaded_from, core
 
 
-def test_load_hands_mlx_audio_the_snapshot_directory(monkeypatch):
+def test_load_reads_the_config_and_hands_mlx_audio_the_snapshot(monkeypatch, tmp_path):
     base = FakeBase()
     worker, _model, loaded_from, core = load_worker(monkeypatch, base)
-    worker.load(MODEL, "/snapshots/x")
-    assert loaded_from == ["/snapshots/x"]
-    assert worker._loaded["mode"] == "preset"
+    path = snapshot(tmp_path)
+    worker.load(MODEL, path)
+    assert loaded_from == [path]
+    assert worker._loaded["traits"] == {"mode": "preset", "voices": ["ryan", "serena"],
+                                        "languages": ["chinese", "english"]}
     assert base.state["device"] == "mps"
     assert core.made == ["CPU", "GPU"]
 
 
-def test_load_refuses_a_checkpoint_that_is_not_qwen3_tts(monkeypatch):
-    model = FakeModel()
-    model.config.model_type = "kokoro"
-    worker, *_ = load_worker(monkeypatch, FakeBase(), model=model)
+def test_load_refuses_a_checkpoint_that_is_not_qwen3_tts(monkeypatch, tmp_path):
+    worker, _model, loaded_from, _core = load_worker(monkeypatch, FakeBase())
     with pytest.raises(RuntimeError, match="not a Qwen3-TTS checkpoint"):
-        worker.load("org/kokoro", "/snapshots/k")
+        worker.load("org/kokoro", str(tmp_path))
+    assert loaded_from == []
 
 
-def test_generate_writes_a_mono_wav_and_ticks_per_segment(monkeypatch, tmp_path):
+def test_speech_chunks_keep_paragraphs_and_pack_sentences_under_the_limit(monkeypatch):
+    worker, *_ = load_worker(monkeypatch, FakeBase())
+    text = "One. Two!  Three?\n\n\n Four\nfive.\n\n   \n"
+    assert worker.speech_chunks(text) == [["One. Two! Three?"], ["Four five."]]
+    assert worker.speech_chunks("Aa aa. Bb bb. Cc cc.", limit=13) == [["Aa aa. Bb bb.", "Cc cc."]]
+    assert worker.speech_chunks("一二三。四五六。", limit=4) == [["一二三。", "四五六。"]]
+    assert worker.speech_chunks("aaaa bbbb cccc", limit=6) == [["aaaa", "bbbb", "cccc"]]
+    assert worker.speech_chunks("x" * 10, limit=4) == [["xxxx", "xxxx", "xx"]]
+
+
+def test_long_text_is_made_in_parts_with_a_pause_between_paragraphs(monkeypatch, tmp_path):
     base = FakeBase()
-    worker, model, *_ = load_worker(monkeypatch, base, model=FakeModel(tokens_per_segment=24))
-    worker.load(MODEL, "/snapshots/x")
-    module = sys.modules["mlx_audio.tts.models.qwen3_tts.qwen3_tts"]
-    original = module.tqdm
+    worker, model, *_ = load_worker(monkeypatch, base, model=FakeModel(tokens_per_chunk=24))
+    worker.load(MODEL, snapshot(tmp_path))
     out = str(tmp_path / "speech" / "clip.wav")
     reply = worker.generate({"text": "One.\n\nTwo.", "voice": "Ryan", "language": "English",
                              "instruct": "calm", "out": out, "job": "j"})
-    assert reply["path"] == out and reply["segments"] == 2 and reply["voice"] == "Ryan"
+    assert [call["text"] for call in model.calls] == ["One.", "Two."]
+    call = model.calls[0]
+    assert (call["voice"], call["instruct"], call["lang_code"]) == ("ryan", "calm", "english")
+    assert call["split_pattern"] == "" and call["ref_audio"] is None
+    assert reply["parts"] == 2 and reply["voice"] == "ryan"
     with wave.open(out) as handle:
         assert (handle.getframerate(), handle.getnchannels(), handle.getsampwidth()) == (24000, 1, 2)
-        assert handle.getnframes() == 2 * 2400
-    call = model.calls[0]
-    assert (call["voice"], call["instruct"], call["lang_code"]) == ("Ryan", "calm", "english")
-    assert call["ref_audio"] is None
-    ticks = [t for t in base.ticks if t.get("detail", "").startswith("Segment")]
+        assert handle.getnframes() == 2 * 2400 + 12000
+    ticks = [t for t in base.ticks if t.get("detail", "").startswith("Part")]
     assert [(t["done"], t["total"]) for t in ticks] == [(0, 2), (0, 2), (1, 2), (1, 2)]
-    assert ticks[-1]["detail"] == "Segment 2/2 · 2s of audio"
-    assert module.tqdm is original
+    assert ticks[-1]["detail"] == "Part 2/2 · 4s of audio"
+    assert not hasattr(sys.modules[HOOK].tqdm, "update")
 
 
 def test_cancel_restores_the_tqdm_hook(monkeypatch, tmp_path):
-    base = FakeBase(cancel_after=1)
-    worker, *_ = load_worker(monkeypatch, base)
-    worker.load(MODEL, "/snapshots/x")
-    module = sys.modules["mlx_audio.tts.models.qwen3_tts.qwen3_tts"]
-    original = module.tqdm
+    worker, *_ = load_worker(monkeypatch, FakeBase(cancel_after=1))
+    worker.load(MODEL, snapshot(tmp_path))
+    original = sys.modules[HOOK].tqdm
     with pytest.raises(FakeBase.Cancelled):
         worker.generate({"text": "A.", "out": str(tmp_path / "b.wav")})
-    assert module.tqdm is original
+    assert sys.modules[HOOK].tqdm is original
     assert not os.path.exists(tmp_path / "b.wav")
 
 
 def test_a_missing_tqdm_hook_fails_loudly(monkeypatch, tmp_path):
     worker, *_ = load_worker(monkeypatch, FakeBase(), with_tqdm=False)
-    worker.load(MODEL, "/snapshots/x")
+    worker.load(MODEL, snapshot(tmp_path))
     with pytest.raises(RuntimeError, match="no `tqdm`"):
         worker.generate({"text": "A.", "out": str(tmp_path / "a.wav")})
 
 
-def test_generate_refuses_what_the_loaded_variant_does_not_take(monkeypatch, tmp_path):
-    worker, model, *_ = load_worker(monkeypatch, FakeBase(), model=FakeModel("base"))
-    worker.load(MODEL, "/snapshots/x")
-    with pytest.raises(ValueError, match="needs 'refAudio'"):
+def test_generate_applies_the_shared_option_rules(monkeypatch, tmp_path):
+    worker, model, *_ = load_worker(monkeypatch, FakeBase())
+    worker.load(MODEL, snapshot(tmp_path, "base", speakers=()))
+    with pytest.raises(ValueError, match="needs 'refAudio', 'refText'"):
         worker.generate({"text": "A.", "out": str(tmp_path / "a.wav")})
     assert model.calls == []
-
-
-def test_clone_passes_the_sample_and_its_words(monkeypatch, tmp_path):
-    worker, model, *_ = load_worker(monkeypatch, FakeBase(), model=FakeModel("base", speakers=()))
-    worker.load("org/base", "/snapshots/b")
     reply = worker.generate({"text": "A.", "refAudio": "/tmp/me.wav", "refText": "hello",
                              "out": str(tmp_path / "a.wav")})
     assert (model.calls[0]["ref_audio"], model.calls[0]["ref_text"]) == ("/tmp/me.wav", "hello")
     assert reply["refAudio"] == "/tmp/me.wav"
 
 
-def test_a_preset_model_with_no_voice_uses_its_first_speaker(monkeypatch, tmp_path):
+def test_a_preset_model_with_no_voice_uses_the_first_listed_voice(monkeypatch, tmp_path):
     worker, model, *_ = load_worker(monkeypatch, FakeBase())
-    worker.load(MODEL, "/snapshots/x")
+    worker.load(MODEL, snapshot(tmp_path))
     worker.generate({"text": "A.", "out": str(tmp_path / "a.wav")})
-    assert model.calls[0]["voice"] == "Ryan"
+    assert model.calls[0]["voice"] == "ryan"

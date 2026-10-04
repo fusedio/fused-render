@@ -1779,6 +1779,12 @@ def is_laya_snapshot(names, dirnames) -> bool:
 QWEN3_TTS_MODEL_TYPE = "qwen3_tts"
 QWEN3_TTS_TOKENIZER_DIR = "speech_tokenizer"
 SPEECH_VOICE_MODES = {"custom_voice": "preset", "base": "clone", "voice_design": "design"}
+SPEECH_OPTIONS = ("voice", "instruct", "refAudio", "refText", "language")
+_SPEECH_MODE_RULES = {
+    "preset": ("speaks with preset voices", {"voice", "instruct"}, set()),
+    "clone": ("clones a voice from a sample", {"refAudio", "refText"}, {"refAudio", "refText"}),
+    "design": ("makes a voice from a description", {"instruct"}, {"instruct"}),
+}
 
 
 def is_qwen3_tts_snapshot(config: dict, dirnames) -> bool:
@@ -1786,30 +1792,48 @@ def is_qwen3_tts_snapshot(config: dict, dirnames) -> bool:
             and QWEN3_TTS_TOKENIZER_DIR in dirnames)
 
 
-def speech_option_error(model_id: str, mode: str, voices, languages, *,
-                        voice=None, instruct=None, ref_audio=None, ref_text=None,
-                        language=None) -> str | None:
-    voices = [str(v).lower() for v in voices or []]
-    languages = sorted(str(v).lower() for v in languages or [] if str(v).lower() != "auto")
-    clip = ref_audio or ref_text
-    if mode == "preset":
-        if clip:
-            return f"{model_id} does not clone; drop 'refAudio'/'refText'"
-        if voices and voice and str(voice).lower() not in voices:
-            return f"{model_id} has no voice {voice!r}; it has {', '.join(voices)}"
-    elif mode == "clone":
-        if voice or instruct:
-            return f"{model_id} clones a voice and takes no 'voice' or 'instruct'"
-        if not ref_audio or not ref_text:
-            return f"{model_id} needs 'refAudio' (a 10-30 s sample) and 'refText' (its words)"
-    elif mode == "design":
-        if voice or clip:
-            return f"{model_id} takes only 'instruct', not 'voice', 'refAudio' or 'refText'"
-        if not instruct:
-            return f"{model_id} needs 'instruct' to describe the voice"
-    if language and str(language).lower() not in ["auto", *languages] and languages:
-        return f"{model_id} has no language {language!r}; use 'auto' or {', '.join(languages)}"
-    return None
+def speech_traits(config: dict) -> dict | None:
+    if config.get("model_type") != QWEN3_TTS_MODEL_TYPE:
+        return None
+    mode = SPEECH_VOICE_MODES.get(config.get("tts_model_type", "base"))
+    talker = config.get("talker_config")
+    if mode is None or not isinstance(talker, dict):
+        return None
+    return {
+        "mode": mode,
+        "voices": sorted(map(str, talker.get("spk_id") or {})),
+        "languages": sorted(str(name) for name in talker.get("codec_language_id") or {}
+                            if "dialect" not in str(name)),
+    }
+
+
+def _option_names(keys) -> str:
+    return ", ".join(f"'{key}'" for key in SPEECH_OPTIONS if key in keys)
+
+
+def speech_options(model_id: str, traits: dict, options: dict) -> dict:
+    what, allowed, required = _SPEECH_MODE_RULES[traits["mode"]]
+    resolved = {key: options[key] for key in SPEECH_OPTIONS if options.get(key)}
+    given = set(resolved) - {"language"}
+    if given - allowed:
+        raise ValueError(f"{model_id} {what}; it takes {_option_names(allowed)}, "
+                         f"not {_option_names(given - allowed)}")
+    if required - given:
+        raise ValueError(f"{model_id} {what}; it needs {_option_names(required - given)}")
+    voices = traits.get("voices") or []
+    if traits["mode"] == "preset" and voices:
+        wanted = str(resolved.get("voice", voices[0]))
+        match = next((v for v in voices if v.lower() == wanted.lower()), None)
+        if match is None:
+            raise ValueError(f"{model_id} has no voice {wanted!r}; it has {', '.join(voices)}")
+        resolved["voice"] = match
+    language = str(resolved.get("language", "auto")).lower()
+    languages = traits.get("languages") or []
+    if language != "auto" and languages and language not in languages:
+        raise ValueError(f"{model_id} has no language {language!r}; "
+                         f"use 'auto' or {', '.join(languages)}")
+    resolved["language"] = language
+    return resolved
 
 
 def has_ltx_split_layout(names) -> bool:

@@ -9536,7 +9536,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   own `generate_two_stage` builds real I2V conditioning at both stages for
   the ONE image it is given, and a multi-anchor surface is unverified on this
   app's hardware, not merely unimplemented. Path resolution — page-relative
-  to `base`, existence, is-a-file — runs through `_resolve_reference_image`
+  to `base`, existence, is-a-file — runs through `_resolve_reference_file`
   in `ai_runtime.py`, the same function `/api/ai/image`'s `image` calls,
   rather than a third hand-rolled copy of `/api/ai/transcribe`'s own `path`
   rule; the two routes' error text differs only in which bridge function it
@@ -10206,11 +10206,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   folder; a search hit needs the `qwen3_tts` tag on an `mlx-audio` card.
   Each model has one voice mode from `tts_model_type`: `preset` (CustomVoice,
   `voice` + optional `instruct`), `clone` (Base, `refAudio` + `refText`) or
-  `design` (VoiceDesign, `instruct`). `formats.speech_option_error` holds the
-  rules; the route and the worker both call it. `POST /api/ai/speech` follows
-  the video route: closed options, local only, `refAudio` resolved beside the
-  page named by `base`, job-backed, output `<home>/ai/speech/*.wav` (mono
-  16-bit, 24 kHz). Progress is per segment, from a hook on `qwen3_tts.tqdm`.
+  `design` (VoiceDesign, `instruct`). `formats.speech_traits(config)` reads the
+  mode, the sorted voices and the non-dialect languages; `formats.speech_options`
+  checks the options against them and fills the default voice (the first
+  listed). The route and the worker both call these, so they cannot disagree.
+  `POST /api/ai/speech` follows the video route: closed options, local only,
+  `refAudio` resolved beside the page named by `base`, job-backed, output
+  `<home>/ai/speech/*.wav` (mono 16-bit, 24 kHz). The worker splits the text
+  itself, because mlx-audio makes preset, design and clone audio in one pass
+  capped at 4096 tokens (about 5.7 min): blank lines start a paragraph (0.5 s
+  pause), and sentences are packed into parts of at most 600 characters.
+  Progress is per part, from a hook on `qwen3_tts.tqdm`.
   The catalog lists five mlx-community bf16 repos, smallest first, so the
   default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and

@@ -60,9 +60,9 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 
 ## Speech: `fused.ai.speech({text, ...})`
 
-Qwen3-TTS, Apple Silicon only; check the `text-to-speech` row's `available`. Options depend on the model's `voiceMode`: `preset` = `voice` (from `voices`, default first) + optional `instruct` style; `clone` = `refAudio` (page-relative or absolute, 10-30 s) + `refText` (its words), both required; `design` = `instruct` describing the voice, required. Wrong option → `bad_request`. `language`: Qwen names (`english`, `chinese`, ...), not ISO codes; default `"auto"`. Also `model`, `provider`, `onProgress`, `abortSignal`.
+Qwen3-TTS, Apple Silicon only; check the `text-to-speech` row's `available`. Options depend on the model's `voiceMode`: `preset` = `voice` (from `voices`; default and echo = first listed) + optional `instruct` style; `clone` = `refAudio` (page-relative or absolute, 10-30 s) + `refText` (its words), both required; `design` = `instruct` describing the voice, required. Wrong option → `bad_request`. `language`: Qwen names (`english`, `chinese`, ...), not ISO codes; default `"auto"`. Also `model`, `provider`, `onProgress`, `abortSignal`.
 
-Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated: 1}`, `response.id` = job id, `providerMetadata.local: {text, language, voice?, instruct?, refAudio?, refText?}`. Switching between models reloads, so group lines by model.
+Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated: 1}`, `response.id` = job id, `providerMetadata.local: {text, language, voice?, instruct?, refAudio?, refText?}`. Long text is made in parts (paragraphs at blank lines, at most 600 characters each); `onProgress` `done/total` counts parts. Switching between models reloads, so group lines by model.
 
 ## Transcribe, embed and decide
 

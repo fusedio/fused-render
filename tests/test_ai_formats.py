@@ -1317,25 +1317,42 @@ def test_a_qwen3_tts_snapshot_needs_its_speech_tokenizer():
     assert "mlx-audio-tts" not in formats.loaders(dirnames=set(), **kwargs)
 
 
-@pytest.mark.parametrize("mode, kwargs, fragment", [
-    ("preset", {"ref_audio": "/a.wav", "ref_text": "hi"}, "does not clone"),
-    ("preset", {"voice": "nobody"}, "no voice 'nobody'"),
-    ("clone", {"voice": "ryan", "ref_audio": "/a.wav", "ref_text": "hi"}, "takes no"),
-    ("clone", {}, "needs 'refAudio'"),
-    ("design", {"voice": "ryan", "instruct": "warm"}, "takes only"),
-    ("design", {}, "needs 'instruct'"),
-    ("preset", {"language": "klingon"}, "no language 'klingon'"),
-])
-def test_speech_option_error(mode, kwargs, fragment):
-    problem = formats.speech_option_error("org/tts", mode, ["ryan"], ["auto", "english"], **kwargs)
-    assert "org/tts" in problem and fragment in problem
+def test_speech_traits_read_the_qwen3_tts_config():
+    config = {"model_type": "qwen3_tts", "tts_model_type": "voice_design",
+              "talker_config": {"spk_id": {"serena": 0, "aiden": 1},
+                                "codec_language_id": {"english": 1, "beijing_dialect": 2}}}
+    assert formats.speech_traits(config) == {
+        "mode": "design", "voices": ["aiden", "serena"], "languages": ["english"]}
+    assert formats.speech_traits({**config, "tts_model_type": "other"}) is None
+    assert formats.speech_traits({"model_type": "kokoro"}) is None
 
 
-@pytest.mark.parametrize("mode, voices, kwargs", [
-    ("preset", ["ryan"], {"voice": "Ryan", "instruct": "calm", "language": "English"}),
-    ("preset", [], {"voice": "anyone"}),
-    ("clone", ["ryan"], {"ref_audio": "/a.wav", "ref_text": "hi", "language": "auto"}),
-    ("design", ["ryan"], {"instruct": "warm"}),
+PRESET = {"mode": "preset", "voices": ["aiden", "ryan"], "languages": ["english"]}
+
+
+@pytest.mark.parametrize("traits, options, fragment", [
+    (PRESET, {"refAudio": "/a.wav", "refText": "hi"}, "takes 'voice', 'instruct', not 'refAudio', 'refText'"),
+    (PRESET, {"voice": "nobody"}, "has no voice 'nobody'; it has aiden, ryan"),
+    (PRESET, {"language": "klingon"}, "has no language 'klingon'"),
+    ({"mode": "clone"}, {"voice": "ryan", "refAudio": "/a.wav", "refText": "hi"}, "not 'voice'"),
+    ({"mode": "clone"}, {"refAudio": "/a.wav"}, "needs 'refText'"),
+    ({"mode": "design"}, {"refText": "hi", "instruct": "warm"}, "not 'refText'"),
+    ({"mode": "design"}, {}, "needs 'instruct'"),
 ])
-def test_speech_option_error_accepts(mode, voices, kwargs):
-    assert formats.speech_option_error("org/tts", mode, voices, ["english"], **kwargs) is None
+def test_speech_options_refuse(traits, options, fragment):
+    with pytest.raises(ValueError, match="org/tts") as error:
+        formats.speech_options("org/tts", traits, options)
+    assert fragment in str(error.value)
+
+
+@pytest.mark.parametrize("traits, options, resolved", [
+    (PRESET, {"voice": "Ryan", "instruct": "calm", "language": "English"},
+     {"voice": "ryan", "instruct": "calm", "language": "english"}),
+    (PRESET, {"voice": None}, {"voice": "aiden", "language": "auto"}),
+    ({"mode": "preset"}, {"voice": "anyone"}, {"voice": "anyone", "language": "auto"}),
+    ({"mode": "clone"}, {"refAudio": "/a.wav", "refText": "hi", "language": "auto"},
+     {"refAudio": "/a.wav", "refText": "hi", "language": "auto"}),
+    ({"mode": "design"}, {"instruct": "warm", "text": "x"}, {"instruct": "warm", "language": "auto"}),
+])
+def test_speech_options_resolve(traits, options, resolved):
+    assert formats.speech_options("org/tts", traits, options) == resolved

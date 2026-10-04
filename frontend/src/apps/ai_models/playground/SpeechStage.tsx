@@ -146,8 +146,9 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
     const style = mode === "design" && sample && !instruct.trim() ? sample.voice : instruct;
     if (sample) setText(sample.prompt);
     if (style !== instruct) setInstruct(style);
-    if (missingFor(mode, wanted, refAudio, refText, style)) return;
-    setError(null);
+    const why = missingFor(mode, wanted, refAudio, refText, style);
+    setError(why);
+    if (why) return;
     const request: SpeechRequest = {
       text: wanted,
       model,
@@ -258,7 +259,7 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
                 hint={voices.length === 0 ? "The voice list shows after the download." : undefined}
               >
                 <RailSelect value={voice} onChange={(e) => setVoice(e.target.value)}>
-                  <option value="">Default</option>
+                  <option value="">{voices.length ? `Default (${nameOf(voices[0])})` : "Default"}</option>
                   {voices.map((v) => (
                     <option key={v} value={v}>
                       {nameOf(v)}
