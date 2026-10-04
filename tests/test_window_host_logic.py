@@ -265,3 +265,38 @@ def test_main_exits_with_the_toolkit_code_when_unavailable(monkeypatch, capsys, 
     code = wh.main(["--port", "1", "--socket", str(tmp_path / "s"), "--state", str(tmp_path)])
     assert code == wh.EXIT_UNAVAILABLE
     assert "no display" in capsys.readouterr().err
+
+
+def test_timed_out_main_thread_request_never_runs_later(monkeypatch):
+    """A request the host gave up on must not open a window afterwards: the
+    caller already fell back to a browser tab."""
+    from types import SimpleNamespace
+
+    queued = []
+    tk = SimpleNamespace(GLib=SimpleNamespace(idle_add=lambda fn: queued.append(fn)))
+    backend = wh.GtkBackend.__new__(wh.GtkBackend)
+    backend.tk = tk
+    monkeypatch.setattr(wh, "_MAIN_DEADLINE_S", 0.05)
+    ran, errors = [], []
+
+    def ipc_thread():  # run_on_main only queues when not on the main thread
+        try:
+            backend.run_on_main(lambda: ran.append(1))
+        except TimeoutError as error:
+            errors.append(error)
+
+    import threading
+    t = threading.Thread(target=ipc_thread)
+    t.start()
+    t.join(5)
+    assert len(errors) == 1
+    for fn in queued:  # the busy loop finally gets to it
+        fn()
+    assert ran == []
+
+
+def test_host_deadline_is_shorter_than_every_client_timeout():
+    from fused_render.supervisor._linux import windows
+
+    assert wh._MAIN_DEADLINE_S < windows._OPEN_TIMEOUT_S
+    assert wh._MAIN_DEADLINE_S < 5.0  # linux_windows.open_app's request timeout

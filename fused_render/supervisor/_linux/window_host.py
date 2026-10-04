@@ -252,6 +252,11 @@ class _Win:
         self.window, self.view, self.frame_name = window, view, frame_name
 
 
+# Strictly below every client's request timeout (5s), so when the host gives up
+# the client is still waiting and hears the refusal before it falls back.
+_MAIN_DEADLINE_S = 3.0
+
+
 class GtkBackend:
     def __init__(self, tk, host_getter, state_dir: Path, log) -> None:
         from fused_render import __version__
@@ -271,8 +276,14 @@ class GtkBackend:
         if threading.current_thread() is threading.main_thread():
             return fn()
         done, box = threading.Event(), {}
+        lock = threading.Lock()
+        state = {"started": False, "cancelled": False}
 
         def run():
+            with lock:
+                if state["cancelled"]:
+                    return False  # the caller already gave up and fell back
+                state["started"] = True
             try:
                 box["value"] = fn()
             except BaseException as error:  # noqa: BLE001 - re-raised on the caller
@@ -281,8 +292,12 @@ class GtkBackend:
             return False  # GLib.SOURCE_REMOVE
 
         self.tk.GLib.idle_add(run)
-        if not done.wait(10):
-            raise TimeoutError("GTK main loop did not respond")
+        if not done.wait(_MAIN_DEADLINE_S):
+            with lock:
+                if not state["started"]:
+                    state["cancelled"] = True
+                    raise TimeoutError("GTK main loop did not respond")
+            done.wait()  # already running on the main thread: it will finish
         if "error" in box:
             raise box["error"]
         return box.get("value")
