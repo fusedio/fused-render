@@ -1394,6 +1394,11 @@ never imports server).
   (CL-7), a second "Logs" heading beside the Call log section read as the call
   log's own settings. The durable log a user has settings for is the call log
   (§31); the disposable one belongs to the process, not to preferences.
+  **Amended by D1307:** the page now has a **Diagnostics** section whose one
+  action is "Save diagnostics…" (`POST /api/diagnostics`, previewed by
+  `GET /api/diagnostics/plan`, DG-18). The log itself is still not shown or
+  configured here: the section packs it into a zip the user chooses to send;
+  it does not bring back a second "Logs" heading.
 
 ### 20.4 Deploy to Fused account — **REMOVED**
 
@@ -2555,9 +2560,13 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
 - **CL-7** **Store.** `~/.fused-render/logs/<partition>/<date>-<pid>-<part>.calls.jsonl`
   — append-only JSONL under the branch-aware shell home, partitioned per app
   (CL-18). The root is `logs/`, which is NOT where `logs.py` writes: the app log
-  is disposable and lives in the system temp dir (D68), while this store is
-  durable and pruned by code (CL-10), so the two never share a directory despite
-  both being called logs in the UI.
+  has its own home and retention (DG-1, D1307; under D68 it lived in the system
+  temp dir), while this store is durable and pruned by code (CL-10), so the two
+  never share a directory despite both being called logs in the UI. On macOS
+  the app log is in `~/Library/Logs/fused-render/`; on Windows/Linux it is
+  `<home>/logs/app/` — a subdirectory beside the call partitions, but still its
+  own directory: the store's walks match only `.calls.jsonl` names, so nothing
+  in `app/` is ever read as a call record.
   One file per day per
   process (per-pid for the same reason `logs.py` is: two live servers must not
   interleave lines, and the reader merges the day back together, CL-12), rolled
@@ -2611,7 +2620,8 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   nothing — accepted: such a process is also adding nothing, and the next
   session that makes a single call clears the backlog.) D68 chose the temp dir
   for the app log precisely because "nothing prunes the directory"; this store
-  is durable instead, so the pruning is code.
+  is durable instead, so the pruning is code. (D1307 later gave the app log a
+  persistent home with its own boot-time prune, DG-1/DG-3.)
 - **CL-10** **Reads of the store are recorded like any other call; nothing
   *watches* a store file.** Everything that opens the store (`log_studio`,
   `code`, `duckdb`, `tree`) **is** logged: what a viewer costs to open a large
@@ -10878,8 +10888,9 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   knows only the install root still cannot see the two places that most often
   hold the fault: `~/.fused-render` (settings, the template registry, the staged
   core templates) is named as a DIFFERENT place, since a reinstall replaces one
-  and never touches the other; the per-pid log is named as a glob (it lives in
-  the system temp dir, `fused_render/logs.py`); and the `raw` steps now say to
+  and never touches the other; the per-pid log is named as a glob (since D1307 it
+  lives in `~/Library/Logs/fused-render/fused-render-*.log` on macOS — it was
+  `"${TMPDIR:-/tmp}"/fused-render-*.log` — `fused_render/logs.py`); and the `raw` steps now say to
   check whether the server is running before concluding the app is broken —
   "Failed to fetch" at boot is far more often a dead process than a broken app.
   Pinned across both copies by `tests/test_trouble_parity.py`: a find command in
@@ -12124,3 +12135,207 @@ https://claude.ai/artifact/PDhNwAeVBVfuAvNyrxicMz (SKILL.md discovery).
   only **add** a pause (an own build's destructive file); nothing in a
   `SKILL.md` can remove one, since the author of a foreign app is not the
   user.
+
+## 50. Diagnostics — Telling a Slow Server From a Dead One (D1307)
+
+Goal: when the shell's red "fused-render isn't running" card appears, or a
+"Python quit unexpectedly" dialog does, the user can hand over one zip that
+says which of three things happened. **No platform self-restarts a dead
+server** — on macOS uvicorn runs on a daemon thread inside the AppKit process
+and nothing watches it; on Windows/Linux the desktop supervisor turns
+`SERVER_DIED` into a dialog and exits 1 — so a card that clears by itself is
+the banner's own down→reconnected cycle, never a restart. Every process in
+the bundle runs as `Contents/MacOS/python`, so the crash dialog is usually a
+child. The three causes the records must discriminate:
+
+- **(A) Slow server** — the probe arrived and was answered late.
+- **(B) Probe queued in the browser** — HTTP/1.1's 6-connections-per-origin
+  cap held it behind busy app requests; the server never saw it.
+- **(C) A child died** — an index worker, AI worker, engine daemon, claude
+  session host or similar.
+
+Nothing here leaves the machine on its own. Every record stays on the user's
+disk and leaves only inside a zip the user chooses to send (D421's posture).
+
+### 50.1 Log home and retention
+
+- **DG-1 Log home.** The app log's directory is `~/Library/Logs/fused-render/`
+  on macOS (so Console.app lists it) and `<home>/logs/app/` on Windows/Linux,
+  where the desktop supervisor sets `FUSED_RENDER_LOG_DIR` to that
+  subdirectory. `FUSED_RENDER_LOG_DIR` still overrides on every platform. The
+  home is persistent: the system temp dir (D68's default) is erased by the
+  reboot every reporter does before reporting. It holds the per-pid session
+  logs (DG-2), relaunch logs, `crash/` (DG-11), `outages.jsonl` (DG-9) and
+  `resources.jsonl` (DG-16). On Windows/Linux it sits beside the call-store
+  partitions but is not one of them (CL-7). **Rejected:** staying in
+  `$TMPDIR`; one path on every platform (Console.app visibility on macOS is
+  worth the split).
+- **DG-2 Session log.** One `fused-render-<pid>.log` per process (D68's
+  per-pid reasoning unchanged), `RotatingFileHandler` at **10 MB × 3 files** (the
+  current one + 2 backups; was 2 MB × 2), sized so one session holds a 24 h window: a visible tab
+  writes one health access line per 5 s, about 1.5 MB/day. The formatter adds
+  `[pid threadName]` to every line. The boot line carries the process's
+  `boot_id` (DG-7). Lines stay plain text — the reading recipe (DG-22) is
+  greps; a JSONL app log stays on the SV-3 backlog.
+- **DG-3 Retention.** `prune_log_home` runs at boot and keeps the newest 10
+  sessions within 50 MB total, oldest out first. This answers D68's reason for
+  using temp ("nothing prunes the directory").
+- **DG-4 uvicorn reaches the root logger.** uvicorn's default
+  `LOGGING_CONFIG` sets `propagate=False` on `uvicorn` and gives it its own
+  stderr handler, so ASGI tracebacks, bind errors and lifespan failures went
+  to a stderr nobody reads on a Finder launch (D68 claimed otherwise). Every
+  `uvicorn.Config` (`app.py`, `cli.py`, `lan.py` ×2) is passed
+  `log_config=logs.uvicorn_log_config()`: `uvicorn` and `uvicorn.error`
+  propagate to root; `uvicorn.access` stays silent, because
+  `server/common.py`'s middleware already writes one request line with its
+  duration (SV-3). **Rejected:** `dup2` of fd 2 onto the log file (fights the
+  handler's rename-and-reopen on rotation).
+- **DG-5 Reveal the directory.** The tray's "Open app logs" and the macOS
+  menu's "Show App Logs in Finder" reveal the log home, not the current pid's
+  file — the evidence is as often in an earlier session's file, the crash
+  files or the JSONL trails beside it.
+
+### 50.2 Health route and outage record
+
+- **DG-6 `GET /api/health`.** `async`, no dependencies; returns `{boot_id,
+  pid, started_at, uptime_s, version}`. It is what the shell's liveness
+  banner probes. `/api/config` is not a probe: it is sync, takes the update
+  manager's `RLock` and may fork the FDA probe, so under load it reports
+  "down" for the very reason it is slow. The shell still fetches
+  `/api/config` about every 60 s for `version`/`installed_version`/`dev`.
+  **Rejected:** new fields on `/api/config`; reusing `/api/desktop/ready`
+  (sync, and part of the supervisor-token handshake).
+- **DG-7 `boot_id`.** Minted once per process in `fused_render/health.py`,
+  stamped into the app log's boot line and into `server.json` (D472). A
+  different `boot_id` before and after an outage means a restart; the same
+  one means the server never went away.
+- **DG-8 Client classification.** Each failed probe is tagged `timeout`,
+  `refused`, `http-5xx`, `http-other` or `parse`. The card shows after **3**
+  consecutive failures (`FAIL_THRESHOLD`, was 2). After the first `timeout`
+  the shell shows an amber "slow" line, so a slow server reads as slow, not
+  as down.
+- **DG-9 Outage record.** On recovery the shell `POST`s `/api/health/outage`
+  with `{t_down, t_up, strikes, kinds, boot_id_before, boot_id_after,
+  visible, page, latencies_ms, recovered}`; the server appends it to
+  `<log home>/outages.jsonl`. **Rejected:** a `localStorage`-only trail (a
+  reporter cannot hand it over); a general telemetry endpoint (D421).
+- **DG-10 Partial record on unload.** `pagehide` during an open outage
+  flushes the record so far by `navigator.sendBeacon`. A beacon carries no
+  custom headers, so the route accepts a bare JSON body.
+
+### 50.3 Crash hooks and child exit reporting
+
+- **DG-11 `crashlog.install(kind)`.** Every long-lived Python process calls
+  it at startup. It opens `<log home>/crash/<kind>-<pid>.log` and keeps that
+  fd for `faulthandler.enable` (a native fault writes its stack there),
+  registers `faulthandler` on `SIGTERM` with `chain=True`, and routes
+  `sys.excepthook` and `threading.excepthook` to the root logger. The file
+  is created empty and removed on clean exit; the packaged app's
+  `quit_teardown` calls `crashlog.release()` itself, because `os._exit` skips
+  `atexit`. **Rejected:** faulthandler on the rotating log (needs an fd that
+  rotation never swaps out); `PYTHONFAULTHANDLER=1` (writes to the inherited
+  stderr, which is `/dev/null` under Finder).
+- **DG-12 Reading a crash file.** **Non-empty = a native stack** (segfault,
+  abort, or a SIGTERM dump). **Empty at collection = the process did not exit
+  cleanly**: SIGKILL and jetsam are invisible to every handler, so the
+  leftover empty file is their only trace. Absent = clean exit.
+- **DG-13 Install sites.** The app (`app.main`, kind `app`), `cli serve`
+  (`server`), the index worker and watcher, `_child.py`, the AI
+  `worker_base`, `engine_worker`, the claude `session_host`, the env-install
+  worker and the desktop supervisor.
+- **DG-14 Parents record how a child died.** `crashlog.describe_exit(code)`
+  turns a return code into words (−9 → "killed by SIGKILL: … memory pressure
+  (jetsam) …", SIGSEGV, SIGABRT …); `report_child_exit(kind, pid, code,
+  log_path)` logs a WARNING with that text and the last 2000 characters of
+  the child's stderr file. Three sites that used to lose this:
+  `index/runner.py` keeps the `Popen` and polls `returncode` beside its 90 s
+  mtime check; `ai/supervisor.py`'s `_drop_gone` reads the code and tail
+  before deleting the worker's log; `engine_host.py` reports the dead daemon
+  before it respawns one. **Rejected:** a central child registry (the parent
+  already holds the `Popen`).
+- **DG-15 No child writes to `DEVNULL`.** The claude `session_host` and the
+  Swift Apple helper get stderr files, so DG-14 has a tail to read.
+
+### 50.4 Resource trail
+
+- **DG-16 `health.ResourceTrail`.** One JSON line every 20 s to
+  `<log home>/resources.jsonl`: server RSS and footprint, children's RSS
+  grouped by sysmon kind (`index`, `engine`, `model`, `claude`, …), host
+  memory total/used, swap used, load average, thread count. A ~24 h ring
+  (4400 lines). It runs whatever the Monitor pref says — that pref gates UI
+  only. Cost: one process-tree walk per 20 s. **Rejected:** asking reporters
+  to turn Monitor on (1 s cadence, 120 s of memory-only history); sampling
+  only once something is slow (the minute before is what matters).
+
+### 50.5 Diagnostics bundle
+
+- **DG-17 One builder, files only.** `diagnostics.build_bundle(since_s,
+  out_dir, *, reveal)` reads files and runs read-only OS commands; it needs
+  no running server.
+- **DG-18 Three callers.**
+  - Menu bar **"Save Diagnostics…"** — in-process, so it works while the
+    server thread is dead.
+  - Preferences → **Diagnostics** — `POST /api/diagnostics`, with a
+    `GET /api/diagnostics/plan` preview ("N files · M MB · K crash reports")
+    before the user commits (PF-5).
+  - CLI **`fused-render diagnose [--since 2h] [--out DIR]`**. The packaged
+    app puts no `fused-render` wrapper on PATH, so support instructions give
+    `/Applications/FusedRender.app/Contents/MacOS/python -m fused_render.cli diagnose`.
+
+  **Rejected:** a button in the red down card — it cannot reach a dead
+  server, and in the false-positive case the moment has passed by the time
+  anyone clicks.
+- **DG-19 Output, window, caps.**
+  `~/Desktop/fused-render-diagnostics-<timestamp>.zip` unless `--out` says
+  otherwise. Window = max(24 h, since boot), widened by `--since`.
+  Unbounded logs are tailed to 512 KB; the whole bundle is capped at 64 MB.
+  Paths inside files are kept as they are: they are evidence.
+- **DG-20 Layout.**
+
+  | Path in the zip | Contents |
+  |---|---|
+  | `manifest.json` | schema, versions, install method, platform, RAM, `boot_id`s, window, files collected and files skipped with the reason |
+  | `app/` | session logs and relaunch logs from the log home AND the legacy temp dir; `crash/`; `outages.jsonl`; `resources.jsonl` |
+  | `os/DiagnosticReports/` | `*.ips` in the window matching `FusedRender`, `python`, `fused-apple-ai` or `rclone` |
+  | `os/unified-log.txt` | `log show` over our processes plus `com.apple.memorystatus`/jetsam; 60 s timeout, 8 MB cap |
+  | `os/memory.txt` | `sysctl hw.memsize vm.swapusage`, `memory_pressure`, `vm_stat` |
+  | `os/ps-tree.txt` | the process tree at collection time |
+  | `index/` | newest 5 index runs |
+  | `ai/` | AI worker logs |
+  | `engines/` | engine `daemon.log` tails |
+  | `envinstall/` | env-install logs |
+  | `claude/` | claude run `err.log` tails only |
+  | `calls/` | `*.calls.jsonl` in the window (§31) |
+  | `state/` | `server.json` minus its token; `current_apps.json`, `background_apps.json`, `registered_apps.json`; `claude-health.json`; `rcd.log` tail; `prefs.json` redacted |
+  | `desktop/` | `server-console.log` and `supervisor.log` tails (Windows/Linux) |
+
+- **DG-21 Never collected.** openfused secrets and credentials,
+  `rclone.conf`, `lan_tls/`, `claude-config/`, drafts, `held_answers`, and
+  claude `out.jsonl` (the conversation itself). `server.json` loses its
+  token and `prefs.json` is redacted before either enters the zip.
+- **DG-22 Reading a bundle.** For a red card at a reported time:
+  1. `app/outages.jsonl` — find the row at that time. `boot_id_before !=
+     boot_id_after` ⇒ the server restarted; step 4 says why.
+  2. Same `boot_id` ⇒ grep the session log for `GET /api/health` access
+     lines in that minute. Present and slow ⇒ **(A)**; absent ⇒ **(B)**, the
+     probe never arrived.
+  3. `app/resources.jsonl` — the two minutes before `t_down`: memory, swap,
+     load, which child kind grew.
+  4. `app/crash/` (DG-12), `os/DiagnosticReports/`, and child-exit WARNING
+     lines (DG-14) in the session log ⇒ **(C)**, and which child.
+  5. `state/current_apps.json` — which apps were live.
+
+### 50.6 Watchdog
+
+- **DG-23 The server thread is watched.** `app.watch_server_thread` checks
+  the uvicorn thread every 3 s once the server is ready. A dead thread ⇒ a
+  CRITICAL log line, an `outages.jsonl` event `server-thread-died`, and the
+  normal quit path, so the user relaunches into a known state instead of a
+  shell that can never reconnect. **Rejected:** re-running `server.run()`
+  in-process (app state after an uncaught exception on that thread is
+  unknown).
+
+**Deferred (not D1307):** index worker memory and `Pool` hangs; orphaned AI
+workers; the 6-connection cap itself and OpenBot's `HEAD` poll; App Nap; the
+~40 fork-path spawns; a JSONL app log (SV-3); pruning claude run dirs and
+capping template `daemon.log`.

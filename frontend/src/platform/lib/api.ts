@@ -252,6 +252,34 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
+// -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------
+/** What a bundle WOULD contain, without building it — cheap. */
+export interface DiagnosticsPlan {
+  files: number;
+  bytes: number;
+  /** Epoch seconds: the oldest log/sample the bundle reaches back to. */
+  window_start: number;
+  crash_reports: number;
+}
+
+/** The zip that was written (to the Desktop). */
+export interface DiagnosticsResult {
+  path: string;
+  bytes: number;
+}
+
+export function fetchDiagnosticsPlan(): Promise<DiagnosticsPlan> {
+  return getJson<DiagnosticsPlan>("/api/diagnostics/plan");
+}
+
+/** Builds the bundle. Slow — up to a minute on a machine with big logs.
+ *  postJson carries the `X-Fused: 1` write guard the endpoint requires. An
+ *  optional `since_s` would be ABSOLUTE epoch seconds, not a duration; the
+ *  shell sends `{}` and takes the server's default window. */
+export function buildDiagnostics(): Promise<DiagnosticsResult> {
+  return postJson<DiagnosticsResult>("/api/diagnostics", {});
+}
+
 // -- Full Disk Access nudge (fused_render/shell/fda.py) ----------------------
 // Both are packaged-mac-only mutations: X-Fused via postJson, 404 elsewhere.
 export function openFdaSettings(): Promise<{ ok: boolean }> {

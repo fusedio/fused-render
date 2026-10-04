@@ -49,6 +49,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
+from fused_render.crashlog import report_child_exit
+
 logger = logging.getLogger(__name__)
 
 BOOTSTRAP_TIMEOUT_S = 120.0
@@ -138,6 +140,11 @@ class Child:
     #: which is what "pid 1234, up 3m" has to mean.
     started_at: float = field(default_factory=time.monotonic)
     proc: subprocess.Popen | None = field(default=None, repr=False)
+    #: Set once this child's end has been accounted for — logged as a death by
+    #: `_report_if_dead`, or about to be killed on purpose by `_terminate` —
+    #: so a record left dead in `_children` (idle retirement keeps it there
+    #: for `restart`) is never reported again by the next sweep or status poll.
+    exit_reported: bool = field(default=False, repr=False)
 
 
 #: Guards the _children pointers and the _reinit registry only — both fast, and
@@ -278,7 +285,37 @@ def _kill_tree(child: Child) -> None:
             time.sleep(0.05)
 
 
+def _report_if_dead(child: Child) -> None:
+    """Log how this child died, once, if it has exited on its own (SPEC §50, D5).
+
+    Every path that finds a child dead used to just respawn or skip it, so a
+    daemon that segfaulted or was memory-killed left no line anywhere saying
+    so — only a fresh `daemon.log` append from the next bring-up. Called
+    wherever a dead child is first noticed; a no-op for a live child, one with
+    no Popen, or one already accounted for. Reads `daemon.log` BEFORE the
+    respawn appends to it, since every caller reaches here ahead of `_spawn`.
+    """
+    if child.exit_reported or child.proc is None:
+        return
+    try:
+        code = child.proc.poll()
+    except OSError:
+        return
+    if not isinstance(code, int) or isinstance(code, bool):
+        return
+    child.exit_reported = True
+    try:
+        report_child_exit(f"engine:{child.engine_id}", child.pid, code,
+                          os.path.join(child.cache, "daemon.log"))
+    except Exception:  # noqa: BLE001 — diagnostics must never block a respawn
+        logger.debug("could not report engine child exit", exc_info=True)
+
+
 def _terminate(child: Child) -> None:
+    # A child that already died on its own is reported as such first; past
+    # this line its end is deliberate (we are killing it), never a crash.
+    _report_if_dead(child)
+    child.exit_reported = True
     _kill_tree(child)
     if child.proc is not None:
         try:
@@ -677,6 +714,9 @@ def running_engines() -> list[dict]:
     result = []
     for c in children:
         if not _alive(c):
+            # The status bar polls this, so it is often the first to see a
+            # background daemon that died while idle — say how, once.
+            _report_if_dead(c)
             continue
         idle_for_s = max(0.0, now - c.last_used)
         is_busy = busy.get(c.engine_id, 0) > 0

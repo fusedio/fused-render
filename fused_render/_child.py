@@ -41,7 +41,33 @@ from _binding import bind_params
 # tells them which interpreter looked and where.
 
 
+def _enable_faulthandler() -> None:
+    """Native-crash stacks for this child (SPEC §50, D4), stdlib only.
+
+    Not `fused_render.crashlog.install`: this file runs as a standalone script
+    with the package directory as sys.path[0] and deliberately cannot import
+    the package (the NOTE above). So faulthandler goes to fd 2 instead, and
+    that is the right place anyway: the executor pipes this process's stderr
+    and attaches its tail to the result, so a SIGSEGV out of native code leaves
+    its Python stack in the very output the parent already reads after a death.
+
+    No SIGTERM registration, unlike `crashlog.install`: a deliberate stop is
+    routine for this process, and a stack dump on every one would bury the
+    real failures in that same stderr. Uncaught Python exceptions need
+    nothing here — the default hooks already print them to stderr. Never
+    raises: a child must not fail to start over diagnostics.
+    """
+    try:
+        import faulthandler
+
+        if sys.stderr is not None:
+            faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run():
+    _enable_faulthandler()
     req = json.load(sys.stdin)
     path = os.path.abspath(req["path"])
     params = req.get("params") or {}

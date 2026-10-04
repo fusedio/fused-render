@@ -128,6 +128,7 @@ EXPECTED_STARTUP = [
     "_startup_ai_hardware_refresh",
     "_startup_ai_hub_metadata_refresh",
     "_startup_ai_hub_catalog_refresh",
+    "_startup_resource_trail",
     "_startup_gc_project_venvs",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
@@ -148,6 +149,7 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_background_apps_resurrection",
     "_startup_shutdown_ai",
     "_shutdown_server_json",
+    "_shutdown_resource_trail",
     "_shutdown_captures",
     "_shutdown_ai_workers",
     "_shutdown_engines",

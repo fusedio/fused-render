@@ -1530,7 +1530,8 @@
 }
 
 /* ---- Server-status card (foot of the notification stack) ----------------- */
-/* Shown by ServerStatusBanner after two failed /api/config probes; the green
+/* Shown by ServerStatusBanner after three failed /api/health probes; a single
+   timed-out probe draws the quiet amber -slow line instead, and the green
    -reconnected variant auto-dismisses. Placement and stacking belong to
    .notif-host — this only describes the card. */
 .server-status {
@@ -1596,6 +1597,13 @@
 .server-status-reconnected {
   border-color: var(--success);
   color: var(--fg);
+}
+
+/* A probe timed out, the down threshold is not reached: a busy server, most
+   likely. One muted line, no title and no buttons. */
+.server-status-slow {
+  border-color: var(--warning, var(--border));
+  color: var(--fg-muted);
 }
 
 /* ---- The update DIALOG (platform/ui/UpdateDialog) -------------------------- */

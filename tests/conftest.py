@@ -42,6 +42,10 @@ import pytest
 
 for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
                        ("FUSED_RENDER_DIR", "fused-render-tests-dir-"),
+                       # SPEC §50: the log home is persistent (~/Library/Logs on
+                       # macOS), so a test that reaches setup_logging, crashlog
+                       # or the Apple helper must not write there.
+                       ("FUSED_RENDER_LOG_DIR", "fused-render-tests-logs-"),
                        ("CLAUDE_CONFIG_DIR", "fused-render-tests-claude-")):
     if _var not in os.environ:
         _tmp = tempfile.mkdtemp(prefix=_prefix)

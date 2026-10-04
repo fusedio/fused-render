@@ -13603,7 +13603,7 @@ const TROUBLE_FIND_INSTALL = [
   'dir "%LOCALAPPDATA%\\Programs\\FusedRenderPy"   # Windows',
 ];
 const TROUBLE_USER_DATA_DIR = "~/.fused-render";
-const TROUBLE_LOG_LIST = 'ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3';
+const TROUBLE_LOG_LIST = "ls -t ~/Library/Logs/fused-render/fused-render-*.log | head -3";
 
 function troubleWhereToLook() {
   const lines = ["Where to look on this machine:",

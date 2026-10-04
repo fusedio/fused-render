@@ -135,6 +135,14 @@ class _ActionsTarget(NSObject):
     def openLogs_(self, _sender):
         self._controller._actions["open_logs"]()
 
+    def saveDiagnostics_(self, _sender):
+        # SPEC §50: `app.save_diagnostics_async` builds the bundle off the main
+        # thread. `.get`: an actions dict without the key (older callers,
+        # tests) must not turn a menu click into a pyobjc exception.
+        action = self._controller._actions.get("save_diagnostics")
+        if action is not None:
+            action()
+
     def quitApp_(self, _sender):
         self._controller._actions["quit"]()
 
@@ -512,6 +520,8 @@ class PinController:
         if self._actions.get("show_launcher") is not None:
             add("Search Apps…", b"showLauncher:")
         add("Open app logs", b"openLogs:")
+        if self._actions.get("save_diagnostics") is not None:
+            add("Save Diagnostics…", b"saveDiagnostics:")
         add("Quit fused-render", b"quitApp:")
         menu.popUpMenuPositioningItem_atLocation_inView_(
             None, NSMakePoint(0, sender.bounds().size.height + 4), sender

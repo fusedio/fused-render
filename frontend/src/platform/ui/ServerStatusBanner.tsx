@@ -3,9 +3,19 @@
 // positions nothing). Unlike a toast it has no auto-dismiss: it stays until
 // the server answers again, which is why it sits below the transient entries
 // rather than shuffling among them.
-// Polls /api/config every 5s; what each probe result means (down, reconnected,
-// update-refresh, update-restart, auto-reload) lives in lib/server-status.ts —
-// this component owns the polling, the timers and the cards. The backend is a
+// Probes /api/health every 5s (4s abort) — async and cheap on the server, so a
+// busy sync threadpool no longer reads as an outage (SPEC §50). Each failure
+// is classified (timeout / refused / http-5xx / http-other / parse) and the
+// latency of each healthy probe is kept. The VERSION facts (version,
+// installed_version, dev) still come from /api/config, but only at mount,
+// every CONFIG_EVERY probes (~60s) and whenever the health boot_id moves —
+// update detection needs them, the 5s liveness check does not. When a
+// failure streak ends (or the boot id moves under a healthy tab) the reducer
+// hands back an outage record and this component POSTs it to
+// /api/health/outage; a tab closing mid-outage beacons a partial one. What
+// each probe result means (slow, down, reconnected, update-refresh,
+// update-restart, auto-reload) lives in lib/server-status.ts — this component
+// owns the polling, the timers, the reporting and the cards. The backend is a
 // native app the user launches, so the "down" fix is always "reopen the app",
 // not a CLI command. Fully self-contained: mounted once in App's #app root so
 // it survives the epoch-keyed view remounts. Styling is .server-status* in
@@ -42,11 +52,13 @@ import { useUpdateStatus } from "@platform/lib/update-status";
 import {
   bannerSurface,
   initialStatus,
+  pendingOutage,
   reduceProbe,
   probeOnTick,
   updateDialogMode,
   updateDialogPreview,
   UPDATE_DIALOG_KEY,
+  type OutageRecord,
   type ProbeResult,
   type ServerBanner,
   type StatusState,
@@ -55,6 +67,91 @@ import {
 const POLL_MS = 5000;
 const PROBE_TIMEOUT_MS = 4000;
 const RECONNECT_DISMISS_MS = 5000;
+/** /api/config is re-read every this many probes (~60s at POLL_MS). */
+const CONFIG_EVERY = 12;
+const OUTAGE_URL = "/api/health/outage";
+
+/** One liveness probe against /api/health, classified. Never throws. */
+async function probeHealth(): Promise<ProbeResult> {
+  const ctrl = new AbortController();
+  const timeout = window.setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+  const t0 = performance.now();
+  try {
+    let res: Response;
+    try {
+      res = await fetch("/api/health", { cache: "no-store", signal: ctrl.signal });
+    } catch (e) {
+      // An abort is OUR timeout firing; anything else the fetch throws
+      // (TypeError "Failed to fetch", "Load failed") is nothing answering.
+      return { ok: false, kind: (e as Error)?.name === "AbortError" ? "timeout" : "refused" };
+    }
+    if (!res.ok) return { ok: false, kind: res.status >= 500 ? "http-5xx" : "http-other" };
+    let body: { boot_id?: unknown };
+    try {
+      body = await res.json();
+    } catch (e) {
+      // The abort can also land while the body is still streaming in.
+      return { ok: false, kind: (e as Error)?.name === "AbortError" ? "timeout" : "parse" };
+    }
+    if (!body || typeof body !== "object") return { ok: false, kind: "parse" };
+    return {
+      ok: true,
+      bootId: typeof body.boot_id === "string" ? body.boot_id : undefined,
+      latencyMs: Math.round(performance.now() - t0),
+    };
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+type VersionFacts = Pick<ProbeResult, "version" | "installedVersion" | "dev">;
+
+/** The version facts from /api/config; null when that read fails (the caller
+ *  keeps its last cached copy — liveness is /api/health's call, not this). */
+async function fetchVersionFacts(): Promise<VersionFacts | null> {
+  const ctrl = new AbortController();
+  const timeout = window.setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch("/api/config", { cache: "no-store", signal: ctrl.signal });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return {
+      version: typeof body.version === "string" ? body.version : undefined,
+      installedVersion: typeof body.installed_version === "string" ? body.installed_version : null,
+      dev: body.dev === true,
+    };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+/** POST one outage record to the server's outage log. Fire-and-forget: a
+ *  report that fails is not worth a second outage card. `beacon` is the
+ *  `pagehide` path, where only sendBeacon reliably leaves the page. */
+function reportOutage(outage: OutageRecord, latencies: number[], beacon: boolean): void {
+  try {
+    const json = JSON.stringify({
+      ...outage,
+      visible: document.visibilityState === "visible",
+      page: window.location?.pathname ?? "",
+      latencies_ms: latencies.slice(-20),
+    });
+    if (beacon && typeof navigator.sendBeacon === "function") {
+      navigator.sendBeacon(OUTAGE_URL, new Blob([json], { type: "application/json" }));
+      return;
+    }
+    void fetch(OUTAGE_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: json,
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // A bare test DOM (no fetch/navigator) or a throwing accessor: drop it.
+  }
+}
 
 // Baked by vite `define`; guarded so bun test (no vite) can import this file.
 const BUILD_VERSION = typeof __BUILD_VERSION__ === "undefined" ? "" : __BUILD_VERSION__;
@@ -98,28 +195,27 @@ function useServerStatus(): {
     let disposed = false;
     let dismissTimer: number | undefined;
 
-    async function probe() {
+    // The version facts, cached between /api/config fetches (see the header).
+    let cfg: VersionFacts | null = null;
+    let probeCount = 0;
+
+    async function probe(forceConfig = false) {
       if (probingRef.current) return;
       probingRef.current = true;
-      let result: ProbeResult = { ok: false };
-      const ctrl = new AbortController();
-      const timeout = window.setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+      let result: ProbeResult;
       try {
-        const res = await fetch("/api/config", { cache: "no-store", signal: ctrl.signal });
-        if (res.ok) {
-          const body = await res.json();
-          result = {
-            ok: true,
-            version: typeof body.version === "string" ? body.version : undefined,
-            installedVersion:
-              typeof body.installed_version === "string" ? body.installed_version : null,
-            dev: body.dev === true,
-          };
+        result = await probeHealth();
+        // Refresh the version facts at mount, every CONFIG_EVERY probes, and
+        // whenever the boot id moved — a new process may be a new version,
+        // and the reducer must see THAT probe's version or a same-version
+        // "reconnected" would paper over an update for a whole minute.
+        const bootMoved = result.bootId !== undefined && result.bootId !== stateRef.current.bootId;
+        if (result.ok && (forceConfig || cfg === null || probeCount % CONFIG_EVERY === 0 || bootMoved)) {
+          cfg = (await fetchVersionFacts()) ?? cfg;
         }
-      } catch {
-        result = { ok: false };
+        probeCount += 1;
+        if (result.ok && cfg) result = { ...result, ...cfg };
       } finally {
-        window.clearTimeout(timeout);
         probingRef.current = false;
       }
       if (disposed) return;
@@ -131,8 +227,14 @@ function useServerStatus(): {
       // having a second one (see restart-flow.ts's header).
       noteRestartProbe({ ok: result.ok, version: result.version ?? null });
 
-      const wasDown = stateRef.current.banner === "down";
-      const { state: next, reload } = reduceProbe(stateRef.current, result, BUILD_VERSION);
+      const prevBanner = stateRef.current.banner;
+      const { state: next, reload, outage } = reduceProbe(stateRef.current, result, BUILD_VERSION);
+      // Ahead of the render, so a `pagehide` between this probe and the next
+      // render reads the streak this probe just extended (or ended).
+      stateRef.current = next;
+      // Reported BEFORE a reload below: `keepalive` lets the request outlive
+      // the document that sent it.
+      if (outage) reportOutage(outage, next.latencies, false);
       if (reload) {
         // Server came back updated — the tab was blocked anyway, and views are
         // URL-synced, so swap in the new shell without asking.
@@ -151,7 +253,9 @@ function useServerStatus(): {
       if (result.ok) setDev(result.dev === true);
       setState(next);
       if (next.banner === "reconnected") {
-        if (wasDown) {
+        // Armed on the transition INTO reconnected — from down, or from a
+        // healthy tab whose server restarted under it (boot id moved).
+        if (prevBanner !== "reconnected") {
           window.clearTimeout(dismissTimer);
           dismissTimer = window.setTimeout(() => {
             // Hide the card but KEEP the rest of the state — `served` in
@@ -172,7 +276,9 @@ function useServerStatus(): {
       }
     }
 
-    probeRef.current = probe;
+    // An explicit check (the "Check again" button, the install-landed wake
+    // below) re-reads the version facts too, not just liveness.
+    probeRef.current = () => probe(true);
     const interval = window.setInterval(() => {
       // Hidden tabs sit the poll out — unless a restart is in flight, when the
       // hidden tab is the one most likely to miss the app coming back
@@ -186,9 +292,16 @@ function useServerStatus(): {
     // "online" probes even while hidden — a WiFi reconnect shouldn't wait for
     // the next visibilitychange to clear the banner.
     const onOnline = () => probe();
+    // A tab closing (or navigating) MID-OUTAGE never sees the recovery that
+    // would have produced the record, so it leaves a partial one behind.
+    const onPageHide = () => {
+      const pending = pendingOutage(stateRef.current);
+      if (pending) reportOutage(pending, stateRef.current.latencies, true);
+    };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("online", onOnline);
     window.addEventListener("focus", onVisible);
+    window.addEventListener("pagehide", onPageHide);
 
     return () => {
       disposed = true;
@@ -197,6 +310,7 @@ function useServerStatus(): {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("focus", onVisible);
+      window.removeEventListener("pagehide", onPageHide);
     };
   }, []);
 
@@ -229,7 +343,8 @@ export default function ServerStatusBanner() {
   // THE INSTALL LANDING WAKES THE PROBE (Akshil, 2026-09-19). Two facts say
   // "there is a new version on disk" and they arrive on two different clocks:
   // the update store's `installed` (2 s while an install runs) and this
-  // component's own `/api/config` probe reading `installed_version` (5 s).
+  // component's own `/api/config` read of `installed_version` (~60 s since
+  // SPEC §50; `checkNow()` forces that read, so this wake still lands at once).
   // What this still buys, now that nothing in this file reads
   // `installed_version` any more (finding #7, code review — the field used
   // to feed a `setInstalledVersion` that had no reader anywhere, on a false
@@ -279,6 +394,17 @@ export default function ServerStatusBanner() {
   }
 
   if (surface === "none") return null;
+
+  // A probe timed out but the down threshold is not reached: the server is
+  // most likely busy, not gone. A quiet line, no buttons — there is nothing
+  // for the reader to do yet, and "isn't running" would be a guess.
+  if (surface === "slow") {
+    return (
+      <div className="server-status server-status-slow" role="status" aria-live="polite">
+        fused-render is slow to respond…
+      </div>
+    );
+  }
 
   if (surface === "reconnected") {
     return (

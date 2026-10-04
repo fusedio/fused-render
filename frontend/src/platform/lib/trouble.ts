@@ -194,10 +194,13 @@ export const FIND_INSTALL_COMMANDS: string[] = [
     registry, which is itself one of the four failures here (§42). */
 export const USER_DATA_DIR = "~/.fused-render";
 
-/** This session's log. Per-pid in the system temp dir (fused_render/logs.py),
-    so it is a glob rather than a path, and `-t` puts the live one first. */
-export const LOG_LIST_COMMAND =
-  'ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3';
+/** This session's log. Per-pid in the persistent log home (fused_render/logs.py:
+    `~/Library/Logs/fused-render/` on macOS, where Console.app lists it;
+    `~/.fused-render/logs/app/` on Linux and Windows), so it is a glob rather
+    than a path, and `-t` puts the live one first. It used to live in the
+    system temp dir, which macOS clears — the log of a crash was gone by the
+    time anyone looked for it. */
+export const LOG_LIST_COMMAND = "ls -t ~/Library/Logs/fused-render/fused-render-*.log | head -3";
 
 /** The "where to look" section of the agent brief. */
 function whereToLook(ctx: TroubleContext): string[] {
