@@ -397,7 +397,7 @@ windows-desktop = [
 # mode (gate (c)). pillow repacks the icon into the SNI ARGB32 pixmap.
 #
 # PyGObject drives the native app windows (supervisor/_linux/window_host.py:
-# GTK3 + WebKitGTK 4.1 in a child process, D890). It is the only entry here that
+# GTK3 + WebKitGTK 4.1 in a child process, D950). It is the only entry here that
 # is NOT pure Python: there is no manylinux wheel, so it compiles from the sdist
 # against the BUILD machine's libgirepository + cairo headers (release.yml
 # installs them), and the resulting `_gi*.so` links the USER's libgirepository
