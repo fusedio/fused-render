@@ -230,6 +230,22 @@ class _Session:
 _lock = threading.Lock()
 _sessions: dict[str, _Session] = {}
 
+# Serialises every call INTO the native backend. `_lock` above guards the
+# registry only and is held for a dict op; this one is held for the whole
+# backend call, which may block for seconds (`stop` waits for the muxer to
+# finalise). Separate locks so a long stop never blocks `active()`.
+#
+# Why: the routes in server/routers/capture.py are sync `def`s, so Starlette
+# runs each on its own threadpool thread, and the backends drive ObjC objects
+# (ScreenCaptureKit, AVFoundation, CoreGraphics) from whichever thread the
+# request landed on. The same shape killed the app through NSPasteboard
+# (shell/pasteboard/__init__.py, same fix): two worker threads inside one
+# non-thread-safe native call. SCK is documented callable off the main thread
+# and the sessions share no objects today, so nothing has crashed here yet;
+# a screenshot is milliseconds and a start is rare, so serialising costs
+# nothing and closes the class.
+_native_lock = threading.Lock()
+
 
 def active() -> list[dict]:
     """Every live recording on this machine — the read side of `list()`.
@@ -417,8 +433,9 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
         if why:
             raise CaptureError(why)
 
-    handle = (backend.start_screen(out, spec) if mode == "screen"
-              else backend.start_audio(out, spec))
+    with _native_lock:
+        handle = (backend.start_screen(out, spec) if mode == "screen"
+                  else backend.start_audio(out, spec))
     session = _Session(cid, mode, out, handle, spec, page=page)
     with _lock:
         _sessions[cid] = session
@@ -635,7 +652,8 @@ def stop(cid: str, *, discard: bool = False) -> dict:
 
     error = ""
     try:
-        _backend().stop(session.handle)
+        with _native_lock:
+            _backend().stop(session.handle)
     except Exception as e:                      # noqa: BLE001 - reported, not raised
         error = f"{e.__class__.__name__}: {e}".strip().rstrip(":")
 
@@ -760,7 +778,8 @@ def screenshot(body: dict) -> dict:
         why = refuse("screenshot", spec)
         if why:
             raise CaptureError(why)
-    shot = backend.screenshot(out, spec)
+    with _native_lock:
+        shot = backend.screenshot(out, spec)
     result = _describe(out)
     result.update(shot)
     return result
@@ -803,7 +822,8 @@ def shot_region(body: dict) -> bytes:
     backend = _backend()
     locate = getattr(backend, "locate", None)
     if locate is not None:
-        display, local = locate(rect, dpr)
+        with _native_lock:
+            display, local = locate(rect, dpr)
     else:
         display, local = None, rect
     fd, out = tempfile.mkstemp(prefix="fused-shot-", suffix=".png")

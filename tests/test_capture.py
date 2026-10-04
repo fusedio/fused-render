@@ -823,3 +823,51 @@ def test_the_mux_handle_reports_an_error_it_has_already_died_of():
     assert _darwin_mux.failure(handle) == "the display went away"
     handle.note_error("something later")
     assert _darwin_mux.failure(handle) == "the display went away"
+
+
+# ------------------------------------------------------------ native serialisation
+
+def test_backend_calls_never_overlap(backend, monkeypatch, tmp_path):
+    """Every call into the native backend is serialised.
+
+    The backends drive ObjC objects from whichever threadpool thread the
+    request landed on; the same shape crashed the app through NSPasteboard.
+    A backend that counts how many callers are inside it at once must never
+    see more than one across concurrent screenshots, starts and stops.
+    """
+    import threading
+    import time
+
+    inside = {"n": 0, "peak": 0}
+    guard = threading.Lock()
+
+    def tracked(fn):
+        def wrapper(*a, **kw):
+            with guard:
+                inside["n"] += 1
+                inside["peak"] = max(inside["peak"], inside["n"])
+            try:
+                time.sleep(0.002)
+                return fn(*a, **kw)
+            finally:
+                with guard:
+                    inside["n"] -= 1
+        return wrapper
+
+    for name in ("start_screen", "start_audio", "stop", "screenshot"):
+        monkeypatch.setattr(backend, name, tracked(getattr(backend, name)))
+
+    def shoot(i):
+        capture.screenshot({"path": str(tmp_path / f"s{i}.png")})
+
+    def record(i):
+        rec = capture.start("audio", {"path": str(tmp_path / f"r{i}.m4a")})
+        capture.stop(rec["id"])
+
+    threads = [threading.Thread(target=shoot, args=(i,)) for i in range(6)]
+    threads += [threading.Thread(target=record, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert inside["peak"] == 1
