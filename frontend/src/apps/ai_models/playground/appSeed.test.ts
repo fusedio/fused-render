@@ -169,3 +169,18 @@ describe("the text-to-speech seed for a clone model", () => {
     expect(detail).not.toContain("refText:");
   });
 });
+
+describe("speech voice settings in the app seed", () => {
+  it("preserves the edited voice description for design and omits it for cloning", () => {
+    const saved = location.search;
+    (location as { search: string }).search = "?instruct=A%20gentle%20storyteller";
+    try {
+      const design = buildAppAnnotation(model({ voiceMode: "design" }), "text-to-speech").detail;
+      const clone = buildAppAnnotation(model({ voiceMode: "clone" }), "text-to-speech").detail;
+      expect(design).toContain('instruct: "A gentle storyteller"');
+      expect(clone).not.toContain('instruct:');
+    } finally {
+      (location as { search: string }).search = saved;
+    }
+  });
+});

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
-import { startSpeech, watchJob, type SpeechRequest, type SpeechStarted } from "./client";
+import { startSpeech, startTranscribe, watchJob, type SpeechRequest, type SpeechStarted } from "./client";
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
@@ -10,7 +10,6 @@ import {
   useConfigOpen,
   RailField,
   RailSelect,
-  ResultSlot,
   StageHeader,
   StarterCards,
   type Starter,
@@ -71,12 +70,10 @@ function missingFor(
   text: string,
   refAudio: string | null,
   refText: string,
-  instruct: string,
 ): string | null {
   if (!text.trim()) return "Type the text to speak.";
   if (mode === "clone" && !refAudio) return "Add a voice clip to copy.";
   if (mode === "clone" && !refText.trim()) return "Type the words that the voice clip says.";
-  if (mode === "design" && !instruct.trim()) return "Describe the voice.";
   return null;
 }
 
@@ -86,21 +83,74 @@ interface Run {
   done: boolean;
 }
 
-export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
+export function SpeechStage({ model, entry, transcribeModel }: {
+  model: string; entry: AiCatalogModel; transcribeModel?: string;
+}) {
   const mode: VoiceMode = entry.voiceMode ?? "preset";
   const voices = entry.voices ?? [];
   const languages = entry.languages ?? [];
 
-  const [text, setText] = useState(() => readParam("prompt") ?? "");
+  const [text, setText] = useState(() => readParam("prompt") ?? STARTERS[0].prompt);
   const [voice, setVoice] = useState(() => readParam("voice") ?? "");
   const [language, setLanguage] = useState(() => readParam("lang") ?? AUTO);
-  const [instruct, setInstruct] = useState("");
+  const [instruct, setInstruct] = useState(() => readParam("instruct") ?? (mode === "design"
+    ? STARTERS[0].voice : "Speak clearly, warmly, and at a natural pace."));
   const [refAudio, setRefAudio] = useState<string | null>(() => readParam("ref"));
   const [refText, setRefText] = useState(() => readParam("reftext") ?? "");
   const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
   const [run, setRun] = useState<Run | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [clipNote, setClipNote] = useState<string | null>(null);
+  const [showClipWords, setShowClipWords] = useState(false);
+
+  useEffect(() => {
+    setTranscribing(false);
+    if (mode !== "clone" || !refAudio || refText.trim()) return;
+    if (!transcribeModel) {
+      setClipNote("Add the clip’s words below, or download a Speech to text model to fill them automatically.");
+      setShowClipWords(true);
+      return;
+    }
+    let active = true;
+    let jobId: string | null = null;
+    const controller = new AbortController();
+    setTranscribing(true);
+    setClipNote("Reading the clip’s words locally…");
+    void (async () => {
+      try {
+        const started = await startTranscribe({ path: refAudio, model: transcribeModel });
+        jobId = started.jobId;
+        if (!active) { void cancelJob(jobId).catch(() => {}); return; }
+        const outcome = await watchJob(jobId, controller.signal, () => {});
+        if (outcome.state === "cancelled") throw new Error("Transcription was stopped.");
+        const response = await fetch(rawUrl(started.output), { signal: controller.signal });
+        if (!response.ok) throw new Error("The clip’s words could not be read.");
+        const record = await response.json() as { text?: string };
+        if (!record.text?.trim()) throw new Error("No words were found in this clip.");
+        if (active) {
+          setRefText(record.text.trim());
+          setClipNote(null);
+        }
+      } catch (e) {
+        if (active) {
+          setClipNote(`${(e as Error).message} You can enter the words below.`);
+          setShowClipWords(true);
+        }
+      } finally {
+        if (active) setTranscribing(false);
+      }
+    })();
+    return () => {
+      active = false;
+      controller.abort();
+      if (jobId) void cancelJob(jobId).catch(() => {});
+    };
+    // Only a new clip starts transcription; editing its words must not restart it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, refAudio, transcribeModel]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -110,10 +160,11 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
         lang: language !== AUTO ? language : null,
         ref: mode === "clone" && refAudio ? refAudio : null,
         reftext: mode === "clone" && refText.trim() ? refText : null,
+        instruct: mode !== "clone" && instruct.trim() ? instruct : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [text, voice, language, refAudio, refText, mode]);
+  }, [text, voice, language, refAudio, refText, instruct, mode]);
 
   const { ref: boxRef } = useAutoGrow(text);
 
@@ -132,7 +183,12 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
     setPicking(true);
     try {
       const path = await pickFile({ title: "Choose a voice clip", types: REF_TYPES });
-      if (path !== null && aliveRef.current) setRefAudio(path);
+      if (path !== null && path !== refAudio && aliveRef.current) {
+        setRefText("");
+        setClipNote(null);
+        setShowClipWords(false);
+        setRefAudio(path);
+      }
     } catch (e) {
       if (aliveRef.current) setError((e as Error).message);
     } finally {
@@ -140,13 +196,12 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
     }
   };
 
-  const generate = async (sample?: SpeechSample) => {
-    if (run && !run.done) return;
-    const wanted = (sample?.prompt ?? text).trim();
-    const style = mode === "design" && sample && !instruct.trim() ? sample.voice : instruct;
-    if (sample) setText(sample.prompt);
+  const generate = async () => {
+    if (starting || (run && !run.done) || picking || transcribing) return;
+    const wanted = text.trim();
+    const style = mode === "design" ? instruct.trim() || STARTERS[0].voice : instruct;
     if (style !== instruct) setInstruct(style);
-    const why = missingFor(mode, wanted, refAudio, refText, style);
+    const why = missingFor(mode, wanted, refAudio, refText);
     setError(why);
     if (why) return;
     const request: SpeechRequest = {
@@ -157,11 +212,14 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
       ...(mode !== "clone" && style.trim() ? { instruct: style.trim() } : {}),
       ...(mode === "clone" && refAudio ? { refAudio, refText: refText.trim() } : {}),
     };
+    setStarting(true);
     try {
       const controller = new AbortController();
       abortRef.current = controller;
       const started = await startSpeech(request);
+      if (!aliveRef.current) return;
       setRun({ started, job: null, done: false });
+      setStarting(false);
       try {
         const outcome = await watchJob(started.jobId, controller.signal, (job) =>
           setRun((r) => (r && r.started.jobId === started.jobId ? { ...r, job } : r)),
@@ -177,7 +235,9 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
         setRun(null);
       }
     } catch (e) {
-      setError((e as Error).message);
+      if (aliveRef.current) setError((e as Error).message);
+    } finally {
+      if (aliveRef.current) setStarting(false);
     }
   };
 
@@ -188,11 +248,11 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
     boxRef.current?.focus();
   };
 
-  const busy = !!run && !run.done;
-  const job = busy ? run.job : null;
+  const busy = starting || (!!run && !run.done);
+  const job = busy ? run?.job : null;
   const pct = job && job.total ? Math.min(100, ((job.done ?? 0) / job.total) * 100) : null;
   const settled = run?.started;
-  const missing = missingFor(mode, text, refAudio, refText, instruct);
+  const missing = picking ? "Choose a voice clip first." : transcribing ? "Reading the clip’s words…" : missingFor(mode, text, refAudio, refText);
   const refName = refAudio ? refAudio.split("/").pop() || refAudio : null;
 
   const voiceLine = settled?.voice
@@ -202,12 +262,13 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
       <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
-        <StageHeader title="Type text to speak" configOpen={configOpen} onToggleConfig={toggleConfig} />
+        <StageHeader title="Make it speak" configOpen={configOpen} onToggleConfig={toggleConfig} />
 
         <div className="pg-composer">
           <textarea
             ref={boxRef}
             rows={3}
+            aria-label="Text to speak"
             value={text}
             placeholder="Type the text to read aloud…"
             onChange={(e) => setText(e.target.value)}
@@ -229,7 +290,9 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
                 Clear
               </button>
             )}
-            {busy ? (
+            {starting ? (
+              <button type="button" className="btn btn-primary pg-send" disabled>Starting…</button>
+            ) : busy && run ? (
               <button
                 type="button"
                 className="btn btn-secondary pg-send"
@@ -251,107 +314,68 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
           </div>
         </div>
 
-        <div className="pg-speech-voice">
+        {mode === "clone" && (
+          <div className="pg-speech-voice">
+            <div className="pg-speech-choice">
+              <div>
+                <strong>{refAudio ? "Voice to copy" : "Choose the voice to copy"}</strong>
+                <p className="text-muted-foreground text-sm">
+                  {refAudio ? refName : "Add a clear recording of one person. We’ll fill in the words for you."}
+                </p>
+              </div>
+              <button type="button" className="btn btn-secondary" disabled={picking || busy}
+                onClick={() => void chooseClip()}>
+                {picking ? "Choosing…" : refAudio ? "Change clip" : "Choose a clip"}
+              </button>
+            </div>
+            {refAudio && <audio className="pg-speech-audio" controls preload="metadata" src={rawUrl(refAudio)} />}
+            {clipNote && <p role="status" className="text-muted-foreground text-sm">{clipNote}</p>}
+            {refAudio && (
+              <details open={showClipWords} onToggle={(e) => setShowClipWords(e.currentTarget.open)}>
+                <summary className="pg-speech-detail">{refText.trim() ? "Review clip words" : "Add clip words"}</summary>
+                <Textarea aria-label="Clip words" rows={2} value={refText}
+                  disabled={transcribing}
+                  placeholder="The words in your recording"
+                  onChange={(e) => setRefText(e.target.value)} />
+              </details>
+            )}
+          </div>
+        )}
+        {mode !== "clone" && (
+          <div className="pg-speech-choice">
+            <div>
+              <strong>{mode === "design" ? "Designed voice" : voice ? nameOf(voice) : voices.length ? nameOf(voices[0]) : "Default voice"}</strong>
+              <p className="text-muted-foreground text-sm">
+                {mode === "design" ? instruct.trim() || STARTERS[0].voice : instruct.trim() || "Natural delivery"}
+              </p>
+            </div>
+            <button type="button" className="pg-ghost-btn" aria-expanded={configOpen} onClick={toggleConfig}>
+              Change voice
+            </button>
+          </div>
+        )}
+
+        <ConfigPanel open={configOpen} animated={configTouched.current}>
           {mode === "preset" && (
             <>
-              <RailField
-                label="Voice"
-                hint={voices.length === 0 ? "The voice list shows after the download." : undefined}
-              >
+              <RailField label="Voice">
                 <RailSelect value={voice} onChange={(e) => setVoice(e.target.value)}>
                   <option value="">{voices.length ? `Default (${nameOf(voices[0])})` : "Default"}</option>
-                  {voices.map((v) => (
-                    <option key={v} value={v}>
-                      {nameOf(v)}
-                    </option>
-                  ))}
+                  {voices.map((v) => <option key={v} value={v}>{nameOf(v)}</option>)}
                   {voice && !voices.includes(voice) && <option value={voice}>{nameOf(voice)}</option>}
                 </RailSelect>
               </RailField>
-              <RailField label="Style" hint="Optional. Tell the voice how to speak.">
-                <Input
-                  type="text"
-                  value={instruct}
-                  placeholder="For example: speak slowly and calmly"
-                  onChange={(e) => setInstruct(e.target.value)}
-                />
-              </RailField>
-            </>
-          )}
-          {mode === "clone" && (
-            <>
-              <RailField
-                label="Voice clip"
-                hint="A clear clip of one person, 10 to 30 seconds long."
-              >
-                {refAudio ? (
-                  <div className="pg-audio-row">
-                    <div className="pg-audio-meta">
-                      <span className="pg-audio-label">Voice to copy</span>
-                      <span className="pg-audio-name" title={refAudio}>
-                        {refName}
-                      </span>
-                    </div>
-                    <audio className="pg-audio" controls preload="metadata" src={rawUrl(refAudio)} />
-                    <button
-                      type="button"
-                      className="pg-ghost-btn"
-                      disabled={picking}
-                      onClick={() => void chooseClip()}
-                    >
-                      Replace
-                    </button>
-                    <button
-                      type="button"
-                      className="pg-ghost-btn"
-                      title="Remove this clip"
-                      onClick={() => setRefAudio(null)}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ) : (
-                  <div className="pg-attach-row">
-                    <button
-                      type="button"
-                      className="pg-attach-btn"
-                      title="Point at an audio file on this disk. Nothing is copied."
-                      disabled={picking}
-                      onClick={() => void chooseClip()}
-                    >
-                      {StarterIcons.music}
-                      <span>Add a voice clip</span>
-                    </button>
-                    {picking && <span className="pg-attach-note">Working…</span>}
-                  </div>
-                )}
-              </RailField>
-              <RailField label="Clip words" hint="Type the exact words that the clip says.">
-                <Textarea
-                  rows={2}
-                  value={refText}
-                  placeholder="The words in the voice clip"
-                  onChange={(e) => setRefText(e.target.value)}
-                />
+              <RailField label="Delivery">
+                <Input value={instruct} placeholder="Natural delivery" onChange={(e) => setInstruct(e.target.value)} />
               </RailField>
             </>
           )}
           {mode === "design" && (
-            <RailField
-              label="Voice description"
-              hint="Say who speaks and how: age, tone, pace, accent."
-            >
-              <Textarea
-                rows={2}
-                value={instruct}
-                placeholder="For example: a calm older man with a deep, warm voice"
-                onChange={(e) => setInstruct(e.target.value)}
-              />
+            <RailField label="Voice description" hint="Already filled in. Make it your own, or leave it for a warm, friendly voice.">
+              <Textarea aria-label="Voice description" rows={3} value={instruct}
+                placeholder={STARTERS[0].voice} onChange={(e) => setInstruct(e.target.value)} />
             </RailField>
           )}
-        </div>
-
-        <ConfigPanel open={configOpen} animated={configTouched.current}>
           <RailField label="Language" hint="Auto finds the language from the text.">
             <RailSelect value={language} onChange={(e) => setLanguage(e.target.value)}>
               <option value={AUTO}>Auto</option>
@@ -367,17 +391,15 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
           </RailField>
         </ConfigPanel>
 
-        {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s)} />}
+        {!busy && <StarterCards samples={STARTERS} onPick={(sample) => {
+          setText(sample.prompt);
+          setRun(null);
+          setError(null);
+        }} />}
 
         {error && <p className="pg-error">{error}</p>}
 
-        {!run ? (
-          <ResultSlot
-            label="Result"
-            capability="text-to-speech"
-            note="Your audio shows here. Type some text above, then Speak."
-          />
-        ) : (
+        {run && (
           <div className="pg-answer-block">
             <p className="pg-answer-label">Result</p>
             <div className="pg-speech-result">

@@ -1356,3 +1356,19 @@ def test_speech_options_refuse(traits, options, fragment):
 ])
 def test_speech_options_resolve(traits, options, resolved):
     assert formats.speech_options("org/tts", traits, options) == resolved
+
+
+@pytest.mark.parametrize("language", ["English", "english", "ENGLISH"])
+def test_speech_options_preserve_the_catalog_language(language):
+    traits = formats.speech_traits({
+        "model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+        "talker_config": {"codec_language_id": {"English": 1}},
+    })
+    assert formats.speech_options("org/tts", traits, {"language": language}) == {
+        "language": "English"}
+
+
+def test_speech_options_auto_bypasses_the_language_catalog():
+    assert formats.speech_options("org/tts", {**PRESET, "languages": ["English"]},
+                                  {"language": "AUTO"}) == {
+        "voice": "aiden", "language": "auto"}

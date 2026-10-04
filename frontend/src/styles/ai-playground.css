@@ -2057,6 +2057,32 @@
   gap: 12px;
 }
 
+.pg-speech-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
+.pg-speech-choice > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pg-speech-choice button {
+  flex-shrink: 0;
+}
+
+.pg-speech-detail {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 8px 0;
+}
+
 .pg-speech-result {
   display: flex;
   flex-direction: column;

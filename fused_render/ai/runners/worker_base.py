@@ -63,7 +63,12 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from fused_render.ai.runners import job_marker
+# Runner venvs have this directory, but do not install the app package.
+# Load the sibling by path, also supporting tests that import us by path.
+_marker_spec = importlib.util.spec_from_file_location(
+    "fused_job_marker", os.path.join(os.path.dirname(__file__), "job_marker.py"))
+job_marker = importlib.util.module_from_spec(_marker_spec)
+_marker_spec.loader.exec_module(job_marker)
 
 # ------------------------------------------------------------------- the state
 #

@@ -111,6 +111,7 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
     const clip = ref && refText;
     const extra = opts([
       ["voice", mode === "preset" && readParam("voice") ? JSON.stringify(readParam("voice")) : null],
+      ["instruct", mode !== "clone" && readParam("instruct") ? JSON.stringify(readParam("instruct")) : null],
       ["language", readParam("lang") ? JSON.stringify(readParam("lang")) : null],
       ["refAudio", clip ? JSON.stringify(ref) : null],
       ["refText", clip ? JSON.stringify(refText) : null],

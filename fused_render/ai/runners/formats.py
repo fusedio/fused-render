@@ -1829,9 +1829,12 @@ def speech_options(model_id: str, traits: dict, options: dict) -> dict:
         resolved["voice"] = match
     language = str(resolved.get("language", "auto")).lower()
     languages = traits.get("languages") or []
-    if language != "auto" and languages and language not in languages:
-        raise ValueError(f"{model_id} has no language {language!r}; "
-                         f"use 'auto' or {', '.join(languages)}")
+    if language != "auto" and languages:
+        match = next((name for name in languages if name.lower() == language), None)
+        if match is None:
+            raise ValueError(f"{model_id} has no language {language!r}; "
+                             f"use 'auto' or {', '.join(languages)}")
+        language = match
     resolved["language"] = language
     return resolved
 

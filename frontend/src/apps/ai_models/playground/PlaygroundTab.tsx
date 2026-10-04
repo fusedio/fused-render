@@ -1011,6 +1011,9 @@ export default function PlaygroundTab() {
                 key={selected.model.id}
                 model={selected.model.id}
                 entry={selected.model}
+                transcribeModel={capabilities.find((row) =>
+                  row.capability === "automatic-speech-recognition" && row.available
+                )?.models.find((model) => model.downloaded || model.loaded)?.id}
               />
             ) : selected.row.capability === "embeddings" ? (
               <EmbedStage
