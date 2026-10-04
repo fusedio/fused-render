@@ -7,6 +7,7 @@ import {
   modelThinks,
   parseUseCase,
   pickForUseCase,
+  pickRow,
   useCaseById,
   useCasesOf,
 } from "./useCases";
@@ -106,4 +107,16 @@ test("alternativeThatSees names the closest curated model that accepts images", 
   });
   expect(alternativeThatSees([current, tooBig, far], current)?.id).toBe("far-vision");
   expect(alternativeThatSees([current], current)).toBeNull();
+});
+
+test("pickRow finds a GGUF-shaped pick on disk by its repo, and a suggested one by either key", () => {
+  const gguf = model("Qwen3-Coder-30B-A3B-Q4_K_M.gguf", { repo: "unsloth/Qwen3-Coder-30B-A3B-GGUF" });
+  const onDisk = { id: "unsloth/Qwen3-Coder-30B-A3B-GGUF", have: true };
+  const other = { id: "someone/else", have: true };
+  expect(pickRow(gguf, [other, onDisk], [])).toBe(onDisk);
+  // Suggested rows are keyed by the catalog id; a repo-keyed one matches too.
+  const suggested = { id: "Qwen3-Coder-30B-A3B-Q4_K_M.gguf", have: false };
+  expect(pickRow(gguf, [other], [suggested])).toBe(suggested);
+  expect(pickRow(gguf, [other], [{ id: gguf.repo as string, have: false }])?.have).toBe(false);
+  expect(pickRow(gguf, [other], [])).toBeNull();
 });

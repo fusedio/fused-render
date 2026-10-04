@@ -57,7 +57,7 @@ import {
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { activeFitLevel, activeParamsBand, activeSort, type ResultSort } from "@apps/ai_models/lib/hubSearchView";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
-import { USE_CASES } from "@apps/ai_models/lib/useCases";
+import { USE_CASES, pickRow } from "@apps/ai_models/lib/useCases";
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import {
   deleteAiModels,
@@ -502,9 +502,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
           const pick = textCatalog.models.find((m) => m.useCasePicks?.includes(useCase.id));
           if (!pick) return [];
           const row =
-            have.find((r) => r.id === (pick.repo ?? pick.id)) ??
-            recommended.find((r) => r.id === pick.id) ??
-            catalogRow(pick, section.runner?.shortLabel ?? null);
+            pickRow(pick, have, recommended) ?? catalogRow(pick, section.runner?.shortLabel ?? null);
           return [{ useCase, row: { ...row, ourPick: true } }];
         })
       : [];

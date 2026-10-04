@@ -249,3 +249,19 @@ export function alternativeThatSees(
   candidates.sort((a, b) => gap(a) - gap(b));
   return candidates[0] ?? null;
 }
+
+/** The row that already stands for a starred model: on disk first, else
+ *  suggested. One key set for BOTH lists — the repo (what an on-disk row is
+ *  keyed by) and the catalog id (what a suggested row is keyed by) — so a GGUF
+ *  pick, whose id is a filename, is not missed on either side and offered as a
+ *  redundant download. Null when neither list has it. */
+export function pickRow<R extends { id: string }>(
+  pick: Pick<AiCatalogModel, "id" | "repo">,
+  have: R[],
+  recommended: R[],
+): R | null {
+  const keys = new Set([pick.repo ?? pick.id, pick.id]);
+  return (
+    have.find((r) => keys.has(r.id)) ?? recommended.find((r) => keys.has(r.id)) ?? null
+  );
+}
