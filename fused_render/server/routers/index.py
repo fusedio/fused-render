@@ -815,11 +815,16 @@ def startup_warm() -> None:
 # idiom `envinstall.py` and `ai/supervisor.py` already use, so it shows up in
 # the Activity card the same way a download or a background AI task does —
 # without teaching the card to speak /api/index/* or adding a third polling
-# loop to the frontend. One job per RUN (keyed by run_id, not by root): the
-# existing status poll can only ever answer for the most recent run, and this
-# is what makes two concurrent per-root scans each get their own row instead
-# of one clobbering the other.
-INDEX_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "index:"
+# loop to the frontend.
+#
+# ONE job for ALL runs (D-index-one-row). The live watcher (index_touch.py's
+# RescanQueue) starts many short per-folder runs back to back, and each used to
+# get its own `sys:index:<run_id>` row that then lingered FINISHED_TTL_S: the
+# Activity tab showed 5+ "Indexing files" rows at once. Now every run folds
+# into this single stable row: running while any run is live, one terminal
+# write when the last live run ends.
+INDEX_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "index"
+INDEX_JOB_ID = INDEX_JOB_PREFIX
 
 # Same order of magnitude as the Indexing panel's own poll (index-status.ts
 # INDEX_POLL_MS, 1500ms): an Activity row for a scan updates no more (and no
@@ -838,10 +843,6 @@ INDEX_JOB_ACTIVE_S = 1.5
 # starting while idle does not wait out this interval — see
 # `_index_job_wake` below.
 INDEX_JOB_IDLE_S = 10.0
-
-
-def _index_job_id(run_id: str) -> str:
-    return INDEX_JOB_PREFIX + run_id
 
 
 def _display_root(root: str) -> str:
@@ -917,190 +918,154 @@ _seen_running: set = set()
 _UNCOUNTABLE_PHASES = frozenset({"starting", "checking for changes"})
 
 
-def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -> bool:
-    """Mirror one run into its job. Returns whether the run was live
-    (`running`) on this tick, so `mirror_index_jobs_once` can answer the
-    loop's cadence question without a second read of the run directories.
-
-    `prev_total` — the rescan denominator ESTIMATE — is read by the CALLER,
-    once per tick, not here: this function runs once per run
-    `mirror_index_jobs_once` is mirroring (its own `for run in runs:` loop),
-    so a `read_manifest(cfg)` call inside this function would run once PER
-    RUNNING RUN per tick, not once per tick — the two disagree on multi-root
-    setups, where every configured root scanning at once used to mean one
-    JSON read of the same `partitions.json` per root, every tick. Hoisted out
-    (D733) because every run under one `cfg` shares that one file, so reading
-    it once and handing the same value to every run this tick is both cheaper
-    and, unlike N separate reads, immune to the file changing mid-tick and
-    making sibling runs disagree about the denominator."""
+def _classify_run(run: dict) -> str | None:
+    """`"live"` for a run this process may mirror and that is running,
+    `"terminal"` for one it watched run that has now ended, else `None` (no
+    run id/root, already folded into a batch, or never seen live here)."""
     run_id = run.get("run_id")
-    root = run.get("root")
-    if not run_id or not root:
-        return False
-    job_id = _index_job_id(str(run_id))
-    if job_id in _mirrored_terminal:
-        return False
-    running = bool(run.get("running"))
-    if running:
-        _seen_running.add(job_id)
-    elif job_id not in _seen_running:
-        # Never seen live in THIS process — see `_seen_running`'s own
-        # comment. Skip the mirror outright rather than upserting a
-        # notification for a run nobody here watched happen.
-        _mirrored_terminal.add(job_id)
-        return False
-    if not running:
-        prev_total = None
-    phase = str(run.get("phase") or "")
-    if phase in _UNCOUNTABLE_PHASES:
-        # `done` (files+reused) is still 0 here — derive_state's seeded
-        # "starting" default, or scan.py's own "checking for changes" phase
-        # that names it (the fsevents.hint/load_dir_cache race, before either
-        # has anything countable to report) — so a `total` alongside it would
-        # render "0 / 673,655", which reads as broken rather than as "not
-        # started counting yet". jobFraction (jobs.ts) already turns a `None`
-        # total into an indeterminate sweep, so withholding it here is enough;
-        # no frontend special-casing of the phase string is needed. Every
-        # phase reached AFTER this one keeps its estimate: the plain
-        # full/incremental pool path increments steadily throughout its own
-        # "scanning (...)" phase already, the fsevents path's bulk-reuse tail
-        # now emits mid-loop too (index/scan.py's beat-gated credit, this same
-        # branch), and "writing index"/"writing signatures" (store.py) show a
-        # stable, accurate `done` frozen at the walk's final count — none of
-        # those are "meaningless", just possibly an estimate, which
-        # `total_estimated` below already communicates honestly.
-        prev_total = None
-    root_display = _display_root(str(root))
-    fields = {
+    if not run_id or not run.get("root"):
+        return None
+    run_id = str(run_id)
+    if run_id in _mirrored_terminal:
+        return None
+    if run.get("running"):
+        _seen_running.add(run_id)
+        return "live"
+    if run_id not in _seen_running:
+        # Never seen live in THIS process -- see `_seen_running`'s own
+        # comment. Skip outright rather than upserting a notification for a
+        # run nobody here watched happen.
+        _mirrored_terminal.add(run_id)
+        return None
+    return "terminal"
+
+
+# The current batch: everything from the tick a run first goes live until the
+# tick no run is live any more. `open` once a running row was (attempted to
+# be) written; the terminal outcomes of runs that end meanwhile accumulate
+# here and are written exactly once, when the last live run ends.
+_batch: dict = {"open": False, "errors": [], "cancelled": False, "files": 0}
+
+
+def _reset_batch() -> None:
+    _batch.update(open=False, errors=[], cancelled=False, files=0)
+
+
+def _fold_terminal_run(run: dict) -> None:
+    if run.get("cancelled"):
+        _batch["cancelled"] = True
+    elif run.get("error"):
+        _batch["errors"].append(str(run.get("error")))
+    files_done = run.get("files")
+    summary = run.get("summary")
+    if isinstance(summary, dict) and summary.get("files") is not None:
+        files_done = summary.get("files")
+    _batch["files"] += int(files_done or 0)
+    _mirrored_terminal.add(str(run.get("run_id")))
+
+
+def _job_fields_common() -> dict:
+    return {
         "title": "Indexing files",
-        "detail": root_display,
-        # True only when `total` is actually set below — a tree that grew
-        # since the last scan means `done` can pass `total` before the walk
-        # finishes (jobs.ts `jobFraction` clamps the bar at 1.0 rather than
-        # render past full or backwards), so the row has to say the
-        # denominator is a guess, not a promise. This used to be an
-        # "(estimated)" suffix appended to `detail` above — but `detail` here
-        # is the ROOT PATH, so the qualifier ended up modifying the wrong
-        # noun (`~/proj (estimated)` reads as "the path is a guess"). A
-        # dedicated field lets the client (`jobAmount`'s call site) attach it
-        # to the COUNT instead, where it actually belongs (D733). `total_scope`
-        # is a different approximation for model downloads
-        # (`shared/modelSize.ts`) and is untouched by this.
-        "total_estimated": prev_total is not None,
         "kind": "task",
-        # `files` ALONE undercounts against `prev_total`: `Sink.add` (D724's
-        # own `read_manifest` fold, `index/store.py:215-229`) only adds to
-        # `files` for a dir it actually re-walks (`kind != "u"`) — an
-        # unchanged dir's cached file count goes to `reused` instead
-        # (`index/scan.py:78`'s own docstring: "'u' (unchanged; payload =
-        # cached file count)"). `prev_total`, by contrast, is the LAST
-        # compaction's `total_rows` — every row in the merged index, reused
-        # dirs included (`_compact_locked`'s `merged` table unions the old
-        # kept/unchanged rows with the new shard rows before counting,
-        # `index/store.py`'s `compact`). Comparing `files` alone to that would
-        # divide a NEW-ONLY numerator by an EVERYTHING denominator: a rescan
-        # that reuses 95% of a tree (the common case) would crawl to ~5% and
-        # then jump straight to done the instant compaction lands — a bar
-        # that lies with an official look, not an honest one. `files +
-        # reused` is the like-for-like pair: both counters are in the SAME
-        # file-count units (`scan.py:78`, `store.py:219,229`), so their sum is
-        # "every file this run has accounted for so far" — the same
-        # population `prev_total` counts.
-        "done": float((run.get("files") or 0) + (run.get("reused") or 0)),
-        "total": prev_total,
         "unit": "files",
-        # The run's phase, verbatim — this covers compaction too, which has
-        # no structured flag of its own and appears only as this same text
-        # ("writing index" / "writing signatures", index/store.py). The
-        # bridge does not special-case it into a separate concept.
-        "message": str(run.get("phase") or ""),
         "cancellable": True,
         # SILENT, not TRANSIENT (user: "similarly remove notification for
-        # file indexing completion" — same reasoning as the delete-toast
-        # reversal, see DECISIONS-toasts-become-notifications.md: a scan
-        # finishing carries nothing the user needs to be told). TRANSIENT
-        # still pops a card for ~2.5s before leaving nowhere; SILENT is the
-        # one tier that skips the pop entirely (jobs.py's own tier table).
-        # A finished scan's success has no destination worth keeping either
-        # way — the index itself isn't a file a click could open — so
-        # nobody asked for this row to stick around (SPEC
-        # actionable-notifications), and `_sweep` ages a `done` silent row
-        # like this one out on the read-gated clock rather than waiting on
-        # a dismiss. A failed or cancelled run is unaffected by this change
-        # on either axis: `effective_tier`'s error/cancelled override to
-        # `attention` reads `job.state`, not the stored tier, so it promotes
-        # a SILENT row exactly as it always promoted a TRANSIENT one — a
-        # failed scan still pops and is kept until dismissed, same as any
-        # other row a surface can show and let the user clear. The
-        # still-RUNNING row is unaffected too: `jobRows`/`jobs.py`'s own
-        # activity-list filter only ever drops a row by tier once it is
-        # terminal, so a live scan keeps showing progress in the Activity
-        # dock regardless of which of these two tiers it declares.
+        # file indexing completion" -- see DECISIONS-toasts-become-notifications.md):
+        # a scan finishing carries nothing the user needs to be told, and
+        # SILENT is the one tier that skips the pop entirely. `effective_tier`
+        # promotes an error/cancelled row to `attention` from `job.state`, so a
+        # failed scan still pops and is kept until dismissed.
         "tier": jobs.SILENT,
         # This row is the Explorer's own indexing scan, never anything a
         # different feature raises against the same id.
         "origin": "Explorer",
     }
-    if running:
-        fields["state"] = jobs.RUNNING
-    elif run.get("cancelled"):
-        fields["state"] = "cancelled"
-    elif run.get("error"):
+
+
+def _upsert_index_job(fields: dict) -> dict | None:
+    try:
+        # The Indexing tab of Preferences -- where the root list and toggle
+        # live, and the only place a scan can be cancelled or retried from
+        # outside this row.
+        return jobs.upsert({"id": INDEX_JOB_ID, **fields},
+                           page="/preferences?tab=indexing", server=True)
+    except jobs.JobError:
+        # A reporting failure says nothing about whether any RUN is live.
+        logger.exception("could not report index job %s", INDEX_JOB_ID)
+        return None
+
+
+def _write_running(cfg: IndexConfig, live: list, prev_total: float | None) -> None:
+    """Upsert the one row as running for the aggregate of `live` runs.
+
+    One root -> its display form, several -> "N folders". The estimated
+    denominator (`prev_total`, the whole index's last row count) only makes
+    sense for a lone run, so with several live runs the bar is indeterminate
+    (`total` None) and `done` is the sum of their counts."""
+    _batch["open"] = True
+    roots = sorted({str(r.get("root")) for r in live})
+    single = len(live) == 1
+    phase = str(live[0].get("phase") or "")
+    if not single or phase in _UNCOUNTABLE_PHASES:
+        # `done` (files+reused) is still 0 for the seeded "starting" /
+        # "checking for changes" phases -- a `total` next to it would render
+        # "0 / 673,655", which reads as broken. jobFraction (jobs.ts) turns a
+        # `None` total into an indeterminate sweep.
+        prev_total = None
+    # `files` alone undercounts against `prev_total` (reused dirs land in
+    # `reused`, index/scan.py:78); `files + reused` is the like-for-like pair.
+    done = float(sum((r.get("files") or 0) + (r.get("reused") or 0) for r in live))
+    fields = {
+        **_job_fields_common(),
+        "detail": _display_root(roots[0]) if len(roots) == 1 else f"{len(roots)} folders",
+        # True only when `total` is actually set: a grown tree can pass it.
+        "total_estimated": prev_total is not None,
+        "done": done,
+        "total": prev_total,
+        "message": phase,
+        "state": jobs.RUNNING,
+    }
+    result = _upsert_index_job(fields)
+    # A cancel is a REQUEST the reporter honours on its next tick (jobs.py
+    # `request_cancel`) -- this IS that next tick. The row is aggregate, so a
+    # cancel on it cancels EVERY live run (and any run that starts while the
+    # request is still pending, until the row goes terminal).
+    if result and result.get("cancel_requested"):
+        for r in live:
+            try:
+                runner.cancel(cfg, str(r.get("run_id")))
+            except ValueError:
+                pass
+
+
+def _write_terminal() -> None:
+    """The batch's single terminal write: error beats cancelled beats done."""
+    fields = {**_job_fields_common(), "total": None, "total_estimated": False}
+    if _batch["errors"]:
         fields["state"] = "error"
-        fields["message"] = str(run.get("error"))
+        fields["message"] = _batch["errors"][0]
+    elif _batch["cancelled"]:
+        fields["state"] = "cancelled"
+        fields["message"] = ""
     else:
         fields["state"] = "done"
-        summary = run.get("summary")
-        files_done = run.get("files")
-        if isinstance(summary, dict) and summary.get("files") is not None:
-            files_done = summary.get("files")
-        fields["message"] = f"{int(files_done or 0)} files indexed"
-    try:
-        # The Indexing tab of Preferences — where this run's own root list
-        # and toggle live, and the only place a scan can be cancelled or
-        # retried from outside this row.
-        result = jobs.upsert({"id": job_id, **fields},
-                             page="/preferences?tab=indexing", server=True)
-    except jobs.JobError:
-        # A reporting failure says nothing about whether the RUN is live —
-        # `running` above already answered that from `run` itself, before
-        # `jobs.upsert` was ever called. Returning bare `None` here used to
-        # read as "not live" to `mirror_index_jobs_once`'s `if
-        # _mirror_one_run_job(...): live = True`, which backed the tick off
-        # to the idle cadence (INDEX_JOB_IDLE_S, 10s) while a scan was
-        # genuinely running and simply failing to report — the two facts are
-        # independent and only one of them broke.
-        logger.exception("could not report index job %s", job_id)
-        return running
-    if not running:
-        _mirrored_terminal.add(job_id)
-        return False
-    # A cancel is a REQUEST the reporter honours on its next tick (jobs.py
-    # `request_cancel`'s own docstring) — this IS that next tick, and
-    # `runner.cancel` is the exact function `/api/index/cancel` calls, so
-    # driving it from here is the same action through the same path, just
-    # without an HTTP hop the server does not need to make to itself.
-    if result.get("cancel_requested"):
-        try:
-            runner.cancel(cfg, str(run_id))
-        except ValueError:
-            pass
-    return True
+        fields["message"] = f"{int(_batch['files'])} files indexed"
+    if _upsert_index_job(fields) is not None:
+        _reset_batch()
 
 
 def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> bool:
     """One tick of the Activity bridge: every run `list_runs` currently
-    knows about gets (or updates) a `sys:index:<run_id>` job.
+    knows about is folded into the single `sys:index` job.
 
-    Deliberately reads through `runner.list_runs` — the same fold
-    `/api/index/status` and the Indexing panel already use — rather than
+    Deliberately reads through `runner.list_runs` -- the same fold
+    `/api/index/status` and the Indexing panel already use -- rather than
     opening `events.jsonl` a second way, so this shares that function's
-    liveness check and its 1s fold cache instead of adding a competing read
-    of the same run directories.
+    liveness check and its 1s fold cache.
 
-    Returns whether any run this tick was still `running` — the signal
-    `_index_job_loop` uses to pick its next sleep, again without a second
-    read of the run directories.
+    Returns whether any run this tick was still `running` -- the signal
+    `_index_job_loop` uses to pick its next sleep.
     """
     cfg = cfg or load_config()
     try:
@@ -1108,36 +1073,35 @@ def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> bool:
     except Exception:  # noqa: BLE001 - a bridge tick must never take the server down
         logger.exception("could not list index runs for job mirroring")
         return False
-    # An ESTIMATE for a rescan's denominator: the file count `partitions.json`
-    # recorded as of the LAST completed scan — the same fold `/api/index/status`
-    # already reads (`read_manifest(cfg)["rows"]`). Read ONCE HERE, per tick,
-    # not inside `_mirror_one_run_job`'s own per-run loop below — every run
-    # under this one `cfg` shares the same `partitions.json`, so N running
-    # runs sharing one config used to mean N identical JSON reads every tick
-    # (D733). A first-ever scan has no such file (`read_manifest` returns
-    # None) and every run's `total` stays the indeterminate `None` (jobs.ts
-    # `jobFraction`/`StatusChip`) rather than a fake number invented to fill
-    # a bar. `cfg` is best-effort here (a caller can hand this a stub, as
-    # every non-estimate test in test_index_jobs.py does): a bad or absent
-    # manifest just means no estimate, not a broken tick. Read unconditionally
-    # (not gated on any run being `running`) — cheap (one small JSON file),
-    # and `_mirror_one_run_job` already drops it back to `None` for a run
-    # that isn't running, so a wasted read here costs nothing observable.
+    # An ESTIMATE for a lone rescan's denominator: the file count
+    # `partitions.json` recorded as of the LAST completed scan. Read ONCE per
+    # tick (every run under this `cfg` shares the one file, D733). Best-effort:
+    # a bad or absent manifest just means no estimate.
     try:
         manifest = read_manifest(cfg)
     except Exception:
         manifest = None
     prev_rows = int((manifest or {}).get("rows") or 0)
     prev_total = float(prev_rows) if prev_rows > 0 else None
-    live = False
+    live: list = []
     for run in runs:
         try:
-            if _mirror_one_run_job(cfg, run, prev_total):
-                live = True
+            kind = _classify_run(run)
+            if kind == "live":
+                live.append(run)
+            elif kind == "terminal":
+                _fold_terminal_run(run)
         except Exception:  # noqa: BLE001 - one bad run must not stop the rest
             logger.exception("could not mirror index run %s into jobs",
                              run.get("run_id"))
-    return live
+    try:
+        if live:
+            _write_running(cfg, live, prev_total)
+        elif _batch["open"]:
+            _write_terminal()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not write the index job")
+    return bool(live)
 
 
 # Set by every path that starts a scan (`run_startup_scan`, `api_index_scan`,

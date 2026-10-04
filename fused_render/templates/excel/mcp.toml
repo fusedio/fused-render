@@ -1,0 +1,30 @@
+# MCP tools for this app, curated in fused-render's MCP panel.
+# `fused app serve <this folder>` publishes one tool per [[tool]] table.
+
+[[tool]]
+name = "excel_sheets"
+description = "List the sheets of an Excel workbook (.xlsx/.xlsm) with row counts and typed columns. Start here: sheet names are the table names excel_query accepts."
+file = "workbook.py"
+entrypoint = "sheets"
+signature = "sheets(file: str)"
+
+[[tool]]
+name = "excel_describe"
+description = "Summary statistics for each column of a sheet: count, nulls, distinct; min/max/mean/median/std/sum for numbers; min/max for dates; most common values for text. Formula cells count by their computed value."
+file = "workbook.py"
+entrypoint = "describe"
+signature = "describe(file: str, sheet: str='', columns: str='')"
+
+[[tool]]
+name = "excel_query"
+description = "Run read-only DuckDB SQL over an Excel workbook; every sheet is a table named after it (quote names with spaces), columns come from its header row. Formula cells hold their computed values. Returns at most `limit` rows."
+file = "workbook.py"
+entrypoint = "query"
+signature = "query(file: str, sql: str, limit: int=1000)"
+
+[[tool]]
+name = "excel_cells"
+description = "Read an A1 range (\"B5\", \"A1:D10\", \"'Sheet 2'!A1:C3\") of an Excel workbook: each cell's computed value and its formula. Use it for model-style sheets whose first row is not a header."
+file = "workbook.py"
+entrypoint = "cells"
+signature = "cells(file: str, ref: str, sheet: str='')"

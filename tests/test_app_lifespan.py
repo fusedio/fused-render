@@ -127,6 +127,7 @@ EXPECTED_STARTUP = [
     "_startup_ai_idle_reaper",
     "_startup_ai_hardware_refresh",
     "_startup_ai_hub_metadata_refresh",
+    "_startup_ai_hub_catalog_refresh",
     "_startup_gc_project_venvs",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
@@ -150,6 +151,12 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_captures",
     "_shutdown_ai_workers",
     "_shutdown_engines",
+    # Status-bar terminal (PLAN-status-bar-terminal.md): registered where
+    # `terminal_router` is included in `create_app`, well after the handlers
+    # above — reaps every live pty session (pty_session.py's
+    # PtySessionRegistry.shutdown_all) so a server restart never leaves an
+    # orphaned shell running.
+    "_shutdown_terminal_sessions",
     "_shutdown_index_watch",
 ]
 

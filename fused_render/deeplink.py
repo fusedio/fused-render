@@ -1,5 +1,6 @@
-"""Deep links (SPEC §26, D110): fused-render://open?git=<github URL> and
-fused-render://open?file=<absolute .fused path>.
+"""Deep links (SPEC §26, D110): fused-render://open?git=<github URL>,
+fused-render://open?file=<absolute .fused path> and
+fused-render://open?url=<http(s) link to a .fused>.
 
 A `fused-render://open?git=https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
 link, caught by the OS protocol registration (macOS CFBundleURLTypes /
@@ -27,6 +28,18 @@ its own — `GET /clone` answers a redirect INTO the shell carrying the path as
 .fused, or keep it?"), else to Home, where the shell clones through the
 X-Fused `/api/appfile/clone` and moves to the copy. Nothing is written on the
 GET (D3), and nothing the user edited is replaced without the modal's Overwrite.
+
+`fused-render://open?url=<http(s) link>` (DL-8) is Render App's
+`render-app://open?url=` ported: a web page's "Open in fused-render" link to
+a hosted `.fused`. Same no-page shape as `file=`: `GET /clone` answers a 303
+to Home with the link as `?_fetch_appfile=`; the shell's `FetchAppFileBoot`
+reads it once, downloads through the X-Fused `POST /api/appfile/fetch`
+(appfetch.py, into `~/.fused-render/downloads/<app_id>.fused`) and hard-loads
+the file's chrome-free embed URL in the same document — the app, like a
+Finder double-click (D390). In a native window that window becomes the app's
+own (the URL observer re-keys it; title-bar Edit leads to the explorer); in
+a browser tab the EmbedStrip's "Open in explorer" does. No confirm step
+(owner call, mirrors lite PR #30): the link click is the gesture.
 
 Ref parsing caveat: a GitHub tree URL does not delimit where the ref ends and
 the subpath begins (`/tree/feature/x/docs` is ambiguous). The first segment
@@ -75,6 +88,7 @@ router = APIRouter()
 # params on the same action instead of new grammar (owner call, D110).
 _OPEN_PREFIXES = ("fused-render://open?git=", "fused-render://open/?git=")
 _OPEN_FILE_PREFIXES = ("fused-render://open?file=", "fused-render://open/?file=")
+_OPEN_URL_PREFIXES = ("fused-render://open?url=", "fused-render://open/?url=")
 
 # The launch action (D128) is payload-free by definition: any query or extra
 # path makes the link NOT a launch link (strictness keeps the grammar clean —
@@ -173,7 +187,8 @@ def github_url_from(src: str) -> str:
         if low.startswith("fused-render:"):
             raise DeeplinkError(
                 "unsupported fused-render link (expected fused-render://open?git=…, "
-                f"fused-render://open?file=… or fused-render://launch): {src}"
+                "fused-render://open?file=…, fused-render://open?url=… or "
+                f"fused-render://launch): {src}"
             )
     if not src.lower().startswith(("https://", "http://")) and "%" in src:
         # Some carriers (browser address bars, chat apps) percent-encode the
@@ -211,6 +226,36 @@ def file_payload_from(src: str) -> str | None:
     src = (src or "").strip()
     low = src.lower()
     for prefix in _OPEN_FILE_PREFIXES:
+        if low.startswith(prefix):
+            return src[len(prefix):]
+    return None
+
+
+def app_file_url_from(src: str) -> str | None:
+    """The ``http(s)`` link a ``fused-render://open?url=`` link carries, or
+    None when ``src`` is not a url link at all.
+
+    Same contract as ``app_file_path_from``: the value is taken verbatim to
+    end-of-string and percent-decoded exactly once (the sender's side is one
+    ``encodeURIComponent`` / ``quote(url, safe="")``), so a query string on
+    the hosted link survives. A url link whose payload is not http(s) is an
+    error, not a fall-through: the link named a kind and got its payload wrong.
+    """
+    raw = url_payload_from(src)
+    if raw is None:
+        return None
+    url = unquote(raw).strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise DeeplinkError(f"url link needs an http(s) link to a .fused: {url or '(empty)'}")
+    return url
+
+
+def url_payload_from(src: str) -> str | None:
+    """The still-encoded ``url=`` value of a url link, or None when ``src``
+    is not one."""
+    src = (src or "").strip()
+    low = src.lower()
+    for prefix in _OPEN_URL_PREFIXES:
         if low.startswith(prefix):
             return src[len(prefix):]
     return None
@@ -578,6 +623,8 @@ def clone_or_pull(spec: dict) -> dict:
 #: The query param a file link is handed to the shell under (DL-7). Underscore
 #: like `_preview`: shell-internal, stripped by the shell on first read.
 EDIT_APPFILE_PARAM = "_edit_appfile"
+#: Same for a url link (DL-8): the http(s) link, for the shell to download.
+FETCH_APPFILE_PARAM = "_fetch_appfile"
 
 
 def edit_appfile_redirect(path: str) -> str:
@@ -641,6 +688,17 @@ def clone_page(src: str = ""):
         except DeeplinkError:
             target = f"/?{EDIT_APPFILE_PARAM}=" + quote(unquote(raw), safe="")
         return RedirectResponse(target, status_code=303)
+    # A ?url= link (DL-8) always goes to Home: nothing is on disk yet, and
+    # the download is the shell's guarded POST, never this GET (D3). A
+    # malformed payload rides along verbatim so the shell reports it.
+    raw = url_payload_from(src)
+    if raw is not None:
+        try:
+            link = app_file_url_from(src)
+        except DeeplinkError:
+            link = unquote(raw)
+        return RedirectResponse(f"/?{FETCH_APPFILE_PARAM}=" + quote(link, safe=""),
+                                status_code=303)
     # The git confirm page (static/clone.html) is self-contained: it reads
     # ?src= client-side, previews via GET /api/clone/info, and only its
     # explicit Clone button fires the guarded POST. Serving it performs no I/O.

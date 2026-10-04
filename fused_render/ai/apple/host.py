@@ -304,6 +304,18 @@ def cancel(proc: subprocess.Popen) -> None:
             pass
 
 
+def cancel_pid(pid: int) -> bool:
+    """Stop the in-flight text child running as `pid` (the Monitor's Stop),
+    through `cancel` like any other caller. False when no live child has it."""
+    with _lock:
+        match = next((c for c in _text_children
+                      if c.pid == pid and c.poll() is None), None)
+    if match is None:
+        return False
+    cancel(match)
+    return True
+
+
 def cancel_text() -> bool:
     """Stop every `afm-text` generation in flight. True when there was one."""
     with _lock:

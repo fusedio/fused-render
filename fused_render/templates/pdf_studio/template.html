@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PDF Studio</title>
+<title>PDF</title>
 <link rel="modulepreload" href="/template-assets/pdfjs.bundle.mjs">
 <link rel="modulepreload" href="/template-assets/pdfjs.worker.bundle.mjs">
 <style>
@@ -36,9 +36,8 @@
     display: flex; align-items: center; gap: 10px; padding: 7px 12px; flex: 0 0 auto;
     background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 30;
   }
-  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; }
-  .brand .mark { width: 22px; height: 22px; border-radius: 5px; background: var(--blue);
-    color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 800; font-family: var(--mono); }
+  .brand { display: flex; align-items: center; flex: 0 0 auto; }
+  .brand .mark { width: 26px; height: 26px; display: block; filter: drop-shadow(0 1px 1.5px rgba(59,61,245,.25)); }
   .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--chrome); color: var(--ink);
     border: 1px solid var(--hair); border-radius: var(--radius); padding: 6px 11px; font-weight: 500; }
   .btn:hover { background: var(--hair-2); }
@@ -146,10 +145,67 @@
   .textLayer ::selection { background: rgba(45,127,249,.28); }
   body.mode-edit .textLayer { display: none; }
   .tspan { position: absolute; cursor: text; border-radius: 2px; }
-  .tspan:hover { outline: 1.5px solid var(--blue-2); background: rgba(45,127,249,.08); }
-  .tedit { position: absolute; z-index: 10; border: 1.5px solid var(--blue); border-radius: 3px; background: #fff;
-    box-shadow: var(--shadow-2); font-family: var(--font); color: var(--ink); padding: 0 2px; min-width: 60px; }
+  body.tool-select .tspan:hover { outline: 1.5px solid var(--blue-2); outline-offset: 1.5px; background: rgba(45,127,249,.08); }
+  body.mode-edit:not(.tool-select) :is(.tspan, .timg) { pointer-events: none; }
+  /* Placed images: a hit target per image (under the text ones, so text wins
+     where they overlap), and the selected one's frame with corner handles. */
+  .timg { position: absolute; cursor: move; }
+  body.tool-select .timg:hover { outline: 1.5px dashed var(--blue-2); outline-offset: 1px; }
+  .isel { position: absolute; z-index: 8; border: 1.5px solid var(--blue); cursor: move; touch-action: none;
+    box-shadow: 0 0 0 3px rgba(45,127,249,.18); }
+  .isel.moving { background: rgba(45,127,249,.08); }
+  .isel .ih { position: absolute; width: 10px; height: 10px; background: #fff; border: 1.5px solid var(--blue); border-radius: 2px; }
+  .isel .ih[data-h=nw] { left: -6px; top: -6px; cursor: nwse-resize; }
+  .isel .ih[data-h=ne] { right: -6px; top: -6px; cursor: nesw-resize; }
+  .isel .ih[data-h=sw] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+  .isel .ih[data-h=se] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+  body.mode-edit.tool-text .overlay { cursor: text; }
+  body.mode-edit.tool-image .overlay { cursor: crosshair; }
+  /* In-place text editor: a frame (.tbox) around a bare textarea. Border +
+     padding are the same 4.5px on every side (EDIT_PAD in the script); the
+     script sizes the textarea to its text on every keystroke — it grows right
+     as a line gets longer and down per line. The frame and its Move tab drag
+     the box. */
+  .tbox { position: absolute; z-index: 10; padding: 3px; border: 1.5px solid var(--blue); border-radius: 3px;
+    background: #fff; box-shadow: 0 0 0 3px rgba(45,127,249,.18); cursor: move; touch-action: none; }
+  .tveil { position: absolute; z-index: 9; background: rgba(255,255,255,.72); pointer-events: none; }
+  .tbox.moving { box-shadow: var(--shadow-2), 0 0 0 3px rgba(45,127,249,.18); }
+  .tgrip { position: absolute; left: -1.5px; bottom: 100%; margin-bottom: 3px; display: flex; align-items: center;
+    gap: 4px; background: var(--blue); color: #fff; font: 600 10.5px var(--font); padding: 2px 7px 2px 5px;
+    border-radius: 4px; white-space: nowrap; user-select: none; }
+  .tgrip svg { width: 11px; height: 11px; }
+  .tedit { display: block; margin: 0; padding: 0; border: 0; background: transparent; cursor: text;
+    resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: break-word; }
   .tedit:focus { outline: none; }
+  .img-ghost { position: absolute; z-index: 9; pointer-events: none; border: 1.5px dashed var(--blue);
+    background: rgba(45,127,249,.06); }
+  .img-ghost img { display: block; width: 100%; height: 100%; opacity: .65; }
+
+  /* ---- edit toolbar (edit mode only) ---- */
+  #editbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; flex: 0 0 auto;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 24; }
+  body.mode-view #editbar { display: none; }
+  .eb-group { display: inline-flex; align-items: center; gap: 4px; }
+  .eb-sep { width: 1px; align-self: stretch; background: var(--hair); margin: 2px 2px; }
+  .eb-tool { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: none;
+    color: var(--ink-2); border-radius: var(--radius); padding: 5px 10px; font-weight: 600; }
+  .eb-tool:hover { background: var(--hair-2); color: var(--ink); }
+  .eb-tool.on { background: var(--blue-soft); color: var(--blue-ink); border-color: #cfe0fb; }
+  .eb-tool svg { width: 16px; height: 16px; }
+  .eb-fmt select, .eb-fmt input[type=number] { font: inherit; font-size: 12.5px; color: var(--ink);
+    border: 1px solid var(--hair); border-radius: var(--radius); background: #fff; padding: 4px 6px; height: 28px; }
+  .eb-fmt input[type=number] { width: 58px; }
+  .eb-color { display: inline-flex; width: 28px; height: 28px; border: 1px solid var(--hair); border-radius: var(--radius);
+    padding: 3px; cursor: pointer; background: #fff; }
+  .eb-color input { width: 100%; height: 100%; border: none; padding: 0; background: none; cursor: pointer; }
+  .eb-color input::-webkit-color-swatch-wrapper { padding: 0; }
+  .eb-color input::-webkit-color-swatch { border: none; border-radius: 3px; }
+  .eb-color input::-moz-color-swatch { border: none; border-radius: 3px; }
+  .eb-tog { width: 28px; height: 28px; border: 1px solid var(--hair); border-radius: var(--radius); background: #fff;
+    color: var(--ink-2); font-size: 13px; padding: 0; }
+  .eb-tog:hover { background: var(--hair-2); }
+  .eb-tog.on { background: var(--blue-soft); color: var(--blue-ink); border-color: #cfe0fb; }
+  #ebHint { color: var(--ink-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   #pagesNote { color: var(--ink-3); text-align: center; font-size: 12px; padding: 6px; }
 
   /* ---- modal ---- */
@@ -170,7 +226,9 @@
   .modal .checklist label:hover { background: var(--hair-2); }
 
   /* file browser */
-  .modal input.fb-path { font-family: var(--mono); font-size: 12px; margin-bottom: 8px; }
+  .modal input.fb-path { font-size: 12.5px; margin-top: 8px; }
+  .fb-places { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .fb-places .btn { padding: 4px 10px; font-size: 12.5px; }
   .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
     background: var(--hair-2); border-radius: var(--radius); padding: 5px 8px; margin-bottom: 10px; }
   .fb-crumbs button { border: none; background: none; color: var(--blue-ink); padding: 2px 4px; border-radius: 4px; font: inherit; }
@@ -362,7 +420,7 @@
 </style>
 <script src="/template-shared/ro-badge.js"></script>
 </head>
-<body class="mode-view">
+<body class="mode-view tool-select">
 <div id="boot">
   <div class="boot-skel" aria-hidden="true">
     <div class="boot-topbar">
@@ -380,11 +438,21 @@
       <div class="boot-canvas"><div class="boot-page skel-shimmer"></div></div>
     </div>
   </div>
-  <div class="boot-msg">Loading PDF Studio…</div>
+  <div class="boot-msg">Loading…</div>
 </div>
 
 <div id="topbar">
-  <div class="brand"><span class="mark">PDF</span><span>PDF Studio</span></div>
+  <div class="brand" title="PDF editor">
+    <svg class="mark" viewBox="0 0 28 28" aria-hidden="true">
+      <defs><linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#3b8bff"/><stop offset="1" stop-color="#5b3df5"/></linearGradient></defs>
+      <rect width="28" height="28" rx="7" fill="url(#brandGrad)"/>
+      <path d="M9.2 6h6.6l4.7 4.7v10.8a1.5 1.5 0 0 1-1.5 1.5H9.2a1.5 1.5 0 0 1-1.5-1.5V7.5A1.5 1.5 0 0 1 9.2 6z" fill="#fff"/>
+      <path d="M15.8 6v3.2a1.5 1.5 0 0 0 1.5 1.5h3.2z" fill="#c9d6ff"/>
+      <path d="M10.6 14.2h6.2M10.6 17.4h3.6" stroke="#5b3df5" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="m16.4 20.3 4.6-4.6 1.5 1.5-4.6 4.6-2 .5z" fill="#3b8bff" stroke="#fff" stroke-width=".9" stroke-linejoin="round"/>
+    </svg>
+  </div>
   <span id="docName"></span>
   <span id="ro" hidden></span>
   <span id="docPages"></span>
@@ -396,7 +464,7 @@
   </button>
   <button class="btn" id="toolsBtn" title="All tools">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-    Tools
+    All tools
   </button>
   <div class="seg" id="modeSeg">
     <button data-mode="edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
@@ -424,6 +492,8 @@
     <div class="mi" data-act="redo" id="miRedo">Redo <span class="kbd">Ctrl+Y</span></div>
     <div class="divider"></div>
     <div class="mi" data-act="editTextHint">Edit text — click any line on a page</div>
+    <div class="mi" data-act="addText">Add text</div>
+    <div class="mi" data-act="addImage">Add image…</div>
   </div></div>
   <div class="menu" data-menu>Page<div class="dropdown">
     <div class="mi" data-act="rotateL">Rotate left</div>
@@ -466,6 +536,32 @@
     <div class="mi" data-act="zoomOut">Zoom out</div>
     <div class="mi" data-act="zoom100">Actual size</div>
   </div></div>
+</div>
+
+<div id="editbar">
+  <div class="eb-group" id="ebTools">
+    <button class="eb-tool on" data-etool="select" title="Edit existing text — click any line on a page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      Edit text</button>
+    <button class="eb-tool" data-etool="text" title="Add a new text box — click where it should start">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M9 19h6"/></svg>
+      Add text</button>
+    <button class="eb-tool" data-etool="image" title="Add an image — pick a file, then click or drag on the page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4-4-8 8"/></svg>
+      Add image</button>
+  </div>
+  <div class="eb-sep"></div>
+  <div class="eb-group eb-fmt" id="ebFmt">
+    <select id="fmtFamily" title="Font">
+      <option value="sans">Helvetica</option><option value="serif">Times</option><option value="mono">Courier</option>
+    </select>
+    <input id="fmtSize" type="number" min="4" max="144" step="0.5" value="12" title="Font size (pt)">
+    <label class="eb-color" title="Text color"><input id="fmtColor" type="color" value="#1d2025"></label>
+    <button class="eb-tog" id="fmtBold" title="Bold"><b>B</b></button>
+    <button class="eb-tog" id="fmtItalic" title="Italic"><i style="font-family:Georgia,serif">I</i></button>
+  </div>
+  <div class="spacer"></div>
+  <div id="ebHint"></div>
 </div>
 
 <div id="banner" class="hidden"></div>
@@ -553,7 +649,11 @@ const state = {
   undoDepth: 0, redoDepth: 0,
   writable: true,     // fs writability of the ORIGINAL (open_doc verdict)
   spans: {},          // pageNo -> {mtime, spans}
-  editing: null,      // the floating text input, if any
+  editing: null,      // the open in-place text editor, if any (see openEditor)
+  tool: "select",     // edit-mode tool: select (edit text) | text (add) | image (add)
+  fmt: { family: "sans", size: 12, color: "#1d2025", bold: false, italic: false },  // new text
+  image: null,        // the picked image waiting to be placed (see loadImage)
+  picked: null,       // the placed image selected for moving/resizing (see pickImage)
   inspect: null,      // the last inspection report, dropped on every mutation
   insTab: "overview",
   md: null,           // last markdown conversion {spec, markdown, chars, pages}
@@ -681,47 +781,42 @@ function dialog({ title, message = "", label = "", value = "", okText = "OK", da
 const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
 const docDir = () => state.doc.split("/").slice(0, -1).join("/");
 
-function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false, filename = "", start = "", exts = ".pdf" }) {
+// pdf.py's folder listing. `src` (origin only) lets the worker route a
+// mount-backed folder via /api/fs/list instead of a kernel scan that could
+// drop the mount.
+const listDir = (path, exts) => py({ action: "listdir", path, exts,
+  src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
+
+// The in-page browser: the fallback for a machine that can't raise its own
+// file dialog (see pickFile/pickFolder). Picks a file of `exts`, or with
+// `dirOnly` a folder; the places row jumps to the usual folders.
+function browseModal({ title, okText = "Open", dirOnly = false, start = "", exts = ".pdf" }) {
   const extRe = new RegExp(`(${exts.split(",").map((e) => e.trim().replace(".", "\\.")).join("|")})$`, "i");
+  const places = [["Home", "~"], ["Desktop", "~/Desktop"], ["Documents", "~/Documents"], ["Downloads", "~/Downloads"],
+    ...(state.doc ? [["This PDF's folder", docDir()]] : [])];
   const m = modal(`
     <h3></h3>
-    <input type="text" id="fbPath" class="fb-path" placeholder="Paste a full path and press Enter" spellcheck="false" autocomplete="off">
+    <div class="fb-places">${places.map(([n, p]) => `<button class="btn ghost" data-place="${p.replace(/"/g, "&quot;")}">${n}</button>`).join("")}</div>
     <div class="fb-crumbs" id="fbCrumbs"></div>
     <div class="fb-list" id="fbList"></div>
-    ${pickDir ? `<label>File name</label><input type="text" id="fbName">` : ""}
+    <input type="text" id="fbPath" class="fb-path" placeholder="…or paste a path and press Enter" spellcheck="false" autocomplete="off">
     <div class="row"><button class="btn" data-x="cancel">Cancel</button>
-    ${pickDir || dirOnly ? `<button class="btn primary" data-x="ok"></button>` : ""}</div>`);
+    ${dirOnly ? `<button class="btn primary" data-x="ok"></button>` : ""}</div>`);
   m.el.classList.add("wide");
   m.el.querySelector("h3").textContent = title;
   m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelectorAll("[data-place]").forEach((b) => { b.onclick = () => show(b.dataset.place); });
   const pathInp = m.el.querySelector("#fbPath");
-  const nameInp = m.el.querySelector("#fbName");
   let cur = "";
-  if (pickDir) {
-    nameInp.value = filename;
-    const finish = () => {
-      const n = cleanPath(nameInp.value);
-      if (!n) return;
-      if (/^([A-Za-z]:)?\//.test(n))
-        m.close({ dir: n.split("/").slice(0, -1).join("/") || "/", name: n.split("/").pop() });
-      else m.close({ dir: cur, name: n });
-    };
-    const ok = m.el.querySelector("[data-x=ok]");
-    ok.textContent = okText;
-    ok.onclick = finish;
-    nameInp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(); });
-  } else if (dirOnly) {
+  if (dirOnly) {
     const ok = m.el.querySelector("[data-x=ok]");
     ok.textContent = okText;
     ok.onclick = () => m.close(cur);
   }
   async function show(path) {
     if (/^[A-Za-z]:$/.test(path)) path += "/";
-    // src (origin only) lets the worker route a mount-backed dir via
-    // /api/fs/list instead of a kernel scan that could drop the mount.
-    const res = await py({ action: "listdir", path, exts,
-      src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
-    if (res.error) { toast(res.error, true); return; }
+    const res = await listDir(path, exts);
+    if (res.error) { toast(res.error, true); return null; }
     cur = res.path;
     pathInp.value = res.path;
     const crumbs = m.el.querySelector("#fbCrumbs");
@@ -741,7 +836,7 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
     if (res.parent && res.parent !== res.path) {
       const up = document.createElement("button");
       up.className = "fb-row dir";
-      up.innerHTML = `<span class="ico">${icoDir}</span><span class="nm">..</span>`;
+      up.innerHTML = `<span class="ico">${icoUp}</span><span class="nm">Up to ${res.parent.split("/").filter(Boolean).pop() || "/"}</span>`;
       up.onclick = () => show(res.parent);
       list.appendChild(up);
     }
@@ -753,32 +848,114 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
       b.onclick = () => show(res.path + "/" + d);
       list.appendChild(b);
     }
-    for (const f of res.files) {
+    // Choosing a folder lists folders only.
+    for (const f of dirOnly ? [] : res.files) {
       const b = document.createElement("button");
       b.className = "fb-row";
       b.innerHTML = `<span class="ico">${icoFile}</span><span class="nm"></span><span class="sz">${fmtSize(f.size)}</span>`;
       b.querySelector(".nm").textContent = f.name;
-      b.onclick = dirOnly ? null
-        : pickDir ? () => { nameInp.value = f.name; }
-        : () => m.close(res.path + "/" + f.name);
+      b.onclick = () => m.close(res.path + "/" + f.name);
       list.appendChild(b);
     }
-    if (!res.dirs.length && !res.files.length)
-      list.innerHTML = `<div class="fb-empty">No folders or ${exts.replace(/\./g, "").toUpperCase()} files here.</div>`;
+    if (!res.dirs.length && (dirOnly || !res.files.length))
+      list.insertAdjacentHTML("beforeend", `<div class="fb-empty">${dirOnly ? "No folders in here."
+        : `No folders or ${exts.replace(/\./g, "").toUpperCase()} files here.`}</div>`);
+    return res;
   }
-  pathInp.addEventListener("keydown", (e) => {
+  // A pasted path goes through the same listing as browsing — pdf.py expands
+  // `~`, resolves it to an absolute path and, for a file, lists its folder — so
+  // a pasted file is picked exactly as clicking it in that folder would pick it,
+  // and a path that isn't there is caught here, not after the pick.
+  pathInp.addEventListener("keydown", async (e) => {
     if (e.key !== "Enter") return;
-    let p = cleanPath(pathInp.value);
+    const p = cleanPath(pathInp.value);
     if (!p) return;
-    if (extRe.test(p)) {
-      if (!pickDir && !dirOnly) return m.close(p);
-      if (nameInp) nameInp.value = p.split("/").pop();
-      p = p.split("/").slice(0, -1).join("/") || "/";
-    }
-    show(p);
+    if (dirOnly || !extRe.test(p)) { show(p); return; }
+    const want = p.split("/").pop();
+    const res = await show(p);
+    if (!res) return;
+    const hit = res.files.find((f) => f.name === want)
+      || res.files.find((f) => f.name.toLowerCase() === want.toLowerCase());
+    if (hit) m.close(res.path + "/" + hit.name);
+    else toast(`No file named ${want} in ${res.path}`, true);
   });
-  show(start || (state.doc ? docDir() : "~"))
-    .then(() => { pathInp.focus(); pathInp.select(); });
+  show(start || defaultDir());
+  return m.done;
+}
+
+// ---------- choosing files and folders ----------
+// The machine's own dialogs — Finder's open panel on a Mac — whenever the app
+// can raise one (/api/config's native_dir_picker). The server opens them: a
+// browser never hands a page the real path of a file the reader picks. Where
+// there is no dialog to raise (a hosted deploy, a phone over the LAN) or it
+// fails, the in-page browser stands in; a cancel is an answer either way and
+// is never asked again.
+const defaultDir = () => (state.doc ? docDir() : "~");
+let nativeDialogs = null;
+const hasNativeDialogs = () => (nativeDialogs ||= fetch("/api/config")
+  .then((r) => (r.ok ? r.json() : {})).then((c) => !!c.native_dir_picker, () => false));
+
+// Ask the OS dialog: the chosen path, null when the reader cancelled, or
+// undefined when it could not be asked — no dialog on this machine, or any
+// step failing — which is the caller's cue for the in-page browser. It opens
+// at an absolute folder: `start` (~, relative, or a file) resolved by the
+// same mount-safe listing the in-page browser uses.
+async function nativePick(kind, { start, ...body }) {
+  if (!(await hasNativeDialogs())) return undefined;
+  return listDir(start || defaultDir(), ".pdf")
+    .then(({ path }) => fetch(`/api/fs/pick-${kind}`, { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ ...body, start: path }) }))
+    .then(async (res) => {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `the ${kind} chooser failed`);
+      return data.path ?? null;
+    })
+    .catch((err) => { console.warn(`native ${kind} chooser:`, err); return undefined; });
+}
+
+// Ask for a file of one of `exts` (".png,.jpg"); its absolute path, or null.
+async function pickFile({ title, exts = ".pdf", start = "" }) {
+  const types = exts.split(",").map((e) => e.trim().replace(/^\./, ""));
+  const path = await nativePick("file", { title, types, start });
+  if (path === undefined) return browseModal({ title, exts, start });
+  // The dialog's type filter is a courtesy (some let "All files" through),
+  // so what came back is checked like a pasted path would be.
+  if (path === null || types.includes(path.split(".").pop().toLowerCase())) return path;
+  toast(`${path.split("/").pop()} isn't a ${types.join(" / ").toUpperCase()} file`, true);
+  return null;
+}
+
+// Ask for a folder; its absolute path, or null.
+async function pickFolder({ title = "Choose a folder", start = "" }) {
+  const path = await nativePick("folder", { title, start });
+  return path !== undefined ? path : browseModal({ title, okText: "Select folder", dirOnly: true, start });
+}
+
+// Ask where to save a new file: a name and a folder (Browse… picks the folder
+// with pickFolder). {dir, name}, or null.
+function saveModal({ title, okText = "Save", filename, start = "" }) {
+  const m = modal(`<h3></h3>
+    <label>Name</label><input type="text" id="svName" spellcheck="false">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="svDir" spellcheck="false"><button class="btn" id="svDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok"></button></div>`);
+  m.el.querySelector("h3").textContent = title;
+  const nameInp = m.el.querySelector("#svName"), ok = m.el.querySelector("[data-x=ok]");
+  nameInp.value = filename;
+  const getDir = destRow(m, "svDir", start || defaultDir());
+  const finish = () => {
+    const name = cleanPath(nameInp.value);
+    if (name) m.close({ dir: getDir(), name });
+  };
+  ok.textContent = okText;
+  ok.onclick = finish;
+  nameInp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(); });
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  // Select the stem, so typing replaces the name and keeps the extension.
+  nameInp.focus();
+  nameInp.setSelectionRange(0, filename.replace(/\.[^.]+$/, "").length);
   return m.done;
 }
 
@@ -798,8 +975,7 @@ function destRow(m, id, value, onFile) {
   };
   inp.addEventListener("change", absorb);
   m.el.querySelector("#" + id + "Btn").onclick = async () => {
-    const dir = await browseModal({ title: "Choose a folder", okText: "Select folder",
-      dirOnly: true, start: cleanPath(inp.value) || "~" });
+    const dir = await pickFolder({ start: cleanPath(inp.value) || defaultDir() });
     if (dir) { inp.value = dir; lastDir = dir; }
   };
   return () => { absorb(); return cleanPath(inp.value); };
@@ -849,39 +1025,69 @@ function pageWidth() {
 // Bumped per render so stale in-flight page/thumb loops cancel themselves.
 let renderGen = 0;
 
+// Built on use: the icons are declared further down the module.
+const qaPage = () => `<div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Extract this page" data-qa="extract">${icoExtract}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`;
+const qaThumb = () => `<div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`;
+
+// Run `fn` (which may resize pages) without moving what the reader is looking
+// at: the page at the top of the viewport keeps its place on screen, so a
+// repaint of the pages above it, or a zoom, never scrolls the document away.
+function keepInView(fn) {
+  const cw = $("canvasWrap"), viewTop = cw.getBoundingClientRect().top;
+  const el = [...document.querySelectorAll("#pages .pdf-page[data-page]")]
+    .find((p) => p.getBoundingClientRect().bottom > viewTop);
+  const top = el?.getBoundingClientRect().top;
+  fn();
+  if (el?.isConnected) cw.scrollTop += el.getBoundingClientRect().top - top;
+}
+
+// Page n's wrap, created (in page order, replacing the loading placeholder)
+// the first time it is painted and reused by every repaint after that.
+function pageWrap(n) {
+  const have = document.getElementById(`__fr_page_${n}`);
+  if (have) return have;
+  $("pages").querySelector(".skel-shimmer")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "pdf-page";
+  wrap.id = `__fr_page_${n}`;
+  wrap.dataset.page = n;
+  wrap.innerHTML = `<canvas></canvas><div class="textLayer"></div><div class="overlay"></div>${qaPage()}`;
+  const next = [...$("pages").children].find((el) => +el.dataset.page > n);
+  $("pages").insertBefore(wrap, next || null);
+  pageWatcher.observe(wrap);
+  return wrap;
+}
+
+const inView = (el) => {
+  const r = el.getBoundingClientRect();
+  return r.bottom > 0 && r.top < innerHeight;
+};
+
+// Draw page n into a new canvas and text layer off screen, then swap both into
+// its wrap at once: a repaint never blanks the page, and the wrap — with the
+// reader's scroll position — survives it.
 async function renderPage(pdf, n, gen) {
   const page = await pdf.getPage(n);
   const base = page.getViewport({ scale: 1 });
   const scale = pageWidth() / base.width;
   const vp = page.getViewport({ scale });
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  if (gen !== renderGen) return;
-  const wrap = document.createElement("div");
-  wrap.className = "pdf-page";
-  wrap.id = `__fr_page_${n}`;
-  wrap.dataset.page = n;
-  wrap.dataset.scale = scale;
   const canvas = document.createElement("canvas");
   canvas.width = Math.floor(vp.width * dpr);
   canvas.height = Math.floor(vp.height * dpr);
   canvas.style.width = vp.width + "px";
   canvas.style.height = vp.height + "px";
-  wrap.appendChild(canvas);
-  wrap.style.setProperty("--scale-factor", scale);
   const textLayer = document.createElement("div");
   textLayer.className = "textLayer";
-  wrap.appendChild(textLayer);
-  const overlay = document.createElement("div");
-  overlay.className = "overlay";
-  wrap.appendChild(overlay);
-  wrap.insertAdjacentHTML("beforeend", `<div class="qa">
-    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
-    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
-    <button title="Extract this page" data-qa="extract">${icoExtract}</button>
-    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
-  </div>`);
-  $("pages").appendChild(wrap);
-  pageWatcher.observe(wrap);
   await page.render({
     canvasContext: canvas.getContext("2d"), viewport: vp,
     transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
@@ -889,13 +1095,23 @@ async function renderPage(pdf, n, gen) {
   await new pdfjs.TextLayer({
     textContentSource: page.streamTextContent(), container: textLayer, viewport: vp,
   }).render();
+  if (gen !== renderGen) return;
+  let wrap;
+  keepInView(() => {
+    wrap = pageWrap(n);
+    wrap.dataset.scale = scale;
+    wrap.style.setProperty("--scale-factor", scale);
+    wrap.querySelector("canvas").replaceWith(canvas);
+    wrap.querySelector(".textLayer").replaceWith(textLayer);
+    wrap.dataset.gen = gen;   // this drawing is the current one — see buildOverlay
+  });
+  if (document.body.classList.contains("mode-edit") && inView(wrap)) buildOverlay(n).catch(() => {});
 }
 
 async function renderThumb(pdf, n, gen) {
   const page = await pdf.getPage(n);
   const base = page.getViewport({ scale: 1 });
   const vp = page.getViewport({ scale: 132 / base.width });
-  if (gen !== renderGen) return;
   const div = document.createElement("div");
   div.className = "thumb" + (n === state.curPage ? " on" : "");
   div.dataset.page = n;
@@ -903,13 +1119,14 @@ async function renderThumb(pdf, n, gen) {
   canvas.width = Math.floor(vp.width);
   canvas.height = Math.floor(vp.height);
   div.appendChild(canvas);
-  div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span><div class="qa">
-    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
-    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
-    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
-  </div>`);
-  $("thumbs").appendChild(div);
+  div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span>${qaThumb()}`);
   await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  if (gen !== renderGen) return;
+  const rail = $("thumbs");
+  rail.querySelector(".skel-thumb")?.remove();
+  const old = rail.querySelector(`.thumb[data-page="${n}"]`);
+  if (old) old.replaceWith(div);
+  else rail.insertBefore(div, [...rail.children].find((el) => +el.dataset.page > n) || null);
 }
 
 // Shimmering placeholders shown for the gap between "doc/zoom switch requested"
@@ -941,25 +1158,31 @@ function showRenderSkeleton() {
   showThumbSkeleton();
 }
 
-// Resolves once page 1 is on screen; the remaining pages and the thumbnail
-// rail keep rendering in the background.
-async function renderAll() {
+// Paint the working copy. Opening a document (`fresh`) starts from a loading
+// placeholder; every other repaint — after an edit, undo, page op or zoom —
+// redraws the pages in place, the one being read first, so the view stays
+// where the reader left it. Resolves once that first page is painted; the
+// rest of the pages and the thumbnail rail follow in the background.
+async function renderAll({ fresh = false } = {}) {
   cancelEdit();
+  unpickImage();
   state.spans = {};
   const gen = ++renderGen;
+  // Every overlay was hit-tested against the drawing (and spans) being
+  // replaced; they all go now and come back per page as each one is redrawn.
+  document.querySelectorAll("#pages .overlay").forEach((o) => { o.innerHTML = ""; });
   if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
-  showRenderSkeleton();
+  if (fresh) showRenderSkeleton();
   let data, pdf;
   try {
     data = await loadPdfBytes();
     pdf = await pdfjs.getDocument({ data }).promise;
   } catch (err) {
-    // Only wipe the skeleton if this call is still the current one — a
-    // superseded request's skeleton belongs to whatever newer renderAll()
+    // Only wipe the placeholder if this call is still the current one — a
+    // superseded request's placeholder belongs to whatever newer renderAll()
     // already repainted #pages/#thumbs. Callers already try/catch renderAll()
-    // and toast the error; this just stops the placeholder from shimmering
-    // forever with nothing behind it.
-    if (gen === renderGen) { $("pages").innerHTML = ""; $("thumbs").innerHTML = ""; }
+    // and toast the error; this just stops it shimmering forever.
+    if (fresh && gen === renderGen) { $("pages").innerHTML = ""; $("thumbs").innerHTML = ""; }
     throw err;
   }
   if (gen !== renderGen) { pdf.destroy(); return; }
@@ -970,30 +1193,35 @@ async function renderAll() {
   if (pdf.numPages > MAX_PAGES)
     note.textContent = `Showing ${shown} of ${pdf.numPages} pages`;
   $("docPages").textContent = `${pdf.numPages} ${pdf.numPages === 1 ? "page" : "pages"}`;
-  $("pages").innerHTML = "";
-  showThumbSkeleton(shown); // keep the thumb rail shimmering (sized to the real count) until thumbs start landing
-  watchPages();
+  // Pages the document no longer has (a delete, an undone insert) go now.
+  keepInView(() => {
+    document.querySelectorAll("#pages .pdf-page, #thumbs .thumb[data-page]")
+      .forEach((el) => { if (+el.dataset.page > shown) el.remove(); });
+  });
+  if (fresh) showThumbSkeleton(shown);   // sized to the real count until thumbs land
+  if (!pageWatcher) watchPages();
+  const first = Math.min(Math.max(1, state.curPage), shown);
+  const order = [first, ...Array.from({ length: shown }, (_, i) => i + 1)
+    .filter((n) => n !== first).sort((a, b) => Math.abs(a - first) - Math.abs(b - first))];
   try {
-    await renderPage(pdf, 1, gen);
+    await renderPage(pdf, first, gen);
   } catch (err) {
-    // Page 1 failing means the background loop below (which is the only
-    // thing that ever clears the thumb skeleton) never starts — clear it
-    // here so it doesn't shimmer forever, then rethrow to the caller's
-    // existing try/catch + toast.
-    if (gen === renderGen) $("thumbs").innerHTML = "";
+    // The first page failing means the background loop below (the only thing
+    // that clears the thumb placeholders) never starts — clear them here, then
+    // rethrow to the caller's try/catch + toast.
+    if (gen === renderGen) $("thumbs").querySelectorAll(".skel-thumb").forEach((el) => el.remove());
     throw err;
   }
-  if (document.body.classList.contains("mode-edit")) primeOverlays();
   (async () => {
-    for (let n = 2; n <= shown; n++) {
+    for (const n of order.slice(1)) {
       if (gen !== renderGen) return;
       await renderPage(pdf, n, gen);
     }
-    $("thumbs").innerHTML = "";
     for (let n = 1; n <= shown; n++) {
       if (gen !== renderGen) return;
       await renderThumb(pdf, n, gen);
     }
+    $("thumbs").querySelectorAll(".skel-thumb").forEach((el) => el.remove());
     applyOcrBadges();
   })().catch((err) => {
     if (err?.name === "RenderingCancelledException") return;
@@ -1003,7 +1231,6 @@ async function renderAll() {
 
 let pageWatcher = null;
 function watchPages() {
-  if (pageWatcher) pageWatcher.disconnect();
   pageWatcher = new IntersectionObserver((entries) => {
     for (const e of entries) {
       if (!e.isIntersecting) continue;
@@ -1011,7 +1238,6 @@ function watchPages() {
       if (document.body.classList.contains("mode-edit")) buildOverlay(+e.target.dataset.page).catch(() => {});
     }
   }, { root: $("canvasWrap"), threshold: 0.25 });
-  document.querySelectorAll(".pdf-page").forEach((p) => pageWatcher.observe(p));
 }
 
 function setCurPage(n, scroll = true) {
@@ -1022,71 +1248,485 @@ function setCurPage(n, scroll = true) {
 
 function primeOverlays() {
   document.querySelectorAll(".pdf-page").forEach((p) => {
-    const r = p.getBoundingClientRect();
-    if (r.bottom > 0 && r.top < innerHeight) buildOverlay(+p.dataset.page).catch(() => {});
+    if (inView(p)) buildOverlay(+p.dataset.page).catch(() => {});
   });
 }
 
 // ---------- text edit overlay ----------
+// A page's overlay is built for the drawing it sits on: only once that page
+// has been painted by the current render (its `gen`), once per render, and
+// dropped if a newer render starts while the page's text is being fetched.
 async function buildOverlay(n) {
+  const gen = String(renderGen);
   const wrap = document.getElementById(`__fr_page_${n}`);
-  if (!wrap || wrap.dataset.overlayFor === String(state.mtime)) return;
-  wrap.dataset.overlayFor = state.mtime;
+  if (!wrap || wrap.dataset.gen !== gen || wrap.dataset.overlayFor === gen) return;
+  wrap.dataset.overlayFor = gen;
   let pt = state.spans[n];
   if (!pt || pt.mtime !== state.mtime) {
     pt = await py({ action: "page_text", doc: state.doc, page: n });
+    if (String(renderGen) !== gen) return;
     state.spans[n] = pt;
   }
   const overlay = wrap.querySelector(".overlay");
   overlay.innerHTML = "";
   const s = +wrap.dataset.scale;
+  const box = (el, [x0, y0, x1, y1]) => Object.assign(el.style, {
+    left: x0 * s + "px", top: y0 * s + "px", width: (x1 - x0) * s + "px", height: (y1 - y0) * s + "px" });
+  pt.images.forEach((bbox, i) => {
+    const d = document.createElement("div");
+    d.className = "timg";
+    d.dataset.i = i;
+    box(d, bbox);
+    overlay.appendChild(d);
+  });
   pt.spans.forEach((sp, i) => {
     const d = document.createElement("div");
     d.className = "tspan";
     d.dataset.i = i;
-    d.style.left = sp.bbox[0] * s + "px";
-    d.style.top = sp.bbox[1] * s + "px";
-    d.style.width = (sp.bbox[2] - sp.bbox[0]) * s + "px";
-    d.style.height = (sp.bbox[3] - sp.bbox[1]) * s + "px";
+    box(d, sp.bbox);
     overlay.appendChild(d);
   });
 }
 
-function cancelEdit() {
-  if (state.editing) { state.editing.remove(); state.editing = null; }
+// ---------- in-place text editor ----------
+// One <textarea> per edit, laid over the page and sized to its own text on
+// every keystroke: a line that outgrows the box widens it (up to the page's
+// right edge, where the line wraps), and every line adds height. Nothing is
+// shrunk — pdf.py draws the text at the size shown, one PDF line per line in
+// the box, so the result lands where it was typed.
+//
+// The editor previews in the same base-14 faces pdf.py writes (Helvetica /
+// Times / Courier, via their metric-compatible system fallbacks), so the box
+// width here is the width the text will take on the page.
+const FAMILY_CSS = { sans: "Helvetica, Arial, sans-serif",
+  serif: '"Times New Roman", Times, serif', mono: '"Courier New", Courier, monospace' };
+const FAMILY_PDF = { sans: "Helvetica", serif: "Times-Roman", mono: "Courier" };
+// Baseline below the middle of a CSS line box, in em: (ascent - descent) / 2 of
+// the fallback faces above. Places a NEW text's first PDF baseline where the
+// editor showed it.
+const BASELINE_EM = { sans: 0.35, serif: 0.34, mono: 0.27 };
+const LINE_EM = 1.25;   // line pitch × font size — pdf.py's _draw_text default
+const EDIT_PAD = 4.5;   // .tbox border + padding, each side, px
+const measureCtx = document.createElement("canvas").getContext("2d");
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+const hex2 = (n) => clamp(n | 0, 0, 255).toString(16).padStart(2, "0");
+const rgbToHex = (c) => "#" + (c || [0, 0, 0]).map(hex2).join("");
+const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
+
+function familyOf(font, flags) {
+  const n = (font || "").toLowerCase();
+  if (flags & 8 || /mono|courier/.test(n)) return "mono";
+  if (!/sans/.test(n) && (flags & 4 || /times|serif|roman|georgia|garamond/.test(n))) return "serif";
+  return "sans";
+}
+const fmtFlags = (f) => (f.bold ? 16 : 0) | (f.italic ? 2 : 0)
+  | (f.family === "serif" ? 4 : 0) | (f.family === "mono" ? 8 : 0);
+const cssFont = (f, px) => `${f.italic ? "italic " : ""}${f.bold ? 700 : 400} ${px}px ${FAMILY_CSS[f.family]}`;
+const sameFmt = (a, b) => a.family === b.family && a.size === b.size && a.color === b.color
+  && a.bold === b.bold && a.italic === b.italic;
+
+// Soft-wrap `text` to `maxW` px the way the textarea does (break after spaces,
+// split a single over-long word), so the lines sent to pdf.py match the box.
+function wrapLines(text, maxW) {
+  const w = (s) => measureCtx.measureText(s).width;
+  const out = [];
+  for (const para of text.split("\n")) {
+    let line = "";
+    for (const tok of para.match(/\S+\s*|\s+/g) || []) {
+      if (line.trim() && w(line + tok.trimEnd()) > maxW) { out.push(line); line = ""; }
+      line += tok;
+      while (line.trimEnd().length > 1 && w(line.trimEnd()) > maxW) {
+        let k = line.length - 1;
+        while (k > 1 && w(line.slice(0, k)) > maxW) k--;
+        out.push(line.slice(0, k)); line = line.slice(k);
+      }
+    }
+    out.push(line);
+  }
+  return out;
 }
 
-function startEdit(wrap, span) {
-  cancelEdit();
-  const s = +wrap.dataset.scale;
-  const pageNo = +wrap.dataset.page;
-  const pt = state.spans[pageNo];
-  if (pt.rotation !== 0) { toast("Rotate this page to 0° before editing its text"); return; }
-  const inp = document.createElement("input");
-  inp.type = "text";
-  inp.className = "tedit";
-  inp.value = span.text;
-  inp.style.left = span.bbox[0] * s - 3 + "px";
-  inp.style.top = span.bbox[1] * s - 3 + "px";
-  inp.style.width = Math.max(80, (span.bbox[2] - span.bbox[0]) * s + 30) + "px";
-  inp.style.height = (span.bbox[3] - span.bbox[1]) * s + 6 + "px";
-  inp.style.fontSize = span.size * s + "px";
-  if (span.flags & 16) inp.style.fontWeight = "700";
-  if (span.flags & 2) inp.style.fontStyle = "italic";
-  if (span.flags & 8) inp.style.fontFamily = "var(--mono)";
-  wrap.appendChild(inp);
-  inp.focus(); inp.select();
-  state.editing = inp;
-  inp.addEventListener("keydown", (e) => {
-    e.stopPropagation();
-    if (e.key === "Escape") cancelEdit();
-    if (e.key === "Enter") {
-      const val = inp.value;
-      cancelEdit();
-      if (val !== span.text) act("commitEdit", { pageNo, span, val });
-    }
+const pageBounds = (wrap) => ({ left: 0, top: 0, right: wrap.clientWidth, bottom: wrap.clientHeight });
+const UNBOUNDED = { left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity };
+
+// Lay the editor out for its current text: wrap it, size the textarea to fit,
+// and place the frame from ed.anchor (where the text's top-left wants to be,
+// page px) inside ed.bounds. New text is bounded by the page, so a box opened
+// near an edge grows away from it and its first baseline is always on the
+// page; an existing span is unbounded until it is dragged, so it stays exactly
+// on the text it replaces.
+function sizeEditor(ed) {
+  const s = ed.scale, px = ed.fmt.size * s, lh = px * LINE_EM;
+  ed.el.style.font = cssFont(ed.fmt, px);
+  ed.el.style.lineHeight = lh + "px";
+  ed.el.style.color = ed.fmt.color;
+  measureCtx.font = ed.el.style.font;
+  ed.lines = wrapLines(ed.el.value, ed.wrapW);
+  ed.ranges = lineRanges(ed.el.value, ed.lines);
+  const widest = Math.max(0, ...ed.lines.map((l) => measureCtx.measureText(l).width));
+  const w = Math.min(ed.wrapW, Math.max(ed.minW, widest + 2, px));   // +2: room for the caret
+  const h = ed.lines.length * lh;
+  ed.pos = { x: clamp(ed.anchor.x, ed.bounds.left, ed.bounds.right - w),
+             y: clamp(ed.anchor.y, ed.bounds.top, ed.bounds.bottom - h) };
+  ed.box.style.left = ed.pos.x - EDIT_PAD + "px";
+  ed.box.style.top = ed.pos.y - EDIT_PAD + "px";
+  ed.el.style.width = w + "px";
+  ed.el.style.height = h + "px";
+  // The caret can scroll the textarea's content a line up before this resize
+  // lands; the box now fits everything, so pin it back.
+  ed.el.scrollTop = 0; ed.el.scrollLeft = 0;
+}
+
+// [start, end] offsets of each line as the box lays it out. The lines are
+// the value cut at wraps and at "\n", which belongs to neither side.
+function lineRanges(value, lines) {
+  let at = 0;
+  return lines.map((l) => {
+    const r = [at, at + l.length];
+    at = r[1] + (value[r[1]] === "\n" ? 1 : 0);
+    return r;
   });
-  inp.addEventListener("blur", () => setTimeout(cancelEdit, 120));
+}
+
+// Where a caret key sends the caret's moving end, for the keys that can find
+// it with nowhere to go: End at the end of a line, ↑ on the first one,
+// PageDown anywhere (the box has no pages)… A textarea hands such a key to
+// the page, which then scrolls the document to its top or bottom under the
+// editor. null: the key is the textarea's own (↑ between lines, typing…).
+function caretTarget(ed, e, pos) {
+  const r = ed.ranges.findLast(([a, b]) => a <= pos && pos <= b);
+  const len = ed.el.value.length, doc = e.ctrlKey || (e.metaKey && e.key.startsWith("Arrow"));
+  switch (e.key) {
+    case "Home": return doc ? 0 : r[0];
+    case "End": return doc ? len : r[1];
+    case "PageUp": return 0;
+    case "PageDown": return len;
+    case "ArrowUp": return e.metaKey || r === ed.ranges[0] ? 0 : null;
+    case "ArrowDown": return e.metaKey || r === ed.ranges.at(-1) ? len : null;
+    case "ArrowLeft": return e.metaKey ? r[0] : null;
+    case "ArrowRight": return e.metaKey ? r[1] : null;
+  }
+  return null;
+}
+
+// The editor moves the caret itself for every key caretTarget models, so none
+// of them reaches the page; Shift extends the selection from its anchor.
+function moveCaret(ed, e) {
+  const el = ed.el, back = el.selectionDirection === "backward";
+  const anchor = back ? el.selectionEnd : el.selectionStart;
+  const to = caretTarget(ed, e, back ? el.selectionStart : el.selectionEnd);
+  if (to === null) return;
+  e.preventDefault();
+  const from = e.shiftKey ? anchor : to;
+  el.setSelectionRange(Math.min(from, to), Math.max(from, to), to < from ? "backward" : "forward");
+}
+
+function cancelEdit() {
+  if (!state.editing) return;
+  state.editing.parts.forEach((el) => el.remove());
+  state.editing = null;
+  updateEditUi();
+}
+
+// `span` edits an existing line; `at` ({x, y} page px, the text's top-left)
+// opens an empty box for new text. Returns the editor, or null when the page
+// can't be edited.
+// Text and images are edited on unrotated pages only (pdf.py's
+// _editable_page); every edit gesture asks here first, before it starts.
+function pageEditable(pageNo) {
+  const ok = (state.spans[pageNo]?.rotation || 0) === 0;
+  if (!ok) toast("Rotate this page to 0° before editing it");
+  return ok;
+}
+
+function openEditor(wrap, { span = null, at = null }) {
+  cancelEdit();
+  const pageNo = +wrap.dataset.page;
+  if (!pageEditable(pageNo)) return null;
+  const s = +wrap.dataset.scale;
+  const fmt = span ? {
+    family: familyOf(span.font, span.flags), size: span.size, color: rgbToHex(span.color),
+    bold: !!(span.flags & 16) || /bold|black|heavy/i.test(span.font),
+    italic: !!(span.flags & 2) || /italic|oblique/i.test(span.font),
+  } : { ...state.fmt };
+  const box = document.createElement("div");
+  box.className = "tbox";
+  box.innerHTML = `<div class="tgrip">${icoMove} Move</div>`;
+  const el = document.createElement("textarea");
+  el.className = "tedit";
+  el.spellcheck = false;
+  el.value = span ? span.text : "";
+  box.appendChild(el);
+  const parts = [box];   // everything the editor adds to the page, removed together
+  let anchor, minW, wrapW, bounds;
+  if (span) {
+    const [x0, y0, x1, y1] = span.bbox;
+    // Centre the first line on the original span so the frame sits evenly
+    // around it, and never narrower than the span, so the old text stays hidden.
+    const lh = fmt.size * s * LINE_EM;
+    anchor = { x: x0 * s, y: ((y0 + y1) / 2) * s - lh / 2 };
+    bounds = UNBOUNDED;
+    // Trailing spaces in the span are blank on the page — don't pad the box for them.
+    measureCtx.font = cssFont(fmt, fmt.size * s);
+    const tail = span.text.length - span.text.trimEnd().length;
+    minW = (x1 - x0) * s - (tail ? measureCtx.measureText(span.text.slice(-tail)).width : 0);
+    wrapW = Math.max(minW, wrap.clientWidth - anchor.x - 6);   // wraps at the page's right edge
+    // Fade the original line while it's open, so dragging the box away reads
+    // as moving it rather than copying it.
+    const veil = document.createElement("div");
+    veil.className = "tveil";
+    Object.assign(veil.style, { left: x0 * s + "px", top: y0 * s + "px",
+      width: (x1 - x0) * s + "px", height: (y1 - y0) * s + "px" });
+    parts.push(veil);
+  } else {
+    anchor = { x: at.x, y: at.y };
+    bounds = pageBounds(wrap);
+    minW = 24;
+    wrapW = wrap.clientWidth - 12;                             // grows leftwards before it wraps
+  }
+  const ed = { box, el, parts, wrap, pageNo, span, scale: s, anchor, bounds, minW, wrapW,
+    pos: anchor, fmt, orig: { ...fmt }, lines: [] };
+  state.editing = ed;
+  wrap.append(...parts);
+  sizeEditor(ed);
+  ed.start = { ...ed.pos };
+  el.addEventListener("input", () => sizeEditor(ed));
+  el.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finishEdit(); }
+    else moveCaret(ed, e);
+  });
+  // The frame around the text (and its Move tab) drags the box; the text
+  // itself stays a normal text field.
+  box.addEventListener("pointerdown", (e) => {
+    if (e.target === el || e.button !== 0) return;
+    e.preventDefault();
+    dragEditor(ed, e);
+  });
+  el.focus();
+  if (span) el.select();
+  updateEditUi();
+  return ed;
+}
+
+// Move the editor with the pointer once it has travelled `threshold` px.
+// A moved box is placed like new text: kept inside the page, same wrap width.
+function dragEditor(ed, e, threshold = 0) {
+  const x0 = e.clientX, y0 = e.clientY, from = { ...ed.pos };
+  let moving = false;
+  const onMove = (ev) => {
+    const dx = ev.clientX - x0, dy = ev.clientY - y0;
+    moving ||= Math.hypot(dx, dy) > threshold;
+    if (!moving) return;
+    ed.bounds = pageBounds(ed.wrap);
+    ed.anchor = { x: from.x + dx, y: from.y + dy };
+    ed.box.classList.add("moving");
+    sizeEditor(ed);
+  };
+  const onUp = () => {
+    document.removeEventListener("pointermove", onMove);
+    ed.box.classList.remove("moving");
+    ed.el.focus();
+  };
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp, { once: true });
+}
+
+// Apply the open editor (no-op when nothing changed) and close it.
+function finishEdit() {
+  const ed = state.editing;
+  if (!ed) return;
+  sizeEditor(ed);
+  const text = ed.lines.map((l) => l.trimEnd()).join("\n").replace(/\n+$/, "");
+  cancelEdit();
+  const f = ed.fmt, s = ed.scale;
+  const common = { page: ed.pageNo, new_text: text, size: String(f.size),
+    flags: fmtFlags(f), color: JSON.stringify(hexToRgb(f.color)),
+    line_height: String(+(f.size * LINE_EM).toFixed(2)) };
+  const pt = (v) => +v.toFixed(2);
+  if (ed.span) {
+    const dx = (ed.pos.x - ed.start.x) / s, dy = (ed.pos.y - ed.start.y) / s;
+    if (ed.el.value === ed.span.text && sameFmt(f, ed.orig) && !dx && !dy) return;
+    act("commitEdit", { ...common, origin: JSON.stringify(ed.span.origin), old_text: ed.span.text,
+      to_origin: JSON.stringify([pt(ed.span.origin[0] + dx), pt(ed.span.origin[1] + dy)]),
+      // The span's own font name carries its weight/style — only swap it for
+      // a plain base-14 name once the reader changed the formatting.
+      font: sameFmt(f, ed.orig) ? ed.span.font : FAMILY_PDF[f.family] });
+  } else {
+    if (!text.trim()) return;
+    const px = f.size * s;
+    const x = ed.pos.x / s;
+    const y = (ed.pos.y + (px * LINE_EM) / 2 + BASELINE_EM[f.family] * px) / s;
+    act("insertText", { ...common, origin: JSON.stringify([pt(x), pt(y)]),
+      font: FAMILY_PDF[f.family] });
+  }
+}
+
+// ---------- placed images: select, move, resize, delete ----------
+// The selected image gets a frame (page px) the reader drags or resizes by a
+// corner; letting go applies it through edit_image, which rewrites only that
+// image's draw on the page. A repaint drops the selection with the overlays
+// it was picked from, and a move re-selects the image where it landed.
+// Returns the selection, or null when the page can't be edited.
+function pickImage(wrap, index, bbox) {
+  unpickImage();
+  if (!pageEditable(+wrap.dataset.page)) return null;
+  const s = +wrap.dataset.scale;
+  const el = document.createElement("div");
+  el.className = "isel";
+  el.innerHTML = ["nw", "ne", "sw", "se"].map((h) => `<div class="ih" data-h="${h}"></div>`).join("");
+  wrap.appendChild(el);
+  const pk = { el, wrap, pageNo: +wrap.dataset.page, index, bbox, scale: s,
+    box: { x: bbox[0] * s, y: bbox[1] * s, w: (bbox[2] - bbox[0]) * s, h: (bbox[3] - bbox[1]) * s } };
+  placePicked(pk);
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragImage(pk, e, e.target.dataset.h || "", 0);
+  });
+  state.picked = pk;
+  updateEditUi();
+  return pk;
+}
+
+function unpickImage() {
+  if (!state.picked) return;
+  state.picked.el.remove();
+  state.picked = null;
+  updateEditUi();
+}
+
+function placePicked({ el, box }) {
+  Object.assign(el.style, { left: box.x + "px", top: box.y + "px", width: box.w + "px", height: box.h + "px" });
+}
+
+// The box resized from corner `h` (nw/ne/sw/se) by the pointer's travel: the
+// opposite corner stays put, the aspect is kept, and the axis the pointer
+// moved further along decides the size.
+function resizeBox(b, h, dx, dy) {
+  const west = h.includes("w"), north = h.includes("n"), aspect = b.h / b.w;
+  const wx = b.w + (west ? -dx : dx), wy = (b.h + (north ? -dy : dy)) / aspect;
+  const w = Math.max(12, Math.abs(dx) * aspect >= Math.abs(dy) ? wx : wy), hh = w * aspect;
+  return { x: west ? b.x + b.w - w : b.x, y: north ? b.y + b.h - hh : b.y, w, h: hh };
+}
+
+// Drag the selected image (a corner handle `h` resizes it) once the pointer
+// has travelled `threshold` px; a move is kept inside the page.
+function dragImage(pk, e, h, threshold) {
+  const x0 = e.clientX, y0 = e.clientY, from = { ...pk.box };
+  const W = pk.wrap.clientWidth, H = pk.wrap.clientHeight;
+  let moved = false;
+  const onMove = (ev) => {
+    const dx = ev.clientX - x0, dy = ev.clientY - y0;
+    moved ||= Math.hypot(dx, dy) > threshold;
+    if (!moved) return;
+    pk.el.classList.add("moving");
+    pk.box = h ? resizeBox(from, h, dx, dy)
+      : { ...from, x: clamp(from.x + dx, 0, W - from.w), y: clamp(from.y + dy, 0, H - from.h) };
+    placePicked(pk);
+  };
+  const onUp = () => {
+    document.removeEventListener("pointermove", onMove);
+    pk.el.classList.remove("moving");
+    if (moved) applyImage(pk, false);
+  };
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp, { once: true });
+}
+
+// Write the selected image's new box (or remove it) into the working copy.
+async function applyImage(pk, remove) {
+  const s = pk.scale, b = pk.box;
+  const to = [b.x / s, b.y / s, (b.x + b.w) / s, (b.y + b.h) / s].map((v) => +v.toFixed(2));
+  const res = await act("editImage", { page: pk.pageNo, index: pk.index,
+    rect: JSON.stringify(pk.bbox), to_rect: remove ? "" : JSON.stringify(to) });
+  if (res && !remove) pickImage(pk.wrap, pk.index, to);
+}
+
+// ---------- edit tools: edit text / add text / add image ----------
+// Switching tool replaces the pending image: only the image tool carries one,
+// and its preview element leaves the page with it.
+function setTool(tool, image = null) {
+  unpickImage();
+  state.image?.ghost.remove();
+  state.image = image;
+  state.tool = tool;
+  for (const t of ["select", "text", "image"]) document.body.classList.toggle("tool-" + t, t === tool);
+  document.querySelectorAll("#ebTools [data-etool]").forEach((b) => b.classList.toggle("on", b.dataset.etool === tool));
+  updateEditUi();
+}
+
+// The format controls show the open editor's formatting, else the defaults
+// the next new text box starts with.
+function updateEditUi() {
+  const f = state.editing?.fmt || state.fmt;
+  $("fmtFamily").value = f.family;
+  $("fmtSize").value = f.size;
+  $("fmtColor").value = f.color;
+  $("fmtBold").classList.toggle("on", f.bold);
+  $("fmtItalic").classList.toggle("on", f.italic);
+  $("ebHint").textContent = state.editing
+    ? "Drag the frame to move · Enter adds a line · ⌘/Ctrl+Enter or click outside to apply · Esc cancels"
+    : state.picked ? "Drag to move · drag a corner to resize · Delete removes it · Esc deselects"
+    : { select: "Click text to edit or drag it to move it · click an image to move, resize or delete it",
+        text: "Click on the page where the new text should start",
+        image: "Click to place the image, or drag to size it · Esc cancels" }[state.tool];
+}
+
+function setFmt(patch, refocus = true) {
+  const ed = state.editing;
+  if (ed) { Object.assign(ed.fmt, patch); sizeEditor(ed); }
+  // New text boxes inherit whatever was last chosen for new text.
+  if (!ed || !ed.span) Object.assign(state.fmt, patch);
+  updateEditUi();
+  if (refocus) ed?.el.focus();
+}
+
+let imgDrag = null;
+function localPt(wrap, e) {
+  const r = wrap.getBoundingClientRect();
+  return { x: clamp(e.clientX - r.left, 0, r.width), y: clamp(e.clientY - r.top, 0, r.height) };
+}
+// The box the image would land in, in page px: dragged out from the press point
+// (aspect kept), or a default size with its top-left at the pointer, nudged
+// back inside the page.
+function imageBox(wrap, p, drag = imgDrag) {
+  const img = state.image, W = wrap.clientWidth, H = wrap.clientHeight;
+  if (drag?.moved) {
+    const w = Math.max(8, Math.abs(p.x - drag.x0)), h = w * img.aspect;
+    return { x: p.x < drag.x0 ? drag.x0 - w : drag.x0,
+             y: p.y < drag.y0 ? drag.y0 - h : drag.y0, w, h };
+  }
+  const s = +wrap.dataset.scale;
+  let w = Math.min(img.natW * 0.75 * s || W * 0.35, W * 0.4), h = w * img.aspect;
+  if (h > H * 0.6) { h = H * 0.6; w = h / img.aspect; }
+  return { x: Math.min(p.x, W - w), y: Math.min(p.y, H - h), w, h };
+}
+function showGhost(wrap, box) {
+  const g = state.image.ghost;
+  if (g.parentNode !== wrap) wrap.appendChild(g);
+  Object.assign(g.style, { left: box.x + "px", top: box.y + "px", width: box.w + "px", height: box.h + "px" });
+}
+
+// The picked image, with the preview element built from that same file — one
+// object, so a later pick can never show an earlier file's preview.
+function loadImage(src) {
+  return new Promise((resolve) => {
+    const ghost = document.createElement("div");
+    ghost.className = "img-ghost";
+    const im = new Image();
+    im.alt = "";
+    im.onload = () => {
+      ghost.appendChild(im);
+      resolve({ src, ghost, natW: im.naturalWidth, aspect: im.naturalHeight / im.naturalWidth || 1 });
+    };
+    // Formats the browser can't draw (TIFF…) still place fine — the preview
+    // is just the dashed outline.
+    im.onerror = () => resolve({ src, ghost, natW: 0, aspect: 1 });
+    im.src = fused.rawUrl(src);
+  });
 }
 
 // ---------- data flows ----------
@@ -1102,18 +1742,41 @@ async function applyMut(res) {
   refreshLib().catch(() => {});
 }
 
-async function mutate(action, params = {}) {
-  setStatus("working…", "busy");
-  const res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params });
-  if (res.conflict) {
-    toast("File changed on disk — reloaded the latest version", true);
-    await openDoc(state.doc);
-    setStatus("reloaded", "err");
-    return null;
-  }
-  await applyMut(res);
-  setStatus("unsaved changes", "warn");
-  return res;
+// Everything that writes the working copy (or reads it back out as a file)
+// runs through one queue, strictly in order. Each pdf.py call is its own
+// process sharing the working copy and its `.pre` undo snapshot, and applying
+// an edit is fire-and-forget from the click that closes the editor — so a
+// Save, Undo or page action clicked right after must wait for it, and must
+// read state.mtime/undoDepth only once the change before it has landed.
+let queueTail = Promise.resolve();
+let queued = 0;     // changes queued or running — page clicks wait for the re-render
+function serial(fn) {
+  queued++;
+  const run = queueTail.then(fn).finally(() => { queued--; });
+  queueTail = run.catch(() => {});   // a failed change must not stall the ones after it
+  return run;
+}
+
+function mutate(action, params = {}) {
+  return serial(async () => {
+    setStatus("working…", "busy");
+    const res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params });
+    if (res.conflict) {
+      toast("File changed on disk — reloaded the latest version", true);
+      await loadDoc(state.doc);
+      setStatus("reloaded", "err");
+      return null;
+    }
+    await applyMut(res);
+    setStatus("unsaved changes", "warn");
+    return res;
+  });
+}
+
+async function stepHistory(action, depth, status) {
+  if (!depth) return;
+  await applyMut(await py({ action, doc: state.doc }));
+  setStatus(status, "warn");
 }
 
 function updateUndoUi() {
@@ -1158,7 +1821,12 @@ function renderDocList() {
   }
 }
 
-async function openDoc(path, opts) {
+// Switching documents joins the same queue, so every change clicked before
+// the switch lands on the document it was made in, and nothing queued before
+// it can rewrite the new document's viewer state afterwards.
+const openDoc = (path, opts) => serial(() => loadDoc(path, opts));
+
+async function loadDoc(path, opts) {
   cancelEdit();
   const info = await py({ action: "open_doc", doc: path });
   if (info.encrypted) {
@@ -1170,7 +1838,7 @@ async function openDoc(path, opts) {
     const res = await py({ action: "unlock", doc: path, password: pw });
     await refreshLib();
     toast(`Unlocked copy saved as ${res.name}`);
-    return openDoc(res.path, opts);
+    return loadDoc(res.path, opts);
   }
   state.doc = info.path; state.work = info.work; state.info = info; state.mtime = info.mtime;
   state.docs = info.docs; state.dirty = !!info.dirty;
@@ -1179,6 +1847,7 @@ async function openDoc(path, opts) {
   dropInspect();
   setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
   $("docName").textContent = info.name;
+  document.title = info.name;
   // Read-only original (§13.5): viewing and working-copy edits (rotate, text,
   // undo/redo, revert, export, save-a-copy) stay fully allowed — only writes
   // back to the original (Save, Rename) are blocked.
@@ -1199,16 +1868,18 @@ async function openDoc(path, opts) {
     Object.assign({ default: fused.params.get("_file") || "" }, opts));
   updateUndoUi();
   renderDocList();
-  await renderAll();
+  await renderAll({ fresh: true });
 }
 
 function clearOpenDoc() {
   cancelEdit();
+  unpickImage();
   dropInspect();
   renderGen++;
   state.doc = ""; state.pdf?.destroy(); state.pdf = null;
   $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
   $("docName").textContent = ""; $("docPages").textContent = "";
+  document.title = "PDF";
   // Absent `doc` already means "nothing open" — don't add `doc=` to say it.
   // (`doc` is a path, not a true default: there is no value worth stamping.)
   fused.params.set("doc", "", { default: "" });
@@ -1230,7 +1901,7 @@ const acts = {
   openDoc: (path) => openDoc(path),
 
   addPdf: async () => {
-    const src = await browseModal({ title: "Add a PDF" });
+    const src = await pickFile({ title: "Add a PDF" });
     if (!src) return;
     const res = await py({ action: "add_to_library", src });
     await refreshLib();
@@ -1251,8 +1922,8 @@ const acts = {
       return toast("The file is read-only — it can't be renamed", true);
     const name = await dialog({ title: "Rename PDF", value: d.name, okText: "Rename" });
     if (!name || name === d.name) return;
-    const res = await py({ action: "rename_doc", doc: d.path, name });
-    if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; }
+    const res = await serial(() => py({ action: "rename_doc", doc: d.path, name }));
+    if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; document.title = res.name; }
     await refreshLib();
   },
   removeDoc: async (d) => {
@@ -1266,20 +1937,22 @@ const acts = {
     if (state.doc === d.path) {
       // Clear the removed doc first so a failed open of the next one (missing/
       // encrypted) leaves an empty viewer, not the just-removed file.
-      clearOpenDoc();
-      if (state.docs.length) await openDoc(state.docs[0].path);
+      await serial(async () => {
+        clearOpenDoc();
+        if (state.docs.length) await loadDoc(state.docs[0].path);
+      });
     }
   },
   save: async () => {
     needDoc();
     if (!state.writable)  // also covers the Ctrl+S path (keydown → act("save"))
       return toast("The file is read-only — edits can't be saved back to it. Use Save a copy.", true);
-    let res = await py({ action: "save", doc: state.doc });
+    let res = await serial(() => py({ action: "save", doc: state.doc }));
     if (res.conflict) {
       const ok = await dialog({ title: "Overwrite changed file?", input: false, danger: true, okText: "Overwrite",
         message: "The file on disk changed after you opened it. Saving replaces those changes with yours." });
       if (!ok) return;
-      res = await py({ action: "save", doc: state.doc, force: 1 });
+      res = await serial(() => py({ action: "save", doc: state.doc, force: 1 }));
     }
     state.dirty = false;
     setStatus("saved", "ok");
@@ -1291,43 +1964,33 @@ const acts = {
     const ok = await dialog({ title: "Revert to saved?", input: false, danger: true, okText: "Revert",
       message: "Unsaved changes to this document are discarded." });
     if (!ok) return;
-    const res = await py({ action: "revert", doc: state.doc });
-    await applyMut(res);
+    await serial(async () => applyMut(await py({ action: "revert", doc: state.doc })));
     setStatus("reverted", "ok");
   },
   saveAs: async () => {
     needDoc();
-    const picked = await browseModal({ title: "Save a copy", okText: "Save",
-      pickDir: true, filename: state.info.name, start: "~" });
+    const picked = await saveModal({ title: "Save a copy", filename: state.info.name });
     if (!picked) return;
-    const res = await py({ action: "save_as", doc: state.doc, directory: picked.dir, name: picked.name });
+    const res = await serial(() => py({ action: "save_as", doc: state.doc, directory: picked.dir, name: picked.name }));
     toast(`Saved to ${res.file}`);
   },
 
-  undo: async () => {
+  // The depth is read inside the queue: an edit still being applied is what
+  // the reader expects Undo to take back.
+  undo: () => { needDoc(); return serial(() => stepHistory("undo", state.undoDepth, "undone — unsaved")); },
+  redo: () => { needDoc(); return serial(() => stepHistory("redo", state.redoDepth, "redone — unsaved")); },
+  editTextHint: () => { setMode("edit"); setTool("select"); },
+  commitEdit: (params) => mutate("edit_text", params),
+  addText: () => { needDoc(); setMode("edit"); setTool("text"); },
+  insertText: (params) => mutate("add_text", params),
+  addImage: async () => {
     needDoc();
-    if (!state.undoDepth) return;
-    const res = await py({ action: "undo", doc: state.doc });
-    await applyMut(res);
-    setStatus("undone — unsaved", "warn");
+    setMode("edit");
+    const src = await pickFile({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff" });
+    setTool(src ? "image" : "select", src ? await loadImage(src) : null);
   },
-  redo: async () => {
-    needDoc();
-    if (!state.redoDepth) return;
-    const res = await py({ action: "redo", doc: state.doc });
-    await applyMut(res);
-    setStatus("redone — unsaved", "warn");
-  },
-  editTextHint: () => toast("Click any line of text on a page to edit it in place"),
-  commitEdit: async ({ pageNo, span, val }) => {
-    setStatus("editing…", "busy");
-    const res = await mutate("edit_text", {
-      page: pageNo, bbox: JSON.stringify(span.bbox), origin: JSON.stringify(span.origin),
-      old_text: span.text, new_text: val, font: span.font, size: String(span.size),
-      flags: span.flags, color: JSON.stringify(span.color),
-    });
-    if (res && res.used_size < span.size) toast(`Text shrunk to ${res.used_size}pt to fit the line`);
-  },
+  placeImage: ({ pageNo, rect }) => mutate("add_image", { page: pageNo, rect: JSON.stringify(rect), src: state.image.src }),
+  editImage: (params) => mutate("edit_image", params),
 
   rotateL: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: -90 }),
   rotateR: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: 90 }),
@@ -1423,8 +2086,8 @@ const acts = {
     const opt = await exportModal(typeof kind === "string" ? kind : "");
     if (!opt) return;
     setStatus("exporting…", "busy");
-    const res = await py({ action: "export", doc: state.doc, kind: opt.kind,
-      pages: opt.pages, name: opt.name, directory: opt.dir });
+    const res = await serial(() => py({ action: "export", doc: state.doc, kind: opt.kind,
+      pages: opt.pages, name: opt.name, directory: opt.dir }));
     setStatus("exported", "ok");
     await resultModal({ title: "Export complete",
       note: `${res.files.length} file${res.files.length === 1 ? "" : "s"} saved to ${res.dir}.`,
@@ -1446,7 +2109,7 @@ const acts = {
       files: [res], dir: res.dir });
   },
   removePassword: async () => {
-    const src = await browseModal({ title: "Choose the password-protected PDF" });
+    const src = await pickFile({ title: "Choose the password-protected PDF" });
     if (!src) return;
     // openDoc prompts for the password and saves the unlocked copy.
     await openDoc(src);
@@ -1477,7 +2140,7 @@ const acts = {
     await resultModal({ title: "Word document created", files: [res], dir: res.dir });
   },
   fromWord: async () => {
-    const src = await browseModal({ title: "Choose a Word document", exts: ".docx" });
+    const src = await pickFile({ title: "Choose a Word document", exts: ".docx" });
     if (!src) return;
     setStatus("converting…", "busy");
     const res = await py({ action: "word_to_pdf", src });
@@ -1487,7 +2150,7 @@ const acts = {
     toast(`Created ${res.name}${res.via === "libreoffice" ? "" : " (text-level conversion — install LibreOffice for full fidelity)"}`);
   },
   fromExcel: async () => {
-    const src = await browseModal({ title: "Choose an Excel workbook", exts: ".xlsx,.xlsm" });
+    const src = await pickFile({ title: "Choose an Excel workbook", exts: ".xlsx,.xlsm" });
     if (!src) return;
     setStatus("converting…", "busy");
     const res = await py({ action: "excel_to_pdf", src });
@@ -1510,8 +2173,7 @@ const acts = {
   scan: async () => {
     const caps = await scanModal();
     if (!caps || !caps.length) return;
-    const picked = await browseModal({ title: "Save the scan", okText: "Save",
-      pickDir: true, filename: "scan.pdf", start: "~" });
+    const picked = await saveModal({ title: "Save the scan", filename: "scan.pdf" });
     if (!picked) return;
     setStatus("saving scan…", "busy");
     const res = await py({ action: "save_scan", images_b64: JSON.stringify(caps),
@@ -1542,8 +2204,8 @@ const acts = {
     toast("Markdown copied");
   },
   mdSave: async () => {
-    const picked = await browseModal({ title: "Save Markdown", okText: "Save", pickDir: true,
-      filename: state.info.name.replace(/\.pdf$/i, "") + ".md", start: docDir(), exts: ".md" });
+    const picked = await saveModal({ title: "Save Markdown",
+      filename: state.info.name.replace(/\.pdf$/i, "") + ".md" });
     if (!picked) return;
     const res = await py({ action: "save_markdown", doc: state.doc, pages: state.md.spec,
       text: state.md.markdown,
@@ -1566,7 +2228,7 @@ const acts = {
 
 async function act(name, arg) {
   try {
-    await acts[name]?.(arg);
+    return await acts[name]?.(arg);
   } catch (err) {
     // A superseded pdf.js render (fast rotate/zoom, hidden pane) is not a
     // user-facing failure — the newer render already owns the canvas.
@@ -1615,7 +2277,7 @@ async function mergeModal() {
   addRow(state.doc, state.doc.split("/").pop() + " (current)", true);
   for (const d of state.docs) if (d.path !== state.doc && !d.missing) addRow(d.path, d.name, false);
   m.el.querySelector("#mgBrowse").onclick = async () => {
-    const src = await browseModal({ title: "Add a PDF to the merge" });
+    const src = await pickFile({ title: "Add a PDF to the merge" });
     if (src) addRow(src, src.split("/").pop(), true);
   };
   m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
@@ -1757,7 +2419,7 @@ async function imagesModal() {
     });
   }
   m.el.querySelector("#imBrowse").onclick = async () => {
-    const src = await browseModal({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" });
+    const src = await pickFile({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" });
     if (src) { sources.push(src); render(); }
   };
   m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
@@ -2165,7 +2827,9 @@ const icoRotL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const icoRotR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v5h-5"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>`;
 const icoTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>`;
 const icoExtract = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></svg>`;
+const icoMove = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/></svg>`;
 const icoPen = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+const icoUp = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>`;
 const icoDir = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
 const icoFile = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>`;
 const icoDown = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`;
@@ -2195,6 +2859,7 @@ $("modeSeg").addEventListener("click", (e) => {
   setMode(b.dataset.mode);
 });
 function setMode(mode) {
+  if (mode === "view") { finishEdit(); setTool("select"); }
   document.body.classList.toggle("mode-view", mode === "view");
   document.body.classList.toggle("mode-edit", mode !== "view");
   document.querySelectorAll("#modeSeg [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
@@ -2238,13 +2903,104 @@ $("pages").addEventListener("click", (e) => {
     act({ rotL: "rotateL", rotR: "rotateR", extract: "extractPages", del: "deletePage" }[qa.dataset.qa], n);
     return;
   }
-  if (!document.body.classList.contains("mode-edit")) return;
-  const ts = e.target.closest(".tspan");
-  if (ts) {
-    const pt = state.spans[n];
-    startEdit(wrap, pt.spans[+ts.dataset.i]);
+  if (!document.body.classList.contains("mode-edit") || state.tool === "image") return;
+  if (swallowClick) { swallowClick = false; return; }
+  if (queued) return toast("Still applying the last change…");
+  if (state.tool === "text") {
+    if (!e.target.closest(".overlay")) return;
+    openEditor(wrap, { at: localPt(wrap, e) });
+    setTool("select");
   }
 });
+
+// Edit-text tool: pressing on a line opens it; dragging it moves it.
+$("pages").addEventListener("pointerdown", (e) => {
+  const ts = e.target.closest(".tspan");
+  if (!ts || e.button !== 0 || state.tool !== "select" || swallowClick) return;
+  if (queued) return toast("Still applying the last change…");
+  e.preventDefault();
+  const wrap = ts.closest(".pdf-page");
+  const ed = openEditor(wrap, { span: state.spans[+wrap.dataset.page].spans[+ts.dataset.i] });
+  if (ed) dragEditor(ed, e, 4);
+});
+
+// Edit-text tool: pressing on a placed image selects it; dragging moves it.
+$("pages").addEventListener("pointerdown", (e) => {
+  const ti = e.target.closest(".timg");
+  if (!ti || e.button !== 0 || state.tool !== "select" || swallowClick) return;
+  if (queued) return toast("Still applying the last change…");
+  e.preventDefault();
+  const wrap = ti.closest(".pdf-page"), i = +ti.dataset.i;
+  const pk = pickImage(wrap, i, state.spans[+wrap.dataset.page].images[i]);
+  if (pk) dragImage(pk, e, "", 3);
+});
+
+// Clicking anywhere outside the open editor applies it (the edit bar's format
+// controls excepted — they restyle it). The click that did so is swallowed so
+// it doesn't also open another editor underneath.
+let swallowClick = false;
+document.addEventListener("pointerdown", (e) => {
+  swallowClick = false;
+  if (state.picked && !state.picked.el.contains(e.target)) unpickImage();
+  const ed = state.editing;
+  if (!ed || ed.box.contains(e.target) || e.target.closest("#editbar")) return;
+  finishEdit();
+  if (e.target.closest("#pages")) swallowClick = true;
+}, true);
+
+// Add-image tool: a preview follows the pointer; click drops it at a default
+// size, drag sizes it.
+$("pages").addEventListener("pointermove", (e) => {
+  if (state.tool !== "image" || !state.image) return;
+  const wrap = imgDrag?.wrap || e.target.closest(".pdf-page");
+  if (!wrap || !wrap.dataset.page) return;
+  const p = localPt(wrap, e);
+  if (imgDrag && Math.hypot(p.x - imgDrag.x0, p.y - imgDrag.y0) > 6) imgDrag.moved = true;
+  showGhost(wrap, imageBox(wrap, p));
+});
+$("pages").addEventListener("pointerdown", (e) => {
+  if (state.tool !== "image" || !state.image || e.button !== 0) return;
+  const wrap = e.target.closest(".pdf-page");
+  if (!wrap || !wrap.dataset.page || e.target.closest(".qa")) return;
+  e.preventDefault();
+  const p = localPt(wrap, e);
+  imgDrag = { wrap, x0: p.x, y0: p.y, moved: false };
+  wrap.setPointerCapture(e.pointerId);
+});
+$("pages").addEventListener("pointerup", (e) => {
+  const drag = imgDrag;
+  imgDrag = null;
+  if (!drag || state.tool !== "image" || !state.image) return;
+  if (queued) return toast("Still applying the last change…");
+  const pageNo = +drag.wrap.dataset.page;
+  if (!pageEditable(pageNo)) return;
+  const { x, y, w, h } = imageBox(drag.wrap, localPt(drag.wrap, e), drag);
+  const s = +drag.wrap.dataset.scale;
+  const rect = [x / s, y / s, (x + w) / s, (y + h) / s].map((v) => +v.toFixed(2));
+  // The new image comes in selected, ready to be moved or resized.
+  act("placeImage", { pageNo, rect }).then((res) => {
+    setTool("select");
+    if (res) pickImage(drag.wrap, res.image.index, res.image.bbox);
+  });
+});
+$("pages").addEventListener("pointerleave", () => { if (!imgDrag) state.image?.ghost.remove(); });
+
+$("ebTools").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-etool]");
+  if (!b) return;
+  finishEdit();
+  if (b.dataset.etool === "image") act("addImage");
+  else setTool(b.dataset.etool);
+});
+$("fmtFamily").addEventListener("change", (e) => setFmt({ family: e.target.value }));
+$("fmtSize").addEventListener("change", (e) => {
+  setFmt({ size: clamp(+e.target.value || 12, 4, 144) });
+});
+// Live preview while the picker is open; focus returns to the text once it closes.
+$("fmtColor").addEventListener("input", (e) => setFmt({ color: e.target.value }, false));
+$("fmtColor").addEventListener("change", (e) => setFmt({ color: e.target.value }));
+$("fmtBold").addEventListener("click", () => setFmt({ bold: !(state.editing?.fmt || state.fmt).bold }));
+$("fmtItalic").addEventListener("click", () => setFmt({ italic: !(state.editing?.fmt || state.fmt).italic }));
 
 $("thumbs").addEventListener("click", (e) => {
   const t = e.target.closest(".thumb");
@@ -2261,6 +3017,12 @@ $("thumbs").addEventListener("click", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (state.editing || e.target.closest(".modal")) return;
+  if (e.key === "Escape" && state.tool !== "select") { setTool("select"); return; }
+  if (e.target.closest("#editbar input, #editbar select")) return;
+  if (state.picked && e.key === "Escape") { unpickImage(); return; }
+  if (state.picked && (e.key === "Delete" || e.key === "Backspace")) {
+    e.preventDefault(); applyImage(state.picked, true); return;
+  }
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); act("undo"); }
   else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); act("redo"); }
@@ -2290,7 +3052,7 @@ async function boot() {
       libP.catch(() => {});
       $("boot").innerHTML = "";
       const msg = document.createElement("div");
-      msg.innerHTML = `<b>PDF Studio needs its Python engines.</b><br>
+      msg.innerHTML = `<b>The PDF editor needs its Python engines.</b><br>
         pymupdf and pikepdf are declared in this template's
         <code style="font-family:var(--mono)">pyproject.toml</code>, so the app
         normally installs them into this folder's environment the first time you
@@ -2322,7 +3084,7 @@ async function boot() {
     $("boot").remove();
   } catch (err) {
     console.error(err);
-    $("boot").textContent = `PDF Studio failed to start: ${err?.message || err}`;
+    $("boot").textContent = `The PDF editor failed to start: ${err?.message || err}`;
     return;
   }
   // A bookmarked ?inspect=1 reopens the drawer on the document it was taken on.

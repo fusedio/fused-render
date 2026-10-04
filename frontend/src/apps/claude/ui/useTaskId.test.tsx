@@ -308,8 +308,8 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
   // this menu owns no vocabulary of the annotation subsystem's.
   expect(src).toContain("locked?: boolean");
   expect(src).toContain("lockedReason?: string");
-  const items = src.split("<DropdownMenuItem").slice(2);
-  expect(items).toHaveLength(2); // Archive and Delete; the terminal item is neither
+  const items = src.split("<DropdownMenuItem").slice(3);
+  expect(items).toHaveLength(2); // Archive and Delete; the terminal/copy items are neither
   for (const item of items) {
     const head = item.slice(0, item.indexOf("</DropdownMenuItem>"));
     // A run is still named first — it is the refusal the reader cannot lift

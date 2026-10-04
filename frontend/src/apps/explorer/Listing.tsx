@@ -1009,6 +1009,7 @@ export default function Listing({
       folder: own.folder,
       open: [
         ...(own.open ?? []),
+        ...appRows.terminal,
         ...(ownsBarChrome ? splitItems((dir) => enterPanel(base, dir)) : []),
       ],
       copy: own.copy,

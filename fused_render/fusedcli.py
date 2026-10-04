@@ -145,10 +145,10 @@ def _pinned_fused_version() -> str | None:
     pyproject.toml.
 
     The optional `[...]` extras group must be matched and stripped, not just
-    the bare name: `[bundled]`/`[fused]` pin `fused[ai,aws]==...` (openfused
-    #(2.9.3b9) moved `anthropic`/`boto3`/`pyarrow`/`pyjwt[crypto]` behind those
-    extras, so a bare `fused==` pin no longer builds a working DMG venv — see
-    the pyproject.toml comment on that line). A plain `startswith("fused==")`
+    the bare name: `[bundled]`/`[fused]` pin `fused[aws,mcp]==...` (since fused
+    2.9.3b9/b10, boto3, pyarrow, `pyjwt[crypto]` and mcp sit behind those extras,
+    so a bare `fused==` pin no longer builds a working DMG venv or a startable
+    `fused app serve`; the pyproject.toml comment on that line has the detail). A plain `startswith("fused==")`
     check would silently stop matching the moment extras were added, turning
     this drift check into a permanent no-op with no failing test — exactly the
     class of defect `test_the_pin_is_discoverable_at_runtime` exists to catch.

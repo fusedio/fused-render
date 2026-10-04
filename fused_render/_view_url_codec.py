@@ -62,6 +62,25 @@ def embed_url_path(fs_path: str) -> str:
     return "/explorer/embed/" + "/".join(segments)
 
 
+def explorer_view_path(fs_path: str) -> str:
+    """Explorer view URL path for ANY fs path, a `.fused` included — the
+    shell chrome kept. `view_url_path` sends a `.fused` to its embed (an OS
+    open is a run, not an edit); a native app window's Edit button asks for
+    the explorer on purpose, whatever the file is."""
+    norm = canonical_fs_path(fs_path)
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/explorer/view/" + "/".join(segments)
+
+
+def app_page_path(folder: str) -> str:
+    """The shell's app page for an app folder — `/apps/<segments>`, encoded
+    exactly as the frontend's `appPageUrl` (shell/current-apps-lib.ts) does,
+    so a window opened here and a sidebar row point at one address."""
+    norm = canonical_fs_path(folder)
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/apps/" + "/".join(segments)
+
+
 def view_url(port: int, fs_path: str | None) -> str:
     """Full local URL for an absolute fs path; home page when fs_path is None."""
     if not fs_path:

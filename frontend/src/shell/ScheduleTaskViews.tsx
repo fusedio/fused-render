@@ -108,6 +108,7 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  SHOW_PAGE_DOOR,
   parseLaneChoices,
   parseListMemory,
   laneCountLabel,
@@ -3919,7 +3920,7 @@ function TaskNode({
             its press re-opens the card — so a door there would be a promise
             nothing can keep. `page` is null on a row whose folder is gone for
             the same reason (the toast already says so). */}
-        {peekOn && page && !openDraft && (
+        {SHOW_PAGE_DOOR && peekOn && page && !openDraft && (
           <a
             className="tasks-act tasks-act--page"
             href={page}
@@ -5817,7 +5818,7 @@ function TaskCard({
               act, same glyph, same caption (design.md, Round 3). A SIBLING of
               the card rather than a child, because the card IS a button; that
               is what this wrapper has always been for. */}
-          {peekOn && page && !isDraftTask(task) && (
+          {SHOW_PAGE_DOOR && peekOn && page && !isDraftTask(task) && (
             <a
               className="tasks-act tasks-card-act tasks-act--page"
               href={page}

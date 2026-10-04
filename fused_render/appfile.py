@@ -577,6 +577,105 @@ def _make_read_only(root: str) -> None:
                 continue
 
 
+def shared_dot_fused_dir(app_id: str) -> str:
+    """Where an app id's shared ``.fused`` state lives (whether or not it
+    exists yet): ``<home>/fused_data/<app_id>``. ``app_id`` must have passed
+    ``app_identity.is_valid`` — the regex admits nothing but ``[a-z0-9-]``,
+    so it is safe as a path segment."""
+    from fused_render.shell import storage
+
+    return os.path.join(storage.home_dir(), "fused_data", app_id)
+
+
+def _is_dot_fused_scaffold(dot: str) -> bool:
+    """Whether a ``.fused`` dir holds nothing an app saved: empty, or only
+    what ``app_fused_dir.ensure`` creates on open (``meta.json``, empty
+    ``data`` and ``cache``)."""
+    for name in os.listdir(dot):
+        p = os.path.join(dot, name)
+        if os.path.islink(p):
+            return False
+        if name == "meta.json" and os.path.isfile(p):
+            continue
+        if name in ("data", "cache") and os.path.isdir(p) and not os.listdir(p):
+            continue
+        return False
+    return True
+
+
+def _link_dot_fused(app_dir: str, app_id: str) -> str:
+    """Point ``<extract>/.fused`` at the shared per-app-id dir and answer
+    that dir. Raises OSError.
+
+    Every extract of one app (a re-export changes the file's bytes, so it
+    lands in a fresh content-addressed dir) shares ``fused_data/<app_id>``:
+    the state an app saved next to itself (``.fused/data``, D548) follows the
+    app across updates. This is what lets a re-downloaded ``.fused`` (DL-8)
+    replace the app's FILES while keeping everything inside ``.fused``. Port
+    of Render App's ``_link_dot_fused`` (fused-render-lite PR #32).
+
+    An extract that already holds a REAL ``.fused`` dir (made before this
+    linking existed) is migrated: its contents move into the shared dir when
+    that holds no saved state yet (empty, or only the scaffold a first open
+    of another extract made), else the local dir is deleted (the shared state
+    wins), and the link goes in its place either way.
+
+    ``app_fused_dir.ensure`` then runs through the link on render exactly as
+    before and scaffolds ``data``/``cache``/``meta.json`` in the shared dir.
+    Its move-witness sees a second extract as a COPY of the first (the first
+    extract dir still exists), so the record is left alone.
+    """
+    target = shared_dot_fused_dir(app_id)
+    os.makedirs(target, exist_ok=True)
+    dot = os.path.join(app_dir, ".fused")
+    if os.path.islink(dot):
+        if os.readlink(dot) == target:
+            return target
+        os.unlink(dot)
+    elif os.path.isdir(dot):
+        if _is_dot_fused_scaffold(target):
+            # Nothing saved in the shared dir yet (it may hold only what a
+            # first open of ANOTHER extract scaffolded): the local state is
+            # the real one, move it in.
+            shutil.rmtree(target)
+            os.makedirs(target)
+            for name in os.listdir(dot):
+                shutil.move(os.path.join(dot, name), os.path.join(target, name))
+            os.rmdir(dot)
+        else:
+            shutil.rmtree(dot)  # the shared state wins; the local copy goes
+    elif os.path.lexists(dot):
+        os.unlink(dot)  # a stray file or dangling link
+    try:
+        os.symlink(target, dot, target_is_directory=True)
+    except FileExistsError:
+        # a concurrent open of the same extract won the race
+        if not (os.path.islink(dot) and os.readlink(dot) == target):
+            raise
+    except OSError:
+        if os.name != "nt":
+            raise
+        # Windows: a symlink needs Developer Mode or admin; a directory
+        # junction needs neither and reads the same for every caller here.
+        import _winapi
+
+        _winapi.CreateJunction(target, dot)
+    return target
+
+
+def _share_dot_fused(app_dir: str, manifest: dict) -> None:
+    """Best-effort: link the extract's ``.fused`` to the shared per-app-id
+    dir when the file declares an id. A failure leaves the state local to
+    the extract, as before — it must never stop the app from opening."""
+    app_id = app_id_of(manifest)
+    if app_id is None:
+        return
+    try:
+        _link_dot_fused(app_dir, app_id)
+    except OSError:
+        pass
+
+
 def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     """Extract the ``.fused`` file into the content-addressed cache (re-using
     a prior extract of the same bytes) and return
@@ -615,6 +714,12 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     entry_abs = os.path.join(dest, *entry_rel.split("/"))
     if os.path.isdir(dest):
         if os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs):
+            # An extract made before the shared-state link existed still holds
+            # a real .fused dir: link it now (its contents move into the shared
+            # dir when that is still empty). Previews skip it — they must not
+            # touch the cache (D396).
+            if not reuse_only:
+                _share_dot_fused(dest, manifest)
             return {"dir": dest, "entry": entry_abs, "name": name, "reused": True,
                     "exported_at": exported_at(manifest), "app_id": app_id_of(manifest)}
         if reuse_only:
@@ -669,6 +774,10 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
             # same content key, so the winner's extract is ours too.
             if not (os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs)):
                 raise AppFileError(f"could not place the extracted app at {dest}")
+        # Files are read-only now, the dirs are not: the .fused link goes in
+        # beside them. Every extract of this app id shares one state dir, so
+        # a re-export (new bytes, new extract) keeps what the app saved.
+        _share_dot_fused(dest, manifest)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {"dir": dest, "entry": entry_abs, "name": name, "reused": False,

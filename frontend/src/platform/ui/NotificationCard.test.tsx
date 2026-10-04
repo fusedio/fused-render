@@ -92,6 +92,41 @@ test("terminal renders its glyph even when there is no status text to go with it
   expect(findAll(noTerminal, "dl-status")).toHaveLength(0);
 });
 
+// status-popovers item 7: a caption-less row (most repo rows) has no
+// `.dl-eyebrow` line at all to put `age` on — it used to draw there alone,
+// wasting a whole line above the title. `age` now moves inline onto the
+// title line itself for exactly that case.
+test("age with no caption draws inline on the title line, not on its own eyebrow line", () => {
+  const tree = render({ title: "a", age: "3d" });
+  expect(findAll(tree, "dl-eyebrow")).toHaveLength(0);
+  const inline = findAll(tree, "dl-row-age-inline");
+  expect(inline).toHaveLength(1);
+  expect(inline[0].children).toEqual(["3d"]);
+  // the inline age lives inside the head line alongside the title, not in a
+  // line of its own above it
+  expect(findAll(tree, "dl-row-head").some((n) => findAll(n, "dl-row-age-inline").length > 0)).toBe(
+    true,
+  );
+});
+
+test("age with a caption keeps the existing eyebrow-line placement, right-aligned beside the caption", () => {
+  const tree = render({ title: "a", caption: "Playground", age: "3d" });
+  const eyebrows = findAll(tree, "dl-eyebrow");
+  expect(eyebrows).toHaveLength(1);
+  expect(findAll(eyebrows[0], "dl-origin-text")[0].children).toEqual(["Playground"]);
+  expect(findAll(eyebrows[0], "dl-row-age")[0].children).toEqual(["3d"]);
+  // no inline-on-the-title-line variant when there's a caption to share the
+  // eyebrow line with
+  expect(findAll(tree, "dl-row-age-inline")).toHaveLength(0);
+});
+
+test("no caption and no age draws neither an eyebrow line nor an inline age", () => {
+  const tree = render({ title: "a" });
+  expect(findAll(tree, "dl-eyebrow")).toHaveLength(0);
+  expect(findAll(tree, "dl-row-age")).toHaveLength(0);
+  expect(findAll(tree, "dl-row-age-inline")).toHaveLength(0);
+});
+
 test("an explicit `role` sets the row's aria role, distinct from rowClick's own implicit button role (finding #3)", () => {
   const alert = render({ title: "a", role: "alert" });
   expect(findAll(alert, "dl-row")[0].props.role).toBe("alert");

@@ -30,6 +30,9 @@ def _clean_state(monkeypatch):
     next."""
     monkeypatch.setattr(git_upstream, "_checked", {})
     monkeypatch.setattr(git_upstream, "_state", {})
+    # This file pins the pre-auto-sync behaviour (the Update card, silent
+    # failures); tests/test_git_auto_sync.py covers the setting-on side.
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
     # Drain, don't release (C2, FIXES-round-1.md): this file's own tests
     # exercise `note_app_opened(..., _runner=_sync)` and require the
     # process-wide `_check_slot` to be free the moment they call it — a

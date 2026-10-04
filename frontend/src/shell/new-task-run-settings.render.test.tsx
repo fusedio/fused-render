@@ -278,24 +278,33 @@ test("an edit opens on the model the task was saved with", async () => {
   expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Sonnet", "High"]);
 });
 
-// ── THE OTHER HALF: the card WRITES the global pair too ────────────────────
+// ── THE OTHER HALF: the card never WRITES the global pair ──────────────────
 //
-// One value, two surfaces (Akshil, 2026-09-21, after testing #1281: "I don't
-// see this being followed"). The card's dropdowns and the Explorer composer's
-// pills for a chat with no session are two editors of the same setting —
-// `~/.claude/settings.json`'s `model` / `effortLevel` — so a pick here has to
-// reach the file, and a pick THERE has to reach an open card.
+// A pick on the card is that task's pick (Akshil, 2026-10-01, reversing
+// 2026-09-21's "one value, two surfaces"): `~/.claude/settings.json` is edited
+// from the Claude config page and nowhere else. The card still OPENS on the
+// global and follows it while a field is untouched.
 
-test("picking on a new task card writes the global setting", async () => {
+test("picking on a new task card never writes the global setting", async () => {
   const sent: Sent[] = [];
   const b = await openCard({}, sent);
   await pick(b, "Model", "Opus");
   await pick(b, "Thinking", "Max");
+  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Opus", "Max"]);
+  expect(sent.filter((s) => s.url === "/api/claude-sessions/defaults")).toEqual([]);
+});
 
-  const puts = sent.filter((s) => s.url === "/api/claude-sessions/defaults");
-  // PER FIELD, and one field per write: moving Thinking must not restate the
-  // model, or the two dropdowns become one value with two names.
-  expect(puts.map((p) => p.body)).toEqual([{ model: "opus" }, { effort: "max" }]);
+test("a field the reader picked stops following the global; an untouched one still does", async () => {
+  const b = await openCard({}, []);
+  await pick(b, "Model", "Opus");
+  const store = await import("@platform/lib/claude-defaults");
+  await act(async () => {
+    store.applyClaudeDefaultsBroadcast(
+      store.CLAUDE_DEFAULTS_BROADCAST_KEY,
+      JSON.stringify({ model: "haiku", effort: "high" }),
+    );
+  });
+  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Opus", "High"]);
 });
 
 test("a change made on another surface reaches an open card", async () => {

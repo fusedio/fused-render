@@ -126,15 +126,41 @@ The loop, per configured root (`index_routes.scan_roots(load_config())`):
    dropped by the kernel. It is the only time-based trigger left, and it is
    a floor, not the mechanism.
 
-### 3.2 Linux shallow fallback
+### 3.2 The watcher process, the pruned watch, and the shallow fallback
 
-`watchfiles` has no depth limit — `recursive` is all-or-nothing. When the
-recursive open fails with the watch-limit error, open **non-recursive**
-watches on the root and on each of its immediate non-ignored subdirectories
-(a few hundred watches, well under any default). That still catches
-`~/Downloads/foo.dmg` and `~/a.txt`; deeper changes fall to the periodic
-rescan. Implement this as a list of paths passed to one `watch(...)` call
-with `recursive=False`. Log the degraded mode once.
+`watchfiles` runs in a child process per root
+(`python -m fused_render.index.watcher <spec>`), never in the server.
+`RustNotify` sets its watches up with the GIL held, and a recursive watch
+walks every directory under the root, so in-process it freezes every server
+thread for the length of that walk — uvicorn's startup included. The child
+writes JSON lines (`changes`, `log`, `error`) to stdout;
+`index_watch._process_source` turns them back into `watchfiles.watch`-shaped
+batches plus a 5 s empty tick, so `WatchLoop` is unchanged. The child exits
+on stdin EOF, which ties it to the server's lifetime; the server also closes
+its stdin, then terminates it, whenever the source ends. It is spawned with
+`close_fds=False` so CPython uses `posix_spawn`: a fork of a server with
+PROJ loaded dies with SIGSEGV before exec. Python's fds are non-inheritable,
+so the child still gets only its two pipes, not the listening socket.
+
+The child watches the indexed tree, not the whole root. `plan_watch` walks
+the root with the scan's own descent rule (`scan.keep_subdirs`, the root's
+device only, leaf dirs never entered, the index dir never) and watches each
+topmost fully-indexed directory recursively and every directory above one
+non-recursively. On a real `~` this is ~84k directories against the ~1.19M
+a recursive watch of `~` walks (past the default 524288 inotify limit on
+its own), planned in ~1 s. A plan goes stale when a directory appears where
+it would classify differently — a new folder under a non-recursive watch, or
+an ignored folder, leaf dir or directory symlink created inside a recursive
+one — and the child re-plans after a 2 s settle.
+
+When the watch fails with the watch-limit error (inotify's `ENOSPC`, which
+`watchfiles` surfaces as a bare `OSError` "OS file watch limit reached"),
+the child falls back to **non-recursive** watches on the root and each of
+its kept children. That still catches `~/Downloads/foo.dmg` and `~/a.txt`;
+deeper changes fall to the periodic rescan. The degraded mode is logged
+once, naming `fs.inotify.max_user_watches`. Only a new kept folder directly
+under the root makes the shallow plan stale; one deeper would re-plan into
+the same watches.
 
 ### 3.3 Ignore rules
 

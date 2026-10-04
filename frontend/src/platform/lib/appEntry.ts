@@ -37,7 +37,8 @@
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
 import { type AppInfo } from "./api";
-import { navigate, urlForFsPath } from "./router";
+import { openAppWindow } from "./native-window";
+import { IS_NATIVE_WINDOW, navigate, urlForFsPath } from "./router";
 
 // The ONE ordering every app grid uses (/home's strip, the /apps hub):
 // recently-OPENED desc; an app never opened falls back to its modified time,
@@ -131,6 +132,14 @@ export function hrefFor(app: AppInfo): string {
 
 export function openApp(app: AppInfo): void {
   const { path, opts } = openTargetFor(app);
+  // Inside a macOS native window the app runs in a window of its own
+  // (native-window.ts); the server picks the landing (its entry as an
+  // embed), so the folder is what it is asked for. In place only if that
+  // window cannot be had.
+  if (IS_NATIVE_WINDOW) {
+    void openAppWindow(app.path).then((ok) => ok || navigate(path, opts));
+    return;
+  }
   navigate(path, opts);
 }
 
