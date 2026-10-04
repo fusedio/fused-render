@@ -125,7 +125,7 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
   const [language, setLanguage] = useState(() => readParam("lang") ?? AUTO);
   const [instruct, setInstruct] = useState("");
   const [refAudio, setRefAudio] = useState<string | null>(() => readParam("ref"));
-  const [refText, setRefText] = useState("");
+  const [refText, setRefText] = useState(() => readParam("reftext") ?? "");
   const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
   const [run, setRun] = useState<Run | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -138,10 +138,11 @@ export function SpeechStage({ model, entry }: { model: string; entry: AiCatalogM
         voice: mode === "preset" && voice ? voice : null,
         lang: language !== AUTO ? language : null,
         ref: mode === "clone" && refAudio ? refAudio : null,
+        reftext: mode === "clone" && refText.trim() ? refText : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [text, voice, language, refAudio, mode]);
+  }, [text, voice, language, refAudio, refText, mode]);
 
   const { ref: boxRef } = useAutoGrow(text);
 

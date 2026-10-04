@@ -106,10 +106,14 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
     );
   } else if (capability === "text-to-speech") {
     const mode = model.voiceMode ?? "preset";
+    const ref = mode === "clone" ? readParam("ref") : null;
+    const refText = mode === "clone" ? readParam("reftext")?.trim() || null : null;
+    const clip = ref && refText;
     const extra = opts([
       ["voice", mode === "preset" && readParam("voice") ? JSON.stringify(readParam("voice")) : null],
       ["language", readParam("lang") ? JSON.stringify(readParam("lang")) : null],
-      ["refAudio", mode === "clone" && readParam("ref") ? JSON.stringify(readParam("ref")) : null],
+      ["refAudio", clip ? JSON.stringify(ref) : null],
+      ["refText", clip ? JSON.stringify(refText) : null],
     ]);
     lines.push(
       "It turns text into spoken audio, saved as a WAV file. Call it from the page with " +
