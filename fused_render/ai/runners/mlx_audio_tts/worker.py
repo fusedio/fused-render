@@ -136,6 +136,8 @@ class _Progress:
         return self
 
     def update(self, n=1):
+        if worker_base.CANCEL.is_set():
+            raise worker_base.Cancelled()
         seconds = self.tokens // TOKENS_PER_SECOND
         self.tokens += n
         if self.tokens // TOKENS_PER_SECOND == seconds:

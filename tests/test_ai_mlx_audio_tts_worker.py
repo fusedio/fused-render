@@ -22,6 +22,7 @@ class FakeBase:
         pass
 
     def __init__(self, cancel_after=None):
+        self.CANCEL = threading.Event()
         self.ticks = []
         self.state = {}
         self.cancel_after = cancel_after
@@ -200,3 +201,16 @@ def test_a_preset_model_with_no_voice_uses_the_first_listed_voice(monkeypatch, t
     worker.load(MODEL, snapshot(tmp_path))
     worker.generate({"text": "A.", "out": str(tmp_path / "a.wav")})
     assert model.calls[0]["voice"] == "ryan"
+
+
+def test_fused_ai_cancel_stops_between_tokens(monkeypatch, tmp_path):
+    base = FakeBase()
+    model = FakeModel(tokens_per_chunk=5)
+    worker, *_ = load_worker(monkeypatch, base, model=model)
+    worker.load(MODEL, snapshot(tmp_path))
+    base.CANCEL.set()
+    with pytest.raises(FakeBase.Cancelled):
+        worker.generate({"text": "A.\n\nB.", "out": str(tmp_path / "c.wav")})
+    assert len(model.calls) == 1
+    assert sys.modules[HOOK].tqdm is not None and not hasattr(sys.modules[HOOK].tqdm, "update")
+    assert not os.path.exists(tmp_path / "c.wav")
