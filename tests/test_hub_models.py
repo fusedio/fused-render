@@ -3140,10 +3140,10 @@ def test_a_gpu_less_machines_tail_keeps_a_strict_ordering():
     assert displayed[0] == displayed[1] == displayed[2] == 0.0
 
 
-# -- use cases + thinks on search rows (SPEC AI-28b) ---------------------------
+# -- use cases on search rows (SPEC AI-28b) ---------------------------
 
 
-def test_text_search_rows_carry_a_heuristic_use_case_and_thinks(client, hub_cache, monkeypatch):
+def test_text_search_rows_carry_a_heuristic_use_case(client, hub_cache, monkeypatch):
     _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([
         _hit("org/Foo-Coder-7B", tags=["code"]),
@@ -3155,8 +3155,6 @@ def test_text_search_rows_carry_a_heuristic_use_case_and_thinks(client, hub_cach
     assert rows["org/Foo-Coder-7B"]["useCases"] == ["coding"]
     assert rows["org/Bar-R1-Distill-8B"]["useCases"] == ["reasoning"]
     assert rows["org/plain-chat-7B"]["useCases"] == ["writing"]
-    assert rows["Qwen/Qwen3-8B"]["thinks"] is True
-    assert rows["org/plain-chat-7B"]["thinks"] is False
 
 
 # ---- D1245/D1246: per-axis breakdown for the row-level tooltip -----------

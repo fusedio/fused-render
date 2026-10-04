@@ -1148,14 +1148,11 @@ def _catalog_with_downloads() -> list[dict]:
             # carries its own hand-written `useCases` (already on `entry` via
             # the `dict(entry, ...)` above); everything else — a cached repo
             # the user found themselves — gets `registry.use_cases`' heuristic.
-            # `pickFor` is the curator's hand-marked recommended pick, folded
-            # into `useCasePicks` below with the computed reasoning pick.
             is_text = row["capability"] == registry.TEXT_GENERATION
             if is_text and not entry.get("useCases"):
                 entry["useCases"] = list(registry.use_cases(entry["id"]))
             elif not is_text:
                 entry["useCases"] = []
-            entry["useCasePicks"] = list(entry.pop("pickFor", ()) or ()) if is_text else []
             # The embeddings pair (SPEC §40): whether this entry may be handed
             # image PATHS, and which retrieval prompt scheme its texts get.
             # Computed per entry on BOTH halves for `acceptsImage`'s reason — a
@@ -1165,11 +1162,6 @@ def _catalog_with_downloads() -> list[dict]:
                                                    entry["id"])
             entry["promptScheme"] = _prompt_scheme(row["capability"],
                                                    entry["id"])
-        if row["capability"] == registry.TEXT_GENERATION:
-            pick = catalog.reasoning_pick(row["models"])
-            for entry in row["models"]:
-                if entry["id"] == pick:
-                    entry["useCasePicks"].append("reasoning")
     return rows
 
 

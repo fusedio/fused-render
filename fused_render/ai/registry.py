@@ -155,9 +155,6 @@ DECISIONS = "text-classification"
 #: text AND calls tools is still one `text-generation` entry, tagged.
 TOOL_USE_TAG = "tool-use"
 VISION_TAG = "vision"
-#: The model honours the Playground's think-first toggle (a hybrid thinking
-#: checkpoint). Tag-shaped for the same reason as the two above.
-THINKS_TAG = "thinks"
 
 #: The three end-user USE CASES a text-generation entry can belong to (SPEC
 #: AI-28b). Tags/fields on an entry, never capability rows — see the note
@@ -189,16 +186,6 @@ TOOL_USE_FAMILIES: tuple[tuple[str, ...], ...] = (
 )
 
 
-#: Families whose chat template takes the think-first toggle — an allowlist
-#: like `TOOL_USE_FAMILIES`, for the same reason (a regex would confidently
-#: tag checkpoints nobody verified). Each row is (all-of tokens, none-of
-#: tokens): the Qwen3 line hybrid-thinks, but the Qwen3-Coder checkpoints
-#: are non-thinking-only and ignore the switch.
-THINKING_FAMILIES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
-    (("qwen3",), ("coder",)),
-)
-
-
 def _tag_haystack(*values: str | None) -> str:
     """Every non-empty string in `values`, lowercased and with underscores
     normalized to hyphens — the Hub spells the same family both ways
@@ -226,15 +213,6 @@ def supports_tool_use(repo_id: str, *, model_type: str | None = None,
     haystack = _tag_haystack(repo_id, model_type, architecture)
     return any(all(token in haystack for token in family)
               for family in TOOL_USE_FAMILIES)
-
-
-def supports_thinking(repo_id: str, *, model_type: str | None = None,
-                      architecture: str | None = None) -> bool:
-    """Is `repo_id` in a family `THINKING_FAMILIES` lists? Same
-    dependency-light, evidence-from-the-caller shape as `supports_tool_use`."""
-    haystack = _tag_haystack(repo_id, model_type, architecture)
-    return any(all(t in haystack for t in need) and not any(t in haystack for t in deny)
-               for need, deny in THINKING_FAMILIES)
 
 
 # Heuristic evidence for `use_cases`. Letter-bounded so `decode`/`barcode`
@@ -277,8 +255,6 @@ def capability_tags(repo_id: str, *, model_type: str | None = None,
         tags.append(TOOL_USE_TAG)
     if has_vision:
         tags.append(VISION_TAG)
-    if supports_thinking(repo_id, model_type=model_type, architecture=architecture):
-        tags.append(THINKS_TAG)
     return tuple(tags)
 
 

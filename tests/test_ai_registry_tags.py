@@ -70,11 +70,8 @@ def test_model_type_and_architecture_evidence_is_also_consulted():
 
 
 def test_capability_tags_composes_tool_use_and_vision():
-    tags = registry.capability_tags("mistralai/Mistral-7B-Instruct-v0.3", has_vision=True)
-    assert set(tags) == {"tool-use", "vision"}
-    # a Qwen3 also carries `thinks` (SPEC AI-28b)
     tags = registry.capability_tags("Qwen/Qwen3-8B-Instruct", has_vision=True)
-    assert set(tags) == {"tool-use", "vision", "thinks"}
+    assert set(tags) == {"tool-use", "vision"}
 
 
 def test_capability_tags_is_empty_when_neither_applies():
@@ -92,7 +89,7 @@ def test_the_capability_constants_are_unchanged():
     assert registry.DECISIONS == "text-classification"
 
 
-# -- use cases + the `thinks` tag (SPEC AI-28b) --------------------------------
+# -- use cases (SPEC AI-28b) --------------------------------
 # A USE CASE is a tag-shaped fact about a text-generation entry, not a sixth
 # capability: `writing` / `coding` / `reasoning`. Curated entries carry theirs
 # by hand; everything else (Hub search hits, cached repos) gets a heuristic
@@ -135,18 +132,3 @@ def test_use_case_takes_hub_tags_as_evidence():
 
 def test_use_case_coding_beats_reasoning():
     assert registry.use_cases("org/Coder-R1-7B") == ("coding",)
-
-
-def test_thinks_tag_for_qwen3_family_but_not_the_coder():
-    assert registry.supports_thinking("mlx-community/Qwen3.5-4B-OptiQ-4bit") is True
-    assert registry.supports_thinking("unsloth/Qwen3.8-27B-GGUF") is True
-    assert registry.supports_thinking("Qwen/Qwen3-Coder-30B-A3B-Instruct") is False
-    assert registry.supports_thinking("google/gemma-3-4b-it") is False
-    assert registry.supports_thinking("org/some-random-checkpoint") is False
-
-
-def test_capability_tags_carry_thinks():
-    assert "thinks" in registry.capability_tags("Qwen/Qwen3-8B")
-    assert "thinks" not in registry.capability_tags("Qwen/Qwen3-Coder-30B-A3B-Instruct")
-    # tool-use is untouched: the coder is still a tool-use family.
-    assert "tool-use" in registry.capability_tags("Qwen/Qwen3-Coder-30B-A3B-Instruct")

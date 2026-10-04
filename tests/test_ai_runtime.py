@@ -7071,7 +7071,7 @@ def test_capability_tags_uses_hub_metadata_family_evidence_when_uncached(hub, mo
     monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
                         lambda repo_id: {"modelType": "qwen3", "hasVisionTower": False})
     tags = ai_runtime._capability_tags(registry.TEXT_GENERATION, "org/my-finetune")
-    assert tags == ("tool-use", "thinks")
+    assert tags == ("tool-use",)
 
 
 def test_accepts_image_prefers_the_cached_reading_over_hub_metadata(hub, monkeypatch):
@@ -11985,7 +11985,7 @@ def test_neither_spawn_site_forgets_the_model(monkeypatch):
             f"{ast.unparse(call.args[1])!r} as the model")
 
 
-# -- use cases + `thinks` on the text rows (SPEC AI-28b) ------------------------
+# -- use cases on the text rows (SPEC AI-28b) ------------------------
 
 
 def _text_row(client, monkeypatch):
@@ -11995,43 +11995,19 @@ def _text_row(client, monkeypatch):
     return next(row for row in rows if row["capability"] == registry.TEXT_GENERATION)
 
 
-def test_text_entries_carry_use_cases_and_one_pick_per_use_case(client, hub, monkeypatch):
+def test_text_entries_carry_use_cases(client, hub, monkeypatch):
     models = _text_row(client, monkeypatch)["models"]
     assert models and all(isinstance(m["useCases"], list) and m["useCases"] for m in models)
-    assert all(isinstance(m["useCasePicks"], list) for m in models)
-    for case in registry.USE_CASES:
-        assert sum(case in m["useCasePicks"] for m in models) == 1, case
     coder = next(m for m in models if m["id"] == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit")
-    assert coder["useCases"] == ["coding"] and "coding" in coder["useCasePicks"]
-    assert "thinks" not in coder["tags"]
-    qwen = next(m for m in models if m["id"] == "mlx-community/Qwen3.5-4B-OptiQ-4bit")
-    assert "thinks" in qwen["tags"] and "writing" in qwen["useCasePicks"]
+    assert coder["useCases"] == ["coding"]
 
 
-def test_a_cached_text_repo_gets_a_heuristic_use_case_and_never_a_pick(client, hub, monkeypatch):
+def test_a_cached_text_repo_gets_a_heuristic_use_case(client, hub, monkeypatch):
     _cached_repo(hub, "org/tiny-coder-7b", files=("model.safetensors",),
                  config={"model_type": "llama"})
     models = _text_row(client, monkeypatch)["models"]
     cached = next(m for m in models if m["id"] == "org/tiny-coder-7b")
     assert cached["useCases"] == ["coding"]
-    assert cached["useCasePicks"] == []
-
-
-def test_reasoning_pick_follows_the_machine_fit(client, hub, monkeypatch):
-    """The star moves with the machine: with every verdict over 5GB forced to
-    `no`, the reasoning pick is the 4B, not a 27B."""
-    real = fit.verdict
-
-    def only_small_fits(capability, model_id, size_gb=None, *a, **kw):
-        out = real(capability, model_id, size_gb, *a, **kw)
-        if out is not None and (size_gb or 0) > 5:
-            out = dict(out, verdict="no")
-        return out
-
-    monkeypatch.setattr(fit, "verdict", only_small_fits)
-    models = _text_row(client, monkeypatch)["models"]
-    picked = [m["id"] for m in models if "reasoning" in m["useCasePicks"]]
-    assert picked == ["mlx-community/Qwen3.5-4B-OptiQ-4bit"]
 
 
 def test_non_text_entries_have_no_use_cases(client, hub, monkeypatch):
@@ -12040,7 +12016,7 @@ def test_non_text_entries_have_no_use_cases(client, hub, monkeypatch):
     for row in client.get("/api/ai/catalog").json()["capabilities"]:
         if row["capability"] == registry.TEXT_GENERATION:
             continue
-        assert all(m["useCases"] == [] and m["useCasePicks"] == [] for m in row["models"])
+        assert all(m["useCases"] == [] for m in row["models"])
 
 
 # -- item A: per-variant download's `file` threading through the supervisor -----

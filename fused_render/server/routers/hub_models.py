@@ -1782,14 +1782,12 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         "taskHelp": ai_tasks.help_for(reading.tag),
         "pipelineTag": raw.get("pipeline_tag"),
         # Use case(s) by `registry.use_cases`' heuristic over the repo id, the
-        # pipeline tag and the Hub tags (SPEC AI-28b), and whether the model
-        # honours the think-first toggle — text generation only, `[]`/False
+        # pipeline tag and the Hub tags (SPEC AI-28b) — text generation only, `[]`/False
         # for every other capability. A guess; curated models never come here.
         "useCases": (list(registry.use_cases(
             model_id, pipeline_tag=raw.get("pipeline_tag"),
             hub_tags=tuple(t for t in (raw.get("tags") or ()) if isinstance(t, str))))
             if capability == TEXT_GENERATION else []),
-        "thinks": capability == TEXT_GENERATION and registry.supports_thinking(model_id),
         # Never null, by the drop rule above — it is what the page hands to
         # `POST /api/ai/runtime/download`, which needs to know which runner is
         # being asked for.
