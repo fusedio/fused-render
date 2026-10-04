@@ -191,11 +191,27 @@ export function useResolvedTheme(): Theme {
 // bootstrap (before paint) — this only handles later changes, so mounting it
 // can never cause a flash.
 export function useThemeSync(): void {
-  useEffect(
-    () =>
-      subscribeThemePref(() => {
-        applyTheme(resolveTheme(loadThemePref()));
-      }),
-    []
-  );
+  useEffect(() => {
+    reportNativeTheme(loadThemePref());
+    return subscribeThemePref(() => {
+      applyTheme(resolveTheme(loadThemePref()));
+      reportNativeTheme(loadThemePref());
+    });
+  }, []);
+}
+
+// Tell the native macOS window the PREFERENCE (system/light/dark) so its
+// titlebar can follow the in-app theme, not just the OS. A no-op in a browser
+// (no handler) and in any frame but the top one — an embed must not drive the
+// window chrome. index.html's bootstrap posts the same message pre-paint.
+function reportNativeTheme(pref: ThemePref): void {
+  try {
+    if (window.parent !== window) return;
+    const w = window as unknown as {
+      webkit?: { messageHandlers?: { fusedTheme?: { postMessage(m: string): void } } };
+    };
+    w.webkit?.messageHandlers?.fusedTheme?.postMessage(pref);
+  } catch {
+    // best-effort chrome tint
+  }
 }

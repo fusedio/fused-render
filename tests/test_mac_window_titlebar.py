@@ -94,4 +94,4 @@ def test_frontend_posts_the_pref_from_the_top_level_only():
     for path in ("frontend/src/platform/lib/theme.ts", "frontend/index.html"):
         src = read_repo_file(path)
         assert "messageHandlers" in src and "fusedTheme" in src, path
-        assert "window.parent === window" in src or "window.top === window" in src, path
+        assert "window.parent === window" in src or "window.parent !== window" in src, path
