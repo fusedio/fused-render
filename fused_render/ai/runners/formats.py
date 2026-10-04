@@ -1035,6 +1035,10 @@ GGUF_RECIPES = {
         "repo": "unsloth/Qwen3.8-27B-GGUF",
         "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
     },
+    "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": {
+        "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        "file": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+    },
 }
 
 

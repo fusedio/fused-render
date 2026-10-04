@@ -293,6 +293,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # still load it once.
         {
             "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+            "useCases": ["writing"],
             "params": "1.2B",
             "quantization": "MLX 4-bit",
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
@@ -303,6 +304,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            "useCases": ["writing", "coding", "reasoning"],
+            "pickFor": ["writing"],
             "params": "4B",
             "quantization": "OptiQ 4-bit",
             "recommended": True,
@@ -326,6 +329,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # two different machines, which is what earns this one a slot.
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            "useCases": ["writing"],
             "params": "27B",
             "quantization": "Ternary 2-bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
@@ -351,6 +355,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # carries a Google family row.
         {
             "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+            "useCases": ["writing", "coding", "reasoning"],
             "params": "9B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
@@ -361,6 +366,27 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
         },
+        # The CODING pick (SPEC AI-28b). Qwen3-Coder-30B-A3B is a MoE — 30B of
+        # code knowledge answering at about a 3B's speed — and the only
+        # code-tuned row here; every other row is a generalist that merely
+        # also codes. Not a thinking model (its template has no think switch),
+        # so the Playground's coding use case leaves thinking off. 4-bit, 17.2GB
+        # whole-snapshot Hub byte sum on 2026-10-04, ungated; model_type
+        # `qwen3_moe`, which mlx-lm ships. Not loaded here (no Mac in the
+        # build) — someone on a 32GB Mac should load it once.
+        {
+            "id": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+            "useCases": ["coding"],
+            "pickFor": ["coding"],
+            "params": "30B (~3B active)",
+            "quantization": "MLX 4-bit",
+            "label": "Qwen3-Coder 30B-A3B (MLX 4-bit)",
+            "nickname": "Qwen3 Coder",
+            "size_gb": 17.2,
+            "note": "The code-tuned pick: writes, explains and fixes code at "
+                    "about a 3B's speed, but its 17GB of weights want a 32GB "
+                    "machine.",
+        },
         # LAST, and the only entry here that is not a 16GB-machine model. It
         # lands at the bottom on size alone now, which happens to agree with
         # where its memory cost belongs: 20GB of weights resident is a 32GB Mac,
@@ -370,6 +396,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # into swap is not something to suggest on one machine's evidence.
         {
             "id": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
+            "useCases": ["writing", "coding", "reasoning"],
             "params": "27B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
@@ -482,6 +509,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # this file's own "every line is somebody's answer" test.
         {
             "id": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+            "useCases": ["writing"],
             "params": "1.2B",
             "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
@@ -493,6 +521,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.5-4B-Q4_K_M.gguf",
+            "useCases": ["writing", "coding", "reasoning"],
+            "pickFor": ["writing"],
             "params": "4B",
             "quantization": "GGUF Q4_K_M",
             "recommended": True,
@@ -504,6 +534,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "gemma-4-E4B-it-Q4_K_M.gguf",
+            "useCases": ["writing"],
             "params": "4B effective",
             "quantization": "GGUF Q4_K_M",
             "label": "Gemma 4 E4B (Q4_K_M)",
@@ -532,6 +563,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # what most machines resolve to, there is nothing left on the table.
         {
             "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
+            "useCases": ["writing"],
             "params": "8B (~1B active)",
             "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 8B-A1B (Q4_K_M)",
@@ -543,6 +575,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+            "useCases": ["writing", "coding", "reasoning"],
             "params": "27B",
             "quantization": "GGUF UD-Q3_K_XL",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
@@ -552,6 +585,23 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "the download — expect a bigger quality hit than the "
                     "LFM2.5 8B-A1B above, and a laptop GPU to run it mostly "
                     "or entirely on the CPU rather than resident in VRAM.",
+        },
+        # The CODING pick (SPEC AI-28b) — the GGUF twin of the MLX row of the
+        # same model. unsloth's Q4_K_M is 18.56GB (Hub tree listing,
+        # 2026-10-04); `general.architecture` is `qwen3moe`. Last because the
+        # list is smallest-first. Not loaded in the build environment.
+        {
+            "id": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+            "useCases": ["coding"],
+            "pickFor": ["coding"],
+            "params": "30B (~3B active)",
+            "quantization": "GGUF Q4_K_M",
+            "label": "Qwen3-Coder 30B-A3B (Q4_K_M)",
+            "nickname": "Qwen3 Coder",
+            "size_gb": 18.6,
+            "note": "The code-tuned pick: a mixture of experts, so only about "
+                    "3B of it runs per token — but the whole 18GB must be "
+                    "held, so it wants a 32GB machine or a big GPU.",
         },
     ],
     "diffusers-image": [
@@ -1951,3 +2001,26 @@ def _video_traits_payload(runner_code: str) -> dict:
         # `framesBase`/`framesStep` already serve for the frame grid.
         "supportsImage": traits.supports_image,
     }
+
+
+def reasoning_pick(entries: list[dict]) -> str | None:
+    """The id of the DEEP-REASONING pick among `entries` (describe_catalog's
+    text rows, each already carrying `fit` and `useCases`; SPEC AI-28b).
+
+    Computed per machine, never hand-marked: the largest curated entry tagged
+    `reasoning` whose fit verdict is not `no` — a tight 27B beats an easy 9B,
+    because "deep reasoning" is the one use case where size is the point and
+    the pill already says "tight". Size is `size_gb` (bytes on disk), not the
+    params string, so a 2-bit 27B does not outrank a 4-bit 9B it cannot match.
+    When nothing fits (or no fit data exists at all) the SMALLEST reasoning
+    entry is returned, so a small machine still sees a star rather than a
+    hole. Non-curated rows never win: a pick is a curator's claim."""
+    pool = [e for e in entries
+            if e.get("source") == "curated" and "reasoning" in (e.get("useCases") or ())
+            and isinstance(e.get("size_gb"), (int, float))]
+    if not pool:
+        return None
+    fitting = [e for e in pool if e.get("fit") and e["fit"].get("verdict") in ("easy", "tight")]
+    if fitting:
+        return max(fitting, key=lambda e: e["size_gb"])["id"]
+    return min(pool, key=lambda e: e["size_gb"])["id"]
