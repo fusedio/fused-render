@@ -1783,17 +1783,21 @@ def test_a_diffusers_video_pipeline_is_supported_but_has_no_engine(client, hub, 
 
 @requires_symlinks
 def test_a_genuine_image_to_image_repo_keeps_its_label_and_gets_no_load(client, hub):
-    """The other side of the same rule: the override is for a task the app
-    SERVES, read off decisive format evidence. A repo that really is img2img
-    and carries no such evidence keeps the card's word for it, and gets no
-    Load — nothing here does image-to-image."""
+    """D1235: `image-to-image` now maps to IMAGE_GENERATION in tasks.py (the
+    hub_catalog spec — the FLUX.2-klein family and the mflux edit path do
+    take a base image), so the CLAIM is one the app can act on. This repo
+    still gets no Load, though: it carries no decisive diffusers/mlx format
+    evidence, so `_engine` cannot name a runner for it (see `_engine`'s
+    `not meta.loaders` branch, hub_cache.py) — the capability field says the
+    app COULD run this kind of model, the missing engine says not from these
+    particular bytes."""
     repo = _repo(hub, "models--org--img2img", blobs={"w": 10},
                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-to-image\n---\n")
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
     row = _repo_row(client, "org/img2img")
     assert row["task"] == "image to image"
-    assert row["capability"] is None
+    assert row["capability"] == _ai_registry.IMAGE_GENERATION
     assert row["engine"] is None
 
 

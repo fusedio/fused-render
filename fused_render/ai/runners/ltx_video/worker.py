@@ -44,7 +44,6 @@ directory, so `download` asks for the one file the loader will actually
 open — checking the repo's shape before a byte moves.
 """
 
-import fnmatch
 import glob
 import os
 import sys
@@ -160,31 +159,16 @@ _FIXED_FILES = (
 )
 
 
-def _resolve_versioned_name(names, stem):
-    """Mirrors `_base.py::_resolve_safetensors`'s own rule — prefer a
-    versioned `{stem}-*.safetensors`, alphabetically latest; else the plain
-    `{stem}.safetensors` — against a Hub file LISTING rather than a local
-    directory, so `download` can ask for the one file the loader will
-    actually open instead of every name that could conceivably match.
-    Returns None when neither form is present in `names`.
-    """
-    versioned = sorted(name for name in names
-                       if fnmatch.fnmatch(name, f"{stem}-*.safetensors"))
-    if versioned:
-        return versioned[-1]
-    plain = f"{stem}.safetensors"
-    return plain if plain in names else None
-
-
-def _distilled_transformer_filename(names):
-    """The one transformer file `DistilledPipeline.load()` would actually
-    open: `transformer.safetensors` if present (no curated repo ships this
-    name today, but upstream tries it FIRST), else the versioned-preferred
-    `transformer-distilled*` — `_resolve_versioned_name`'s own rule. `None`
-    when the repo has neither, which `download` treats as a refusal."""
-    if "transformer.safetensors" in names:
-        return "transformer.safetensors"
-    return _resolve_versioned_name(names, "transformer-distilled")
+#: Both moved into `formats.py` (item 2, D1287+), next to
+#: `has_ltx_split_layout` — the worker runs in its own venv and cannot
+#: import `hub_loadable`, but both it and the server already import
+#: `formats.py`, so this is the one place the rule can live without a
+#: second, driftable copy. Kept as module-level names here (rather than
+#: rewriting every call site below) so this file's own comments — which
+#: cross-reference `_resolve_versioned_name`/`_distilled_transformer_
+#: filename` by these exact names — stay accurate.
+_resolve_versioned_name = formats.resolve_versioned_name
+_distilled_transformer_filename = formats.distilled_transformer_filename
 
 
 #: Checked by NAME before construction, the same "refuse by name before

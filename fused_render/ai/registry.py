@@ -417,6 +417,25 @@ class Runner:
     #: query see different rows only when they made different, visible engine
     #: choices in Preferences — never for a reason neither could see.
     hub_filter_tags: tuple[str, ...] = ()
+    #: Hub `filter=` tags the CATALOG POOL BUILD pages for this runner — read
+    #: ONLY by `hub_catalog_builder._formats_for_capability`, falling back to
+    #: `hub_filter_tags` when empty. Separate from `hub_filter_tags` because
+    #: that one NARROWS the live search whenever its runner is active (and
+    #: keys the D412/D779 GGUF pick), while a pool question is "which repos
+    #: could this runner load" and must be answerable for a runner that must
+    #: not narrow live search. `mlx-text` is the case: it loads `library_name:
+    #: mlx` repos (tag `mlx`) but also GGUF rows via the sibling runner, and
+    #: giving it `hub_filter_tags=("mlx",)` would have made the live search
+    #: under an active `mlx-text` drop every GGUF and plain-transformers
+    #: row. Before this field a tagless `mlx-text` simply vanished from the
+    #: union, so the text-generation pool was fetched with `filter=gguf` only
+    #: (measured: 5 of 44,941 rows were `mlx-community/*`) (D1304).
+    hub_pool_tags: tuple[str, ...] = ()
+    #: The on-disk format this runner reads natively, as `hub_models.
+    #: _row_native_format` names it (`"mlx"`, `"gguf"`) — empty when the
+    #: runner has no format a search row can be matched against. Read by the
+    #: ranking's engine-match bonus (D1305) for the capability's ACTIVE runner.
+    native_format: str = ""
     _available: Callable[[], Availability] = field(repr=False, default=lambda: Availability(True))
 
     def available(self) -> Availability:
@@ -1462,6 +1481,8 @@ _RUNNERS: tuple[Runner, ...] = (
         note="Generates text on the GPU. Downloads the full checkpoint, "
              "including vision weights it doesn't use.",
         _available=_apple_silicon,
+        hub_pool_tags=("mlx",),
+        native_format="mlx",
     ),
     # The Vulkan variant of `llamacpp-text` below — GPU acceleration on NVIDIA
     # and AMD under Windows and Linux, where that row's CPU-index pin is
@@ -1500,6 +1521,7 @@ _RUNNERS: tuple[Runner, ...] = (
              "CPU build; much larger download.",
         _available=_vulkan,
         hub_filter_tags=("gguf",),
+        native_format="gguf",
     ),
     # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
     # unaccelerated local text engine on Windows and Linux. It now sits BELOW
@@ -1575,6 +1597,7 @@ _RUNNERS: tuple[Runner, ...] = (
         # (a plain safetensors repo) is not actionable here — see
         # `hub_filter_tags`'s own docstring for why this is a runner field.
         hub_filter_tags=("gguf",),
+        native_format="gguf",
     ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
