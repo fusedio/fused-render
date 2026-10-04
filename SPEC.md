@@ -12232,7 +12232,12 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
   `sys.excepthook` and `threading.excepthook` to the root logger. The file
   is created empty and removed on clean exit; the packaged app's
   `quit_teardown` calls `crashlog.release()` itself, because `os._exit` skips
-  `atexit`. **Rejected:** faulthandler on the rotating log (needs an fd that
+  `atexit`. Children that cannot import the package by design (the
+  env-install worker, D152; the AI worker base, stdlib-only on the runner's
+  venv; the claude session host, the runpy child and the engine worker, all
+  run by path) instead call `faulthandler.enable()` on their own stderr, which
+  their parent already captures to a file — so their native stacks land in
+  that file rather than in `crash/`. **Rejected:** faulthandler on the rotating log (needs an fd that
   rotation never swaps out); `PYTHONFAULTHANDLER=1` (writes to the inherited
   stderr, which is `/dev/null` under Finder).
 - **DG-12 Reading a crash file.** **Non-empty = a native stack** (segfault,

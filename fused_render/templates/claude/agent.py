@@ -5257,6 +5257,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         errors="replace").read().strip()
         except FileNotFoundError:
             tail = ""
+        if not tail:
+            # The CLI said nothing — the HOST may have (SPEC §50: its own
+            # stderr lands in host.err.log instead of DEVNULL), e.g. a crash
+            # between spawn and the CLI's Popen.
+            try:
+                tail = open(os.path.join(run_dir, "host.err.log"), encoding="utf-8",
+                            errors="replace").read().strip()[-2000:]
+            except OSError:
+                tail = ""
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
 

@@ -153,6 +153,34 @@ def prune_log_home(directory: str | None = None, *, keep_sessions: int = KEEP_SE
                 total -= size
             except OSError:
                 pass
+    removed.extend(_prune_crash_dir(os.path.join(directory, "crash")))
+    return removed
+
+
+#: A crash file (crashlog.py) older than this is no longer evidence anyone
+#: will ask for: the diagnostics bundle's window is at most a few days.
+CRASH_KEEP_S = 7 * 24 * 3600
+
+
+def _prune_crash_dir(directory: str, *, keep_s: float = CRASH_KEEP_S) -> list[str]:
+    """Drop crash files older than `keep_s`. Empty ones too — an empty file
+    means "did not exit cleanly", which a week later nobody is still asking
+    about, and a watcher the server terminates on every reload leaves one
+    per restart."""
+    removed: list[str] = []
+    cutoff = time.time() - keep_s
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return removed
+    for name in names:
+        path = os.path.join(directory, name)
+        try:
+            if os.stat(path).st_mtime < cutoff:
+                os.unlink(path)
+                removed.append(path)
+        except OSError:
+            pass
     return removed
 
 
