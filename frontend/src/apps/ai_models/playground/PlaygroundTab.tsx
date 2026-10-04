@@ -45,6 +45,7 @@ import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params"
 import {
   parseUseCase,
   pickForUseCase,
+  USE_CASES,
   useCasesOf,
   type UseCaseId,
 } from "@apps/ai_models/lib/useCases";
@@ -366,7 +367,7 @@ export default function PlaygroundTab() {
   const activeUseCase: UseCaseId =
     askedUseCase ??
     (selected
-      ? (["writing", "coding", "reasoning"] as const).find((id) =>
+      ? USE_CASES.map((u) => u.id).find((id) =>
           selected.model.useCasePicks?.includes(id),
         ) ?? useCasesOf(selected.model)[0]
       : undefined) ??
