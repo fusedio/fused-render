@@ -1371,11 +1371,7 @@
 
 /* Border and text only — no fill. The row is eight pills side by side; a tinted
    plate under the hovered one reads as a selected state rather than a pointer. */
-.pg-starter-card:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.pg-starter-card:not(:disabled):hover {
+.pg-starter-card:hover {
   color: var(--fg);
   border-color: var(--accent);
 }

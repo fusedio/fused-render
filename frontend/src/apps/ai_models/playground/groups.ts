@@ -39,7 +39,7 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
   {
     capability: "text-generation",
     label: capabilityLabel("text-generation"),
-    blurb: "Write, code, or work through a hard problem.",
+    blurb: "Ask questions, write and rewrite text.",
   },
   {
     capability: "text-to-image",

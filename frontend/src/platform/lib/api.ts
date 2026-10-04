@@ -5160,14 +5160,8 @@ export interface AiCatalogModel {
   /** Which end-user use cases this text model suits (SPEC AI-28b): any of
    *  `"writing"`, `"coding"`, `"reasoning"`. Curated by hand on a curated row,
    *  a name heuristic (`registry.use_cases`) on a cached one; `[]` on every
-   *  non-text capability. A model may belong to several. Vision is NOT one —
-   *  it is `acceptsImage` / the `"vision"` tag. Optional for an older payload. */
+   *  non-text capability. Optional for an older payload. */
   useCases?: string[];
-  /** The use cases this row is THE starred pick for on this machine
-   *  (`["coding"]`, `["writing"]`, `["reasoning"]`, or several). One row per
-   *  use case carries each; `reasoning` follows the machine's fit
-   *  (`catalog.reasoning_pick`). Always `[]` on a cached or non-text row. */
-  useCasePicks?: string[];
 }
 
 export interface AiCatalogCapability {

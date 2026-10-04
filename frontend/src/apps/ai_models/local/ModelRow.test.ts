@@ -78,11 +78,3 @@ describe("ModelRow drawer", () => {
     expect(ROW).toContain("hubModelUrl(model.id)");
   });
 });
-
-describe("ModelRow capability badges (SPEC AI-28b)", () => {
-  it("shows thinks and sees images as plain chips, only when the row says so", () => {
-    expect(ROW).toContain("if (model.thinks) chips.push(");
-    expect(ROW).toContain("if (model.sees) chips.push(");
-    expect(ROW).toContain("sees images");
-  });
-});

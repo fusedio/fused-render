@@ -27,7 +27,6 @@ import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
 import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
 import { tabHref } from "@apps/ai_models/routes";
-import { USE_CASES } from "@apps/ai_models/lib/useCases";
 
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
@@ -345,8 +344,8 @@ function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
   // vocabulary edit): it falls back to the header glyph on both sides.
   const head = PLAYGROUND_HEADS[group.capability] ?? "chat";
   const flow = PLAYGROUND_FLOWS[group.capability] ?? [head, head];
-  const body = (
-    <>
+  return (
+    <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
       <span className="fhb-card-head">
         <span className="fh-card-icon home-pg-icon" aria-hidden="true">
           {MEDIA_GLYPHS[head]}
@@ -364,42 +363,7 @@ function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
         </span>
         <span className="home-pg-blurb">{group.blurb}</span>
       </span>
-    </>
-  );
-  // The text card carries three small links under it (SPEC AI-28b), one per use
-  // case, each opening the Playground with that use case selected. Links cannot
-  // nest, so on this card the card is a div, its main link wraps the head and
-  // body, and the chips sit beside that link; every other card stays the single
-  // anchor it always was.
-  if (group.capability !== "text-generation") {
-    return (
-      <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
-        {body}
-      </a>
-    );
-  }
-  return (
-    <div className="fhb-card home-pg-card">
-      <a className="home-pg-main" href={href} onClick={(e) => softNavigate(e, href)}>
-        {body}
-      </a>
-      <span className="home-pg-chips">
-        {USE_CASES.map((u) => {
-          const to = tabHref("playground", `?cap=text-generation&uc=${u.id}`);
-          return (
-            <a
-              key={u.id}
-              className="home-pg-chip"
-              href={to}
-              title={`${u.label}: ${u.blurb}`}
-              onClick={(e) => softNavigate(e, to)}
-            >
-              {u.chip}
-            </a>
-          );
-        })}
-      </span>
-    </div>
+    </a>
   );
 }
 

@@ -3287,20 +3287,6 @@ button.am-bench-model:focus-visible {
   margin-bottom: var(--am-gap-subgroup);
 }
 
-/* `.tp-all` is the text pane's "All text models" heading: the same small
-   caps as a group's own, but outside any group (it introduces the two that
-   follow), so it carries its own top rule and spacing. */
-.tp h5.tp-all {
-  margin: 4px 0 var(--am-gap-head);
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
 .tp-group h5 {
   margin: 0 0 var(--am-gap-head);
   font-size: 11px;

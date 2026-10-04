@@ -74,15 +74,14 @@ describe("EngineFilesPane", () => {
 });
 
 describe("CapabilityPane use cases (SPEC AI-28b)", () => {
-  it("draws one section per use case, headed by its label and blurb, above the have/suggest groups", () => {
-    expect(PANE).toContain('{useCase.label} <span className="note">{useCase.blurb}</span>');
-    expect(PANE.indexOf("useCaseRows.map")).toBeLessThan(PANE.lastIndexOf('data-part="pane.have"'));
-    expect(PANE).toContain("All text models");
+  it("draws one headed section per use case, empty ones hidden", () => {
+    expect(PANE).toContain("<h5>{useCase.label}</h5>");
+    expect(PANE).toContain("groupByUseCase([...have, ...recommended], useCaseOf)");
   });
 
   it("keeps the use-case sections out of the off pane", () => {
     const start = PANE.indexOf("if (offReason) {");
     const end = PANE.indexOf("\n  }\n", start);
-    expect(PANE.slice(start, end)).not.toContain("useCaseRows");
+    expect(PANE.slice(start, end)).not.toContain("useCaseOf");
   });
 });

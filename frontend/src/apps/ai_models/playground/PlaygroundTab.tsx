@@ -42,14 +42,7 @@ import { capabilityIcon, unsupportedIcon, useCaseIcon } from "@apps/ai_models/li
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
-import {
-  parseUseCase,
-  groupByUseCase,
-  USE_CASES,
-  type UseCaseGroup,
-  type UseCaseId,
-} from "@apps/ai_models/lib/useCases";
-import type { AttachedImage } from "./imageInput";
+import { groupByUseCase, useCaseOf, type UseCase } from "@apps/ai_models/lib/useCases";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { activeJobByModel, cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
 import {
@@ -334,19 +327,21 @@ export default function PlaygroundTab() {
 
   // The sidebar's sections. Text generation is not one section but one per use
   // case (Writing & chat, Coding, Deep reasoning, SPEC AI-28b), each a peer of
-  // Image generation and the rest; its other rows keep their order after them.
-  // A text row with no groups (unavailable, or nothing offered) stays a single
-  // section so its reason or "nothing to try" line still has somewhere to show.
-  const sections = useMemo<Array<{ row: (typeof railRows)[number]; group: UseCaseGroup | null }>>(
+  // Image generation and the rest, holding the same rows in the same order. A
+  // text row with nothing to group (unavailable, or nothing offered) stays a
+  // single section so its reason or "nothing to try" line still has a place.
+  const sections = useMemo<Array<{ row: (typeof railRows)[number]; useCase: UseCase | null }>>(
     () =>
-      railRows.flatMap((row): Array<{ row: typeof row; group: UseCaseGroup | null }> => {
-        if (row.capability !== "text-generation" || !row.available) return [{ row, group: null }];
-        const groups = groupByUseCase(playgroundModels(row));
-        return groups.length ? groups.map((group) => ({ row, group })) : [{ row, group: null }];
+      railRows.flatMap((row): Array<{ row: typeof row; useCase: UseCase | null }> => {
+        if (row.capability !== "text-generation" || !row.available) return [{ row, useCase: null }];
+        const groups = groupByUseCase(playgroundModels(row), useCaseOf);
+        return groups.length
+          ? groups.map((g) => ({ row, useCase: g.useCase }))
+          : [{ row, useCase: null }];
       }),
     [railRows],
   );
-  const firstTextGroup = sections.find((s) => s.group)?.group ?? null;
+  const firstTextSection = sections.find((s) => s.useCase)?.useCase ?? null;
 
   // The selection lives in the URL. An unknown or absent id falls back to the
   // TOP SECTION's default silently (PT-9's posture: a stale link opens the
@@ -357,10 +352,6 @@ export default function PlaygroundTab() {
   // here with only a task in mind. It only steers the fallback: an explicit
   // `model` always wins, and an unknown cap value falls through silently.
   const askedCap = useMemo(() => readParam("cap"), [urlVersion]);
-  // `?uc=` is a text use case (SPEC AI-28b): the Home card's Writing / Coding /
-  // Reasoning links land here with it, and it only steers the arrival pick (that
-  // use case's star). It is read from the URL and never written by an effect.
-  const askedUseCase = useMemo(() => parseUseCase(readParam("uc")), [urlVersion]);
   // Only a row the SIDEBAR ACTUALLY DRAWS is selectable — which since D425 is
   // narrower than "in the catalog": an unavailable capability renders its
   // reason in place of its model buttons (HF-8), and an unrecommended model
@@ -368,25 +359,9 @@ export default function PlaygroundTab() {
   // `pick.ts`, with the sidebar reading the same `playgroundModels` below, so
   // the drawn list and the selectable list cannot come apart.
   const selected = useMemo(
-    () => pickPlaygroundModel(railRows, asked, askedCap, askedUseCase),
-    [railRows, asked, askedCap, askedUseCase],
+    () => pickPlaygroundModel(railRows, asked, askedCap),
+    [railRows, asked, askedCap],
   );
-
-  // The picture a text prompt is about. Held here rather than in the text
-  // stage, which is keyed by model: "Switch to a model that can see it" remounts
-  // the stage and must not drop the picture it switched for.
-  const [textAttachment, setTextAttachment] = useState<AttachedImage | null>(null);
-  // The use case the text stage shows is the one the SELECTED MODEL is listed
-  // under in the sidebar, so the starters, the placeholder and the thinking
-  // default follow the model and nothing swaps the model behind the user.
-  const activeUseCase: UseCaseId = useMemo(() => {
-    if (!selected || selected.row.capability !== "text-generation") return USE_CASES[0].id;
-    return (
-      groupByUseCase(playgroundModels(selected.row)).find((g) =>
-        g.models.some((m) => m.id === selected.model.id),
-      )?.useCase.id ?? USE_CASES[0].id
-    );
-  }, [selected]);
 
   // What the URL asked for, when this machine cannot give it. Home's strip is
   // the STATIC `PLAYGROUND_GROUPS` list, not the catalog, so every machine
@@ -440,13 +415,12 @@ export default function PlaygroundTab() {
     // places, and Back should return to the one before — with the settings it
     // had, since a stage's slider rewrites edit the entry it is on.
     if (nextCapability && selected && nextCapability !== selected.row.capability) {
-      setTextAttachment(null);
       resetParams({ model: id }, "push");
       return;
     }
     // cap dies with the first explicit pick — leaving it would make a shared
     // URL claim a task the user has since clicked away from.
-    writeParams({ model: id, cap: null, uc: null }, "push");
+    writeParams({ model: id, cap: null }, "push");
   };
 
   const residentRow = selected
@@ -565,7 +539,7 @@ export default function PlaygroundTab() {
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
-        {sections.map(({ row, group }) => {
+        {sections.map(({ row, useCase }) => {
           // The catalog's curated half, in its own smallest-first order — but
           // the RECOMMENDED subset of it (D425), because this tab is where
           // someone types a sentence rather than shops for a download: see
@@ -577,14 +551,16 @@ export default function PlaygroundTab() {
           // still playable but sit apart under their own quiet caption — they
           // have no curator, and mixed in they read as recommendations nobody
           // made.
-          const offered = playgroundModels(row);
+          const offered = playgroundModels(row).filter(
+            (m) => !useCase || useCaseOf(m) === useCase.id,
+          );
           const curated = offered.filter((m) => m.source === "curated");
           // The apple tier's ids (D700) draw AFTER the curation and before the
           // uncurated downloads: recommended like the curation, but system-
           // provided rather than chosen, and never a download.
           const system = offered.filter((m) => m.source === "apple");
           const cached = offered.filter((m) => m.source !== "curated" && m.source !== "apple");
-          const draw = (model: AiCatalogModel, starred = false) => {
+          const draw = (model: AiCatalogModel) => {
             const active = selected?.model.id === model.id;
             const downloading = runtime.downloading.some((d) => d.model === model.id);
             const name = modelName(model);
@@ -625,7 +601,6 @@ export default function PlaygroundTab() {
                     {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
                       <span className="pg-model-live" title="Loaded — answering from memory" />
                     )}
-                    {starred ? "★ " : ""}
                     {name}
                   </span>
                   {model.source === "apple" ? (
@@ -689,18 +664,12 @@ export default function PlaygroundTab() {
             );
           };
           return (
-            <details
-              key={group ? `${row.capability}:${group.useCase.id}` : row.capability}
-              className="pg-group"
-              open
-            >
+            <details key={useCase ? `${row.capability}:${useCase.id}` : row.capability} className="pg-group" open>
               <summary className="pg-group-head">
                 <span className="pg-group-icon">
-                  {group ? useCaseIcon(group.useCase.id) : capabilityIcon(row.capability)}
+                  {useCase ? useCaseIcon(useCase.id) : capabilityIcon(row.capability)}
                 </span>
-                <span className="pg-group-title">
-                  {group ? group.useCase.shortLabel : groupLabel(row.capability)}
-                </span>
+                <span className="pg-group-title">{useCase ? useCase.label : groupLabel(row.capability)}</span>
               </summary>
               {!row.available && (
                 // Visible with its reason, never hidden: an absent group and a
@@ -727,20 +696,11 @@ export default function PlaygroundTab() {
                   a Download button and a fetched one does not, so which half
                   is on this disk is legible from the cards themselves, and the
                   heading was a second answer to a question already answered. */}
-              {row.available && !group && (
-                <>
-                  {curated.map((m) => draw(m))}
-                  {system.map((m) => draw(m))}
-                  {cached.map((m) => draw(m))}
-                </>
-              )}
-              {/* Text generation is split into one top-level section per use
-                  case (SPEC AI-28b): the star leads each section, and the
-                  selected model's section is what the stage's starters and
-                  thinking default follow. */}
-              {group && group.models.map((m) => draw(m, m === group.pick))}
+              {row.available && curated.map(draw)}
+              {row.available && system.map(draw)}
+              {row.available && cached.map(draw)}
               {appleNote &&
-                ((row.capability === "text-generation" && (!group || group === firstTextGroup)) ||
+                ((row.capability === "text-generation" && (!useCase || useCase === firstTextSection)) ||
                   (row.capability === "automatic-speech-recognition" &&
                     apple?.speechAvailable === false)) && (
                   // Where the apple row WOULD be, when it is not: the reason,
@@ -1049,14 +1009,9 @@ export default function PlaygroundTab() {
               <TextStage
                 key={selected.model.id}
                 model={selected.model.id}
+                modelLabel={modelName(selected.model)}
                 downloaded={selected.model.downloaded}
                 entry={selected.model}
-                useCase={activeUseCase}
-                models={playgroundModels(selected.row)}
-                catalog={selected.row.models}
-                attachment={textAttachment}
-                onAttachment={setTextAttachment}
-                onModel={select}
               />
             ) : selected.row.capability === "text-to-image" ? (
               <ImageStage

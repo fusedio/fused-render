@@ -1,21 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { AiCatalogModel } from "@platform/lib/api";
-import {
-  USE_CASES,
-  alternativeThatSees,
-  groupByUseCase,
-  modelThinks,
-  parseUseCase,
-  pickForUseCase,
-  pickRow,
-  useCaseById,
-  useCasesOf,
-} from "./useCases";
-
-// `useCases.ts` imports nothing but a type: Home (eager) reads it for its chip
-// labels, so a runtime import of anything heavy here would drag the playground
-// into the front-door bundle.
+import { USE_CASES, groupByUseCase, useCaseOf } from "./useCases";
 
 function model(id: string, over: Partial<AiCatalogModel> = {}): AiCatalogModel {
   return {
@@ -31,119 +17,31 @@ function model(id: string, over: Partial<AiCatalogModel> = {}): AiCatalogModel {
   };
 }
 
-test("three use cases, in reading order, each with everything a surface needs", () => {
+test("three use cases, in reading order, each with a label", () => {
   expect(USE_CASES.map((u) => u.id)).toEqual(["writing", "coding", "reasoning"]);
-  for (const u of USE_CASES) {
-    expect(u.label.length).toBeGreaterThan(0);
-    expect(u.blurb.length).toBeGreaterThan(0);
-    expect(u.placeholder.length).toBeGreaterThan(0);
-    expect(u.starters.length).toBeGreaterThanOrEqual(4);
-    for (const s of u.starters) {
-      expect(s.name && s.hint && s.prompt && s.icon).toBeTruthy();
-    }
-  }
+  expect(USE_CASES.map((u) => u.label)).toEqual(["Writing & chat", "Coding", "Deep reasoning"]);
 });
 
-test("thinking defaults: off for writing and coding, on for reasoning", () => {
-  expect(USE_CASES.map((u) => u.thinking)).toEqual([false, false, true]);
+test("useCaseOf takes the first known use case and defaults to writing", () => {
+  expect(useCaseOf(model("a", { useCases: ["coding"] }))).toBe("coding");
+  expect(useCaseOf(model("a", { useCases: ["vision", "reasoning"] }))).toBe("reasoning");
+  expect(useCaseOf(model("a", { useCases: [] }))).toBe("writing");
+  expect(useCaseOf(model("a"))).toBe("writing");
 });
 
-test("starter names are unique across the whole set (they are React keys)", () => {
-  const names = USE_CASES.flatMap((u) => u.starters.map((s) => s.name));
-  expect(new Set(names).size).toBe(names.length);
-});
-
-test("the eight original starters kept their prompts, split by use case", () => {
-  const byUse = (id: string) => useCaseById(id as "writing")!.starters.map((s) => s.name);
-  expect(byUse("writing")).toEqual(
-    expect.arrayContaining(["Decline a meeting", "Dinner from this", "How it guesses"]),
-  );
-  expect(byUse("coding")).toEqual(expect.arrayContaining(["Explain an error", "Regex, in parts"]));
-});
-
-test("parseUseCase accepts only the three ids", () => {
-  expect(parseUseCase("coding")).toBe("coding");
-  expect(parseUseCase("vision")).toBeNull();
-  expect(parseUseCase("")).toBeNull();
-  expect(parseUseCase(null)).toBeNull();
-});
-
-test("useCasesOf reads the catalog field and tolerates an older payload", () => {
-  expect(useCasesOf(model("a", { useCases: ["coding"] }))).toEqual(["coding"]);
-  expect(useCasesOf(model("a"))).toEqual([]);
-  // An id this client does not know is dropped rather than rendered.
-  expect(useCasesOf(model("a", { useCases: ["coding", "vision"] }))).toEqual(["coding"]);
-});
-
-test("modelThinks reads the thinks tag", () => {
-  expect(modelThinks(model("a", { tags: ["thinks"] }))).toBe(true);
-  expect(modelThinks(model("a", { tags: ["tool-use"] }))).toBe(false);
-  expect(modelThinks(model("a"))).toBe(false);
-});
-
-test("pickForUseCase prefers the server's star, then a model of that use case", () => {
-  const models = [
-    model("w", { useCases: ["writing"] }),
-    model("c", { useCases: ["coding"], useCasePicks: ["coding"] }),
-    model("c2", { useCases: ["coding"] }),
-  ];
-  expect(pickForUseCase(models, "coding")?.id).toBe("c");
-  // No star for it: the first model that belongs, never a stranger.
-  expect(pickForUseCase(models, "reasoning")).toBeNull();
-  expect(pickForUseCase([models[0], models[2]], "coding")?.id).toBe("c2");
-});
-
-test("alternativeThatSees names the closest curated model that accepts images", () => {
-  const current = model("text-only", { size_gb: 5 });
-  const small = model("small-vision", { acceptsImage: true, size_gb: 3 });
-  const near = model("near-vision", { acceptsImage: true, size_gb: 6 });
-  const far = model("far-vision", { acceptsImage: true, size_gb: 20 });
-  const hub = model("hub-vision", { acceptsImage: true, size_gb: 5.5, source: "cached" });
-  expect(alternativeThatSees([current, far, near, small, hub], current)?.id).toBe("near-vision");
-  // Prefer one that fits this machine over a nearer one that does not.
-  const tooBig = model("too-big", {
-    acceptsImage: true,
-    size_gb: 5.2,
-    fit: { verdict: "no" } as AiCatalogModel["fit"],
-  });
-  expect(alternativeThatSees([current, tooBig, far], current)?.id).toBe("far-vision");
-  expect(alternativeThatSees([current], current)).toBeNull();
-});
-
-test("pickRow finds a GGUF-shaped pick on disk by its repo, and a suggested one by either key", () => {
-  const gguf = model("Qwen3-Coder-30B-A3B-Q4_K_M.gguf", { repo: "unsloth/Qwen3-Coder-30B-A3B-GGUF" });
-  const onDisk = { id: "unsloth/Qwen3-Coder-30B-A3B-GGUF", have: true };
-  const other = { id: "someone/else", have: true };
-  expect(pickRow(gguf, [other, onDisk], [])).toBe(onDisk);
-  // Suggested rows are keyed by the catalog id; a repo-keyed one matches too.
-  const suggested = { id: "Qwen3-Coder-30B-A3B-Q4_K_M.gguf", have: false };
-  expect(pickRow(gguf, [other], [suggested])).toBe(suggested);
-  expect(pickRow(gguf, [other], [{ id: gguf.repo as string, have: false }])?.have).toBe(false);
-  expect(pickRow(gguf, [other], [])).toBeNull();
-});
-
-test("groupByUseCase: three groups in USE_CASES order, the pick first, one group per model", () => {
+test("groupByUseCase: USE_CASES order, rows keep their order, empty groups dropped", () => {
   const models = [
     model("note", { useCases: ["writing"] }),
     model("coder-b", { useCases: ["coding"] }),
-    model("coder-pick", { useCases: ["coding"], useCasePicks: ["coding"] }),
-    model("chat-pick", { useCases: ["writing"], useCasePicks: ["writing"] }),
-    model("big", { useCases: ["reasoning", "writing"], useCasePicks: ["reasoning"] }),
+    model("big", { useCases: ["reasoning", "writing"] }),
+    model("coder-a", { useCases: ["coding"] }),
     model("untagged"),
   ];
-  const groups = groupByUseCase(models);
-  expect(groups.map((g) => g.useCase.id)).toEqual(USE_CASES.map((u) => u.id));
-  expect(groups[0].models.map((m) => m.id)).toEqual(["chat-pick", "note", "untagged"]);
-  expect(groups[0].pick?.id).toBe("chat-pick");
-  expect(groups[1].models.map((m) => m.id)).toEqual(["coder-pick", "coder-b"]);
-  expect(groups[2].models.map((m) => m.id)).toEqual(["big"]);
-  const all = groups.flatMap((g) => g.models.map((m) => m.id));
-  expect(all.sort()).toEqual(models.map((m) => m.id).sort());
-});
-
-test("groupByUseCase: empty groups are dropped; a pick that is also another pick is placed once", () => {
-  const both = model("both", { useCases: ["coding", "reasoning"], useCasePicks: ["coding", "reasoning"] });
-  const groups = groupByUseCase([both]);
-  expect(groups.map((g) => g.useCase.id)).toEqual(["coding"]);
-  expect(groups[0].models).toHaveLength(1);
+  const groups = groupByUseCase(models, useCaseOf);
+  expect(groups.map((g) => g.useCase.id)).toEqual(["writing", "coding", "reasoning"]);
+  expect(groups[0].items.map((m) => m.id)).toEqual(["note", "untagged"]);
+  expect(groups[1].items.map((m) => m.id)).toEqual(["coder-b", "coder-a"]);
+  expect(groups[2].items.map((m) => m.id)).toEqual(["big"]);
+  const only = groupByUseCase([model("x", { useCases: ["coding"] })], useCaseOf);
+  expect(only.map((g) => g.useCase.id)).toEqual(["coding"]);
 });

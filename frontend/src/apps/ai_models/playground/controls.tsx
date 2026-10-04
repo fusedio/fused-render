@@ -460,12 +460,9 @@ const STARTER_MIN = 2;
 export function StarterCards<S extends Starter>({
   samples,
   onPick,
-  disabled = false,
 }: {
   samples: S[];
   onPick: (sample: S) => void;
-  /** Starters that cannot run right now (a send that would be refused). */
-  disabled?: boolean;
 }) {
   const [offset, setOffset] = useState(0);
   // How many fit, measured rather than guessed at a breakpoint: the pills hug
@@ -502,7 +499,6 @@ export function StarterCards<S extends Starter>({
             key={sample.name}
             type="button"
             className="pg-starter-card"
-            disabled={disabled}
             // The pill shows a name; the prompt it stands for is only legible
             // on hover, so the title is load-bearing here, not decoration.
             title={sample.detail ?? sample.prompt}

@@ -481,41 +481,6 @@
   color: var(--fg);
 }
 
-/* The text card's use-case links (Writing / Coding / Reasoning). The card is a
-   div there, so its main link takes the anchor's place: same column, same
-   colour, no underline. The chips sit under the body, centred, and are small
-   quiet pills so they read as options on the card and not as a second card. */
-.home-pg-main {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  color: inherit;
-  text-decoration: none;
-}
-
-.home-pg-chips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 6px 4px;
-}
-
-.home-pg-chip {
-  padding: 2px 10px;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  text-decoration: none;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg);
-}
-
-.home-pg-chip:hover {
-  color: var(--fg);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-}
-
 /* Empty voice. */
 .home-empty {
   color: var(--fg-muted);
