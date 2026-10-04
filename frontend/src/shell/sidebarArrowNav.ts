@@ -21,6 +21,7 @@
 import { useEffect } from "react";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { appPathFromPath } from "@shell/current-apps-lib";
+import { getPeekState } from "@shell/task-peek-store";
 
 const ROW_LINKS = "#sidebar a.bookmark-name";
 
@@ -58,6 +59,13 @@ export function stepSidebarRow(e: KeyboardEvent): void {
   const inSidebar = !!el && sidebar.contains(el);
   const onBody = !el || el === document.body || el === document.documentElement;
   if (!inSidebar && !(onBody && appPathFromPath(location.pathname) !== null)) return;
+  // A TASK PEEK OPEN ON THIS PAGE OWNS THE BARE ARROWS (task-peek-store.ts
+  // `arrowShouldWalk`): with the panel up, ↑/↓ from the page walk the task
+  // list, and this listener — registered before the peek's, so it runs first
+  // — was stepping the Projects rows instead and marking the press spent
+  // (Akshil, 2026-09-21, the app page's Tasks tab). Focus INSIDE the sidebar
+  // still walks the sidebar: the reader put it there.
+  if (!inSidebar && getPeekState().key !== null) return;
 
   const links = rowLinks();
   if (!links.length) return;

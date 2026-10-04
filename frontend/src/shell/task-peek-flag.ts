@@ -1,19 +1,18 @@
 // Whether the Tasks page opens a task in a SIDE PANEL beside the list instead
 // of navigating to the Explorer — the `task_peek_enabled` pref
-// (fused_render/shell/prefs.py), experimental and default OFF.
+// (fused_render/shell/prefs.py), default ON since 2026-09-17.
 //
 // A CLONE OF `apps/claude/feature-flag.ts`, deliberately down to the shape: one
 // shared GET, a generation guard so a publish beats a slower in-flight read, and
 // `null` meaning "not asked yet". Two flags that gate a whole behaviour should
 // not have two different idioms for the same three states.
 //
-// WHY THE TRI-STATE MATTERS HERE, which is the one thing worth saying twice:
-// OFF must be behaviour-identical to the page before any of this existed, and
-// that includes the frames where the answer has not landed. A premature `false`
-// would be harmless (it is the shipping behaviour); a premature `true` would
-// stamp `data-peek-key` on every row, claim the window's param boundary and
-// adopt a `?peek=` from the URL — none of which an opted-out reader asked for.
-// So every consumer takes `=== true`, and "not asked yet" is honestly "no".
+// WHY THE TRI-STATE STILL MATTERS, now that the default is ON: "not asked yet"
+// is still not an answer. A premature `true` would stamp `data-peek-key` on
+// every row, claim the window's param boundary and adopt a `?peek=` from the
+// URL on behalf of a reader who may have switched the panel OFF — so the first
+// frames stay `null`, every consumer takes `=== true`, and the page navigates
+// as it always did until the read lands a few milliseconds later.
 //
 // The peek's own STORE is separate (`task-peek-store.ts`): this answers whether
 // the feature exists at all, that one answers what it is doing.
@@ -40,17 +39,19 @@ function read(): Promise<void> {
     .catch(() => getPrefs())
     .then((p) => {
       if (generation !== departed) return;
-      // `=== true` and nothing looser: a server that predates the switch sends
-      // no `task_peek` at all, and that reads as off — which is both the pref's
-      // own default and the behaviour the page has always had.
-      set(p.task_peek?.enabled === true);
+      // `!== false`, matching the pref's own default (shell/prefs.py
+      // `task_peek_enabled`): the panel is what a server that has never been
+      // told otherwise does, so an absent field — a server that predates the
+      // switch — is ON, not off.
+      set(p.task_peek?.enabled !== false);
     })
     .catch(() => {
-      // STILL NO ANSWER — so `false`. Unlike the chat's flag, nothing here is
-      // holding a skeleton open waiting: `false` IS the shipping behaviour, so
-      // a server we cannot ask simply gets the page it has always had.
+      // STILL NO ANSWER — so the pref's own default, which is now `true`
+      // (2026-09-17). Nothing here is holding a skeleton open waiting either
+      // way; the choice is only "which behaviour does a dropped request get",
+      // and the honest answer is the one the server would have given.
       // `reading` is cleared so a later mount (or a publish) can ask again.
-      if (generation === departed) set(false);
+      if (generation === departed) set(true);
       reading = null;
     })
     .then(() => {});

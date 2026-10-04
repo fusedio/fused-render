@@ -23,8 +23,20 @@ every one of which assumes there is one. A separate store, joined at read.
 
 Shape::
 
-    {"chat": {"<session-id>": {"text": …, "attachments": […], "updated_at": …}},
-     "task": {"<draft-id>": {"title": …, …, "created_at": …, "updated_at": …}}}
+    {"chat": {"<session-id>": {"text": …, "attachments": […], "updated_at": …,
+                               "version": …, "form": {…}?}},
+     "task": {"<draft-id>": {"title": …, …, "created_at": …, "updated_at": …,
+                             "version": …}}}
+
+**One record, one version.** Every record carries a `version` an int at a time,
+stamped by `_update` on each write (`_stamp`), and every write may be
+conditional on it (`if_version`, the routes' `If-Match`): a second window that
+saved since the caller last read loses with a `VersionConflict` carrying the
+record it lost to, instead of overwriting it. `form` is the other half of that
+round — the Schedule hop's New task modal edits the CHAT record it was opened
+on rather than minting a `draft:<id>` of its own, so a chat draft carries the
+settings the modal set (`CHAT_FORM_FIELDS`) beside the words
+(design-drafts-one-record.md).
 
 **One record, two doors.** A task draft that names a session (`session_id`) IS
 that conversation's unsent message, so the composer is a second door onto it:
@@ -86,6 +98,48 @@ DRAFTS_FILE = "drafts.json"
 CHAT = "chat"
 TASK = "task"
 
+#: …and a third section that is not a kind of draft: the LAST WRITE EACH PAGE
+#: MADE to each key, `{key: {client: {"seq": …, "at": …}}}` — ONE ROW PER
+#: (key, client), not per key.
+#:
+#: A version orders two DIFFERENT writers against each other; it cannot order
+#: one writer against itself, because both of its requests state the version
+#: they read and the network decides which arrives first. One page's own saves
+#: for one key are a SEQUENCE — the syncer client-side mints a monotonic `seq`
+#: per key and sends the whole desired state each time (`platform/lib/drafts.ts`,
+#: `draftSyncer`) — so a request whose `seq` is not newer than the one already
+#: applied from that same page is a STRAGGLER, and the only correct thing to do
+#: with it is nothing.
+#:
+#: PER (key, client) RATHER THAN PER KEY, because a key is not one writer's:
+#: two tabs on the same session are two different `client` ids racing the same
+#: key, and a single slot means the second tab's write erases the first tab's
+#: own history of itself — the exact case `_seq_fresh` exists to judge. With one
+#: slot, a genuine straggler from tab A that lands after tab B has written (or
+#: deleted) the same key is compared against B's note, sees a different
+#: `client` and is waved through as "first write" — and if it carries
+#: `If-Match: 0` against a key B just deleted, that waved-through write matches
+#: "no record" and resurrects. Keeping A's own note alive under its own client
+#: id, untouched by B's writes, is what lets `_seq_fresh` still catch it. Capped
+#: at `_SEQ_MAX_CLIENTS_PER_KEY` so one key opened by a thousand tabs over a
+#: laptop's lifetime cannot grow this section without bound; TTL unchanged.
+SEQ = "seq"
+
+#: How long one of those notes is worth keeping. A straggler is a request that
+#: is already on the wire; a minute is an eternity for one, and a quarter of an
+#: hour means a suspended laptop's queued write is still judged against the page
+#: that queued it. After that the note is noise and `_prune` drops it, so the
+#: section cannot grow without bound on a machine that opens a thousand folders.
+_SEQ_TTL_SEC = 15 * 60
+
+#: How many DIFFERENT clients' notes one key keeps at once, on top of the TTL
+#: above. The TTL alone bounds how long a note lives; this bounds how many can
+#: pile up on one key inside that window — a shared key a lot of tabs are
+#: hammering at once (the same reasoning, bounded by count instead of by the
+#: clock). The oldest-seen client is evicted first, same as the TTL sweep would
+#: eventually do to it anyway.
+_SEQ_MAX_CLIENTS_PER_KEY = 8
+
 #: A chat with no session yet (the composer's first message has not been sent)
 #: keys on the file it opened on instead — the same key `takeDraft(file)` uses
 #: in the client.
@@ -127,29 +181,56 @@ _CHAT_KEY_MAX = 512
 #: composer where the user left it.
 PREVIEW_MAX = 120
 
+#: How long an unsent chat with no session yet may sit in the store before
+#: `_prune` forgets it. A fortnight, which is long enough to cover a holiday and
+#: short enough that the Upcoming lane is not a museum. Only `new:<file>` keys
+#: age — see `_prune` for why the other two kinds never do.
+CHAT_TTL_SEC = 14 * 24 * 60 * 60
+
 #: Every field a task draft stores, in the order the form reads them. A key the
 #: client sends that is not in here is DROPPED rather than refused (the modal
 #: gains fields over time and an older server must not start 400ing a newer
 #: page), and a field the client omits keeps whatever the stored draft had.
 TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule",
                "model", "effort", "permission", "attachments",
-               "new_task_each_run", "from_chat_key", "session_id")
+               "new_task_each_run", "session_id")
+
+#: The SETTINGS half of a draft, spelled once and read from either record.
+#:
+#: A hop out of the composer no longer mints a second record: the New task modal
+#: edits the chat draft it was opened on, so a `new:<file>` chat record carries
+#: the form's fields beside its text, and a session-bound task record answers
+#: the same shape out of the fields it already stores (`_form_of_task`). One
+#: vocabulary, so a reader of `/api/drafts` never has to ask which of the two
+#: records it is looking at (design-drafts-one-record.md, "Server model
+#: deltas").
+#:
+#: The WORDS are not in here. They live in `text` on a chat record and in
+#: `title`/`description` on a task record, joined and split by the one rule both
+#: doors use (`split_draft`). `title` is the exception and is a form field too,
+#: because the modal has a title box of its own that a person may edit away from
+#: the first line of what they typed.
+CHAT_FORM_FIELDS = ("title", "when", "repeat", "custom_rule", "model", "effort",
+                    "permission", "target", "new_task_each_run")
+
+#: The form fields that are plain text, normalised through `_text`. The rest are
+#: pass-through json (`when`, `repeat`, `custom_rule`) or a tri-state flag
+#: (`new_task_each_run`) — the same split `_TASK_TEXT` draws, for the same
+#: fields.
+_FORM_TEXT = ("title", "model", "effort", "permission", "target")
 
 #: The fields that are plain text, normalised through `_text` on the way in. The
 #: rest are pass-through (`when`, `repeat`, `custom_rule`), a tri-state flag
-#: (`new_task_each_run`), rows (`attachments`), the chat key this draft was
-#: moved out of (`from_chat_key`) or the session it is going into
-#: (`session_id`) — the last two being keys rather than free text, and each
-#: validated as the key it is.
+#: (`new_task_each_run`), rows (`attachments`), or the session this form is a
+#: message to (`session_id`) — the last being a key rather than free text, and
+#: validated as one.
 #:
 #: THIS IS A LIST OF SHAPES, NOT A DEFINITION OF CONTENT — see `_TASK_CONTENT`
 #: below, which is the one that decides whether there is a draft here at all.
-#: `from_chat_key` and `session_id` are in neither, and for the same reason
-#: `from_chat_key` was always out of the second: they are provenance and
-#: destination, not something a person typed. A form that arrives blank is still
-#: a delete even when it names the chat it came from and the session it was
-#: going to — which is exactly the bargain `an empty task put keeps the chat
-#: draft` rests on (Akshil, 2026-09-11).
+#: `session_id` is in neither: it is a destination, not something a person
+#: typed. A form that arrives blank is still a delete even when it names the
+#: session it was going to — which is exactly the bargain `an empty task put
+#: keeps the chat draft` rests on (Akshil, 2026-09-11).
 _TASK_TEXT = ("title", "description", "target", "model", "effort", "permission")
 
 #: WHAT MAKES A DRAFT A DRAFT: words. Plus `attachments`, which `_empty_task`
@@ -171,6 +252,42 @@ _TASK_CONTENT = ("title", "description")
 #: the module docstring for why this is not an import).
 _ATTACH_KINDS = ("image", "file")
 _ATTACH_NAME_MAX = 255
+
+
+# --------------------------------------------------------------- the version
+
+
+class VersionConflict(Exception):
+    """A conditional write lost — the record moved since the caller read it.
+
+    Carries the CURRENT record and the version it is at, because a bare refusal
+    is not something a client can act on: the editor that lost has to decide
+    between adopting what is on disk and re-sending its own words, and either
+    answer needs the state it collided with (design-drafts-one-record.md, §2).
+    Raised out of the store rather than answered as a value so no caller can
+    forget to look: every write path either returns a record or does not
+    return."""
+
+    def __init__(self, key: str, version: int, record=None):
+        super().__init__("draft version conflict on %r" % (key,))
+        self.key = key
+        self.version = int(version or 0)
+        self.record = record
+
+
+def version_of(record) -> int:
+    """One record's version, 0 for anything that has none.
+
+    0 is "there is no record here", which is what a client that has never
+    written this key holds — so `If-Match: 0` reads as "I expect nothing" and
+    creates, and the two are one arithmetic rather than a special case."""
+    if not isinstance(record, dict):
+        return 0
+    try:
+        value = int(record.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
 
 
 # ------------------------------------------------------------------- the keys
@@ -251,7 +368,25 @@ def task_key(ident: str) -> str:
     `pending:` (tasks_store's key for a scheduled message with no session yet)
     because the two are genuinely different rows: a pending message WILL run,
     and a draft will not until somebody finishes it."""
-    return "draft:" + ident
+    return TASK_KEY_PREFIX + ident
+
+
+#: What `task_key` puts in front of a task draft's id. Named so the one caller
+#: that has to read such a key back — the changes endpoint, which is handed
+#: listing keys and has to say which store to look each one up in — does not
+#: spell the prefix a second time.
+TASK_KEY_PREFIX = "draft:"
+
+
+def task_draft_id(key) -> str:
+    """The draft id inside a `draft:<id>` listing key, or `""`.
+
+    `task_key` run backwards, and the tolerant twin of `draft_id`: a key of any
+    other shape (a session id, `new:<file>`, a pending key) answers `""` rather
+    than raising, because the caller is asking WHICH KIND of key this is."""
+    if not isinstance(key, str) or not key.startswith(TASK_KEY_PREFIX):
+        return ""
+    return draft_id(key[len(TASK_KEY_PREFIX):])
 
 
 # ------------------------------------------------------------------ the file
@@ -259,7 +394,9 @@ def task_key(ident: str) -> str:
 
 def load() -> dict:
     """The whole store, `{"chat": {}, "task": {}}` — missing or corrupt is not
-    an error. Both sections always present, so no caller has to test for them."""
+    an error. Both sections always present, so no caller has to test for them.
+
+    Stale `new:<file>` chat drafts are dropped on the way out — see `_prune`."""
     data = None
     try:
         with open(os.path.join(STATE_DIR, DRAFTS_FILE), "r", encoding="utf-8") as f:
@@ -268,10 +405,180 @@ def load() -> dict:
         data = None
     if not isinstance(data, dict):
         data = {}
-    for section in (CHAT, TASK):
+    for section in (CHAT, TASK, SEQ):
         if not isinstance(data.get(section), dict):
             data[section] = {}
+    _prune(data)
     return data
+
+
+class StaleWrite(Exception):
+    """This request is a straggler from a page that has already said something
+    newer about this key, so it was DROPPED.
+
+    Not an error and not a conflict: nobody lost anything and there is nothing
+    for the client to resolve — the write it is being refused is one it has
+    itself superseded. The routes answer 200 `{"ok": true, "dropped": true}`
+    with the record as it stands, so a caller that is not looking sees a write
+    that succeeded, which for its purposes it did: the state it wanted IS what
+    the newer request put there.
+
+    Carries the current record for the same reason `VersionConflict` does — the
+    version on it is the one the client should be writing against next."""
+
+    def __init__(self, key: str, record=None):
+        super().__init__("stale draft write on %r" % (key,))
+        self.key = key
+        self.record = record
+
+
+def _seq_of(value) -> int | None:
+    """One request's `seq`, or None for "this client is not counting".
+
+    None is the answer for every client written before this round, and it means
+    the write is judged on its version alone — which is exactly how it behaved
+    then. A bool is not an int here (it is in Python), and a negative number is
+    no sequence at all."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def _client_of(value) -> str:
+    """The random id one PAGE mints for itself, or `""`.
+
+    Bounded and stripped, because it becomes a json key's value in a file this
+    process writes; nothing is inferred from its shape."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:64]
+
+
+def _seq_fresh(data: dict, key: str, client: str, seq: int | None) -> bool:
+    """Is this write NEWER than the last one THIS CLIENT made to this key?
+
+    True for a client that sends no `seq` (nothing to compare), and true the
+    first time this particular client writes this key — including when some
+    OTHER client has written (or deleted) it since; that write left its own
+    note under its own client id and never touched this one's (module SEQ
+    comment: per (key, client), not per key). A different page's write is
+    always "nothing to compare" here, however old ITS OWN counter is — a
+    sequence only ever orders a page against itself; versions go on ordering
+    pages against each other."""
+    if not client or seq is None:
+        return True
+    row = (data.get(SEQ) or {}).get(key)
+    entry = row.get(client) if isinstance(row, dict) else None
+    if not isinstance(entry, dict):
+        return True
+    try:
+        seen = int(entry.get("seq"))
+    except (TypeError, ValueError):
+        return True
+    return seq > seen
+
+
+def _seq_note(data: dict, key: str, client: str, seq: int | None) -> None:
+    """Remember this write as the newest one THIS CLIENT made to this key.
+
+    Only ever the LATEST `{seq, at}` per (key, client) — one page's whole
+    history under a key is of no interest, and keeping every seq it ever sent
+    would make this file a record of every tab that ever opened a draft. Other
+    clients' notes under the same key are untouched, which is the point (module
+    SEQ comment). Capped at `_SEQ_MAX_CLIENTS_PER_KEY`: past that, the
+    longest-idle client's note is evicted first, the same fate the TTL sweep
+    would give it anyway."""
+    if not client or seq is None:
+        return
+    row = data.setdefault(SEQ, {}).setdefault(key, {})
+    row[client] = {"seq": int(seq), "at": time.time()}
+    if len(row) > _SEQ_MAX_CLIENTS_PER_KEY:
+        stale = sorted(
+            (c for c in row if c != client),
+            key=lambda c: _epoch(row[c].get("at"))
+            if isinstance(row.get(c), dict) else 0.0,
+        )[:len(row) - _SEQ_MAX_CLIENTS_PER_KEY]
+        for other in stale:
+            row.pop(other, None)
+
+
+def _prune(data: dict) -> None:
+    """Forget the `new:<file>` chat drafts nobody has touched in a fortnight.
+
+    ONLY THAT ONE SHAPE (design.md, PR C, "TTL"). A `new:` key is a folder
+    somebody opened a chat on and typed half a sentence into; it is a ROW on the
+    Tasks page with a TASK number of its own, and a machine in daily use grows
+    one per folder ever opened — a permanent list of month-old fragments nobody
+    will finish, each holding a number. A chat draft on a REAL session is the
+    next message of a conversation that is still there, and a task draft is a
+    form somebody is filling in: both are things a reader can still find their
+    way back to from the row they are attached to, so neither ages out.
+
+    IN `load()` RATHER THAN IN A SWEEP, and so with no write of its own. Every
+    read comes through here, `_update` reads through here INSIDE its lock, and
+    `_update` writes back the dict it was handed — so the prune is observed by
+    every reader at once and is persisted by the next write that changes
+    anything else. A timer that took the lock to delete text nobody had asked
+    about would be a risk run on nobody's behalf.
+
+    A RECORD WITH NO READABLE STAMP IS KEPT. `_epoch` answers 0.0 for one, which
+    is literally older than any cutoff — and this store's whole job is not to
+    lose what somebody typed, so an unreadable clock buys a draft its life
+    rather than costing it."""
+    cutoff = time.time() - CHAT_TTL_SEC
+    chat = data[CHAT]
+    for key in [k for k in chat if isinstance(k, str) and is_new_chat_key(k)]:
+        record = chat.get(key)
+        stamp = _epoch(record.get("updated_at")) if isinstance(record, dict) else 0.0
+        if 0.0 < stamp < cutoff:
+            chat.pop(key, None)
+    # …AND THE SEQUENCE NOTES NOBODY CAN STILL BE RACING (`SEQ`). A note exists
+    # to drop a request that is on the wire right now; a quarter of an hour
+    # later there is no such request, and keeping it would make this section
+    # grow for ever. Unlike a draft, losing one of these costs nothing anybody
+    # typed, so an unreadable stamp is dropped here rather than kept. One row
+    # per (key, client) now, so each client's note under a key ages out on its
+    # own — one tab going quiet does not touch another tab's note on the same
+    # key — and a key with no clients left is dropped rather than kept as an
+    # empty shell.
+    seq_cutoff = time.time() - _SEQ_TTL_SEC
+    notes = data.setdefault(SEQ, {})
+    for key in list(notes):
+        row = notes.get(key)
+        if not isinstance(row, dict):
+            notes.pop(key, None)
+            continue
+        for client_id in list(row):
+            entry = row.get(client_id)
+            if not isinstance(entry, dict) or _epoch(entry.get("at")) < seq_cutoff:
+                row.pop(client_id, None)
+        if not row:
+            notes.pop(key, None)
+
+
+def _stamp(before: dict, data: dict) -> None:
+    """Give every record this write TOUCHED the next version of itself.
+
+    BY IDENTITY, not by comparing contents: every writer in this file replaces a
+    record with a freshly built dict rather than editing the stored one in
+    place, so "is this a different object than the one `load()` handed us" is
+    exactly "did this write touch it" — and it is a test no writer can forget,
+    which is the whole reason the stamp lives here instead of in each of them
+    (design-drafts-one-record.md, §2: "`_update()` increments `version` on every
+    mutation").
+
+    A version is per KEY and monotonic: prior + 1, so a record that is deleted
+    and written again starts over at 1 — a client holding version 9 of a draft
+    somebody discarded collides with the new record rather than silently
+    matching it, which is the resurrection this whole round exists to make
+    impossible. Deletions need no stamp; the key is simply gone, and `gone` is
+    what the changes endpoint says about it."""
+    for section in (CHAT, TASK):
+        old = before.get(section) or {}
+        for key, record in data[section].items():
+            if not isinstance(record, dict) or old.get(key) is record:
+                continue
+            record["version"] = version_of(old.get(key)) + 1
 
 
 def _update(mutate):
@@ -283,15 +590,29 @@ def _update(mutate):
     nothing. The lock covers the READ as well as the write for the reason
     documented there — the app runs several windows against one server, and a
     second writer holding a snapshot taken before the first one's change would
-    persist the loss."""
+    persist the loss.
+
+    …AND THE VERSION BUMP, AND THE `If-Match` CHECK, are both inside it. A
+    compare that happened outside this lock would be a check against a store
+    somebody else is already writing, which is the same lost update read as a
+    guarantee. `mutate` raises `VersionConflict` for the mismatch and nothing is
+    written; `_stamp` numbers whatever it did write.
+
+    `mutate` MAY ANSWER A CALLABLE, which is called with the store after the
+    stamp and whose answer is returned instead. That is how a writer returns the
+    record it just wrote WITH its new version on it: the number does not exist
+    until the stamp, which by construction happens after the write that earned
+    it."""
     os.makedirs(STATE_DIR, exist_ok=True)
     path = os.path.join(STATE_DIR, DRAFTS_FILE)
     with open(path + ".lock", "w") as lock:
         if fcntl is not None:
             fcntl.flock(lock, fcntl.LOCK_EX)
         data = load()
+        before = {section: dict(data[section]) for section in (CHAT, TASK)}
         result, changed = mutate(data)
         if changed:
+            _stamp(before, data)
             # Temp + rename, unlike tasks_store's plain overwrite: this file
             # holds text a person typed and has not sent, which is the one
             # thing in `claude-sessions/` that cannot be rebuilt from anywhere
@@ -301,6 +622,8 @@ def _update(mutate):
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             os.replace(tmp, path)
+        if callable(result):
+            result = result(data)
     return result
 
 
@@ -356,6 +679,46 @@ def _jsonable(value):
         return {str(k): _jsonable(v) for k, v in value.items()
                 if isinstance(k, str)}
     return None
+
+
+def _form(value, patch: bool = False) -> dict:
+    """A draft's SETTINGS as stored — the `CHAT_FORM_FIELDS` subset of whatever
+    came in, everything else dropped.
+
+    Dropped rather than refused, the same bargain `TASK_FIELDS` makes and for
+    the same reason: the modal grows a field long before an installed server
+    learns about it, and a 400 there would cost the words on the page.
+
+    `patch=True` keeps only the keys the caller ACTUALLY SENT, which is what
+    makes a form a patch: a composer autosave that says nothing about the time
+    must not clear the time, and `{"when": null}` must. Without it a form is
+    read whole and missing fields read as empty, which is what a reader of a
+    stored record wants."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict = {}
+    for field in CHAT_FORM_FIELDS:
+        if patch and field not in value:
+            continue
+        if field in _FORM_TEXT:
+            out[field] = _text(value.get(field))
+        elif field == "new_task_each_run":
+            out[field] = _flag(value.get(field))
+        else:
+            out[field] = _jsonable(value.get(field))
+    return out
+
+
+def _form_of_task(record: dict) -> dict:
+    """The same settings read off a TASK record, which stores them as fields of
+    its own.
+
+    ONE VOCABULARY FOR TWO RECORDS (design-drafts-one-record.md, §1: "the
+    schedule hop edits the same record"). A chat draft keys its settings under
+    `form`; a session-bound task draft IS the form. A reader asking "what time
+    is this draft set for" must not have to know which of the two it is holding,
+    so both answer through this shape."""
+    return {field: record.get(field) for field in CHAT_FORM_FIELDS}
 
 
 def _text(value) -> str:
@@ -435,7 +798,11 @@ def _project_chat(section: dict) -> dict:
     `bound_draft` is `""` on everything that comes out of here, because a
     STORED chat record is a record of its own — the field is filled in only by
     `chat_view`, on the entries it synthesizes out of a task draft. One shape
-    for both, so a reader never has to test for the key."""
+    for both, so a reader never has to test for the key.
+
+    `form` is `{}` on a record nobody has scheduled, and the settings the
+    Schedule hop edited on one somebody has (`CHAT_FORM_FIELDS`). Always
+    present, for the same one-shape reason."""
     out: dict[str, dict] = {}
     for key, rec in section.items():
         if not chat_key(key) or not isinstance(rec, dict):
@@ -443,7 +810,9 @@ def _project_chat(section: dict) -> dict:
         out[key] = {"text": _text(rec.get("text")),
                     "attachments": _attachments(rec.get("attachments")),
                     "updated_at": _epoch(rec.get("updated_at")),
-                    "bound_draft": ""}
+                    "version": version_of(rec),
+                    "bound_draft": "",
+                    "form": _form(rec.get("form"))}
     return out
 
 
@@ -451,10 +820,9 @@ def bound_chats(chat: dict, task: dict) -> dict[str, str]:
     """`{session-id: draft-id}` — every conversation whose unsent words are
     being kept in a New task FORM rather than in a chat record of its own.
 
-    ONE RECORD, TWO DOORS (Akshil, 2026-09-12). The composer's Schedule hop
-    moves the words out of the chat draft and into a task draft bound to the
-    session (`from_chat_key` deletes the one, `session_id` binds the other), and
-    the reported bug is what the session's row looked like afterwards: it wore
+    ONE RECORD, TWO DOORS (Akshil, 2026-09-12). A task draft can name the
+    conversation it is the next message of (`session_id`), and the reported bug
+    was what the session's row looked like when one did: it wore
     the red `✎ Draft` chip, the chip's press took the reader to the chat, and
     the composer there was empty — the words were on disk the whole time, in a
     record that door could not see. A session with a bound form and no chat
@@ -486,6 +854,25 @@ def bound_chats(chat: dict, task: dict) -> dict[str, str]:
     return out
 
 
+def _bound_view(ident: str, record: dict) -> dict | None:
+    """One task draft read as the chat draft it is a second door onto, or None
+    when there is nothing in it to read.
+
+    The projection `chat_view` makes, split out so `put_chat` can answer the
+    write it just made through the bound door in the same shape the reader gets
+    — and with the version the write earned, which is the task record's."""
+    text = join_draft(record.get("title"), record.get("description"))
+    rows = _attachments(record.get("attachments"))
+    if not text.strip() and not rows:
+        return None
+    return {"text": text,
+            "attachments": rows,
+            "updated_at": _epoch(record.get("updated_at")),
+            "version": version_of(record),
+            "bound_draft": ident,
+            "form": _form_of_task(record)}
+
+
 def chat_view(chat: dict, task: dict) -> dict:
     """The chat half as a READER sees it: every stored chat draft, plus one
     synthesized entry for every session whose words live in a bound form
@@ -496,16 +883,28 @@ def chat_view(chat: dict, task: dict) -> dict:
     of the split the hop made), the form's attachments, the form's clock — plus
     `bound_draft`, the form's id, so a client that cares can tell the two apart.
     Nothing here writes: this is a projection of one read, and the write that
-    goes back through the same door is `put_chat`'s half of the bargain."""
-    out = dict(chat)
+    goes back through the same door is `put_chat`'s half of the bargain.
+
+    A WORDLESS FORM IS NOT A DRAFT HERE, even though its record survives. Since
+    `_put_bound` stopped deleting the whole form when the composer empties (the
+    settings the reader spent a minute choosing are not theirs to throw away),
+    a bound record can legitimately hold a time, a repeat rule and a model with
+    nothing typed in it — and that is not something anybody is still writing. It
+    is skipped, so `get_chat` answers None, the session's row wears no `✎ Draft`
+    chip, and a composer seeding off this key gets the empty box it should.
+
+    A WORDLESS STORED RECORD IS SKIPPED FOR THE SAME REASON, and there is now
+    such a thing: a chat draft that carries a `form` survives its words being
+    cleared, exactly as a bound form does, because the time and the repeat rule
+    somebody chose in the hop are not the composer's to throw away. One rule for
+    both records, since after this round they are the same record seen through
+    two doors (design-drafts-one-record.md, §1)."""
+    out = {key: record for key, record in chat.items()
+           if record["text"].strip() or record["attachments"]}
     for session, ident in bound_chats(chat, task).items():
-        record = task[ident]
-        out[session] = {
-            "text": join_draft(record.get("title"), record.get("description")),
-            "attachments": _attachments(record.get("attachments")),
-            "updated_at": _epoch(record.get("updated_at")),
-            "bound_draft": ident,
-        }
+        view = _bound_view(ident, task[ident])
+        if view is not None:
+            out[session] = view
     return out
 
 
@@ -541,7 +940,7 @@ def bound_chat_draft(session_id) -> str:
                        _project_task(store[TASK])).get(session, "")
 
 
-def _put_bound(data: dict, ident: str, body: str, rows: list[dict]):
+def _put_bound(data: dict, ident: str, body: str, rows: list[dict], form=None):
     """The composer's words written into the FORM they live in — `put_chat`'s
     other half, run inside its lock (`bound_chats` for why there is one).
 
@@ -556,29 +955,96 @@ def _put_bound(data: dict, ident: str, body: str, rows: list[dict]):
     from "did not ask"; this door always shows the whole tray, so a file
     missing from the write is a file the reader took out.
 
-    EMPTY IS A DELETE, the same bargain the chat half has always made: the
-    composer's autosave fires after the send has cleared the box, and the words
-    it is clearing are the ones that were just sent. What goes is the whole
-    form — there is no half of a draft left to keep."""
+    EMPTY CLEARS THE WORDS AND KEEPS THE FORM (Akshil, 2026-09-15; design.md,
+    PR C). It used to delete the whole record, on the chat half's reasoning that
+    there is no half of a draft to keep — true of a chat draft, which IS its
+    text, and false of a form. This door is the COMPOSER, and the composer's
+    autosave fires after every send; the other door is a card holding a folder, a
+    time, a repeat rule, a model, an effort, a permission mode and a tray that
+    somebody spent a minute choosing. Sending a message into the conversation
+    threw all of that away, and the person who had been setting it up had no way
+    to know that pressing Enter was the gesture that did it.
+
+    So an emptying write clears exactly what this door can see — title,
+    description, attachments — and leaves every setting where it was. The record
+    is then wordless, which every reader already treats as no draft: `chat_view`
+    skips it, `_bound_chips` draws no chip, and `_empty_task` says a form with no
+    words and no files is nothing anybody is writing. Deleting the RECORD is
+    still possible and is still what the reader's own gesture does — Discard in
+    the modal, the trash on the row, `DELETE /api/drafts/chat/<key>` on the
+    composer's send — all of which go through an explicit delete rather than
+    through here.
+
+    `None` is answered either way, because the question this door was asked is
+    "what does the composer hold now" and the answer is still nothing.
+
+    THE SETTINGS COME THROUGH THIS DOOR TOO, as of the one-record round. The
+    Schedule hop no longer mints a second draft: the New task modal it opens
+    edits THIS record, writing the time, the repeat rule and the model as
+    `form` alongside the words (`CHAT_FORM_FIELDS`), and on a bound session
+    those fields already ARE the task record's own. A patch, field by field, so
+    the composer's ordinary autosave — which says nothing about any of them —
+    cannot clear what the modal set.
+
+    `title` is the one form field this door does not take: here the WORDS own
+    it, split off the box by `split_draft`, and letting a form overwrite it
+    would be the two doors disagreeing about one sentence."""
+    patch = _form(form, patch=True) if isinstance(form, dict) else {}
+    patch.pop("title", None)
     title, description = split_draft(body)
-    if not title and not description and not rows:
-        if ident not in data[TASK]:
-            return None, False
-        data[TASK].pop(ident, None)
-        return None, True
-    record = _task_record(data[TASK].get(ident)) or {}
-    now = time.time()
+    words = bool(title or description or rows)
+    stored = _task_record(data[TASK].get(ident))
+    if stored is None and not words:
+        return None, False
+    record = dict(stored) if stored is not None else (_task_record({}) or {})
+    had = bool(record["title"] or record["description"] or record["attachments"])
+    if not words and not had and not patch:
+        return None, False  # already wordless, and this write says nothing else
     record["title"] = title
     record["description"] = description
     record["attachments"] = rows
+    for field, value in patch.items():
+        record[field] = value
+    now = time.time()
     record["created_at"] = record.get("created_at") or now
     record["updated_at"] = now
     data[TASK][ident] = record
-    return {"text": join_draft(title, description), "attachments": rows,
-            "updated_at": now, "bound_draft": ident}, True
+    if not words:
+        return None, True
+    return (lambda d: _bound_view(ident, _task_record(d[TASK].get(ident)) or {})), True
 
 
-def put_chat(session_id, text=None, attachments=None) -> dict | None:
+def _has_form(form: dict) -> bool:
+    """Is there anything in these settings? A form of nothing but blanks is no
+    form at all, and storing one would put an empty `form` key on every chat
+    draft in the file."""
+    return any(value not in (None, "", [], {}) for value in form.values())
+
+
+def _chat_current(data: dict, key: str, ident: str) -> dict | None:
+    """What is under this chat key RIGHT NOW, read the way a client reads it —
+    the body of a 409.
+
+    Answers a WORDLESS record too, unlike `chat_view`, which is the difference
+    between the two questions: the reader is asking "is there a draft here"
+    (a wordless one is not), and a loser of a conditional write is asking "what
+    version am I up against" (there is one, and refusing to say would leave the
+    client retrying against a number it can never learn)."""
+    if ident:
+        record = _task_record(data[TASK].get(ident))
+        if record is None:
+            return None
+        return _bound_view(ident, record) or {
+            "text": "", "attachments": [], "updated_at": record["updated_at"],
+            "version": version_of(record), "bound_draft": ident,
+            "form": _form_of_task(record)}
+    if key not in data[CHAT]:
+        return None
+    return _project_chat({key: data[CHAT][key]}).get(key)
+
+
+def put_chat(session_id, text=None, attachments=None, form=None,
+             if_version=None, client=None, seq=None) -> dict | None:
     """Upsert one chat draft — and DELETE it when it comes in empty.
 
     "Empty" is no text and no attachments, which is the state a composer is in
@@ -597,12 +1063,41 @@ def put_chat(session_id, text=None, attachments=None) -> dict | None:
 
     The binding is looked up INSIDE the lock, with the write: a form bound (or
     emptied) between a read and a write outside one is exactly how the same
-    sentence ends up in both halves of the store."""
+    sentence ends up in both halves of the store.
+
+    `form` IS A PATCH AND IS OPTIONAL. The New task modal opened by the
+    Schedule hop writes back through this door — same key, same record, no
+    `draft:<id>` minted — so the settings it edits ride here beside the words
+    (`CHAT_FORM_FIELDS`). Omitted, the stored settings stand: the composer's own
+    autosave knows nothing about them and must not be able to clear them. Sent,
+    only the fields it names move, so `{"when": null}` clears a time and a form
+    that never mentions the model keeps it.
+
+    EMPTYING A DRAFT THAT CARRIES SETTINGS CLEARS THE WORDS AND KEEPS THEM —
+    the same bargain `_put_bound` makes on a bound session, now that the two are
+    one record seen through two doors. The record then reads as no draft to
+    every reader (`chat_view` skips it, no row, no chip), so nothing about that
+    is visible; what survives is the time somebody chose.
+
+    `if_version` is the caller's `If-Match`: the version it believes this key is
+    at, compared inside the lock against the record this write would touch —
+    the bound form's when there is one, since that is the record being written.
+    A mismatch raises `VersionConflict` carrying the current state and writes
+    nothing; `None` is an unconditional write, which is what every client that
+    predates versions sends.
+
+    `client`/`seq` are the page's own sequence for this key (`SEQ`): a write
+    that is not newer than the last one THAT page made here raises `StaleWrite`
+    and changes nothing. Checked BEFORE the version, because a straggler is not
+    a conflict — nobody is losing an edit, the page has simply said something
+    newer already."""
     key = chat_key(session_id)
     if not key:
         return None
     body = _text(text)
     rows = _attachments(attachments)
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
         ident = ""
@@ -610,38 +1105,98 @@ def put_chat(session_id, text=None, attachments=None) -> dict | None:
         if session:
             ident = bound_chats(_project_chat(data[CHAT]),
                                 _project_task(data[TASK])).get(session, "")
+        if not _seq_fresh(data, key, page, count):
+            raise StaleWrite(key, _chat_current(data, key, ident))
+        _seq_note(data, key, page, count)
+        if if_version is not None:
+            current = data[TASK].get(ident) if ident else data[CHAT].get(key)
+            if version_of(current) != if_version:
+                raise VersionConflict(key, version_of(current),
+                                      _chat_current(data, key, ident))
         if ident:
-            return _put_bound(data, ident, body, rows)
+            return _put_bound(data, ident, body, rows, form)
+        stored = data[CHAT].get(key)
+        settings = _form((stored or {}).get("form"))
+        merged = dict(settings)
+        merged.update(_form(form, patch=True) if isinstance(form, dict) else {})
+        keep = _has_form(merged)
         if not body.strip() and not rows:
             # The delete, taken here rather than through `delete_chat` so the
             # question "is this key bound?" and the answer to it are one turn of
             # the lock.
-            if key not in data[CHAT]:
-                return None, False
-            data[CHAT].pop(key, None)
+            if stored is None:
+                return None, bool(page and count is not None)
+            if not keep:
+                data[CHAT].pop(key, None)
+                return None, True
+            was_wordless = not (_text(stored.get("text")).strip()
+                                or _attachments(stored.get("attachments")))
+            if was_wordless and merged == settings:
+                # already wordless, and the settings stand — but the note still
+                # has to land, same reason as the `stored is None` branch above.
+                return None, bool(page and count is not None)
+            data[CHAT][key] = {"text": "", "attachments": [],
+                               "updated_at": time.time(), "form": merged}
             return None, True
         record = {"text": body, "attachments": rows, "updated_at": time.time()}
+        if keep:
+            record["form"] = merged
         data[CHAT][key] = record
         # STORED without `bound_draft` and ANSWERED with it: the field is a fact
         # about which record these words are in, not a field of the record, and
         # writing it into the file would be a second place for it to go stale.
-        return dict(record, bound_draft=""), True
+        # Read back AFTER `_update` has stamped it, so the answer carries the
+        # version this write earned.
+        return (lambda d: _project_chat({key: d[CHAT][key]}).get(key)), True
 
     return _update(mutate)
 
 
-def delete_chat(session_id) -> bool:
+def delete_chat(session_id, if_version=None, client=None, seq=None) -> bool:
     """Drop one chat draft; True if there was one. Called on send, on an
-    explicit clear, and by every verb that takes the task away —
-    archive/delete/erase — because a draft for a conversation nobody can reach
-    any more is a badge on a row that is gone."""
+    explicit clear, and by the two verbs that take the task away for good —
+    delete and erase — because a draft for a conversation nobody can reach any
+    more is a badge on a row that is gone. NOT by archive, which is the
+    reversible verb: its drafts hide with the row and come back with it
+    (Akshil, 2026-09-15).
+
+    `if_version` is the caller's `If-Match`, compared inside the lock against
+    the record this key READS as — the bound form's version on a session whose
+    words live in one, exactly as `put_chat` compares — so the two doors agree
+    about what the client is holding. Mismatch raises `VersionConflict` and
+    deletes nothing; `None` deletes unconditionally.
+
+    A DELETE CARRIES A `seq` TOO, and it is the one that matters most: the send
+    deletes, and a keepalive PUT the page fired a moment earlier can arrive
+    afterwards. The note this leaves behind outlives the record it removed
+    (`SEQ`), which is what makes that straggler a no-op instead of a
+    resurrection."""
     key = chat_key(session_id)
     if not key:
         return False
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
+        ident = ""
+        session = bound_session(key)
+        if session:
+            ident = bound_chats(_project_chat(data[CHAT]),
+                                _project_task(data[TASK])).get(session, "")
+        if not _seq_fresh(data, key, page, count):
+            raise StaleWrite(key, _chat_current(data, key, ident))
+        _seq_note(data, key, page, count)
+        if if_version is not None:
+            current = data[TASK].get(ident) if ident else data[CHAT].get(key)
+            if version_of(current) != if_version:
+                raise VersionConflict(key, version_of(current),
+                                      _chat_current(data, key, ident))
         if key not in data[CHAT]:
-            return False, False
+            # NOTHING TO REMOVE, AND THE NOTE IS STILL WORTH WRITING: a send on
+            # a chat whose first save never landed deletes nothing, and the PUT
+            # that was in flight while it did is precisely the request this note
+            # exists to drop.
+            return False, bool(page and count is not None)
         data[CHAT].pop(key, None)
         return True, True
 
@@ -670,33 +1225,34 @@ def _task_record(rec) -> dict | None:
     out["custom_rule"] = _jsonable(rec.get("custom_rule"))
     out["attachments"] = _attachments(rec.get("attachments"))
     out["new_task_each_run"] = _flag(rec.get("new_task_each_run"))
-    # WHERE THESE WORDS CAME FROM, and it is stored rather than merely acted on
-    # (design.md, Round 2: "A draft moves, never duplicates"). The hop deletes
-    # the chat draft as it writes this one, so without a record of the key the
-    # move is irreversible the moment the modal is closed: a draft REOPENED from
-    # its row has no `?back=` in the URL and no sessionStorage stash left, and
-    # "Back to chat" — the only thing that puts the sentence back where it was
-    # typed — had nothing to aim at. Validated through `chat_key`, so the field
-    # is either a key the chat half can actually be written under or "" (Akshil,
-    # 2026-09-11).
-    out["from_chat_key"] = chat_key(rec.get("from_chat_key"))
     # WHICH CONVERSATION THIS DRAFT IS A MESSAGE TO, when it came out of one
     # that already exists (Akshil, 2026-09-12).
     #
-    # `from_chat_key` above says where the WORDS were typed and is spent the
-    # moment the chat's own copy is deleted; this says where the TASK is going,
-    # and it has to outlive the modal being closed. Without it the hop worked
-    # only while the page still held the session in memory: press Schedule
-    # straight away and the message landed in the conversation, exit the modal
-    # and the draft on disk knew nothing about it — so reopening that draft and
-    # scheduling it started a NEW session under a NEW task number, and the task
-    # the reader had been watching was gone.
+    # It says where the TASK is going, and it has to outlive the modal being
+    # closed. Without it the hop worked only while the page still held the
+    # session in memory: press Schedule straight away and the message landed in
+    # the conversation, exit the modal and the draft on disk knew nothing about
+    # it — so reopening that draft and scheduling it started a NEW session under
+    # a NEW task number, and the task the reader had been watching was gone.
+    #
+    # ITS TWIN `from_chat_key` IS GONE (design-drafts-one-record.md, §1). It
+    # said where the words were TYPED, and it only had to exist while a hop
+    # copied a chat draft into a task draft — two records for one sentence, and
+    # the provenance field was how the second one knew to delete the first. The
+    # hop makes no copy now: the modal edits the chat record it was opened on.
+    # A stored record that still carries the field loads fine and simply drops
+    # it, which is what this projection does with every key it does not know.
     #
     # Validated as a session id and never as `new:<file>` (`bound_session`):
     # binding is to a thread, not to a folder.
     out["session_id"] = bound_session(rec.get("session_id"))
     out["created_at"] = _epoch(rec.get("created_at"))
     out["updated_at"] = _epoch(rec.get("updated_at"))
+    # WHAT THE CALLER'S `If-Match` IS COMPARED AGAINST, stamped by `_update` on
+    # every write and carried out to every reader (`GET /api/drafts`, the
+    # changes endpoint, the 409 body). 0 on a record written before versions
+    # existed, which reads as "nobody has a number for this yet".
+    out["version"] = version_of(rec)
     return out
 
 
@@ -776,7 +1332,14 @@ def _fold_into_bound(existing: dict, incoming: dict) -> dict:
 
     `session_id` is the exception and takes the incoming value outright — it is
     the very fact that brought these two records together, and it is the same on
-    both sides by construction."""
+    both sides by construction.
+
+    THE SETTINGS IT RECONCILES ARE `CHAT_FORM_FIELDS`, the same nine a chat
+    record now carries as its `form` and the same nine `_put_bound` patches, so
+    a hop that lands on this path and one that lands on that one leave the
+    record in the same state (design-drafts-one-record.md, §1). `version` is not
+    among them and is not merged: it belongs to the KEY this write lands on, and
+    `_update` stamps it."""
     out = dict(existing)
     for field in _TASK_TEXT:
         if incoming[field].strip():
@@ -786,8 +1349,6 @@ def _fold_into_bound(existing: dict, incoming: dict) -> dict:
             out[field] = incoming[field]
     if incoming["new_task_each_run"] is not None:
         out["new_task_each_run"] = incoming["new_task_each_run"]
-    if incoming["from_chat_key"]:
-        out["from_chat_key"] = incoming["from_chat_key"]
     out["session_id"] = incoming["session_id"]
     rows: list[dict] = []
     seen: set[str] = set()
@@ -800,7 +1361,8 @@ def _fold_into_bound(existing: dict, incoming: dict) -> dict:
     return out
 
 
-def put_task(ident, fields) -> tuple[dict | None, str]:
+def put_task(ident, fields, if_version=None, client=None,
+             seq=None) -> tuple[dict | None, str]:
     """Upsert one task draft — and DELETE it when every field comes in empty.
 
     Fields the client did not send keep the value the stored draft had, so the
@@ -836,13 +1398,31 @@ def put_task(ident, fields) -> tuple[dict | None, str]:
     words land, the settings stay, the id the reader keeps is the one that was
     already bound. Done inside THIS write's lock rather than as a second
     request, so nothing can observe the moment two drafts both claim one
-    session."""
+    session.
+
+    `if_version` is the caller's `If-Match`, compared inside the lock against
+    the record under THIS id (the one the caller named and is holding a version
+    of). Mismatch raises `VersionConflict` and writes nothing; `None` writes
+    unconditionally, which is what every client that predates versions does.
+
+    `client`/`seq` are the page's own sequence for `draft:<id>` — the listing's
+    key for this record, and the same one the client's syncer counts under
+    (`SEQ`). A write that is not newer than the last one that page made here
+    raises `StaleWrite` and changes nothing."""
     key = draft_id(ident)
     if not key:
         return None, ""
     patch = fields if isinstance(fields, dict) else {}
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
+        if not _seq_fresh(data, task_key(key), page, count):
+            raise StaleWrite(task_key(key), _task_record(data[TASK].get(key)))
+        _seq_note(data, task_key(key), page, count)
+        if if_version is not None and version_of(data[TASK].get(key)) != if_version:
+            raise VersionConflict(task_key(key), version_of(data[TASK].get(key)),
+                                  _task_record(data[TASK].get(key)))
         stored = _task_record(data[TASK].get(key)) or {}
         merged = dict(stored)
         for field in TASK_FIELDS:
@@ -851,7 +1431,7 @@ def put_task(ident, fields) -> tuple[dict | None, str]:
         record = _task_record(merged)
         if record is None or _empty_task(record):
             if key not in data[TASK]:
-                return (None, key), False
+                return (None, key), bool(page and count is not None)
             data[TASK].pop(key, None)
             return (None, key), True
         now = time.time()
@@ -878,38 +1458,47 @@ def put_task(ident, fields) -> tuple[dict | None, str]:
             record["updated_at"] = now
             data[TASK].pop(key, None)
             data[TASK][bound_id] = record
-            return (record, bound_id), True
+            # Read back after the stamp, so the answer carries the version this
+            # write earned rather than the one it started from.
+            return (lambda d: (_task_record(d[TASK].get(bound_id)), bound_id)), True
         data[TASK][key] = record
-        return (record, key), True
+        return (lambda d: (_task_record(d[TASK].get(key)), key)), True
 
     return _update(mutate)
 
 
-def unbind_session(session_id) -> list[str]:
-    """Cut every task draft loose from one session; the LISTING KEYS of the ones
-    that were cut (`draft:<id>`), newest-store order, and `[]` when none were.
+def delete_bound(session_id) -> list[str]:
+    """Discard every task draft bound to one session; the LISTING KEYS of the
+    ones that went (`draft:<id>`), and `[]` when there were none.
 
-    THE KEYS AND NOT A COUNT (bugbot, PR #1126): those rows have just changed —
-    a different number, a different folder, no session — and the caller has to
-    announce them (`tasks_watch.notify`) or the page goes on showing the erased
-    session's number on a draft whose Schedule would send the message back into
-    a conversation that no longer exists. A count cannot be announced.
+    THE VERB THE TASK'S OWN DELETE AND ERASE SPEND (Akshil, 2026-09-15;
+    design.md, PR C). A session-bound draft is the NEXT MESSAGE of one
+    conversation — it stands in for no row of its own, it borrows that
+    conversation's number, and the only way back into it is the composer of the
+    chat it is a message to. Take the task away and the draft is bytes nothing
+    can show and nobody can reach, which is precisely what the chat draft beside
+    it has always been treated as.
 
-    The erase gesture's share of this store (`POST /api/tasks/erase`). The words
-    are NOT deleted — a draft is a task somebody is still writing, and the
-    conversation it was going to be sent into is only where it was going to go.
-    What goes is the binding, and with it everything the binding stood for: the
-    draft stops borrowing a number that is now a reservation nobody may reissue
-    (`tasks_store.forget_session` stamps the record `erased` and keeps it), stops
-    standing in for a row that no longer exists, and is numbered as the ordinary
-    `draft:<id>` it has become on the next listing.
+    THIS REPLACES THE UNBINDING THAT USED TO HAPPEN ON ERASE. That rule kept the
+    words and cut only the binding, so the form came back as an ordinary
+    `draft:<id>` row in its own folder — defensible in the abstract and wrong in
+    practice, because what came back was half a message addressed to a
+    conversation that no longer exists, in a lane the reader had just cleared.
+    Delete and erase now do the same thing to both halves of "this session's
+    unsent text", which is also the one thing they could never previously agree
+    on (design.md, PR C: "Delete + erase drop BOTH").
 
-    Without this the draft showed the dead TASK-nnn for ever and could never be
-    allocated one of its own, because the binding was the very thing telling
-    `_draft_numbers` that its task already had a number (review, 2026-09-12).
+    THE KEYS AND NOT A COUNT (bugbot, PR #1126): those rows have just left the
+    listing and the caller has to announce them (`tasks_watch.notify`), or a
+    page holding one goes on drawing a draft whose Schedule would send its
+    message into a conversation that is gone. A count cannot be announced.
+
+    ARCHIVE DOES NOT CALL THIS, and that is the decision this verb exists
+    alongside (Akshil, 2026-09-15): filing a task away is reversible, so its
+    drafts simply hide with it and come back on unarchive.
 
     One pass under one lock, and `[]` — no write at all — for the overwhelmingly
-    common erase where nothing was bound to that session."""
+    common case where nothing was bound to that session."""
     target = bound_session(session_id)
     if not target:
         return []
@@ -920,28 +1509,42 @@ def unbind_session(session_id) -> list[str]:
             record = _task_record(rec)
             if record is None or record["session_id"] != target:
                 continue
-            # `updated_at` is NOT touched: it is the clock the row prints
-            # ("drafted 5m ago") and sorts on, and nobody typed anything here.
-            record["session_id"] = ""
-            data[TASK][ident] = record
+            data[TASK].pop(ident, None)
             cut.append(task_key(ident))
         return cut, bool(cut)
 
     return _update(mutate)
 
 
-def delete_task(ident) -> bool:
+def delete_task(ident, if_version=None, client=None, seq=None) -> bool:
     """Discard one task draft; True if there was one. Called by the modal's
     Discard button and by `POST /api/schedule` once the draft has become a real
     scheduled entry — the draft's whole purpose is over at that moment, and a
-    row left behind would be the same task twice."""
+    row left behind would be the same task twice.
+
+    `if_version` is the caller's `If-Match`: the trash on a row is a destructive
+    gesture aimed at words somebody may have kept typing since the row was
+    drawn, so it is allowed to be conditional. Mismatch raises
+    `VersionConflict`; `None` deletes unconditionally.
+
+    …and `client`/`seq` are the page's own sequence for `draft:<id>`, kept past
+    the delete so a PUT that was already on the wire cannot put the record
+    back (`SEQ`, `delete_chat`)."""
     key = draft_id(ident)
     if not key:
         return False
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
+        if not _seq_fresh(data, task_key(key), page, count):
+            raise StaleWrite(task_key(key), _task_record(data[TASK].get(key)))
+        _seq_note(data, task_key(key), page, count)
+        if if_version is not None and version_of(data[TASK].get(key)) != if_version:
+            raise VersionConflict(task_key(key), version_of(data[TASK].get(key)),
+                                  _task_record(data[TASK].get(key)))
         if key not in data[TASK]:
-            return False, False
+            return False, bool(page and count is not None)
         data[TASK].pop(key, None)
         return True, True
 

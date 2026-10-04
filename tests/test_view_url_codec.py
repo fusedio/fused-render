@@ -47,18 +47,6 @@ def test_posix_backslash_filename_untouched():
     assert view_url_path("/home/user/back\\slash.txt") == "/explorer/view/home/user/back%5Cslash.txt"
 
 
-def test_bookmark_on_drive_path():
-    assert view_url(8000, "C:\\Users\\x\\demo.bookmark") == (
-        "http://127.0.0.1:8000/explorer/view/_bookmark?file=C%3A%2FUsers%2Fx%2Fdemo.bookmark"
-    )
-
-
-def test_bookmark_on_unc_path():
-    assert view_url(8000, "\\\\server\\share\\demo.bookmark") == (
-        "http://127.0.0.1:8000/explorer/view/_bookmark?file=%5C%5Cserver%5Cshare%5Cdemo.bookmark"
-    )
-
-
 def test_none_path_is_home():
     assert view_url(8000, None) == "http://127.0.0.1:8000/"
 

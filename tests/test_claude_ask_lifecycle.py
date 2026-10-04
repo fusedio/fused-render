@@ -108,7 +108,7 @@ def test_both_hosts_install_the_cross_navigation_pull(preview, listing):
     a folder opened one way must not silently drop a prompt the other way
     would have shown (Preview.tsx's own "Lockstep" note)."""
     for label, src in [("Preview.tsx", preview), ("Listing.tsx", listing)]:
-        assert '"@apps/explorer/lib/pending-claude-ask"' in src, label
+        assert '"@platform/lib/pending-claude-ask"' in src, label
         assert "takePendingClaudeAsk" in src, label
         assert "takePendingClaudeAsk(fsPath)" in src, label
         assert "claudeAskActionRef.current(prompt)" in src, label

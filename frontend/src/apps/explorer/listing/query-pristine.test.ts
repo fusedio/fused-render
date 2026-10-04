@@ -41,4 +41,22 @@ describe("isPristineQuery", () => {
     expect(isPristineQuery("report", FS_PATH, HOME)).toBe(false);
     expect(isPristineQuery("/Users/iamsdas/*.csv", FS_PATH, HOME)).toBe(false);
   });
+
+  // A file host seeds the box with its own full path (SearchField.tsx's
+  // `crumbsPath`), not the search scope (`fsPath`, the parent folder) — a
+  // committed query still searches the parent, so the scope stays `fsPath`,
+  // but the box's own pristine seed is the file's path and must read as
+  // untouched too, given as the optional 4th `crumbsFsPath` argument.
+  test("the file path a file host actually pre-fills is pristine when passed as crumbsFsPath", () => {
+    const file = "/Users/iamsdas/work/index.html";
+    expect(isPristineQuery(file, FS_PATH, undefined, file)).toBe(true);
+    expect(isPristineQuery(file + "/", FS_PATH, undefined, file)).toBe(true);
+    expect(isPristineQuery("~/work/index.html", FS_PATH, HOME, file)).toBe(true);
+  });
+
+  test("crumbsFsPath does not loosen what counts as edited when it differs from the query", () => {
+    const file = "/Users/iamsdas/work/index.html";
+    expect(isPristineQuery("report", FS_PATH, HOME, file)).toBe(false);
+    expect(isPristineQuery(FS_PATH + "/x", FS_PATH, undefined, file)).toBe(false);
+  });
 });

@@ -35,10 +35,19 @@
 // completion dropdown's reasoning for suppressing the search applies to it
 // exactly as much as to a leading "/".
 //
-// A glob ("*" anywhere in the query) is excluded via `listingAddress` —
-// it returns null for one, the same way the server's own `resolve_query`
-// treats "*" as the one glob trigger (`is_glob = "*" in raw`,
-// fused_render/index/query.py) — so this needs no glob check of its own.
+// A glob is excluded two ways. `listingAddress` rejects a "*" typed by the
+// user directly — it returns null for one, the same way the server's own
+// `resolve_query` treats "*" as a glob trigger (`is_glob = "*" in raw`,
+// fused_render/index/query.py). But a glob can also be INJECTED by trailing
+// (or leading) whitespace — `expand_whitespace_query` turns "/Users/iamsdas "
+// into a pattern containing "*" server-side, with no literal "*" anywhere in
+// what the user typed, and `listingAddress`'s own raw-substring check can't
+// see that (deliberately: its job is "what would Enter open", never "does
+// this now resolve to a glob"). This predicate has to see it, so it runs the
+// query through the SAME normalization `escapesFsPath` (query-base.ts) uses
+// before its own escape check, and excludes a query whose NORMALIZED form
+// carries a "*" — round 3 finding, see `normalizeQueryForResolution`'s own
+// comment for why this and `escapesFsPath` must never diverge again.
 //
 // This does NOT verify the address exists. An earlier version of this
 // predicate did (an async `statPath`, debounced and cached) — dropped once
@@ -51,7 +60,10 @@
 // a real path ("~/Work/agent-skills/u", nothing by that exact name yet)
 // reads as "Path" the same as the folder that already exists, because shape
 // is the only thing left to ask.
-import { escapesBase } from "@apps/explorer/listing/query-base";
+import {
+  escapesBase,
+  normalizeQueryForResolution,
+} from "@apps/explorer/listing/query-base";
 import { listingAddress } from "@apps/explorer/listing/listing-address";
 
 export function isPathShapedQuery(
@@ -59,6 +71,10 @@ export function isPathShapedQuery(
   fsPath: string,
   home: string | undefined,
 ): boolean {
-  const raw = query.trim();
-  return escapesBase(raw) && listingAddress(query, fsPath, home) !== null;
+  const normalized = normalizeQueryForResolution(query);
+  return (
+    escapesBase(normalized) &&
+    !normalized.includes("*") &&
+    listingAddress(query, fsPath, home) !== null
+  );
 }

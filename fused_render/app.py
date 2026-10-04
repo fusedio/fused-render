@@ -14,6 +14,8 @@ import importlib.util
 import json
 import logging
 import os
+import plistlib
+import posixpath
 import secrets
 import shlex
 import socket
@@ -29,7 +31,7 @@ import uvicorn
 
 from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
-from fused_render.logs import log_path, setup_logging
+from fused_render.logs import log_dir, log_path, setup_logging
 from fused_render.server import (
     create_app, export_app_env, set_server_origin_env, write_server_json,
 )
@@ -52,13 +54,11 @@ MAX_PORT = DEFAULT_PORT + 10
 
 
 def view_url_path(fs_path: str) -> str:
-    """Shell URL path for a Finder-opened file (SB-9, D99).
+    """Shell URL path for a Finder-opened file.
 
-    A `.bookmark` file is not previewed — it routes to the `_bookmark`
-    sentinel, which reads the file server-side and redirects to the view it
-    describes (the frontend resolves its relative paths against the file's
-    own directory). Everything else opens as a plain `/view/<path>`.
-    Module-level (not a closure) so it is testable without AppKit.
+    A `.fused` app lands on its embed URL; everything else opens as a plain
+    `/view/<path>`. Module-level (not a closure) so it is testable without
+    AppKit.
 
     Delegates to the shared `_view_url_codec` (the single body, now 4/4
     consumers with winopen/deeplink/shell.seed) so macOS encodes paths exactly
@@ -88,7 +88,7 @@ def openurls_target_path(raw_url: str) -> str:
     """Shell URL path for an `application:openURLs:` event (SPEC §26, D110).
 
     AppKit delivers both `fused-render://` deep links AND plain document
-    opens (e.g. a Finder double-click on a registered `.bookmark` file, as
+    opens (e.g. a Finder double-click on a registered `.fused` file, as
     a `file://` URL) through this one selector — unlike `openFiles:`, which
     only ever gets plain paths. Only a `fused-render:` URL is a deep link;
     anything else is a file open and must resolve the same way
@@ -221,6 +221,25 @@ def _close_duckdb_stash() -> None:
 
 
 def _is_process_alive(pid: int) -> bool:
+    # os.kill(pid, 0) is the POSIX no-op liveness check, but on Windows signal 0
+    # aliases CTRL_C_EVENT: it broadcasts a real Ctrl+C via
+    # GenerateConsoleCtrlEvent to the whole console process group rather than
+    # probing `pid` alone. Use the Win32 exit-code API instead.
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -699,32 +718,223 @@ def bundle_path() -> str | None:
     return os.path.dirname(contents)
 
 
+# How long `_bootstrap_server` gives its own server to answer the desktop probe
+# before it gives up — and, because `_write_pidfile` runs AFTER that wait, the
+# ceiling on how late a perfectly healthy successor's pidfile can appear. Named
+# rather than spelled 15.0 at the call site because the relauncher below has to
+# be sized against it: a relauncher that gives up first would "retry" a launch
+# that was still booting (bugbot, PR #1214).
+SERVER_READY_TIMEOUT_S = 15.0
+
 # The relauncher's poll cadence while it waits for this process to die. Fast
 # enough that the relaunch feels immediate after the teardown (bounded by
-# QUIT_HARD_DEADLINE_S), slow enough to cost nothing.
+# QUIT_HARD_DEADLINE_S), slow enough to cost nothing. Also the cadence of its
+# watch for the successor afterwards.
 RELAUNCH_POLL_S = 0.2
 
+# How long the relauncher waits AFTER our pid disappears before it asks
+# LaunchServices for a new instance. The pid going away is not the same event as
+# LaunchServices letting go of the app: for a moment the dead instance is still
+# the registered owner of the bundle, and `open -a` in that window is delivered
+# to a process that is already gone — it exits 0 having done nothing at all,
+# which is exactly the silent failure this file could not diagnose (real-app test
+# of PR #1214: teardown finished, no successor, no crash report, `open` by hand
+# 20 s later worked first time).
+RELAUNCH_SETTLE_S = 1.0
 
-def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
+# How long a VISIBLY ALIVE successor is given to produce its pidfile before the
+# relauncher stops expecting one. Strictly longer than SERVER_READY_TIMEOUT_S,
+# and that is the point: `_bootstrap_server` waits up to that ceiling for its own
+# server and only then calls `_write_pidfile`, so a slow-but-perfectly-healthy
+# launch has no pidfile for fifteen seconds after it starts — plus the seconds a
+# cold start of a signed bundle takes before any Python runs.
+RELAUNCH_BOOT_WAIT_S = 25.0
+
+# How long after an ask before the relauncher checks whether ANYTHING started at
+# all. Much shorter than the boot wait above, and for a different question: "is
+# the app running" is answerable within a second or two of `open` (the process
+# execs long before it has a server), where "has it finished booting" is not.
+# Keeping the two apart is what lets a genuinely silent `open` be retried
+# promptly without ever mistaking a booting successor for a failed launch.
+RELAUNCH_RETRY_AFTER_S = 5.0
+
+# The relauncher's overall deadline, COUNTED FROM ITS OWN START — which is the
+# press, not the pid's death: it is spawned by `begin_quit`'s `on_claim`, at the
+# very start of the teardown. That distinction is load-bearing. The teardown may
+# take up to QUIT_HARD_DEADLINE_S (34 s), so a deadline counted from the pid's
+# death could still be running 84 s after the press, long after the page gave up
+# at RESTART_GIVE_UP_MS (60 s, frontend/src/platform/lib/restart-flow.ts) and
+# told the user the app is not running. Counted from the press it is under that
+# cap whatever the teardown does (bugbot, PR #1214).
+RELAUNCH_DEADLINE_S = 50.0
+
+# How many times it asks, the first ask included.
+RELAUNCH_OPEN_TRIES = 3
+
+
+def bundle_executable(bundle: str) -> str:
+    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender.
+
+    Not "anything under Contents/MacOS": the bundle also ships
+    `Contents/MacOS/python` (the packaged interpreter every engine run, index
+    worker and helper execs — see engine.py) and `Contents/MacOS/fused-apple-ai`.
+    Those are the app's CHILDREN, and `os._exit` REPARENTS children rather than
+    killing them, so a leftover one outlives the quit — which is why the liveness
+    probe has to name the app itself. A probe that matched the directory would
+    read a stranded helper as "the successor is booting", refuse to escalate, and
+    leave the user with no app at all (bugbot, PR #1214).
+
+    Falls back to the conventional name: a bundle whose Info.plist cannot be read
+    is one the relauncher is about to `open` anyway, and a probe that is slightly
+    wrong is better than one that matches everything.
+    """
+    try:
+        with open(posixpath.join(bundle, "Contents", "Info.plist"), "rb") as f:
+            name = plistlib.load(f).get("CFBundleExecutable")
+        if isinstance(name, str) and name:
+            return name
+    except (OSError, plistlib.InvalidFileException):
+        pass
+    return "FusedRender"
+
+
+def relauncher_log_path(pid: int) -> str:
+    """Where the relauncher writes its own timeline.
+
+    Beside the app's own `fused-render-<pid>.log`, named for the pid it is
+    watching, so `ls -t` in the log dir puts the two next to each other: the app
+    log ends with "quit teardown finished" and this one says what happened next.
+    A separate file because the process that would have written those lines into
+    the app log is the one that just exited — a relauncher that logs nowhere is
+    precisely why "the app never came back" was undiagnosable the first time.
+    """
+    return os.path.join(log_dir(), f"fused-render-relaunch-{int(pid)}.log")
+
+
+# The "is a successor already running?" test, as a shell fragment that exits 0
+# when one is. `pgrep -f` sees the successor from the instant it execs, long
+# before it has a server — let alone the pidfile, which `_bootstrap_server`
+# writes only after `wait_until_ready`. The `grep -v` is not optional: this
+# shell's OWN command line carries the bundle path, so `pgrep -f` matches it too
+# and an unfiltered probe would report "alive" forever, on every run, and never
+# escalate.
+#
+# Its own constant so a test can swap in a probe it controls and assert the RULE
+# (never `-n` over a live process) without depending on the host's `pgrep`
+# semantics — which differ on Linux, where CI runs the string-level tests.
+ALIVE_PROBE = '/usr/bin/pgrep -f "^$exe" >/dev/null 2>&1'
+
+
+def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
+                     log=None, pidfile=None, opener="/usr/bin/open",
+                     alive_probe=None):
     """Detached shell child that waits for `pid` to exit, then `open`s the
-    bundle. A dying app cannot start its own successor — `open` on a bundle
-    that is still running only foregrounds it — so the wait has to happen in a
-    process that survives us: its own session, no inherited pipes.
+    bundle — and keeps watching until a successor actually answers.
+
+    A dying app cannot start its own successor — `open` on a bundle that is
+    still running only foregrounds it — so the wait has to happen in a process
+    that survives us: its own session, no inherited pipes.
 
     The poll loop has no timeout of its own: the pid it waits on is guaranteed
-    to die within QUIT_HARD_DEADLINE_S (start_quit's watchdog terminates the
-    app past it, teardown finished or not), so a bounded wait here would only
-    duplicate that guarantee."""
-    # `open -a <bundle> fused-render://launch`, not a plain `open <bundle>`:
-    # a plain open is a normal launch, which boots onto a fresh home tab and
-    # steals focus from the page that asked for the restart. Delivering the
-    # launch action instead makes the successor's handler set state["docs"]
-    # and open nothing (D128); -a pins WHICH copy launches, so the deep link
-    # can't resolve to some other registered install.
-    quoted = shlex.quote(bundle)
+    to die within QUIT_HARD_DEADLINE_S (start_quit's watchdog terminates the app
+    past it, teardown finished or not), so a bounded wait here would only
+    duplicate that guarantee.
+
+    IT VERIFIES, RATHER THAN HOPING. `open` exits 0 for "I handed the URL to
+    something", which includes handing it to the instance that is in the middle
+    of disappearing — so its exit code says nothing about whether the app came
+    back. The successor's PIDFILE is the signal that does: `begin_quit` removes
+    it before this shell is ever spawned (the removal is ordered ahead of the
+    `on_claim` hook, deliberately), so the file existing again can only mean a
+    new instance booted.
+
+    AND IT NEVER ASKS TWICE OVER A LIVE PROCESS. The pidfile is a LATE signal —
+    `_bootstrap_server` writes it only after `wait_until_ready`, up to
+    SERVER_READY_TIMEOUT_S after the process started — so "no pidfile yet" and
+    "the launch failed" are not the same statement, and treating them as one is
+    how a retry with `-n` would fork a second copy onto a port the first is
+    still claiming (bugbot, PR #1214). Two things keep them apart: the boot wait
+    is strictly longer than that ceiling, and before any retry the shell asks
+    `pgrep` whether ANY process is running out of this bundle — an EARLY signal,
+    true from the moment the successor execs. While one is alive the answer is
+    always "keep waiting", never "ask again", and `-n` is reachable only when
+    nothing at all is running for this bundle.
+    """
+    if log is None:
+        log = relauncher_log_path(pid)
+    if pidfile is None:
+        pidfile = PIDFILE
+    if alive_probe is None:
+        alive_probe = ALIVE_PROBE
+    # Paths go through variables rather than being spliced into every command:
+    # `shlex.quote` makes each one safe as an argument, and a single assignment
+    # keeps a path containing a quote or a `$` from having to be re-escaped for
+    # the log messages as well as for `open`.
     script = (
-        f"while /bin/kill -0 {int(pid)} 2>/dev/null; do sleep {RELAUNCH_POLL_S}; done; "
-        f"exec /usr/bin/open -a {quoted} fused-render://launch"
+        f"bundle={shlex.quote(bundle)}; "
+        f"pidfile={shlex.quote(pidfile)}; "
+        f"log={shlex.quote(log)}; "
+        f"opener={shlex.quote(opener)}; "
+        # `posixpath.join`, not `os.path.join`: `bundle` is always a macOS bundle
+        # path (forward slashes) regardless of the host OS running this code —
+        # in production that's always macOS, but the test suite also exercises
+        # this string-building on Windows, where `os.path.join` would splice in
+        # backslashes and corrupt the path.
+        f"exe={shlex.quote(posixpath.join(bundle, 'Contents', 'MacOS', bundle_executable(bundle)))}; "
+        # THE CLOCK STARTS HERE, not when the pid dies. This shell is spawned by
+        # `begin_quit`'s `on_claim`, at the very start of the teardown, so its
+        # own start is the press — and the teardown may take up to
+        # QUIT_HARD_DEADLINE_S, which a deadline counted from the pid's death
+        # would add on top of its own budget and blow straight through the page's
+        # cap.
+        "t0=$(/bin/date +%s); "
+        'say() { printf "%s relauncher[%s] %s\\n" '
+        '"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" >>"$log" 2>/dev/null; }; '
+        # ANY process running as the app ITSELF — see ALIVE_PROBE and
+        # `bundle_executable`. A shell FRAGMENT, not an argument, so it is
+        # spliced rather than quoted; the only caller that passes one is a test.
+        f"alive() {{ {alive_probe}; }}; "
+        f'say "parked on pid {int(pid)}; bundle=$bundle"; '
+        f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
+        f'say "pid {int(pid)} has exited"; '
+        f"/bin/sleep {RELAUNCH_SETTLE_S}; "
+        # `open -a <bundle> fused-render://launch`, not a plain `open <bundle>`:
+        # a plain open is a normal launch, which boots onto a fresh home tab and
+        # steals focus from the page that asked for the restart. Delivering the
+        # launch action instead makes the successor's handler set state["docs"]
+        # and open nothing (D128); -a pins WHICH copy launches, so the deep link
+        # can't resolve to some other registered install.
+        '"$opener" -a "$bundle" "fused-render://launch"; rc=$?; '
+        'say "open attempt 1 exited $rc"; '
+        f"try=1; next=$(( $(/bin/date +%s) + {int(RELAUNCH_RETRY_AFTER_S)} )); "
+        "while :; do "
+        'if [ -f "$pidfile" ]; then '
+        'say "successor is up after attempt $try"; exit 0; fi; '
+        "now=$(/bin/date +%s); left=$(( t0 + "
+        f"{int(RELAUNCH_DEADLINE_S)} - now )); "
+        'if [ "$left" -le 0 ]; then break; fi; '
+        'if [ "$now" -ge "$next" ]; then '
+        "if alive; then "
+        'say "no pidfile yet, but the app is running — still booting, not asking again"; '
+        f'next=$(( now + {int(RELAUNCH_RETRY_AFTER_S)} )); '
+        # A retry needs room to be WORTH anything: enough of the deadline left to
+        # see whether the new ask started anything at all. No try is ever issued
+        # on the deadline tick.
+        f'elif [ "$try" -lt {RELAUNCH_OPEN_TRIES} ] && [ "$left" -ge {int(RELAUNCH_RETRY_AFTER_S)} ]; then '
+        "try=$((try + 1)); "
+        # `-n` ONLY here: nothing is running as the app, so forcing a new instance
+        # cannot produce a second server racing the first.
+        '"$opener" -n -a "$bundle" "fused-render://launch"; rc=$?; '
+        'say "open attempt $try (-n, nothing was running) exited $rc"; '
+        f'next=$(( now + {int(RELAUNCH_RETRY_AFTER_S)} )); '
+        "else "
+        'say "no successor and nothing running; no room for another ask"; '
+        f'next=$(( now + {int(RELAUNCH_RETRY_AFTER_S)} )); '
+        "fi; fi; "
+        f"/bin/sleep {RELAUNCH_POLL_S}; "
+        "done; "
+        'say "giving up: the app did not come back"; '
+        "exit 1"
     )
     return popen(
         ["/bin/sh", "-c", script],
@@ -733,6 +943,22 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _spawn_relauncher_logged(bundle: str, pid: int):
+    """`spawn_relauncher` plus the one line that says it happened.
+
+    The first cut logged NOTHING here, which is why a restart that quit cleanly
+    and never came back could not be told apart from one where the spawn never
+    ran at all (real-app test of PR #1214). One line, naming the child's pid, the
+    bundle it will open and the file it writes to, is the difference between a
+    guess and a diagnosis.
+    """
+    log = relauncher_log_path(pid)
+    child = spawn_relauncher(bundle, pid, log=log)
+    logger.info("relauncher parked: pid %s watching pid %s, bundle %s, log %s",
+                getattr(child, "pid", "?"), pid, bundle, log)
+    return child
 
 
 def begin_relaunch(*, quit_action, bundle=None, spawn=None,
@@ -789,7 +1015,7 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
                         "reads fine — nothing a relaunch would change")
             return False
         if spawn is None:
-            spawn = spawn_relauncher
+            spawn = _spawn_relauncher_logged
         if not quit_action(on_claim=lambda: spawn(bundle, os.getpid())):
             logger.info("relaunch deep link ignored: quit already in progress")
             return False
@@ -805,7 +1031,7 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
                     running, installed)
         return False
     if spawn is None:
-        spawn = spawn_relauncher
+        spawn = _spawn_relauncher_logged
     if not quit_action(on_claim=lambda: spawn(bundle, os.getpid())):
         logger.info("relaunch deep link ignored: quit already in progress")
         return False
@@ -1011,13 +1237,27 @@ def main() -> None:
         "quitting": False,   # a teardown is in flight; later Quits join it
         "quit_ready": threading.Event(),  # teardown done/deadline hit: die now
         "pin": None,         # menubar_pin.PinController, built after run loop start
+        "windows": None,     # mac_window.WindowManager, built after run loop start
+        "launcher": None,    # launcher_panel.LauncherController, after the windows
     }
+
+    def _open_target(target: str) -> None:
+        """Show ``target`` in a NEW window of this app (mac_window.py).
+        Callable from any thread. A browser tab only if the window manager
+        failed to build — the app is never left without a surface."""
+        manager = state["windows"]
+        if manager is None:
+            webbrowser.open(target)
+            return
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(manager.open, target)
 
     def open_file_view(fs_path: str) -> None:
         target = f"http://127.0.0.1:{port}" + view_url_path(fs_path)
         if state["ready"]:
             logger.info("opening file view: %s", target)
-            webbrowser.open(target)
+            _open_target(target)
         else:
             logger.info("queuing file view until server is ready: %s", target)
             state["pending"].append(target)
@@ -1046,7 +1286,7 @@ def main() -> None:
     # clone, so this handler only ferries the raw URL to the server.
     #
     # AppKit also routes plain document opens (Finder double-click on a
-    # registered file type, e.g. .bookmark) through this same selector as a
+    # registered file type, e.g. .fused) through this same selector as a
     # file:// URL on some launches, not through application:openFiles:.
     # openurls_target_path tells the two apart (mirrors the scheme check in
     # winopen.py's _open()).
@@ -1069,7 +1309,8 @@ def main() -> None:
                 begin_relaunch(quit_action=_do_quit, same_version=True)
                 continue
             if is_relaunch_url(raw):
-                # fused-render://relaunch (the update-restart banner's button):
+                # fused-render://relaunch (the update dialog's Restart button,
+                # through frontend platform/lib/restart-store):
                 # park a relauncher on our pid and quit through the normal
                 # teardown — the successor boots from the bundle on disk, and
                 # the page that linked here reconnects + reloads on its own
@@ -1098,7 +1339,7 @@ def main() -> None:
                 continue
             if state["ready"]:
                 logger.info("opening open-URLs target: %s", target)
-                webbrowser.open(target)
+                _open_target(target)
             else:
                 logger.info("queuing open-URLs target until server is ready: %s", target)
                 state["pending"].append(target)
@@ -1109,14 +1350,22 @@ def main() -> None:
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
     # user clicks the Dock icon (or double-clicks the app in Finder) while the
     # app is already running. rumps's delegate doesn't implement it, so without
-    # this patch a Dock click does nothing. Open the home tab; if the server is
-    # still booting, queue it on the same pending list the bootstrap flushes.
+    # this patch a Dock click does nothing. Bring the front window forward, or
+    # open a Home window if every window was closed (a browser tab only when
+    # the window manager failed to build); if the server is still booting,
+    # queue the home URL on the same pending list the bootstrap flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):
         logger.info("dock reopen event (server ready=%s)", state["ready"])
         if state["ready"]:
-            webbrowser.open(url)
-        else:
+            manager = state["windows"]
+            if manager is None:
+                webbrowser.open(url)
+            else:
+                from PyObjCTools import AppHelper
+
+                AppHelper.callAfter(manager.reopen)
+        elif url not in state["pending"]:
             state["pending"].append(url)
         return True
 
@@ -1142,16 +1391,42 @@ def main() -> None:
             lambda: NSApplication.sharedApplication()
             .replyToApplicationShouldTerminate_(should_terminate))
 
-    install_terminate_hook(
-        rumps.rumps.NSApp,
-        make_appkit_terminate_hook(state, reply=_reply_to_appkit))
+    def _close_windows() -> None:
+        """Close every native window — only from the main thread (AppKit):
+        every page unloads and every WKWebView deallocs before the teardown
+        drains the server they were talking to. `quit_teardown` itself runs
+        off the main thread (DM-9) and cannot drive AppKit, so this cannot be
+        a rung of it; it is the first step of BOTH quit entrances instead —
+        `_do_quit` (our menu's ⌘Q, the popover's Quit) and the AppKit hook
+        below (the Dock menu's Quit, logout/restart). The bootstrap-thread
+        abort has no windows to close."""
+        manager = state.get("windows")
+        if manager is None:
+            return
+        try:
+            from Foundation import NSThread
+
+            if NSThread.isMainThread():
+                manager.close_all()
+        except Exception:
+            logger.debug("closing windows on quit failed", exc_info=True)
+
+    _appkit_terminate = make_appkit_terminate_hook(state, reply=_reply_to_appkit)
+
+    def _appkit_terminate_with_windows() -> int:
+        # applicationShouldTerminate: arrives on the main thread.
+        _close_windows()
+        return _appkit_terminate()
+
+    install_terminate_hook(rumps.rumps.NSApp, _appkit_terminate_with_windows)
 
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
         server, server_thread = _start_server_thread(port)
         state["server"] = server
         state["server_thread"] = server_thread
-        if not desktop_probe.wait_until_ready(port, desktop_token, 15.0, poll_interval=0.2):
+        if not desktop_probe.wait_until_ready(port, desktop_token,
+                                              SERVER_READY_TIMEOUT_S, poll_interval=0.2):
             # Log file, not print: Finder-launched apps have no visible stderr.
             logger.error("server did not become ready on port %s", port)
             # Through the quit ACTION, not straight to quit_application: by now
@@ -1177,12 +1452,21 @@ def main() -> None:
             from PyObjCTools import AppHelper
 
             AppHelper.callAfter(state["pin"].server_ready)
+        if state["launcher"] is not None:
+            # The panel loads its page off the live server, and the global
+            # shortcuts bind now — Carbon and the page live on the main thread.
+            from PyObjCTools import AppHelper
+
+            launcher_ctl = state["launcher"]
+            AppHelper.callAfter(launcher_ctl.server_ready)
+            AppHelper.callAfter(launcher_ctl.bind_hotkey)
+            AppHelper.callAfter(launcher_ctl.bind_pinned)
         pending, state["pending"] = state["pending"], []
         for target in pending:
-            webbrowser.open(target)
-        # Home tab only when this launch wasn't a document double-click.
+            _open_target(target)
+        # Home window only when this launch wasn't a document double-click.
         if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
-            webbrowser.open(url)
+            _open_target(url)
 
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):
@@ -1237,7 +1521,14 @@ def main() -> None:
 
     # Returns immediately — the AppKit run loop must not block here — and lets
     # quit_teardown do the blocking work off-thread under a hard deadline.
-    _do_quit = make_quit_action(state, terminate=_terminate)
+    _begin_quit_action = make_quit_action(state, terminate=_terminate)
+
+    def _do_quit(on_claim=None) -> bool:
+        # The windows first (`_close_windows`), then the ordered teardown.
+        # Same signature and return as `make_quit_action`'s: `begin_relaunch`
+        # passes `on_claim` and reads the claim bool.
+        _close_windows()
+        return _begin_quit_action(on_claim=on_claim)
 
     status_app = FusedRenderStatusApp()
 
@@ -1245,6 +1536,162 @@ def main() -> None:
         # One-shot, fired right after the run loop starts — the status item
         # (status_app._nsapp.nsstatusitem) exists only from this point on.
         timer.stop()
+        def _show_launcher() -> None:
+            ctl = state["launcher"]
+            if ctl is not None:
+                ctl.show()
+
+        # The windows (mac_window.py) need the AppKit run loop — the manager
+        # installs the main menu and sets the activation policy — so they
+        # are built here, on the first timer tick, and never at import time.
+        # ON BY DEFAULT (`native_windows_enabled`, shell/prefs.py, opt-out):
+        # with the preference off the app runs the way it used to, every
+        # surface a browser tab (`_open_target` and friends fall back on
+        # `state["windows"] is None`). The Preferences checkbox applies live
+        # through `window_policy.native_hooks["apply"]`: on builds the
+        # manager, off closes every window and drops it. Guarded either way:
+        # a manager that fails to build is the browser, never a dead app.
+        from PyObjCTools import AppHelper
+
+        from fused_render import window_policy
+        from fused_render.shell.prefs import native_windows_enabled
+
+        def _apply_windows(on: bool) -> None:
+            # Main thread. The manager is built on the first ON and kept for
+            # the life of the process: the main menu it installs targets it,
+            # so dropping the object would leave ⌘N and File → Open making
+            # windows through a manager nobody closes on quit. OFF is the
+            # manager's own mode (`WindowManager.enabled`): it closes its
+            # windows and every later open it is asked for goes to the
+            # browser. With no manager at all (never turned on, or it failed
+            # to build) every seam falls back to `webbrowser.open` on
+            # `state["windows"] is None`.
+            manager = state["windows"]
+            if manager is None:
+                if not on:
+                    return
+                try:
+                    from fused_render.mac_window import WindowManager
+
+                    manager = state["windows"] = WindowManager(
+                        port, quit=_do_quit, show_launcher=_show_launcher)
+                except Exception:
+                    logger.exception("windows unavailable; falling back to browser tabs")
+                    return
+            try:
+                manager.set_enabled(on)
+            except Exception:
+                logger.debug("applying the windows preference failed", exc_info=True)
+
+        _apply_windows(native_windows_enabled())
+        window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
+
+        def _open_app_window(fs_path: str) -> None:
+            # POST /api/windows/open: the shell, running inside one of our
+            # windows, was clicked on an app. Its own window, focused if
+            # already open (`WindowManager.focus_or_open_app`). The route
+            # answers before this runs; with no manager (the preference off
+            # since the page loaded) the click becomes a browser tab at the
+            # same address, never nothing.
+            manager = state["windows"]
+            if manager is None:
+                webbrowser.open(url.rstrip("/") + window_policy.app_window_path(fs_path))
+                return
+            manager.focus_or_open_app(fs_path)
+
+        window_policy.native_hooks["open_app"] = (
+            lambda fs_path: AppHelper.callAfter(_open_app_window, fs_path))
+
+        def _open_window(target: str) -> None:
+            # The popover's `window.open` / target=_blank (menubar_pin), main
+            # thread already. Classified FIRST, like a window's own policy:
+            # only this server's pages get a window of ours; an external link
+            # goes to the default browser, which is what the new window's
+            # policy would do anyway — after leaving a blank window behind.
+            manager = state["windows"]
+            if manager is None or window_policy.classify(target, port) != "app":
+                webbrowser.open(target)
+            else:
+                manager.open(target)
+
+        # The launcher (launcher_panel.py): a Spotlight-like panel on a
+        # global shortcut (⌥Space by default) that opens any known app. NOT
+        # behind the windows preference: with native windows on its pick
+        # focuses-or-opens a window, off it opens a browser tab at the same
+        # address (`window_policy.shell_path_for`). Guarded — no launcher is
+        # a lesser outcome than no app.
+        try:
+            from AppKit import NSApp
+
+            from fused_render import launcher as launcher_mod
+            from fused_render.launcher_panel import LauncherController
+
+            def _open_from_launcher(fs_path: str) -> None:
+                manager = state["windows"]
+                # `enabled`, not just a manager: it outlives the preference
+                # being switched off, and off must be the browser tab on the
+                # app page exactly as before — never the run window's embed.
+                if manager is None or not manager.enabled:
+                    webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
+                    return
+                # Dock semantics; the panel is non-activating, so bring
+                # this app forward or the window opens behind the caller.
+                # An app lands in its own run window, as a shell click does.
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.focus_or_open_app(fs_path)
+
+            def _home_from_launcher() -> None:
+                manager = state["windows"]
+                if manager is None:
+                    webbrowser.open(url)
+                    return
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.show_home()
+
+            def _open_keys() -> set[str]:
+                # Read live: the manager comes and goes with the preference.
+                manager = state["windows"]
+                return manager.open_keys() if manager is not None else set()
+
+            launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
+            state["launcher"] = launcher_ctl
+
+            # What the uvicorn thread may call (PUT /api/prefs, GET
+            # /api/launcher): rebinding hops to the main thread; the
+            # bound flags and the open-window set are plain attribute
+            # reads, safe from any thread.
+            def _rebind(spec) -> None:
+                if spec:
+                    AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
+                else:  # the row modifier changed; rebind those, tell the page
+                    AppHelper.callAfter(launcher_ctl.push_settings)
+
+            def _suspend(on: bool) -> None:
+                AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
+
+            launcher_mod.native_hooks.update({
+                "rebind": _rebind,
+                "suspend": _suspend,
+                "hotkey_bound": launcher_ctl.hotkey_bound,
+                "pinned_bound": launcher_ctl.pinned_bound,
+                "open_keys": _open_keys,
+            })
+            if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
+                # Dev only: SIGUSR2 toggles the launcher, so a script can
+                # screenshot it without Accessibility access to press the
+                # shortcut. Python signal handlers run only between
+                # bytecodes; an idle AppKit run loop executes none, so a
+                # no-op tick keeps the interpreter breathing.
+                import signal
+
+                signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
+                    launcher_ctl.toggle))
+                status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+                status_app.launcher_dev_tick.start()
+        except Exception:
+            logger.exception("launcher unavailable")
+            state["launcher"] = None
+
         try:
             # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
             # older [app] env; on failure the rumps menu stays attached and
@@ -1260,6 +1707,10 @@ def main() -> None:
                     "copy_url": _copy_url,
                     "open_logs": _open_logs,
                     "quit": _do_quit,
+                    "open_window": _open_window,
+                    # Present only when the launcher was built: the popover
+                    # shows "Search Apps…" off this key.
+                    **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
                 },
             )
         except Exception:

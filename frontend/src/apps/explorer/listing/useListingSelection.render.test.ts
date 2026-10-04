@@ -180,6 +180,88 @@ describe("Enter on the zero-match glob-broadening offer", () => {
   });
 });
 
+// The breadcrumb (path-crumbs.tsx and, for a plain unclaimed bar,
+// Breadcrumb.tsx) and Mod+Up "go to parent" shortcut (useListingShortcuts)
+// land an upward hop by writing `?sel=<child>` onto the destination's URL
+// (cameFromSelParam + navigate) and rely on THIS hook's mount-time seed to
+// read it back for the folder being arrived at. `StatView` keys its subtree
+// on `epoch + ":" + fsPath` (App.tsx), so `Listing` — and this hook with it —
+// hard-REMOUNTS on every folder navigation: there is no "same hook instance,
+// fsPath prop changed" case in the real app. These tests drive that real
+// shape (unmount the old folder's instance, mount a fresh one for the
+// destination) rather than rerendering one instance across an `fsPath`
+// change, which no code path here ever does.
+describe("arrival seeding across a real folder remount", () => {
+  function mountSel(args: { fsPath: string; navRows: string[]; globalKeys?: boolean }) {
+    const ctx = new Map<string, RowCtx>();
+    // A distinct sentinel, not null: with it null, `document.activeElement`
+    // (also null, per installDocument) would satisfy `el === searchInputRef.current`
+    // by coincidence and read as "focused in the search box" (see the Escape
+    // test below for the same gotcha).
+    const searchInputRef = { current: {} as HTMLInputElement };
+    return renderHook(
+      () =>
+        useListingSelection({
+          fsPath: args.fsPath,
+          navRows: args.navRows,
+          listingLoaded: true,
+          rowsAnswerQuery: true,
+          searchInputRef,
+          rowCtxByPathRef: { current: ctx },
+          overlayOpenRef: { current: false },
+          globalKeys: args.globalKeys,
+        }),
+    );
+  }
+  function setSearch(qs: string) {
+    (globalThis.location as { search: string }).search = qs;
+  }
+
+  test("a breadcrumb hop up seeds the lead from ?sel= on the fresh mount, not the old row index", async () => {
+    const from = mountSel({ fsPath: "/a/b/c", navRows: ["/a/b/c/x", "/a/b/c/y"] });
+    expect(from.current().selectedPath).toBe(null);
+    from.unmount();
+    setSearch("?sel=b"); // what navigate({ sel: cameFromSelParam(...) }) wrote
+    const to = mountSel({ fsPath: "/a", navRows: ["/a/b", "/a/other"] });
+    expect(to.current().selectedPath).toBe("/a/b");
+    to.unmount();
+  });
+
+  test("arriving with no recall and no ?sel selects nothing — no folder auto-select", async () => {
+    setSearch("");
+    const box = mountSel({ fsPath: "/q", navRows: ["/q/a", "/q/b"] });
+    expect(box.current().selectedPath).toBe(null);
+    box.unmount();
+  });
+
+  test("a ?sel= naming a row this folder does not have selects nothing, not row one (D279)", async () => {
+    setSearch("?sel=nonexistent");
+    const box = mountSel({ fsPath: "/q", navRows: ["/q/a", "/q/b"] });
+    expect(box.current().selectedPath).toBe(null);
+    box.unmount();
+  });
+
+  test("leaving a folder from a deep row does not carry that row's index into the next folder", async () => {
+    const from = mountSel({ fsPath: "/p", navRows: ["/p/a", "/p/b", "/p/c"] });
+    await flush(() => press("End")); // selects the last row, index 2
+    expect(from.current().selectedPath).toBe("/p/c");
+    from.unmount();
+    setSearch(""); // arriving with no seed
+    // A single-row destination: if the old index (2) leaked through, it would
+    // land here on the only row instead of nothing.
+    const to = mountSel({ fsPath: "/q", navRows: ["/q/a"] });
+    expect(to.current().selectedPath).toBe(null);
+    to.unmount();
+  });
+
+  test("an embedded listing (globalKeys=false) never reads ?sel= for the folder it arrives at", async () => {
+    setSearch("?sel=b");
+    const box = mountSel({ fsPath: "/a", navRows: ["/a/b"], globalKeys: false });
+    expect(box.current().selectedPath).toBe(null);
+    box.unmount();
+  });
+});
+
 describe("Escape", () => {
   test("clears the selection even when a clipboard op would have been pending", async () => {
     // A pending copy/cut no longer has a say here: nothing outside this hook

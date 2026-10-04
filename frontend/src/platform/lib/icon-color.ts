@@ -45,6 +45,39 @@ export const ICON_COLOR_HEX: Record<IconColor, { light: string; dark: string }> 
   red: { light: "#d44c47", dark: "#df5452" },
 };
 
+/** The plate behind a picker-written glyph: the `--bg-alt` pair (tokens.css),
+ *  the sidebar's own background, so on the Projects row the plate dissolves
+ *  into the surface and the glyph reads as if drawn straight on it (owner,
+ *  2026-09-20; was white / black). Written into the file as `var(--fused-bg)`
+ *  (declared in the svg's own `<style>` with a prefers-color-scheme flip, for
+ *  standalone readers) and swapped for the literal hex by `themeIconSvg` when
+ *  the shell draws it — so files already on disk follow this change. */
+export const ICON_BG_HEX: { light: string; dark: string } = {
+  light: "#f4f5f7",
+  dark: "#1b1d21",
+};
+
+/** The `<style>` block a picker-written icon.svg carries so it reads right
+ *  standalone (Finder, GitHub, a bare tab), where only the OS theme is
+ *  knowable: glyph colour via `color` (currentColor reads it), plate via
+ *  `--fused-bg`. */
+export function iconStyleBlock(color: IconColor): string {
+  const hex = ICON_COLOR_HEX[color];
+  return (
+    `<style>svg{color:${hex.light};--fused-bg:${ICON_BG_HEX.light}}` +
+    `@media(prefers-color-scheme:dark){svg{color:${hex.dark};--fused-bg:${ICON_BG_HEX.dark}}}</style>`
+  );
+}
+
+/** The plate, first child so everything else draws over it. A full square,
+ *  no radius (owner, 2026-09-20): the plate is the sidebar's own colour, so
+ *  a rounded corner only showed as a notch on hover/active rows. `style=`
+ *  not `fill=`: a `var()` is only honoured in CSS, not as a presentation
+ *  attribute. */
+export function iconPlateRect(size: number): string {
+  return `<rect width="${size}" height="${size}" style="fill:var(--fused-bg)"/>`;
+}
+
 export const ICON_COLOR_LABEL: Record<IconColor, string> = {
   default: "Default",
   gray: "Gray",
@@ -73,13 +106,16 @@ export function readIconColor(svg: string): IconColor | null {
   return m && isIconColor(m[1]) ? m[1] : null;
 }
 
-/** The svg with its `currentColor` strokes resolved to the theme's hex —
+/** The svg with its `currentColor` strokes and `var(--fused-bg)` plate
+ *  resolved to the theme's hex —
  *  what the shell actually hands the `<img>` / favicon. A file without a
  *  marker comes back untouched. */
 export function themeIconSvg(svg: string, theme: Theme): string {
   const color = readIconColor(svg);
   if (!color) return svg;
-  return svg.replace(/currentColor/g, ICON_COLOR_HEX[color][theme]);
+  return svg
+    .replace(/currentColor/g, ICON_COLOR_HEX[color][theme])
+    .replace(/var\(--fused-bg\)/g, ICON_BG_HEX[theme]);
 }
 
 /** A data: URL for an svg document. encodeURIComponent, not base64: the

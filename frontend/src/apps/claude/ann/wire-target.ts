@@ -55,6 +55,10 @@ export interface WireTargetDeps {
    *  the pointer (and usually focus) IN here, and keydowns do not cross the
    *  frame boundary (T:8534). */
   onEscape(e: KeyboardEvent): void;
+  /** ⌘↩ / Ctrl+↩ — ✓ Done, bound here for the same reason as Escape: the round
+   *  is placed with the pointer in the app, so the press that finishes it lands
+   *  in THIS document and never reaches the chat's own listener. */
+  onDoneChord(e: KeyboardEvent): void;
   closeComposer(): void;
   openComposer(x: number, y: number, anchor: AnnAnchor): void;
   /** A stamped, wordless note at an exact spot (T:7972 `annRecMarkPoint`). */
@@ -142,8 +146,14 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
     else if (!on && root.style.cursor === "crosshair") root.style.cursor = "";
   };
 
-  // ── 1. keydown: Escape, which cannot reach the chat from in here ──────────
-  const onKeyDown = (e: Event) => deps.onEscape(e as KeyboardEvent);
+  // ── 1. keydown: Escape and ⌘↩, neither of which reaches the chat from in here
+  // Both claimants on the ONE listener, each answering only its own chord — a
+  // second `keydown` registration would be a second thing for the
+  // remove-before-add teardown below to keep in step with.
+  const onKeyDown = (e: Event) => {
+    deps.onEscape(e as KeyboardEvent);
+    deps.onDoneChord(e as KeyboardEvent);
+  };
 
   /**
    * THE SWALLOW THE CLICK CANNOT DO ON ITS OWN (A11, QA round 2). A native form

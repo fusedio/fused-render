@@ -35,10 +35,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
-import { useThemedIconSrc } from "@platform/lib/app-icon-src";
-import { exportAppFile } from "@platform/lib/appShot";
-import { notify } from "@platform/lib/notifications";
+import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useLivePreviewsFeature } from "@platform/lib/live-previews-flag";
 import { AppStar } from "@platform/ui/AppStar";
+import { ThumbPlaceholder } from "@platform/ui/ThumbPlaceholder";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -88,9 +90,8 @@ export function AppPreviewCard({
 }) {
   // The icon.svg recoloured for the live theme when it names a colour
   // (picker-written), the raw file otherwise.
-  const iconSrc = useThemedIconSrc(
-    app.icon ? appIconUrl(app.icon, app.icon_mtime) : null,
-  );
+  const iconUrl = app.icon ? appIconUrl(app.icon, app.icon_mtime) : null;
+  const iconSrc = useThemedIconSrc(iconUrl);
   const title = app.title || app.name;
   // The same timestamp the grid SORTS by (last opened, modified standing in) —
   // a card ranked first for being opened just now must not label itself with a
@@ -143,17 +144,6 @@ export function AppPreviewCard({
   // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
   const [hovered, setHovered] = useState(false);
   const [liveReady, setLiveReady] = useState(false);
-  // The card BODY's live iframe has loaded — i.e. the thumb is a picture of the
-  // app and not an empty box. Separate state from `liveReady`, which is the
-  // hover crossfade's and is deliberately reset on every enter AND leave: the
-  // export chip is only reachable while hovering, so gating a capture on
-  // `liveReady` would gate it on a flag the hover just cleared. One-way for the
-  // life of the mount, which is exact — the body iframe is never torn down and
-  // re-created for the same card, and cards are keyed by path, so a different
-  // app is a different mount. It CAN stay true after the iframe unmounts by
-  // scrolling far out of `nearViewport`, and that is harmless: appShot's
-  // cropRect refuses an off-viewport element anyway.
-  const [bodyLive, setBodyLive] = useState(false);
   // What the live branch renders. An ordinary app live-renders its entry
   // page. An exported .fused card (kind "appfile") has no page to point
   // /render at — its live look is its own fusedapp view under `_preview=1`,
@@ -167,8 +157,17 @@ export function AppPreviewCard({
     : app.kind === "appfile" && app.opened_at != null
       ? embedUrlForFsPath(app.path)
       : null;
+  // Whether live thumbnails are allowed at all — the `live_previews_enabled`
+  // preference (live-previews-flag.ts; opt-in, and off until the one shared
+  // read lands). `false` turns both live branches off — the body below and
+  // the hover swap — and puts the placeholder where the live body would have
+  // been. Called every render, before any early return: hook order.
+  const liveAllowed = useLivePreviewsFeature();
   const wantsLive = Boolean(
-    liveSrc && nearViewport && ((!shotSrc || shotFailed) || hovered),
+    liveAllowed === true &&
+      liveSrc &&
+      nearViewport &&
+      ((!shotSrc || shotFailed) || hovered),
   );
   // The still's hover path keeps the queue's `true` fast lane: a gesture skips
   // the idle wait and jumps the queue. It only ever flips together with
@@ -183,20 +182,19 @@ export function AppPreviewCard({
   // rather than a dependency because usePreviewStart's effect restarts the
   // iframe whenever its deps change: promoting a waiting card through the deps
   // would tear down a running one.
+  // Whether the hover chip is Share (the sheet) or plain Export — see
+  // share-app-flag.ts; default off.
+  const sharing = useAppSharingFeature();
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
     hoverPriority || onScreen,
   );
-  // Whether the CURRENTLY MOUNTED body iframe has painted — separate from
-  // `bodyLive` above on purpose. `bodyLive` is deliberately one-way for the
-  // export capture's sake (see its comment); reusing it here would mean a
-  // card that once painted, then scrolled out of view and back in, shows its
-  // brand-new, not-yet-loaded iframe at FULL opacity — a blank/booting frame
-  // presented as finished, the same bug `loaded` in BookmarkCards.tsx's
-  // LivePreview has this same fix for. `bodyPainted` resets whenever the
+  // Whether the CURRENTLY MOUNTED body iframe has painted. Resets whenever the
   // iframe itself is torn down and remounted (`liveStarted` or `liveSrc`
-  // changing) and drives the fade/shimmer instead; `bodyLive` keeps its
-  // existing one-way contract untouched.
+  // changing): a card that once painted, then scrolled out of view and back
+  // in, must not show its brand-new, not-yet-loaded iframe at FULL opacity —
+  // a blank/booting frame presented as finished, the same bug `loaded` in
+  // BookmarkCards.tsx's LivePreview has this same fix for.
   const [bodyPainted, setBodyPainted] = useState(false);
   useEffect(() => {
     setBodyPainted(false);
@@ -244,8 +242,10 @@ export function AppPreviewCard({
             <img> carries the browser's native drag-the-image gesture, which
             starts a drag instead of the click that opens the card. */}
         {iconSrc ? (
+          // An icon.png — the raster fallback — is clipped to the slot's
+          // rounded square (`is-raster`, apps.css); an svg is drawn as is.
           <img
-            className="app-pcard-icon"
+            className={"app-pcard-icon" + (isRasterIconUrl(iconUrl) ? " is-raster" : "")}
             src={iconSrc}
             alt=""
             draggable={false}
@@ -277,20 +277,7 @@ export function AppPreviewCard({
           </span>
         </span>
       </span>
-      {/* `data-capture-ready` marks the thumb as a picture of the APP — the
-          export capture's crop-source contract (appShot.exportAppFile). The
-          card's own chip below reads `bodyLive` directly; the context menu is
-          opened by Apps.tsx, which has no access to this component's state and
-          finds the element by this attribute instead. Same posture as the
-          preview pane's `data-fused-annotate-target`: one attribute naming the
-          element that is showing what the reader is looking at. Absent, not
-          "0", so the selector is a plain presence test. */}
-      <span
-        className="app-pcard-thumb"
-        aria-hidden="true"
-        ref={thumbRef}
-        data-capture-ready={bodyLive ? "" : undefined}
-      >
+      <span className="app-pcard-thumb" aria-hidden="true" ref={thumbRef}>
         {/* Shimmer while something is actually COMING: an authored still not
             yet decoded, or a live iframe the card wants but has not painted.
             Never for the "nothing to show" case (D365, the module comment) —
@@ -319,7 +306,7 @@ export function AppPreviewCard({
                 a `load` event ever fires, which would leave `liveReady` (and
                 the shimmer above) stuck forever and a scheduler slot held
                 until the 10s timeout. */}
-            {hovered && liveSrc && nearViewport && liveStarted && (
+            {liveAllowed === true && hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
                 {...thumbFrame(liveSrc)}
                 style={{
@@ -372,6 +359,13 @@ export function AppPreviewCard({
                 that opens it. */}
             <span className="app-pcard-shield" />
           </>
+        ) : liveAllowed === false ? (
+          // Live previews turned off and nothing authored to show (no still,
+          // or one that failed to decode): the placeholder mark, whether or
+          // not a `liveSrc` exists. The one departure from D365's empty box,
+          // and only on this path — with previews ON, a card with no entry
+          // file or one offloaded by scroll keeps the plain box it always had.
+          <ThumbPlaceholder />
         ) : liveSrc && nearViewport && liveStarted ? (
           <>
             {/* No `loading="lazy"` — see the comment on the hover iframe
@@ -383,31 +377,23 @@ export function AppPreviewCard({
                 height: `${100 / PREVIEW_SCALE}%`,
                 transform: `scale(${PREVIEW_SCALE})`,
                 // Fades in over the skeleton above rather than popping in
-                // mid-boot. Gated on `bodyPainted`, NOT `bodyLive`: `bodyLive`
-                // is one-way for the export capture's sake (see its
-                // declaration) and stays true across a scroll-away/back
-                // remount, which would otherwise show the freshly-mounted,
-                // not-yet-loaded iframe at full opacity.
+                // mid-boot.
                 opacity: bodyPainted ? 1 : 0,
                 transition: "opacity 0.15s ease",
               }}
-              // `bodyLive` as well as the queue's release: settling frees the
-              // NEXT card's start slot, which says nothing about whether this
-              // frame painted, and the export capture needs the latter.
+              // `bodyPainted` as well as the queue's release: settling frees
+              // the NEXT card's start slot, which says nothing about whether
+              // this frame painted.
               onLoad={() => {
                 liveSettled();
-                setBodyLive(true);
                 setBodyPainted(true);
               }}
               // An error is still a painted result (the frame shows the app's
               // own error page) — `onError={liveSettled}` alone freed the
-              // scheduler slot but left `bodyLive`/`bodyPainted` false
-              // forever, so the shimmer never cleared, the frame never faded
-              // in, and `data-capture-ready` was never set (silently breaking
-              // export-from-card for an app whose live render errors).
+              // scheduler slot but left `bodyPainted` false forever, so the
+              // shimmer never cleared and the frame never faded in.
               onError={() => {
                 liveSettled();
-                setBodyLive(true);
                 setBodyPainted(true);
               }}
             />
@@ -420,13 +406,15 @@ export function AppPreviewCard({
           </>
         ) : null}
       </span>
-      {/* Hover-revealed export (SPEC §43 AF-4, D391): the same action as the
-          right-click menu's "Export App File", surfaced so it is one visible
-          click. A SIBLING of the thumb, not a child: the thumb span is
-          aria-hidden (it is decoration), and a focusable button inside an
-          aria-hidden subtree is announced as nothing by assistive tech while
-          still taking tab focus. Positioned over the thumb via the card's own
-          positioning context. A <button> inside the card's <a>: it must both
+      {/* Hover-revealed Share (SPEC §43 AF-4, D391): the same action as the
+          right-click menu's "Share…", surfaced so it is one visible click.
+          The sheet behind it (ShareAppModal) holds both ways out — the public
+          link and the .fused download — so this is the ONE chip on the card.
+          A SIBLING of the thumb, not a child: the thumb span is aria-hidden
+          (it is decoration), and a focusable button inside an aria-hidden
+          subtree is announced as nothing by assistive tech while still taking
+          tab focus. Positioned over the thumb via the card's own positioning
+          context. A <button> inside the card's <a>: it must both
           preventDefault (or the card link opens the app) and stopPropagation
           (or the click ALSO bubbles to onAppCardClick). Not rendered on an
           exported .fused card (kind "appfile", D396): its path is the file
@@ -434,30 +422,23 @@ export function AppPreviewCard({
       {app.kind !== "appfile" && (
       <button
         type="button"
-        className="app-pcard-export"
-        title={"Export " + (app.title || app.name) + " as a .fused app file"}
-        aria-label="Export app file"
+        className="app-pcard-share"
+        title={
+          sharing
+            ? "Share " + (app.title || app.name) + " — public link or .fused file"
+            : "Export " + (app.title || app.name) + " as a .fused app file"
+        }
+        aria-label={sharing ? "Share app" : "Export app file"}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          // Also bakes a native screen shot in as the file's preview.png when
-          // the folder has no authored one (appShot, D396). The thumb element
-          // rides along as the crop source: a card without a preview.png is
-          // already showing the live app there, so nothing has to flash —
-          // but ONLY once that frame has loaded (`bodyLive`). Two card
-          // previews start at a time, so an unstarted card's thumb is an
-          // empty box, and cropping it would bake the empty box in as the
-          // artifact's permanent thumbnail. Offer nothing instead and
-          // appShot stages the app full-screen for the shot.
-          exportAppFile(app, bodyLive ? thumbRef.current : null).catch((err: Error) =>
-            notify({
-              title: "Could not export " + app.name + ": " + err.message,
-              tone: "error",
-            }),
-          );
+          // Flag off (share-app-flag.ts, the default): the chip is the plain
+          // Export it was before the sheet — straight to Downloads + a toast.
+          if (sharing) openShareApp(app);
+          else void exportAppFileOnly(app);
         }}
       >
-        {MenuIcons.download}
+        {sharing ? MenuIcons.share : MenuIcons.download}
       </button>
       )}
     </a>

@@ -153,7 +153,7 @@ off.
 
 1. **Reclaim** run directories beyond the newest `KEEP_RUNS` (`scan.md §2`).
 2. For each root: skip it if it does not exist, or if a scan **started** within
-   `SCAN_DEBOUNCE_S` (15 min). The debounce reads the start time, not the finish time,
+   `SCAN_DEBOUNCE_S` (5 min). The debounce reads the start time, not the finish time,
    so a scan still running suppresses the next one just as firmly.
 3. Otherwise start an incremental scan. Later boots are cheap by construction — the
    directory-mtime rule (`scan-incremental.md §2`) turns an unchanged tree into one
@@ -205,7 +205,7 @@ all of it billed to a keystroke. The warm moves it to idle.
   one scan `run_startup_scan` just spawned for that root (recorded in `_startup_runs`)
   and then searches again. It is not a scheduler: one named run, polled every
   `WARM_WAIT_POLL_S` (0.5 s, the worker's heartbeat cadence) with a hard
-  `WARM_WAIT_DEADLINE_S` ceiling (6 min — just past `runner.ABANDONED_RUN_S`, so a dead
+  `WARM_WAIT_DEADLINE_S` ceiling (2 min — just past `runner.ABANDONED_RUN_S`, so a dead
   worker is reported not-running before the ceiling is reached), on a daemon thread that
   cannot hold the process open. The search and the sweep then run **whatever ended the
   wait** — a finished scan, a dead worker, a pruned run dir, the ceiling — because how a
@@ -259,12 +259,85 @@ same redundancy for an eighth of the time.
 ## 7. The ranked search — `GET /api/index/rank`
 
 `GET /api/index/rank?root=&q=&limit=` answers `{ok, covered, fresh, reason, updated,
-age_s, root, hits, total, truncated, scanned_partitions, of_partitions}`, where each
-hit is `{rel, is_dir, size, mtime, score, longest_run, tier, depth}` and `limit`
-defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000). Plain JSON, a few KB — no columnar
+age_s, root, base, mode, pattern, hits, total, truncated, scanned_partitions,
+of_partitions}`, where each hit is `{rel, is_dir, size, mtime}` on the wire —
+`query.py` computes `score`, `tier`, `depth` and `longest_run` per hit too (every
+mode, ranked or not, computes the same key set — see below), but the router strips
+all four (`_WIRE_DROP`, `server/routers/index.py`) before the response goes out,
+since none of them is meant to be a wire contract (see "Parity is a test" below).
+`limit` defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000; a
+`mode: "glob"` answer instead uses `MAX_GLOB_RANK_LIMIT`, 5,000 — a glob's candidate
+set can still be far wider than a substring's, so the ceiling stays generous even
+though, per below, glob hits are ranked too now). Plain JSON, a few KB — no columnar
 encoding and no gzip special-casing, because that machinery (§6) exists for a 20 MB
 corpus and this is not one. A miss is a 200 with `covered: false` and no hits, exactly
 as for the corpus.
+
+`q`, exactly as typed (unstripped — a trailing space is meaningful, not trimmed
+away, UNLESS the whole string is whitespace, which resolves to empty), is run
+through `resolve_query` (`query.md §3`) before anything else: whitespace runs
+collapse into `**` (not `*` — a single-segment wildcard can't cross a `/`, so a
+`*` collapse would narrow a query typed with a space instead of widening it), the
+final path segment is wrapped at each end independently — but with different
+tokens (even a whitespace-free one — `*.pdf` becomes `*.pdf*`, an accepted
+same-folder precision-glob trade-off): a leading `**` (crosses directories,
+same reasoning as the whitespace collapse), a trailing single `*` (confined to
+one segment — a folder-anchored query like `/*.pdf` must stay anchored to that
+folder, not also match a `.pdf`-free file several segments below it), a leading
+`~`/`/`/drive letter/`..` can peel a `base` off the front,
+and the result decides `mode` — `"glob"` the moment the expanded string contains a
+`*` anywhere, including one introduced purely by whitespace with no character the
+user typed, else `"substring"`. `base` is the resolved search root (equal to the
+request's own `root` unless `q` escaped it), and `pattern` is exactly what a
+`mode: "glob"` hit's `rel` was full-matched against — the tail of the expanded `q`
+left after peeling off `base`, carrying any implicit `**/` prefix. `pattern` is
+populated in **both** modes (cheap — it is already computed) but only meaningful
+for highlighting when `mode == "glob"`: in substring mode a hit's `rel` is
+trivially known to contain the raw query as a literal substring, so the client
+re-derives highlight positions from its own typed text (`fuzzy.ts`'s
+`substringMatch`) exactly as it always did.
+
+**A `mode: "glob"` hit IS scored**, by default (`query.md §3`): both modes share
+the SAME two helpers, `_name_predicate_sql` and `_lex_order_and_score` — there is
+no glob-specific scoring formula. `pattern`'s FINAL segment (the part after its
+last directory-crossing boundary — `_final_segment_pattern`, `query.md §3`; the
+whole pattern's earlier segments can never appear in `nm`, a slash-free
+basename) is split on its wildcard tokens into literal runs, and those runs feed
+the same position-free boolean columns substring mode uses: `prefix`, `suffix`,
+`edge` (per-candidate whole-segment vs. fragment refinement — `query.md §3`),
+`contains` (an in-order, anything-between existence test — this is what fixes the
+old glob tier defect: a path-shaped pattern like `**/src/*.ts` used to be scored
+off the WHOLE pattern's literal runs, including a directory-segment literal like
+`"src/"` that can never match `nm`, so it was tier 3 for every hit regardless of
+match quality) and `boundary` (a word/segment-start existence test). There is no
+wildcard-swallow penalty and no run-length bonus of any kind — a longer or
+tighter overall match is not itself a better or worse glob match under the
+position-free design; a tie between two equally-good matches is broken by
+`depth`/`length(nm)`/`rel`, ordering columns, not subtracted score terms. A
+pattern with exactly one literal run in its final segment produces the SAME
+predicate values, and hence the same `order_by`/`score`, as `_rank_sql`'s
+substring mode for the equivalent query. This is the caller's `ranked`
+preference (default true); with `ranked=False`, or a pattern with no literal
+content anywhere (a bare `**/*`), no scoring expression is computed and hits
+come back in the original `depth ASC, lower(rel) ASC, rel ASC` order — the same
+order both branches used before ranking existed. An ancestor-only pattern whose
+final segment has no literal content (`**/alpha/*`) is different from that: it
+still gets a real, computed `tier == 3` (not the unscored placeholder `0`),
+since the WHOLE pattern does have literal content, just none that survives
+confining to the final segment. A ranked glob hit's `tier` is REAL, not a fixed
+0: `1` when `contains` holds (a basename match), else `3` (ancestor-only) —
+substring mode's old middle tier (straddling the basename boundary) has no
+equivalent here either, for the identical reason `query.md §3` gives for
+substring mode: `contains` is a pure existence test with no positional "window"
+to ask whether it straddles anything. `tier` is NOT a primary sort key for
+either mode — the lexicographic predicate vector (`nm_exact`,
+`nm_exact_natural`, `edge`, `prefix`, `suffix`, `contains`, `boundary`, then
+`depth`/`length(nm)`/`rel` — `query.md §3`) already separates match quality
+more finely than a tier value ever did; `tier` is kept only as a coarse,
+wire-compatible summary field. Every hit — substring or glob, ranked or not —
+carries the identical key set, since the wire layer strips
+`score`/`tier`/`longest_run`/`positions` unconditionally (see below);
+`ranked=False` computes no scoring apparatus at all, including no `tier`.
 
 **Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
 raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held
@@ -289,26 +362,38 @@ substring branch always set `longestRun = len(q)`, the maximum a subsequence-onl
 could reach, and `rankCompare` ordered on `longestRun` first — so every substring hit
 already outranked every subsequence-only one. With the subsequence pass gone,
 `longest_run` is constant across every surviving row and drops out of the SQL `ORDER
-BY` entirely (`tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` — the trailing
-`rel ASC` is a later fix, a free final tie-break so a pair equal in every other column,
-including `lower(rel)`, doesn't land in an arbitrary order on a multi-threaded top-N);
-`longest_run` is still reported on each hit, since the wire contract and
-`listing/ranked-hits.ts` still read it.
+BY` entirely (`(nm_exact) DESC, (nm_exact_natural) DESC, (edge) DESC, (prefix) DESC,
+(suffix) DESC, (contains) DESC, (boundary) DESC, depth ASC, length(nm) ASC,
+lower(rel) ASC, rel ASC` — `query.md §3`
+has the full column-by-column vector and why it replaced a scalar `score DESC`/`tier
+ASC` sort entirely; the trailing `rel ASC` is a free final tie-break so a pair equal
+in every other column, including `lower(rel)`, doesn't land in an arbitrary order on
+a multi-threaded top-N); `longest_run` is still reported on each hit, since the wire
+contract and `listing/ranked-hits.ts` still read it.
 
-**`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
-got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of
-truth for what highlights, and the server stays free to change how it scores internally
-without that becoming a wire contract.
+**`positions` are not returned, in either mode.** The client re-runs `fuzzyMatch`
+(substring mode) or `globMatch` (glob mode, matching `pattern` against each hit's
+`rel`, both in `platform/lib/fuzzy.ts`) over the ~200 rows it got back to build its own
+highlights, so `fuzzy.ts` stays the single source of truth for what highlights, and the
+server stays free to change how it scores or matches internally without that becoming
+a wire contract. `globMatch` marks each literal piece of `pattern` separately, leaving
+wildcard gaps unmarked (a mark spanning `/` stays continuous); rendering must
+reconstruct the hit's `rel` byte-exact. The two production call sites — the in-folder
+listing (`listing/ranked-hits.ts`) and the home page (`lib/home-search.ts`) — compute
+positions independently (one per search box) but share this one render/match layer.
 
-**Parity is a test, not an intention.** The deleted `index/rank.py` used to be a line-
-for-line port of `fuzzy.ts` + `listing/search.ts`; `_rank_sql` is now a SQL port of just
-its substring branch. `fuzzy.ts` remains the authority for the folders it still ranks —
+**Parity was a test, not an intention, and is no longer asserted.** The deleted
+`index/rank.py` used to be a line-for-line port of `fuzzy.ts` + `listing/search.ts`;
+`_rank_sql` is now an independent, position-free, lexicographic-column ranker (see
+`index/specs/query.md` §3) and no longer aims to reproduce `fuzzy.ts`'s scalar-sum
+order term for term. `fuzzy.ts` remains the authority for the folders it still ranks —
 the in-folder search still ranks a live streamed walk in the browser, and only a
-browser-side ranker can rank a stream. The same box is therefore answered by either
-ranker depending on coverage, so both assert against `tests/fixtures/rank-parity.json`
-(generated from the JS side by `bun scripts/gen-rank-fixture.ts`):
-`tests/test_index_rank.py` (restricted to the fixture's substring-matching rows) and
-`frontend/src/apps/explorer/listing/rank-parity.test.ts` (the full fixture, unchanged).
+browser-side ranker can rank a stream — but the two rankers are allowed to diverge in
+tie-break and bonus behavior; only the highlighted-position recomputation (§8) is a
+wire contract between them. `tests/fixtures/rank-parity.json` and
+`scripts/gen-rank-fixture.ts` were deleted along with the JS-side rank-parity harness
+they were generated from; `tests/test_index_rank.py` now pins the SQL ranker against a
+hand-reasoned golden corpus instead.
 
 ### 7.1 `reason` — why an answer is what it is
 
@@ -454,7 +539,7 @@ of the folder:
   response carries `created` so the client's "indexing…" caption can follow the
   same rule instead of guessing.
 - **a 20 s floor per folder** (`MUTATION_SCAN_FLOOR_S`), which DEFERS rather
-  than drops — the scheduler's 15-minute `SCAN_DEBOUNCE_S` would be a refusal,
+  than drops — the scheduler's 5-minute `SCAN_DEBOUNCE_S` would be a refusal,
   and a refused rescan leaves a renamed file unfindable, which is the failure
   this mechanism exists to prevent. The 120 s deadline is the escape from both
   the floor and the wait-for-a-live-run, so nothing is held for ever.

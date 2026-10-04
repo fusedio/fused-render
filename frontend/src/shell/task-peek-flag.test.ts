@@ -28,6 +28,7 @@ const VIEWS = read("ScheduleTaskViews.tsx");
 const CARDS = read("TaskCards.tsx");
 const CALENDAR = read("ScheduleCalendar.tsx");
 const PAGE = read("Scheduled.tsx");
+const FRAME = read("TaskPeekFrame.tsx");
 const APP = read("App.tsx");
 const FIT = read("row-fit.ts");
 const FLAG = read("task-peek-flag.ts");
@@ -98,15 +99,18 @@ describe("the flag module", () => {
     expect(FLAG).toContain(".catch(() => getPrefs())");
   });
 
-  it("reads the pref strictly: only a stored true is on", () => {
-    // A server that predates the switch sends no `task_peek` at all, and that
-    // must read as off — the pref's own default and today's behaviour.
-    expect(FLAG).toContain("p.task_peek?.enabled === true");
+  it("reads the pref as ON unless a stored false says otherwise", () => {
+    // The panel is default ON (shell/prefs.py `task_peek_enabled`, 2026-09-17),
+    // so a server that predates the switch — which sends no `task_peek` at all —
+    // must read as ON, the same answer the pref itself would give.
+    expect(FLAG).toContain("p.task_peek?.enabled !== false");
+    expect(FLAG).not.toContain("p.task_peek?.enabled === true");
   });
 
-  it("settles a failed read on OFF rather than leaving it unknown", () => {
-    // `null` sticking would be a page that never decides which behaviour it has.
-    expect(FLAG).toContain("if (generation === departed) set(false);");
+  it("settles a failed read on the default rather than leaving it unknown", () => {
+    // `null` sticking would be a page that never decides which behaviour it has,
+    // and the boolean it settles on is the pref's own default (now `true`).
+    expect(FLAG).toContain("if (generation === departed) set(true);");
   });
 });
 
@@ -140,8 +144,8 @@ describe("the markup adds nothing when the feature is off", () => {
   });
 
   it("draws no quick-open door", () => {
-    expect(VIEWS).toContain("{peekOn && page && !openDraft && (");
-    expect(VIEWS).toContain("{peekOn && page && !isDraftTask(task) && (");
+    expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !openDraft && (");
+    expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !isDraftTask(task) && (");
     // …and the card's hover strip is not drawn FOR one either.
     expect(VIEWS).toContain("{((peekOn && page) || file || folderMissing");
   });
@@ -165,9 +169,16 @@ describe("the markup adds nothing when the feature is off", () => {
     expect(FIT).toContain("(enabled ? { level } : OFF_FIT)");
   });
 
-  it("mounts no panel: the host is the flag AND the page", () => {
-    expect(PAGE).toContain("const peekable = !scope && peekOn;");
+  it("mounts no panel: the host is the flag, on /tasks and on the app page's Tasks tab alike", () => {
+    // Since 2026-09-20 the scope no longer disarms the peek — the app page's
+    // Tasks tab hosts the same panel (TaskPeekFrame.tsx) — so the flag is the
+    // whole gate on the Tasks page, and the app page adds its own tab test.
+    expect(PAGE).toContain("const peekable = peekOn;");
     expect(PAGE).toContain("if (!peekable) return page;");
+    expect(FRAME).toContain('<div className="peek-shell">');
+    // …and the OFF shells share no name with the peek's host, so no rule reaches them.
+    expect(FRAME).toContain('<div ref={frameRef} className="peek-shell-frame">');
+    expect(read("AppPage.tsx")).toContain('const peekable = peekOn === true && tab === "tasks";');
     // Which also means no param-boundary claim from this page: the claim lives
     // in TaskPeek, and TaskPeek is inside the branch above.
     expect(read("TaskPeek.tsx")).toContain("useParamBoundary(nativeChat === false && !!src)");
@@ -219,9 +230,6 @@ describe("the peek header", () => {
     };
     const order = [
       'aria-label="Close the task panel"',
-      // Only in cover, and directly after the ×: two acts, two controls
-      // (design.md, Polish batch 4, item 11).
-      "task-side-peek-resize",
       'aria-label="Previous task"',
       'aria-label="Next task"',
       // The identity block, in one element (TaskPeekWho.tsx) — its own three
@@ -247,36 +255,18 @@ describe("the peek header", () => {
     expect(WHO).not.toContain("tabIndex");
   });
 
-  it("leads with a plain × in EVERY mode, and adds Resize panel only in cover", () => {
-    // It was a `PanelIcon` whose meaning changed with the layout — "hide the
-    // right panel", and in cover "show the list" (Polish batch 3, option b).
-    // The one control every reader reaches for first was the one they had to
-    // decode first, so it is a × now and it always closes (design.md, Polish
-    // batch 4, item 11).
+  it("leads with a plain × in EVERY mode, and has NO Resize panel (2026-09-15)", () => {
+    // The × always closes (design.md, Polish batch 4, item 11). The way out of
+    // cover is now the sidebar itself — expanding it resets the panel to its
+    // default split (task-peek-store `expandUncovers`) — so the "Resize panel"
+    // button that stood beside the × is gone, not folded away.
     expect(HEAD).toContain('aria-label="Close the task panel"');
     expect(HEAD).toContain('data-hint="Close · Esc"');
     expect(HEAD).not.toContain("<PanelIcon");
-    expect(HEAD).not.toContain('from "@platform/ui/PanelIcon"');
-    expect(HEAD).not.toContain("layout.cover ? showListBesidePeek() : closePeek()");
-    // The way back to the split is a SECOND control beside it, shown only where
-    // there is a split to go back to — a control that changes what it does
-    // under the reader is worse than two controls.
-    expect(HEAD).toContain("{layout.cover && (");
-    // …and it says what it does IN WORDS, with no glyph at all (design.md,
-    // Polish batch 5): the four inward corner marks it wore were a picture a
-    // reader had to be taught, for an act that happens once in a visit.
-    expect(HEAD).toContain('className="task-side-peek-resize"');
-    expect(HEAD).toContain("Resize panel");
-    expect(HEAD).toContain('? "Restore the list beside the panel"');
-    // …and on a window that cannot hold both, it is DISABLED and says which
-    // (design.md, Fix batch 6 §1) rather than pressing and moving nothing.
-    expect(HEAD).toContain("disabled={!canList}");
-    expect(HEAD).toContain('"Window too narrow to show the list"');
-    expect(HEAD).toContain("const canList = layout.cover && canShowList();");
-    expect(HEAD).not.toContain("ICON_RESET_SIZE");
-    expect(HEAD).toContain("onClick={() => showListBesidePeek()}");
-    // …and with a × in the corner at every width, the ⋮'s own Close row is a
-    // second way to do what the corner already does.
+    expect(HEAD).not.toContain('className="task-side-peek-resize"');
+    expect(HEAD).not.toContain("Resize panel");
+    expect(HEAD).not.toContain("showListBesidePeek");
+    expect(HEAD).not.toContain("canShowList");
     expect(HEAD).not.toContain('items.push({ label: "Close", icon: ICON_CLOSE');
   });
 
@@ -318,8 +308,8 @@ describe("the peek header", () => {
     // …and all three doors wear an OUTLINE at rest (design.md, Polish batch 5).
     // The wall's already did; the other two were bare words in a run of ink,
     // with only a hover wash to say they could be pressed.
-    expect(PEEK_CSS).toContain(".task-side-peek-open,\n.task-side-peek-resize {");
-    expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open,"))).toContain(
+    expect(PEEK_CSS).toContain(".task-side-peek-open {");
+    expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open {"))).toContain(
       "border: 1px solid var(--border);",
     );
     expect(TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-act--page,"))).toContain(
@@ -429,11 +419,11 @@ describe("the peek header", () => {
       HEAD.indexOf('<header className="task-side-peek-head"'),
       HEAD.indexOf("</header>"),
     );
-    // One `data-hint` per control — the app's own tooltip contract. Six now:
-    // close, Resize panel (cover only), prev, next, Open, kebab. The project name
-    // is not in the count any more: it is a label, and its full path is a
+    // One `data-hint` per control — the app's own tooltip contract. Five now:
+    // close, prev, next, Open, kebab (Resize panel went 2026-09-15). The
+    // project name is not in the count: it is a label, and its full path is a
     // `title` rather than a hint (design.md, Polish batch 4).
-    expect(head.match(/data-hint=/g)?.length).toBe(6);
+    expect(head.match(/data-hint=/g)?.length).toBe(5);
   });
 
   it("stays ONE LINE at the pane minimum by folding, in a stated order", () => {
@@ -531,7 +521,7 @@ describe("the peek header", () => {
     // …and every later mention of the deleted task is the SNAPSHOT — the prop,
     // the toast and the advance alike.
     expect(HEAD).toContain("const erased = erasing;");
-    expect(HEAD).toContain("notify({ title: `Deleted ${erased.task_id}`, tone: \"info\" });");
+    expect(HEAD).toContain("notify({ title: `Deleted ${shortTaskId(erased.task_id)}`, tone: \"info\" });");
     expect(HEAD).toContain("advancePast(erased.key, eraseOrder.current);");
     expect(HEAD).not.toContain("setErasing(true)");
     // …and the arrows cannot reach the panel from inside the dialog in the
@@ -564,10 +554,14 @@ describe("the one selected style, and the flag that gates it", () => {
   // the whole restyle to a reader who opted out.
 
   it("reaches nothing with the feature off: every rule names the host", () => {
-    // `.tasks-peek-host` is rendered by Scheduled.tsx only when `peekable` —
-    // the flag AND the unscoped /tasks route — so with the feature down the
-    // wrapper does not exist and not one of these selectors can match.
-    expect(PAGE).toContain('<div className="tasks-peek-host">');
+    // `.tasks-peek-host` is rendered by TaskPeekFrame.tsx only when `peekable`
+    // — the flag, on /tasks and on the app page's Tasks tab — so with the
+    // feature down the wrapper does not exist and not one of these selectors
+    // can match.
+    expect(FRAME).toContain('<div className="tasks-peek-host" ref={setHost}>');
+    expect(FRAME).toContain('<div className="peek-shell">');
+    // …and the OFF shells share no name with the peek's host, so no rule reaches them.
+    expect(FRAME).toContain('<div ref={frameRef} className="peek-shell-frame">');
     expect(PAGE).toContain("if (!peekable) return page;");
     const rules = PEEK_CSS.split("}")
       .map((chunk) => chunk.slice(chunk.lastIndexOf("*/") + 1).split("{")[0] ?? "")
@@ -648,19 +642,19 @@ describe("the one selected style, and the flag that gates it", () => {
 });
 
 describe("the preview's inset, and the page's gutters at width", () => {
-  it("gives the preview one header-button of air, and scales to what is left", () => {
-    // The app was welded to both walls of the panel while everything around it
-    // was inset (design.md, Polish batch 4, item 7). One var, so the preview's
-    // edge and the ×'s edge cannot drift apart.
+  it("gives the preview a hairline of air, and scales to what is left", () => {
+    // Was welded one header-button's width off both walls of the panel
+    // (design.md, Polish batch 4, item 7); Akshil, 2026-09-16, cut that inset
+    // to 1px — the header-button size (`--peek-icon-w`) no longer sets it.
     expect(PEEK_CSS).toContain("--peek-icon-w: 28px;");
     expect(PEEK_CSS).toContain("width: var(--peek-icon-w);");
-    expect(PEEK_CSS).toContain("--peek-preview-inset: 38px;");
+    expect(PEEK_CSS).toContain("--peek-preview-inset: 1px;");
     expect(PEEK_CSS).toContain("padding-left: var(--peek-preview-inset);");
     expect(PEEK_CSS).toContain("padding-right: var(--peek-preview-inset);");
     // The ARITHMETIC half of the same number — padding on a scroller does not
     // shrink what is inside it, so the frame has to be drawn at the inner
     // width or the gutter simply crops the app.
-    expect(read("peek-preview.ts")).toContain("export const PREVIEW_INSET = 38;");
+    expect(read("peek-preview.ts")).toContain("export const PREVIEW_INSET = 1;");
     expect(read("peek-preview.ts")).toContain("const inner = peekWidth - 2 * PREVIEW_INSET;");
   });
 
@@ -689,11 +683,18 @@ describe("the middle pane's floor", () => {
   // a switch nothing listens for, or a rule keyed on an attribute nobody
   // writes. Neither needs a mounted list to catch.
   it("writes the switch and the number onto the frame, and only there", () => {
-    expect(PAGE).toContain('data-floored={peek.floored ? "1" : undefined}');
-    expect(PAGE).toContain('"--tasks-floor": `${contentFloor}px`');
+    // Since 2026-09-15 the switch is `tight`, not `floored`: the list scrolls
+    // rather than folding its marks from the first pixel the frame is under
+    // the column (Scheduled.tsx `scrolls`).
+    expect(PAGE).toContain("const scrolls = peek.open && peek.tight;");
+    // The frame itself moved to TaskPeekFrame.tsx (2026-09-20) so the app page
+    // can draw the same one; the switch and the number are written there.
+    expect(FRAME).toContain("const scrolls = layout.open && layout.tight;");
+    expect(FRAME).toContain('data-floored={scrolls ? "1" : undefined}');
+    expect(FRAME).toContain('"--tasks-floor": `${contentFloor}px`');
     // The number is a CONTENT width: the frame's ¾ baseline counts the page's
     // gutters, and the views live inside them.
-    expect(PAGE).toContain("peek.floor - peekGutter()");
+    expect(FRAME).toContain("layout.floor - peekGutter()");
   });
 
   it("keeps the seam reachable in cover mode — it is the only way back", () => {
@@ -746,7 +747,7 @@ describe("the middle pane's floor", () => {
     expect(VIEWS).toContain("useRowFit(listRef, peekOn, floored)");
     // …and the page hands the pane's own state down, so the stylesheet and the
     // ladder cannot disagree about which side of the floor it is on.
-    expect(PAGE).toContain("floored={peek.floored}");
+    expect(PAGE).toContain("floored={scrolls}");
   });
 
   it("leaves the toolbar out of it — the toolbar is exempt at every width", () => {
@@ -847,5 +848,98 @@ describe("the stylesheet changes nothing when the feature is off", () => {
       const bare = css.match(/[^\]]:not\(\[data-fit/g) ?? [];
       expect({ file: rel, bare }).toEqual({ file: rel, bare: [] });
     }
+  });
+});
+
+// ---- the peek's composer opens on THIS TASK's run settings --------------------
+// Akshil, 2026-09-18: "I saw the sidebar peek — the values there were
+// different." The peek's body is a real chat, and a chat handed no opinion about
+// its model resolves one by DETECTION — `agent._defaults`, the model last used
+// in that FOLDER, scanned off its newest transcripts. That is the right answer
+// for a chat somebody opened on a folder and the wrong one for a task that was
+// set up with a model in the New task card.
+//
+// The composer's ranking has a seat for the truth
+// (`record > param > detected > pref > constant`, apps/claude/ui/composer-defaults)
+// and both branches of the peek now state the task's own — unconditionally,
+// because the seat above them is what retires the seed.
+describe("the peek's run settings", () => {
+  const PEEK = read("TaskPeek.tsx");
+
+  /** The file with every run of whitespace collapsed, so an assertion about
+   *  WHAT the source says is not also an assertion about how it wrapped. */
+  const flat = PEEK.replace(/\s+/g, " ");
+
+  it("seeds the task's model and effort, and lets the record outrank them", () => {
+    // UNCONDITIONALLY, and that is the fix to the first attempt at this. Gating
+    // the seed on `!task.session_id` was too coarse: a task whose session
+    // existed but whose transcript had not been written yet got no seed AND no
+    // detection, so the composer fell through to the newest OTHER chat in the
+    // folder — fable/max for a task created with haiku/low (Akshil,
+    // 2026-09-18). The conversation's own record is what stands the seed down
+    // now, and it exists from the first spawn rather than from the first
+    // transcript row.
+    expect(flat).toContain("model={task.model} effort={task.effort}");
+  });
+
+  it("…and does the same to the FLAG-OFF frame's URL, so the branches agree", () => {
+    // The legacy template reads the same two params (`curModel`/`curEffort`).
+    expect(flat).toContain("{ model: task.model, effort: task.effort }),");
+  });
+
+  it("does not DRAW them — the peek is about a task, not about the tool", () => {
+    // The same rule the header took when it stopped wearing the chat's Topbar:
+    // a model cluster is a fact about the TOOL. These two travel as settings
+    // for the composer and are not a third thing in the header.
+    expect(PEEK).not.toContain("taskRunLabel");
+    expect(PEEK).not.toContain("MODEL_LABELS");
+  });
+});
+
+
+// ---- ONE ANSWER THROUGH EVERY DOOR (Akshil, 2026-09-18) ----------------------
+//
+// "What I select as a user stays." The pills are resolved by
+// `ui/composer-defaults`, which asks the agent about a SESSION — so a route
+// keeps its promise exactly as far as it carries the session id to the chat it
+// opens. These pin that every door does.
+//
+// The routes, and where each one's id comes from:
+//   (a) task row → side peek          `ChatMount sessionId={task.session_id}`
+//   (b) peek → Open → explorer chat   `taskHref` → `explorerUrl` → `chatUrl`
+//   (c) Tasks list → row → chat       the same `taskHref`
+//   (d) chat list / recents → chat    the explorer's own row href
+//   (e) a bare URL with only session_id
+//   (f) a hand-typed chat whose reader picked a model — no task, no seed; the
+//       pick is in the transcript and `_defaults` reads it back
+//       (tests/test_claude_sessions_merged.py).
+describe("every door into a chat names the conversation", () => {
+  const PEEK = read("TaskPeek.tsx");
+
+  it("(a) the peek hands the session to the mount", () => {
+    expect(PEEK).toContain("sessionId={task.session_id}");
+  });
+
+  it("(b,c,d,e) every URL door carries session_id", async () => {
+    const { chatUrl } = await import("@platform/lib/queue");
+    const { explorerUrl, chatPaneUrl } = await import("./schedule-lib");
+    const { taskHref } = await import("./tasks-lib");
+
+    expect(chatUrl("/w/p", "sess-1")).toContain("session_id=sess-1");
+    expect(explorerUrl("/w/p", "sess-1")).toContain("session_id=sess-1");
+    // The peek's Open door is `taskHref`, and it is the SAME string the row's
+    // own door builds — one address for one conversation, however it is reached.
+    const href = taskHref({ session_id: "sess-1", target: "/w/p", project: "/w" });
+    expect(href).toBe(explorerUrl("/w/p", "sess-1"));
+    expect(href).toContain("session_id=sess-1");
+    // …and the one door that deliberately names NO conversation still says so
+    // by omission rather than by an empty value.
+    expect(chatPaneUrl("/w/p")).not.toContain("session_id");
+  });
+
+  it("the peek's Open door and the row's door cannot drift", () => {
+    // Both are `taskHref`. A second builder here is how one route would start
+    // answering a different question from the other.
+    expect(PEEK).toContain("taskHref(");
   });
 });

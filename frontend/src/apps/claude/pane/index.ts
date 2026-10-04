@@ -8,7 +8,6 @@ export {
   appEntrySrc,
   curLeftEntry,
   decidePane,
-  footnoteFor,
   homePlaceholderFor,
   PANE_SKIP_MODES,
   paneModeIconUrl,

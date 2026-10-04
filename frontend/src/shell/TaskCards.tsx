@@ -39,6 +39,7 @@ import { ChatMount, useNativeChatEnabled, useNativeChatFlag } from "@apps/claude
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
 import {
+  discardDraft,
   ICON_ARCHIVE,
   ICON_OPEN_FOLDER_PATH,
   ICON_TRASH,
@@ -52,8 +53,10 @@ import { EraseTaskModal } from "./EraseTaskModal";
 import {
   CARD_PAGE,
   basename,
+  shortTaskId,
   cardKey,
   cardsForTasks,
+  draftHeldByPeek,
   draftTag,
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
@@ -61,15 +64,17 @@ import {
   emptyPaneText,
   eraseBlocked,
   filingIntent,
-  firstLine,
+  hasDraft,
   opensElsewhere,
   peekOpenable,
   spansProjects,
   ringFailed,
   taskColumn,
   taskHref,
+  usageLimitCaption,
   taskWhen,
   tildePath,
+  cardTitleLine,
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import {
@@ -79,7 +84,7 @@ import {
   usePeekHost,
   usePeekedKey,
 } from "./task-peek-store";
-import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
+import { useTaskHeadline } from "./TaskPeekWho";
 import { useMarginWheel } from "./useMarginWheel";
 
 /** What the page says when there is nothing to draw — the Board's own words,
@@ -315,10 +320,6 @@ export function TaskCards({
   // is "this conversation is open RIGHT NOW", this is "this is the one you came
   // back out of" — and it outlives the peek being closed.
   const [selected, setSelected] = useState(readSelectedCard);
-  // Titled by the task, or by the last thing said in it (task-card-title-flag,
-  // `task_card_last_message`). Read once for the wall rather than per card: one
-  // subscription, one answer, and no chance of two cards disagreeing mid-poll.
-  const titleMode = useTaskCardTitleMode();
   const openTask = (task: Task) => {
     const key = cardKey(task);
     setSelected(key);
@@ -445,7 +446,6 @@ export function TaskCards({
           peekOn={peekOn}
           peeked={peekedKey === cardKey(task)}
           selected={selected === cardKey(task)}
-          titleMode={titleMode}
           onReload={onReload}
           project={
             showProject
@@ -480,7 +480,6 @@ function TaskCard({
   peekOn = false,
   peeked = false,
   selected = false,
-  titleMode = false,
   onReload,
   project,
   onPickDraft,
@@ -504,9 +503,6 @@ function TaskCard({
    * fill the head's hover used to draw (task-cards.css `.is-selected`), whether
    * or not anything is open now. The List row's own mark, and its fill. */
   selected?: boolean;
-  /** Title the card by the last thing said in its conversation rather than by
-   * the task's own title (task-card-title-flag, `task_card_last_message`). */
-  titleMode?: boolean;
   /** After a door archives or unarchives: the card's lane changed, so the page
    * re-reads (the popup's own rule, TaskPeek). */
   onReload?: () => void;
@@ -519,16 +515,18 @@ function TaskCard({
   draftOn?: boolean;
 }) {
   const when = taskWhen(task);
-  // THE ONE LINE UNDER THE HEAD ROW: the task's title, or — with the experiment
-  // on and something said in this conversation — its newest message, whoever
-  // said it (design.md §A, Option 1). The rule is `cardTitleLine`'s, so the
-  // card is not a second place deciding what a blank one falls back to.
-  const line = cardTitleLine(task, titleMode);
+  // THE ONE LINE UNDER THE HEAD ROW: the reader's newest message, never
+  // Claude's reply, or the task's title when nothing has been said (design.md
+  // §A, Option 1). The rule is tasks-lib.cardTitleLine's, so the card is not a
+  // second place deciding what a blank one falls back to.
+  const line = cardTitleLine(task);
   const title = line.text || "(untitled)";
   // Words nobody has sent, in this conversation's composer — the List row's and
   // the Board card's own chip, from the same function, so the three views
   // cannot describe one draft differently (tasks-lib.draftTag).
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this card's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // Both halves have to be there before anything can be framed: no session means
   // there is no conversation yet, and no template means the folder's stat has
   // not answered (or has no chat mode at all).
@@ -557,6 +555,9 @@ function TaskCard({
   // it is the way out.
   const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
+  /** "Usage limit · resumes 4:00 AM" on a session the plan's window stopped, ""
+   *  on every other card. */
+  const limit = usageLimitCaption(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
   // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
@@ -570,6 +571,9 @@ function TaskCard({
   // hint says the only thing that would help. Disabled means the dialog never
   // opens, so nobody reads the refusal for the first time inside a confirmation.
   const [erasing, setErasing] = useState(false);
+  /** One discard at a time: the trash above stays down while its DELETE is out,
+   *  so a double press cannot send two. */
+  const [discarding, setDiscarding] = useState(false);
   const blocked = eraseBlocked(task);
   const refile = async () => {
     if (!filing || acting) return;
@@ -607,7 +611,7 @@ function TaskCard({
       // this view is the grid's own order (shell/TaskPeek.tsx). Absent entirely
       // when the feature is off.
       {...(peekOn ? peekItemProps(cardKey(task), peekOpenable(task)) : {})}
-      aria-label={`${task.task_id} ${title}`}
+      aria-label={`${shortTaskId(task.task_id)} ${title}`}
       // THE WHOLE CARD IS THE DOOR (Akshil, 2026-09-10, E2E R1 F3): the body
       // used to be the live chat with its own scroll and its own clicks —
       // collapsible chips, thumbnails, links — and a wall of tiles each
@@ -628,7 +632,7 @@ function TaskCard({
         className="task-card-head"
         role="button"
         tabIndex={0}
-        aria-label={`Preview ${task.task_id}`}
+        aria-label={`Preview ${shortTaskId(task.task_id)}`}
         onClick={(e) => {
           e.stopPropagation();
           onPeek(task);
@@ -662,13 +666,13 @@ function TaskCard({
           <StatusIcon
             status={taskColumn(task)}
             failed={ringFailed(task)}
-            draftHeld={draftRing(task)}
+            draftHeld={draftRing(task) && !heldInPeek}
           />
           {/* The id keeps the List row's muted skin whatever the title row below
               shows. It was lifted to bold + full fg while that row was the
               conversation's last message (design.md §A); Akshil (2026-09-14)
               took the emphasis back out — one weight for the id everywhere. */}
-          <span className="tasks-id tasks-id--task">{task.task_id}</span>
+          <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
@@ -726,6 +730,14 @@ function TaskCard({
         >
           {title}
         </span>
+        {/* THE PLAN'S PAUSE, under the title — the List row's and the Board
+            card's own sentence, from the same function (`usageLimitCaption`), so
+            one stopped session is described one way on all three surfaces. The
+            ring above it is Blocked's red and the lane is Blocked's, which is
+            true; this is the clause that says the run did not BREAK, it is
+            waiting for a clock, and names the clock. Nothing at all on every
+            other card. */}
+        {limit && <span className="task-card-limit">{limit}</span>}
         {/* Inside the head (so hovering them keeps the head hovered) but not OF
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when
@@ -741,6 +753,35 @@ function TaskCard({
             a folder that opens, and a folder that is not gone has none). */}
         {(filing || explorer || gone) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
+          {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
+              trash, on this wall too (design "one record", §5: the same actions
+              everywhere). It is the ONE way a draft is ever drawn here: a card
+              is a transcript, so a draft ROW has no card (tasks-lib.cardsForTasks)
+              and what a wall can carry is an ordinary task whose composer is
+              holding something — the the Draft chip in the head above. The
+              gesture is the same call the other two views make (`discardDraft`),
+              and, like them, it asks nothing first: unsent text is not a
+              destructive delete, and the New task modal's own Discard has never
+              confirmed either.
+
+              Stands down on a card whose folder is gone, where the trash beside
+              it is the stronger claim — the same rule the List row keeps. */}
+          {hasDraft(task) && !gone && !heldInPeek && (
+            <button
+              type="button"
+              className="task-card-door task-card-door--danger"
+              disabled={discarding}
+              data-hint="Discard draft"
+              aria-label={`Discard draft ${shortTaskId(task.task_id)}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setDiscarding(true);
+                void discardDraft(task).finally(() => setDiscarding(false));
+              }}
+            >
+              {ICON_TRASH}
+            </button>
+          )}
           {/* Delete for good — ONLY on a card whose folder is gone (Akshil,
               2026-09-07: "should only show up if it has a folder missing
               error"): a task that can still be opened is archived, not
@@ -753,7 +794,7 @@ function TaskCard({
             className="task-card-door task-card-door--danger"
             disabled={blocked || acting}
             data-hint={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}
-            aria-label={`Delete ${task.task_id} forever`}
+            aria-label={`Delete ${shortTaskId(task.task_id)} forever`}
             onClick={(e) => {
               e.stopPropagation();
               if (blocked || acting) return;
@@ -825,7 +866,7 @@ function TaskCard({
           <ChatMount
             legacySrc={src}
             className="task-card-frame"
-            title={`${task.task_id} ${title}`}
+            title={`${shortTaskId(task.task_id)} ${title}`}
             file={task.target || task.project}
             sessionId={task.session_id}
             chatOnly
@@ -863,7 +904,7 @@ function TaskCard({
             // clean delete now only pops (tone: "info" default) rather than
             // staying in the panel — see DECISIONS-toasts-become-
             // notifications.md's retention-narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onReload?.();
           }}
         />
@@ -899,7 +940,8 @@ function TaskPeek({
   onClose: () => void;
   onReload?: () => void;
 }) {
-  const title = firstLine(task.title) || "(untitled)";
+  // The same line the card and every other task header print (TaskPeekWho).
+  const title = useTaskHeadline(task);
   const src = task.session_id && template && !folderMissing
     ? peekFrameSrc(template, task.target || task.project, task.session_id)
     : null;
@@ -993,10 +1035,10 @@ function TaskPeek({
       title={
         <span className="task-peek-title">
           <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
-          <span className="tasks-id tasks-id--task">{task.task_id}</span>
+          <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
-          <span className="task-peek-name" data-hint={task.title}>
+          <span className="task-peek-name" data-hint={task.last_message?.text || task.title}>
             {title}
           </span>
         </span>
@@ -1112,7 +1154,7 @@ function TaskPeek({
           legacySrc={src}
           legacyFrameRef={frameRef}
           className="task-peek-frame"
-          title={`${task.task_id} ${title}`}
+          title={`${shortTaskId(task.task_id)} ${title}`}
           file={task.target || task.project}
           sessionId={task.session_id}
           chatOnly
@@ -1143,7 +1185,7 @@ function TaskPeek({
             // A clean delete now only pops (tone: "info" default) rather
             // than staying in the panel — see DECISIONS-toasts-become-
             // notifications.md's retention-narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onReload?.();
             onClose();
           }}

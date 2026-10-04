@@ -32,10 +32,20 @@ from fused_render.server.common import _require_fused
 
 router = APIRouter()
 
+# trigger -> the action sentence the Fix with Claude prompt names.
+_SYNC_ACTIONS = {"claude-turn": "Auto-push after Claude commit"}
+
 
 @router.get("/api/git-upstream")
 def api_git_upstream():
-    return {"repos": git_upstream.known_repos()}
+    # `sync_failures`: standing auto-sync failures (persistent notification
+    # rows). `pulls`: recent auto-pulls that brought commits in (the transient
+    # "Updated <app>" popup). `auto_sync`: the pref, so the shell can tell
+    # "setting off" from "nothing to report".
+    return {"repos": git_upstream.known_repos(),
+            "sync_failures": git_upstream.sync_failures(),
+            "pulls": git_upstream.recent_pulls(),
+            "auto_sync": git_upstream.auto_sync_enabled()}
 
 
 @router.post("/api/git-upstream")
@@ -44,6 +54,21 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
     if guard is not None:
         return guard
     action = str(body.get("action") or "")
+    if action == "sync":
+        # The Claude template's post-turn hook (a standalone process that
+        # cannot import this package): push whatever the default branch is
+        # ahead by. Only a path inside a workspace app folder is accepted, and
+        # the work is queued in the background, so this answers immediately.
+        from fused_render import app_git
+
+        path = str(body.get("path") or "")
+        if not path or app_git.app_dir_for(path) is None:
+            return {"ok": False, "reason": "not-an-app",
+                    "message": "that path is not inside an app folder"}
+        label = _SYNC_ACTIONS.get(str(body.get("trigger") or ""),
+                                  "Auto-push after app change")
+        queued = git_upstream.schedule_sync(path, label, push=True)
+        return {"ok": True, "queued": queued}
     root = str(body.get("root") or "")
     if not root:
         return {"ok": False, "reason": "missing", "message": "no repo root given"}
@@ -53,6 +78,27 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
         # rather than needing a special case for this one failure mode.
         return {"ok": False, "reason": "unknown-repo",
                 "message": "that repository is not one this app has checked."}
+    if action == "sync-retry":
+        result = git_upstream.retry_sync(root, str(body.get("reason") or ""))
+        if result["status"] == "failed":
+            f = result["failure"]
+            return {"ok": False, "reason": f["reason"], "message": f["title"]}
+        if result["status"] != "synced":
+            # offline / busy / skipped: nothing was cleared server-side, so
+            # reporting ok would hide a row that the next poll brings back.
+            if result["status"] == "skipped":
+                why = result.get("why") or "skipped"
+                return {"ok": False, "reason": why,
+                        "message": "Nothing was synced (%s); this failure still stands." % why}
+            if result.get("busy"):
+                return {"ok": False, "reason": "busy",
+                        "message": "Another sync is running; try again in a moment."}
+            return {"ok": False, "reason": "offline",
+                    "message": "Still offline; try again when you are connected."}
+        return {"ok": True, "op": "sync", "root": root, "status": "synced"}
+    if action == "sync-dismiss":
+        git_upstream.dismiss_sync_failure(root, str(body.get("reason") or ""))
+        return {"ok": True, "op": "dismiss", "root": root}
     if action == "update":
         return git_upstream.update_repo(root)
     if action == "switch":

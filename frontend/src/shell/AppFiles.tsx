@@ -34,7 +34,7 @@ import {
   type TemplateEntry,
 } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { replaceSearch } from "@platform/lib/router";
+import { replaceSearch, spaLinkProps } from "@platform/lib/router";
 import { rewritePathAgainst } from "@platform/lib/snapshot-param";
 import type { AppPageSnapshotState } from "./useAppPageSnapshot";
 import SnapshotError from "./SnapshotError";
@@ -78,14 +78,12 @@ type Stat =
 export default function AppFiles({
   dir,
   entry,
-  folderHref,
   snapshot,
 }: {
   /** The app folder, absolute forward-slash. */
   dir: string;
   /** The app's entry page (absolute) — the default selection. */
   entry: string | null;
-  folderHref: string;
   /** The app page's own snapshot resolution (AppPage.tsx). Rewritten against
    *  directly — never a shared singleton — so under a selected commit this
    *  tab walks and previews THAT commit's tree instead of the working tree.
@@ -312,8 +310,8 @@ export default function AppFiles({
           {walk.kind === "ok" && nodes.length > 0 && <ul role="tree">{renderNodes(nodes)}</ul>}
           {walk.kind === "ok" && walk.truncated && (
             <p className="app-files-caption">
-              Showing the first {total} files. <a href={folderHref}>Open the folder</a> for the
-              rest.
+              Showing the first {total} files.{" "}
+              <a {...spaLinkProps(dir, { isDir: true })}>Open the folder</a> for the rest.
             </p>
           )}
         </div>

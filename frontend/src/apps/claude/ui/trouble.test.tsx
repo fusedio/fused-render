@@ -184,7 +184,7 @@ const MISSING =
 
 test("a cli-missing card draws the install command ONCE", () => {
   // It was on screen TWICE in one card — once as `TroubleCard`'s
-  // `.trouble-install` (with the "Run it in a terminal…" hint) and once as
+  // `.trouble-install` (with the "no need to restart" hint) and once as
   // `TroubleView`'s own `.trouble-cmd`, each with its own Copy button. T:13681-
   // 13691 draws exactly one, inside the card.
   const r = mount(
@@ -196,8 +196,31 @@ test("a cli-missing card draws the install command ONCE", () => {
   const text = textOf(r.toJSON() as Json);
   const shown = text.split("claude.ai/install.sh").length - 1;
   expect(shown).toBe(1);
-  // And the card's version is the one with the hint the chat's copy never had.
-  expect(text).toContain("Run it in a terminal");
+  // And the card's version is the one with the hint the chat's copy never had:
+  // a retry re-discovers a freshly-installed `claude` on PATH, so no restart.
+  expect(text).toContain("no need to restart Fused Render");
+});
+
+test("the install hint only promises \"try again below\" where a retry button exists", () => {
+  // The chat's boot failure passes no `onRetry` (reloading the page is its own
+  // retry), so the card must not tell the reader to press a button it never
+  // drew.
+  const noRetry = mount(
+    <TroubleView trouble={{ kind: "cli-missing", message: MISSING }} what="using the chat" />,
+  );
+  const noRetryText = textOf(noRetry.toJSON() as Json);
+  expect(noRetryText).toContain("no need to restart Fused Render");
+  expect(noRetryText).not.toContain("try again below");
+
+  const withRetry = mount(
+    <TroubleView
+      trouble={{ kind: "cli-missing", message: MISSING }}
+      what="using the chat"
+      onRetry={() => {}}
+    />,
+  );
+  const withRetryText = textOf(withRetry.toJSON() as Json);
+  expect(withRetryText).toContain("try again below — no need to restart Fused Render");
 });
 
 test("the install box follows the kind WE classified, not a re-read of the slice", () => {

@@ -62,8 +62,18 @@ export interface Attachments {
   capture(): Promise<void>;
   /** ⌘V and a drop of bytes (T:11557 `shotAttachFiles`). */
   addFiles(files: readonly File[]): Promise<void>;
-  /** A drag from inside fused-render: the real path, no upload (T:11680). */
-  addPaths(paths: readonly string[]): Promise<void>;
+  /**
+   * A drag from inside fused-render: the real path, no upload (T:11680).
+   *
+   * Resolves to a REVERT — this call's own undo, and NOTHING else's. A caller
+   * that later decides this particular restore turned out to be stale (a
+   * newer restore already in flight, or already landed, for the same
+   * composer) calls it to take back exactly what THIS call put in the tray:
+   * no epoch bump, and no reach for `discard()`, either of which would also
+   * abort or wipe whatever that newer restore added (Bugbot #4028927464). A
+   * no-op past its first call, so a caller free with it costs nothing.
+   */
+  addPaths(paths: readonly string[]): Promise<() => void>;
   /** The chip's ✕ and the viewer's Discard (T:10654 `shotDrop`). */
   remove(att: Attachment): void;
   /**
@@ -309,8 +319,9 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
   );
 
   const addPaths = useCallback(
-    async (paths: readonly string[]) => {
-      if (!paths.length) return;
+    async (paths: readonly string[]): Promise<() => void> => {
+      const noop = () => {};
+      if (!paths.length) return noop;
       const began = epoch.current;
       const added = await api.attachPaths(agentDir, [...paths]);
       if (!alive.current || epoch.current !== began) {
@@ -318,9 +329,25 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         // also how a peek's draft re-seed racing a Board drop is kept from
         // putting the just-sent files back.
         for (const att of added) api.revoke(att);
-        return;
+        return noop;
       }
-      if (added.length) commit((prev) => [...prev, ...added]);
+      if (!added.length) return noop;
+      commit((prev) => [...prev, ...added]);
+      // WHAT THIS CALL — AND ONLY THIS CALL — PUT IN THE TRAY. `newId()` mints
+      // a fresh id per attachment, so this set is never confused with another
+      // call's chips even when the paths are identical (Bugbot #4028927464): a
+      // caller who decides this restore is stale removes exactly these, never
+      // the whole tray, and never touches the epoch — a second, newer restore
+      // may still be mid-flight on the same tray and must not be aborted or
+      // stripped by this one's cleanup.
+      const ids = new Set(added.map((a) => a.id));
+      let reverted = false;
+      return () => {
+        if (reverted) return;
+        reverted = true;
+        for (const att of live.current) if (ids.has(att.id)) api.revoke(att);
+        commit((prev) => prev.filter((s) => !ids.has(s.id)));
+      };
     },
     [api, agentDir, commit],
   );

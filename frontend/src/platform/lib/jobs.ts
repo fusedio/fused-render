@@ -90,6 +90,21 @@ export interface Job {
   // one place that tells the two shapes apart and turns either into a real
   // navigation). Empty for a job no destination has been given yet.
   page: string;
+  // WHO RAISED this job, for presence suppression only — mirrors
+  // `fused_render/jobs.py`'s `Job.source` exactly, including why it exists:
+  // `page` above is deliberately allowed to end up pointing at a RENDER's own
+  // output file (so a click opens it) once no caller page was supplied, which
+  // makes `page` useless for "is the user already looking at the page that
+  // asked for this" — an absolute `.png` path can never match an open shell
+  // route. `source` is the field a presence check must read instead
+  // (SPEC-quiet-notifications.md bug 1): for an ordinary job it carries the
+  // SAME value as `page` (both come off the same `X-Fused-Page`), and only
+  // diverges for a render, where it stays the raising route (or "") through
+  // every tick, including the terminal one, never inheriting `page`'s
+  // output-path fallback. "" means "no known raiser" and must always read as
+  // "cannot suppress, so notify" — see `matchesSource` (presence.ts), which
+  // already returns false for an empty `source`.
+  source: string;
   // A short, human-readable label naming WHAT RAISED this job — "Playground",
   // "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
   // "Scheduler", "App install". Deliberately NOT `page` and never derived
@@ -123,6 +138,17 @@ export interface Job {
   // through `effectiveTier` below, not directly — a terminal row's actual
   // tier can differ from what its producer declared.
   tier: JobTier;
+  // §3 (SPEC-quiet-notifications.md): the client-side grouping key. Mirrors
+  // `fused_render/jobs.py`'s `Job.group` exactly, including its default:
+  // defaulted server-side, ONCE, at creation, from the id's own
+  // `sys:<name>:` prefix when it has one, else the whole id. The
+  // whole-id fallback is what makes an ungrouped job's own id its own
+  // group of exactly one member — by construction, not by a client-side
+  // special case — which is why "a lone job renders and behaves exactly as
+  // today" holds without this file ever having to check "is this job even
+  // grouped at all". See `groupJobs` below for the client-side grouping
+  // this field feeds.
+  group: string;
 }
 
 export interface JobsSnapshot {
@@ -260,10 +286,215 @@ export function effectiveTier(job: Job): JobTier {
  *  that declared itself transient/silent but ended in `error`/`cancelled`
  *  still gets a row, because the override already turned it into
  *  `attention`. */
-export function jobRows(jobs: Job[]): Job[] {
+// ------------------------------------------------------------------ §3 grouping
+//
+// SPEC-quiet-notifications.md §3. `Job.group` (above) is defaulted server-side
+// to a group of exactly one (the job's own id) for anything with no
+// `sys:<name>:` family prefix, which is what makes "a lone job renders and
+// behaves exactly as today" true by construction — the functions below never
+// special-case group size 1, and a regression test pins that it doesn't need
+// to.
+
+/** Finding 3 (code review, quiet-notifications): the server's `group` field
+ *  is a FAMILY key (`sys:ai-image:<id>` -> `sys:ai-image`), and terminal rows
+ *  are kept until dismissed (D663) - so grouping purely by `(page, group)`
+ *  folds a page's ENTIRE history for that family into one group. Once a
+ *  second model download has ever existed on a page, every future download
+ *  in that family joins the same permanent group: it never pops on its own
+ *  completion again (`popupJobs` excludes any multi-member group), an old
+ *  failure pins the group in "Needs you" forever, and the subline counts
+ *  jobs from hours ago ("17 of 18 done").
+ *
+ *  THE FIX: a group must mean one BURST of work, not one family of work.
+ *  Within a `(page, group)` family, jobs are further split into CLUSTERS by
+ *  activity gap - sort the family by `started_at`, walk in order, and start
+ *  a new cluster whenever a job's `started_at` is more than `GROUP_GAP_MS`
+ *  past the latest `finished_at ?? started_at` seen so far in the CURRENT
+ *  cluster. The final grouping key is `(page, family, cluster)`, not just
+ *  `(page, family)` - so a burst from hours ago can never absorb a job that
+ *  starts today, no matter how many bursts came before it in the same
+ *  family. See `clusterFamily` below for the walk itself.
+ *
+ *  DO NOT "simplify" this back to `(page, group)` - that is precisely the
+ *  bug this fix exists to close (findings 3/3a/3b/3c, code review
+ *  2026-09-16). See DECISIONS-quiet-notifications.md for the full writeup. */
+export const GROUP_GAP_MS = 2 * 60 * 1000;
+
+/** One group of jobs sharing the same `(page, group)` FAMILY *and* burst
+ *  cluster - the unit a group row is judged and rendered as. `jobs`
+ *  preserves the snapshot's own arrival order. `key` is the full
+ *  cluster-scoped identity (family plus which burst) - use it, not
+ *  `${page} ${group}` alone, anywhere a stable per-burst identity is needed
+ *  (React list keys): two different bursts of the same family share
+ *  `page`/`group` but must never be treated as the same group. Since the
+ *  follow-up finding below, the cluster component is itself content-derived
+ *  (the cluster's earliest member's id), not positional, so this key no
+ *  longer moves when an unrelated cluster in the same family leaves the
+ *  snapshot. (As of 2026-09-23, D888, `groupPopupTick` no longer tracks a
+ *  START edge at all — only FAILURE, keyed by `popupKey`, same as
+ *  `popupTick` — so the key-churn concern this paragraph used to describe no
+ *  longer applies to that function; `key` is still the right identity for
+ *  React list keys.) */
+export interface JobGroup {
+  page: string;
+  group: string;
+  key: string;
+  jobs: Job[];
+}
+
+// Finding (2026-09-16, found while fixing bug 1 above, not in the original
+// brief): keyed on `job.page` until now, which for a REAL render is a
+// per-job output path — two Playground image generations sharing the same
+// `group` ("sys:ai-image") never shared a `familyKey` in production, because
+// each one's own `page` is its own unique output file once the render
+// finishes. That means they could never even reach `groupJobs`'s
+// multi-member path at all, regardless of `groupPopupTick`'s own START rule
+// — the live symptom "2 popups for 2 image gens" (SPEC-quiet-notifications.md
+// bug 2) would have SURVIVED a `groupPopupTick`-only fix, silently, because
+// the jobs never became a group to pop once for. `job.source || job.page`
+// fixes this: a render's `source` is the raising route, shared across every
+// render from the same page (unlike `page`), while an ordinary job with no
+// distinct `source` (every existing producer/test fixture, where `source`
+// defaults to `page`) computes the exact same key as before — this is why no
+// existing test needed its `page`/`group` values touched to keep passing.
+function familyKey(job: Job): string {
+  return `${job.source || job.page} ${job.group}`;
+}
+
+/** Split one `(page, group)` family into burst clusters - see `GROUP_GAP_MS`
+ *  above for the rule. Returns each member's cluster index, computed off a
+ *  copy sorted by `started_at` (the family's own arrival order, preserved by
+ *  the caller, is not necessarily start order - a shorter job can be
+ *  reported after a longer one that started first). */
+/** Finding (code review 2026-09-16, follow-up to finding 3): the cluster
+ *  identity used to be its POSITIONAL index (0, 1, 2...) in the current
+ *  snapshot. That ordinal moves whenever an unrelated cluster in the same
+ *  family leaves the snapshot (a Clear-all, a dismissal, a sweep) or a late
+ *  report arrives out of `started_at` order and splits an earlier cluster in
+ *  two — every later ordinal shifts even though nothing about the shifted
+ *  cluster's OWN membership changed. Keying each cluster on its own earliest
+ *  member's id instead (content-derived, not positional) means the key only
+ *  moves when that cluster's own earliest member actually changes.
+ *
+ *  This is defence-in-depth / a React-key fix (`groupJobs`'s `key`, read by
+ *  every caller that lists one row per group) — it is NOT what makes
+ *  `groupPopupTick`'s
+ *  START rule correct by itself. `GroupPopupState` tracks running MEMBER
+ *  IDS, not group keys, specifically so a key change here can never revive a
+ *  duplicate START pop. See that type's own doc comment. */
+function clusterFamily(members: readonly Job[]): Map<string, string> {
+  const sorted = [...members].sort((a, b) => a.started_at - b.started_at);
+  const clusterOf = new Map<string, string>();
+  let clusterHeadId: string | null = null;
+  let latestActivity = -Infinity; // latest finished_at ?? started_at seen so far, THIS cluster only
+  for (const j of sorted) {
+    if (clusterHeadId === null || j.started_at - latestActivity > GROUP_GAP_MS) {
+      clusterHeadId = j.id;
+      latestActivity = -Infinity;
+    }
+    clusterOf.set(j.id, clusterHeadId);
+    const activity = j.finished_at ?? j.started_at;
+    if (activity > latestActivity) latestActivity = activity;
+  }
+  return clusterOf;
+}
+
+/** Group a job snapshot by `(page, group, cluster)`, preserving first-seen
+ *  order - see `GROUP_GAP_MS`'s doc comment above for why a family alone is
+ *  not the unit.
+ *
+ *  THIS RUNS BEFORE CLASSIFICATION, ON PURPOSE - the resolved design
+ *  question this branch inherited from an earlier handoff: the popup
+ *  pipeline (`popupJobs`/`popupTick`) judges a GROUP's popup-suppression
+ *  fate as a whole (every member must satisfy the suppression condition, or
+ *  the whole group still pops), not each member independently and then
+ *  folded after the fact. Grouping first and then asking "does this whole
+ *  group satisfy the condition" is the only order that keeps a group's
+ *  popup verdict consistent across its own members. */
+export function groupJobs(jobs: readonly Job[]): JobGroup[] {
+  const families = new Map<string, Job[]>();
+  for (const j of jobs) {
+    const fk = familyKey(j);
+    let arr = families.get(fk);
+    if (!arr) {
+      arr = [];
+      families.set(fk, arr);
+    }
+    arr.push(j);
+  }
+  const clustersByFamily = new Map<string, Map<string, string>>();
+
+  const byKey = new Map<string, JobGroup>();
+  const order: JobGroup[] = [];
+  for (const j of jobs) {
+    const fk = familyKey(j);
+    let clusterOf = clustersByFamily.get(fk);
+    if (!clusterOf) {
+      clusterOf = clusterFamily(families.get(fk) ?? []);
+      clustersByFamily.set(fk, clusterOf);
+    }
+    const cluster = clusterOf.get(j.id) ?? j.id;
+    const key = `${fk}#${cluster}`;
+    let g = byKey.get(key);
+    if (!g) {
+      g = { page: j.page, group: j.group, key, jobs: [] };
+      byKey.set(key, g);
+      order.push(g);
+    }
+    g.jobs.push(j);
+  }
+  return order;
+}
+
+/** A group is fully terminal only once EVERY member is — one member still
+ *  running or waiting keeps the whole group "in flight", however many of
+ *  its siblings have already finished. */
+export function isGroupTerminal(members: readonly Job[]): boolean {
+  return members.every(isTerminal);
+}
+
+/** The tier a GROUP reads as, extending `effectiveTier`'s per-job rule: one
+ *  member in `error`/`cancelled` (i.e. `effectiveTier(j) === "attention"`)
+ *  promotes the whole row, the same way a single failing job is always news
+ *  regardless of what it declared. Absent any attention member, the group
+ *  takes the "loudest" tier present among the rest — `trail` over
+ *  `transient` over `silent` — so a group mixing a kept-tier member with a
+ *  quieter one still earns the lasting row its kept member would have gotten
+ *  alone. */
+export function groupEffectiveTier(members: readonly Job[]): JobTier {
+  if (members.some((j) => effectiveTier(j) === "attention")) return "attention";
+  if (members.some((j) => effectiveTier(j) === "trail")) return "trail";
+  if (members.some((j) => effectiveTier(j) === "transient")) return "transient";
+  return "silent";
+}
+
+/** Index every job in a snapshot by the `JobGroup` it belongs to — the one
+ *  lookup the popup pipeline needs to judge a member's fate by its GROUP's
+ *  verdict rather than its own. */
+function indexGroups(jobs: readonly Job[]): Map<string, JobGroup> {
+  const byId = new Map<string, JobGroup>();
+  for (const g of groupJobs(jobs)) {
+    for (const j of g.jobs) byId.set(j.id, g);
+  }
+  return byId;
+}
+
+// `isOpenAnywhere`, still accepted here, is now UNUSED by this function
+// itself (removed 2026-09-17 alongside the "Recent" section — presence no
+// longer gates this list, only the popup path below does) — kept only so
+// every existing caller (`terminalNotifications`, `ActivityDock.tsx`, every test in
+// `jobs.test.ts` that passes `openHere(...)`/`openNowhere`) keeps compiling
+// unchanged. A presence-suppressed success is no longer excluded from this
+// list at all: it lands here as an ordinary row, exactly like everything
+// else — only the POPUP (`popupJobs`/`popupTick`, below) still reads
+// presence to decide whether to pop.
+export function jobRows(jobs: Job[], isOpenAnywhere?: (source: string) => boolean): Job[] {
+  void isOpenAnywhere;
   return jobs.filter((j) => {
     if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
-    return !isTerminal(j) || (effectiveTier(j) !== "transient" && effectiveTier(j) !== "silent");
+    if (!isTerminal(j)) return true;
+    if (effectiveTier(j) === "transient" || effectiveTier(j) === "silent") return false;
+    return true;
   });
 }
 
@@ -288,8 +519,11 @@ export function mergedRows(jobs: Job[]): Job[] {
  *  before the waiter notices and clears its own `waiting_for`
  *  (`_wait_ready`'s poll loop), so a poll landing in that gap saw the load
  *  as terminal while Activity's own merged view still had it hidden. */
-export function terminalNotifications(jobs: Job[]): Job[] {
-  return terminalJobs(jobRows(mergedRows(jobs)));
+export function terminalNotifications(
+  jobs: Job[],
+  isOpenAnywhere?: (source: string) => boolean,
+): Job[] {
+  return terminalJobs(jobRows(mergedRows(jobs), isOpenAnywhere));
 }
 
 // ------------------------------------------------------------------ popups
@@ -304,31 +538,39 @@ export function terminalNotifications(jobs: Job[]): Job[] {
 // successful finish (a resident model load/unload: the running row already
 // said as much, so "done" is not news).
 
-/** Every terminal job that should pop a card — deliberately NOT `jobRows`
- *  filtered by `effectiveTier`, since that filter is exactly what would drop
- *  a `transient` job's pop. `mergedRows` still runs first, for the same
- *  reason `terminalNotifications` runs it first: a render waiting on a
- *  shared model load must not pop the load's own id as a second card the
- *  instant it goes terminal, one poll ahead of the waiter noticing and
- *  clearing its own `waiting_for`. The `sys:schedule:*` exclusion (D661) is
- *  independent of tier and applies here exactly as it does in `jobRows` —
- *  a scheduled message's run is not a job anyone asked to watch.
+/** Every terminal job that should pop a card. Quieted (2026-09-23, user: no
+ *  more START/success popups — see DECISIONS.md D888): a floating card is
+ *  now reserved for `error`/`cancelled` only. `state === "done"` (a clean
+ *  finish, whatever the producer's declared `tier`) is excluded outright — a
+ *  running row, or the chip's own progress line, already said the work was
+ *  happening, so a successful finish is not news worth interrupting for.
+ *  This is why the old presence-suppression check (`isOpenAnywhere`) is gone
+ *  from this function: it only ever gated a SUCCESS pop, and success never
+ *  pops here any more regardless of where the user is.
  *
- *  The `silent` exclusion below reads the STORED `job.tier`, gated on
- *  `state === "done"` specifically — NOT `effectiveTier(j) !== "silent"`.
- *  A manager process can die mid-report and leave a row stuck `error` while
- *  its last-written tier is still `silent` (the supervisor's own reporting
- *  thread is the producer of that report; nothing guarantees its failure
- *  path gets to restate tier before it dies) — that row must still pop,
- *  because silence is a property of SUCCESS only, and a failure is always
- *  news. Reading `effectiveTier` here would already promote that row to
- *  `attention` and let it through correctly by accident, but it would also
- *  hide the actual rule being applied: this filter cares about the
- *  producer's OWN claim on a clean finish, not the derived display tier. */
+ *  `mergedRows` still runs first, for the same reason `terminalNotifications`
+ *  runs it first: a render waiting on a shared model load must not pop the
+ *  load's own id as a second card the instant it goes terminal, one poll
+ *  ahead of the waiter noticing and clearing its own `waiting_for`. The
+ *  `sys:schedule:*` exclusion (D661) is independent of tier and applies here
+ *  exactly as it does in `jobRows` — a scheduled message's run is not a job
+ *  anyone asked to watch.
+ *
+ *  A MULTI-MEMBER GROUP'S OWN MEMBERS ARE EXCLUDED HERE (SPEC-quiet-
+ *  notifications.md §3) — their only remaining pop (a member `error`/
+ *  `cancelled`) is handled by `groupPopupTick` below instead, on the group's
+ *  own rule, not on this function's per-job terminal rule. A group of one is
+ *  unaffected — it is excluded from nothing extra, so a lone job's own
+ *  failure still pops through this path exactly as before. */
 export function popupJobs(jobs: Job[]): Job[] {
+  const groupById = indexGroups(jobs);
   return terminalJobs(mergedRows(jobs))
     .filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX))
-    .filter((j) => !(j.tier === "silent" && j.state === "done"));
+    .filter((j) => j.state !== "done")
+    .filter((j) => {
+      const g = groupById.get(j.id);
+      return !g || g.jobs.length === 1;
+    });
 }
 
 /** One popup tick's candidate key — a terminal EVENT, not a job id.
@@ -379,16 +621,127 @@ export function popupTick(
   jobs: Job[],
   seen: ReadonlySet<string>,
   isFirstTick: boolean,
+  // Finding 8 (code review 2026-09-16): keys `groupPopupTick` has ALREADY
+  // popped as a multi-member group's failure. A group's members are excluded
+  // from `popupJobs` entirely while the group has more than one member (see
+  // that function's own doc), so this path has never seen their key before --
+  // if a sibling is later dismissed/swept and the group shrinks to one
+  // member, that lone survivor becomes a `popupJobs` candidate for the FIRST
+  // time here, with no entry in `seen` yet, and would otherwise look like a
+  // brand-new terminal event and pop again for the exact same failure
+  // `groupPopupTick` already showed a card for. Passing the prior tick's
+  // `GroupPopupState.failedSeen` in lets this loop recognize "I didn't pop
+  // this before only because it wasn't my candidate yet, not because it's
+  // new" and seed it into `seen` silently instead. Only needed for that one
+  // transition tick — once the key lands in `next`/`seen` below, ordinary
+  // `seen.has(key)` handles every tick after.
+  alreadyPoppedByGroup?: ReadonlySet<string>,
 ): { seen: Set<string>; popped: Job | null } {
   const next = new Set<string>();
   let popped: Job | null = null;
+  // No presence check here any more (2026-09-23, D888): `popupJobs` already
+  // excludes every `state === "done"` job outright, so the only candidates
+  // reaching this loop are `error`/`cancelled` — never suppressed regardless
+  // of where the user is. The former `isOpenAnywhere` param existed solely
+  // to gate a success pop and is gone with it.
   for (const j of popupJobs(jobs)) {
     const key = popupKey(j);
     next.add(key);
+    if (alreadyPoppedByGroup && alreadyPoppedByGroup.has(key)) continue;
     if (isFirstTick || seen.has(key)) continue;
     if (popped === null || (j.finished_at ?? 0) > (popped.finished_at ?? 0)) popped = j;
   }
   return { seen: next, popped };
+}
+
+/** Carried tick-to-tick state for `groupPopupTick`, the same shape of
+ *  "rebuilt every call" ref `popupTick`'s own `seen` set is.
+ *
+ *  As of 2026-09-23 (D888), a group's card pops on FAILURE only — the START
+ *  edge (a group going from no running members to some) was removed, since
+ *  the Activity chip's own progress indicator is now the passive "something
+ *  is happening" signal and a start popup was redundant chatter on top of
+ *  it. That removed the need to track running-member ids or per-family
+ *  last-start-pop timestamps at all; only the failure-dedup set remains. */
+export interface GroupPopupState {
+  /** `popupKey`-shaped keys of members already popped for failing — same
+   *  one-shot-terminal-event identity `popupTick` uses, restricted to
+   *  members of MULTI-member groups (a single-member group's own failure
+   *  already pops via `popupTick`/`popupJobs` unchanged). */
+  failedSeen: ReadonlySet<string>;
+}
+
+export const EMPTY_GROUP_POPUP_STATE: GroupPopupState = {
+  failedSeen: new Set(),
+};
+
+/** A MULTI-member group's own pop rule (SPEC-quiet-notifications.md §3) — a
+ *  group of one is handled entirely by `popupTick` above and never reaches
+ *  here (see `groupJobs(jobs).filter(...length > 1)` below).
+ *
+ *  As of 2026-09-23 (D888), exactly one event pops a group's card: FAILURE —
+ *  any member enters `error`/`cancelled` (reads via
+ *  `effectiveTier(member) === "attention"`, the same promotion rule every
+ *  other tier decision in this file uses). A START popup (the group going
+ *  from no running members to some) used to pop here too but was removed:
+ *  the Activity chip's own progress indicator already tells the user
+ *  something is running, so a start card was redundant. Ordinary completion
+ *  (one member finishing cleanly) and full completion (the group going fully
+ *  terminal) pop NOTHING — an unattended multi-file operation stays quiet
+ *  exactly the way a single successful job already does, until something
+ *  needs the user's attention.
+ *
+ *  Not gated by presence/`isOpenAnywhere` on purpose: a FAILURE is
+ *  `effectiveTier === "attention"`, which is never suppressed regardless of
+ *  presence — so there is no presence check this function could apply that
+ *  would ever change the outcome. */
+export function groupPopupTick(
+  jobs: Job[],
+  state: GroupPopupState,
+  isFirstTick: boolean,
+): { state: GroupPopupState; popped: Job | null } {
+  const allGroups = groupJobs(jobs);
+  const groups = allGroups.filter((g) => g.jobs.length > 1);
+  const nextFailedSeen = new Set<string>();
+  let popped: Job | null = null;
+  let poppedAt = -Infinity;
+
+  for (const g of groups) {
+    for (const member of g.jobs) {
+      if (effectiveTier(member) !== "attention") continue;
+      const mkey = popupKey(member);
+      nextFailedSeen.add(mkey);
+      if (isFirstTick || state.failedSeen.has(mkey)) continue;
+      const at = member.finished_at ?? 0;
+      if (at > poppedAt) {
+        popped = member;
+        poppedAt = at;
+      }
+    }
+  }
+
+  // Finding 8 (code review 2026-09-16): once a member's failure has been
+  // recorded here, keep it recorded even after its group shrinks to one
+  // member (a sibling dismissed/swept) — otherwise `nextFailedSeen` would
+  // silently drop that key the instant the group falls below two members
+  // (this loop only ever visits `groups`, the >1-member subset), and the
+  // lone survivor would look brand new to `popupTick`'s own singleton path
+  // (see that function's `alreadyPoppedByGroup` param). This does NOT create
+  // any new entries for a genuinely single-member group's own first
+  // failure — that keeps popping via `popupTick`/`popupJobs` exactly as it
+  // always has — it only carries an EXISTING entry forward.
+  for (const g of allGroups) {
+    if (g.jobs.length > 1) continue;
+    for (const member of g.jobs) {
+      const mkey = popupKey(member);
+      if (state.failedSeen.has(mkey)) nextFailedSeen.add(mkey);
+    }
+  }
+
+  return {
+    state: { failedSeen: nextFailedSeen },
+    popped,
+  };
 }
 
 // A REAL, server-side dismissal that happened somewhere its own `onPatch`

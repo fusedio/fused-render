@@ -32,7 +32,7 @@ export const POLL_MS = 3000;
 
 // The one deep link that respawns the SAME version so a fresh grant takes
 // effect (fused_render/deeplink.py). Rendered as a plain <a>, like the
-// update-restart banner: the OS hands it to the running app, which quits
+// update dialog's Restart: the OS hands it to the running app, which quits
 // through the normal teardown and respawns; this tab's poll picks the new
 // server up on its own.
 export const RELAUNCH_HREF = "fused-render://relaunch?reason=fda";

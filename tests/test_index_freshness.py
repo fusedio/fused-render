@@ -176,6 +176,22 @@ def test_a_folder_that_changed_moments_ago_is_left_to_settle(tmp_path, spawned):
     assert spawned == []
 
 
+def test_a_folder_quiet_for_only_a_few_seconds_is_already_actionable(tmp_path, spawned):
+    """QUIET_S only has to outlast a single write burst, not tolerate a whole
+    coffee break of one — MIN_INTERVAL_S is what stops a churning directory
+    from queueing scan after scan, independently. A directory edited five
+    seconds ago, well past a realistic single burst, is already stale-worthy:
+    the file someone just saved must be findable within a handful of seconds,
+    not thirty of them."""
+    root = _tree(tmp_path, "root")
+    sub = _tree(tmp_path, "root/sub")
+    cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
+    now = os.stat(sub).st_mtime + 5
+    assert note_folder_opened(cfg, sub, [root], now=now) == FreshnessCheck(
+        started=canonical_root(root))
+    assert spawned == [{"root": canonical_root(root), "full": False}]
+
+
 def test_a_root_scanned_within_the_floor_is_not_rescanned(tmp_path, spawned):
     root = _tree(tmp_path, "root")
     sub = _tree(tmp_path, "root/sub")
@@ -211,28 +227,75 @@ def test_a_root_scanned_two_minutes_ago_is_rescanned(tmp_path, spawned):
     assert spawned == [{"root": canonical_root(root), "full": False}]
 
 
-def test_the_scan_floor_matches_the_routers_check_debounce(tmp_path):
+def test_the_scan_floor_sits_below_the_routers_check_debounce(tmp_path):
     """Two floors. freshness.MIN_INTERVAL_S paces the SCANS (read off scans.json,
     so it also sees the startup scheduler and the manual buttons);
     routers.index.FRESHNESS_CHECK_S paces the CHECKS, per root, in memory.
 
-    This pins the CURRENT VALUES, and they are not the ideal ones. 55 < 60 does
-    not give a 60 s folder-open scan cadence; it gives ~110 s, because
-    `_freshness_due` stamps the check clock whenever a check comes due whether or
-    not that check then scans. The check at t=55 stamps, note_folder_opened
-    refuses on its own 60 s floor (last scan 55 s ago), and the next check is
-    t=110 — the first that can act. An equal 60 gives ~120 the same way, so
-    "shorter avoids the interleave", which this docstring used to claim, is
-    backwards: shorter is what causes it.
-
-    The fix is FRESHNESS_CHECK_S ABOVE MIN_INTERVAL_S plus the spawn offset (61),
-    and it is a deliberate non-change here — how often every machine rescans is a
-    behaviour decision. So this stays an assertion of what the numbers ARE, with
-    the bug written down next to it, rather than an assertion that they are
-    right."""
+    `_freshness_due` stamps the check clock whenever a check comes due, whether
+    or not that check goes on to actually scan. So a check that lands before
+    MIN_INTERVAL_S has elapsed since the last scan stamps for nothing: it
+    refuses on the scan floor, and the next check is a full FRESHNESS_CHECK_S
+    later. Keeping FRESHNESS_CHECK_S above MIN_INTERVAL_S (plus the ~1s spawn
+    offset a scan takes to record itself) means every check that comes due
+    finds the scan floor already clear, so the folder-open rescan cadence is
+    FRESHNESS_CHECK_S itself — see
+    test_the_effective_folder_open_scan_cadence_tracks_freshness_check_s below,
+    which asserts that cadence directly rather than this relationship alone."""
     from fused_render.server.routers.index import FRESHNESS_CHECK_S
 
-    assert FRESHNESS_CHECK_S < MIN_INTERVAL_S
+    assert FRESHNESS_CHECK_S > MIN_INTERVAL_S + 1
+
+
+def test_the_effective_folder_open_scan_cadence_tracks_freshness_check_s(tmp_path, spawned, monkeypatch):
+    """The number that actually governs how often an open folder gets rescanned
+    is not FRESHNESS_CHECK_S read back in isolation — it is what falls out of
+    that constant interacting with note_folder_opened's own MIN_INTERVAL_S
+    scan floor. Simulated on a synthetic clock (seconds, not real time) so this
+    runs instantly rather than over several real minutes.
+
+    `runner._record_scan` stamps the real wall clock, not an injectable `now`,
+    so the simulated "a scan just started" moment is recorded directly into
+    scans.json via the same storage module it uses, keyed the same way
+    (`canonical_root`) — bypassing the wall-clock dependency entirely rather
+    than monkeypatching `time.time` globally, which would also perturb
+    anything else in the loop that reads the real clock."""
+    from fused_render.server.routers.index import FRESHNESS_CHECK_S
+    from fused_render.server.routers import index as index_router
+    from fused_render.shell import storage
+    import time as time_mod
+
+    root = _tree(tmp_path, "root")
+    sub = _tree(tmp_path, "root/sub")
+    canon = canonical_root(root)
+    # An mtime_ns of 1 is permanently "older than disk", so every check that
+    # clears the quiet window and the scan floor also finds the folder stale.
+    cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
+    storage.write_json(cfg.scans_json, {canon: 0.0})
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+
+    t0 = time_mod.time()
+    scans_at = []
+    t = t0
+    end = t0 + 6 * FRESHNESS_CHECK_S
+    while t < end:
+        if index_router._freshness_due(canon, t):
+            result = note_folder_opened(cfg, sub, [root], now=t)
+            if result.started:
+                scans_at.append(t)
+                storage.write_json(cfg.scans_json, {canon: t})
+        t += 1.0
+
+    # At least 4 scans over the simulated window, or the gaps below would be
+    # measuring too few samples to mean anything.
+    assert len(scans_at) >= 4
+    gaps = [b - a for a, b in zip(scans_at, scans_at[1:])]
+    # The bug this guards: every OTHER due check wasted on a scan floor not
+    # yet clear, doubling the real cadence to roughly 2×FRESHNESS_CHECK_S.
+    # Fixed, every due check can act, so each gap tracks FRESHNESS_CHECK_S
+    # itself.
+    for gap in gaps:
+        assert MIN_INTERVAL_S <= gap <= FRESHNESS_CHECK_S + 2
 
 
 def test_the_deferral_is_absorbed_inside_the_check_interval(tmp_path):
@@ -240,17 +303,18 @@ def test_the_deferral_is_absorbed_inside_the_check_interval(tmp_path):
 
     _run_freshness_check waits FRESHNESS_DELAY_S and then stamps, so a root's
     checks recur every FRESHNESS_CHECK_S + FRESHNESS_DELAY_S rather than every
-    FRESHNESS_CHECK_S. At 3 against 55 that shifts the schedule by a rounding
-    error, which is the whole claim the deferral makes: it does not introduce a
-    refusal that was not already happening (the refusals come from the check
-    interval — see the test above — not from this). A delay of the same order as
-    the interval would stop being absorbed and start being the cadence, so the
-    margin, not merely the ordering, is what is asserted.
+    FRESHNESS_CHECK_S. That shifts the schedule by a rounding error, which is
+    the whole claim the deferral makes: it does not introduce a refusal that
+    was not already happening (the refusals, if any, come from the check
+    interval interacting with the scan floor — see the tests above — not from
+    this). A delay of the same order as the interval would stop being absorbed
+    and start being the cadence, so the margin, not merely the ordering, is
+    what is asserted.
 
-    Deliberately NOT asserted: any relation between this pair and MIN_INTERVAL_S.
-    The sum being under the scan floor is neither true-by-design nor desirable —
-    the fix to the cadence bug documented above is FRESHNESS_CHECK_S going ABOVE
-    MIN_INTERVAL_S, and a test forbidding that would lock the bug in."""
+    Deliberately NOT asserted: any relation between this pair and
+    MIN_INTERVAL_S — FRESHNESS_CHECK_S sitting above MIN_INTERVAL_S is what the
+    test above already covers, and a second test here forbidding it would only
+    duplicate that constraint under a different name."""
     from fused_render.server.routers.index import (
         FRESHNESS_CHECK_S,
         FRESHNESS_DELAY_S,

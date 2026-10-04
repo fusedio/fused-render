@@ -1,10 +1,22 @@
-// THE BAR'S KEBAB — the file preview's crumb bar, and the folder listing's
-// search row (which IS the bar over a folder): every app-level action that used to
-// stand in that bar as its own bordered button — App Doctor, Export App, Open in
-// project — plus the fullscreen glyph and the MCP companion, in one `⋮`
-// (BarMenu's OverflowMenu). Four labelled buttons and two glyphs in a 28px strip
-// was a toolbar competing with the mode control for the bar; the mode control is
-// what the bar is FOR, and these are things you do to the app once in a while.
+// THE APP-LEVEL ROWS — every app-level action that used to stand in the crumb
+// bar as its own bordered button — App Doctor, Export App, Open in project —
+// plus the fullscreen glyph and the MCP companion. Four labelled buttons and
+// two glyphs in a 28px strip was a toolbar competing with the mode control for
+// the bar; the mode control is what the bar is FOR, and these are things you
+// do to the app once in a while.
+//
+// One export that matters: `useAppActionRows`, the hook. It owns the entry
+// probe, the App Doctor's checks and modal, the Share sheet's version logic,
+// and returns the rows as ContextMenu MenuEntry[] in two groups (`app`,
+// `embed`) plus the trigger badge and the modal node. It renders no menu of its
+// own: the FOLDER LISTING composes the groups with its folder ops into the one
+// folder menu (bar-menus' folderMenu) that its kebab, its background
+// right-click and the crumb bar all show, and the FILE PREVIEW composes them
+// with its file ops into the one file menu (bar-menus' fileMenu) that its kebab
+// and the crumb bar's right-click both show — so the same row is never spelled
+// twice. (A thin `EntryActionsMenu` component wrapped the hook for the file
+// kebab until that kebab and the bar's right-click were merged; the file is
+// named after it still, since every comment in the tree points here by name.)
 //
 // ONE ENTRY PROBE. The three buttons each asked /api/apps/entry whether the
 // previewed page is its folder's app entry (the server's own entry rule, never
@@ -14,14 +26,16 @@
 // embed, MCP config — are gated on their own facts (always, and whether the parent
 // folder offers an MCP companion), so a plain html file still gets a kebab.
 //
-// The App Doctor's STATUS DOT rides the trigger's corner while the menu is shut
-// (OverflowMenu's `badge`): its whole job is to be seen without a click, and a
+// The App Doctor's STATUS DOT rides the kebab trigger's corner while the menu is
+// shut (OverflowMenu's `badge`): its whole job is to be seen without a click, and a
 // dot on a row inside a closed menu is a dot nobody sees. It repeats on the row
 // so the two agree.
 //
 // The bodies are the deleted buttons' bodies, verbatim where it matters:
-//   * Export keeps its `busy || snapshotPending || snapshotError` guard and its
-//     `.preview-frame.is-shown` capture source (see the row's comments);
+//   * Share (which absorbed the Download row — the sheet behind it holds both
+//     the public link and the .fused file) keeps Export's
+//     `snapshotPending || snapshotError` guard and its `.preview-frame.is-shown`
+//     capture source (see `doShare`);
 //   * Open as project puts the folder on the sidebar's desk first, then
 //     navigates in THIS tab, spelled by hand since an app may not import
 //     shell/current-apps-lib;
@@ -34,21 +48,22 @@
 //     (McpDialog) rather than in the sidebar, whose two remaining companions are
 //     tabs now (SideChrome's SideTabs). The dialog's open state lives in
 //     Preview.tsx because Open With → MCP has to reach it too.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Plug, Stethoscope } from "lucide-react";
-import { addCurrentApp, getAppEntry, statPath } from "@platform/lib/api";
-import { exportAppFile } from "@platform/lib/appShot";
+import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { navigateUrl, encodeFsPathSegments } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
-import { notify } from "@platform/lib/notifications";
+import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { OverflowMenu, type OverflowEntry } from "@apps/explorer/BarMenu";
+import type { MenuEntry } from "@platform/ui/ContextMenu";
 
 // lucide at MenuIcons' own weight (1.5 on a 24 grid, 16px) so the two rows that
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
@@ -98,15 +113,41 @@ export interface EntryActionsMenuProps {
   // over a folder that may well be one.
   mcp?: { available: boolean; pending: boolean; reason?: string };
   onOpenMcp: () => void;
-  // The host surface's OWN actions, appended after the app rows under a
-  // separator. The folder listing hands in its folder menu (lib/bar-menus'
-  // folderBarMenu: rename, new file/folder, paste, refresh, reveal, copy path,
-  // the splits) so the folder has ONE kebab rather than this one in the bar and
-  // a second `⋮` on the column header.
-  extraItems?: OverflowEntry[];
+  // G1 (FIXES-round-3.md): App Doctor's "Open in git" row, handed straight
+  // through to `AppDoctorModal` — see that component's own doc comment. Each
+  // caller (Listing.tsx, Preview.tsx) knows its OWN `_side`/pane-side writer;
+  // this hook has no sidebar of its own to open, so it neither builds this
+  // nor defaults it. `undefined` on a surface with none (a snapshot/panel
+  // pane), where the row falls back to navigating instead.
+  onOpenGit?: () => void;
 }
 
-export function EntryActionsMenu({
+// What the hook hands back. `app` is what this folder IS when it is an app
+// (Share…, Open as project, MCP config); `doctor` is the App Doctor row on its
+// own, so the file preview can slot Set Current View as Preview ahead of it
+// (owner, 2026-09-21: "app doctor to move down set as preview"); `embed` is
+// Open in embed on its own — the folder listing and the file preview file each
+// into the matching group of their menus (bar-menus' `app` and `embed`).
+// `isEntry` is the probe's (or the caller's) answer,
+// `badge` rides the kebab trigger while the menu is shut, `modal` is the App
+// Doctor dialog to render wherever the rows are shown.
+export interface AppActionRows {
+  app: MenuEntry[];
+  doctor: MenuEntry[];
+  embed: MenuEntry[];
+  // Open in Terminal — its own group, like `embed`, since it belongs in the
+  // "same folder/file elsewhere" `open` group each caller already builds
+  // (Reveal in Finder, Open in New Tab, the splits), not folded into `app`:
+  // it acts on this folder/file, not on whether it happens to be an app, so
+  // it shows on a plain folder too. Empty under `IS_EMBED` — an embedded pane
+  // mounts no TerminalDrawer (App.tsx), so a row here would open nothing.
+  terminal: MenuEntry[];
+  isEntry: boolean;
+  badge: ReactNode;
+  modal: ReactNode;
+}
+
+export function useAppActionRows({
   fsPath,
   isEntry: isEntryKnown,
   snapshotSha = null,
@@ -116,14 +157,13 @@ export function EntryActionsMenu({
   onOpenEmbed,
   mcp,
   onOpenMcp,
-  extraItems,
-}: EntryActionsMenuProps) {
+  onOpenGit,
+}: EntryActionsMenuProps): AppActionRows {
   const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
   const name = basename(dir);
   const [isEntryProbed, setIsEntry] = useState(false);
   const isEntry = isEntryKnown ?? isEntryProbed;
   const [doctorOpen, setDoctorOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
@@ -144,62 +184,55 @@ export function EntryActionsMenu({
   // Opening the modal re-fetches its own copy; this one is only for the dot and
   // is never reused to seed the dialog.
   const doctorChecks = useAppDoctorChecks(isEntry ? dir : null);
-  const versionLabel = useAppVersionLabel(dir, snapshotSha);
+  // Gated on `isEntry` like the doctor checks: the label is read by the Share
+  // row alone, which exists only on an entry — and this hook is mounted over
+  // every file view now (not just where a kebab rendered), so an ungated sha
+  // would fetch the parent's commit list for a snapshot-previewed folder that
+  // gets no Share row.
+  const versionLabel = useAppVersionLabel(dir, isEntry ? snapshotSha : null);
 
-  // Mirrors AppPage.tsx's `exportDisabled`: a click landing mid-resolve, before
+  // Mirrors AppPage.tsx's `shareDisabled`: a click landing mid-resolve, before
   // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
   // folder while the pane still shows the version being resolved.
-  const exportDisabled = exporting || snapshotPending || snapshotError;
-  const doExport = async () => {
-    if (exportDisabled) return;
-    setExporting(true);
-    try {
-      const isLive = snapshotSha === null;
-      // The snapshot's OWN extracted tree (`snap.dir`), never `snap.app_dir`
-      // (the LIVE folder the sha resolved from) — exporting that would silently
-      // ship the live app labelled as the picked commit.
-      const exportPath = snapshotResolved ? snapshotResolved.dir : dir;
-      // The filename carries the version so a v7 export sitting beside a live
-      // export in Downloads is never ambiguous about which is which.
-      const exportName = isLive ? name : `${name}-${versionLabel}`;
-      // Same capture-on-export as the /apps card (appShot, D396): the shown
-      // preview frame IS the app rendering, so it is the crop source — no
-      // navigation, no flash. exportAppFile itself skips capture when the folder
-      // carries an authored preview.png; the probe below is only so a pointless
-      // native shot (and, on a Mac that has not granted Screen Recording, its
-      // permission dialog) isn't taken for a capture the server would discard
-      // anyway (stat failure reads as "no authored still" — worst case is that
-      // redundant shot, never a lost export).
-      //
-      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
-      // the app, not a box it may fill): the class rides `shown`, which the
-      // frame swap only sets once that frame paints. Only checked for a LIVE
-      // export: a snapshot's preview.png (if any) lives under the extracted
-      // tree, and `entry_html` is omitted below for a snapshot anyway.
-      const authored = isLive
-        ? await statPath(dir + "/preview.png").then(
-            (s) => !s.is_dir,
-            () => false,
-          )
-        : false;
-      await exportAppFile(
-        {
-          path: exportPath,
-          name: exportName,
-          // Omitted for a snapshot export: with no on-screen capture element
-          // threaded to this target folder, `exportAppFile`'s stage fallback
-          // would reload the ENTRY PAGE'S LIVE copy to shoot it — a present-day
-          // screenshot baked into a file labelled as the old commit.
-          entry_html: isLive ? fsPath : undefined,
-          preview_image: isLive && authored ? dir + "/preview.png" : null,
-        },
-        isLive ? document.querySelector(".preview-frame.is-shown") : null,
-      );
-    } catch (e) {
-      notify({ title: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
-    } finally {
-      setExporting(false);
+  // BEHIND THE FLAG (share-app-flag.ts, default off): ON, the row is Share and
+  // opens the sheet; OFF, it is the "Download app" row this menu carried
+  // before the sheet — the same `.fused` straight to Downloads, a toast saying
+  // where — with its own spinner, since there is no sheet to narrate the save.
+  const sharing = useAppSharingFeature();
+  const [exporting, setExporting] = useState(false);
+  const shareDisabled = snapshotPending || snapshotError || exporting;
+  // One Share entry opens the unified sheet (ShareAppModal): the public link
+  // and the `.fused` download as two cards. This is the one place that turns
+  // "which version is previewed" into "which folder the FILE card exports".
+  const doShare = async () => {
+    if (shareDisabled) return;
+    const isLive = snapshotSha === null;
+    // The snapshot's OWN extracted tree (`snap.dir`), never `snap.app_dir`
+    // (the LIVE folder the sha resolved from) — exporting that would silently
+    // ship the live app labelled as the picked commit.
+    const exportPath = snapshotResolved ? snapshotResolved.dir : dir;
+    // The filename carries the version so a v7 export sitting beside a live
+    // export in Downloads is never ambiguous about which is which.
+    const exportName = isLive ? name : `${name}-${versionLabel}`;
+    const live = { path: dir, name };
+    const file = isLive ? live : { path: exportPath, name: exportName };
+    if (!sharing) {
+      setExporting(true);
+      try {
+        await exportAppFileOnly(file);
+      } finally {
+        setExporting(false);
+      }
+      return;
     }
+    openShareApp(live, {
+      file,
+      // Live only — the shared canvas is named after the app's id and
+      // always carries "the app", so a snapshot published under it would
+      // downgrade every link out there. The sheet says so instead.
+      link: isLive,
+      versionLabel,
+    });
   };
 
   // Put the folder on the sidebar's desk (POST /api/current-apps/add, a no-op
@@ -215,92 +248,124 @@ export function EntryActionsMenu({
     navigateUrl("/apps/" + encodeFsPathSegments(dir));
   };
 
-  const entryRows: OverflowEntry[] = isEntry
+  // Row order (owner, 2026-09-21: "move doctor of folder/file context menu
+  // below mcp config, share to the top"): Share…, Open as project, MCP
+  // config, App Doctor. Share leads because it is what the menu is opened
+  // for; the Doctor closes the app rows because it is the check you run
+  // before sharing, not the thing you came to do — its status dot rides the
+  // trigger, so the row need not be first to be seen.
+  const app: MenuEntry[] = isEntry
     ? [
-        {
-          label: "App Doctor",
-          icon: <Stethoscope {...LUCIDE} />,
-          title:
-            "Check " + name +
-            " before you share it: leaked credentials, paths tied to this machine, " +
-            "stray generated files, uncommitted work, a stale fused API version",
-          trailing: <AppDoctorStatusDot checks={doctorChecks} />,
-          onClick: () => setDoctorOpen(true),
-        },
-        {
-          label: exporting ? "Exporting…" : "Download app",
-          icon: exporting ? <span className="mode-icon-spinner" /> : MenuIcons.download,
-          title: "Export " + name + " as a single .fused app file",
-          disabled: exportDisabled,
-          onClick: () => void doExport(),
-        },
+        // The one Share entry: the sheet behind it offers the public link
+        // (share_app.py) and the `.fused` download together (see `doShare`).
+        // Flag off: the plain "Download app" row instead.
+        sharing
+          ? {
+              label: "Share…",
+              icon: MenuIcons.share,
+              title:
+                snapshotSha === null
+                  ? "Share " + name + " — public link or .fused file"
+                  : "Share " + name + " as of " + versionLabel + " as a .fused file",
+              disabled: shareDisabled,
+              onClick: () => void doShare(),
+            }
+          : {
+              label: exporting ? "Exporting…" : "Download app",
+              icon: exporting ? <span className="mode-icon-spinner" /> : MenuIcons.download,
+              title:
+                snapshotSha === null
+                  ? "Export " + name + " as a single .fused app file"
+                  : "Export " + name + " as of " + versionLabel + " as a .fused file",
+              disabled: shareDisabled,
+              onClick: () => void doShare(),
+            },
         {
           label: "Open as project",
           icon: MenuIcons.open,
           title: "Open " + name + " as a project",
           onClick: () => void openProject(),
         },
-        "separator",
       ]
     : [];
 
-  const items: OverflowEntry[] = [
-    ...entryRows,
-    ...(onOpenEmbed
-      ? [
-          {
-            label: "Open in embed",
-            icon: MenuIcons.newTab,
-            title: "Open this page in a new tab, without the sidebar and toolbar",
-            onClick: onOpenEmbed,
-          } satisfies OverflowEntry,
-        ]
-      : []),
-    // The MCP row is worth listing DISABLED only where its absence is news: on
-    // an app (an entry page exists, so "this app publishes no tools" says
-    // something) or while the probe is still out. A plain folder that is not an
-    // app would otherwise get a kebab that opens on one dead row — and the
-    // empty-list collapse below could never run for it.
-    ...(mcp && (mcp.available || mcp.pending || isEntry)
-      ? [
-          {
-            label: "MCP config",
-            icon: mcp.pending ? <span className="mode-icon-spinner" /> : <Plug {...LUCIDE} />,
-            title: mcp.pending
-              ? "Checking if this folder publishes MCP tools…"
-              : mcp.available
-                ? "The MCP tools " + name + " publishes"
-                : mcp.reason ?? "This folder publishes no MCP tools",
-            disabled: mcp.pending || !mcp.available,
-            onClick: onOpenMcp,
-          } satisfies OverflowEntry,
-        ]
-      : []),
-  ];
-
-  if (extraItems && extraItems.length) {
-    if (items.length) items.push("separator");
-    items.push(...extraItems);
+  // The MCP row is worth listing DISABLED only where its absence is news: on
+  // an app (an entry page exists, so "this app publishes no tools" says
+  // something) or while the probe is still out. A plain folder that is not an
+  // app would otherwise get a kebab that opens on one dead row.
+  if (mcp && (mcp.available || mcp.pending || isEntry)) {
+    app.push({
+      label: "MCP config",
+      icon: mcp.pending ? <span className="mode-icon-spinner" /> : <Plug {...LUCIDE} />,
+      title: mcp.pending
+        ? "Checking if this folder publishes MCP tools…"
+        : mcp.available
+          ? "The MCP tools " + name + " publishes"
+          : mcp.reason ?? "This folder publishes no MCP tools",
+      disabled: mcp.pending || !mcp.available,
+      onClick: onOpenMcp,
+    });
   }
-  // A trailing separator with nothing after it (an entry page over a surface
-  // with neither embed nor MCP) would draw a rule under the last row; a leading
-  // one (extras under no app rows) a rule over the first.
-  while (items.length && items[items.length - 1] === "separator") items.pop();
-  while (items.length && items[0] === "separator") items.shift();
 
-  // NOTHING QUALIFIES, NO KEBAB: OverflowMenu already renders nothing for an
-  // empty list, so a plain folder that is not an app and publishes no MCP gets
-  // no `⋮` at all rather than a menu that opens on nothing.
-  return (
-    <>
-      <OverflowMenu
-        items={items}
-        title="App actions"
-        badge={isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined}
-      />
-      {doctorOpen && <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} />}
-    </>
-  );
+  // Handed back on its own so callers close the app group with it — after
+  // Set Current View as Preview where the file menu has one.
+  const doctor: MenuEntry[] = [];
+  if (isEntry) {
+    doctor.push({
+      label: "App Doctor",
+      icon: <Stethoscope {...LUCIDE} />,
+      title:
+        "Check " + name +
+        " before you share it: leaked credentials, paths tied to this machine, " +
+        "stray generated files, uncommitted work, a stale fused API version",
+      trailing: <AppDoctorStatusDot checks={doctorChecks} />,
+      onClick: () => setDoctorOpen(true),
+    });
+  }
+
+  // `dir` is already the right cwd for both callers: the folder listing hands
+  // this hook its entry page (or `<folder>/index.html` standing in for one),
+  // whose parent IS the folder; the file preview hands it the previewed
+  // file, whose parent is the file's own directory — exactly "a folder →
+  // that folder, a file → its parent" the row is meant to open.
+  // Also hidden on Windows: the server routes 501 there regardless (see
+  // fused_render/server/routers/terminal.py). `useCanRunInTerminal()` is the
+  // one place both conditions live (platform/lib/terminalDockStore.ts).
+  const canRun = useCanRunInTerminal();
+  const terminal: MenuEntry[] = !canRun
+    ? []
+    : [
+        {
+          label: "Open in Terminal",
+          icon: MenuIcons.terminal,
+          title: "Open a terminal in " + name,
+          onClick: () => openTerminal({ cwd: dir }),
+        },
+      ];
+
+  const embed: MenuEntry[] = onOpenEmbed
+    ? [
+        // The fullscreen glyph the row replaced, not `newTab`: the row once
+        // sat directly under "Open in New Tab", and two consecutive rows with
+        // one icon read as a duplicate; the glyph still says what it does.
+        {
+          label: "Open in embed",
+          icon: MenuIcons.fullscreen,
+          title: "Open this page in a new tab, without the sidebar and toolbar",
+          onClick: onOpenEmbed,
+        },
+      ]
+    : [];
+
+  return {
+    app,
+    doctor,
+    embed,
+    terminal,
+    isEntry,
+    badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
+    modal: doctorOpen ? (
+      <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} onOpenGit={onOpenGit} />
+    ) : null,
+  };
 }
-
-export default EntryActionsMenu;

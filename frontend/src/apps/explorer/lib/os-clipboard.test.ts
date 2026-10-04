@@ -65,6 +65,39 @@ test("skips an empty OS clipboard", async () => {
   expect(getClipboard()).toEqual({ paths: ["/x/y"], op: "cut" });
 });
 
+test("an OS clipboard emptied of files clears a pending COPY", async () => {
+  // Nothing on the OS clipboard can confirm or refute anything, but an empty
+  // clipboard IS evidence that whatever a pending copy was mirroring is gone —
+  // the system clipboard was cleared, or overwritten with non-file content.
+  setLastSeenOsToken("t1");
+  setClipboard({ paths: ["/x/y"], op: "copy" });
+  stubClipboard({ paths: [], token: "t2", supported: true });
+  await reconcileOsClipboard();
+  expect(getClipboard()).toBeNull();
+});
+
+test("an OS clipboard emptied of files never clears a pending CUT", async () => {
+  // A cut is app-local state and was never published to the OS clipboard, so
+  // nothing the OS clipboard says — full, empty, or changed — can confirm or
+  // refute it. This is the one case the reordering exists to protect.
+  setLastSeenOsToken("t1");
+  setClipboard({ paths: ["/x/y"], op: "cut" });
+  stubClipboard({ paths: [], token: "t2", supported: true });
+  await reconcileOsClipboard();
+  expect(getClipboard()).toEqual({ paths: ["/x/y"], op: "cut" });
+});
+
+test("an emptied OS clipboard still commits the new token", async () => {
+  // Otherwise the very next reconcile would see the (still unrecorded) token
+  // as unchanged and skip the empty read for good, leaving a stale copy
+  // pinned in place forever instead of just until the next focus change.
+  setLastSeenOsToken("t1");
+  setClipboard({ paths: ["/x/y"], op: "copy" });
+  stubClipboard({ paths: [], token: "t2", supported: true });
+  await reconcileOsClipboard();
+  expect(getLastSeenOsToken()).toBe("t2");
+});
+
 test("no-ops when the bridge is unsupported", async () => {
   setClipboard({ paths: ["/x/y"], op: "cut" });
   stubClipboard({ paths: ["/a/b.csv"], token: "t1", supported: false });

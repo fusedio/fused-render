@@ -269,22 +269,34 @@ def test_identity_step_focuses_only_once_per_session():
 
 def test_checkout_lives_in_the_previewing_banner_and_sends_app_restore():
     """D744: Checkout is only ever reachable through an active preview — the
-    banner (`if (previewed) { ... }`) is the one place it lives, so a
-    rollback can never be committed against a version nobody looked at."""
-    body = _function_body(_source(), "if (previewed) ")
-    assert '"app_restore"' in body, body
-    assert "sha: previewed" in body, body
+    banner (`if (previewed) { ... }`) is the one place its button lives, so a
+    rollback can never be armed against a version nobody looked at. The write
+    itself now happens in `pendingConfirm`'s `app_restore` branch (mounted at
+    the page root as a modal), which re-derives the same "still the version
+    being previewed" guard from `ask` and `previewed` on its own."""
+    source = _source()
+    body = _function_body(source, "if (previewed) ")
+    assert 'confirmable("app_restore:" + previewed' in body, body
     assert "Checkout" in body, body
+    branch = _function_body(source, 'if (op === "app_restore") ')
+    assert "sha: previewed" in branch, branch
+    assert "rest !== previewed" in branch, branch
 
 
 def test_revert_appears_on_the_expanded_commit_and_sends_its_own_sha():
     """The Revert control is built where the selected commit's diff is
-    (`loadDiff`'s `rev` branch), and sends the SELECTED commit's sha, not
-    whatever happens to be previewed elsewhere."""
-    body = _function_body(_source(), "async function loadDiff(data)")
-    assert '"revert"' in body, body
-    assert "sha: rev" in body, body
+    (`loadDiff`'s `rev` branch), and arms with the SELECTED commit's sha, not
+    whatever happens to be previewed elsewhere. The write itself now happens
+    in `pendingConfirm`'s `revert` branch (mounted at the page root as a
+    modal), which re-derives the same "still the commit actually selected"
+    guard from `ask` and `selectedRev()` on its own."""
+    source = _source()
+    body = _function_body(source, "async function loadDiff(data)")
+    assert 'confirmable("revert:" + rev' in body, body
     assert "Revert" in body, body
+    branch = _function_body(source, 'if (op === "revert" || op === "reset") ')
+    assert "sha !== selectedRev()" in branch, branch
+    assert 'run("revert:" + sha, { op: "revert", sha }' in branch, branch
 
 
 def test_app_restore_and_revert_are_destructive_in_the_views_own_mirror():

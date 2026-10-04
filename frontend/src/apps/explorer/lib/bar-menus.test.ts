@@ -11,11 +11,10 @@ import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 (globalThis as { location?: unknown }).location = new URL("http://x/");
 const {
   crumbMenu,
-  fileBarMenu,
-  folderBarMenu,
+  fileMenu,
+  folderMenu,
   splitItems,
   canRenameBase,
-  withFolderRename,
 } = await import("@apps/explorer/lib/bar-menus");
 
 // Labels in order, with separators spelled out — the whole point of these tests
@@ -44,28 +43,48 @@ test("splitItems rows carry a glyph, so the menu is not half-iconed", () => {
   }
 });
 
-test("folderBarMenu is the folder's own menu plus the splits", () => {
-  // Stand-in for useFileOps.backgroundMenu() — the folder list is NOT restated
-  // here, it is passed in, and this test is what pins that contract.
-  const background: MenuEntry[] = [
-    { label: "New Folder…" },
-    { label: "New File…" },
-    "separator",
-    { label: "Paste", disabled: true },
-  ];
-  const items = folderBarMenu(background, () => {});
+test("folderMenu shows the groups in a fixed order with one separator between", () => {
+  // Stand-ins for what the surfaces fill in — the rows are NOT restated here,
+  // they are passed in, and this test is what pins that contract.
+  const items = folderMenu({
+    copy: [{ label: "Copy path" }],
+    embed: [{ label: "Open in embed" }],
+    app: [{ label: "App Doctor" }, { label: "Share…" }],
+    open: [{ label: "Open in New Tab" }, { label: "Split right" }],
+    create: [{ label: "New Folder…" }, { label: "Paste", disabled: true }],
+    folder: [{ label: "Rename…" }, { label: "Refresh" }],
+  });
   expect(labels(items)).toEqual([
-    "New Folder…",
-    "New File…",
+    "App Doctor",
+    "Share…",
     "—",
+    "New Folder…",
     "Paste",
     "—",
+    "Rename…",
+    "Refresh",
+    "—",
+    "Open in New Tab",
     "Split right",
-    "Split down",
+    "—",
+    "Copy path",
+    "—",
+    "Open in embed",
   ]);
   // Passed through untouched, disabled state included (Paste with an empty
   // clipboard is a listed-but-dead row, not a missing one).
   expect(item(items, "Paste").disabled).toBe(true);
+});
+
+test("folderMenu draws no rule for an empty or absent group, at either end or between", () => {
+  // A plain folder (no app rows) in a panel pane (nothing extra to open).
+  expect(labels(folderMenu({ app: [], create: [{ label: "New File…" }], copy: [{ label: "Copy path" }] }))).toEqual([
+    "New File…",
+    "—",
+    "Copy path",
+  ]);
+  expect(labels(folderMenu({ folder: [{ label: "Refresh" }] }))).toEqual(["Refresh"]);
+  expect(folderMenu({})).toEqual([]);
 });
 
 test("crumbMenu is exactly the two ancestor items, in the row menu's order", () => {
@@ -83,30 +102,49 @@ test("crumbMenu is exactly the two ancestor items, in the row menu's order", () 
   for (const i of items) expect(i === "separator" ? null : i.icon).not.toBeNull();
 });
 
-test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
+// -- fileMenu ------------------------------------------------------------------
+// The file preview's kebab and the crumb bar's right-click over the open file
+// show ONE list, composed by Preview.tsx from useAppActionRows' groups and
+// usePreviewFileMenu's. These pin the builder's arrangement: the folder menu's
+// groups minus `create`, in the folder menu's order.
+
+const row = (label: string, onClick?: () => void): MenuItem => ({ label, icon: null, onClick });
+
+test("fileMenu lays the groups out app → file → open → copy → embed with one divider between", () => {
   const called: string[] = [];
-  const items = fileBarMenu({
-    onRename: () => called.push("rename"),
-    onOpenInClaude: () => called.push("claude"),
-    onCopyPath: () => called.push("copy"),
-    onReveal: () => called.push("reveal"),
-    onOpenInNewTab: () => called.push("newtab"),
-    onSplit: (dir) => called.push("split:" + dir),
+  const items = fileMenu({
+    app: [row("App Doctor"), row("Share…"), row("Set Current View as Preview", () => called.push("shot"))],
+    file: [row("Rename…", () => called.push("rename"))],
+    open: [
+      row("Reveal in Finder", () => called.push("reveal")),
+      row("Open in New Tab", () => called.push("newtab")),
+      ...splitItems((dir) => called.push("split:" + dir)),
+    ],
+    copy: [row("Copy Path", () => called.push("copy")), row("Copy Claude session command", () => called.push("claude"))],
+    embed: [row("Open in embed")],
   });
-  // The shared trio sits in the FOLDER menu's order (backgroundMenu):
-  // Reveal → Open in New Tab → Copy Path → Claude Code. Two bars, one surface.
+  // The shared rows sit in the FOLDER menu's order (useFileOps.folderGroups):
+  // Reveal → Open in New Tab → the splits, then the copy pair, and Open in
+  // embed closes the list on its own. Two bars, one surface.
   expect(labels(items)).toEqual([
+    "App Doctor",
+    "Share…",
+    "Set Current View as Preview",
+    "—",
     "Rename…",
     "—",
     "Reveal in Finder",
     "Open in New Tab",
+    "Split right",
+    "Split down",
+    "—",
     "Copy Path",
     "Copy Claude session command",
     "—",
-    "Split right",
-    "Split down",
+    "Open in embed",
   ]);
   for (const label of [
+    "Set Current View as Preview",
     "Rename…",
     "Reveal in Finder",
     "Open in New Tab",
@@ -116,66 +154,42 @@ test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
     item(items, label).onClick?.();
   }
   item(items, "Split down").onClick?.();
-  expect(called).toEqual(["rename", "reveal", "newtab", "copy", "claude", "split:col"]);
+  expect(called).toEqual(["shot", "rename", "reveal", "newtab", "copy", "claude", "split:col"]);
 });
 
-test("fileBarMenu drops the splits AND their separator when it can't split", () => {
-  const items = fileBarMenu({
-    onRename: () => {},
-    onOpenInClaude: () => {},
-    onCopyPath: () => {},
-    onReveal: () => {},
-    onOpenInNewTab: () => {},
+test("fileMenu draws no divider for an empty or absent group and never ends in one", () => {
+  // A plain file (no app rows, nothing to photograph) in a pane (no splits):
+  // what usePreviewFileMenu's groups alone produce.
+  const items = fileMenu({
+    app: [],
+    file: [row("Rename…")],
+    open: [row("Reveal in Finder"), row("Open in New Tab")],
+    copy: [row("Copy Path"), row("Copy Claude session command")],
   });
   expect(labels(items)).toEqual([
     "Rename…",
     "—",
     "Reveal in Finder",
     "Open in New Tab",
+    "—",
     "Copy Path",
     "Copy Claude session command",
   ]);
   // No trailing divider: a menu that ends in a separator reads as a menu with
   // something missing.
   expect(items[items.length - 1]).not.toBe("separator");
+  // The kebab over a directory previewed in a non-listing mode, or over a file
+  // in a pane: the app rows alone, no file groups at all.
+  expect(labels(fileMenu({ app: [row("App Doctor")], embed: [row("Open in embed")] }))).toEqual([
+    "App Doctor",
+    "—",
+    "Open in embed",
+  ]);
+  expect(fileMenu({})).toEqual([]);
 });
 
-test("fileBarMenu offers Set Current View as Preview only on an app entry, in its own group", () => {
-  const base = {
-    onRename: () => {},
-    onOpenInClaude: () => {},
-    onCopyPath: () => {},
-    onReveal: () => {},
-    onOpenInNewTab: () => {},
-  };
-  // A plain file: no preview verb, and no orphan separator for it.
-  expect(labels(fileBarMenu(base))).not.toContain("Set Current View as Preview");
-  let shot = 0;
-  const items = fileBarMenu({ ...base, onSetPreview: () => shot++, onSplit: () => {} });
-  expect(labels(items)).toEqual([
-    "Rename…",
-    "—",
-    "Reveal in Finder",
-    "Open in New Tab",
-    "Copy Path",
-    "Copy Claude session command",
-    "—",
-    "Set Current View as Preview",
-    "—",
-    "Split right",
-    "Split down",
-  ]);
-  item(items, "Set Current View as Preview").onClick?.();
-  expect(shot).toBe(1);
-  // Without splits the preview group still closes the list cleanly.
-  expect(labels(fileBarMenu({ ...base, onSetPreview: () => {} })).slice(-2)).toEqual([
-    "—",
-    "Set Current View as Preview",
-  ]);
-});
-
-// -- canRenameBase / withFolderRename ----------------------------------------
-// The folder background menu (and, through folderBarMenu, the crumb bar over
+// -- canRenameBase -------------------------------------------------------------
+// The folder menu (kebab, background right-click, and the crumb bar over
 // the current folder) gains a "Rename…" item — this pins the guard that
 // decides when, and the shape it produces.
 
@@ -220,23 +234,4 @@ test("canRenameBase fails closed while config hasn't loaded (home/mountsRoot und
   expect(canRenameBase("/Users/x/Projects", {})).toBe(false);
   expect(canRenameBase("/Users/x/Projects", { home: "/Users/x" })).toBe(false);
   expect(canRenameBase("/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" })).toBe(true);
-});
-
-test("withFolderRename leads the list with Rename… + a separator when allowed", () => {
-  const rest: MenuEntry[] = [{ label: "New Folder…" }, "separator", { label: "Refresh" }];
-  let renamed = false;
-  const items = withFolderRename(rest, "/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" }, () => {
-    renamed = true;
-  });
-  expect(labels(items)).toEqual(["Rename…", "—", "New Folder…", "—", "Refresh"]);
-  item(items, "Rename…").onClick?.();
-  expect(renamed).toBe(true);
-  expect(item(items, "Rename…").icon).not.toBeNull();
-});
-
-test("withFolderRename hands the list back untouched when the guard refuses", () => {
-  const rest: MenuEntry[] = [{ label: "New Folder…" }, "separator", { label: "Refresh" }];
-  const items = withFolderRename(rest, "/Users/x", { home: "/Users/x" }, () => {});
-  expect(items).toBe(rest); // same array, not just same shape
-  expect(labels(items)).toEqual(["New Folder…", "—", "Refresh"]);
 });

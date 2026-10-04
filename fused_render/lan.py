@@ -630,6 +630,12 @@ class LanApp:
         if kind == "websocket":
             # /api/fs/events (the runtime's change feed) is the one socket a
             # page needs; forwarded when every watched `path` is in the roots.
+            # /api/terminal/{sid}/stream is deliberately NOT allowlisted here —
+            # a paired LAN peer gets a 1008 close instead of a shell. This is a
+            # UX/scope call, not a security barrier (/api/run already executes
+            # arbitrary Python for any client that reaches the loopback
+            # server), so the omission is intentional, not an oversight the
+            # next socket added here should "fix".
             query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                              keep_blank_values=True)
             if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"
@@ -659,17 +665,40 @@ class LanApp:
         if path == "/lan/ca.pem" and method == "GET":
             # The private CA's PUBLIC certificate, for the native shell to pin
             # after checking it against the fingerprint the QR carried.
-            from fused_render import lan_tls
+            #
+            # lan_tls.py has no top-level `cryptography` import — it imports
+            # lazily inside ca_pem()/ca_fingerprint() — so the ModuleNotFoundError
+            # from a bare install surfaces from the CALL, not the `import
+            # lan_tls` line itself. The call has to be inside the try too.
+            try:
+                from fused_render import lan_tls
 
-            return Response(lan_tls.ca_pem(), media_type="application/x-pem-file",
+                pem = lan_tls.ca_pem()
+            except ModuleNotFoundError:
+                return PlainTextResponse(
+                    "LAN TLS needs the optional cryptography dependency "
+                    "([bundled]/[fused]); not available on this install.",
+                    status_code=503)
+
+            return Response(pem, media_type="application/x-pem-file",
                             headers={"Cache-Control": "no-store"})
         if path == "/api/lan/tls" and method == "GET":
             # Where https is and which CA signs it — for a shell that found the
-            # computer over Bonjour rather than a QR (trust on first use).
-            from fused_render import lan_tls
+            # computer over Bonjour rather than a QR (trust on first use). Same
+            # lazy-import caveat as /lan/ca.pem above: the call must be inside
+            # the try, not just the `import lan_tls` line.
+            try:
+                from fused_render import lan_tls
+
+                fingerprint = lan_tls.ca_fingerprint() if _controller.tls_running else None
+            except ModuleNotFoundError:
+                return PlainTextResponse(
+                    "LAN TLS needs the optional cryptography dependency "
+                    "([bundled]/[fused]); not available on this install.",
+                    status_code=503)
 
             return JSONResponse({"https_port": _controller.tls_port,
-                                 "ca_fingerprint": lan_tls.ca_fingerprint() if _controller.tls_running else None})
+                                 "ca_fingerprint": fingerprint})
         if not _paired(scope):
             return _unauthorized(scope)
 
@@ -822,6 +851,7 @@ def lan_apps() -> list[dict]:
     then name). Exported ``.fused`` files are not here: they are archives, not
     folders a page can render from. Same source and same rule as the hub so the
     two grids cannot drift. Read each time — a phone opens the grid rarely."""
+    from fused_render import app_listing
     from fused_render.server.routers.apps import _workspace_apps
 
     rows = []
@@ -858,10 +888,12 @@ def lan_apps() -> list[dict]:
             # tile; falls back to icon.svg, then to the monogram, on the page.
             "preview": ("/api/fs/raw?" + urlencode({"path": app["preview_image"]})
                         if app.get("preview_image") else None),
-            # The SVG bytes themselves via /api/fs/raw (an <img> subresource,
-            # so the route's document-load downgrade does not apply).
-            "icon": ("/api/fs/raw?" + urlencode({"path": os.path.join(folder, "icon.svg")})
-                     if os.path.isfile(os.path.join(folder, "icon.svg")) else None),
+            # The icon bytes themselves via /api/fs/raw (an <img> subresource,
+            # so the route's document-load downgrade does not apply). Same
+            # precedence as every other surface (app_listing.ICON_NAMES): svg,
+            # else png — the page clips a png to a rounded square.
+            "icon": ("/api/fs/raw?" + urlencode({"path": icon["icon"]})
+                     if (icon := app_listing.app_icon(folder)) else None),
         })
     rows.sort(key=lambda r: (-r["recency"], (r["title"] or r["name"]).lower(), r["name"].lower()))
     return rows

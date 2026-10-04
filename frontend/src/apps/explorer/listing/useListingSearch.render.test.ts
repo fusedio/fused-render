@@ -7,16 +7,27 @@ import type { IndexRankResult, Prefs } from "@platform/lib/api";
 import { Clock, Deferred, flush, renderHook } from "@apps/explorer/listing/hook-harness";
 import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
+import { SEARCH_GLOB_RANK_LIMIT, SEARCH_RANK_LIMIT } from "@apps/explorer/listing/types";
 
 // --- the module boundary ------------------------------------------------------
 const rankCalls: {
   root: string;
   q: string;
   ranked: boolean | undefined;
+  limit: number | undefined;
   reply: Deferred<IndexRankResult>;
+  /** The controller's own signal, captured at call time -- the abort-on-
+   * schedule fix (rank-starvation-fallback) aborts the SOURCE's
+   * AbortController directly, so this is the one thing a test can observe
+   * to prove a request already in flight was actually cut loose, as
+   * opposed to merely superseded by a later reply landing first. */
+  signal: AbortSignal | undefined;
 }[] = [];
 const scanCalls: string[] = [];
 let scanReply: { started: boolean; why: string } = { started: true, why: "started" };
+// A thrown fetch (as opposed to a policy refusal the route answers
+// normally) — SPEC-empty-search-scan.md requires this to be silent too.
+let scanThrows = false;
 // The owner's unranked-search preference (D720) — `useRankedSearchEnabled`
 // (ranked-search-pref.ts) reads it via `getPrefs`, which this stub answers
 // synchronously-resolved rather than deferred: the pref is not this file's
@@ -25,13 +36,18 @@ let scanReply: { started: boolean; why: string } = { started: true, why: "starte
 let prefsRanked = true;
 
 mock.module("@platform/lib/api", () => ({
-  indexRank: (root: string, q: string, opts?: { ranked?: boolean }) => {
+  indexRank: (
+    root: string,
+    q: string,
+    opts?: { ranked?: boolean; limit?: number; signal?: AbortSignal },
+  ) => {
     const reply = new Deferred<IndexRankResult>();
-    rankCalls.push({ root, q, ranked: opts?.ranked, reply });
+    rankCalls.push({ root, q, ranked: opts?.ranked, limit: opts?.limit, reply, signal: opts?.signal });
     return reply.promise;
   },
   requestFolderScan: (path: string) => {
     scanCalls.push(path);
+    if (scanThrows) return Promise.reject(new Error("network down"));
     return Promise.resolve({ ...scanReply, run_id: "r1", root: path });
   },
   getPrefs: () =>
@@ -69,6 +85,7 @@ function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
     total: 0,
     base: "/d",
     mode: "substring",
+    pattern: "",
     ...over,
   };
 }
@@ -81,6 +98,7 @@ beforeEach(() => {
   rankCalls.length = 0;
   scanCalls.length = 0;
   scanReply = { started: true, why: "started" };
+  scanThrows = false;
   prefsRanked = true;
   publishRankedSearchEnabled(true);
   freshness.resetFsMutations();
@@ -128,6 +146,31 @@ describe("the MIN_QUERY_CHARS gate", () => {
   });
 });
 
+describe("the request limit mirrors willResolveToGlobMode, not a bare '*' check", () => {
+  // Code review finding: the limit predicate used to be `q.includes("*")`,
+  // a strict subset of `resolve_query`'s actual mode rule — a whitespace-
+  // only query (no literal `*` typed at all) still settles in `mode:
+  // "glob"` server-side (SPEC-search-space-wildcard.md), so it needs the
+  // wider glob row budget too, not the substring one.
+  test("a whitespace-only query (no literal *) asks for the wider glob limit", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("hello world"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].limit).toBe(SEARCH_GLOB_RANK_LIMIT);
+    box.unmount();
+  });
+
+  test("a plain single-word query still asks for the narrower substring limit", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("hello"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].limit).toBe(SEARCH_RANK_LIMIT);
+    box.unmount();
+  });
+});
+
 describe("one request per query, abortable", () => {
   test("a second keystroke before the debounce fires only ONE request", async () => {
     const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
@@ -146,6 +189,57 @@ describe("one request per query, abortable", () => {
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     expect(rankCalls[1].q).toBe("gadget");
+    box.unmount();
+  });
+});
+
+describe("aborting a superseded request (rank-starvation fallback fix)", () => {
+  // The bug: the abort used to live only inside `run`, the function the
+  // trailing debounce finally invokes. During a sustained typing burst
+  // (each keystroke's gap under INSTANT_DEBOUNCE_MS) `run` for the newer
+  // query never fires until the burst pauses, so the abort inside it never
+  // ran either -- the request already in flight kept running (and holding
+  // an interactive-lane permit + DuckDB threads) for the WHOLE burst. The
+  // fix moves the abort to scheduling time, right after the `inflightKey`
+  // guard, so it fires the moment the key changes, not once the debounce
+  // that follows finally elapses.
+  test("scheduling a new query aborts the request already in flight immediately, before the new debounce elapses", async () => {
+    const box = await search("widget");
+    const first = rankCalls[0];
+    expect(first.signal?.aborted).toBe(false);
+
+    // A keystroke mid-burst: this resets the debounce, so `run` for
+    // "widgets" has NOT fired yet by the time this assertion runs.
+    await flush(() => box.current().setQuery("widgets"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS / 2));
+
+    expect(rankCalls).toHaveLength(1); // the new request has not gone out yet
+    expect(first.signal?.aborted).toBe(true); // but the old one is already cut loose
+    box.unmount();
+  });
+
+  // The guard this fix must not break: `inflightKey.current === key` exists
+  // so a poll tick (the fetch effect re-running on `pollTick`/`polling`
+  // alone, query unchanged) does not abort-and-restart a live request -- a
+  // rank that outlasts SCAN_POLL_MS would otherwise never be allowed to
+  // finish (see "an uncovered folder: scan, poll, answer" above, which this
+  // reuses the shape of).
+  test("a poll tick landing on the SAME query does not abort the request already in flight", async () => {
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(answer({ covered: false, reason: "uncovered" })));
+    expect(scanCalls).toEqual(["/d"]);
+
+    await flush(() => clock.advance(SCAN_POLL_MS));
+    expect(rankCalls).toHaveLength(2);
+    const polled = rankCalls[1];
+    expect(polled.signal?.aborted).toBe(false);
+
+    // Left UNRESOLVED on purpose: another poll tick landing on the exact
+    // same key before this one settles is the regression the inflightKey
+    // guard exists to prevent.
+    await flush(() => clock.advance(SCAN_POLL_MS));
+    expect(rankCalls).toHaveLength(2); // no new request -- the guard matched
+    expect(polled.signal?.aborted).toBe(false);
     box.unmount();
   });
 });
@@ -294,6 +388,196 @@ describe("an uncoverable folder reports the index gap, not an infinite loop", ()
     const ticks = clock.pending;
     await flush(() => clock.advance(SCAN_POLL_MS * 5));
     expect(clock.pending).toBeLessThanOrEqual(ticks); // the poll loop is over
+    box.unmount();
+  });
+});
+
+describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empty-search-scan.md)", () => {
+  test("asks for a scan of the answer's own root", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    box.unmount();
+  });
+
+  test("does not fire when the answer has at least one file hit", async () => {
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("widget.md")], total: 1 })));
+    expect(scanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("does not fire (a second time) for mount / package / ignored / disabled / fda — no scan will ever cover them", async () => {
+    for (const reason of ["mount", "package", "ignored", "disabled", "fda"]) {
+      scanCalls.length = 0;
+      const box = await search("widget", "/d/" + reason);
+      await flush(() => rankCalls[rankCalls.length - 1].reply.resolve(answer({ covered: false, reason: reason as never })));
+      expect(scanCalls).toEqual([]);
+      box.unmount();
+    }
+  });
+
+  test("does not ALSO fire for uncovered — the existing on-demand-scan affordance already asked, exactly once", async () => {
+    const box = await search("widget", "/d/uncovered");
+    await flush(() =>
+      rankCalls[0].reply.resolve(
+        answer({ covered: false, reason: "uncovered", base: "/d/uncovered" }),
+      ),
+    );
+    // The EXISTING uncovered-scan path (index-source's "scan" step) already
+    // fires this — this new, covered-but-empty trigger must not double it.
+    expect(scanCalls).toEqual(["/d/uncovered"]);
+    box.unmount();
+  });
+
+  test("does not fire for a one-character query (never even asks the index)", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("w"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(scanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("fires once for a given query, not once per re-render or a lifecycle bump re-asking it", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+
+    // A lifecycle bump re-runs the fetch effect (Part 2) — the SAME query,
+    // still empty, must not refire the scan.
+    await flush(() => freshness.noteIndexLifecycle());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls.length).toBeGreaterThan(1);
+    await flush(() => rankCalls[rankCalls.length - 1].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    box.unmount();
+  });
+
+  test("a DIFFERENT query fires its own scan", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+
+    await flush(() => box.current().setQuery("otherfile"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[1].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d", "/d"]);
+    box.unmount();
+  });
+
+  test("a route refusal is silent — no error, no retry", async () => {
+    scanReply = { started: false, why: "debounced" };
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    expect(box.current().searchState.status).toBe("ok");
+    expect(box.current().reason).toBe("");
+    box.unmount();
+  });
+
+  test("a thrown fetch (the promise itself rejects) is silent too", async () => {
+    scanThrows = true;
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    await flush(() => {});
+    expect(box.current().searchState.status).toBe("ok");
+    box.unmount();
+  });
+
+  test("verified against a PRE-EXISTING answer object, not only a freshly created one", async () => {
+    // The same `answer()` shape reused verbatim from an existing describe
+    // block above ("never-blank / stale-while-revalidate" uses its own
+    // constructed replies) — this asserts the trigger fires off a plain,
+    // already-established `answer()` value with no bespoke fields, so a
+    // create-path-only hook (a real bug class in this repo) can't hide here.
+    const box = await search("qq");
+    const reply = answer({ base: "/d/sub" });
+    await flush(() => rankCalls[0].reply.resolve(reply));
+    expect(scanCalls).toEqual(["/d/sub"]);
+    box.unmount();
+  });
+
+  test("bumps the caller's onScanRequested once the scan request resolves, restarting the poll's idle beat", async () => {
+    let bumped = 0;
+    const box = renderHook(
+      (p: string, r: number) =>
+        useListingSearch(p, undefined, r, false, () => {
+          bumped += 1;
+        }),
+      "/d",
+      0,
+    );
+    await flush(() => box.current().setQuery("newfile"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(bumped).toBe(1);
+    box.unmount();
+  });
+
+  // Code review finding 5: the dedup key is the TRIMMED query, not the raw
+  // one — "newfile" and "newfile " must be treated as the same episode even
+  // though A1 keeps them different `indexRank` requests.
+  test("a query that differs only by surrounding whitespace does not refire the scan", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+
+    await flush(() => box.current().setQuery("newfile "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(2);
+    await flush(() => rankCalls[1].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]); // not fired a second time
+    box.unmount();
+  });
+
+  // Code review finding 1: FileSearchField.tsx passes `fireEmptyScan=false`
+  // — this instance never renders a result, so it must never ask for a scan
+  // at all.
+  test("fireEmptyScan=false (FileSearchField.tsx's non-displaying instance) never fires", async () => {
+    const box = renderHook(
+      (p: string, r: number) => useListingSearch(p, undefined, r, false, undefined, false),
+      "/d",
+      0,
+    );
+    await flush(() => box.current().setQuery("newfile"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  // Code review findings 2 & 3: the caller's "still building" copy is gated
+  // on `ourScanRunning`, which must only flip true once `requestFolderScan`
+  // confirms `started` — a refusal must not claim a build is in progress.
+  test("ourScanRunning stays false when the scan request is refused", async () => {
+    scanReply = { started: false, why: "debounced" };
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(box.current().ourScanRunning).toBe(false);
+    box.unmount();
+  });
+
+  test("ourScanRunning flips true once the scan request confirms started", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(box.current().ourScanRunning).toBe(true);
+    box.unmount();
+  });
+
+  // Code review finding 4: the new reply handler needed the same epoch guard
+  // its sibling (the uncovered-scan handler) already had.
+  test("a scan reply for the previous folder does not set ourScanRunning for the new one", async () => {
+    const box = await search("newfile");
+    box.rerender("/other", 0); // navigate before the scan reply lands
+    await flush(() => {});
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(box.current().ourScanRunning).toBe(false);
     box.unmount();
   });
 });
@@ -746,6 +1030,70 @@ describe("searchBase: the directory hits are relative to", () => {
     // One transition, straight to the real base — never a detour through
     // `/proj` first.
     expect(box.current().searchBase).toBe("/home/u/other");
+    box.unmount();
+  });
+});
+
+// A1 (code review): `q` used to be `deferredQuery.trim()`, which silently
+// dropped a trailing space before it ever reached `indexRank` — defeating
+// the whole search-trailing-space grammar (A3, DECISIONS.md) at this box's
+// own door, one layer below where `expand_whitespace_query`
+// (fused_render/index/query.py) could ever see the space it was designed to
+// treat as meaningful.
+describe("A1: the query reaches indexRank verbatim, whitespace and all", () => {
+  test("a trailing space is sent to the server exactly as typed, not trimmed away", async () => {
+    const box = await search("src ");
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("src ");
+    box.unmount();
+  });
+
+  test("'src' and 'src ' are genuinely different queries: no memo hit across the trim boundary", async () => {
+    // Before the fix, `deferredQuery.trim()` folded "src" and "src " into
+    // the identical memo key — a real bug independent of the server, since
+    // `expand_whitespace_query` resolves them to different patterns
+    // ("src" substring-mode vs "**src**" glob-mode).
+    const box = await search("src");
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("src.txt")], total: 1 })));
+    await flush(() => box.current().setQuery("src "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(2);
+    expect(rankCalls[1].q).toBe("src ");
+    box.unmount();
+  });
+
+  test("a single real character padded with spaces still fails the MIN_QUERY_CHARS gate", async () => {
+    // "a " is two raw characters but only one of real content — the same
+    // thin, near-noise query MIN_QUERY_CHARS exists to refuse (a whitespace-
+    // derived pattern is at least as indiscriminate as a bare substring, see
+    // MIN_QUERY_CHARS's own doc comment, lib/home-search.ts), so the gate is
+    // measured on trimmed length, not raw length.
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("a "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(box.current().searching).toBe(false);
+    box.unmount();
+  });
+
+  test("a whitespace-only query never fires a request — nothing to search for (A2)", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("   "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(box.current().searching).toBe(false);
+    box.unmount();
+  });
+
+  test("deferredStale compares raw against raw, so a settled trailing-space query is not stuck stale", async () => {
+    // `deferredStale` used to read `query.trim() !== q` — with `q` now raw,
+    // that comparison would permanently disagree for any query with leading/
+    // trailing whitespace once React's deferred value caught up to it. The
+    // fix compares `query !== q` (both raw), matching exactly when the
+    // deferred value has caught up to the live one, whitespace and all.
+    const box = await search("src ");
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("src.txt")], total: 1 })));
+    expect(box.current().isStale).toBe(false);
     box.unmount();
   });
 });

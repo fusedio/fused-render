@@ -29,6 +29,30 @@ export function announceCurrentAppsChanged(): void {
   window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT));
 }
 
+// "An App Doctor row just changed" — the same wall-throw for the header
+// status dot (platform/ui/useAppDoctorChecks.ts), which fetches the report
+// once per app open and would otherwise not hear that an on-demand Check
+// (AppDoctorModal.tsx's `runCheck`) just turned a row red — or green — until
+// the app was opened again. Carries the app FOLDER so a dot for another app
+// (the explorer's dialog is not always over the page it decorates) ignores
+// it. A GET after a Check is free: the verdict is cached server-side.
+export const APP_DOCTOR_CHANGED_EVENT = "fused-render:app-doctor-changed";
+
+export function announceAppDoctorChanged(dir: string): void {
+  window.dispatchEvent(new CustomEvent<string>(APP_DOCTOR_CHANGED_EVENT, { detail: dir }));
+}
+
+/** Subscribe for the component's lifetime; `cb` gets the folder announced. */
+export function useAppDoctorChanged(cb: (dir: string) => void): void {
+  const ref = useRef(cb);
+  ref.current = cb;
+  useEffect(() => {
+    const fire = (e: Event) => ref.current(String((e as CustomEvent<string>).detail ?? ""));
+    window.addEventListener(APP_DOCTOR_CHANGED_EVENT, fire);
+    return () => window.removeEventListener(APP_DOCTOR_CHANGED_EVENT, fire);
+  }, []);
+}
+
 /** Subscribe for the component's lifetime. `cb` is read through a ref so a
  *  fresh closure each render does not churn the listener. */
 export function useCurrentAppsChanged(cb: () => void): void {

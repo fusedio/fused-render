@@ -29,6 +29,7 @@ Two ways onto the desk: the tasks listing (`current_apps.observe`, run inside
   there is not an error (``added: false``): the sidebar focuses the row it
   has rather than inserting a second.
 """
+import logging
 import os
 import time
 
@@ -38,6 +39,8 @@ from pydantic import BaseModel
 from fused_render import current_apps, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.routers import tasks as tasks_router
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -222,4 +225,13 @@ def api_current_apps_rename(patch: RenamePatch):
         # the same standing an out-of-band move of such a folder has.
         app_state_move.rewrite_stores(folder, new)
         claude_session_move.relocate(folder, new)
+    # The moved chats are on disk under the new path; tell every open listing
+    # to reload (same call `fs_mutate._fs_rename` makes — see the note there).
+    # Best effort, like there: the rename is done and must answer OK, and a
+    # listing that is late is a lesser thing than a move reported as failed.
+    try:
+        tasks_watch.notify_all()
+    except Exception:
+        logger.warning("rename %s -> %s: tasks listing not notified",
+                       folder, new, exc_info=True)
     return {"ok": True, "path": new}

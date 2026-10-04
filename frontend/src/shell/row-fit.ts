@@ -609,6 +609,10 @@ export const PEEK_HEAD_DROPS = [
 export function useStripFit(
   drops: readonly string[],
   enabled = true,
+  /** How the strip's need is measured — `rowNeed` unless the strip's shape
+   *  is not a row of seats (the app page's header charges its title a floor
+   *  and its actions their natural width; shell/app-page-fit.ts). */
+  measure: (el: HTMLElement) => number = rowNeed,
 ): [number, (el: HTMLElement | null) => void] {
   const [level, setLevel] = useState(0);
   // A CALLBACK REF, not a `useRef`, and the difference is the whole reason the
@@ -630,7 +634,7 @@ export function useStripFit(
     let frame = 0;
     const read = () => {
       const at = levelRef.current;
-      const need = rowNeed(el);
+      const need = measure(el);
       const known = needAt.current[at];
       // CONTENT CHANGED UNDER US — a poll landed a longer folder name, a filter
       // count appeared, the panel swapped to another task — so what we remember
@@ -675,7 +679,7 @@ export function useStripFit(
       ro.disconnect();
       mo.disconnect();
     };
-  }, [el, enabled, drops]);
+  }, [el, enabled, drops, measure]);
   return [enabled ? level : 0, setEl];
 }
 

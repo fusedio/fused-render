@@ -174,6 +174,22 @@ export function runAgent<K extends Action>(
   return runScript<AgentResponses[K]>(`${dir}/agent.py`, { action, ...fields }, opts);
 }
 
+/** agent.py's `terminal_command` action, which already returns a full
+ *  `cd '<dir>' && claude ...` line — the one fetch every "continue this
+ *  session in a terminal" caller shares (`apps/claude/ui/Kebab.tsx`'s
+ *  "Continue in terminal", `shell/TaskPeek.tsx`'s own), so neither re-derives
+ *  it and there is exactly one `cd` in the string either ends up sending. */
+export async function fetchTerminalCommand(
+  dir: string,
+  file: string,
+  sessionId: string,
+): Promise<string> {
+  const out = await runAgent(dir, "terminal_command", { file, session_id: sessionId }, { key: null });
+  if ("error" in out && out.error) throw new Error(out.error);
+  if (!("command" in out)) throw new Error("agent.py returned no command");
+  return out.command;
+}
+
 /** `./app.py {dir}` — the folder's entry html, if it is an app (T:5417). */
 export function runAppEntry(dir: string, target: string, opts: RunOpts = {}): Promise<AppEntryResponse> {
   return runScript<AppEntryResponse>(`${dir}/app.py`, { dir: target }, opts);

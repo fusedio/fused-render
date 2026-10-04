@@ -805,7 +805,7 @@ _SAMPLING = {
 #: caller-facing option.
 _TEXT_OPTIONS = frozenset({
     "prompt", "provider", "model", "systemPrompt", "effort", "history", "raw",
-    "images", "temperature", "maxTokens", "topP"})
+    "images", "temperature", "maxTokens", "topP", "thinking"})
 _TEXT_SERVER_OPTIONS = _TEXT_OPTIONS | {"stream", "base"}
 
 
@@ -813,7 +813,7 @@ _TEXT_SERVER_OPTIONS = _TEXT_OPTIONS | {"stream", "base"}
 # (`runtime.js` maps camelCase to snake_case on the way in), so a warning
 # names the thing the author can find in their own code.
 _OPTION_NAMES = {"temperature": "temperature", "maxTokens": "maxTokens",
-                 "topP": "topP", "effort": "effort"}
+                 "topP": "topP", "effort": "effort", "thinking": "thinking"}
 
 
 def _unsupported(setting: str, tier: str, why: str) -> dict:
@@ -1071,6 +1071,11 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         "max_tokens": body.get("maxTokens"),
         "temperature": body.get("temperature"),
         "top_p": body.get("topP"),
+        # Wire name -> worker vocabulary, the one place camelCase meets
+        # snake_case (D633), same as every other sampling knob above. `None`
+        # (unset) is filtered out just below, same as the others — the
+        # worker's own default (thinking ON, D886) is what then applies.
+        "enable_thinking": body.get("thinking"),
         # Absolute paths on THIS turn only (mlx_text/worker.py's own boundary,
         # AI-11j) — a LIST, unlike `/api/ai/image`'s single `image`, because a
         # VLM's chat template is told `num_images` and asking about two
@@ -1445,6 +1450,15 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             "bad_request",
             "'effort' must be one of: %s" % ", ".join(_AI_EFFORTS),
             status=400)
+    # Tri-state (D886): unset/true/false must stay distinguishable, so this
+    # is a bool check rather than `bool(body.get("thinking"))` — `False` is a
+    # caller's explicit request, not the absence of one. A local runner's
+    # default (thinking ON when unset, reversing AI-11d) lives in the two
+    # runners themselves; this route only validates the shape and, on a tier
+    # that cannot honour it, drops it into `warnings[]` below (D631).
+    thinking = body.get("thinking")
+    if thinking is not None and not isinstance(thinking, bool):
+        return _ai_error("bad_request", "'thinking' must be a boolean", status=400)
     system_prompt = body.get("systemPrompt")
     if not (isinstance(system_prompt, str) and system_prompt):
         system_prompt = _AI_DEFAULT_SYSTEM_PROMPT
@@ -1534,6 +1548,10 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             warnings.append(_unsupported(
                 "effort", "apple", "Apple's on-device model has no thinking "
                 "budget to set; use 'temperature' / 'maxTokens'"))
+        if thinking is not None:
+            warnings.append(_unsupported(
+                "thinking", "apple", "Apple's on-device model has no "
+                "thinking flag to set"))
         if body.get("topP") is not None:
             warnings.append(_unsupported(
                 "topP", "apple", "Apple's on-device model samples by temperature "
@@ -1655,6 +1673,10 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             warnings.append(_unsupported(
                 name, "claude", "the Claude CLI exposes 'effort' and no "
                 "sampling knobs"))
+    if thinking is not None:
+        warnings.append(_unsupported(
+            "thinking", "claude", "the Claude CLI exposes 'effort' and no "
+            "thinking flag"))
 
     if not _claude_bin():
         return _ai_failed(

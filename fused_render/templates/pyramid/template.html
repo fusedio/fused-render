@@ -760,7 +760,22 @@ function initCompare() {
   if (pla >= 0 && pla < R.levels.length) cmp.la = pla;
   if (plb >= 0 && plb < R.levels.length) cmp.lb = plb;
   if (fused.params.get("auto") === "0") cmp.auto = false;
-  const style = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+  // Esri's ArcGIS Online raster tiles are plain public REST endpoints, unlike
+  // CARTO's vector basemap styles which now sit behind an API key.
+  const style = {
+    version: 8,
+    sources: {
+      base: { type: "raster", tileSize: 256, maxzoom: 16,
+              tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"],
+              attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors" },
+      label: { type: "raster", tileSize: 256, maxzoom: 16,
+               tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"] },
+    },
+    layers: [
+      { id: "base", type: "raster", source: "base" },
+      { id: "label", type: "raster", source: "label" },
+    ],
+  };
   const b = R.bounds4326;
   const opts = { style, bounds: [[b[0], b[1]], [b[2], b[3]]], fitBoundsOptions: { padding: 60 },
                  attributionControl: false };

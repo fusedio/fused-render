@@ -121,15 +121,29 @@ export interface DirMode {
   // `?_side=git` deep link would be resolved against a list that does not yet
   // contain git and quietly rewritten away before the answer landed.
   pending: boolean;
+  // The probe came back REJECTED — a network/server failure on `/api/fs/stat`
+  // itself, not a settled verdict. Distinct from a plain "not offered" (`entry:
+  // null, failed: false`, which is a genuine denial or absence): a caller that
+  // auto-closes on "not offered" must not treat a transient failure the same
+  // way, or a flaky request silently and permanently shuts a column the reader
+  // never got an honest answer from (useAppPageGitColumn.ts's own history).
+  // `loadDirModes`'s cache evicts a rejection on the spot, so the ordinary close
+  // + reopen cycle already re-probes for free — this field exists only so a
+  // caller can tell the two apart, not to add a retry mechanism of its own.
+  failed: boolean;
 }
 
 // Shared, so a caller that re-renders without changing directory does not get a
-// fresh object and a pointless commit. Used for every "nothing here" answer that
-// carries no binding either: no directory to ask, and a probe that failed.
-const ABSENT: DirMode = { entry: null, bound: null, pending: false };
+// fresh object and a pointless commit. Used for the one "nothing here" answer
+// that carries no binding either and was never even asked: no directory to ask.
+const ABSENT: DirMode = { entry: null, bound: null, pending: false, failed: false };
+
+// A REJECTED probe's settled state — same shape as ABSENT except the flag that
+// tells a caller not to read it as a settled "no such mode here".
+const FAILED: DirMode = { entry: null, bound: null, pending: false, failed: true };
 
 function placeholderFor(mode: string): DirMode {
-  return { entry: { mode, path: null, icon: null }, bound: null, pending: true };
+  return { entry: { mode, path: null, icon: null }, bound: null, pending: true, failed: false };
 }
 
 // `dir === null` switches the whole thing off and makes no request — how callers
@@ -156,12 +170,12 @@ export function useDirMode(dir: string | null, mode: string): DirMode {
         const bound = r.templates.find((e) => e.mode === mode) ?? null;
         setState(
           bound && isModeVisible(bound, r.conditions)
-            ? { entry: bound, bound, pending: false }
-            : { entry: null, bound, pending: false }
+            ? { entry: bound, bound, pending: false, failed: false }
+            : { entry: null, bound, pending: false, failed: false }
         );
       },
       () => {
-        if (alive) setState(ABSENT);
+        if (alive) setState(FAILED);
       }
     );
     return () => {

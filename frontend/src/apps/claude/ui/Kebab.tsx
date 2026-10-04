@@ -35,8 +35,10 @@ import {
 } from "@platform/lib/api";
 import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { runAgent } from "../protocol/agent";
-import type { TerminalCommandResponse } from "../protocol/types";
+import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
+import { canRunInTerminal, useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
+import { forgetSessionSeed } from "./useRecentTasks";
 
 /** Live by the listing's own clock (T:13166-13169). */
 const RUNNING_STATES = new Set<Task["status"]>([
@@ -206,9 +208,19 @@ export function useTaskId(sessionId: string): string {
     };
   }, [sessionId]);
   if (!sessionId) return "";
+  const known = taskIds.get(sessionId);
+  if (known) return known;
+  // A `pending:<entry>` KEY IS NOT A HASH, and the fail-open below would print
+  // it as one: `"pending:8f2…".slice(0, 8)` is the literal word "pending:", which
+  // is what the header of a queued new chat showed until the listing caught up
+  // (Akshil, 2026-09-12). There is nothing to fall back TO for this kind of key —
+  // the conversation has no session id yet — so the honest answer is nothing, and
+  // the caller's own next source (`sched/waiting.headerTaskId`) supplies the
+  // number the admission already minted.
+  if (sessionId.startsWith(PENDING_KEY_PREFIX)) return "";
   // The hash paints first and stays up until the number lands, so the answer to
   // a slow listing is the old label rather than a gap (T:12698).
-  return taskIds.get(sessionId) || sessionId.slice(0, 8);
+  return sessionId.slice(0, 8);
 }
 
 /** What the listing knows about this chat, for the caller's own reads (the
@@ -258,6 +270,19 @@ export interface KebabProps {
   /** Why, for the item's `title` — `NAV_LOCKED_REASON`. A prop rather than an
    *  import so this menu owns no vocabulary of the annotation subsystem's. */
   lockedReason?: string;
+  /**
+   * THIS CHAT'S WORK IS STILL IN ITS FOLDER'S LINE — the task row says `queued`,
+   * or this conversation is a message that has never run (Akshil, 2026-09-12).
+   *
+   * Two items go, and for the same reason: there is no session behind this chat
+   * yet. "Continue in terminal" would hand the reader a `claude --resume` for a
+   * conversation that does not exist, and Archive would file work that has not
+   * happened — which this page spells Delete, and Delete STAYS.
+   *
+   * HIDDEN, not disabled, like everything else in this menu whose precondition
+   * the reader cannot act on from inside it (T:13100-13108).
+   */
+  queued?: boolean;
 }
 
 export function Kebab({
@@ -270,18 +295,21 @@ export function Kebab({
   onErased,
   locked = false,
   lockedReason,
+  queued = false,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
   const [erasing, setErasing] = useState(false);
   /** Bumped whenever a cache write should repaint the items. */
   const [rev, setRev] = useState(0);
   const [terminalLabel, setTerminalLabel] = useState("");
+  const [copyLabel, setCopyLabel] = useState("");
   const [archiveLabel, setArchiveLabel] = useState("");
   /** A press in flight, or its confirmation still on screen, OWNS its item:
    *  a listing read landing in that window must not overwrite the words
    *  (T:13143-13150). */
   const busy = useRef(false);
   const timers = useRef<number[]>([]);
+  const canRun = useCanRunInTerminal();
 
   useEffect(
     () => () => {
@@ -388,6 +416,7 @@ export function Kebab({
       setTerminalLabel(
         sessionId ? "Continue in terminal" : "New session in terminal",
       );
+      setCopyLabel("Copy command");
       setArchiveLabel("");
       void refresh();
     },
@@ -396,29 +425,42 @@ export function Kebab({
 
   const restingArchive = filed ? "Unarchive this task" : "Archive this task";
 
+  const fetchTerminalCommand = useCallback(
+    (): Promise<string> => fetchAgentTerminalCommand(agentDir!, file ?? "", sessionId),
+    [agentDir, file, sessionId],
+  );
+
+  /** THE PRIMARY ITEM. Where the status-bar drawer exists (canRunInTerminal()),
+   *  this runs the command there instead of putting it on the clipboard — the
+   *  point of a managed terminal is that "continue in terminal" can mean
+   *  ACTUALLY continuing, not "go find a terminal and paste". Falls back to the
+   *  old copy behaviour everywhere the drawer does not exist (an embed, or
+   *  Windows), which is also the fallback path if the fetch fails after the
+   *  drawer already opened for a different item elsewhere — the row still has
+   *  to tell the reader something happened. */
   const onTerminal = useCallback(async () => {
     if (!agentDir) return;
     busy.current = true;
     try {
-      const out = (await runAgent(
-        agentDir,
-        "terminal_command",
-        { file: file ?? "", session_id: sessionId },
-        { key: null },
-      )) as TerminalCommandResponse;
-      if ("error" in out && out.error) throw new Error(out.error);
-      if (!("command" in out)) throw new Error("agent.py returned no command");
-      await navigator.clipboard.writeText(out.command);
-      // The copied state shows INSIDE the item, then the menu goes away on its
-      // own: the click's whole job was the clipboard (T:13454).
-      setTerminalLabel("Copied — paste in your terminal");
+      const command = await fetchTerminalCommand();
+      if (canRunInTerminal()) {
+        openTerminal({ command });
+        setTerminalLabel("Opened in terminal");
+      } else {
+        await navigator.clipboard.writeText(command);
+        setTerminalLabel("Copied — paste in your terminal");
+      }
+      // The result shows INSIDE the item, then the menu goes away on its own:
+      // the click's whole job was handing the command off (T:13454).
       later(() => {
         busy.current = false;
         setOpen(false);
       }, 900);
     } catch (err) {
       setTerminalLabel(
-        `Copy failed — ${err instanceof Error ? err.message : String(err)}`,
+        `${canRunInTerminal() ? "Couldn't open a terminal" : "Copy failed"} — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
       later(() => {
         busy.current = false;
@@ -427,7 +469,33 @@ export function Kebab({
         );
       }, 2500);
     }
-  }, [agentDir, file, sessionId, later]);
+  }, [agentDir, fetchTerminalCommand, sessionId, later]);
+
+  /** THE SECONDARY ITEM, only offered where the primary one no longer copies —
+   *  a reader with their own terminal should not have to fight the drawer for
+   *  the string. Hidden (not shown at all) where canRunInTerminal() is false,
+   *  because there the primary item already does exactly this. */
+  const onCopyTerminalCommand = useCallback(async () => {
+    if (!agentDir) return;
+    busy.current = true;
+    try {
+      const command = await fetchTerminalCommand();
+      await navigator.clipboard.writeText(command);
+      setCopyLabel("Copied — paste in your terminal");
+      later(() => {
+        busy.current = false;
+        setOpen(false);
+      }, 900);
+    } catch (err) {
+      setCopyLabel(
+        `Copy failed — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      later(() => {
+        busy.current = false;
+        setCopyLabel("Copy command");
+      }, 2500);
+    }
+  }, [agentDir, fetchTerminalCommand, later]);
 
   /**
    * THE MENU GOES FIRST (R2-8). This used to hold the dropdown open through the
@@ -509,19 +577,36 @@ export function Kebab({
           aria-label="More options"
           className="c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
         >
-          <DropdownMenuItem
-            className="c-kebab-opt"
-            closeOnClick={false}
-            onClick={() => void onTerminal()}
-          >
-            {terminalLabel ||
-              (sessionId ? "Continue in terminal" : "New session in terminal")}
-          </DropdownMenuItem>
+          {/* NOT WHILE THIS CHAT IS WAITING (`queued`): there is no session to
+              continue, so the command this copies would open a conversation that
+              does not exist yet. */}
+          {!queued ? (
+            <DropdownMenuItem
+              className="c-kebab-opt"
+              closeOnClick={false}
+              onClick={() => void onTerminal()}
+            >
+              {terminalLabel ||
+                (sessionId ? "Continue in terminal" : "New session in terminal")}
+            </DropdownMenuItem>
+          ) : null}
+          {/* The primary item above now RUNS the command where it can — this is
+              the clipboard fallback for a reader who would rather paste it into
+              a terminal of their own. */}
+          {!queued && canRun ? (
+            <DropdownMenuItem
+              className="c-kebab-opt"
+              closeOnClick={false}
+              onClick={() => void onCopyTerminalCommand()}
+            >
+              {copyLabel || "Copy command"}
+            </DropdownMenuItem>
+          ) : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a
               disabled row invites the reader to work out what would enable it,
               and the answer is not something they can act on from this menu
               (T:13100-13108). */}
-          {!landing && hasTask ? (
+          {!landing && hasTask && !queued ? (
             <DropdownMenuItem
               className="c-kebab-opt"
               /* R2-8 — the press closes the menu. `onArchive` closes it too
@@ -581,6 +666,7 @@ export function Kebab({
             setErasing(false);
             // Every cache keyed by this session is now a lie (T:13348-13366).
             forgetTaskCaches(sessionId);
+            forgetSessionSeed(sessionId);
             onErased?.(sessionId);
           }}
         />

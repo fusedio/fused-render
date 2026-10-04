@@ -41,7 +41,7 @@ import { refreshAiRuntime } from "./lib/aiRuntime";
 import { AI_MODELS_TABS, tabFromPath, tabHref, tabLabel, type AiModelsTab } from "./routes";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { formatSize } from "@platform/lib/format";
-import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl, spaLinkProps } from "@platform/lib/router";
 
 /** The strip's hover for each tab, in strip order (AI_MODELS_TABS). The label
  *  itself lives in `routes.ts` (`tabLabel`) — the one thing about a tab that
@@ -173,21 +173,8 @@ export default function AiModelsPage() {
                     {data.exists ? (
                       <a
                         className="am-cache-dir"
-                        href={urlForFsPath(data.cacheDir)}
                         title={`Open ${data.cacheDir} in the explorer`}
-                        onClick={(e) => {
-                          if (
-                            e.defaultPrevented ||
-                            e.button !== 0 ||
-                            e.metaKey ||
-                            e.ctrlKey ||
-                            e.shiftKey ||
-                            e.altKey
-                          )
-                            return;
-                          e.preventDefault();
-                          navigate(data.cacheDir, { isDir: true });
-                        }}
+                        {...spaLinkProps(data.cacheDir, { isDir: true })}
                       >
                         {data.cacheDir}
                       </a>

@@ -37,14 +37,17 @@ def _clear_head_cache():
     tasks_store.reset_cache()
 
 
-def _transcript(projects_dir, encoded, session_id, cwd, first_ts, prompt="hi"):
+def _transcript(projects_dir, encoded, session_id, cwd, first_ts, prompt="hi", entrypoint=None):
     d = projects_dir / encoded
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{session_id}.jsonl"
-    path.write_text(json.dumps({
+    record = {
         "type": "user", "cwd": cwd, "timestamp": first_ts, "uuid": "u1",
         "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
-    }) + "\n")
+    }
+    if entrypoint is not None:
+        record["entrypoint"] = entrypoint
+    path.write_text(json.dumps(record) + "\n")
     return path
 
 
@@ -155,6 +158,46 @@ def test_rekey_does_not_renumber_a_session_that_already_has_one():
 def test_rekey_of_something_that_has_no_number_does_nothing():
     assert tasks_store.rekey("nothing", "nowhere") == ""
     assert tasks_store.task_ids() == {}
+
+
+def test_rekey_moved_reports_a_real_move_and_a_no_op_alike():
+    """`rekey`'s callers (`schedule.py`, twice) fire-and-forget and never read
+    its return; `_settle_new_chats` is the one caller that has to tell a real
+    move apart from "already there", to stay idempotent (bugbot / live repro,
+    2026-09-15)."""
+    pending = tasks_store.pending_key("first")
+    tasks_store.ensure_ids([(pending, "/p", 1.0)])
+    assert tasks_store.rekey_moved(pending, "session-a") is True
+    assert tasks_store.task_number("session-a") == "TASK-001"
+    assert tasks_store.task_number(pending) == ""
+
+    # session-b already has its own number: nothing to move.
+    tasks_store.ensure_ids([("session-b", "/p", 2.0)])
+    second = tasks_store.pending_key("second")
+    tasks_store.ensure_ids([(second, "/p", 3.0)])
+    assert tasks_store.rekey_moved(second, "session-b") is False
+    assert tasks_store.task_number(second) == "TASK-003", \
+        "the spent number stays spent, exactly like a plain rekey"
+
+
+def test_a_no_op_rekey_stamps_the_old_key_spent_so_it_is_asked_once():
+    """The fix for the settle loop (bugbot / live repro, 2026-09-15): before
+    this, a rekey onto an already-numbered target left the old record
+    unchanged, and `task_ids()` went on returning it as if it were still a
+    live reservation forever. Now it is stamped, and asking again is a no-op
+    that changes nothing further."""
+    tasks_store.ensure_ids([("session", "/p", 1.0)])
+    pending = tasks_store.pending_key("second")
+    tasks_store.ensure_ids([(pending, "/p", 2.0)])
+
+    assert tasks_store.rekey_moved(pending, "session") is False
+    rec = tasks_store.task_ids()[pending]
+    assert rec == {"project": "/p", "n": 2, "spent": True, "moved_to": "session"}
+
+    # Idempotent: asking again reports the same "nothing moved" and leaves the
+    # stamped record exactly as it is.
+    assert tasks_store.rekey_moved(pending, "session") is False
+    assert tasks_store.task_ids()[pending] == rec
 
 
 # --------------------------------------------------- a draft that moves house
@@ -512,7 +555,7 @@ def test_the_head_is_cached_against_the_file_size(projects_dir):
                             "timestamp": "2026-08-16T10:00:00Z",
                             "message": {"role": "user",
                                         "content": "later"}}) + "\n")
-    cwd, first_ts, prompt, _pane = tasks_store.head(str(path))
+    cwd, first_ts, prompt, _pane, _entrypoint = tasks_store.head(str(path))
     assert cwd == "/home/a"
     assert prompt == "first thing"
     assert first_ts == pytest.approx(
@@ -590,7 +633,7 @@ def test_the_head_finds_the_pane_even_when_the_words_come_later(projects_dir):
                     "timestamp": "2026-08-16T09:01:00Z", "uuid": "u2",
                     "message": {"role": "user",
                                 "content": "actual words"}}) + "\n")
-    cwd, _ts, prompt, pane = tasks_store.head(str(path))
+    cwd, _ts, prompt, pane, _entrypoint = tasks_store.head(str(path))
     assert cwd == "/home/a"
     assert prompt == "actual words"
     assert pane == "/home/a/index.html"
@@ -604,7 +647,47 @@ def test_the_project_of_a_cwd_is_the_folder_itself():
 
 def test_an_unreadable_transcript_costs_only_itself(tmp_path):
     assert tasks_store.head(str(tmp_path / "nope.jsonl")) == \
-        (None, None, "", "")
+        (None, None, "", "", None)
+
+
+# ------------------------------------------------------------- entrypoint
+
+
+def test_the_head_reads_entrypoint_off_the_first_user_record(projects_dir):
+    path = _transcript(projects_dir, "-home-a", "s-cli", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="hi", entrypoint="cli")
+    assert tasks_store.head(str(path))[4] == "cli"
+
+
+def test_the_head_reads_sdk_cli_entrypoint(projects_dir):
+    path = _transcript(projects_dir, "-home-a", "s-sdk", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="hi", entrypoint="sdk-cli")
+    assert tasks_store.head(str(path))[4] == "sdk-cli"
+
+
+def test_a_transcript_with_no_entrypoint_field_answers_none(projects_dir):
+    # Older transcripts, predating the field, must never be defaulted to a
+    # made-up value — the notification gate downstream (task-status-notify.ts)
+    # treats "unknown" as "not cli" and must be able to tell the two apart.
+    path = _transcript(projects_dir, "-home-a", "s-none", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="hi")
+    assert tasks_store.head(str(path))[4] is None
+
+
+def test_entrypoint_is_cached_alongside_the_rest_of_the_head(projects_dir):
+    path = _transcript(projects_dir, "-home-a", "s-cache", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="first thing",
+                        entrypoint="cli")
+    assert tasks_store.head(str(path))[4] == "cli"
+    # A resolved head is cached against file size — appending must not force
+    # a re-read that could (incorrectly) change the already-resolved answer.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "user", "cwd": "/home/a",
+                            "timestamp": "2026-08-16T10:00:00Z",
+                            "entrypoint": "sdk-cli",
+                            "message": {"role": "user",
+                                        "content": "later"}}) + "\n")
+    assert tasks_store.head(str(path))[4] == "cli"
 
 
 def test_epoch_reads_z_and_naive_stamps_as_utc():
@@ -785,3 +868,426 @@ def test_the_head_keeps_scanning_past_a_machinery_record(projects_dir):
     # is a prompt this module writes for a subagent, never one the user typed,
     # and its sibling reader in templates/claude/agent.py has always skipped it.
     assert tasks_store.head(str(path))[2] == "fix the parser"
+
+
+# ------------------------------------------------- the send with no words at all
+
+
+@pytest.mark.parametrize("text,expected", [
+    (records.PANE_SHOT, "pane screenshot"),
+    (records.PANE_SHOT_NO_KIND, "pane screenshot"),
+    (records.PANE_SHOT_WITH_PANE, "pane screenshot"),
+    (records.PANE_SHOT_IMAGE, "images"),
+    (records.PANE_SHOT_IMAGES, "images"),
+    (records.PANE_SHOT_FILE, "files"),
+    (records.PANE_SHOT_MIXED_FILES, "files"),
+    (records.ANNOTATION_TAGGED_SILENT, "annotations"),
+    (records.ANNOTATION, "annotations"),
+    (records.PROSE, ""),
+    (records.TASK_NOTIFICATION, ""),
+    ("", ""),
+])
+def test_a_wordless_send_is_named_for_what_it_carried(text, expected):
+    """`carried_words` is `stripBlocks`' marker branch, and the words are the
+    page's own. Every case here was run through the client's copy
+    (frontend/src/apps/claude/protocol/wire.ts) and came back identical."""
+    assert tasks_store.carried_words(text) == expected
+
+
+def test_two_kinds_in_one_send_are_named_for_both():
+    """The chat joins its markers with `" + "`, annotations first. A send that
+    pinned three spots without typing on them AND attached the overview
+    screenshot is both things."""
+    assert tasks_store.carried_words(records.prefixed(
+        records.APP_STATE, records.PANE_SHOT,
+        records.ANNOTATION_TAGGED_SILENT)) == "annotations + pane screenshot"
+
+
+def test_the_marker_words_are_the_pages_own():
+    """D146 / PY-15: `wire.ts` and `tasks_store` may not import each other, so
+    the four substitute texts are spelled twice. This is the test the comment is
+    not — reword a marker in the page and a listing row starts saying something
+    the bubble beside it does not.
+
+    The page's constants carry U+2063 INVISIBLE SEPARATOR in front of the word
+    (that sigil is how it tells its own substitute text from a reader who typed
+    "files"); it is stripped for everything a human reads, and what this module
+    writes IS what a human reads."""
+    wire = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "frontend", "src", "apps", "claude", "protocol", "wire.ts")
+    page = {}
+    for line in open(wire, encoding="utf-8").read().splitlines():
+        line = line.strip()
+        for const in ("MARKER_ANN", "MARKER_VIEW", "MARKER_IMG", "MARKER_FILE"):
+            prefix = "export const %s = MARKER_SIGIL + \"" % const
+            if line.startswith(prefix):
+                page[const] = line[len(prefix):].split('"')[0]
+        if line.startswith('export const MARKER_JOIN = "'):
+            page["MARKER_JOIN"] = line.split('"')[1]
+    assert page == {"MARKER_ANN": tasks_store.MARKER_ANN,
+                    "MARKER_VIEW": tasks_store.MARKER_VIEW,
+                    "MARKER_IMG": tasks_store.MARKER_IMG,
+                    "MARKER_FILE": tasks_store.MARKER_FILE,
+                    "MARKER_JOIN": tasks_store.MARKER_JOIN}, (
+        "the page's markers and this module's have drifted")
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Words win over everything, wherever the blocks sit.
+    (records.prefixed(records.APP_STATE, records.PANE_SHOT, records.PROSE),
+     records.PROSE),
+    # No words, but the user wrote on their pins — those notes are the only
+    # thing in the record a human typed.
+    (records.prefixed(records.APP_STATE, records.ANNOTATION_TAGGED),
+     records.ANNOTATION_TAGGED_NOTES),
+    # Nothing typed anywhere: the send is named for what it carried.
+    (records.prefixed(records.APP_STATE, records.ANNOTATION_TAGGED_SILENT),
+     "annotations"),
+    (records.prefixed(records.APP_STATE, records.PANE_SHOT), "pane screenshot"),
+    # …and a record that carried none of the three is still nothing to show.
+    (records.APP_STATE, ""),
+])
+def test_user_words_is_the_three_steps_in_order(text, expected):
+    """The one rule the three readers share: typed words, then the notes on the
+    pins, then the marker. Before it, `tasks.py::_prompt` took only the first
+    step and dropped every wordless send — which cost the chat its rows on the
+    Tasks page AND, because status is derived from the messages, its status."""
+    assert tasks_store.user_words(text) == expected
+
+
+def test_a_head_prompt_settles_for_the_marker_only_when_nothing_said_anything(
+        projects_dir):
+    """Both halves, and the second is why the marker is NOT simply `user_words`
+    here. A row titled "pane screenshot" while the words that could name it sit
+    one record further down is the same bug `strip_machinery`'s empty answer
+    caused, told from the other side — so the scan carries on and only a head
+    that found no words at all settles for what the first send carried."""
+    wordless = records.prefixed(records.APP_STATE, records.PANE_SHOT)
+    path = _transcript(projects_dir, "-home-a", "s1", "/home/a",
+                       "2026-08-16T09:00:00Z", prompt=wordless)
+    assert tasks_store.head(str(path))[2] == "pane screenshot"
+
+    tasks_store.reset_cache()
+    later = _transcript(projects_dir, "-home-b", "s2", "/home/b",
+                        "2026-08-16T09:00:00Z", prompt=wordless)
+    with open(later, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "cwd": "/home/b",
+            "timestamp": "2026-08-16T09:01:00Z",
+            "message": {"role": "user",
+                        "content": [{"type": "text",
+                                     "text": "actual words"}]}}) + "\n")
+    assert tasks_store.head(str(later))[2] == "actual words"
+
+
+def test_a_marker_title_is_shown_but_never_BANKED(projects_dir):
+    """Bugbot, PR #1213: "marker titles freeze after later words".
+
+    The head cache treats a resolved prompt as final — transcripts are
+    append-only, so a head that found the first thing a human said can never be
+    outdated by a later append. A MARKER is not that: "pane screenshot" is what
+    the head shows while none of the sends so far has carried words, and the
+    very next append can carry some. Banked as final it stayed the row's title
+    for the life of the process, over everything the reader typed afterwards.
+
+    So it is shown and not banked: the read is re-done on the next append, and
+    the first real words replace it.
+    """
+    wordless = records.prefixed(records.APP_STATE, records.PANE_SHOT)
+    path = _transcript(projects_dir, "-home-a", "s1", "/home/a",
+                       "2026-08-16T09:00:00Z", prompt=wordless)
+    assert tasks_store.head(str(path))[2] == "pane screenshot"
+
+    # …and the reader types. NO `reset_cache()` here — that is the whole point:
+    # the listing runs in one long-lived process and asks again as the file
+    # grows.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "cwd": "/home/a",
+            "timestamp": "2026-08-16T09:01:00Z",
+            "message": {"role": "user",
+                        "content": [{"type": "text",
+                                     "text": "make the header sticky"}]}}) + "\n")
+    assert tasks_store.head(str(path))[2] == "make the header sticky"
+
+    # A head that DID find words is still banked — the cheap path this cache
+    # exists for is untouched.
+    settled = tasks_store.head(str(path))
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "cwd": "/home/a",
+            "timestamp": "2026-08-16T09:02:00Z",
+            "message": {"role": "user",
+                        "content": [{"type": "text", "text": "and now green"}]}}) + "\n")
+    assert tasks_store.head(str(path))[2] == settled[2], "the FIRST words stay"
+
+
+def test_one_folder_is_one_counter_however_it_is_spelled():
+    # A transcript's cwd arrives in the OS's own spelling and a scheduled
+    # entry's target arrives through `os.path.abspath`; on Windows the two spell
+    # one folder with different slashes. Keyed on the raw string, each spelling
+    # had a counter of its own, and a queued chat's row and the row holding its
+    # folder were both TASK-001 (Windows CI, PR #1124). The counter is looked up
+    # by the canonical name, so both spellings count on together.
+    native = "C:\\Users\\me\\proj"
+    canonical = "C:/Users/me/proj"
+    ids = tasks_store.ensure_ids([("holder", canonical, 1.0), ("pending:e1", native, 2.0)])
+    assert ids == {"holder": "TASK-001", "pending:e1": "TASK-002"}
+    # …and a store written before the rule — a record whose project is the
+    # native spelling — still raises the high-water mark for the canonical one.
+    assert tasks_store.ensure_ids([("later", canonical, 3.0)])["later"] == "TASK-003"
+    # The record keeps the project as it was given: the counter is a lookup,
+    # not a rewrite of what is stored.
+    assert tasks_store.task_ids()["pending:e1"]["project"] == native
+
+
+
+# ---- session_settings.json: what a conversation runs with -------------------
+
+
+def test_a_recorded_pair_reads_back(state_dir):
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert tasks_store.session_settings(
+        tasks_store.settings_state(), "sess-a") == ("haiku", "low")
+
+
+def test_only_the_fields_given_are_written(state_dir):
+    """"Not saying" and "nothing" are different words, and they have to stay
+    different: the spawn path records both fields, a pill pick records one, and
+    they share the file."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    tasks_store.record_settings("sess-a", model="opus")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_settings(state, "sess-a") == ("opus", "low")
+    tasks_store.record_settings("sess-a", effort="max")
+    assert tasks_store.session_settings(
+        tasks_store.settings_state(), "sess-a") == ("opus", "max")
+
+
+def test_nothing_to_say_writes_nothing(state_dir):
+    """An empty pair, and a conversation with no identity to key a record on —
+    a `""` key would be a record every id-less caller overwrote in turn."""
+    assert tasks_store.record_settings("sess-a") == {}
+    assert tasks_store.record_settings("", "haiku", "low") == {}
+    assert tasks_store.settings_state() == {}
+
+
+def test_a_session_nobody_recorded_says_nothing(state_dir):
+    """"" for both, which is what leaves the caller's own default speaking."""
+    assert tasks_store.session_settings({}, "sess-a") == ("", "")
+    assert tasks_store.session_settings({"sess-a": "not a record"}, "sess-a") \
+        == ("", "")
+
+
+def test_erasing_a_session_erases_what_it_ran_with(state_dir):
+    """The conversation is gone, so the record has nothing left to be about —
+    and left behind it would re-seed a new chat handed the same id."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    tasks_store.record_settings("sess-b", "opus", "max")
+    result = tasks_store.forget_session("sess-a")
+    assert result["settings"] is True
+    state = tasks_store.settings_state()
+    assert tasks_store.session_settings(state, "sess-a") == ("", "")
+    assert tasks_store.session_settings(state, "sess-b") == ("opus", "max")
+
+
+# ------------------------------------------------- did the user say anything?
+# `user_row_after` — the evidence a tombstone asks for before it lets a row
+# come back (routers/tasks.py:_deleted). Read from the END of the transcript,
+# because Claude Code's exit bookkeeping rewrites the file long after the last
+# thing anybody typed.
+
+
+def _rows(tmp_path, name, rows):
+    path = tmp_path / name
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return str(path)
+
+
+def _user_row(ts, text="hi"):
+    return {"type": "user", "timestamp": ts, "uuid": "u-" + str(ts),
+            "message": {"role": "user",
+                        "content": [{"type": "text", "text": text}]}}
+
+
+# The rows Claude Code 2.1.x appends as it exits: no timestamp anywhere, and
+# not one of them is a `user` row.
+_EXIT_ROWS = [
+    {"type": "last-prompt", "prompt": "hi r1"},
+    {"type": "ai-title", "aiTitle": "", "sessionId": "s"},
+    {"type": "mode", "mode": "default"},
+    {"type": "permission-mode", "permissionMode": "acceptEdits"},
+    {"type": "atis-latch", "latched": False},
+    {"type": "cost-state", "totalCostUsd": 0.01},
+]
+
+# 2026-08-16T09:00:00Z and 2026-08-16T11:00:00Z, the stamps used either side
+# of a tombstone at 10:00.
+_BEFORE = "2026-08-16T09:00:00Z"
+_AFTER = "2026-08-16T11:00:00Z"
+_AT = 1786874400.0  # 2026-08-16T10:00:00Z
+
+
+def test_a_user_message_after_the_mark_is_evidence(tmp_path):
+    path = _rows(tmp_path, "a.jsonl", [_user_row(_BEFORE), _user_row(_AFTER)])
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_exit_bookkeeping_is_not_evidence(tmp_path):
+    """THE BUG THIS EXISTS FOR: the file is newer than the tombstone and holds
+    nothing but the rows Claude Code writes on its way out. None of them says
+    when it happened, so none of them says anything happened."""
+    path = _rows(tmp_path, "b.jsonl", _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_exit_bookkeeping_over_an_older_conversation_is_not_evidence(tmp_path):
+    """The shape on disk after a real erase: the transcript comes back holding
+    the old turn AND the exit rows. The walk skips the stampless rows and stops
+    on the first stamp it can read, which is older than the mark."""
+    path = _rows(tmp_path, "c.jsonl", [_user_row(_BEFORE)] + _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_an_assistant_row_after_the_mark_is_not_a_user_message(tmp_path):
+    """A run that was still finishing writes rows of its own; the question is
+    whether the USER said something, so the walk goes on past them — and stops
+    on the older user row beneath."""
+    path = _rows(tmp_path, "d.jsonl", [
+        _user_row(_BEFORE),
+        {"type": "assistant", "timestamp": _AFTER,
+         "message": {"role": "assistant", "content": []}},
+    ])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_the_mark_itself_is_not_after_it(tmp_path):
+    """STRICTLY newer. A row written in the same instant as the tombstone is
+    the delete's own moment, not news from after it."""
+    path = _rows(tmp_path, "e.jsonl", [_user_row("2026-08-16T10:00:00Z")])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_multi_chunk_file_is_read_from_the_end(tmp_path):
+    """The read walks backwards 64 KiB at a time. A transcript far bigger than
+    one chunk, whose only newer user row is the last line, must be found — and
+    found without the walk running off a chunk boundary mid-line."""
+    filler = [_user_row(_BEFORE, "x" * 900) for _ in range(200)]
+    path = _rows(tmp_path, "f.jsonl", filler + [_user_row(_AFTER)])
+    assert os.path.getsize(path) > 64 * 1024
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_a_multi_chunk_file_of_stampless_rows_answers_no(tmp_path):
+    """The same size, with the newest rows carrying no timestamp at all: the
+    walk has to cross every chunk boundary before it reaches the old stamp
+    underneath, and still answer no."""
+    filler = [{"type": "file-history-snapshot", "blob": "x" * 900}
+              for _ in range(200)]
+    path = _rows(tmp_path, "g.jsonl", [_user_row(_BEFORE)] + filler)
+    assert os.path.getsize(path) > 64 * 1024
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_an_empty_or_missing_transcript_is_no_evidence(tmp_path):
+    empty = tmp_path / "h.jsonl"
+    empty.write_text("")
+    assert tasks_store.user_row_after(str(empty), _AT) is False
+    missing = str(tmp_path / "nope.jsonl")
+    assert tasks_store.user_row_after(missing, _AT) is False
+
+
+def test_a_half_written_last_line_does_not_stop_the_walk(tmp_path):
+    """A transcript caught mid-append: the tail is not JSON yet. It is skipped
+    like any unreadable row, and the complete row above it still answers."""
+    path = tmp_path / "i.jsonl"
+    path.write_text(json.dumps(_user_row(_AFTER)) + "\n"
+                    + '{"type": "user", "timesta')
+    assert tasks_store.user_row_after(str(path), _AT) is True
+
+
+def test_a_rewritten_file_is_read_again(tmp_path):
+    """The answer is cached per (path, size, mtime, question). A transcript
+    that SHRANK was replaced, and a cache keyed on its old size cannot answer
+    for it — which is the case an erase-then-recreate produces."""
+    path = _rows(tmp_path, "j.jsonl", [_user_row(_BEFORE), _user_row(_AFTER)])
+    assert tasks_store.user_row_after(path, _AT) is True
+    _rows(tmp_path, "j.jsonl", _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_replayed_older_row_does_not_hide_the_message_above_it(tmp_path):
+    """TRANSCRIPTS ARE NOT SORTED. A compaction replays older rows after newer
+    ones, and an attachment row can trail the send it belongs to — measured
+    here, 381 user rows across 120 real transcripts have a later-positioned
+    row with an older stamp. A walk that stopped at the first old row would
+    leave a live conversation hidden."""
+    path = _rows(tmp_path, "k.jsonl", [
+        _user_row(_AFTER),
+        {"type": "system", "timestamp": _BEFORE,
+         "subtype": "compact_boundary"},
+        _user_row(_BEFORE, "replayed"),
+    ] + _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_the_walk_stops_once_it_is_safely_past_the_mark(tmp_path):
+    """The slack is not infinite: a row stamped more than `_ORDER_SLACK`
+    before the mark ends the walk, so a long transcript is not read whole.
+    The newer row above that floor is deliberately never reached."""
+    old = "2026-08-16T06:00:00Z"  # four hours before the mark
+    path = _rows(tmp_path, "l.jsonl", [_user_row(_AFTER), _user_row(old)])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_tool_result_is_not_somebody_talking(tmp_path):
+    """Claude Code files a tool's output as a `user` row too. A run still
+    draining when the delete landed must not revive the row off its own tool
+    results — the promise is that somebody SAID something."""
+    path = _rows(tmp_path, "m.jsonl", [{
+        "type": "user", "timestamp": _AFTER, "uuid": "u-tr",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+    }])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_tool_result_next_to_words_still_counts(tmp_path):
+    """Only an all-`tool_result` content says nothing."""
+    path = _rows(tmp_path, "n.jsonl", [{
+        "type": "user", "timestamp": _AFTER, "uuid": "u-mix",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+            {"type": "text", "text": "and one more thing"}]},
+    }])
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_one_line_longer_than_a_chunk_is_read_whole(tmp_path):
+    """A single row far bigger than `_TAIL_CHUNK` — real transcripts here hold
+    one of 2.4 MiB. The pieces either side of every seek point are joined once,
+    and the line still parses."""
+    path = _rows(tmp_path, "o.jsonl", [_user_row(_BEFORE),
+                                       _user_row(_AFTER, "x" * 300_000)])
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_a_walk_that_runs_out_of_budget_gives_up_rather_than_guesses(
+        tmp_path, monkeypatch):
+    """`_TAIL_MAX` is the ceiling on the pathological case. Hitting it answers
+    "no evidence", which is the caller's rule, not "revive"."""
+    monkeypatch.setattr(tasks_store, "_TAIL_MAX", 1024)
+    filler = [_user_row(_BEFORE, "x" * 900) for _ in range(50)]
+    path = _rows(tmp_path, "p.jsonl", [_user_row(_AFTER)] + filler)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_file_whose_only_line_never_ends_is_still_read(tmp_path):
+    """No newline anywhere: the backward walk reaches the file's start holding
+    the whole line in hand, and that line is complete — nothing above it can
+    close it. Dropping it read a one-row transcript as empty (found by fuzzing
+    the walk against a naive reader)."""
+    path = tmp_path / "q.jsonl"
+    path.write_text(json.dumps(_user_row(_AFTER)))  # no trailing newline
+    assert tasks_store.user_row_after(str(path), _AT) is True

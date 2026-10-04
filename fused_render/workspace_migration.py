@@ -44,7 +44,6 @@ is not frontmost, so the prompt would be suppressed and a DENY cached
 """
 import logging
 import os
-import re
 import time
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
@@ -66,10 +65,6 @@ _MARKER_NAME = "workspace_migrated.json"
 # Shell url prefixes whose remainder is the target's absolute path, mirroring
 # bookmarks._VIEW_PREFIXES / recents._VIEW_PREFIXES.
 _VIEW_PREFIXES = ("/explorer/view/", "/explorer/embed/", "/view/", "/embed/")
-
-# The `file=` param of the `_bookmark` sentinel url, matched in place so the
-# rest of the query keeps its exact original encoding.
-_FILE_PARAM_RE = re.compile(r"(^|&)file=([^&]*)")
 
 
 def legacy_dir() -> str:
@@ -242,30 +237,12 @@ def _remap_url(url: object, src: str, dst: str) -> str | None:
     if not segments:
         return None
     if len(segments) == 1 and segments[0].startswith("_"):
-        # A shell sentinel (`_prefs`, `_bookmark`, ...) names no path of its
-        # own — but `_bookmark` carries one in `file=`.
-        if segments[0] != "_bookmark":
-            return None
-        query = _remap_file_param(parts.query, src, dst)
-        if query is None:
-            return None
-        return urlunsplit(("", "", parts.path, query, parts.fragment))
+        # A shell sentinel (`_prefs`, `_panel`, ...) names no path of its own.
+        return None
     remapped = _remap(_rooted(segments), src, dst)
     if remapped is None:
         return None
     return urlunsplit(("", "", prefix + _encode(remapped), parts.query, parts.fragment))
-
-
-def _remap_file_param(query: str, src: str, dst: str) -> str | None:
-    # `query` really is a str here (urlsplit's, empty when there is none) —
-    # unlike this module's other inputs it never came out of untrusted JSON.
-    m = _FILE_PARAM_RE.search(query)
-    if not m:
-        return None
-    remapped = _remap(unquote(m.group(2)), src, dst)
-    if remapped is None:
-        return None
-    return query[:m.start(2)] + quote(remapped, safe="") + query[m.end(2):]
 
 
 # ---------------------------------------------------------------- state files

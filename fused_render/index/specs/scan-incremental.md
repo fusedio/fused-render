@@ -139,20 +139,19 @@ again on every watch tick of a folder on screen**:
    indefinitely, and this one is serving a listing.
 3. `MIN_INTERVAL_S` (60 s) since any scan of that root, read off `scans.json` — so no
    state file of its own, and a scan that just ran for any reason suppresses a trigger.
-   `routers/index.FRESHNESS_CHECK_S` (55 s) paces the checks in memory. **Known bug,
-   pre-existing and deliberately not fixed:** 55 being *shorter* than 60 does not give a
-   60 s folder-open scan cadence, it gives ~110 s. The check clock is stamped whenever a
-   check comes due, whether or not that check then scans — so the check at t=55 stamps,
-   is refused by this gate (last scan 55 s ago), and the next check is t=110. Every
-   other check is wasted, and an equal 60 gives ~120 the same way. The fix is to set
-   `FRESHNESS_CHECK_S` *above* `MIN_INTERVAL_S` plus the spawn offset (61), which lands
-   with this gate already clear; it is left alone because how often a machine rescans is
-   a behaviour decision, not a comment correction. Scanning sooner is also *cheaper*,
-   since both dominant scan costs (the journal replay and the visit set it names) scale
-   with the window since the last one.
-4. `QUIET_S` (30 s) since the directory's own mtime moved. A build tree's mtime never
+   `routers/index.FRESHNESS_CHECK_S` (62 s) paces the checks in memory, and sits *above*
+   `MIN_INTERVAL_S` plus the spawn offset on purpose: the check clock is stamped whenever
+   a check comes due, whether or not that check then scans, so a value at or below
+   `MIN_INTERVAL_S` would waste every other check on a scan floor not yet clear and double
+   the real cadence. Kept above it, every check that comes due finds the floor already
+   clear, so the folder-open rescan cadence tracks `FRESHNESS_CHECK_S` itself — about a
+   minute, matching `MIN_INTERVAL_S`'s own floor. Scanning sooner is also *cheaper*, since
+   both dominant scan costs (the journal replay and the visit set it names) scale with the
+   window since the last one.
+4. `QUIET_S` (3 s) since the directory's own mtime moved. A build tree's mtime never
    stops moving, so it is never quiet and never triggers; the open after the churn stops
-   still does.
+   still does. Only needs to outlast a single write burst — `MIN_INTERVAL_S` above
+   already stops a churning directory from queueing scan after scan, independently.
 
 A live run of the root is refused rather than joined, the check runs on a background
 thread throttled to one at a time, and nothing about the listing waits on it or fails
@@ -179,6 +178,48 @@ direct entries change); it is cheap, and the tab has no better signal.
 renamed *in that directory*. An edit five levels down does not flip the mtime of the
 folder being viewed. This makes the index fresher; it does not make it correct, and the
 `fresh`/`covered` flags of `query.md §6` still describe the honest state.
+
+## 6. Live watcher
+
+> Implementing module: `server/index_watch.py` (`WatchLoop`, `make_dropped`, `start`,
+> `stop`); feeds `server/index_touch.py`'s `note_index_folders` / `RescanQueue`.
+
+§5 answers "is this folder stale?" only when something asks — a folder someone has open.
+Nothing above notices a change to a folder nobody happens to visit, and SPEC-index-live-
+watch.md §1 documents three earlier attempts to answer that with a better time constant,
+each shipping green unit tests and failing the same real test: no clock-based guess can
+tell a genuinely quiet folder from one that changed five seconds after the last check.
+
+The watcher instead observes the real change stream — `watchfiles` (the `notify` Rust
+crate: FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows) — one
+`WatchLoop` per configured root (`server/routers/index.py`'s `scan_roots`), running on
+its own background thread from app startup to shutdown. A batch of raw events is
+filtered at arrival by the same two structural refusals the rest of the index uses
+(`ignored_for_index(..., tree=True)`, `MountGuard`) — critically including the index
+store's own directory, without which a scan's own write would trigger the scan that
+triggered it — then reduced to parent folders and forwarded to `note_index_folders` no
+more often than a 30s flush floor. A burst that touches more folders than
+`MAX_FOLDERS` collapses to the whole root, exactly as `RescanQueue`'s own overflow
+handling does when a mutation endpoint touches too many folders at once (§ above); both
+share one "does folder A already cover folder B" definition
+(`index_touch.outermost_folders`).
+
+An hourly per-root safety net (`WATCH_RESCAN_S`) forces a rescan on an idle tick if nothing
+has forwarded one that long and no run already covers the root — the one time-based
+trigger left, and deliberately a floor under the watcher rather than the mechanism: it
+catches a change made while the process was off, or a kernel-dropped event, and nothing
+else. A watch that raises (a mount disappearing, a permissions change) forwards the whole
+root and backs off on an escalating schedule (5s/30s/120s, reset the next time a tick is
+delivered) rather than spinning; the indexing-enabled pref is polled every 30s so toggling
+it in the sidebar takes effect without a restart.
+
+**Non-recursive fallback (Linux only, code-reviewed but not measured on this branch's
+dev machine, which is macOS):** `watchfiles` has no depth limit — `recursive` is
+all-or-nothing — so a home tree that exhausts `fs.inotify.max_user_watches` cannot fall
+back to "watch shallower, still recursively." On that specific error the loop instead
+opens a non-recursive watch of the root plus its immediate non-ignored subdirectories,
+which still catches `~/newfile.txt` and `~/Downloads/x.dmg`; anything deeper is left to
+the hourly safety net.
 
 ## Non-goals
 

@@ -30,6 +30,7 @@ function job(over: Partial<Job> = {}): Job {
     unit: "",
     message: "",
     page: "",
+    source: "",
     origin: "",
     owner: "server",
     cancellable: true,
@@ -40,6 +41,7 @@ function job(over: Partial<Job> = {}): Job {
     stalled: false,
     waiting_for: "",
     tier: "trail",
+    group: over.id ?? "j1",
     ...over,
   };
 }

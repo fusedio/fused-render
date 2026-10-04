@@ -27,16 +27,21 @@ import type { CapabilityEngine, EngineChoice, Prefs } from "@platform/lib/api";
 // an unknown capability renders as itself, so a capability added server-side
 // appears here (ugly but present) instead of vanishing from the page.
 //
-// `embeddings` is a deliberate exception to "standard capability name
-// everywhere" (fix round 3, item 11 amendment): the user asked to keep
-// "Search & similarity" for it specifically — every OTHER entry uses the
-// registered task's own standard name.
+// Two deliberate exceptions to "standard capability name everywhere":
+// `embeddings` (fix round 3, item 11 amendment: the user asked to keep
+// "Search & similarity" for it specifically) and `text-classification`
+// (the Hub tag undersells what the Laya runner does — see its row). Every
+// OTHER entry uses the registered task's own standard name.
 const CAPABILITY_LABELS: Record<string, string> = {
   "text-generation": "Text generation",
   "text-to-image": "Image generation",
   "automatic-speech-recognition": "Speech to text",
   "embeddings": "Search & similarity",
   "text-to-video": "Video generation",
+  // Laya (`laya-mlx`): the Hub tag is `text-classification`, but the model
+  // answers typed questions (choice / score / noul) rather than sorting text
+  // into one fixed label set, so the standard name would undersell it.
+  "text-classification": "Decisions",
 };
 
 export function capabilityLabel(capability: string): string {

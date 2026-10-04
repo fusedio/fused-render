@@ -14,6 +14,7 @@ import { act, create } from "react-test-renderer";
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests, resolveAgentDir } = await import("./protocol/agent");
+const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
 
 /** One `/api/run` call: the script and the action, plus the fields. */
@@ -121,6 +122,12 @@ beforeEach(() => {
   stats = 0;
   scheduleReads = 0;
   resetAgentDirCacheForTests();
+  // AND THE LISTING FEED, which is module state shared by every suite in the one
+  // `bun test` process (`shell/tasksPulse`): the rows a previous mount's
+  // `/api/tasks` returned are remembered and REPLAYED synchronously to the next
+  // subscriber, so a landing that is supposed to be waiting on a held read would
+  // otherwise be handed an answer before it ever asked.
+  resetListingFeedForTests();
   stubFetch();
 });
 

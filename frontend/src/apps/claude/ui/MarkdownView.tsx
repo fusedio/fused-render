@@ -7,7 +7,7 @@
 // marked alone). This component is the render site and the code-block pass.
 import { memo, useEffect, useMemo, useRef } from "react";
 
-import { enhanceCodeBlocks, renderMd } from "../protocol/markdown";
+import { enhanceCodeBlocks, renderMd, renderMdInert } from "../protocol/markdown";
 
 /** The components permitted to call `dangerouslySetInnerHTML`, by name. The
  *  template pins the same list with a test (D246: `addAssistantTurn`,
@@ -23,6 +23,14 @@ export interface MarkdownViewProps {
   /** Highlight and add copy buttons after paint. FALSE on the streaming path:
    *  `attachCodeCopy` must never run per frame (T:14998-15055). */
   enhance?: boolean;
+  /** FALSE: links become their text and images vanish (`renderMdInert`) — for
+   *  a row that is itself one click target, the folded reply. */
+  links?: boolean;
+  /** The chat's working directory — a shell fence's "run" button types into
+   *  the terminal drawer `cd`'d here first, so a relative command lands where
+   *  the chat is actually working rather than wherever the drawer happens to
+   *  be. Omitted where the caller has no cwd to give (ThinkingView, PlanCard). */
+  cwd?: string | null;
 }
 
 /**
@@ -40,15 +48,17 @@ export const MarkdownView = memo(function MarkdownView({
   text,
   className,
   enhance = true,
+  links = true,
+  cwd,
 }: MarkdownViewProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const html = useMemo(() => renderMd(text), [text]);
+  const html = useMemo(() => (links ? renderMd(text) : renderMdInert(text)), [text, links]);
   useEffect(() => {
     // After paint, once per FINAL render: hljs rewrites the `<code>` it
     // highlights, and the copy button reads its `<pre>`'s text before joining
     // the tree, so both need the nodes React has already committed.
-    if (enhance && ref.current) enhanceCodeBlocks(ref.current);
-  }, [html, enhance]);
+    if (enhance && ref.current) enhanceCodeBlocks(ref.current, { cwd });
+  }, [html, enhance, cwd]);
   return <div ref={ref} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 });
 

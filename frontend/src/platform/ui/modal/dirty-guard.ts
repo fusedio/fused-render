@@ -57,3 +57,26 @@ export function isDisarmingInteraction(
   if (key !== null && NON_DISARMING_KEYS.has(key)) return false;
   return true;
 }
+
+// ---- the backdrop grace -----------------------------------------------------
+//
+// A PRESS ON THE SCRIM RIGHT AFTER THE DIALOG OPENED IS NOT A DISMISSAL. The
+// dialog is opened from a click — a menu row, a trash button — and the pointer
+// is still parked on that spot when the dialog paints somewhere else. A second
+// press there (a double-click habit, a trackpad that registered two presses)
+// lands on the scrim, and until now that closed the dialog it had just opened:
+// a "Delete task" confirm that appeared and vanished in under 200ms, inside its
+// own enter animation, so without even a fade (Sina, 2026-09-19, three
+// recordings; reproduced in headless Chromium with a second press at 100–180ms).
+//
+// So the scrim ignores presses in its first `BACKDROP_GRACE_MS`. The window is
+// wider than any double-click interval (macOS's slowest setting is ~500ms) and
+// shorter than a deliberate "I read this and want out" — that press comes after
+// the dialog has been looked at. Escape, ✕ and Cancel are untouched: none of
+// them can be hit by accident from where the pointer already was.
+export const BACKDROP_GRACE_MS = 500;
+
+/** Should a mousedown on the scrim at `now` close a dialog opened at `openedAt`? */
+export function backdropPressCloses(openedAt: number, now: number): boolean {
+  return now - openedAt >= BACKDROP_GRACE_MS;
+}

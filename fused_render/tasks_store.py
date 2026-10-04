@@ -109,6 +109,8 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 
+from fused_render._view_url_codec import canonical_fs_path
+
 try:
     import fcntl  # POSIX only — Windows falls back to no inter-process lock,
     # the same posture as claude_sessions.api_claude_session_triage, whose
@@ -150,6 +152,20 @@ _MSG_WIDTH = 3
 def pending_key(entry_id: str) -> str:
     """The task key for a scheduled message that has not run yet."""
     return PENDING_PREFIX + entry_id
+
+
+def pending_entry(key: str) -> str:
+    """`pending_key` read backwards: the entry id inside a `pending:<entry-id>`
+    task key, and "" for a key that is a session id.
+
+    The inverse exists because the entry id is the one name a queued task has
+    that NEVER MOVES — the key itself rekeys onto the session the moment the
+    leader's run mints one (§5) — so every client gesture aimed at a waiting
+    chat (open it, skip it, cancel it) has to be able to name the entry rather
+    than the row. Spelled here, beside the forward rule, so the prefix is
+    written once."""
+    key = str(key or "")
+    return key[len(PENDING_PREFIX):] if key.startswith(PENDING_PREFIX) else ""
 
 
 def format_task_id(n: int) -> str:
@@ -235,7 +251,19 @@ def _record(store: dict, key: str) -> dict | None:
     if n <= 0:
         return None
     project = rec.get("project")
-    return {"project": project if isinstance(project, str) else "", "n": n}
+    out = {"project": project if isinstance(project, str) else "", "n": n}
+    # SPENT rides along, read-only: a rekey whose target already had a number
+    # stamps the OLD key this way instead of leaving it looking exactly like a
+    # live reservation (see `_apply_rekey`). `task_ids()` is the one place that
+    # answer has to reach — a caller deciding whether a `new:<file>` key is
+    # still owed a settle pass (routers/tasks.py `_settle_new_chats`) — so it
+    # is carried through here rather than filtered out.
+    if rec.get("spent"):
+        out["spent"] = True
+        moved_to = rec.get("moved_to")
+        if isinstance(moved_to, str) and moved_to:
+            out["moved_to"] = moved_to
+    return out
 
 
 def task_ids() -> dict:
@@ -271,17 +299,39 @@ def erased(key: str = "") -> set[str]:
             if isinstance(store.get(k), dict) and store[k].get("erased")}
 
 
+def _counter(project: str) -> str:
+    """The name of the counter a project's numbers come out of: its canonical
+    spelling (`canonical_fs_path` — forward slashes on a drive path, unchanged
+    on POSIX).
+
+    ONE FOLDER, ONE COUNTER, HOWEVER IT WAS SPELLED. A task's project reaches
+    this store by two roads: a transcript's `cwd`, written by Claude Code in the
+    OS's own spelling, and a scheduled entry's `target`, which the router ran
+    through `os.path.abspath` — and on Windows those two spell the same folder
+    with different slashes. Keyed on the raw string, each spelling had a counter
+    of its own and a queued chat's row and the row holding its folder were both
+    TASK-001 (Windows CI, PR #1124). The record still stores the project as it
+    was given; only the counter is looked up by the canonical name, so a store
+    written before this rule counts on unchanged.
+
+    A guessed project (the lossy directory-name decode) mints no number at all
+    under the queue (`routers/tasks.py::_numbers`), so no counter is keyed on
+    the wrong spelling in the first place."""
+    return canonical_fs_path(project or "")
+
+
 def _next_numbers(store: dict) -> dict[str, int]:
-    """project -> highest number allocated in it. "Max seen plus one" is the
-    allocation rule precisely so a deleted task's number is never handed out
-    again: counting live tasks would recycle it."""
+    """project (canonical, see `_counter`) -> highest number allocated in it.
+    "Max seen plus one" is the allocation rule precisely so a deleted task's
+    number is never handed out again: counting live tasks would recycle it."""
     high: dict[str, int] = {}
     for key in list(store):
         rec = _record(store, key)
         if rec is None:
             continue
-        if rec["n"] > high.get(rec["project"], 0):
-            high[rec["project"]] = rec["n"]
+        counter = _counter(rec["project"])
+        if rec["n"] > high.get(counter, 0):
+            high[counter] = rec["n"]
     return high
 
 
@@ -297,6 +347,43 @@ def _spend(store: dict, rec: dict) -> None:
     number becomes a gap, and nothing joins a row onto it (Akshil, 2026-09-11).
     """
     store[SPENT_PREFIX + "%s#%d" % (rec["project"], rec["n"])] = dict(rec)
+
+
+def _apply_rekey(store: dict, old: str, new: str) -> tuple[bool, bool]:
+    """Move `old`'s number onto `new` in `store`, in place. Returns
+    `(moved, changed)`: `moved` is whether the number's OWNER actually changed
+    hands; `changed` is whether the store was written at all (stamping a
+    no-op spent counts, even though nothing moved).
+
+    The number only MOVES onto a key that has none. Two pending occurrences of
+    one recurring message can chain into the same session, or a `new:<file>`
+    draft's send can land in a session numbered some other way first (a
+    scheduled fire, a resumed session) — either way `new` already has a
+    number, and `old`'s is simply SPENT: deleting it would drop the project's
+    high-water mark and hand the same number out again, which is the one thing
+    allocate-once forbids.
+
+    SPENT IS STAMPED, not left verbatim (bugbot / live repro, 2026-09-15): a
+    caller that reads `task_ids()` to find drafts still owed a settle pass
+    (`routers/tasks.py::_settle_new_chats`) cannot tell "still live" from
+    "already spent" off a bare `{project, n}` record, and re-finding the same
+    already-spent key on every listing is what turned one settle into an
+    unbounded notify loop. Idempotent: a key already stamped is left alone, so
+    the store is written at most once per key that ever lands here — same
+    posture as `forget_session`'s reservation stamp.
+    """
+    rec = _record(store, old)
+    if rec is None:
+        return False, False
+    if _record(store, new) is not None:
+        if rec.get("spent"):
+            return False, False
+        store[old] = {"project": rec["project"], "n": rec["n"],
+                      "spent": True, "moved_to": new}
+        return False, True
+    store.pop(old, None)
+    store[new] = rec
+    return True, True
 
 
 def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
@@ -333,22 +420,8 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
     def mutate(store: dict):
         changed = False
         for old, new in rekeys:
-            rec = _record(store, old)
-            if rec is None:
-                continue
-            # The number only MOVES onto a key that has none. Two pending
-            # occurrences of one recurring message can chain into the same
-            # session; the first transfers, and the second's number is simply
-            # SPENT — the record stays put, unread by anything (the pending row
-            # is gone the moment its entry has a session), because deleting it
-            # would drop the project's high-water mark and hand the same number
-            # out again. Releasing a number is the one thing allocate-once
-            # forbids.
-            if _record(store, new) is not None:
-                continue
-            store.pop(old, None)
-            store[new] = rec
-            changed = True
+            _moved, this_changed = _apply_rekey(store, old, new)
+            changed = changed or this_changed
 
         if reproject:
             for key, project, _order in items:
@@ -365,7 +438,7 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
                 if not project:
                     continue
                 rec = _record(store, key)
-                if rec is None or rec["project"] == project:
+                if rec is None or _counter(rec["project"]) == _counter(project):
                     continue
                 _spend(store, rec)
                 store.pop(key, None)
@@ -378,8 +451,9 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
         # in the same millisecond still number deterministically.
         missing.sort(key=lambda it: (it[2] if it[2] is not None else 0.0, it[0]))
         for key, project, _order in missing:
-            n = high.get(project, 0) + 1
-            high[project] = n
+            counter = _counter(project)
+            n = high.get(counter, 0) + 1
+            high[counter] = n
             store[key] = {"project": project, "n": n}
             changed = True
 
@@ -393,6 +467,15 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
     return _update(TASK_IDS_FILE, mutate)
 
 
+def stored_number(store: dict, key: str) -> str:
+    """The number `key` already holds in a `task_ids()` snapshot, or "" — a
+    READ, never an allocation. For the caller that must not mint (a task whose
+    project is only guessed, `routers/tasks.py::_numbers`) but must still show
+    the number a task was given before."""
+    rec = _record(store, str(key or ""))
+    return format_task_id(rec["n"]) if rec is not None else ""
+
+
 def rekey(old: str, new: str) -> str:
     """Move a task's number from `old` to `new` — the pending row's key to the
     session id its first run minted (§5). Returns the number `new` ends up with,
@@ -402,6 +485,34 @@ def rekey(old: str, new: str) -> str:
     recurring message chaining into a session that already ran one), that number
     stands and `old`'s is dropped."""
     return ensure_ids([], rekeys=[(old, new)]).get(new, "")
+
+
+def rekey_moved(old: str, new: str) -> bool:
+    """Like `rekey`, but answers the one thing its callers have never needed:
+    did the number actually change hands, or was `new` already numbered (in
+    which case nothing about the listing changed and `old` was only stamped
+    spent)?
+
+    `_settle_new_chats` needs this to stay idempotent — a settle pass that
+    calls `notify()` every time it re-finds an already-settled key turns one
+    move into an unbounded loop (bugbot / live repro, 2026-09-15).
+    `schedule.spend_chat_draft` needs it for the mirror-image reason: the key it
+    is handed usually has no number at all (a session-less composer autosaves
+    nothing, so there is no `new:<file>` record to be numbered), and announcing
+    a move that did not happen would put a `gone` on every ordinary new-chat
+    send. The remaining rekey call sites fire and forget."""
+    old, new = str(old or ""), str(new or "")
+    if not old or not new or old == new:
+        return False
+    result = {"moved": False}
+
+    def mutate(store: dict):
+        moved, changed = _apply_rekey(store, old, new)
+        result["moved"] = moved
+        return None, changed
+
+    _update(TASK_IDS_FILE, mutate)
+    return result["moved"]
 
 
 def task_number(key: str) -> str:
@@ -617,12 +728,112 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+# -------------------------------------------------- session_settings.json
+#
+#     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}
+#
+# WHICH CLAUDE A CONVERSATION RUNS WITH, and how hard it thinks — the fourth
+# fact about a task that cannot live in a transcript, after its number, its read
+# marks and its tombstone, and it lives here for the same reasons: keyed by
+# session, global, never branch-nested.
+#
+# WHY OURS AND NOT THE TRANSCRIPT'S. The composer used to DETECT both by reading
+# Claude Code's transcripts: the model off `message.model`, which every
+# assistant row carries, and the effort off a top-level `effort` key, which
+# Claude Code writes only sometimes. A field the writer does not reliably write
+# is a field that reads as missing, and a missing field used to be filled in
+# from the newest OTHER chat in the same folder — so a task set up with
+# haiku/low opened on some neighbour's max (Akshil, 2026-09-18: "made a task
+# with haiku/low; peek first showed fable/max"). Detection also cannot answer
+# at all in the seconds between "this conversation has an id" and "this
+# conversation has a transcript", which is exactly when a new task's peek is
+# first read.
+#
+# So the app records what it launched a run with, and what the reader picked,
+# at the moment it knows — `agent._start` and `_send` for every spawn and every
+# send, `POST /api/tasks/settings` for every pill pick — and every surface reads
+# THAT. Transcript scanning stays as the legacy fallback for conversations that
+# predate this store.
+#
+# PER FIELD, and a missing one stays missing. `record` writes only what it was
+# given, so a pick that names the effort cannot wipe a model recorded at spawn.
+# Nothing here ever answers about a DIFFERENT session: a field this store has
+# no value for reads as "", the caller's own constant default speaks, and the
+# reader is never told about a conversation they did not ask about.
+#
+# A record for a session whose transcript is later erased goes with it
+# (`forget_session`) — there is no conversation left for it to be about.
+
+SETTINGS_FILE = "session_settings.json"
+
+
+def settings_state() -> dict:
+    """The per-session model/effort store, as saved. Missing/corrupt reads as
+    {} — no record anywhere, so every chat falls back to detection, which is
+    precisely how the app behaved before this file existed."""
+    return load_state(SETTINGS_FILE)
+
+
+def session_settings(state: dict, session_id: str) -> tuple[str, str]:
+    """`(model, effort)` recorded for one session, "" for each field this store
+    has no answer for.
+
+    Strings only, and no vocabulary check here: the store keeps what the app
+    launched with, and the two readers that turn it into a selected pill
+    (`agent._defaults`, the composer's own `pick`) each validate against the
+    list THEY offer. A value this module rejected would be a value the CLI
+    really ran with that the app then denies knowing."""
+    rec = state.get(str(session_id or ""))
+    if not isinstance(rec, dict):
+        return "", ""
+    return (str(rec.get("model") or ""), str(rec.get("effort") or ""))
+
+
+def record_settings(session_id: str, model: str = "", effort: str = "",
+                    now: float | None = None) -> dict:
+    """Record what this conversation runs with; return the stored record.
+
+    ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
+    about the model", not "the model is nothing" — a pill pick names one field,
+    a spawn names both, and neither may erase what the other knew. That is the
+    same invariant `mark_read_many` keeps for the ids it was handed.
+
+    Writes nothing for an empty session id: a conversation with no identity has
+    nothing to key a record on, and a `""` key would be a record every future
+    id-less caller overwrote in turn. The task entry's own setting is what
+    speaks for that window (`routers/tasks.py::_run_settings`)."""
+    session_id = str(session_id or "").strip()
+    model = str(model or "").strip()
+    effort = str(effort or "").strip()
+    if not session_id or not (model or effort):
+        return {}
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        if model:
+            rec["model"] = model
+        if effort:
+            rec["effort"] = effort
+        rec["at"] = stamp
+        state[session_id] = rec
+        return rec, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 def forget_session(session_id: str) -> dict:
-    """Erase what these two stores keep about one session — the erase gesture's
+    """Erase what these stores keep about one session — the erase gesture's
     share of `POST /api/tasks/erase`, where the transcript itself goes too.
 
     `read.json`'s record GOES: it is per-message read marks for messages that
     no longer exist, and there is no thread left for them to be about.
+
+    `session_settings.json`'s record GOES for the same reason: it says which
+    model a conversation runs with, and the conversation is gone. Left behind,
+    it would be the one thing that outlived the erase and re-seeded a new chat
+    that happened to be handed the same id.
 
     `task_ids.json`'s record STAYS, deliberately, and this is the one decision
     in here worth arguing. Allocation is "max n seen for this project, plus
@@ -636,8 +847,15 @@ def forget_session(session_id: str) -> dict:
     go on wearing its number — and it is legible in the file besides, so a human
     reading the store can tell a reserved number from a live one.
 
-    Returns `{"read": bool, "number": bool}` — whether each store changed."""
+    Returns `{"read": bool, "settings": bool, "number": bool}` — whether each
+    store changed."""
     def forget_read(state: dict):
+        if session_id not in state:
+            return False, False
+        state.pop(session_id, None)
+        return True, True
+
+    def forget_settings(state: dict):
         if session_id not in state:
             return False, False
         state.pop(session_id, None)
@@ -652,6 +870,7 @@ def forget_session(session_id: str) -> dict:
         return True, True
 
     return {"read": _update(READ_FILE, forget_read),
+            "settings": _update(SETTINGS_FILE, forget_settings),
             "number": _update(TASK_IDS_FILE, reserve_number)}
 
 
@@ -662,18 +881,41 @@ def forget_session(session_id: str) -> dict:
 # is what makes `backfill()` cheap enough to run at startup on a machine with a
 # few thousand sessions.
 
-# path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file). Same cache
-# shape, and the same append-only reasoning, as claude_sessions._HEAD_CACHE.
-_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str]] = {}
+# path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file, entrypoint,
+# settled). Same cache shape, and the same append-only reasoning, as
+# claude_sessions._HEAD_CACHE.
+_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str,
+                             str | None, bool]] = {}
 
 _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
+
+# (path, size, mtime_ns, at) -> "is there a user message newer than `at`".
+# Keyed by the file's identity AND by the question, because the answer changes
+# the moment either does; a rewrite that shrinks the file misses the key and is
+# re-read, which is the point (see `user_row_after`).
+_USER_ROW_CACHE: dict[tuple[str, int, int, float], bool] = {}
+
+_TAIL_CHUNK = 64 * 1024
+
+# How far a transcript's timestamps may run BACKWARDS as it is read forwards:
+# a compaction replays older rows after newer ones, and an attachment row can
+# trail its send. Measured worst case over 120 real transcripts here: ten
+# minutes. An hour is the slack a backward walk must cross before it may call
+# the rest of the file older (`_row_after`).
+_ORDER_SLACK = 3600.0
+
+# The most a single backward walk will read before giving up. Only a deleted
+# task whose transcript moved is ever walked, and the answer is cached per
+# append, so this is a ceiling on the pathological case, not a budget.
+_TAIL_MAX = 16 * 1024 * 1024
 
 
 def reset_cache() -> None:
     """Forget every cached head. For tests, and for any caller that wants the
     next walk to re-read from disk unconditionally."""
     _HEAD_CACHE.clear()
+    _USER_ROW_CACHE.clear()
 
 
 def epoch(value) -> float | None:
@@ -935,6 +1177,185 @@ def ann_notes(text: str) -> str:
     return " · ".join(notes)
 
 
+# ---------------------------------------------------------- the wordless send
+#
+# A send can carry no typed words AT ALL and still be something the user did:
+# annotations with nothing written on them, or a screenshot on its own. The
+# client already has a vocabulary for exactly this — `stripBlocks` in
+# `frontend/src/apps/claude/protocol/wire.ts` substitutes one MARKER per block
+# kind for the bubble's text — and until 2026-09-18 every Python reader answered
+# such a record "" and DROPPED it, which cost the whole chat its rows on the
+# Tasks page (both real sends in one reported annotation session) and, via
+# `tasks.py::_status`, its status too: status is derived from the messages, so no
+# messages meant nothing to derive from and the run read `done` while it ran.
+#
+# THE WORDS ARE THE CLIENT'S, NOT OURS. A fourth spelling of "screenshot" would
+# be a fourth thing to keep in step, so these are `MARKER_VIEW`/`MARKER_IMG`/
+# `MARKER_FILE`/`MARKER_ANN` — pinned to the page's own copy by
+# `tests/test_tasks_store.py` (D146: the duplicated rule gets a test, not a
+# comment).
+#
+# WITHOUT THE SIGIL. Every client marker opens with U+2063 INVISIBLE SEPARATOR
+# because the page needs to tell its own substitute text apart from a reader who
+# genuinely typed "files"; that sigil is a private token of the page's display
+# layer and is never put on the wire. What a bubble SHOWS is `markerWord`'s
+# output — the bare word — and a listing row shows the same.
+MARKER_ANN = "annotations"
+MARKER_VIEW = "pane screenshot"
+MARKER_IMG = "images"
+MARKER_FILE = "files"
+#: `MARKER_JOIN` — a send that carried two kinds is named for both.
+MARKER_JOIN = " + "
+
+_PANE_SHOT_TAG = "pane-shot"
+_PANE_SHOT_BLOCK = re.compile(
+    r"<%s>(.*?)</%s>" % (_PANE_SHOT_TAG, _PANE_SHOT_TAG), re.DOTALL)
+
+
+def _pane_shot_kinds(text: str) -> list[str]:
+    """The `kind` of every entry in the `<pane-shot>` block, in order.
+
+    The payload is the block's LAST line — a caption paragraph for the model
+    comes first, and `paneShotIn` reads it exactly this way. Both the array form
+    and the bare-object form parse, because a session on disk carries whichever
+    shape the page wrote that year. Anything that does not parse answers `[]`,
+    which is the same answer as "no `kind` field anywhere" and falls the right
+    way on its own: a block we cannot read is a picture of the pane.
+    """
+    found = _PANE_SHOT_BLOCK.search(text or "")
+    if not found:
+        return []
+    lines = [ln for ln in found.group(1).strip().splitlines() if ln.strip()]
+    if not lines:
+        return []
+    try:
+        payload = json.loads(lines[-1])
+    except ValueError:
+        return []
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list):
+        return []
+    return [entry.get("kind") for entry in payload
+            if isinstance(entry, dict) and isinstance(entry.get("kind"), str)]
+
+
+def _ann_block_present(text: str) -> bool:
+    """Did this send carry annotations at all — words on them or not?
+
+    `ann_notes` answers the narrower question (what the user WROTE on the pins)
+    and its "" covers two different sends: one with no annotations, and one whose
+    pins nobody typed a note on. Only the second is a wordless annotation send,
+    and only this tells them apart. Both shapes, for `ann_notes`' reason: the
+    tagged block is found wherever it sits, the legacy preamble only at position
+    zero once the other leading blocks are peeled off.
+    """
+    out = (text or "").strip()
+    if _ANN_BLOCK.search(out):
+        return True
+    while True:
+        match = _LEADING_BLOCK.match(out)
+        if not match:
+            break
+        out = out[match.end():].strip()
+    return out.startswith(_ANN_PREAMBLE) and _ANN_FENCE_OPEN in out
+
+
+def carried_words(text: str) -> str:
+    """What a send with NO typed words carried, named the way the chat names it
+    — "pane screenshot", "annotations", "images", "files", or two joined by
+    `" + "` — or "" for a send that carried none of them.
+
+    `stripBlocks`' marker branch, mirrored decision for decision (wire.ts:450):
+    annotations first, then the pictures, and the pictures' word depends on what
+    they ARE. A `kind` of "pane" or "overview" is a picture of this app taken at
+    send time; "image" is a picture the user brought in from somewhere else and
+    "file" is not a picture at all. So an all-"image" block is `images`, a block
+    that is all brought-in but not all pictures is `files`, and anything with a
+    screenshot of the pane in it — including a block too old or too broken to
+    carry `kind` — is `pane screenshot`. That last default is the page's too,
+    and for the same reason: `kind` postdates the pane shot, so its absence IS
+    the pane case.
+
+    Asked LAST, after the words and after the notes on the pins: a marker is a
+    label for a send that said nothing, and a send that said something is named
+    by what it said. See `user_words`.
+    """
+    carried = []
+    if _ann_block_present(text):
+        carried.append(MARKER_ANN)
+    if _PANE_SHOT_BLOCK.search(text or ""):
+        kinds = _pane_shot_kinds(text)
+        brought = bool(kinds) and all(k in ("image", "file") for k in kinds)
+        if not brought:
+            carried.append(MARKER_VIEW)
+        elif all(k == "image" for k in kinds):
+            carried.append(MARKER_IMG)
+        else:
+            carried.append(MARKER_FILE)
+    return MARKER_JOIN.join(carried)
+
+
+def user_words(text: str) -> str:
+    """The words to SHOW for one send, in the one order every reader wants them:
+    what the human typed, else the notes they wrote inside their annotations,
+    else the client's own name for what the send carried. "" only for a record
+    that carried nothing a reader could name.
+
+    ONE RULE, SPELLED ONCE, for the three readers that had drifted: this module's
+    own `_parse_head`, `claude_sessions._parse_head` and `tasks.py::_prompt`. The
+    first two already took the second step (`strip_machinery(raw) or
+    ann_notes(raw)`); none of them took the third, so a screenshot sent with no
+    words was dropped by all three.
+
+    A reader that must not put a MARKER where a real message would do asks the
+    three steps in this order but at its own precedence — the two head readers
+    keep scanning for words before settling for a marker, because a row titled
+    "pane screenshot" while the words that could name it sit two records further
+    down is the bug this fallback exists to fix, told from the other side.
+    """
+    return strip_machinery(text) or ann_notes(text) or carried_words(text)
+
+
+# Claude Code's interrupt markers. Written as `type: user` rows with a real
+# uuid when the reader hits stop — one for a turn, one for a tool call in
+# flight — so every "what did the user say" reader sees them as prompts unless
+# it asks. Kept in step with the frontend's `INTERRUPT_MARK` (protocol/wire.ts)
+# and `claude_sessions._INTERRUPT_MARK`. Exact after a strip, never fuzzy: a
+# prompt that TALKS about interrupts is still what the reader wrote.
+_INTERRUPT_MARKS = frozenset((
+    "[Request interrupted by user]",
+    "[Request interrupted by user for tool use]",
+))
+
+
+def is_interrupt_mark(text: str) -> bool:
+    """Is this user record the CLI's stop marker rather than something typed?
+
+    A row titled "[Request interrupted by user]" was the reported bug (Akshil,
+    2026-09-19): with the Tasks page titling rows by the user's last message,
+    the most common way to walk away — hit stop, then leave — put the marker on
+    the row as if the reader had said it.
+    """
+    return (text or "").strip() in _INTERRUPT_MARKS
+
+
+def leading_machinery_tag(text: str) -> str:
+    """The DROP tag a record LEADS with — "command-name", "bash-stdout",
+    "task-notification"… — or "" when it opens with prose or a STRIP tag.
+
+    For readers that need to know WHICH envelope a row is rather than whether
+    it is one (`session_liveness` steps over a slash command's rows but treats a
+    task-notification as the turn it opens). Same anchored matchers as
+    `is_machinery`, so the two cannot disagree about what counts as leading.
+    """
+    out = (text or "").strip()
+    match = _LEADING_BLOCK.match(out) or _LEADING_OPEN.match(out)
+    if match is None or match.group(1) not in _MACHINERY_DROP:
+        return ""
+    return match.group(1)
+
+
 def is_machinery(text: str) -> bool:
     """Is this record machinery WHOLE — nothing a human contributed to it?
 
@@ -1028,11 +1449,16 @@ def pane_file(text: str) -> str:
     return ""
 
 
-def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
+def _parse_head(path: str,
+                 ) -> tuple[str | None, float | None, str, str, str | None, bool]:
     cwd: str | None = None
     first_ts: float | None = None
     prompt = ""
+    # The FIRST wordless send's marker ("pane screenshot"), held back as a last
+    # resort — see the `carried` note in the loop below.
+    carried = ""
     pane = ""
+    entrypoint: str | None = None
     chars = 0
     count = 0
     try:
@@ -1064,7 +1490,8 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
                 # always skipped both, and this one having only half the pair
                 # was how a subagent's brief came to name a task.
                 if (not prompt and obj.get("type") == "user"
-                        and not obj.get("isMeta") and not obj.get("isSidechain")):
+                        and not obj.get("isMeta") and not obj.get("isSidechain")
+                        and not obj.get("isCompactSummary")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         raw = first_text(msg.get("content"))
@@ -1089,41 +1516,234 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
                         # annotations is named by the notes on them, which is
                         # the only text in the record a human wrote (`ann_notes`).
                         prompt = strip_machinery(raw) or ann_notes(raw)
+                        # …and, if this send said nothing anywhere, WHAT IT
+                        # CARRIED — kept aside rather than taken, because the
+                        # loop's whole point is that words two records further
+                        # down name the row better than the block on record one
+                        # does. Only a head that found no words at all settles
+                        # for this (`carried_words`), and only the first one,
+                        # which is the send the row would be named after.
+                        if not prompt and not carried:
+                            carried = carried_words(raw)
+                # ENTRYPOINT (2026-09-18, notification scoping): every
+                # `type: "user"` record Claude Code writes carries an
+                # `entrypoint` — "cli" for an interactive terminal session,
+                # "sdk-cli" for a headless/programmatic one (what
+                # templates/claude/agent.py's print-mode spawn produces). It
+                # is a PROXY for "started by our own template", not proof —
+                # an unrelated SDK-driven session also reports "sdk-cli" — so
+                # a reader of this field must fail open on anything that
+                # isn't exactly "cli" (see task-status-notify.ts). Read off
+                # the same records the prompt loop already walks, at no extra
+                # IO cost; first one found wins, since it does not change
+                # turn to turn the way `ai-title` does.
+                if entrypoint is None and obj.get("type") == "user":
+                    val = obj.get("entrypoint")
+                    if isinstance(val, str) and val:
+                        entrypoint = val
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, "", ""
-    return cwd, first_ts, prompt, pane
+        return None, None, "", "", None, False
+    # THE SIXTH VALUE IS "IS THIS PROMPT SETTLED" (Bugbot, PR #1213). A marker is
+    # what the head shows when nothing in it has said anything YET — and a
+    # transcript is append-only, so the words can still arrive. Handed back as an
+    # ordinary answer it let `head`'s cache call the read COMPLETE and keep "pane
+    # screenshot" as the row's title for the life of the process, over every
+    # later word the reader typed. The two are told apart here; the cache decides
+    # what to do about it.
+    return cwd, first_ts, prompt or carried, pane, entrypoint, bool(prompt)
 
 
 def head(path: str, size: int | None = None,
-         ) -> tuple[str | None, float | None, str, str]:
-    """(cwd, first timestamp, first user prompt, pane file) for one
-    transcript, cached per path. Transcripts are append-only, so a head that
-    resolved fully stays valid however much the file grows; an incomplete one
-    is retried once the file has more to offer, and a file that shrank was
-    replaced. The pane file is deliberately absent from the completeness
-    test: a chat with no `<live-app-state>` block has none to find, and
-    re-reading it on every append to keep looking would never pay for
-    itself."""
+         ) -> tuple[str | None, float | None, str, str, str | None]:
+    """(cwd, first timestamp, first user prompt, pane file, entrypoint) for
+    one transcript, cached per path. Transcripts are append-only, so a head
+    that resolved fully stays valid however much the file grows; an
+    incomplete one is retried once the file has more to offer, and a file
+    that shrank was replaced. The pane file and the entrypoint are
+    deliberately absent from the completeness test: a chat with no
+    `<live-app-state>` block has no pane to find, and a transcript with no
+    `entrypoint` at all (an older session, predating the field) never will —
+    re-reading either on every append to keep looking would never pay for
+    itself. In practice the entrypoint resolves at the same moment the
+    prompt does: both are read off the very first `type: "user"` record.
+
+    A MARKER IS NOT A SETTLED PROMPT (Bugbot, PR #1213). "pane screenshot" is
+    what the head shows for a chat whose sends so far carried no words at all —
+    and the very next append can carry some. Counting it complete froze it as the
+    row's title for the life of the process: the reader typed, the transcript
+    grew, and the listing went on calling their chat "pane screenshot". So a
+    marker-only head stays INCOMPLETE and is re-read on the next append, exactly
+    like a head that found nothing. The marker is still shown meanwhile; it is
+    just not banked. `settled` — the sixth value `_parse_head` returns — is this
+    project's private completeness flag and is never handed to callers of
+    `head()`; only `entrypoint` is."""
     if size is None:
         try:
             size = os.path.getsize(path)
         except OSError:
-            return None, None, "", ""
+            return None, None, "", "", None
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt, pane = cached
-        complete = bool(prompt) and first_ts is not None and cwd is not None
+        cached_size, cwd, first_ts, prompt, pane, entrypoint, settled = cached
+        complete = settled and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
-            return cwd, first_ts, prompt, pane
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane,
+                                      entrypoint, settled)
+            return cwd, first_ts, prompt, pane, entrypoint
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt, pane = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
-    return cwd, first_ts, prompt, pane
+    cwd, first_ts, prompt, pane, entrypoint, settled = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, entrypoint, settled)
+    return cwd, first_ts, prompt, pane, entrypoint
+
+
+def _said_something(obj: dict) -> bool:
+    """Is this `type: "user"` row a MESSAGE, or the machine talking to itself?
+
+    Claude Code files a tool's output as a user row too — in a live transcript
+    most of them are — and a run still draining when the delete landed would
+    otherwise revive the row off its own tool results. A row whose content is
+    nothing but `tool_result` blocks said nothing. Anything else (a string, a
+    text block, an image, an empty message) is taken at face value: the cost of
+    being wrong the other way is a task that stays hidden while its reader is
+    typing in it."""
+    msg = obj.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list) or not content:
+        return True
+    return not all(isinstance(b, dict) and b.get("type") == "tool_result"
+                   for b in content)
+
+
+def _row_after(line: bytes, at: float, floor: float) -> bool | None:
+    """One transcript line read backwards: True "a user message newer than
+    `at`", False "stop, we are safely past `at`", None "no opinion, keep
+    walking".
+
+    Only a parseable `timestamp` can stop the walk — the bookkeeping rows
+    Claude Code appends on exit (`last-prompt`, `ai-title`, `mode`,
+    `permission-mode`, `atis-latch`, `cost-state`) and the file-history
+    snapshots carry none, and a row that cannot say when it happened is not
+    evidence that anything did.
+
+    AND `floor`, NOT `at`, IS WHAT STOPS IT. A transcript is not sorted: a
+    compaction replays older rows after newer ones, and an attachment or
+    system row can trail the send it belongs to. Measured over 120 real
+    transcripts, 381 user rows have a LATER-positioned row with an older
+    stamp, 59 of them by more than a minute and the worst by ten. Stopping on
+    the first old row would walk straight past those — the tombstone's failure
+    inverted, a live conversation left hidden. The floor is `at` minus a slack
+    wider than anything observed (`_ORDER_SLACK`)."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    ts = epoch(obj.get("timestamp"))
+    if ts is None:
+        return None
+    if ts < floor:
+        return False
+    if ts > at and obj.get("type") == "user" and _said_something(obj):
+        return True
+    return None
+
+
+def user_row_after(path: str, at: float) -> bool:
+    """Did the user say something in this transcript after `at`?
+
+    THE QUESTION A TOMBSTONE ASKS (`routers/tasks.py:_deleted`), and the reason
+    it cannot be asked of the mtime. A transcript is append-only WHILE the
+    conversation runs, but Claude Code also rewrites it on the way out: exiting
+    2.1.x appends `last-prompt`, `ai-title`, `mode`, `permission-mode`,
+    `atis-latch` and `cost-state` rows, re-creating a file an erase had just
+    removed. The mtime moves; nobody typed anything. Answering off the mtime
+    alone brought every erased chat back ~30 s later as a blank done row.
+
+    READ FROM THE END, because that is where the news is and the file can be
+    megabytes: `_TAIL_CHUNK` at a time backwards over COMPLETE lines, with the
+    line that straddles each seek point joined once from the pieces either side
+    of it (never re-concatenated per chunk — one real transcript here holds a
+    single 2.4 MiB line). The walk stops at the first row stamped before
+    `at - _ORDER_SLACK`; see `_row_after` for why the slack is not zero.
+
+    THREE WAYS IT GIVES UP, all of them answering False, because the caller's
+    rule is that no evidence is not revival: an unreadable file, a short read
+    (the file was replaced or truncated under us — precisely the erase-then-
+    recreate this whole fix is about, and gluing non-adjacent bytes into one
+    "line" could fabricate a verdict), and `_TAIL_MAX` bytes without reaching
+    the floor.
+
+    Cached per (path, size, mtime_ns, question), read off the OPEN handle so
+    the key describes the bytes actually walked. A rewrite that shrinks the
+    file misses the key and is read again.
+    """
+    try:
+        fh = open(path, "rb")
+    except OSError:
+        return False
+    with fh:
+        try:
+            st = os.fstat(fh.fileno())
+            key = (str(path), st.st_size, st.st_mtime_ns, float(at))
+            cached = _USER_ROW_CACHE.get(key)
+            if cached is not None:
+                return cached
+            verdict = _walk_back(fh, st.st_size, at)
+        except OSError:
+            return False
+    answer = bool(verdict)
+    if len(_USER_ROW_CACHE) > 20000:  # same bound, same reason, as _HEAD_CACHE
+        _USER_ROW_CACHE.clear()
+    _USER_ROW_CACHE[key] = answer
+    return answer
+
+
+def _walk_back(fh, size: int, at: float) -> bool | None:
+    """`user_row_after`'s loop: complete lines, newest first, until one of them
+    has an opinion or the walk gives up (see that docstring for all three ways
+    it does)."""
+    floor = at - _ORDER_SLACK
+    pos = size
+    scanned = 0
+    # The pieces of the line that straddles `pos`, in file order.
+    straddle: list[bytes] = []
+    while pos > 0:
+        step = min(_TAIL_CHUNK, pos)
+        pos -= step
+        fh.seek(pos)
+        block = fh.read(step)
+        if len(block) != step:
+            return None  # replaced or truncated under us
+        scanned += step
+        if scanned > _TAIL_MAX:
+            return None
+        pieces = block.split(b"\n")
+        if len(pieces) == 1:  # no line ends in this block
+            straddle.insert(0, block)
+            continue
+        rows = [pieces[-1] + b"".join(straddle)]
+        rows.extend(reversed(pieces[1:-1]))
+        if pos == 0:  # the file's first line is complete
+            rows.append(pieces[0])
+        straddle = [] if pos == 0 else [pieces[0]]
+        for row in rows:
+            answer = _row_after(row, at, floor)
+            if answer is not None:
+                return answer
+    # The file's FIRST line, when no newline was found before reaching the
+    # start: nothing above it can have closed it, so it is complete and it is
+    # the last row left to read.
+    if straddle:
+        return _row_after(b"".join(straddle), at, floor)
+    return None
 
 
 def project_of(cwd: str) -> str:
@@ -1166,7 +1786,7 @@ def backfill(projects_dir: str | None = None) -> dict[str, str]:
             size = os.path.getsize(path)
         except OSError:
             continue  # vanished mid-walk: costs that one session, not the walk
-        cwd, first_ts, _prompt, _pane = head(path, size)
+        cwd, first_ts, _prompt, _pane, _entrypoint = head(path, size)
         if not cwd:
             continue
         session_id = os.path.splitext(os.path.basename(path))[0]

@@ -228,6 +228,12 @@ export const sharedHistoryCache = {
       historyCache.delete(eldest);
     }
   },
+  /** The conversation is GONE (the history answer said `deleted`): a cached
+   *  copy would be painted ahead of the next fetch, a destroyed transcript
+   *  shown as if it still stood (Bugbot, PR #1153). */
+  delete(file: string, sessionId: string): void {
+    historyCache.delete(historyKey(file, sessionId));
+  },
   /** Tests. */
   clear(): void {
     historyCache.clear();

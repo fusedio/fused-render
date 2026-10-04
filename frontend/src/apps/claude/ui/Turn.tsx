@@ -65,6 +65,14 @@ export interface TurnProps {
    *  is never foldable — the run is blocked on something inside it, and folding
    *  the block away is folding away the thing to do (design.md §B). */
   pendingCard?: boolean;
+  /** A click on a bubble this page has NOT handed to the run yet
+   *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
+   *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
+  onPullPending?: (key: string) => void;
+  /** The chat's working directory, threaded down to `SegmentView`/`ToolChip`/
+   *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
+   *  there first. */
+  cwd?: string | null;
 }
 
 /** MEMOIZED. Every 400 ms poll replaces `state.turns`, but a SETTLED turn's own
@@ -84,6 +92,8 @@ export const Turn = memo(function Turn({
   collapsed = false,
   onToggleCollapse,
   pendingCard,
+  onPullPending,
+  cwd,
 }: TurnProps) {
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
@@ -105,18 +115,20 @@ export const Turn = memo(function Turn({
     );
   }
   if (turn.role === "user") {
-    // Is there a "what was sent" to open at all? Only when the composed wire
-    // differs from what the reader typed — otherwise the panel would show the
-    // bubble back to them.
-    const sent = onShowSent && turn.raw && turn.raw !== turn.text ? onShowSent : null;
     // WHEN it was sent (design.md §C): epoch seconds, off the transcript
     // record for a restored turn (agent.py `_row_ts`) and off the controller
     // for a live send. Absent on an old transcript, and then no time is drawn.
     const ts = turn.ts;
     const stamp = formatStamp(ts);
+    // THE OUTBOX TAG (ui/outbox.ts). A line this page is still holding wears
+    // "queued" — grey, the way Claude Code's terminal lists a line typed while it
+    // works — or "not sent" for one handed back. Both are a door: the click
+    // pulls the words back into the box, so a queued line is never a bubble the
+    // reader can only watch.
+    const pending = turn.pending;
     return (
       <div
-        className={cn("turn", "user", anchored && "is-anchored")}
+        className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending")}
         // The uuid a `?msg=` link addresses. On the element itself, because the
         // anchor is looked for right after the append (T:13459-13463).
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
@@ -147,6 +159,21 @@ export const Turn = memo(function Turn({
             {isMarkerOnly(turn.text) ? <MarkerText text={turn.text} /> : turn.text}
           </div>
         </div>
+        {pending ? (
+          <button
+            type="button"
+            className={cn("turn-pending", pending === "notSent" && "is-not-sent")}
+            title={
+              pending === "notSent"
+                ? "This was not sent. Click to put it back in the box."
+                : "Waiting to send. Click to put it back in the box."
+            }
+            onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
+            disabled={!onPullPending}
+          >
+            {pending === "notSent" ? "not sent · click to edit" : "queued"}
+          </button>
+        ) : null}
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
             matches on `.user .bubble`'s text, and folding a receipt inside
             would make every such turn stop matching (T:16584-16588). Legacy's
@@ -160,32 +187,10 @@ export const Turn = memo(function Turn({
             {...(onShowSent ? { onShowSent } : {})}
           />
         ) : null}
-        {turn.appState ? (
-          // The push channel's receipt (T:16588-16596, `.user .attach` T:1802):
-          // this message carried a description of the app the user is looking at.
-          //
-          // THE RECEIPT IS THE DOOR (R4-1, Akshil). It says the message carried
-          // more than the bubble shows, so it is the one line a reader who wants
-          // to see that "more" points at — exactly what T does with it
-          // (T:11059 `row.title = "Click to see exactly what was sent to the
-          // agent"`, T:1249). A second "what was sent" control beside it was
-          // two doors into one room, and the wordier of them was the one that
-          // only appeared on hover. So the receipt becomes a real `button` —
-          // keyboard-reachable, with the pointer and the underline to say so —
-          // and keeps its 11px faint typography (T:1804) unchanged.
-          sent ? (
-            <button
-              type="button"
-              className="attach is-door"
-              title="Click to see exactly what was sent to the agent"
-              onClick={() => sent(turn)}
-            >
-              app state attached
-            </button>
-          ) : (
-            <div className="attach">app state attached</div>
-          )
-        ) : null}
+        {/* NO "app state attached" LINE (Akshil, 2026-09-20). The push
+            channel's receipt named machinery the reader never typed and never
+            needs to know rode along; the message is the words. `turn.appState`
+            is still recorded on the turn for the "what was sent" panel. */}
         {/* AND THERE IS NO "what was sent" HOVER CONTROL, ANYWHERE (P3R1-7,
             owner 2026-09-10). One survived here, for the turn whose wire differs
             with no receipt line to press — defensible in itself and confusing in
@@ -231,7 +236,9 @@ export const Turn = memo(function Turn({
   // meaning changes under the pointer — and not while it holds a card the
   // reader has not answered: the run is blocked on that card and it is the one
   // thing on screen to do (design.md §B).
-  const foldable = !!onToggleCollapse && !turn.streaming && !pendingCard;
+  // …and NOT a one-line reply (`isOneLiner` below): folding "Done." to "Done."
+  // is a control that does nothing, on the row where it is least wanted.
+  const foldable = !!onToggleCollapse && !turn.streaming && !pendingCard && !isOneLiner(turn);
   // The body the mark opens and shuts, for `aria-controls`. `useId` and not the
   // turn's key: six compact chat mounts share one document on the cards wall and
   // the same conversation is replayed in several of them, so a key-derived id
@@ -296,8 +303,47 @@ export const Turn = memo(function Turn({
               scanning for; a turn that was all tool calls says what the first
               call was instead, muted, so the row is never blank. */}
           {folded ? (
-            <span className={cn("turn-collapsed", line && line.muted && "is-muted")}>
-              {line ? line.text : ""}
+            /* AND THE LINE ITSELF OPENS IT (Akshil, 2026-09-15). The mark is a
+               12px glyph in the gutter; the row a reader is pointing at is the
+               words. Same handler, so there is one action and one state — this
+               is not a second control, it is a bigger target for the one that
+               is already there. ONE WAY ONLY: the open body is not a control,
+               or every click inside a reply — a selection, a code block's copy
+               button — would be a click that shuts it.
+
+               A POINTER TARGET, AND NOTHING MORE (PR5 review #7). It carried
+               `role="button"`, a tab stop and `aria-expanded` — a SECOND
+               announced control for the one action, so a keyboard reader met
+               "collapsed, button" twice per reply and a screen reader read the
+               reply's own first sentence as a control's label. The keyboard
+               already has this: the mark beside it, which is a real `<button>`
+               with the state on it. This span only widens where the MOUSE may
+               land. */
+            <span
+              className={cn("turn-collapsed", line && line.muted && "is-muted")}
+              onClick={() => onToggleCollapse!(turn.key)}
+            >
+              {/* THE FIRST LINE IN ITS OWN TYPE (Akshil, 2026-09-15): a reply
+                  that opens on "**Done.** Two files…" folds to bold "Done.",
+                  not to a row of asterisks. Same renderer as the open body, no
+                  enhance pass (no code blocks on one line, and hljs per fold
+                  would be the per-frame cost MarkdownView exists to avoid); the
+                  stylesheet flattens whatever block it parses to one inline
+                  run. A MUTED line is a summary we wrote, never markdown. */}
+              {line ? (
+                line.muted ? (
+                  line.text
+                ) : (
+                  <MarkdownView
+                    className="turn-collapsed-md"
+                    text={line.text}
+                    enhance={false}
+                    links={false}
+                  />
+                )
+              ) : (
+                ""
+              )}
             </span>
           ) : segments.length ? (
             <SegmentView
@@ -305,6 +351,7 @@ export const Turn = memo(function Turn({
               tail={tail}
               cardsAfter={cardsAfter ?? null}
               live={!!turn.streaming}
+              cwd={cwd}
             >
               {children}
             </SegmentView>
@@ -316,6 +363,7 @@ export const Turn = memo(function Turn({
                 className="seg-text"
                 text={tail ? tail.text : turn.text}
                 enhance={!tail}
+                cwd={cwd}
               />
               {tail && tail.cursor ? <Caret /> : null}
               {children}
@@ -336,6 +384,53 @@ export const Turn = memo(function Turn({
     </>
   );
 });
+
+/** How long a reply may be and still be "one line" (`isOneLiner`). 80 chars is
+ *  the fragment that fits the folded row at the narrowest width the transcript
+ *  is drawn at, so anything under it is a reply the fold could not shorten. */
+const ONE_LINER_MAX = 80;
+
+/**
+ * IS THIS REPLY ALREADY AS SHORT AS ITS OWN FOLD (Akshil 2026-09-15)?
+ *
+ * "Done." / "Yes — the test passes." / "Fixed in `agent.py`." are most of a
+ * working conversation, and folding one hides NOTHING: the collapsed row is the
+ * reply's first line, which for these turns is the reply. So the log gained a
+ * toggle per row that swapped a sentence for the same sentence, and the
+ * auto-fold greyed out answers the reader could already read in full.
+ *
+ * Such a turn is therefore never foldable: always drawn open, its ✻ mark a
+ * plain seat rather than a disclosure (no `aria-expanded`, no hint, no pointer)
+ * and `Transcript`'s rule skips it entirely, so a new response streaming in
+ * cannot fold it either.
+ *
+ * ONE `text` SEGMENT, OR NONE AT ALL. A turn with a tool call, a thought or a
+ * notice in it has something under the fold by definition, whatever its prose
+ * says; a turn with no `segments` key is the plain text-only reply history
+ * restores (`protocol/history.ts`: "an assistant turn carries `segments` only
+ * when it had any"), which is exactly the shape a one-line answer arrives in.
+ * The body is trimmed before it is measured — a trailing newline off markdown
+ * is not a second line.
+ */
+export function isOneLiner(turn: TurnRow): boolean {
+  if (turn.role !== "assistant") return false;
+  const segs = (turn as AssistantTurn).segments ?? [];
+  let body: string;
+  if (segs.length) {
+    if (segs.length > 1) return false;
+    const only = segs[0];
+    if (!only || viewKind(only) !== "text") return false;
+    body = String((only as { text?: string }).text ?? "");
+  } else {
+    body = String(turn.text ?? "");
+  }
+  const line = body.trim();
+  // A turn with NO prose at all is not a one-line reply — it is a reply whose
+  // fold shows machinery (`collapsedLine`'s muted fallbacks), and that is still
+  // worth folding away.
+  if (!line) return false;
+  return !line.includes("\n") && line.length <= ONE_LINER_MAX;
+}
 
 /** THE ONE LINE A FOLDED REPLY SHOWS (design.md §B). */
 export interface CollapsedLine {
@@ -398,10 +493,27 @@ export function collapsedLine(turn: TurnRow): CollapsedLine {
 }
 
 /** The first line with anything on it, trimmed. */
-function firstLine(text: string): string {
+/** Markdown that is SCAFFOLDING, not words: a fence opener/closer, a thematic
+ *  break, a bare heading/list marker, a table rule. A folded row built from one
+ *  of these renders as an empty <pre>/<hr> — a blank line (Bugbot on 69cdcb9). */
+const SCAFFOLD = /^(`{3,}|~{3,})[^`]*$|^([-*_]\s*){3,}$|^#{1,6}$|^[-*+]$|^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/;
+
+/** A markdown link's text with its target dropped, an image's alt text, a bare
+ *  autolink's address. The folded row is one pointer target that OPENS the
+ *  reply; a live <a> inside it would navigate AND bubble to the expand, and be
+ *  a second tab stop (Bugbot on 69cdcb9; PR5 review #7). */
+function delink(line: string): string {
+  return line
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1");
+}
+
+export function firstLine(text: string): string {
   for (const raw of String(text ?? "").split("\n")) {
     const line = raw.trim();
-    if (line) return line;
+    if (!line || SCAFFOLD.test(line)) continue;
+    return delink(line);
   }
   return "";
 }

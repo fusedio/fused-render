@@ -94,13 +94,18 @@ export function isMarkerOnly(text: string | null | undefined): boolean {
  *  became a dead click — the recap anchored on an interrupt row that the
  *  transcript renders without an anchor attribute at all. */
 export const INTERRUPT_MARK = "[Request interrupted by user]";
+/** The same marker when the stop landed DURING A TOOL CALL — the CLI's second
+ *  spelling (Akshil, 2026-09-21: it rendered as a user bubble). Kept in step
+ *  with `tasks_store._INTERRUPT_MARKS` on the server. */
+export const INTERRUPT_MARK_TOOL = "[Request interrupted by user for tool use]";
 
 /** Is this user row the CLI's interrupt marker rather than a prompt? Trimmed,
  *  because the record has carried a trailing newline in some CLI builds; NOT
  *  case-folded or fuzzy — a prompt that happens to talk about interrupts must
- *  still render as what the reader wrote. */
+ *  still render as what the reader wrote. Either spelling. */
 export function isInterruptMark(text: string | undefined | null): boolean {
-  return (text ?? "").trim() === INTERRUPT_MARK;
+  const t = (text ?? "").trim();
+  return t === INTERRUPT_MARK || t === INTERRUPT_MARK_TOOL;
 }
 
 // ---- the pictures block ----------------------------------------------------

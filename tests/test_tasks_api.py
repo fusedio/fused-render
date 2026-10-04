@@ -15,11 +15,12 @@ Nothing here reads the real ~/.claude — every path is under tmp_path.
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import schedule, tasks_store
+from fused_render import schedule, tasks_store, tasks_watch
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
@@ -77,24 +78,17 @@ def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
 
-@pytest.fixture()
-def card_titles(home):
-    """The Cards wall's experimental title, ON — `task_card_last_message`
-    (shell/prefs.py). A row carries `last_message` only while it is, and the
-    pref is read per request, so writing the file is the whole setup. `home`
-    rather than `tmp_path` so the tmp FUSED_RENDER_HOME is in place first."""
-    shell_storage.write_json(prefs_mod._path(), {"task_card_last_message": True})
-
-
 # ------------------------------------------------------------------ fixtures
 
 
-def _user(text, ts, uuid=None):
+def _user(text, ts, uuid=None, entrypoint=None):
     record = {"type": "user", "timestamp": ts,
               "message": {"role": "user",
                           "content": [{"type": "text", "text": text}]}}
     if uuid is not None:
         record["uuid"] = uuid
+    if entrypoint is not None:
+        record["entrypoint"] = entrypoint
     return record
 
 
@@ -117,6 +111,27 @@ def _api_error(text, ts, status=None):
 
 def _ai_title(title, session_id="s"):
     return {"type": "ai-title", "aiTitle": title, "sessionId": session_id}
+
+
+# The rows Claude Code 2.1.x appends as it exits, which re-create a transcript
+# an erase has just removed. Not one of them carries a `timestamp`, and not one
+# of them is a `user` row — which is the whole reason the revival rule reads
+# messages and not mtimes.
+_EXIT_ROWS = [
+    {"type": "last-prompt", "prompt": "hi r1"},
+    {"type": "ai-title", "aiTitle": "", "sessionId": "sess-a"},
+    {"type": "mode", "mode": "default"},
+    {"type": "permission-mode", "permissionMode": "acceptEdits"},
+    {"type": "atis-latch", "latched": False},
+    {"type": "cost-state", "totalCostUsd": 0.01},
+]
+
+
+def _later(seconds=60):
+    """An ISO stamp `seconds` from now — later than any tombstone a test in
+    this file can have written."""
+    return datetime.fromtimestamp(
+        time.time() + seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _write_transcript(projects_dir, session_id, cwd, records, encoded=None):
@@ -214,6 +229,55 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["entry_id"] == ""
     assert message["anchor"] == "sess-a-0", "the record uuid, for scroll-to"
     assert message["unread"] is True
+
+
+# --------------------------------------------------------------- entrypoint
+
+
+def test_a_cli_session_carries_its_entrypoint_on_the_row_and_the_pulse(
+        client, projects_dir, state_dir):
+    """"cli" (interactive terminal) — read off the transcript's own first
+    `type: "user"` record, the same one `cwd`/the first prompt come from.
+    Present on BOTH `/api/tasks` and `/api/tasks/pulse`, since the pulse is a
+    `Pick` of the task row and the notification hook (task-status-notify.ts)
+    reads it off the pulse, not `/api/tasks`."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-cli", "/home/me/proj", [
+        _user("pull today's news", T9, entrypoint="cli"),
+        _assistant("done", T10),
+    ])
+
+    assert _tasks(client)[0]["entrypoint"] == "cli"
+    assert _pulse(client)[0]["entrypoint"] == "cli"
+
+
+def test_an_sdk_cli_session_carries_its_entrypoint(client, projects_dir, state_dir):
+    """"sdk-cli" — what templates/claude/agent.py's headless spawn writes. A
+    proxy for "started by our own template", not proof (an unrelated
+    SDK-driven session can also report this) — see task-status-notify.ts."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-sdk", "/home/me/proj", [
+        _user("pull today's news", T9, entrypoint="sdk-cli"),
+        _assistant("done", T10),
+    ])
+
+    assert _tasks(client)[0]["entrypoint"] == "sdk-cli"
+    assert _pulse(client)[0]["entrypoint"] == "sdk-cli"
+
+
+def test_a_transcript_with_no_entrypoint_leaves_the_row_field_absent(
+        client, projects_dir, state_dir):
+    """An older transcript, predating the field, must never be defaulted to a
+    made-up value — the notification gate downstream treats "unknown" as
+    "not cli" and must be able to tell the two apart from an explicit "cli"."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-none", "/home/me/proj", [
+        _user("pull today's news", T9),
+        _assistant("done", T10),
+    ])
+
+    assert _tasks(client)[0]["entrypoint"] is None
+    assert _pulse(client)[0]["entrypoint"] is None
 
 
 def _pane_block(file_path):
@@ -391,6 +455,16 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         "key", "status", "unread", "last_active", "project",
         "task_id", "title", "target", "session_id", "happened_at", "next_run",
         "next_run_entry", "next_run_repeats",
+        # ...and where the row stands in its folder's line (2026-09-12): the
+        # sidebar's Current apps section prints "n queued" beside "n running",
+        # and a queued row has to be able to say whether it runs next — plus the
+        # session that "behind TASK-041" opens, and how many of this row's own
+        # messages are waiting behind it.
+        "queue_position", "queue_ahead", "queue_priority",
+        "queue_ahead_session", "queue_waiting",
+        # "cli"/"sdk-cli"/None (2026-09-18): the notification hook's terminal-
+        # session gate reads this off the pulse row, not `/api/tasks`.
+        "entrypoint",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
@@ -540,18 +614,47 @@ def test_a_prepended_app_state_block_does_not_eat_what_the_user_typed(
     assert task["title_source"] == "message"
 
 
-def test_a_wordless_screenshot_send_is_not_a_message_either(client, projects_dir):
+def test_a_wordless_screenshot_send_is_a_message_named_for_what_it_carried(
+        client, projects_dir):
     """The one case where a STRIP tag still yields nothing: annotations or a
-    screenshot with no typed words. Real, and the client's job to label — but
-    there is no body for a listing to show, so it is not a row's message."""
+    screenshot with no typed words. Real, and until 2026-09-18 this page dropped
+    it — so a chat where every send was a comment on the app and a tap of Send
+    had no messages here at all, and therefore (`_status` derives from the
+    messages) no status either.
+
+    The body is the CHAT'S OWN LABEL for such a send, not a sentence of ours:
+    `stripBlocks` substitutes "pane screenshot" into the bubble and the row now
+    shows the same words (`tasks_store.carried_words`)."""
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user(records.prefixed(records.APP_STATE, records.PANE_SHOT), T9,
               uuid="u1"),
         _user("and now make it green", T10, uuid="u2"),
     ])
     task = _tasks(client)[0]
-    assert task["message_count"] == 1
-    assert [m["body"] for m in task["messages"]] == ["and now make it green"]
+    assert task["message_count"] == 2
+    assert [m["body"] for m in task["messages"]] == [
+        "and now make it green", "pane screenshot"]
+    # …and the row is still named by the WORDS. A marker is what a send is
+    # called when it said nothing; it never outranks a message that did.
+    assert task["title"] == "and now make it green"
+
+
+def test_a_send_with_only_annotations_is_a_message_named_by_the_notes(
+        client, projects_dir):
+    """The shape the bug was reported on: comment on the app, send without
+    typing. The notes the user wrote on the pins ARE the message — the marker is
+    only for pins nobody wrote on."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED), T9, uuid="u1"),
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED_SILENT), T10,
+              uuid="u2"),
+    ])
+    task = _tasks(client)[0]
+    assert task["message_count"] == 2
+    assert [m["body"] for m in task["messages"]] == [
+        "annotations + pane screenshot", records.ANNOTATION_TAGGED_NOTES]
 
 
 def test_a_session_that_only_ran_a_slash_command_is_named_the_command(
@@ -613,33 +716,31 @@ def test_only_the_three_newest_messages_ride_along(client, projects_dir):
         "message 5", "message 4", "message 3"]
 
 
-# ------------------------------------------------- the last turn of the thread
+# -------------------------------------------- the newest thing the user said
 #
-# `last_message` is the one field on a row that can carry CLAUDE's words:
-# `messages` above is prompts only. It is what the Cards wall titles a card by
-# while `task_card_last_message` is on (shell/prefs.py) — which is why every
-# test here takes the `card_titles` fixture — and the rule is simply "the
-# newest turn, whoever took it".
+# `last_message` is the newest thing the user said, carried on every listing
+# row (it was gated on the `task_card_last_message` pref until 2026-09-20),
+# and the rule is "the newest PROMPT".
+# Claude's replies are never candidates (Akshil, 2026-09-19): a title that
+# tracked the answer changed under the reader every turn.
 
 
-def test_the_last_message_is_the_reply_when_claude_answered_last(
-        client, projects_dir, card_titles):
+def test_the_last_message_is_the_prompt_even_when_claude_answered_last(
+        client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("run the migration", T9),
-        _assistant("Ran the migration, 3 tables updated\nand nothing else", T10),
+        _user("run the migration\nand then tidy up", T9),
+        _assistant("Ran the migration, 3 tables updated", T10),
     ])
 
     said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "assistant"
+    assert said["role"] == "user"
     # ONE LINE of it, which is all a card's title row can draw.
-    assert said["text"] == "Ran the migration, 3 tables updated"
-    assert said["at"] == tasks_store.epoch(T10)
+    assert said["text"] == "run the migration"
+    assert said["at"] == tasks_store.epoch(T9)
 
 
 def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
-        client, projects_dir, card_titles):
-    # The usual state of a running task: the reader has said something and
-    # nothing has come back yet. The card shows what was asked.
+        client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
         _assistant("older answer", T9),
         _user("now do the other one", T10),
@@ -650,42 +751,240 @@ def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
     assert said["text"] == "now do the other one"
 
 
-def test_a_tool_only_turn_is_not_something_claude_said(
-        client, projects_dir, card_titles):
-    # A row whose content is pure tool_use has no words in it. The substring
-    # screen lets the LINE through (it holds an assistant hint); the parse is
-    # what refuses it, and the prompt stays the newest thing said.
-    record = {"type": "assistant", "timestamp": T10,
-              "message": {"role": "assistant",
-                          "content": [{"type": "tool_use", "id": "t1",
-                                       "name": "Bash", "input": {}}]}}
+def test_the_reply_shown_is_the_one_to_the_newest_message(
+        client, projects_dir):
+    """`last_reply` belongs to a turn (Akshil, 2026-09-21: "the response is from
+    the older task"): a row titled by the reader's newest send prints Claude's
+    reply only if it came AFTER that send. Blank until it does."""
     _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("list the files", T9), record,
+        _user("run the migration", T9),
+        _assistant("Ran the migration, 3 tables updated", T10),
+        _user("now tidy up", T11),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_message"]["text"] == "now tidy up"
+    assert row["last_reply"] == ""
+
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran the migration, 3 tables updated", T10),
+        _user("now tidy up", T11),
+        _assistant("Tidied.", T12),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_reply"] == "Tidied."
+
+
+def test_a_run_now_on_a_later_dated_message_does_not_hide_its_reply(
+        client, projects_dir):
+    """`last_message.at` is when the message was SAID (Bugbot, PR #1295): a
+    scheduled message's due time never moves, so a Run-now on one dated for
+    next week must not leave the reply hidden until then."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("the first ask", T9),
+        _user("run the weekly report", T11),
+        _assistant("Report ready", T12),
+    ])
+    schedule._write([_entry("e1", "run the weekly report", "2026-08-23T09:00:00Z",
+                            session_id="sess-a", state=schedule.SENT,
+                            fired=T11, run_now_at=T11, turn="done",
+                            claude_session_id="sess-a")])
+    row = _tasks(client)[0]
+    assert row["last_message"]["text"] == "run the weekly report"
+    assert row["last_message"]["at"] == tasks_store.epoch(T11)
+    assert row["last_reply"] == "Report ready"
+
+
+def test_the_last_message_agrees_with_the_rows_newest_message(
+        client, projects_dir):
+    """Read off the same merged thread `messages` is cut from (review,
+    2026-09-19): a scheduled occurrence that FIRED titles the row, while one
+    still pending — the thread's newest message, but not one the user has sent
+    — does not, and the row keeps the prompt before it."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("first thing", T9),
+    ])
+    _seed_schedule([
+        _entry("e1", "pull today's news", T10, state=schedule.SENT, fired=T10,
+               turn="ok", claude_session_id="sess-a"),
+        _entry("e2", "tomorrow's news", T12, claude_session_id="sess-a"),
     ])
 
-    said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "user"
-    assert said["text"] == "list the files"
+    row = _tasks(client)[0]
+    assert [m["body"] for m in row["messages"]] == [
+        "tomorrow's news", "pull today's news", "first thing"]
+    assert row["last_message"] == {
+        "role": "user", "text": "pull today's news",
+        "at": tasks_store.epoch(T10)}
 
 
-def test_an_api_error_is_not_the_last_message_either(
-        client, projects_dir, card_titles):
-    # Its text is the failure report ("You've hit your session limit"), which
-    # the row already says in `blocked_reason` — a card titled by it would be
-    # a card titled by an outage.
+def test_a_send_that_has_not_reached_disk_titles_the_row_at_once(
+        client, projects_dir):
+    # The just-sent mark is the newest message in the thread the moment the
+    # page sends it (`_fold_sent_mark`), so the title moves in the same poll
+    # `messages[0]` does, not one transcript flush later.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    tasks_watch.mark_running("sess-a", text="and now the follow-up")
+    row = _by_key(client)["sess-a"]
+    assert row["messages"][0]["body"] == "and now the follow-up"
+    assert row["last_message"]["text"] == "and now the follow-up"
+
+
+def test_a_typed_slash_command_does_not_title_the_row_while_it_runs(
+        client, projects_dir):
+    # "/compact" typed into the composer rides the live send mark as raw
+    # words; on disk the CLI files it as an envelope `_prompt` drops. For the
+    # seconds it ran, the row read "/compact" (Akshil, 2026-09-24). A path is
+    # not a command.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("hello world", T9),
+        _assistant("Ready.", T10),
+    ])
+    tasks_watch.mark_running("sess-a", text="/compact")
+    row = _by_key(client)["sess-a"]
+    assert row["last_message"]["text"] == "hello world"
+    assert row["title"] == "hello world"
+    tasks_watch.mark_running("sess-a", text="/Users/me/notes.md please read")
+    row = _by_key(client)["sess-a"]
+    assert row["last_message"]["text"] == "/Users/me/notes.md please read"
+
+
+def test_a_subagent_brief_is_not_a_prompt(client, projects_dir):
+    """`isSidechain` is a prompt written FOR a subagent. Every other reader of
+    a transcript's prompts skips it (tasks_store.head, agent.py); the listing's
+    own reader did not, so a brief could be the row's newest message and its
+    count — a message the chat never shows."""
+    brief = _user("You are a subagent. Investigate the cache.", T10)
+    brief["isSidechain"] = True
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("look into the cache", T9), brief,
+    ])
+
+    row = _tasks(client)[0]
+    assert row["message_count"] == 1
+    assert row["last_message"]["text"] == "look into the cache"
+
+
+def test_an_api_error_leaves_the_prompt_as_the_last_message(
+        client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
         _api_error("You've hit your session limit", T10),
     ])
 
     task = _tasks(client)[0]
-    assert task["blocked_reason"] == "failed"
+    # "session limit" is the plan's usage limit, which the row names as its own
+    # kind of failure (`_LIMIT_HINTS`, the project queue's Blocked-with-a-clock).
+    assert task["blocked_reason"] == "usage_limit"
     assert task["last_message"]["role"] == "user"
     assert task["last_message"]["text"] == "run the migration"
 
 
+def test_the_interrupt_marker_is_not_the_last_message(
+        client, projects_dir):
+    # Hit stop, then leave: the CLI writes `[Request interrupted by user]` as a
+    # user row with a real uuid. Not something the reader said — neither a
+    # message nor the title (Akshil, 2026-09-19). Both marker forms.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _user("[Request interrupted by user for tool use]", T10, uuid="u2"),
+        _user("[Request interrupted by user]\n", T11, uuid="u3"),
+    ])
+
+    row = _tasks(client)[0]
+    assert row["message_count"] == 1
+    assert row["last_message"]["text"] == "run the migration"
+    # ...while a prompt that merely TALKS about the marker is the reader's.
+    _write_transcript(projects_dir, "sess-b", "/q", [
+        _user("why did [Request interrupted by user] appear?", T9),
+    ])
+    rows = {r["last_message"]["text"] for r in _tasks(client)
+            if r.get("last_message")}
+    assert "why did [Request interrupted by user] appear?" in rows
+
+
+def test_a_stopped_turn_prints_interrupted_where_the_reply_goes(
+        client, projects_dir):
+    """Hit stop: the row's reply slot says "Interrupted by you" — always, even
+    when Claude got a first line out before the stop (Akshil, 2026-09-23). The
+    next turn's reply takes the slot back; a new send with no reply yet blanks
+    it like any other turn."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("draft an essay", T9),
+        _assistant("Here is a first draft", T10),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_message"]["text"] == "draft an essay"
+    assert row["last_reply"] == "Interrupted by you"
+
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("draft an essay", T9),
+        _assistant("Here is a first draft", T10),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+        _user("shorter please", T12),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_reply"] == ""
+
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("draft an essay", T9),
+        _assistant("Here is a first draft", T10),
+        _user("[Request interrupted by user for tool use]", T11, uuid="u2"),
+        _user("shorter please", T12),
+        _assistant("Done: 200 words.", "2026-08-16T13:00:00Z"),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_reply"] == "Done: 200 words."
+
+    # A compaction can replay an OLDER assistant row after the marker
+    # (`_ORDER_SLACK`); the stop still stands.
+    _write_transcript(projects_dir, "sess-b", "/q", [
+        _user("draft an essay", T9),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+        _assistant("Here is a first draft", T10),
+    ])
+    rows = {r["last_message"]["text"]: r["last_reply"] for r in _tasks(client)
+            if r.get("last_message")}
+    assert rows["draft an essay"] == "Interrupted by you"
+
+    # ...and the other way round (Bugbot, PR #1317): an OLDER stop marker
+    # replayed after a later turn's reply does not take that reply's place.
+    _write_transcript(projects_dir, "sess-c", "/r", [
+        _user("draft an essay", T9),
+        _user("shorter please", T10),
+        _assistant("Done: 200 words.", T12),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+    ])
+    rows = {r["last_message"]["text"]: r["last_reply"] for r in _tasks(client)
+            if r.get("last_message")}
+    assert rows["shorter please"] == "Done: 200 words."
+
+
+def test_the_compact_summary_is_not_the_last_message(client, projects_dir):
+    # /compact writes its recap as a `user` row (`isCompactSummary`), not
+    # `isMeta`. Not something the reader said: neither the title nor a send
+    # that hides the last reply (Akshil, 2026-09-23).
+    recap = _user("This session is being continued from a previous "
+                  "conversation that ran out of context.", T11, uuid="u3")
+    recap["isCompactSummary"] = True
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran it.", T10),
+        recap,
+    ])
+    row = _tasks(client)[0]
+    assert row["message_count"] == 1
+    assert row["last_message"]["text"] == "run the migration"
+    assert row["title"] == "run the migration"
+    assert row["last_reply"] == "Ran it."
+
+
 def test_a_task_with_nothing_said_in_it_has_no_last_message(
-        client, tmp_path, card_titles):
+        client, tmp_path):
     # A scheduled message that has not run: no transcript, nothing said. The
     # card falls back to the task's own title.
     _seed_schedule([_entry("e1", "water the plants", time.time() + 3600,
@@ -693,39 +992,52 @@ def test_a_task_with_nothing_said_in_it_has_no_last_message(
     assert _tasks(client)[0]["last_message"] is None
 
 
+def test_a_task_claude_has_only_replied_in_has_no_last_message(
+        client, projects_dir):
+    # Nothing the USER said: the field is null and the card keeps its title.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _assistant("Hello, how can I help?", T9),
+    ])
+    assert _tasks(client)[0]["last_message"] is None
+
+
 def test_the_last_message_survives_an_incremental_re_read(
-        client, projects_dir, card_titles):
-    # The scan is incremental and the reply is parsed lazily off the line it
-    # kept, so the SECOND poll — which reads no new bytes at all — must answer
-    # the same as the first rather than blanking the field.
+        client, projects_dir):
+    # The scan is incremental, so the SECOND poll — which reads no new bytes at
+    # all — must answer the same as the first rather than blanking the field.
     path = _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
         _assistant("Ran it", T10),
     ])
-    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
-    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
 
-    # …and a turn appended after it wins, which is what makes the field track
-    # the conversation rather than freeze on its first answer.
+    # …a reply appended after it changes nothing…
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps({**_assistant("Then tidied up", T11),
                             "cwd": "/p", "sessionId": "sess-a",
                             "uuid": "sess-a-2"}) + "\n")
-    assert _tasks(client)[0]["last_message"]["text"] == "Then tidied up"
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
+
+    # …and a prompt appended after THAT wins, which is what makes the field
+    # track the conversation rather than freeze on its first prompt.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({**_user("now the other one", T11, uuid="u3"),
+                            "cwd": "/p", "sessionId": "sess-a"}) + "\n")
+    assert _tasks(client)[0]["last_message"]["text"] == "now the other one"
 
 
-def test_a_tool_turn_after_a_reply_does_not_un_say_the_reply(
-        client, projects_dir, card_titles):
-    # A tool_use row whose INPUT carries text blocks passes the substring
-    # screen, so the line is kept and the parse finds no words in it. Claude
-    # running a tool does not un-say the answer before it: the newest thing
-    # said is still "Ran it", and a card that dropped back to the prompt would
-    # be showing a question that has already been answered.
+def test_a_tool_only_turn_still_clears_a_failed_mark(client, projects_dir):
+    # A tool_use row whose INPUT carries text blocks passes `_reply_fate`'s
+    # substring screen as an ordinary assistant reply, and an ordinary reply
+    # after an API error means the turn was retried and answered: `failed`
+    # clears. This is the one thing an assistant line still contributes to the
+    # scan now that its words are never kept.
     path = _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
-        _assistant("Ran it", T10),
+        _api_error("Wi-Fi off", T10),
     ])
-    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
+    assert _tasks(client)[0]["failed"] is True
 
     record = {"type": "assistant", "timestamp": T11, "cwd": "/p",
               "sessionId": "sess-a", "uuid": "sess-a-2",
@@ -736,39 +1048,19 @@ def test_a_tool_turn_after_a_reply_does_not_un_say_the_reply(
                                            {"type": "text", "text": "x"}]}}]}}
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
-
-    said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "assistant"
-    assert said["text"] == "Ran it"
+    assert _tasks(client)[0]["failed"] is False
 
 
-def test_a_prompt_after_a_reply_wins_even_on_the_same_timestamp(
-        client, projects_dir, card_titles):
-    # The tie-break is "the later LINE is the later turn", and it only holds
-    # while the reply IS the later line. Here the reader asked again in the
-    # same second the answer landed, so the prompt is the newest turn and the
-    # reply is the answer to the one before it.
-    _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("run the migration", T9),
-        _assistant("Ran it", T10),
-        _user("now the other one", T10, uuid="u3"),
-    ])
-
-    said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "user"
-    assert said["text"] == "now the other one"
-
-
-def test_the_row_carries_no_last_message_while_the_pref_is_off(
-        client, projects_dir):
-    # Default off (no `card_titles` fixture): the field is ABSENT, not null —
-    # nothing draws it, and every row on the machine stops paying for it.
+def test_a_single_row_answer_carries_no_last_message(client, projects_dir):
+    # The listing carries the field; the single-row doors (a `/messages` read)
+    # do not — nothing there draws it, so the key is ABSENT, not null.
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
         _assistant("Ran it", T10),
     ])
 
-    assert "last_message" not in _tasks(client)[0]
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
+    assert "last_message" not in client.get("/api/tasks/sess-a/messages").json()
 
 
 def test_show_more_returns_the_whole_thread_newest_first(client, projects_dir):
@@ -1423,7 +1715,8 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
         "message_id", "kind", "body", "at", "ran_at", "state", "turn_at",
-        "unread", "entry_id", "template_id", "turn", "anchor", "immediate"}
+        "unread", "limited", "entry_id", "template_id", "turn", "anchor", "immediate",
+        "queue_at"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"
@@ -1873,6 +2166,294 @@ def _near_now(offset_sec: float) -> str:
                          time.gmtime(time.time() + offset_sec))
 
 
+def test_a_chat_that_only_ever_annotated_still_has_a_status(
+        client, projects_dir, state_dir):
+    """THE WHOLE BUG, END TO END (Akshil, 2026-09-18). Comment on the app, hit
+    Send without typing: the chat vanished from this page, and where it did
+    appear it read `done` with a turn still running.
+
+    Status is DERIVED from the messages (`_status`: `if messages and
+    (_running_now(...) ...)`), so both halves were the same fault — no messages
+    meant nothing to derive from and the fallthrough is `done`. This asserts the
+    derivation is whole again: the messages are here, and the status follows the
+    RUN rather than the emptiness."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-live", "/p", [
+        # (i) annotations with nothing typed anywhere, and (ii) the screenshot
+        # on its own — the two sends that had no body at all.
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED), _near_now(-40),
+              uuid="u1"),
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT),
+              _near_now(-30), uuid="u2"),
+        # …and a tail that says the turn is still going.
+        _assistant("still building it", _near_now(-3)),
+    ])
+    task = _by_key(client)["sess-live"]
+    assert task["message_count"] == 2, "a wordless send is still a send"
+    assert [m["body"] for m in task["messages"]] == [
+        "pane screenshot", records.ANNOTATION_TAGGED_NOTES]
+    assert task["live"] is True
+    assert task["status"] == "in_progress", "not `done` while it is running"
+
+
+def test_the_same_chat_reads_done_once_the_run_has_stopped(
+        client, projects_dir, state_dir):
+    """The other side of the derivation, and the reason `done` was never a safe
+    fallback to leave in place: it is the RIGHT answer here, and it has to be
+    reached by the messages agreeing rather than by there being none."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-cold", "/p", [
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED), T9, uuid="u1"),
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT), T10,
+              uuid="u2"),
+        _assistant("all done", T11),
+    ])
+    task = _by_key(client)["sess-cold"]
+    assert task["message_count"] == 2
+    assert task["live"] is False
+    assert task["status"] == "done"
+
+
+# ---- the run settings a task carries (Akshil, 2026-09-18) --------------------
+#
+# "When we change model and effort from the new task modal it doesn't get
+# reflected" — and the surface was the SIDE PEEK, whose composer pills showed
+# something else entirely. They showed `agent._defaults`: the model last used in
+# that FOLDER, scanned off its newest transcripts, which is the right answer for
+# a chat opened on a folder and the wrong one for a task that was set up with a
+# model of its own.
+#
+# The peek could not have shown the task's model, because the row it is drawn
+# from did not carry one. It does now — and the entry's value is the truth
+# rather than a second opinion about it: `schedule._send` passes exactly
+# `entry["model"]` / `entry["effort"]` to `spawn_helper`, which passes them to
+# `claude --model` / `--effort`. Stored IS what the run uses.
+
+
+def test_a_task_carries_the_model_and_effort_its_runs_use(client, projects_dir):
+    """The two fields the New task card set, on the row every surface reads."""
+    _seed_schedule([_entry("e1", "nightly sweep", T12,
+                           model="opus", effort="max")])
+    task = _tasks(client)[0]
+    assert task["model"] == "opus"
+    assert task["effort"] == "max"
+
+
+def test_a_task_booked_under_the_retired_pinned_Fable_id_says_fable(
+        client, projects_dir):
+    """BACKWARD COMPATIBILITY. The pickers offered "claude-fable-5-1" beside the
+    alias naming the same model until 2026-09-18; only "fable" is left. Entries
+    booked under the old id are not going anywhere, and the row is what the side
+    peek's composer OPENS on — a value no picker lists any more opens a blank
+    pill. So the row says the word the menus now use.
+
+    Display only: `schedule._send` still hands `entry["model"]` to `--model`
+    verbatim, and the CLI takes the full id exactly as it always did."""
+    _seed_schedule([_entry("e1", "nightly sweep", T12,
+                           model="claude-fable-5-1", effort="max")])
+    task = _tasks(client)[0]
+    assert task["model"] == "fable"
+    assert task["effort"] == "max"
+
+
+def test_a_task_that_chose_neither_says_nothing_about_them(client, projects_dir):
+    """"" IS THE ANSWER, and it is the load-bearing one: it means "this task has
+    no opinion", which is what lets the chat's own detection keep speaking for
+    every conversation that never went through the New task card. A row that
+    invented "sonnet" here would pin every hand-typed chat to a model nobody
+    chose."""
+    _seed_schedule([_entry("e1", "no opinion", T12)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_a_plain_chat_has_no_run_settings_either(client, projects_dir):
+    """No schedule anywhere near it — a session the user typed into. Same
+    answer, for the same reason."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_the_newest_entry_that_named_one_speaks(client, projects_dir):
+    """A task is a THREAD, and a thread can hold several scheduled messages. The
+    newest that names a setting is the one a reader is about to act on, which is
+    the same rule `_description` takes over the same list — and it is asked per
+    FIELD, so an entry that pinned only the effort does not wipe the model an
+    earlier one pinned."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([
+        _entry("e1", "first", T9, state=schedule.SENT, fired=T9,
+               claude_session_id="sess-a", model="opus", effort="low"),
+        _entry("e2", "second", T12, claude_session_id="sess-a", effort="max"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["model"] == "opus", "the newest entry that named one"
+    assert task["effort"] == "max", "…asked per field"
+
+
+# ---- the conversation's OWN record, above the entry's ------------------------
+#
+# The entry is the truth only until the first run. After it the conversation has
+# one of its own — what `agent._start`/`_send` actually launched with, and what
+# the reader's pill last said — and THAT is what every door has to read, or a
+# pill moved mid-chat is undone by the next open.
+#
+# It is also what closes the window the report lived in: a task whose session
+# existed but whose transcript had not been written yet had nothing to detect
+# from, and detection answered with the newest OTHER chat in the folder
+# (fable/max, for a task created with haiku/low — Akshil, 2026-09-18).
+
+
+def test_the_chats_own_record_outranks_the_entry(client, projects_dir):
+    """A reader who moved a pill has changed the CHAT, not the task's booked
+    messages — so the row follows them."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([_entry("e1", "nightly", T12, claude_session_id="sess-a",
+                           model="opus", effort="max")])
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["opus", "max"]
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["haiku", "low"]
+
+
+def test_a_record_of_one_field_leaves_the_other_to_the_entry(client, projects_dir):
+    """Per field, the same rule the entries themselves are read by: recording an
+    effort must not wipe the model the task was set up with."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([_entry("e1", "nightly", T12, claude_session_id="sess-a",
+                           model="opus", effort="max")])
+    tasks_store.record_settings("sess-a", effort="low")
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["opus", "low"]
+
+
+def test_a_pill_pick_is_written_for_the_conversation(client, projects_dir):
+    """The endpoint the composer posts to on every pick. The param it also sets
+    dies with the address bar; this is the half that survives the next open."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
+                    json={"session_id": "sess-a", "model": "haiku",
+                          "effort": "low"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "low"}
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["haiku", "low"]
+
+
+def test_picking_one_pill_never_erases_the_other(client, projects_dir):
+    """Two pills, two requests, one record. An absent field is "not saying",
+    never "nothing" — the spawn path writes both and a pick writes one."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    client.post("/api/tasks/settings", headers={"X-Fused": "1"},
+                json={"session_id": "sess-a", "model": "haiku", "effort": "low"})
+    r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
+                    json={"session_id": "sess-a", "effort": "max"})
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "max"}
+
+
+# ---- READING the record, without the subprocess (Akshil, 2026-09-19) --------
+#
+# "It takes some time to load in these model and effort … when I come to the
+# page after 2-3 seconds it flips, same when I reload." The composer learned the
+# record off the agent's `defaults` action — a POST /api/run that spawns agent.py
+# and scans a transcript tail — so the pills painted a constant first and swapped
+# it seconds later. The record is one JSON file this process already reads on
+# every listing; this door hands it over in milliseconds so the pills can WAIT
+# for it instead of guessing ahead of it.
+
+
+def test_the_record_can_be_read_back_without_spawning_anything(
+        client, projects_dir):
+    """The fast half of the composer's ranking. Same file the POST writes, same
+    answer the listing derives its row from — one GET away."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"model": "haiku", "effort": "low"}
+
+
+def test_reading_a_record_under_the_retired_pinned_Fable_id_says_fable(client):
+    """Folded on the way out exactly as the ROW is (`_display_model`): a chat
+    recorded under "claude-fable-5-1" opens on the Fable the picker offers, not
+    on a blank pill. Display only — what the CLI is handed is untouched."""
+    tasks_store.record_settings("sess-a", "claude-fable-5-1", "max")
+    r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
+    assert r.json() == {"model": "fable", "effort": "max"}
+
+
+def test_a_session_with_nothing_recorded_reads_as_no_opinion(client):
+    """"" FOR BOTH, and not a 404: "no record" is the load-bearing answer — it
+    is what leaves detection and the composer's own constants speaking, and a
+    conversation that never existed says the same thing as one that never
+    chose."""
+    r = client.get("/api/tasks/settings", params={"session_id": "no-such"})
+    assert r.status_code == 200
+    assert r.json() == {"model": "", "effort": ""}
+
+
+def test_a_record_of_one_field_reads_back_as_one_field(client):
+    """Per field here too: a chat that recorded only an effort must not be told
+    its model is "", it must be told nothing about its model — which is the same
+    string, and the composer's next rank down is what fills it."""
+    tasks_store.record_settings("sess-a", effort="low")
+    assert client.get("/api/tasks/settings",
+                      params={"session_id": "sess-a"}).json() \
+        == {"model": "", "effort": "low"}
+
+
+def test_the_read_refuses_the_same_ids_the_write_does(client):
+    """One validator behind both doors (`_settings_session_id`): an id no reader
+    would ever look up is not a question this endpoint answers, and a caller
+    that asked with one has a bug rather than an empty record."""
+    for sid in ("", "../../etc/passwd", ".hidden", "a/b", "a\\b", "d:x", ".",
+                ".."):
+        r = client.get("/api/tasks/settings", params={"session_id": sid})
+        assert r.status_code == 400, sid
+    assert client.get("/api/tasks/settings",
+                      params={"session_id": "sess-ok.1_2"}).status_code == 200
+
+
+def test_the_settings_endpoint_refuses_words_it_does_not_know(client, projects_dir):
+    """A 400 rather than a silent fallback: a caller that asked for an effort
+    this build has no name for has been answered with a different session, which
+    is worse than being told no. The MODEL is not list-checked — the composer
+    offers pinned ids no Python vocabulary here carries — so its shape is."""
+    bad = [{"session_id": "sess-a", "effort": "turbo"},
+           {"session_id": "sess-a", "model": "../../etc/passwd"},
+           {"session_id": "", "model": "haiku"},
+           {"session_id": "sess-a"}]
+    for body in bad:
+        assert client.post("/api/tasks/settings", headers={"X-Fused": "1"}, json=body).status_code == 400, body
+
+
+def test_the_settings_endpoint_refuses_an_id_no_reader_would_look_up(client):
+    """`agent._defaults` refuses ids with separators or a leading dot before it
+    reads anything; a record filed under one would never be read back, only
+    carried by every listing. Same shape the running-mark endpoint demands."""
+    for sid in ("../../etc/passwd", ".hidden", "a/b", "a\\b", "d:x", ".", ".."):
+        r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
+                        json={"session_id": sid, "model": "haiku"})
+        assert r.status_code == 400, sid
+    assert client.post("/api/tasks/settings", headers={"X-Fused": "1"},
+                       json={"session_id": "sess-ok.1_2", "model": "haiku"}
+                       ).status_code == 200
+
+
+
+def test_a_record_for_a_chat_that_is_not_a_task_bothers_nobody(client, projects_dir):
+    """Most conversations are not tasks, and the record is keyed by SESSION.
+    Writing one must not mint a row, and must not fail."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    before = {t["key"] for t in _tasks(client)}
+    assert client.post("/api/tasks/settings", headers={"X-Fused": "1"},
+                       json={"session_id": "no-such-session",
+                             "model": "haiku"}).status_code == 200
+    assert {t["key"] for t in _tasks(client)} == before
+
+
 def test_a_freshly_resolved_turn_outvotes_the_transcripts_liveness(
         client, projects_dir):
     """The popover/tasks-page split, closed on the server's side.
@@ -1970,6 +2551,71 @@ def test_a_stamped_verdicts_own_echo_is_still_set_aside(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["live"] is False
     assert task["status"] == "done"
+
+
+def test_a_send_mark_is_not_the_verdicts_echo(client, projects_dir):
+    """A SEND IS TESTIMONY, NOT A TIMESTAMP (Bugbot, PR #1163).
+
+    The row above is the echo rule working: a scheduled run reported, and the
+    closing records it wrote in the same breath are not a pulse. Now the user
+    types a follow-up into that very task. `tasks_watch.mark_running` says so
+    the instant it is sent — earlier than the transcript, earlier than the
+    CLI's registry row — and the echo rule would have thrown it away, because
+    it measures the transcript's freshness against the verdict and the mark
+    lands inside that window by construction: both are 15 seconds wide.
+
+    So the row would have gone on saying `done` until the registry row appeared,
+    which is the exact lag the mark exists to close. The echo rule may discount
+    what it can re-read off the file; it has no jurisdiction over the page that
+    made the send."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           turn_at=_near_now(-5),
+                           claude_session_id="sess-a")])
+    # After the seeding, before the listing: `reset_cache` (the autouse
+    # fixture) clears the marks along with the scans, so a mark set any earlier
+    # would not survive to be tested.
+    tasks_watch.mark_running("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True, "the send outranks the verdict's echo"
+    assert task["status"] == "in_progress"
+
+
+def test_the_registry_catching_up_does_not_reopen_the_echo_gap(
+        client, projects_dir, monkeypatch):
+    """The same row, two seconds later (Bugbot, PR #1163 round 2).
+
+    `claude -p` publishes its registry row two to four seconds into the turn,
+    and from that moment `_live` answers off the registry rather than off the
+    mark. If the third value meant "the mark is what decided this" it would go
+    false right there, the echo rule would get its vote back, and the row would
+    drop from In Progress to Done — returning only once the new prompt reached
+    the transcript. The same lag the mark exists to close, now with a flicker in
+    front of it.
+
+    So the flag is the mark's STATE. The send either happened in the last
+    fifteen seconds or it did not; the registry agreeing does not un-happen it.
+    """
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           turn_at=_near_now(-5),
+                           claude_session_id="sess-a")])
+    # The CLI has published its row: the turn is running, and `_live` now takes
+    # the registry branch instead of the mark's.
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, mtime=None: (True, 0.0))
+    tasks_watch.mark_running("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True, "the send still outranks the echo"
+    assert task["status"] == "in_progress"
 
 
 def test_a_resolved_run_does_not_silence_a_sibling_still_in_flight(
@@ -2131,9 +2777,127 @@ def test_a_chat_turn_that_died_on_an_api_error_is_blocked(client,
     task = _by_key(client)["sess-a"]
     assert task["messages"][0]["turn"] == "error"
     assert task["status"] == "blocked"
-    # The lane holds two different things and the row has to say which; a
-    # broken run is the "failed" one, whatever put it there.
-    assert task["blocked_reason"] == "failed"
+    # …AND THE LANE HOLDS MORE THAN ONE KIND OF NOT-MOVING. This one is the
+    # plan's usage limit, which is not a fault and has no Retry: the word says
+    # so, and `resumes_at` is 0.0 because nothing has been scheduled to pick it
+    # back up. See the comeback test below for the other half.
+    assert task["blocked_reason"] == "usage_limit"
+    assert task["resumes_at"] == 0.0
+    assert task["messages"][0]["limited"] is True
+
+
+def test_a_usage_limit_is_blocked_and_not_in_progress(client, projects_dir):
+    """AKSHIL'S SCREENSHOT, 2026-09-12: a chat that hit the plan's usage limit
+    showed `in_progress` with the failed-red ring on it, and the board put it in
+    In Progress.
+
+    The failure row is itself a write, so the 45-second liveness window read the
+    corpse as a pulse — while the ring, which reads `failed`, read the failure.
+    One run, two answers, and the one the lane went with is the one that hides
+    the fact that nothing will happen until the window resets."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("Claude usage limit reached", fresh, status=429)])
+    task = _by_key(client)["sess-a"]
+
+    assert task["status"] == "blocked"
+    assert task["live"] is False
+    assert task["failed"] is True
+    assert task["blocked_reason"] == "usage_limit"
+
+
+def test_a_usage_limit_with_a_comeback_scheduled_says_when_it_resumes(
+        client, projects_dir, tmp_path):
+    """PR #1107's comeback, read from the row. The chat schedules a
+    continuation on this session at the reset the CLI reported, and the row's
+    job is to say so: `usage_limit` is why it is not moving and `resumes_at` is
+    when it stops not moving."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                          time.gmtime(time.time() + 3600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("You've hit your session limit \u00b7 resets 7:20pm", fresh,
+                   status=429)])
+    _seed_schedule([_entry("e1", "Your usage limit has reset. Continue.", later,
+                           target=str(tmp_path), session_id="sess-a",
+                           claude_session_id="sess-a",
+                           title="Continue after usage limit")])
+
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "blocked"
+    assert task["blocked_reason"] == "usage_limit"
+    assert task["resumes_at"] == task["next_run"] > 0
+
+
+def test_resumes_at_is_the_comeback_entry_and_not_whatever_runs_next(
+        client, projects_dir, tmp_path):
+    """🟡 review, 2026-09-12. `resumes_at` was the task's next pending run of
+    ANY kind, so a nightly repeat due before the window reopened made this row
+    promise the plan resets at 6pm — a sentence about the plan's clock built out
+    of somebody's calendar. The comeback PR #1107 scheduled is the only entry
+    that answers it, and its title is the mark it carries."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                          time.gmtime(time.time() + 3600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("You've hit your session limit \u00b7 resets 7:20pm", fresh,
+                   status=429)])
+    _seed_schedule([
+        # An unrelated message of this task's, due FIRST.
+        _entry("e0", "post the digest", soon, target=str(tmp_path),
+               session_id="sess-a", claude_session_id="sess-a",
+               title="Nightly digest"),
+        _entry("e1", "Your usage limit has reset. Continue.", later,
+               target=str(tmp_path), session_id="sess-a",
+               claude_session_id="sess-a",
+               title="Continue after usage limit"),
+    ])
+
+    task = _by_key(client)["sess-a"]
+    assert task["blocked_reason"] == "usage_limit"
+    # The next run is the digest; the row does not say the plan resets then.
+    assert task["next_run_entry"] == "e0"
+    assert task["resumes_at"] > task["next_run"] > 0
+
+
+def test_resumes_at_is_0_when_the_comeback_is_gone(client, projects_dir,
+                                                    tmp_path):
+    """The comeback was cancelled, or the POST that made it failed. A pending
+    message that is not the comeback is not a reset time, so the row says
+    nothing rather than the wrong thing."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("Claude usage limit reached", fresh, status=429)])
+    _seed_schedule([_entry("e0", "post the digest", soon, target=str(tmp_path),
+                           session_id="sess-a", claude_session_id="sess-a",
+                           title="Nightly digest")])
+
+    task = _by_key(client)["sess-a"]
+    assert task["blocked_reason"] == "usage_limit"
+    assert task["resumes_at"] == 0.0
+
+
+def test_an_ordinary_reply_after_the_limit_takes_the_row_back(client,
+                                                              projects_dir):
+    """The mark is on the LAST answer, not on any answer: the window reopened,
+    the comeback ran, and the conversation is ordinary again with nothing to
+    undo."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("Claude usage limit reached", fresh, status=429),
+        _assistant("here it is", fresh)])
+    task = _by_key(client)["sess-a"]
+
+    assert task["blocked_reason"] == ""
+    assert task["resumes_at"] == 0.0
+    assert task["messages"][0]["limited"] is False
 
 
 def test_a_chat_turn_the_api_killed_reports_failed_on_the_row_too(client,
@@ -2237,7 +3001,7 @@ def test_archiving_cancels_the_work_and_files_the_session(client, projects_dir,
                claude_session_id="sess-a"),
         _entry("e2", "tomorrow", T12, claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1
     assert r.json()["filed"] is True
@@ -2262,7 +3026,7 @@ def test_archiving_stops_the_rule_behind_the_next_occurrence(client,
         _entry("e2", "every day", T12, template_id="tpl",
                claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
 
     states = {e["id"]: e["state"] for e in schedule.list_entries()}
@@ -2278,7 +3042,7 @@ def test_archiving_leaves_a_send_already_away_alone(client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 0
     assert schedule.list_entries()[0]["state"] == schedule.SENDING
@@ -2291,7 +3055,7 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
     `_is_task`'s rule and older than this endpoint."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/archive", json={"key": key})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False}
     assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
@@ -2299,12 +3063,12 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
 
 
 def test_archiving_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/archive",
+    assert client.post("/api/tasks/archive", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_archiving_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/archive",
+    assert client.post("/api/tasks/archive", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -2321,10 +3085,10 @@ def test_unarchiving_drops_the_filing_and_the_task_lands_where_it_derives(
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
                            turn="ok", claude_session_id="sess-a")])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _by_key(client)["sess-a"]["status"] == "archived"
 
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": "sess-a", "unfiled": True,
                         "status": "done"}
@@ -2340,9 +3104,9 @@ def test_unarchiving_reports_the_derived_lane_not_the_one_dropped_on(
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "broke", T12, state=schedule.SENT, fired=T12,
                            turn="failed", claude_session_id="sess-a")])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
 
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "blocked"
     assert _by_key(client)["sess-a"]["status"] == "blocked"
@@ -2354,13 +3118,13 @@ def test_unarchiving_keeps_the_note_the_tag_and_the_read_mark(client,
     """`clear_triage` drops the STATUS and its stamp, nothing else: a note, a
     tag or a read mark on that session is somebody else's data."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     triage_path = state_dir / "triage.json"
     rec = json.loads(triage_path.read_text())
     rec["sess-a"].update({"note": "keep me", "tags": ["blue"], "read": "1"})
     triage_path.write_text(json.dumps(rec))
 
-    assert client.post("/api/tasks/unarchive",
+    assert client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                        json={"key": "sess-a"}).status_code == 200
     kept = json.loads(triage_path.read_text())["sess-a"]
     assert kept == {"note": "keep me", "tags": ["blue"], "read": "1"}
@@ -2377,10 +3141,10 @@ def test_unarchiving_starts_no_run_and_revives_no_cancelled_work(client,
                claude_session_id="sess-a"),
         _entry("e2", "tomorrow", T12, claude_session_id="sess-a"),
     ])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     before = {e["id"]: dict(e) for e in schedule.list_entries()}
 
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert {e["id"]: dict(e) for e in schedule.list_entries()} == before, \
         "the schedule is not touched at all — nothing sent, nothing revived"
@@ -2396,7 +3160,7 @@ def test_unarchiving_a_task_that_was_not_filed_says_so_and_still_answers(
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.CANCELLED,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["unfiled"] is False
 
@@ -2405,7 +3169,7 @@ def test_unarchiving_a_task_with_no_session_only_answers(client, tmp_path):
     """Nothing to un-file — the row had no session to file in the first place."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/unarchive", json={"key": key})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json()["unfiled"] is False
     assert r.json()["status"] == "upcoming"
@@ -2413,12 +3177,12 @@ def test_unarchiving_a_task_with_no_session_only_answers(client, tmp_path):
 
 
 def test_unarchiving_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/unarchive",
+    assert client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_unarchiving_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/unarchive",
+    assert client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -2428,8 +3192,8 @@ def test_unarchiving_takes_no_lane(client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
                            turn="ok", claude_session_id="sess-a")])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
-    r = client.post("/api/tasks/unarchive",
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                     json={"key": "sess-a", "status": "in_progress",
                           "lane": "in_progress"})
     assert r.status_code == 200, r.text
@@ -2447,7 +3211,7 @@ def test_deleting_cancels_the_work_and_hides_the_row_everywhere(
         client, projects_dir, state_dir):
     path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "tomorrow", T12, claude_session_id="sess-a")])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": "sess-a", "cancelled": 1,
                         "erased_transcript": False}
@@ -2476,7 +3240,7 @@ def test_deleting_stops_the_rule_behind_the_next_occurrence(client,
         _entry("e2", "every day", T12, template_id="tpl",
                claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     states = {e["id"]: e["state"] for e in schedule.list_entries()}
     assert states["tpl"] == schedule.CANCELLED
@@ -2500,7 +3264,7 @@ def test_deleting_kills_a_rule_even_between_its_occurrences(client,
         _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
                turn="ok", template_id="tpl", claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1, "the rule itself is what gets called off"
 
@@ -2539,9 +3303,9 @@ def test_deleting_one_run_of_a_fresh_session_series_spares_the_series(
         _entry("e2", "every day", T12, template_id="tpl",
                new_task_each_run=True),
     ])
-    assert client.post("/api/tasks/archive",
+    assert client.post("/api/tasks/archive", headers={"X-Fused": "1"},
                        json={"key": "sess-b"}).status_code == 200
-    r = client.post("/api/tasks/delete", json={"key": "sess-b"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-b"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 0, "nothing of this task's own was pending"
 
@@ -2564,7 +3328,7 @@ def test_deleting_a_running_task_is_refused(client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
     assert schedule.list_entries()[0]["state"] == schedule.SENDING
     assert _by_key(client)["sess-a"]["status"] == "in_progress"
@@ -2575,9 +3339,9 @@ def test_deleting_an_archived_task_takes_the_row_out_of_archive(
     """The Archive lane is where deletable rows accumulate — a filed task is
     settled by construction, so the delete goes through and the lane shrinks."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _by_key(client)["sess-a"]["status"] == "archived"
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert _tasks(client) == []
 
@@ -2588,7 +3352,7 @@ def test_deleting_a_task_with_no_session_leaves_no_shell(client, tmp_path):
     the same answer hold even before the cancel settles."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/delete", json={"key": key})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1
     assert _tasks(client) == []
@@ -2602,33 +3366,67 @@ def test_an_entry_created_after_the_delete_revives_the_task(client,
     stamp that answers, never its due time: a cancelled entry's future due is
     a corpse with a date on it, not news."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _tasks(client) == []
     _seed_schedule([_entry("e9", "again", T12, claude_session_id="sess-a",
                            created="2036-01-01T00:00:00Z")])
     assert "sess-a" in _by_key(client)
 
 
-def test_a_transcript_that_grows_after_the_delete_revives_the_task(
+def test_a_user_message_after_the_delete_revives_the_task(
         client, projects_dir):
     """The other kind of later activity: the user said something in the
-    session itself. Append-only files move their mtime for exactly one
-    reason, and it postdating the tombstone is what brings the row back."""
-    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    session itself. It is the MESSAGE that answers, not the file — a
+    `type: "user"` row stamped after the tombstone."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _tasks(client) == []
-    future = time.time() + 60
-    os.utime(path, (future, future))
+    _write_transcript(projects_dir, "sess-a", "/p",
+                      [_user("hi", T9), _user("and one more thing", _later())])
     assert "sess-a" in _by_key(client)
 
 
+def test_the_exit_rows_of_a_closing_session_do_not_revive_the_task(
+        client, projects_dir):
+    """THE GHOST ROW (Akshil, 2026-09-20). Deleting a task takes the transcript
+    away, but the `claude` behind it is usually still alive — an app chat until
+    session_host's 30 s idle reap, a terminal until the user quits — and on its
+    way out Claude Code 2.1.x appends its bookkeeping: `last-prompt`,
+    `ai-title`, `mode`, `permission-mode`, `atis-latch`, `cost-state`. The file
+    is back, newer than the tombstone, holding nothing anybody typed, and the
+    row came back blank and done half a minute after it was deleted. No row
+    here carries a timestamp, so none of them is news."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi r1", T9)])
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert _tasks(client) == []
+    path = _write_transcript(projects_dir, "sess-a", "/p", _EXIT_ROWS)
+    future = time.time() + 60
+    os.utime(path, (future, future))
+    assert _tasks(client) == []
+
+
+def test_a_rewritten_transcript_with_nothing_newer_stays_deleted(
+        client, projects_dir):
+    """The same rule from the other side: the file is rewritten whole — newer
+    mtime, bigger, the conversation intact — but the newest thing the USER
+    said still predates the tombstone. A moved mtime is not a message."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert _tasks(client) == []
+    _write_transcript(projects_dir, "sess-a", "/p",
+                      [_user("hi", T9), _assistant("hello", T10)] + _EXIT_ROWS)
+    future = time.time() + 60
+    os.utime(path, (future, future))
+    assert _tasks(client) == []
+
+
 def test_deleting_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/delete",
+    assert client.post("/api/tasks/delete", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_deleting_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/delete",
+    assert client.post("/api/tasks/delete", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -2638,16 +3436,65 @@ def test_deleting_without_a_key_is_a_400(client):
 # verb above is unchanged and still keeps the transcript (D306).
 
 
+def test_history_of_an_erased_task_says_so(client, projects_dir, state_dir,
+                                            tmp_path, monkeypatch):
+    """A stale row pressed after its task was erased used to open a BLANK chat:
+    `_history` answers a missing transcript with the same empty payload a
+    not-yet-written chat gets. The endpoint marks the erased case from the
+    tombstone store, so the page can say what happened (Akshil, 2026-09-15)."""
+    import importlib.util
+    import os as _os
+    spec = importlib.util.spec_from_file_location(
+        "claude_agent_deleted",
+        _os.path.join("fused_render", "templates", "claude", "agent.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "PROJECTS", str(projects_dir))
+    monkeypatch.setattr(mod, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: mod)
+    target = tmp_path / "p"
+    target.mkdir()
+    encoded = mod._munge(str(target))
+    _write_transcript(projects_dir, "sess-a", str(target), [_user("hi", T9)],
+                      encoded=encoded)
+    params = {"file": str(target), "session_id": "sess-a", "native": "1"}
+    # Listed first, as any row a person can press has been: the listing is
+    # what hands the session its TASK number, and the erase stamps THAT record
+    # (`forget_session`) — the mark the history endpoint reads.
+    assert _tasks(client)[0]["key"] == "sess-a"
+
+    before = client.get("/api/claude-sessions/history", params=params).json()
+    assert before["turns"] and "deleted" not in before
+
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"}).status_code == 200
+    after = client.get("/api/claude-sessions/history", params=params).json()
+    assert after["turns"] == []
+    assert after["deleted"] is True
+
+    # A chat that simply has not written its first row is NOT deleted.
+    fresh = client.get("/api/claude-sessions/history",
+                       params={**params, "session_id": "sess-new"}).json()
+    assert fresh["turns"] == [] and "deleted" not in fresh
+
+    # A SOFT delete (row tombstoned, transcript kept, revivable) is not "gone"
+    # either — even for a session that has nothing written yet. The mark reads
+    # the erase store, not `deleted.json`, which both verbs write.
+    tasks_store.mark_deleted("sess-new")
+    soft = client.get("/api/claude-sessions/history",
+                      params={**params, "session_id": "sess-new"}).json()
+    assert soft["turns"] == [] and "deleted" not in soft
+
+
 def test_erasing_takes_the_session_off_the_disk_and_out_of_state(
         client, projects_dir, state_dir):
     path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     sidecar = path.parent / "sess-a"
     sidecar.mkdir()
     (sidecar / "subagent.jsonl").write_text("{}\n")
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert json.loads((state_dir / "triage.json").read_text())["sess-a"]
 
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": "sess-a", "cancelled": 0,
                         "erased_transcript": True, "removed": 2}
@@ -2672,7 +3519,7 @@ def test_erasing_reaches_every_copy_of_the_transcript(client, projects_dir):
                               encoded="-p")
     second = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)],
                                encoded="-p-copy")
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["removed"] == 2
     assert not first.exists() and not second.exists()
@@ -2686,7 +3533,7 @@ def test_erasing_forgets_the_read_marks_but_keeps_the_number(
     somebody starts."""
     _already_using(state_dir)
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "message_id": "MSG-001"}
                        ).status_code == 200
     assert "sess-a" in json.loads((state_dir / "read.json").read_text())
@@ -2694,7 +3541,7 @@ def test_erasing_forgets_the_read_marks_but_keeps_the_number(
     numbers = tasks_store.task_ids()
     assert numbers["sess-a"]["n"] == 1
 
-    assert client.post("/api/tasks/erase",
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"},
                        json={"key": "sess-a"}).status_code == 200
     assert "sess-a" not in json.loads((state_dir / "read.json").read_text())
     assert tasks_store.task_ids()["sess-a"] == numbers["sess-a"], \
@@ -2712,7 +3559,7 @@ def test_erasing_a_running_task_is_refused(client, projects_dir):
     path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == \
         "that task is running — stop the run first, then delete"
@@ -2730,7 +3577,7 @@ def test_erasing_cancels_the_rule_behind_the_task(client, projects_dir):
         _entry("e2", "every day", T12, template_id="tpl",
                claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1, \
         "cancelling the rule already withdrew the occurrence it had minted"
@@ -2743,7 +3590,7 @@ def test_erasing_a_task_with_no_session_only_cancels(client, tmp_path):
     erase, so the answer says so instead of pretending."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/erase", json={"key": key})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": key, "cancelled": 1,
                         "erased_transcript": False, "removed": 0}
@@ -2784,7 +3631,7 @@ def test_a_refused_file_is_not_a_deleted_task(client, projects_dir, state_dir):
     proj.mkdir()
     (proj / "sess-a.jsonl").symlink_to(real)
     assert [t["key"] for t in _tasks(client)] == ["sess-a"]
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 500, r.text
     assert real.exists() and (proj / "sess-a.jsonl").exists()
     assert not (state_dir / "deleted.json").exists() or \
@@ -2802,7 +3649,7 @@ def test_a_symlinked_project_dir_is_still_ours(client, projects_dir):
     (real_dir / "sess-a.jsonl").write_text(json.dumps(_user("hi", T9)) + "\n")
     (projects_dir / "-encoded-sess-a").symlink_to(real_dir)
     assert [t["key"] for t in _tasks(client)] == ["sess-a"]
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["removed"] == 1 and r.json()["erased_transcript"] is True
     assert not (real_dir / "sess-a.jsonl").exists()
@@ -2821,7 +3668,7 @@ def test_a_file_that_will_not_go_is_not_a_deleted_task(
         raise OSError("busy")
 
     monkeypatch.setattr(tasks_mod.os, "remove", refuse)
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 500, r.text
     assert "could not remove 1 file" in r.json()["detail"]
     assert path.exists()
@@ -2847,7 +3694,7 @@ def test_a_sidecar_that_will_not_go_leaves_the_transcript_and_the_row(
         raise OSError("busy")
 
     monkeypatch.setattr(tasks_mod.shutil, "rmtree", refuse)
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 500, r.text
     assert path.exists() and sidecar.exists()
     assert [t["key"] for t in _tasks(client)] == ["sess-a"]
@@ -2855,18 +3702,18 @@ def test_a_sidecar_that_will_not_go_leaves_the_transcript_and_the_row(
     # rmtree is put back — `monkeypatch.undo()` would also drop the fixtures
     # that point PROJECTS_DIR at the tmp tree.)
     monkeypatch.setattr(tasks_mod.shutil, "rmtree", real_rmtree)
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert not path.exists() and not sidecar.exists()
 
 
 def test_erasing_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/erase",
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_erasing_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/erase",
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -2887,7 +3734,7 @@ def test_marking_one_message_read_leaves_the_older_one_unread(client,
     ])
     assert _by_key(client)["sess-a"]["unread"] == 3
 
-    r = client.post("/api/tasks/read",
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"},
                     json={"key": "sess-a", "message_id": "MSG-003"})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 2}
@@ -2903,7 +3750,7 @@ def test_reading_a_thread_through_clears_it(client, projects_dir, state_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("one", T9, uuid="u1"), _user("two", T10, uuid="u2")])
     for message_id in ("MSG-001", "MSG-002"):
-        client.post("/api/tasks/read",
+        client.post("/api/tasks/read", headers={"X-Fused": "1"},
                     json={"key": "sess-a", "message_id": message_id})
     task = _by_key(client)["sess-a"]
     assert task["unread"] == 0
@@ -2916,7 +3763,7 @@ def test_a_future_message_is_not_unread(client, projects_dir, state_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("one", T9,
                                                            uuid="u1")])
     _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
-    client.post("/api/tasks/read", json={"key": "sess-a",
+    client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "sess-a",
                                          "message_id": "MSG-001"})
     task = _by_key(client)["sess-a"]
     assert task["message_count"] == 2
@@ -2993,7 +3840,7 @@ def test_marking_a_whole_task_read_is_one_call(client, projects_dir, state_dir):
                                                            uuid="ub")])
     assert _by_key(client)["sess-a"]["unread"] == 5
 
-    r = client.post("/api/tasks/read", json={"key": "sess-a", "all": True})
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "sess-a", "all": True})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 0}
 
@@ -3024,7 +3871,7 @@ def test_a_whole_task_mark_leaves_a_pending_message_alone(client, projects_dir,
     _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
     assert _by_key(client)["sess-a"]["unread"] == 1
 
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "all": True}
                        ).json() == {"ok": True, "unread": 0}
     record = json.loads((state_dir / "read.json").read_text())["sess-a"]
@@ -3040,7 +3887,7 @@ def test_a_whole_task_mark_does_not_reach_a_message_that_arrives_after_it(
     _already_using(state_dir)
     path = _write_transcript(projects_dir, "sess-a", "/p",
                              [_user("one", T9, uuid="u1")])
-    client.post("/api/tasks/read", json={"key": "sess-a", "all": True})
+    client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "sess-a", "all": True})
 
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(_user("two", T10, uuid="u2")) + "\n")
@@ -3059,7 +3906,7 @@ def test_the_per_message_mark_is_unchanged_by_the_whole_task_one(
         _user("two", T10, uuid="u2"),
         _user("three", T11, uuid="u3"),
     ])
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "message_id": "MSG-003"}
                        ).json() == {"ok": True, "unread": 2}
     messages = client.get("/api/tasks/sess-a/messages").json()["messages"]
@@ -3067,7 +3914,7 @@ def test_the_per_message_mark_is_unchanged_by_the_whole_task_one(
         "MSG-003": False, "MSG-002": True, "MSG-001": True}
 
     # And the whole-task ask then clears what is left, in one request.
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "all": True}
                        ).json() == {"ok": True, "unread": 0}
 
@@ -3080,7 +3927,7 @@ def test_marking_a_whole_task_read_before_day_one_marks_nothing(client,
     message that genuinely arrives."""
     path = _write_transcript(projects_dir, "sess-a", "/p",
                              [_user("one", T9, uuid="u1")])
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "all": True}
                        ).json() == {"ok": True, "unread": 0}
     # Nothing to mark and nothing marked — the store is not even created.
@@ -3094,27 +3941,27 @@ def test_marking_a_whole_task_read_before_day_one_marks_nothing(client,
 
 
 def test_the_read_endpoint_refuses_nonsense(client):
-    bad = client.post("/api/tasks/read", json={"key": "s", "message_id": "12"})
+    bad = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "s", "message_id": "12"})
     assert bad.status_code == 400
     assert "MSG-nnn" in bad.json()["detail"]
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "  ", "message_id": "MSG-001"}
                        ).status_code == 400
     # Neither field is a client bug, not a licence to clear a whole thread.
-    missing = client.post("/api/tasks/read", json={"key": "s"})
+    missing = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "s"})
     assert missing.status_code == 400
     assert "message_id" in missing.json()["detail"]
     # ...and so is asking for both at once.
-    both = client.post("/api/tasks/read",
+    both = client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "s", "message_id": "MSG-001", "all": True})
     assert both.status_code == 400
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": " ", "all": True}).status_code == 400
 
 
 def test_marking_a_whole_task_that_no_longer_exists_is_not_an_error(client,
                                                                     state_dir):
-    r = client.post("/api/tasks/read", json={"key": "gone", "all": True})
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "gone", "all": True})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 0}
     # A whole-task mark is DEFINED by a thread, so with no thread there is
@@ -3124,7 +3971,7 @@ def test_marking_a_whole_task_that_no_longer_exists_is_not_an_error(client,
 
 
 def test_marking_a_task_that_no_longer_exists_is_not_an_error(client):
-    r = client.post("/api/tasks/read",
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"},
                     json={"key": "gone", "message_id": "MSG-001"})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 0}
@@ -3203,6 +4050,9 @@ class _FakeAgent:
 
     def _session_from_out(self, run_dir):
         return ""
+
+    def _perm_dir(self, run_dir):
+        return os.path.join(run_dir, "perm")
 
     def _tool_detail(self, name, inp):
         return str((inp or {}).get("command") or "")
@@ -3400,5 +4250,115 @@ def test_a_waiting_task_cannot_be_deleted_out_from_under_its_run(
     parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
            alive={"r-1"})
 
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
+
+
+# ---- a number is never minted from a GUESSED project ---------------------------
+# `_place` falls back to decoding the transcript's directory name when the file
+# has not recorded its cwd yet — and the decode is lossy: every hyphen becomes a
+# separator, so `-private-tmp-pqueue-qa-alpha` reads as `/private/tmp/pqueue/qa/alpha`.
+# A number allocated against THAT project lives in a counter of its own, and the
+# folder's real counter hands the same number out again a second later: two
+# TASK-002s in one folder (browser QA, 2026-09-16, after #1163 started listing a
+# row the instant a send is made, before the CLI's first row lands).
+
+
+def test_a_transcript_with_no_cwd_yet_gets_no_number_until_it_has_one(
+        client, projects_dir):
+    encoded = "-private-tmp-pqueue-qa-alpha"
+    real = "/private/tmp/pqueue-qa/alpha"
+    # A sibling in the same folder that has said where it is.
+    _write_transcript(projects_dir, "sess-old", real, [_user("earlier", T9)],
+                      encoded=encoded)
+    # …and a brand-new one whose only row so far carries no cwd at all.
+    _write_transcript(projects_dir, "sess-new", None, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T10},
+    ], encoded=encoded)
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-old"]["task_id"] == "TASK-001"
+    # The guessed project is still what the row is filed under for display…
+    assert rows["sess-new"]["project"].startswith("/private/tmp/pqueue")
+    # …but it is a GUESS, and a guess mints nothing.
+    assert rows["sess-new"]["task_id"] == ""
+
+    # The first real row lands, with the cwd, and the number follows from the
+    # folder's own counter — the next free one, not a second TASK-001.
+    _write_transcript(projects_dir, "sess-new", real, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T10},
+        _user("hello", T11),
+    ], encoded=encoded)
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-new"]["project"] == real
+    assert rows["sess-new"]["task_id"] == "TASK-002"
+    assert rows["sess-old"]["task_id"] == "TASK-001"
+
+
+def test_a_guessed_project_still_shows_the_number_it_already_has(
+        client, projects_dir):
+    # Bugbot, PR #1124: leaving a guessed row out of the allocation must not
+    # also leave it out of the ANSWER. A session numbered before the rule — or
+    # one whose transcript never records a cwd — keeps wearing its number.
+    encoded = "-private-tmp-pqueue-qa-alpha"
+    _write_transcript(projects_dir, "sess-old", None, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T9},
+    ], encoded=encoded)
+    tasks_store.ensure_ids([("sess-old", "/private/tmp/pqueue/qa/alpha", 1.0)])
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-old"]["task_id"] == "TASK-001"
+
+
+
+def test_cancel_on_a_pending_key_whose_entry_already_ran_stops_its_run(
+        client, monkeypatch):
+    """`POST /api/tasks/create` answers `pending:<entry>` at once and a page
+    holds that key until the session row shows up — so a cancel on it after
+    the scheduler claimed the entry must stop the run it started, not answer
+    not_running because the MESSAGE is no longer cancellable."""
+    from fused_render import project_queue
+
+    _seed_schedule([_entry("e1", "go", _later(-30), target="/p/index.html",
+                           state=schedule.SENT, fired=_later(-30),
+                           run_id="run-1", claude_session_id="sess-a")])
+    calls = []
+
+    class _Agent:
+        def _live_run(self, file, session_id=""):
+            calls.append(("live", file, session_id))
+            return {"run_id": "run-1"}
+
+        def _cancel(self, run_id):
+            calls.append(("cancel", run_id))
+            return {"cancelled": run_id}
+
+    monkeypatch.setattr(project_queue, "agent_module", lambda: _Agent())
+    r = client.post(f"/api/tasks/{tasks_store.pending_key('e1')}/cancel",
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"cancelled": True}
+    assert calls == [("live", "/p/index.html", "sess-a"), ("cancel", "run-1")]
+
+
+def test_create_answers_the_stored_target_and_its_folder(client, tmp_path,
+                                                          monkeypatch):
+    """A handle scopes its feed to the folder the server STORED the target
+    under (`?under=` wants an absolute directory), never to the raw string the
+    page typed — so the create reply names both `target` and `under`."""
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    app_dir = tmp_path / "proj"
+    app_dir.mkdir()
+    page = app_dir / "index.html"
+    page.write_text("<meta name=\"fused-app\">", encoding="utf-8")
+
+    r = client.post("/api/tasks/create", json={"prompt": "go", "target": str(page)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["key"] == tasks_store.pending_key(body["entry_id"])
+    assert body["target"] == str(page)
+    assert body["under"] == str(app_dir)
+
+    r = client.post("/api/tasks/create", json={"prompt": "go", "target": str(app_dir)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert r.json()["under"] == str(app_dir)

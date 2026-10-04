@@ -1,19 +1,21 @@
-"""Self-update endpoints (update/mac.py). Status itself rides /api/config's
-`update` field so the shell's existing 5s poll carries it — these POSTs only
-trigger work. Both mutate (network + a bundle swap), so they carry the D3
-X-Fused guard; they 404 when no update manager is running (dev server, CLI,
-Windows/Linux packages — those update through the supervisor's own path)."""
+"""Self-update endpoints (update/mac.py, update/linux.py). Status itself rides
+/api/config's `update` field so the shell's existing 5s poll carries it —
+these POSTs only trigger work. Both mutate (network + an artifact swap), so
+they carry the D3 X-Fused guard; they 404 when no update manager is running
+(dev server, CLI, or Windows — which updates entirely through the
+supervisor's own path, supervisor/_win32/update.py, with no in-app
+manager)."""
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
+from fused_render import update
 from fused_render.server.common import _require_fused
-from fused_render.update import mac as mac_update
 
 router = APIRouter()
 
 
 def _manager():
-    manager = mac_update.manager()
+    manager = update.manager()
     if manager is None:
         raise HTTPException(status_code=404, detail="self-update is not available here")
     return manager
@@ -26,7 +28,12 @@ def api_update_check(x_fused: str | None = Header(default=None)):
     # Throttled (mac_update.MIN_CHECK_GAP_S): the client fires this when the
     # app comes back to the front, and a run of focus flips must not become a
     # run of CDN fetches. The auto loop's own tick passes force=True.
-    return _manager().check()
+    manager = _manager()
+    manager.check()
+    # A check on return/press that finds a release starts the download too
+    # when "Automatically download updates" is on, not only the 5-min tick.
+    manager.maybe_auto_install()
+    return manager.status()
 
 
 class InstallRequest(BaseModel):

@@ -8,6 +8,7 @@
 // it out loud (Today / This week / Earlier) instead of decorating.
 import { useEffect, useMemo, useState } from "react";
 import { SearchIcon, XIcon, AppWindowIcon, WifiOffIcon } from "lucide-react";
+import { isRasterIconUrl } from "@platform/lib/app-icon-src";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
 import {
@@ -31,7 +32,7 @@ interface LanAppRow {
   recency: number; // epoch seconds; 0 = never opened and no mtime
   url: string;
   preview: string | null; // preview.png, full-bleed
-  icon: string | null; // icon.svg
+  icon: string | null; // icon.svg, else icon.png (clipped to a rounded square)
 }
 
 const FILTER_KEY = "fused-render:lan-filter";
@@ -301,7 +302,15 @@ function AppCard({ app, now }: { app: LanAppRow; now: number }) {
         {app.preview ? (
           <img src={app.preview} alt="" className="size-full object-cover" loading="lazy" />
         ) : app.icon ? (
-          <img src={app.icon} alt="" className="size-12 object-contain" />
+          <img
+            src={app.icon}
+            alt=""
+            className={
+              isRasterIconUrl(app.icon)
+                ? "size-12 rounded-xl object-cover"
+                : "size-12 object-contain"
+            }
+          />
         ) : (
           <span className="text-[44px] leading-none font-semibold tracking-[-0.04em]">{initial}</span>
         )}

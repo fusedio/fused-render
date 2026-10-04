@@ -74,10 +74,12 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
@@ -606,6 +608,31 @@ def _fused_cli_note() -> str:
         "which merges concurrent workbench edits first: publish a coherent "
         "change set with that command and read the errors it prints back. "
         "See that folder's CLAUDE.md for the details."
+    )
+
+
+def _origin_note() -> str:
+    """The prompt paragraph disclosing the server's origin, or "" when none is
+    published. Same rule as `_fused_cli_note`: a fact about the machine, so it
+    is appended to every target's prompt rather than woven into each shape.
+
+    Why it must be said: the authoring skill's testing loop opens
+    `/explorer/embed/<path>` on the running server, and the only port a model
+    can guess is the documented default — wrong under a `--port` override, the
+    desktop launcher's free-port pick, a per-branch dev server, and Render
+    App's 2777. `FUSED_RENDER_ORIGIN` is exported by every one of those before
+    it serves (server/app.py `set_server_origin_env`), and `_spawn_env` hands
+    it down, so the child could read the env itself — but a skill that says
+    "check the env" competes with a habit that says "127.0.0.1:1777", and the
+    prompt stating the origin outright settles it."""
+    origin = _origin()
+    if not origin:
+        return ""
+    return (
+        f" The fused-render server this chat belongs to is serving at {origin} "
+        "(also in $FUSED_RENDER_ORIGIN). Open pages for checking under that "
+        "origin — never assume a default port such as 1777 or 2777, and never "
+        "start a second server: one is already running."
     )
 
 
@@ -1401,16 +1428,201 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     return path
 
 
+# The project queue's held-answers store — a card the user answered while
+# another task was holding this folder's working tree. The decision is NOT in
+# the run dir yet (it is delivered when the folder frees), so without this a
+# reloaded page would draw the card as unanswered and invite a second click.
+#
+# THE PATH IS SPELLED HERE RATHER THAN IMPORTED, and that is deliberate twice
+# over: this file is a TEMPLATE outside the package's import graph (SPEC PY-15)
+# and also a runPython target, so `import fused_render` is not available to it —
+# the same reason CLAUDE_DIR above is re-derived from the environment instead of
+# read off `tasks_store`. `fused_render/project_queue.py` carries the matching
+# note beside its own copy; move one and move both.
+HELD_ANSWERS = ("claude-sessions", "held_answers.json")
+
+# The store's shape version — `project_queue.STORE_VERSION`, spelled again here
+# beside the path it belongs to and for the same reason. A file that does not
+# carry THIS number reads as empty: a future layout is not something this code
+# can half-understand, and guessing at it would badge a card off fields it
+# invented. Move it there and move it here.
+HELD_ANSWERS_VERSION = 1
+
+
+def _held_answers(run_id: str) -> set:
+    """Every request id of `run_id` whose answer is held, or an empty set.
+
+    Best-effort: every failure reads as nothing held. A store that will not
+    parse must cost a card its "held" badge, never the card list — the page's
+    whole transcript is drawn off that list.
+
+    AND CHEAP ON THE MACHINE THAT HAS NEVER HELD ANYTHING, which is every
+    machine with the project queue switched off. `_permissions` is on the poll
+    path, so this used to open a JSON file per call for a feature nobody had
+    turned on; a `stat` of a file that is not there is the whole cost now, and
+    the caller does not even pay that unless some card is still unanswered
+    (round-2 review, 2026-09-12)."""
+    if not run_id:
+        return set()
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser(
+        "~/.fused-render")
+    path = os.path.join(home, *HELD_ANSWERS)
+    try:
+        os.stat(path)
+    except OSError:
+        return set()   # nothing has ever been held here: no read, no parse
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        if state.get("version") != HELD_ANSWERS_VERSION:
+            return set()
+        answers = state.get("answers")
+        return {str(a.get("request_id") or "") for a in answers
+                if isinstance(a, dict) and str(a.get("run_id") or "") == run_id}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return set()
+
+
+# THE CHAT'S OWN model/effort record — `fused_render/tasks_store.py`'s
+# `session_settings.json`, keyed by session id:
+#
+#     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}
+#
+# THE PATH IS SPELLED HERE RATHER THAN IMPORTED, for the same two reasons
+# HELD_ANSWERS above is: this file is a TEMPLATE outside the package's import
+# graph (SPEC PY-15) and also a runPython target, so `import fused_render` is
+# not available to it. `tasks_store` carries the matching note beside its own
+# copy; move one and move both.
+#
+# WHY THE APP KEEPS ITS OWN RECORD when the transcript looks like it already
+# says. `_scan_transcript` reads the model off `message.model`, which every
+# assistant row carries, and the effort off a top-level `effort` key, which
+# Claude Code writes only sometimes — so effort routinely read as MISSING, and
+# a missing field used to be filled in from the newest OTHER chat in the folder.
+# A task set up with haiku/low opened on a neighbour's max (Akshil, 2026-09-18).
+# And no transcript exists at all in the seconds between a chat getting an id
+# and its first row landing, which is exactly when a new task's peek is read.
+#
+# So every spawn (`_start`) and every send (`_send`) records what it actually
+# launched with, the pill records every pick (`POST /api/tasks/settings`), and
+# `_defaults` reads THIS first. Transcript scanning stays as the fallback for
+# conversations that predate the store.
+SESSION_SETTINGS = ("claude-sessions", "session_settings.json")
+
+
+def _state_file(*parts: str) -> str:
+    """One path inside `~/.fused-render`'s global state dir — the same
+    directory, derived the same way from the environment, that `_held_answers`
+    reads its own store from. GLOBAL, never branch-nested: a session belongs to
+    the machine's one `~/.claude/projects` pool, so a chat started from a
+    worktree must be the same chat when it is read from main."""
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser(
+        "~/.fused-render")
+    return os.path.join(home, *parts)
+
+
+def _session_settings(session_id: str) -> tuple:
+    """`(model, effort)` this app recorded for one conversation, "" for each
+    field it has no record of.
+
+    Best-effort, and cheap on a machine that has never recorded one: a `stat` of
+    a file that is not there is the whole cost, the same shape `_held_answers`
+    takes on the poll path. Every failure reads as no record, which simply
+    leaves the older transcript detection speaking."""
+    if not session_id or _bad_id(session_id):
+        return "", ""   # the same guard `_defaults` puts on ids from the page
+    path = _state_file(*SESSION_SETTINGS)
+    try:
+        os.stat(path)
+    except OSError:
+        return "", ""   # nothing has ever been recorded here: no read, no parse
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        rec = state.get(session_id)
+        if not isinstance(rec, dict):
+            return "", ""
+        return str(rec.get("model") or ""), str(rec.get("effort") or "")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return "", ""
+
+
+def _record_settings(session_id: str, model: str = "", effort: str = "") -> None:
+    """Record what this conversation is running with. Best-effort: a store that
+    will not open costs a chat its remembered pill, never a send.
+
+    ONLY THE FIELDS GIVEN, which is what makes this safe to call from two
+    places that each know half: an empty `model` means "not saying", not "no
+    model". Same invariant `tasks_store.record_settings` keeps on the server
+    side — the two writers share one file, so they have to share one rule.
+
+    Locked for the whole read-modify-write where the platform has flock, like
+    `tasks_store._update`: two chats sending at the same moment is ordinary (the
+    app runs several windows against one server), and an unlocked pair would
+    persist a snapshot taken before the other's write and drop it."""
+    session_id = (session_id or "").strip()
+    model = (model or "").strip()
+    effort = (effort or "").strip()
+    if not session_id or _bad_id(session_id) or not (model or effort):
+        return   # an id `_defaults` would refuse to read is not worth writing
+    path = _state_file(*SESSION_SETTINGS)
+    try:
+        import fcntl        # POSIX only — Windows takes the unlocked path,
+    except ImportError:     # the same posture tasks_store takes for the same file
+        fcntl = None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".lock", "w") as lock:
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    state = json.load(fh)
+            except (OSError, ValueError):
+                state = {}
+            if not isinstance(state, dict):
+                state = {}
+            rec = state.get(session_id)
+            rec = dict(rec) if isinstance(rec, dict) else {}
+            if model:
+                rec["model"] = model
+            if effort:
+                rec["effort"] = effort
+            rec["at"] = time.time()
+            state[session_id] = rec
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(state, fh, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def _permissions(run_dir: str) -> list:
     """Every permission request this run has raised, each with the user's
     decision if one has been made. The whole list, not just the unanswered
     ones: a frame that re-attaches mid-turn (mode switch, reload) has to be
-    able to rebuild the cards it never saw."""
+    able to rebuild the cards it never saw.
+
+    `held` is that same promise for the one answer that is not on disk: a
+    decision the user made while another task held this folder is parked by the
+    project queue and written when the folder frees (see `_held_answers`). It
+    reads as no `decision` here — correctly, nothing has been written — so
+    without the flag a reload would show the card asking again.
+
+    IT IS A FIELD WHATEVER THE FLAG SAYS, and the store is consulted only where
+    it could say yes: a run every one of whose cards has a decision on disk has
+    nothing left to hold, so the answers file is not even looked for. On a
+    machine with the queue off that is every run, and the cost of the field is
+    then nothing at all — a card still open costs one `stat` (see
+    `_held_answers`). A page must not have to know which way a server-side flag
+    is set to read its own transcript, which is why the field is not itself
+    gated."""
     perm_dir = _perm_dir(run_dir)
     try:
         names = sorted(n for n in os.listdir(perm_dir) if n.endswith(".req.json"))
     except OSError:
         return []
+    if not names:
+        return []   # nothing was ever asked here: no store read, no loop
     out = []
     for name in names:
         try:
@@ -1437,6 +1649,12 @@ def _permissions(run_dir: str) -> list:
             "input": req.get("input") if isinstance(req.get("input"), dict) else {},
             "created_at": req.get("created_at") or 0,
             "decision": str(res.get("decision") or ""),
+            # ANSWERED, NOT YET DELIVERED — the project queue is holding this
+            # decision until the folder frees. Never true alongside a
+            # `decision`: delivery writes the one and drops the other, which is
+            # why the store below is read only for a run that still has one
+            # unanswered card.
+            "held": False,
             "scope": str(res.get("scope") or ""),
             "mode": str(res.get("mode") or ""),
             # Only a question card has these, and it is the same reason the whole
@@ -1444,6 +1662,16 @@ def _permissions(run_dir: str) -> list:
             # rebuild a card it never saw, including what was chosen on it.
             "answers": answers if isinstance(answers, dict) else {},
         })
+    if any(not row["decision"] for row in out):
+        held = _held_answers(os.path.basename(os.path.normpath(run_dir)))
+        for row in out:
+            # A DECIDED ROW IS NEVER HELD, whatever the store still says. The
+            # two are answers to the same card from opposite ends and delivery
+            # writes the decision before dropping the record, so a poll landing
+            # in between (or a store a crash left a stale record in) would put
+            # `held` on a card that has its answer on disk — and the page draws
+            # "Answer queued" over a card that is already allowed.
+            row["held"] = not row["decision"] and row["id"] in held
     return out
 
 
@@ -2073,7 +2301,8 @@ _DETACH = (
 
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
-                 extra_read_dirs: list | None, file: str) -> list:
+                 extra_read_dirs: list | None, file: str,
+                 new_session_id: str = "") -> list:
     """The CLAUDE CLI's own argv — everything from the binary down to the
     last `--effort` flag. Pulled out of `_start` so the session host, which
     spawns this SAME process (just kept open on a stdin pipe instead of a
@@ -2164,11 +2393,26 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # only when the wrapper actually exists (see _fused_cli_note).
     cmd += ["--append-system-prompt",
             (_split_system_prompt(file, pane) if os.path.isdir(file)
-             else _system_prompt(file)) + _fused_cli_note()]
+             else _system_prompt(file)) + _fused_cli_note() + _origin_note()]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
         cmd += ["--resume", session_id]
+    elif new_session_id:
+        # A FRESH SESSION, WITH AN ID WE ALREADY KNOW. Without this the CLI
+        # mints one and announces it in its first `system` row — two to four
+        # seconds in — so the app could not name the conversation it had just
+        # started until the CLI got round to telling it, and everything keyed on
+        # that name (the Tasks row, the send's own mark, `_live_run`'s
+        # re-attach) waited with it. `_start` mints it instead and hands it to
+        # both sides at once.
+        #
+        # Mutually exclusive with `--resume` by construction, not by promise:
+        # `_start` only mints one when there is no session to resume, and the
+        # `elif` means an argv can never carry both even if a caller passes
+        # both. The CLI rejects that pair, and a run that will not spawn is a
+        # far worse failure than the lag this closes.
+        cmd += ["--session-id", new_session_id]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -2220,6 +2464,29 @@ def _inbox_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "inbox")
 
 
+_INBOX_STAMP_LOCK = threading.Lock()
+_last_inbox_stamp_ns = 0
+
+
+def _inbox_stamp_ns() -> int:
+    """`time.time_ns()`, but STRICTLY INCREASING across calls in this process.
+
+    The inbox name IS the order: the host drains oldest name first and
+    `_drained_unechoed` matches the CLI's echoes against the drained entries as a
+    prefix, in name order. On Windows `time.time_ns()` ticks at ~15 ms, so two
+    follow-ups typed (or two tests written) inside one tick drew the same stamp
+    and sorted by the random suffix — the second message could be drained, and
+    matched, before the first (Windows CI, PR #1124). One extra nanosecond per
+    tie keeps the clock honest and the order the order things were written in."""
+    global _last_inbox_stamp_ns
+    with _INBOX_STAMP_LOCK:
+        now = time.time_ns()
+        if now <= _last_inbox_stamp_ns:
+            now = _last_inbox_stamp_ns + 1
+        _last_inbox_stamp_ns = now
+        return now
+
+
 def _write_inbox_row(run_dir: str, row: dict) -> None:
     """Queue one raw stream-json row into `run_dir/inbox/` for the session
     host to drain into the CLI's stdin verbatim (`session_host._drain_inbox`
@@ -2239,7 +2506,7 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
         # (`_send`, `_cancel`) — the inbox is written to repeatedly for the
         # life of the session, not created once and never touched again.
         _private_dir(inbox)
-    name = "%020d-%s.json" % (time.time_ns(), os.urandom(3).hex())
+    name = "%020d-%s.json" % (_inbox_stamp_ns(), os.urandom(3).hex())
     final_path = os.path.join(inbox, name)
     # `session_host._drain_inbox` runs every `_DRAIN_INTERVAL_SECONDS` against
     # THIS SAME directory, listing whatever `*.json` names are present and
@@ -2389,8 +2656,30 @@ def _start(file: str, message: str, session_id: str, model: str,
         else DEFAULT_PERMISSION_MODE
     cli_mode = PERMISSION_MODES[mode]
 
-    # poll() records the session id with the run once claude reports it;
-    # it needs the file + first message, so keep them with the run.
+    # THE SESSION THIS TURN RUNS IN, KNOWN BEFORE THE CLI IS EVEN SPAWNED.
+    #
+    # A resume already names it — the caller said which conversation to
+    # continue. A FRESH chat did not, and until now nobody knew: the CLI minted
+    # an id and announced it in its first `system` row, two to four seconds in
+    # (`_session_from_out`). Everything that identifies a conversation waited on
+    # that — the Tasks row a send should appear in, the mark that says the turn
+    # started, a page re-attaching to its own run — so the first seconds of
+    # every new chat were seconds in which the app could not say what it had
+    # just started.
+    #
+    # So mint it HERE and tell the CLI (`--session-id`, see `_claude_argv`).
+    # uuid4 because that is the shape Claude Code's own ids are and the shape
+    # its transcript filenames take; a collision with an existing session would
+    # be the CLI's to refuse, and 122 random bits is not the risk in this
+    # sentence.
+    #
+    # `session_id` STAYS "" for a fresh chat, and nothing else in this file
+    # changes meaning: it is the INPUT — "resume this one" — and writing the
+    # minted id into it would make every new chat look like a continuation to
+    # `meta["resumed_from"]`, to `_live_run`, and to the Tasks listing's
+    # `_entry_session`. The minted id rides beside it, under its own name.
+    new_session_id = "" if session_id else str(uuid.uuid4())
+
     # `mode` is the mode this process was SPAWNED with, and it is recorded
     # because nothing else can reconstruct it: the picker's URL param is what
     # the *next* turn will use, so reading that back mid-turn describes a
@@ -2401,8 +2690,19 @@ def _start(file: str, message: str, session_id: str, model: str,
     # re-attaching page compares against the bubble on screen (which shows the
     # typed text only, so an unstripped copy silently stopped matching). Stripped
     # here, once, rather than at each of those three readers.
+    #
+    # poll() records the session id with the run once claude reports it;
+    # it needs the file + first message, so keep them with the run.
     meta = {"file": file, "message": _strip_app_state(message),
             "resumed_from": session_id, "mode": mode}
+    if new_session_id:
+        # `session_id` on meta is the ANSWER — the conversation this run's turn
+        # happens in — next to `resumed_from`, the question. Written before the
+        # spawn, which is the point: `_run_sessions` and `_live_run` can name
+        # this run's session from the instant the run dir exists, rather than
+        # from whenever the CLI first speaks, and `_poll` seeds its own answer
+        # from it so the very first poll already carries the id.
+        meta["session_id"] = new_session_id
     # `draft_key` is the composer's RECEIPT for this send, carried verbatim and
     # read by nothing in this template (fused_render/server/routers/tasks.py
     # `_settle_new_chats` is its one reader). A chat with no session yet keeps
@@ -2440,7 +2740,13 @@ def _start(file: str, message: str, session_id: str, model: str,
     req = {"agent": os.path.abspath(__file__), "run_dir": run_dir,
            "file": file, "cwd": _workdir(file), "pane": pane,
            "cli_mode": cli_mode, "session_id": session_id, "model": model,
-           "effort": effort, "extra_read_dirs": list(extra_read_dirs or [])}
+           "effort": effort, "extra_read_dirs": list(extra_read_dirs or []),
+           # The id minted above, "" for a resume. Its own key beside
+           # `session_id` rather than folded into it: the host builds the CLI's
+           # argv from this dict (`_claude_argv`), and the two produce
+           # DIFFERENT flags — `--resume` continues a conversation, and
+           # `--session-id` names a new one.
+           "new_session_id": new_session_id}
     proc = subprocess.Popen(
         [sys.executable, _SESSION_HOST],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -2450,6 +2756,17 @@ def _start(file: str, message: str, session_id: str, model: str,
         proc.stdin.write(json.dumps(req).encode("utf-8"))
     finally:
         proc.stdin.close()
+    # WHAT THIS CHAT RUNS WITH — the app's own answer to "which model is this
+    # conversation on?", which every surface reads first (`_defaults`). Here
+    # rather than only in the composer because this is the one point every send
+    # passes through: a scheduled run, the apps API and canvases.py all reach
+    # the CLI this way and none of them has a pill to have recorded a pick.
+    # AFTER the host is up, not before: a Popen that raises leaves no
+    # conversation to have a record about, and a record for a chat that never
+    # ran would answer the next chat handed the same id. `new_session_id or
+    # session_id` is the conversation the turn actually happens in, the same
+    # pair the return value names.
+    _record_settings(new_session_id or session_id, model, effort)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -2473,7 +2790,14 @@ def _start(file: str, message: str, session_id: str, model: str,
     else:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(proc.pid))
-    return {"run_id": run_id}
+    # THE ID THE TURN RUNS IN, handed straight back to whoever asked for the
+    # send. A resume gets the session it named; a fresh chat gets the one this
+    # function just minted. Either way the caller can name the conversation in
+    # the same breath it started it — which is what lets the page say "a turn
+    # just started HERE" (`POST /api/tasks/running`) before anything the CLI
+    # writes exists, and what lets the Tasks listing carry a row for a chat with
+    # no transcript yet.
+    return {"run_id": run_id, "session_id": new_session_id or session_id}
 
 
 def _app_dir_for(path: str) -> str:
@@ -2574,6 +2898,34 @@ def _commit_turn(file: str, message: str) -> None:
         git("commit", "-q", "-m", subject, "--", spec)
     except Exception:
         pass
+    finally:
+        # Whether the sweep committed or the turn already committed its own
+        # work (the app's CLAUDE.md asks for that), whatever the default
+        # branch is now ahead by should reach the remote.
+        _request_sync(app_dir)
+
+
+def _request_sync(app_dir: str) -> None:
+    """Ask the server to fast-forward and push `app_dir`'s repo, in ITS
+    background (POST /api/git-upstream, action "sync"). This template is a
+    standalone process and may not import fused_render (D166), so the server
+    owns the git engine; the call answers at once and the push never holds up
+    this poll. Best-effort: no server (a bare test), a refusal, a timeout —
+    all mean "no sync now"; the next trigger retries."""
+    origin = _origin()
+    if not origin:
+        return
+    try:
+        req = urllib.request.Request(
+            origin + "/api/git-upstream",
+            data=json.dumps({"action": "sync", "path": app_dir,
+                             "trigger": "claude-turn"}).encode("utf-8"),
+            headers={"X-Fused": "1", "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+    except Exception:  # noqa: BLE001 — see docstring
+        pass
 
 
 def _alive(run_dir: str) -> bool:
@@ -2590,6 +2942,16 @@ def _alive(run_dir: str) -> bool:
             return _pid_alive(fh.read().strip())
     except OSError:
         return False
+
+
+#: Rows the CLI writes that are NOT part of any turn: `control_response` is
+#: its answer to a control request of ours (the STOP button's `interrupt`,
+#: which lands AFTER the `result` when the reader presses stop on a turn that
+#: just ended — Akshil, 2026-09-23: "why is it in progress when it already
+#: completed"), and `rate_limit_event` is plan bookkeeping. Neither reopens a
+#: turn; treating them as if they did left a finished run reading live for as
+#: long as the session host kept the process alive.
+_NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
 
 
 def _turn_state(run_dir: str) -> tuple:
@@ -2632,6 +2994,8 @@ def _turn_state(run_dir: str) -> tuple:
         if row.get("parent_tool_use_id"):
             continue  # a subagent's own row, not the main turn's (see _poll)
         t = row.get("type")
+        if t in _NOT_A_TURN_ROW:
+            continue
         idle = t == "result"
         if t == "system" and row.get("subtype") == "background_tasks_changed":
             arr = row.get("tasks")
@@ -2639,6 +3003,39 @@ def _turn_state(run_dir: str) -> tuple:
                 tasks = {str(x.get("task_id")): True
                          for x in arr if isinstance(x, dict) and x.get("task_id")}
     return not idle, bool(tasks)
+
+
+def _run_own_session(run_dir: str, meta: dict) -> str:
+    """The session this run's OWN turn is in — not the one it resumed.
+
+    THREE SOURCES, newest knowledge first, and each is the fallback for the one
+    before it going missing:
+
+    * the `session` file — written by the first `_poll` that saw an id, which
+      is the CLI's own answer and therefore the most authoritative;
+    * the head of `out.jsonl` (`_session_from_out`) — the same answer, straight
+      out of the CLI's first `system` row, for a run nobody has polled yet;
+    * `meta["session_id"]` — the id `_start` MINTED and passed to the CLI as
+      `--session-id`. Written before the spawn, so it is the only one of the
+      three that exists during the seconds this whole path is about: a fresh
+      chat used to be nameless until the CLI spoke, and every lookup keyed on
+      the session answered "" for it (a page re-attaching to its own run, a
+      folder's live-session set, the history read).
+
+    "" when the run has none of them, which is a resume (its id is
+    `resumed_from`, the QUESTION, and lives beside this everywhere this is
+    asked) or a run dir too broken to read.
+    """
+    try:
+        with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+            own = fh.read().strip()
+    except OSError:
+        own = ""
+    if not own:
+        own = _session_from_out(run_dir)
+    if not own and isinstance(meta, dict):
+        own = str(meta.get("session_id") or "")
+    return own
 
 
 def _session_from_out(run_dir: str) -> str:
@@ -2836,24 +3233,15 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                 session_id and _folder_and_member(target, file)):
             continue
         if session_id:
-            own = ""
-            try:
-                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                    own = fh.read().strip()
-            except OSError:
-                pass
-            if not own:
-                # The `session` file is written by the FIRST POLL that sees the
-                # id (see _poll) — so a run nobody ever polled has none. That is
-                # not an exotic state: it is exactly what leaving mid-start
-                # leaves behind (Akshil, 2026-08-19 — the reopened chat "does
-                # not show me the streaming thing"): the page left before its
-                # first poll, a NEW chat has no `resumed_from` either, and this
-                # lookup answered "" for a run that was alive the whole time.
-                # The CLI announces the id in its first system row, so read it
-                # from the head of out.jsonl ourselves — a few lines, never the
-                # transcript.
-                own = _session_from_out(run_dir)
+            # See `_run_own_session` for the three places this answer can come
+            # from and why the last of them matters most here.
+            own = _run_own_session(run_dir, meta)
+            # (Leaving mid-start is the state this fallback chain exists for —
+            # Akshil, 2026-08-19, the reopened chat that "does not show me the
+            # streaming thing": the page left before its first poll, so there is
+            # no `session` file, and a NEW chat has no `resumed_from` either.
+            # The out.jsonl head answered that once the CLI had spoken; the
+            # minted id in meta answers it from the instant the run dir exists.)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
         # Liveness LAST: the pid check alone used to be enough, because the
@@ -2911,15 +3299,8 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
         turn_open, _tasks_pending = _turn_state(run_dir)
         if not turn_open:
             continue
-        own = ""
-        try:
-            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                own = fh.read().strip()
-        except OSError:
-            pass
-        if not own:
-            own = _session_from_out(run_dir)
-        for sid in (meta.get("resumed_from", ""), own):
+        for sid in (meta.get("resumed_from", ""),
+                    _run_own_session(run_dir, meta)):
             if sid:
                 live.add(sid)
     return live
@@ -2979,14 +3360,7 @@ def _live_host(file: str, session_id: str = "",
         if os.path.abspath(meta.get("file", "")) != file:
             continue
         if session_id:
-            own = ""
-            try:
-                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                    own = fh.read().strip()
-            except OSError:
-                pass
-            if not own:
-                own = _session_from_out(run_dir)
+            own = _run_own_session(run_dir, meta)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
         if _host_alive(run_dir):
@@ -3084,6 +3458,21 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         # life of the file.
         with _private_open(os.path.join(run_dir, "host.json")) as f:
             json.dump(host, f)
+    # WHAT THIS CHAT RUNS WITH, recorded for the same reason `_start` records
+    # it and at the same moment in the send: a follow-up never passes through
+    # `_start`, so without this a pill changed mid-session would reach the CLI
+    # (the control request above) and leave no trace any surface could read
+    # back. `_run_own_session` names the conversation this run's turn is in;
+    # a resume has its id under `resumed_from` instead, which is the same
+    # conversation. Whichever is present is the one the record belongs to.
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    _record_settings(
+        _run_own_session(run_dir, meta) or str(meta.get("resumed_from") or ""),
+        model, effort)
     # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
     # `pending_echo` handling) will not believe a stale trailing `result` in
     # `out.jsonl` means the turn is done: at this exact instant the host may
@@ -3156,6 +3545,287 @@ def _discard_inbox(run_dir: str) -> list:
             continue  # the host drained it out from under us; the CLI has it
         discarded.extend(t for t in texts if t)
     return discarded
+
+
+
+def _inbox_at(name: str) -> float:
+    """The epoch seconds inside an inbox entry's own name — `_write_inbox_row`
+    builds it as a zero-padded `time.time_ns()` — or 0.0 for a name that does
+    not carry one, the way every other absent time on this wire reads. Read off
+    the NAME and not a `stat`, because the name is the write time exactly and
+    is already in hand."""
+    try:
+        return int(name.split("-", 1)[0]) / 1_000_000_000
+    except ValueError:
+        return 0.0
+
+
+# How much of the tail of `out.jsonl` is read looking for a follow-up's own
+# echo, and how many drained entries are walked back looking for one that has
+# not echoed yet. Both are ceilings on a per-poll cost, not guesses about
+# content: the echo being hunted lands at most one reply after the previous
+# one, and more than a handful of un-echoed follow-ups in one session is not a
+# thing a person does. A window that turns out to hold no echo at all is read
+# as "everything drained has echoed" — the conservative answer, and the one
+# that degrades to exactly the behaviour this rule replaced.
+_ECHO_TAIL_BYTES = 1 << 20
+_DRAINED_WALK_MAX = 16
+
+# THE TWO MEMOS THAT KEEP THIS OFF THE DISK ON EVERY POLL (🟡 review,
+# 2026-09-12). `_poll` runs every 400 ms for the life of a run and both of these
+# answers are functions of files that mostly do not change between two of them:
+# the first keyed on what `out.jsonl` IS (its size and mtime), the second on the
+# newest name in `inbox/done/`. Capped and cleared wholesale rather than aged —
+# they are a cache of cheap facts about live runs, and a shell that visits a
+# great many of them must not grow one entry per run forever.
+_ECHO_CACHE_MAX = 64
+# run_dir -> ((size, mtime_ns), (texts, whole))
+_echo_cache: dict = {}
+# run_dir -> the newest `inbox/done/` name PROVEN fully echoed. Once that is the
+# newest name there is, nothing is waiting and nothing needs reading at all.
+_echoed_done: dict = {}
+
+
+def _remember_capped(cache: dict, key: str, value) -> None:
+    """Store, with a ceiling: a full cache is emptied rather than aged, because
+    the entry worth keeping is the run being polled right now and it is about to
+    be written again."""
+    if len(cache) >= _ECHO_CACHE_MAX and key not in cache:
+        cache.clear()
+    cache[key] = value
+
+
+def _echo_texts(run_dir: str) -> tuple:
+    """`_read_echo_texts`, memoized on the FILE — its size and its mtime.
+
+    Read on every `_poll` (400 ms) and every history refresh, this decoded and
+    scanned up to a megabyte of `out.jsonl` each time for an answer that can only
+    change when the file does. The stamp is the whole invalidation rule: a byte
+    appended moves both halves of it, and a file that has not been written to
+    hands back the list that was already built.
+
+    An unreadable file caches nothing and answers what the read answers."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return [], False
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    hit = _echo_cache.get(run_dir)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    value = _read_echo_texts(run_dir)
+    _remember_capped(_echo_cache, run_dir, (stamp, value))
+    return value
+
+
+def _read_echo_texts(run_dir: str) -> tuple:
+    """`(texts, whole)` — the trimmed text of every user turn `out.jsonl` has
+    echoed back, in file order, over the tail of the file, and whether that
+    tail was the WHOLE file.
+
+    `--replay-user-messages` makes the CLI write each message it takes off its
+    own queue back into the stream the moment it OPENS that turn, and
+    `_starts_new_turn` is the row shape that says so (the same reader
+    `_read_current_turn` refuses to advance its cursor past). That echo is the
+    proof a message has arrived in the conversation, and it is the only proof
+    there is: nothing else on disk distinguishes a follow-up the CLI is holding
+    from one it has answered.
+
+    The tail only, and a partial first line is dropped: this is read on every
+    poll, and a session's whole `out.jsonl` grows without bound. `whole` is what
+    lets the caller tell "this session has echoed nothing yet" (its first
+    message is still in the CLI's hands) from "the echo is behind the window" (a
+    reply longer than `_ECHO_TAIL_BYTES`) — opposite answers about one empty
+    list."""
+    path = os.path.join(run_dir, "out.jsonl")
+    whole = True
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > _ECHO_TAIL_BYTES:
+                whole = False
+                fh.seek(size - _ECHO_TAIL_BYTES)
+                fh.readline()   # the line the window cut in half is not a row
+            chunk = fh.read()
+    except OSError:
+        return [], False
+    texts = []
+    for line in chunk.decode("utf-8", "replace").splitlines():
+        # The cheap screen, before any parse, and the second half of it is the
+        # one that matters: a tool result is a `type: "user"` row too and there
+        # are far more of them than there are turns, so screening them out here
+        # is what keeps this off `json.loads` for most of the window.
+        if '"user"' not in line or '"tool_result"' in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or not _starts_new_turn(row):
+            continue
+        texts.append(_inbox_text(row).strip())
+    return texts, whole
+
+
+def _inbox_text(row) -> str:
+    """The words in one inbox entry (or one echoed user row) — the `text`
+    blocks of its content, joined the way `_write_inbox_entry` splits them.
+    `""` for anything that is not a user turn with words in it."""
+    if not isinstance(row, dict) or row.get("type") != "user":
+        return ""
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return ""
+    texts = [str(b.get("text") or "") for b in content
+             if isinstance(b, dict) and b.get("type") == "text"]
+    return "\n\n".join(t for t in texts if t)
+
+
+def _inbox_entry(path: str, name: str) -> dict | None:
+    """One inbox entry file as `{"id", "text", "at"}`, or None when it is not a
+    user turn with words in it — a `control_request`, a half-written file, or
+    one drained out from under us."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            row = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    text = _inbox_text(row)
+    if not text:
+        return None
+    return {"id": name, "text": text, "at": _inbox_at(name)}
+
+
+def _drained_unechoed(run_dir: str) -> list:
+    """The follow-ups the host has already handed to the CLI that the CLI has
+    NOT yet opened a turn for — `[{"id", "text", "at"}]`, oldest first.
+
+    **DRAINED IS NOT DELIVERED (Akshil, 2026-09-12).** The rule this replaces
+    was "the inbox directory IS the untaken set", which is true of the wire and
+    false of the conversation: `session_host._drain_inbox` runs every 0.2 s and
+    `os.replace`s each entry into `inbox/done/` the instant its bytes are on
+    the pipe, while the CLI holds it in its own queue until the reply in flight
+    finishes — minutes, for a long turn. So `inbox/*.json` was empty almost
+    always, and the bubble this whole field exists to draw appeared for a
+    fifth of a second and then vanished until the answer came back.
+
+    What is actually asked, therefore, is whether the message has SHOWN UP in
+    `out.jsonl` yet (`_echo_texts`), and the walk is cheap because both sides
+    are FIFO: the host drains in name order and the CLI echoes in the order it
+    drained, so the newest done entry is the last to echo and everything behind
+    the first echoed one has echoed too. The walk stops there.
+
+    Matched by POSITION and not by membership, so a message sent twice is not
+    read as its own echo: the echoed entries are a PREFIX of the drained ones, so
+    the last `p` echoes in the file are the texts of the first `p` entries here,
+    and the largest `p` that holds is how many have landed. Everything after it
+    is waiting. (Comparing each entry against the newest echo instead read two
+    identical follow-ups with one echo as two answered messages and drew
+    neither.) A TRUNCATED window holding no echo at all (a reply longer than
+    `_ECHO_TAIL_BYTES`) answers "all echoed", which is the reading this had
+    before the field existed; an empty WHOLE file means the CLI has not opened a
+    turn yet, and everything drained really is waiting."""
+    done = os.path.join(_inbox_dir(run_dir), "done")
+    try:
+        names = sorted(n for n in os.listdir(done) if n.endswith(".json"))
+    except OSError:
+        return []          # nothing has ever been drained here
+    if not names:
+        return []
+    # NOTHING NEW SINCE THE LAST TIME EVERYTHING HAD ECHOED — the fast path off
+    # the whole walk, and the ordinary case for the life of a run: the newest
+    # drained entry was proven echoed on some earlier poll and the host has
+    # drained nothing since, so there is nothing to read and nothing to draw.
+    if _echoed_done.get(run_dir) == names[-1]:
+        return []
+    echoes, whole = _echo_texts(run_dir)
+    if not echoes and not whole:
+        return []
+    recent = []
+    for name in names[-_DRAINED_WALK_MAX:]:
+        entry = _inbox_entry(os.path.join(done, name), name)
+        if entry is None:
+            continue       # a control request: it is not a turn on either side
+        recent.append(entry)
+    texts = [entry["text"].strip() for entry in recent]
+    # HOW MANY OF THESE HAVE ECHOED — a POSITION, counted from the oldest, and
+    # not a search for the newest text that happens to match (🔴 review,
+    # 2026-09-12). Both sides are FIFO: the host drains in name order and the CLI
+    # echoes in the order it drained, so if the first `p` of these have been
+    # answered then the LAST `p` echoes in the file are exactly their texts, in
+    # that order. The largest `p` that holds is the count.
+    #
+    # Comparing the newest entry against the newest echo alone could not tell
+    # "answered" from "said twice": two "go on"s with one echo matched on the
+    # second one and dropped BOTH bubbles, which is the reader's own words going
+    # missing while the CLI still held them.
+    matched = 0
+    for size in range(min(len(texts), len(echoes)), 0, -1):
+        if echoes[len(echoes) - size:] == texts[:size]:
+            matched = size
+            break
+    waiting = recent[matched:]
+    if not waiting:
+        # Proven, so the walk above is skipped until the host drains again.
+        _remember_capped(_echoed_done, run_dir, names[-1])
+    return waiting
+
+
+def _inbox_waiting(run_dir: str) -> list:
+    """Every follow-up the user has typed that the conversation cannot yet show
+    them — `[{"id", "text", "at", "drained"}]`, oldest first.
+
+    A FOLLOW-UP TYPED INTO A RUNNING TURN IS NOWHERE ELSE (Akshil, 2026-09-12).
+    `_send` writes the message into the inbox and returns; the host ships it to
+    the CLI's stdin on its next drain tick, and the CLI echoes it into
+    `out.jsonl` only when it actually opens that turn — which, for a line typed
+    mid-reply, is after the reply in flight has finished. Between those two
+    moments the transcript has no row for the message at all, so a reload drew
+    a conversation with the user's own words missing while the run that will
+    answer them was still going. This is the one place that fact lives, and it
+    rides on `_poll` and on `_history_live` so a chat learns it on the same
+    answer it learns everything else about its run.
+
+    TWO SETS, AND THE SECOND IS THE LONG ONE. The undrained entries are
+    `inbox/*.json` — typed, on disk, not yet on the wire, which lasts a fifth
+    of a second (`drained: false`). The drained-but-unechoed ones
+    (`_drained_unechoed`, `drained: true`) are the rest of the wait, and on a
+    turn that runs for minutes they are the whole of it: listing only the first
+    set was a bubble that flashed and disappeared (Akshil's reload, 2026-09-12).
+    The flag travels because the two are different kinds of undo — an undrained
+    entry can still be thrown away (`_discard_inbox`), one the CLI is holding
+    cannot — and a reader that has to guess would have to re-derive the whole
+    rule.
+
+    Oldest first across both, which is the order they will run: the names are
+    zero-padded nanosecond stamps (`_write_inbox_row`), so sorting the names IS
+    sorting by write time, and the drained ones are older than the undrained
+    ones by construction.
+
+    A `.tmp` name is skipped (a write still in flight is not an entry yet), and
+    a `control_request` row is skipped because it is not words anybody typed —
+    the same `type == "user"` filter `_discard_inbox` applies to the same
+    directory.
+
+    One `listdir`, and on a chat that has never drained anything that is the
+    whole cost: nothing is opened. Once something HAS been drained the price is
+    the bounded tail of `out.jsonl` (`_ECHO_TAIL_BYTES`) plus one file per
+    un-echoed follow-up — the same order of work the poll already does over the
+    same file.
+    """
+    inbox = _inbox_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+    except OSError:
+        return []      # no inbox yet, or the run dir is going away
+    waiting = [dict(row, drained=True) for row in _drained_unechoed(run_dir)]
+    for name in names:
+        entry = _inbox_entry(os.path.join(inbox, name), name)
+        if entry is not None:
+            waiting.append(dict(entry, drained=False))
+    return waiting
 
 
 def _retry_info(row: dict):
@@ -4182,12 +4852,13 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     return False
 
 
-def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
+def _poll(run_id: str, file: str = "", app_reads: bool = False,
+          inbox: bool = True) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
-                "retry_total": 0, "retry_status": 0, "segments": []}
+                "retry_total": 0, "retry_status": 0, "segments": [], "inbox": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
     # (RUNS is one flat dir), and the `run` url param survives some hops the
@@ -4220,7 +4891,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
                     "permissions": [], "app_state": [], "skills": [], "retry": None,
-                    "retry_total": 0, "retry_status": 0, "segments": []}
+                    "retry_total": 0, "retry_status": 0, "segments": [],
+                    "inbox": []}
 
     text_parts = []
     result_text = None
@@ -4264,6 +4936,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
     quota = None         # the latest `rate_limit_event` — plan window + reset time
+    context = None       # the latest API response's own `usage` (`_context_usage`)
     # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
     # thing the CLI already writes to out.jsonl and the page used to ignore, so
     # a long quiet stretch — a minute of extended thinking, a Bash `sleep 30`,
@@ -4301,8 +4974,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
         t = row.get("type")
         # Anything at all after a `result` is the run waking up for another turn
         # (the harness's hooks fire first, then `init`, then the reply), so the
-        # quiet-verb window closes on the first row of any kind — see `idle`.
-        if t != "result":
+        # quiet-verb window closes on the first row of any kind — see `idle` —
+        # except the rows that are not the run speaking at all
+        # (`_NOT_A_TURN_ROW`).
+        if t != "result" and t not in _NOT_A_TURN_ROW:
             idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
@@ -4368,6 +5043,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
                         for x in tasks if isinstance(x, dict) and x.get("task_id")}
         elif t == "assistant":
             skills += _skill_calls(row)
+            # THE WINDOW AS OF THIS MESSAGE. Same filter and same shape as the
+            # transcript walk uses (`_context_usage`), because it is the same
+            # record: the stream writes each finished assistant message with
+            # the API's own `usage` on it.
+            reading = _context_usage(row.get("message") or {})
+            if reading is not None:
+                context = reading
             for blk in (row.get("message") or {}).get("content") or []:
                 if isinstance(blk, dict) and blk.get("type") == "tool_use" \
                         and blk.get("id"):
@@ -4413,6 +5095,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
                     tool_input_bytes += len(delta.get("partial_json") or "")
             elif et == "message_start":
                 thinking_tokens = 0
+                # THE EARLIEST THE WINDOW CAN BE KNOWN: `message_start` carries
+                # the request's own input counts — the prompt that just went up
+                # the wire — seconds before the message it opens is finished and
+                # written as an `assistant` row. Read here as well as there so a
+                # long reply's meter steps at the START of the response.
+                reading = _context_usage(ev.get("message") or {})
+                if reading is not None:
+                    context = reading
             elif et == "message_delta":
                 usage = ev.get("usage") or {}
                 tokens_current = usage.get("output_tokens", tokens_current)
@@ -4615,6 +5305,21 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
     except (OSError, json.JSONDecodeError):
         meta = {}
 
+    # THE FIRST POLL ALREADY NAMES THE SESSION. `new_session` above is whatever
+    # the CLI has announced in `out.jsonl` so far, which for the first couple of
+    # seconds of a fresh run is nothing — so every early poll answered
+    # `session_id: ""` and the page could not say which conversation it was
+    # watching. `_start` minted the id and passed it to the CLI
+    # (`--session-id`), so meta has the answer from before the process existed.
+    #
+    # SEEDED, NEVER PREFERRED: only when the scan found nothing. The CLI's own
+    # word is the authority — if it ever disagrees (an old binary that ignores
+    # the flag and mints its own), the row it wrote wins and this never runs.
+    seeded_session = False
+    if not new_session:
+        new_session = str(meta.get("session_id") or "")
+        seeded_session = bool(new_session)
+
     # First poll that sees a turn finished CLEANLY sweeps anything it left
     # uncommitted into the app's repo (one-shot via a marker, like the
     # session record below). This is a FALLBACK: the app's CLAUDE.md tells
@@ -4658,7 +5363,16 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             # would be holding an id meta.json has never heard of.
             with _private_open(os.path.join(run_dir, "session")) as fh:
                 fh.write(new_session)
-            open(marker, "w", encoding="utf-8").close()
+            if not seeded_session:
+                # The MARKER is what makes this one-shot, and a SEEDED id has
+                # not earned it: it is `_start`'s intention, not the CLI's
+                # report. Writing the file without the marker means the next
+                # poll rewrites it — one tiny write per poll, for the two or
+                # three polls before the CLI speaks — and the moment it does,
+                # its own answer lands here and latches. Latching the seed
+                # instead would leave a `session` file naming an id the CLI
+                # never used, for any run where the flag did not take.
+                open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass  # session bookkeeping must never break the chat itself
 
@@ -4715,6 +5429,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             # `resets_at` is what lets the page schedule the comeback at the
             # actual reset instead of telling the user to wait.
             "quota": quota,
+            # HOW FULL THE CONTEXT WINDOW IS, mid-turn. The CLI updates its
+            # statusline after every API RESPONSE, and one turn that calls six
+            # tools is seven responses — so the meter steps up during a long
+            # turn instead of freezing until the transcript refresh lands.
+            # `None` when this poll's window held no response at all: "nothing
+            # new", which the page reads as "keep what you have".
+            "context": context,
             # The page's own stop button sets a variable and can swallow the
             # resulting error itself, but a stop from anywhere else (the
             # tasks queue card's ✕, which goes through schedule.py) needs
@@ -4736,6 +5457,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
+            # WHAT THE USER HAS TYPED THAT IS NOT IN THE TRANSCRIPT YET — the
+            # follow-ups still sitting in this run's inbox, oldest first, each
+            # `{"id", "text", "at"}`. NOT gated on `echo_pending` and not part
+            # of the window: these are messages the CLI has not taken yet, so
+            # no byte of them is in `out.jsonl` to be echoed or trimmed, and a
+            # reload mid-turn drew nothing at all for them before this existed
+            # (see `_inbox_waiting`). Empty on every poll of an idle chat.
+            "inbox": _inbox_waiting(run_dir) if inbox else [],
             "segments": [] if echo_pending
             else _segments_from_rows(parsed, app_reads=app_reads),
             # The seams inside this payload where a mid-stream follow-up was
@@ -4762,35 +5491,27 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
 _MODEL_SHORT = ("fable", "opus", "sonnet", "haiku")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
-# The PINNED entries the picker offers beside the aliases — full `--model` ids
-# rather than a family name (template.html's MODELS). They have to be matched
-# BEFORE the short names below, and matched exactly, because every one of them
-# contains its own family name: "claude-fable-5-1-20260401" collapsed to "fable"
-# under the old loop, so a chat actually running the pinned model came back from
-# detection as the floating alias and the pill preselected the wrong option.
-#
-# Each pattern is anchored on the version and refuses a longer number, so a
-# future "fable-5-10" is NOT read as 5.1 — the whole point of a pinned entry is
-# that it names one model, and a prefix match would quietly stop being true.
-# What is not pinned still falls through to the family name, which is the right
-# answer for it: the alias is what the user would have picked.
-_MODEL_PINNED = ((re.compile(r"fable-5[.-]1(?!\d)"), "claude-fable-5-1"),)
+# The picker used to offer a PINNED full id ("claude-fable-5-1") beside the
+# family alias that names the same model, and this function had to match it
+# first and exactly — every pinned id contains its own family name, so the loop
+# below would otherwise collapse it. That entry is gone: it was the same model
+# under two spellings, so the menu asked a question with one answer (Akshil,
+# 2026-09-18). Every Fable id — dated, pinned, bare — is "fable" again, which is
+# the row the picker offers and the one the user would have chosen.
 
 
 def _short_model(raw: str) -> str:
-    """Collapse any spelling of a model — full id ('claude-fable-5'), alias
-    ('opusplan'), or already-short name — to one of the selector's values.
+    """Collapse any spelling of a model — full id ('claude-fable-5-1-20260401'),
+    alias ('opusplan'), or already-short name — to one of the selector's values.
 
-    That is a short family name ('fable') for anything the picker offers as an
-    alias, and the full pinned id ('claude-fable-5-1') for the ones it offers by
-    version. The return value is a value the <select> actually holds: the page
-    validates detection against its own MODELS list and drops anything else, so
-    a spelling that does not round-trip here is a preselect that silently never
-    happens."""
+    That is the short family name: 'fable', 'opus', 'sonnet', 'haiku'. The
+    return value is a value the <select> actually holds: the page validates
+    detection against its own MODELS list and drops anything else, so a spelling
+    that does not round-trip here is a preselect that silently never happens —
+    and a transcript or a record still naming the retired pinned id has to come
+    back as the alias, or a chat that has been running on Fable for weeks opens
+    on a blank pill."""
     raw = (raw or "").lower()
-    for pattern, value in _MODEL_PINNED:
-        if pattern.search(raw):
-            return value
     for name in _MODEL_SHORT:
         if name in raw:
             return name
@@ -4834,58 +5555,123 @@ def _scan_transcript(path: str) -> tuple:
     return model, effort
 
 
-def _defaults(file: str) -> dict:
-    """The model/effort the user ACTUALLY last used with Claude Code for this
-    project — through this template or the CLI directly — so the selectors can
-    preselect a real config instead of a hardcoded guess.
+def _global_defaults() -> tuple:
+    """(model, effort) from ~/.claude/settings.json — THE global preference.
 
-    Priority: newest session transcripts in this project's store (true
-    last-used, shared by CLI and template runs since both key sessions on the
-    same cwd munge), then settings files (project .claude/settings.local.json,
-    project .claude/settings.json, ~/.claude/settings.json — the `model` and
-    `effortLevel` keys). Empty fields mean nothing was detected; the page keeps
-    its own fallback."""
-    workdir = _workdir(os.path.abspath(file))
-    model = effort = source = ""
-    proj = os.path.join(PROJECTS, _munge(workdir))
+    The `model` / `effortLevel` pair the app's Claude settings page writes
+    (claude_config/preferences.py) and the CLI reads for itself. ONE reader for
+    the two callers that need it: a brand-new chat below, and the New task
+    card's `GET /api/claude-sessions/defaults`, which shows the pair the run it
+    books will actually get. Two readers of one file drift, and a card that
+    promises "haiku" for a chat that opens on "fable" is worse than a card that
+    promises nothing.
+
+    A field is "" when the file does not set it, cannot be read or parsed, or
+    names something this build's pickers do not offer. "" is the honest answer
+    and it is what leaves the caller's own constant speaking — the same one the
+    CLI would have resolved for itself."""
     try:
-        names = [n for n in os.listdir(proj) if n.endswith(".jsonl")]
-        paths = sorted((os.path.join(proj, n) for n in names),
-                       key=os.path.getmtime, reverse=True)
-    except OSError:
-        paths = []
-    # Newest few only: the newest transcript IS the answer when it has both
-    # fields, and one more file covers a fresh session that hasn't spoken yet.
-    for path in paths[:5]:
-        m, e = _scan_transcript(path)
-        model = model or m
-        effort = effort or e
-        if model or effort:
-            source = "session"
-        if model and effort:
-            break
-    if not (model and effort):
-        for p in (os.path.join(workdir, ".claude", "settings.local.json"),
-                  os.path.join(workdir, ".claude", "settings.json"),
-                  os.path.join(CLAUDE_DIR, "settings.json")):
-            try:
-                with open(p, encoding="utf-8") as f:
-                    data = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if not model:
-                m = _short_model(str(data.get("model", "")))
-                if m:
-                    model, source = m, source or "settings"
-            if not effort:
-                e = str(data.get("effortLevel", "")).lower()
-                if e in _EFFORT_LEVELS:
-                    effort, source = e, source or "settings"
-            if model and effort:
-                break
-    return {"model": model, "effort": effort, "source": source}
+        with open(os.path.join(CLAUDE_DIR, "settings.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    model = _short_model(str(data.get("model") or ""))
+    effort = str(data.get("effortLevel") or "").lower()
+    return model, (effort if effort in _EFFORT_LEVELS else "")
+
+
+def _defaults(file: str, session_id: str = "") -> dict:
+    """The model/effort the selectors should open on — for THIS CONVERSATION
+    when one is named, else the GLOBAL preference.
+
+    THE CONVERSATION ANSWERS FOR ITSELF, or it does not answer (Akshil,
+    2026-09-18: "what I select as a user stays"). With a `session_id` this reads
+    exactly two things, in order:
+
+      1. THE APP'S OWN RECORD (`_session_settings`) — what the last spawn, the
+         last send, or the reader's own pill said this chat runs with. Written
+         by us, so it is complete and it exists from the instant the chat has an
+         id, which is seconds before its first transcript row does.
+      2. THAT CHAT'S TRANSCRIPT, and only that one — the legacy fallback, for
+         conversations older than the record.
+
+    AND THEN IT STOPS. No sibling transcript, no settings file, nothing about
+    the FOLDER. A field neither of the two knows comes back "" and the caller's
+    own constant default speaks. That is the whole fix: asking about one
+    conversation and being answered partly about another is worse than being
+    answered "I don't know", because the caller cannot tell which half it got —
+    and it is precisely how a task created with haiku/low opened on fable/max,
+    since Claude Code writes the transcript's `effort` key only sometimes and
+    the missing half was filled in from whichever neighbour chat ran last.
+
+    WITHOUT a session id — a brand-new chat, which has no conversation to ask —
+    the answer is the GLOBAL preference and only that: `model` / `effortLevel`
+    in ~/.claude/settings.json, through `_global_defaults` (Akshil, 2026-09-21:
+    "only factor in global model/effort for all new chats — from the file
+    explorer composer or from the New task modal").
+
+    NOTHING FOLDER-SPECIFIC ANY MORE. This used to walk a ladder — the newest
+    five transcripts in the folder's project store, then the folder's
+    .claude/settings.local.json, then its .claude/settings.json, and only then
+    the global file. Every rung of it made a new chat inherit a decision
+    somebody made for something else: one experiment on haiku in a folder
+    silently pinned every later chat opened there, and the two folder settings
+    files are Claude Code's own config, not a statement about what the reader
+    wants THIS window to run. The global pair is the one the reader sets on
+    purpose, in the app's own Claude settings page, and it is now the only
+    thing a new chat reads — so the composer and the New task card agree, in
+    every folder, without either of them guessing.
+
+    `recorded` rides back beside the resolved pair so the composer can rank the
+    record ABOVE its own `?model=`/`?effort=` params: those params are a SEED
+    for a new chat (the New task card's deep link, "Fix with AI"), and a seed
+    that outranked the record would undo a pill the reader changed mid-chat on
+    the next open. Empty fields mean nothing was detected; the page keeps its
+    own fallback."""
+    model = effort = source = ""
+    # `_bad_id` for the reason every other reader of a session id has it: the id
+    # becomes a path below, and one that does not round-trip is not a session
+    # this store can hold. A rejected id is treated as no id at all.
+    named = bool(session_id) and not _bad_id(session_id)
+    rec_model, rec_effort = _session_settings(session_id) if named else ("", "")
+    # A RECORD OUTLIVES THE PICKER'S VOCABULARY. Chats settled before the pinned
+    # Fable id was retired still have "claude-fable-5-1" written down for them;
+    # handed back raw it is a value the page's MODELS list no longer holds, so
+    # the pill blanks and the ranking falls to a default nobody chose. Folded
+    # through the same function detection uses, it comes back as the alias that
+    # now offers that model. A value the vocabulary does not know at all is left
+    # exactly as written — the page is the one that judges it.
+    rec_model = _short_model(rec_model) or rec_model
+    if rec_model or rec_effort:
+        model, effort, source = rec_model, rec_effort, "record"
+    if named:
+        # THIS CHAT'S TRANSCRIPT, and then done — see the docstring for why
+        # the global read below is not reached from here.
+        if not (model and effort):
+            proj = os.path.join(PROJECTS, _munge(_workdir(os.path.abspath(file))))
+            mine = os.path.join(proj, session_id + ".jsonl")
+            if os.path.exists(mine):
+                m, e = _scan_transcript(mine)
+                model = model or m
+                effort = effort or e
+                if m or e:
+                    # "record" already, when one existed: the leading source is
+                    # the one a reader wants named.
+                    source = source or "session"
+        return {"model": model, "effort": effort, "source": source,
+                "recorded": {"model": rec_model, "effort": rec_effort}}
+    # A BRAND-NEW CHAT TAKES THE GLOBAL PREFERENCE AND NOTHING ELSE — see the
+    # docstring for why the folder ladder that used to run here is gone.
+    model, effort = _global_defaults()
+    if model or effort:
+        source = "settings"
+    # `recorded` is empty for a chat with no id: there is nothing to have
+    # recorded about a conversation that does not exist yet, and the caller's
+    # own seed is what speaks for that window.
+    return {"model": model, "effort": effort, "source": source,
+            "recorded": {"model": "", "effort": ""}}
 
 
 # How many OUTSIDE sessions the list carries, and how far into one of them the
@@ -5321,14 +6107,7 @@ def _stopped_last(file: str, session_id: str) -> bool:
             continue
         if os.path.abspath(meta.get("file", "")) != file:
             continue
-        own = ""
-        try:
-            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                own = fh.read().strip()
-        except OSError:
-            pass
-        if not own:
-            own = _session_from_out(run_dir)
+        own = _run_own_session(run_dir, meta)
         if own != session_id and str(meta.get("resumed_from") or "") != session_id:
             continue
         # The newest run of this conversation — whatever it says, it is the
@@ -5404,7 +6183,106 @@ def _row_ts(row: dict) -> float | None:
     return parsed.timestamp()
 
 
-def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
+# THE TEXTS THE CLI WRITES INSTEAD OF A REPLY (`ERROR_TEXTS`, spec §9). A row
+# carrying one of these is bookkeeping — an interrupt, a refused tool, a turn
+# nobody asked an answer of — and its `usage` is not the state of the window.
+# Matched by PREFIX because the refusal spells out what was refused after the
+# first sentence.
+_CONTEXT_ERROR_TEXTS = (
+    "[Request interrupted by user]",
+    "[Request interrupted by user for tool use]",
+    "No response requested.",
+    "The user doesn't want to take this action right now",
+    "The user doesn't want to proceed with this tool use",
+)
+
+# An `iterations` entry that is not a reply of its own: its counts are a step
+# inside the turn, not the prompt that went up the wire.
+_CONTEXT_SKIP_ITERATIONS = ("advisor_message", "compaction")
+
+
+def _context_usage(msg: dict) -> dict | None:
+    """The CONTEXT WINDOW READING carried by ONE assistant message, or None.
+
+    This is Claude Code's own `d$` filter and `TNe` normalisation (spec §9),
+    mirrored so the meter this app draws and the meter the CLI draws over the
+    same conversation cannot disagree:
+
+    * a `"<synthetic>"` model is a rate-limit or API-error record. Those DO
+      carry a `usage` object — all zeros — so they have to be skipped by the
+      model check rather than by the absence of one;
+    * a first content block whose text is one of `_CONTEXT_ERROR_TEXTS` is a
+      row the CLI wrote in place of a reply;
+    * `usage.iterations`, when present, is the per-step breakdown, and the LAST
+      real step's counts are the ones that describe the request — an advisor or
+      compaction step is not one.
+
+    The four counts are reported RAW rather than summed: the pill's percentage
+    is input-only (the statusline's definition) and the auto-compact arithmetic
+    adds the output in, so a sum taken here would force one of the two readings
+    to be wrong.
+
+    Defensive about every field: a transcript is somebody else's file format,
+    and a missing or non-numeric number must cost the reading its accuracy at
+    worst, never the whole history payload.
+    """
+    if not isinstance(msg, dict):
+        return None
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    model = str(msg.get("model") or "")
+    if model == "<synthetic>":
+        return None
+    content = msg.get("content")
+    if isinstance(content, list) and content:
+        first = content[0]
+        if isinstance(first, dict) and first.get("type") == "text":
+            text = str(first.get("text") or "")
+            if text.startswith(_CONTEXT_ERROR_TEXTS):
+                return None
+    iterations = usage.get("iterations")
+    if isinstance(iterations, list):
+        for step in reversed(iterations):
+            if isinstance(step, dict) \
+                    and step.get("type") not in _CONTEXT_SKIP_ITERATIONS:
+                usage = step
+                break
+
+    def n(key: str) -> int:
+        value = usage.get(key)
+        # `bool` is an `int` in Python and `True` would read as 1 token.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        try:
+            return max(0, int(value))
+        except (ValueError, OverflowError):
+            return 0
+
+    reading = {
+        "input_tokens": n("input_tokens"),
+        "cache_creation_input_tokens": n("cache_creation_input_tokens"),
+        "cache_read_input_tokens": n("cache_read_input_tokens"),
+        "output_tokens": n("output_tokens"),
+        # WHICH MODEL SAID IT, because the window depends on it: `[1m]`, Sonnet
+        # 5, Fable and Opus 5 are a million tokens and everything else is 200k.
+        # "" when the row does not say, and the page falls back to the picker.
+        "model": model,
+        # True only for the estimate a compaction leaves behind — see `_history`.
+        "compacted": False,
+    }
+    # A usage that counts NOTHING says nothing about the window (the zero-filled
+    # object on an error record is the case this catches when the model field is
+    # missing too), and reporting it would blank a meter that was right.
+    if not any(reading[k] for k in (
+            "input_tokens", "cache_creation_input_tokens",
+            "cache_read_input_tokens", "output_tokens")):
+        return None
+    return reading
+
+
+def _history(file: str, session_id: str, app_reads: bool = False,
+             inbox: bool = True) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
     Resolved ONLY at the target file's own project dir — with copied files
@@ -5446,7 +6324,7 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     timestamp is missing or unparseable (`_row_ts`). Optional throughout, the
     same way `uuid` is: the legacy template reads neither and is unaffected."""
     if _bad_id(session_id):
-        return {"turns": [], "transcript": _transcript_stat("")}
+        return {"turns": [], "transcript": _transcript_stat(""), "context": None}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
@@ -5464,10 +6342,22 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     if not os.path.isfile(path):
         # A run can be live before its transcript exists (the CLI writes the
         # first row after `system/init`), and its card must not wait on that.
-        return {"turns": [], "transcript": stat, **_history_live(file, session_id)}
+        return {"turns": [], "transcript": stat, "context": None,
+                **_history_live(file, session_id, inbox=inbox)}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    # THE LATEST ASSISTANT ROW'S CONTEXT READING, overwritten as the walk finds
+    # newer ones — the last one standing is the state of the window right now.
+    # Free: these are the same rows already being parsed, no second read.
+    context = None
+    # ...and the `compact_boundary` the CLI writes when it summarises a
+    # conversation, when one is NEWER than that reading. Everything before a
+    # compaction is gone from the model's head, so the usage rows above it
+    # describe a window that no longer exists: the boundary's own `postTokens`
+    # is the estimate that replaces them (spec §6). Reset by the next real
+    # reading, which is the API's own count of what the summary actually cost.
+    compacted = None
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -5512,6 +6402,20 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
         msg = row.get("message") or {}
         role = msg.get("role")
         content = msg.get("content")
+        if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
+            meta = row.get("compactMetadata")
+            compacted = meta if isinstance(meta, dict) else {}
+        if role == "assistant" and isinstance(msg, dict):
+            # Read BEFORE any of the branches below, so a reply this walk drops
+            # (an API failure, a row with no prose and no tools) still reports
+            # the window it consumed. A row without usable `usage` leaves the
+            # previous reading standing rather than blanking the meter.
+            reading = _context_usage(msg)
+            if reading is not None:
+                context = reading
+                # A reading NEWER than the boundary is the API's own count of
+                # the compacted conversation, which beats any estimate.
+                compacted = None
         if role == "user":
             if isinstance(content, str):
                 text = content
@@ -5618,13 +6522,34 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     if turns and turns[-1]["role"] == "assistant" \
             and _stopped_last(file, session_id):
         turns[-1]["stopped"] = True
+    # A COMPACTION AFTER THE LAST READING REPLACES IT. The rows above the
+    # boundary counted a conversation the model no longer holds; what it holds
+    # now is the summary, whose size only the boundary knows (`postTokens`) and
+    # only as an ESTIMATE — the API has not been asked yet. Reported as input
+    # with no output, and flagged, so the page can say it is an estimate.
+    #
+    # No `postTokens` and there is nothing honest to draw, so the meter goes
+    # away entirely — which is exactly what the CLI's own statusline does here
+    # (`current_usage` is null until the next API call).
+    if compacted is not None:
+        post = compacted.get("postTokens")
+        if isinstance(post, bool) or not isinstance(post, (int, float)) \
+                or post <= 0:
+            context = None
+        else:
+            context = {"input_tokens": int(post),
+                       "cache_creation_input_tokens": 0,
+                       "cache_read_input_tokens": 0, "output_tokens": 0,
+                       "model": (context or {}).get("model", ""),
+                       "compacted": True}
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
-    return {"turns": turns, "transcript": stat, **_history_live(file, session_id)}
+    return {"turns": turns, "transcript": stat, "context": context,
+            **_history_live(file, session_id, inbox=inbox)}
 
 
-def _history_live(file: str, session_id: str) -> dict:
+def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
     """The run still going for this chat, WITH its cards, riding on the
     history response.
 
@@ -5644,7 +6569,7 @@ def _history_live(file: str, session_id: str) -> dict:
     the gate on it the way the first adopt lap always has."""
     run_id = str(_live_run(file, session_id).get("run_id") or "")
     if not run_id:
-        return {"live_run": "", "permissions": [], "mode": ""}
+        return {"live_run": "", "permissions": [], "mode": "", "inbox": []}
     run_dir = os.path.join(RUNS, run_id)
     try:
         with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
@@ -5655,7 +6580,15 @@ def _history_live(file: str, session_id: str) -> dict:
         meta = {}
     permissions = _permissions(run_dir)
     return {"live_run": run_id, "permissions": permissions,
-            "mode": _live_mode(meta, permissions)}
+            "mode": _live_mode(meta, permissions),
+            # …AND THE WORDS THAT ARE NOT IN THE TRANSCRIPT THIS ANSWER JUST
+            # CARRIED. A follow-up typed into a running turn is on disk in the
+            # run's inbox and nowhere else until the CLI takes it, so a reload
+            # that painted `turns` alone dropped the user's own last line until
+            # the run got round to answering it. Same rows `_poll` returns,
+            # through the same `_inbox_waiting`, so the first poll after this
+            # replays them identically (Akshil, 2026-09-12).
+            "inbox": _inbox_waiting(run_dir) if inbox else []}
 
 
 def _cancel(run_id: str, interrupt_first: bool = True,
@@ -5884,7 +6817,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
-         native: str = "", draft_key: str = "") -> dict:
+         native: str = "", draft_key: str = "", queue: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -5906,7 +6839,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
         # has a page (claude_spawn's record loop).
-        return _poll(run_id, file, app_reads=native == "1")
+        # `inbox` rows are the queue's own picture of a mid-turn follow-up; the
+        # page says whether it draws them (`queue`), and a template cannot read
+        # the pref itself. Flag off, the payload is main's.
+        return _poll(run_id, file, app_reads=native == "1", inbox=queue == "1")
     if action == "decide":
         # `answers` arrives as a JSON string for the same reason `state` does
         # below — params cross into python string-shaped — and is only read for
@@ -5937,11 +6873,14 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "defaults":
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _defaults(file)
+        # `session_id` is optional and already bound above: with one this
+        # answers for THAT conversation, without one for the folder — see
+        # `_defaults`. Same shape as `live_run` two branches up.
+        return _defaults(file, session_id)
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _history(file, session_id, app_reads=native == "1")
+        return _history(file, session_id, app_reads=native == "1", inbox=queue == "1")
     if action == "snapshots":
         # `enrich` arrives as a STRING like every other param (the binder is
         # str-shaped), so "" and "0" both mean don't — the boot call sends

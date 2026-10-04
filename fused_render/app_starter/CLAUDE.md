@@ -1,6 +1,6 @@
 # fused-render app
 
-Folder = **fused-render app**, rendered by fused-render explorer. `index.html` = entry view; edit in place (no second top-level `.html` — one entry file makes folder open as app). Keep `<meta name="fused-app" />` near top of `<head>`: ONLY marker identifying app entry — detection reads first 4 KiB only; without it app vanishes from apps hub. Right after: `<meta name="fused-api-version" content="N" />` — fused page API version app written against. Leave as is; app page's "Migrate" task updates code + tag together. No tag = version 0.
+Folder = **fused-render app**, rendered by fused-render explorer. `index.html` = entry view; edit in place (no second top-level `.html` — one entry file makes folder open as app). Keep `<meta name="fused-app" />` near top of `<head>`: ONLY marker identifying app entry — detection reads first 4 KiB only; without it app vanishes from apps hub. Right after: `<meta name="fused-api-version" content="N" />` — fused page API version app written against. Leave as is; app page's "Migrate" task updates code + tag together. No tag = version 0. May also carry `<meta name="fused-app-id" content="<name>-<8 hex>" />`: app's stable identity, written when app created (in first commit; older apps get it on first `.fused` export), tells "update of same app" from "different app". Never edit, never copy into another app.
 
 Page runs inside explorer, which injects `fused` bridge: `fused.params` (URL-synced view state), `fused.runPython("./file.py", args)` (compute in Python beside page), `fused.readFile` / `fused.rawUrl`, more. No network at runtime, no build step.
 
@@ -29,6 +29,8 @@ into your commit. (`git status -- .` and `git log -- .` are the scoped reads.)
 Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
 Don't push, don't add remotes, don't rewrite history, don't touch paths
 outside this folder — the repo is purely local undo history for the apps.
+
+**Every view must render the same in Chrome, Firefox, Safari and WKWebView** — the authoring skill's Cross-browser section (Baseline-only features, hand-written `-webkit-` prefixes, paste-in reset, form-control rules, second-engine check) applies to all CSS/JS you write, not on request. Something wrong in one browser only → `fused-render-cross-browser`.
 
 App reads machine-wide **file index** (search box, disk-usage/file-type breakdown, repos list, SQL over filesystem)? Invoke **`fused-render-index`**: `fused.fileIndex.search/query`, readiness envelope, direct-parquet reader for bulk Python.
 

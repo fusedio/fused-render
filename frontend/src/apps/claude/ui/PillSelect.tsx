@@ -42,6 +42,13 @@ export interface PillSelectProps {
   pillLabel?: (option: PillOption) => string;
   onChange(value: string): void;
   disabled?: boolean;
+  /** THE VALUE IS NOT KNOWN YET. The pill keeps its box — same option selected,
+   *  so `fitSelect` measures the same width it will measure when the answer
+   *  lands — but paints a wash instead of the word and refuses the menu. See
+   *  `composer.css` `.c-pillwrap.is-loading` and `useComposerDefaults`'s
+   *  `pillsReady`: a pill that has never shown a value cannot flip to another
+   *  one. */
+  loading?: boolean;
   selectRef?: React.MutableRefObject<HTMLSelectElement | null>;
   /** permPopupGuard's three hooks, on the SELECT and not on a wrapper: a
    *  wrapper element would take a seat in the control row's fit sum. */
@@ -59,6 +66,7 @@ export function PillSelect({
   pillLabel,
   onChange,
   disabled,
+  loading,
   selectRef,
   onSelectKeyDown,
   onSelectMouseDown,
@@ -100,13 +108,17 @@ export function PillSelect({
   }, [ref]);
 
   return (
-    <span className="c-pillwrap">
+    <span className={`c-pillwrap${loading ? " is-loading" : ""}`}>
       <select
         ref={ref}
         className={`c-pill ${kind}`}
         aria-label={ariaLabel}
         value={value}
-        disabled={disabled}
+        // A loading pill is a disabled one: there is nothing to pick yet, and a
+        // pick made against a value nobody has seen is the same wrong answer
+        // the flip was.
+        disabled={disabled || loading}
+        aria-busy={loading ? true : undefined}
         onChange={(ev) => onChange(ev.currentTarget.value)}
         onPointerDown={onPointerDown}
         onKeyDown={onSelectKeyDown}

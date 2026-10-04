@@ -1,4 +1,7 @@
-// The `src` to draw an app's icon.svg from, recoloured for the live theme.
+// The `src` to draw an app's icon.svg from, recoloured for the live theme —
+// and, for an `icon.png` (the lower-priority raster fallback, app_listing.
+// ICON_NAMES), the raw URL as is plus the knowledge that it IS a raster, so a
+// host can clip it to a rounded square where an svg is drawn untouched.
 //
 // Every surface that shows an app icon — the sidebar's Projects row, the app
 // page's header mark, the /apps card, the tab favicon — draws the file through
@@ -25,7 +28,24 @@ import { useResolvedTheme, type Theme } from "@platform/lib/theme";
 // `null` = fetched, no marker (or unreadable): use the raw URL.
 const texts = new Map<string, Promise<string | null>>();
 
+/** True when the icon URL (api.appIconUrl / current-apps-lib.iconUrlFor: a
+ *  `/api/fs/raw?path=<file>&v=<mtime>` address, or the LAN page's copy of the
+ *  same) names an `icon.png` — the raster fallback the shell FITS to a rounded
+ *  square (object-fit cover + radius), unlike an svg, which owns its own
+ *  plate and is drawn as is (owner, 2026-08-27). Decided off the FILE name in
+ *  the query, never off a data: URL, so pass the raw url, not `iconSrc`. */
+export function isRasterIconUrl(url: string | null): boolean {
+  if (!url || url.startsWith("data:")) return false;
+  const q = url.indexOf("?");
+  if (q < 0) return /\.png$/i.test(url);
+  const path = new URLSearchParams(url.slice(q + 1)).get("path");
+  return /\.png$/i.test(path ?? "");
+}
+
 function iconText(url: string): Promise<string | null> {
+  // A png carries no colour marker to read — and reading its bytes as text
+  // is a wasted round-trip on every row and remount.
+  if (isRasterIconUrl(url)) return Promise.resolve(null);
   let p = texts.get(url);
   if (!p) {
     p = fetch(url)

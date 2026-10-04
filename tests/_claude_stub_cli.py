@@ -38,3 +38,94 @@ def write_stub_cli(bin_dir, script_body):
     path.write_text(script_body)
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return str(path)
+
+
+def reap_host(run_dir, timeout=5.0):
+    """Tear down the detached session host (and the stub CLI it spawned)
+    that a test's `agent._start` left running under `run_dir`.
+
+    The host is spawned `start_new_session` on purpose so a real chat
+    survives a server restart, which means nothing reaps it when the test
+    process exits: pytest's tmp_path is rmtree'd, and the host and stub stay
+    up until reboot. A stub that never closes its turn (no `result` row, or
+    a `control_response` row after the `result`, which agent._turn_state
+    reads as the turn reopening) also defeats the host's own idle reap, so
+    every test that starts a real host must call this in teardown.
+
+    Both pids are session leaders (agent._DETACH), so each pid is its own
+    process group: `killpg` on the host's pid takes the host, `killpg` on the
+    CLI's pid takes the stub and whatever it forked. Waits up to `timeout`
+    for the host to have written its pid files first, so a test that ends
+    before the host finished starting still gets it reaped."""
+    import json
+    import signal
+    import time
+
+    if os.name == "nt":
+        return
+    host_json = os.path.join(run_dir, "host.json")
+    pid_file = os.path.join(run_dir, "pid")
+
+    def _read_pids():
+        found = set()
+        for path, key in ((host_json, "pid"), (pid_file, None)):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    raw = fh.read()
+                pid = int(json.loads(raw)[key] if key else raw.strip())
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if pid > 1:
+                found.add(pid)
+        return found
+
+    # Give a host that is still starting time to write host.json — but only
+    # while something under this run is actually alive. A run whose pid file
+    # names a dead process (a test that planted its own pid, or a host that
+    # already idle-reaped and removed host.json) has nothing to wait for.
+    # An EMPTY read is not that: the host `_private_open`s (O_TRUNC) the pid
+    # file before writing the CLI's pid into it, so for a moment there is
+    # nothing to read at all — keep waiting on that, the deadline bounds it.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not os.path.exists(host_json):
+        found = _read_pids()
+        if found and not any(_alive(p) for p in found):
+            break
+        time.sleep(0.05)
+    pids = {p for p in _read_pids() if _alive(p)}
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in list(pids):
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                pids.discard(pid)
+            except PermissionError:
+                pids.discard(pid)
+        deadline = time.monotonic() + 2.0
+        while pids and time.monotonic() < deadline:
+            pids = {p for p in pids if _alive(p)}
+            time.sleep(0.05)
+        if not pids:
+            break
+
+
+def _alive(pid) -> bool:
+    """Whether `pid` is still running — and NOT a zombie. The host is a
+    direct child of the test process (agent._start Popens it in-process), so
+    once killed it sits as a zombie until someone waits on it, and a bare
+    `os.kill(pid, 0)` keeps answering "alive". Reap it if it is ours first."""
+    try:
+        waited, _ = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            return False
+    except ChildProcessError:
+        pass  # not our child (the CLI is the host's) — fall through to probe
+    except OSError:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True

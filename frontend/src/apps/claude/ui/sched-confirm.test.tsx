@@ -6,10 +6,15 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, expect, test } from "bun:test";
 import { createElement, useCallback } from "react";
+import type { Attachment } from "../shots/types";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { SchedButton } = await import("./SchedButton");
-const { SchedConfirmBody } = await import("./SchedConfirm");
+const { SchedConfirm, SchedConfirmBody } = await import("./SchedConfirm");
+const { draftSyncer, forgetDraftVersion, resetDraftSyncers, useAutosave } =
+  await import("@platform/lib/drafts");
+const { getPopupNotification, _resetNotificationsForTest } =
+  await import("@platform/lib/notifications");
 const { useDismissOnWindow } = await import("./useDismissOnWindow");
 
 /** A REAL LISTENER REGISTRY on the shim's `window`, which otherwise no-ops. The
@@ -38,6 +43,10 @@ const bound = (type: string): number => (winListeners[type] || []).length;
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  // THE SYNCER REGISTRY IS MODULE SCOPE — one writer per key for the whole
+  // document, which is the point of it — so a test that leaves a desired state
+  // behind is a test the next one inherits.
+  resetDraftSyncers();
 });
 
 // ── the hook, on its own ─────────────────────────────────────────────────────
@@ -83,6 +92,18 @@ test("blur and resize close an open overlay, and nothing is bound while it is sh
 interface Focused {
   count: number;
   preventScroll?: boolean;
+}
+
+/** The sub-lines the popover shows, in order — the two things the calendar glyph
+ *  cannot say for itself. */
+function subLines(r: ReactTestRenderer): string[] {
+  return r.root
+    .findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className || "") === "c-schedpop-sub",
+    )
+    .map((n) => String(n.props.children).trim());
 }
 
 /** Renders the body (the portal above it has no container here — see the note
@@ -208,8 +229,726 @@ test("the Schedule button binds blur/resize only while its confirm is open", asy
   expect(bound("resize")).toBe(0);
 });
 
+// ── the hop waits for its own save ──────────────────────────────────────────
+//
+// Bugbot, PR #1180: Continue used to fire the PUT and navigate in the same tick.
+// The card on the other side seeds from `GET /api/drafts`, so the two raced —
+// and when the GET won, the reader arrived at a card holding the words as they
+// were 600 ms ago, or nothing at all on a first hop. The words are the whole
+// point of the handoff, so the navigation is now the save's ANSWER.
+
+// A SESSION'S key, and it has to be one (Akshil, 2026-09-16). These three tests
+// are about the ORDER of two writers on ONE record — the box's debounced save
+// and the hop's own statement — and that is now only true of a chat that has a
+// session: a never-sent one writes nothing on its own and its Continue mints a
+// `draft:<id>` nobody else holds (see "a never-sent chat" below).
+const HOP_SESSION = "sess-hop";
+const HOP_KEY = HOP_SESSION;
+
+/** Mount the real button and hand back the confirm's own `onGo` — the Continue
+ *  press, without asking a portal to render in a DOM-less runtime. */
+function pressContinue(onNavigate: (url: string) => void) {
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(
+      createElement(SchedButton, {
+        file: "/w/app/page.html",
+        sessionId: HOP_SESSION,
+        draft: () => "a scheduled line",
+        back: "/w/app/page.html",
+        onNavigate,
+      }),
+      { createNodeMock: () => ({ focus: () => {} }) },
+    );
+  });
+  mounted.push(renderer);
+  return (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+}
+
+test("Continue navigates only once the draft's own PUT has answered", async () => {
+  forgetDraftVersion(HOP_KEY);
+  let release!: () => void;
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  const methods: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = ((_url: string, init?: RequestInit) => {
+    methods.push(init?.method ?? "GET");
+    return held.then(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              ok: true,
+              key: HOP_KEY,
+              draft: { text: "a scheduled line", attachments: [], updated_at: 1,
+                       version: 2, form: {} },
+            }),
+        }) as unknown as Response,
+    );
+  }) as typeof fetch;
+
+  const went: string[] = [];
+  const go = pressContinue((url) => went.push(url));
+  await act(async () => {
+    go();
+  });
+  // The write is out; the reader is still in the chat.
+  expect(methods).toEqual(["PUT"]);
+  expect(went).toEqual([]);
+  await act(async () => {
+    release();
+    await held;
+  });
+  expect(went.length).toBe(1);
+  expect(went[0]).toContain("draft=" + encodeURIComponent(HOP_KEY));
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("a refused save keeps the reader in the chat, and says so", async () => {
+  // Navigating with nothing saved is the same empty card by another road — and
+  // this side is the only one still holding the words.
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({}),
+    } as unknown as Response)) as unknown as typeof fetch;
+
+  const went: string[] = [];
+  const go = pressContinue((url) => went.push(url));
+  await act(async () => {
+    go();
+  });
+  expect(went).toEqual([]);
+  expect(getPopupNotification()?.title).toContain("Could not save that draft");
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("the hop waits for the write the box already had out", async () => {
+  // Bugbot, PR #1180 (second round): waiting for THIS button's PUT is not
+  // enough, because the box beside it writes the same record on a debounce. A
+  // keystroke a moment before Continue is a PUT that lands AFTER the hop's —
+  // with the older words, and with the chat tempdir paths `POST /api/schedule`
+  // refuses.
+  //
+  // It is not a WAIT any more, it is an ORDER: the box and this button are the
+  // same writer now (`draftSyncer(key)`), so the hop's state simply queues
+  // behind whatever that writer has out and goes when it clears, stating the
+  // version that write earned.
+  forgetDraftVersion(HOP_KEY);
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  const seen: (string | null)[] = [];
+  let version = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = ((_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const at = seen.length;
+    seen.push(headers["If-Match"] ?? null);
+    const answer = (): Response => {
+      version += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          ok: true,
+          key: HOP_KEY,
+          draft: { text: "a scheduled line", attachments: [], updated_at: 1,
+                   version, form: {} },
+        }),
+      } as unknown as Response;
+    };
+    return at === 0 ? held.then(answer) : Promise.resolve(answer());
+  }) as typeof fetch;
+
+  // The box's own keystroke save, already on the wire when Continue is pressed.
+  const box = draftSyncer(HOP_KEY);
+  box.setText("a scheduled li");
+  box.flushNow();
+  expect(seen.length).toBe(1);
+
+  const went: string[] = [];
+  const go = pressContinue((url) => went.push(url));
+  await act(async () => {
+    go();
+  });
+  // NOTHING NEW HAS LEFT, and the reader is still in the chat.
+  expect(seen.length).toBe(1);
+  expect(went).toEqual([]);
+
+  await act(async () => {
+    release();
+    await held;
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+  // The hop's own write went second, stating the version the box's write made,
+  // and the navigation is its answer.
+  // `0` on the first: this document had never seen a record under this key, and
+  // "I expect nothing here" is what it honestly holds (contract §2).
+  expect(seen).toEqual(["0", "1"]);
+  expect(went.length).toBe(1);
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("a real autosave PUT held open does not race the hop — the two coalesce", async () => {
+  // THE SAME BUG through the REAL hook this time. What used to happen here was
+  // three requests in a row, each waiting for the last, because the box's flush
+  // and the hop's PUT were two different writers being put in order by hand.
+  // They are one writer now, so the keystroke typed during the held write and
+  // the hop's own state are ONE request: the last statement wins, which is what
+  // a desired state means.
+  forgetDraftVersion(HOP_KEY);
+  const calls: { ifMatch: string | null; text?: string }[] = [];
+  let releaseFirst!: () => void;
+  const heldFirst = new Promise<void>((r) => { releaseFirst = r; });
+  let version = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = ((_url: string, init?: RequestInit) => {
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as { text?: string })
+      : undefined;
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const at = calls.length;
+    calls.push({ ifMatch: headers["If-Match"] ?? null, text: body?.text });
+    const answer = (): Response => {
+      version += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          ok: true,
+          key: HOP_KEY,
+          draft: { text: body?.text ?? "", attachments: [], updated_at: 1,
+                   version, form: {} },
+        }),
+      } as unknown as Response;
+    };
+    return at === 0 ? heldFirst.then(answer) : Promise.resolve(answer());
+  }) as typeof fetch;
+
+  const went: string[] = [];
+  let renderer!: ReactTestRenderer;
+  function Host({ value }: { value: { text: string } }) {
+    useAutosave(value, (v: { text: string }) => draftSyncer(HOP_KEY).setText(v.text),
+                { key: HOP_KEY });
+    return createElement(SchedButton, {
+      file: "/w/app/page.html",
+      sessionId: HOP_SESSION,
+      draft: () => value.text,
+      back: "/w/app/page.html",
+      onNavigate: (url: string) => went.push(url),
+    });
+  }
+  // A mount alone mints nothing (design §4), so the box opens empty and the
+  // first keystroke is what the held write below is about.
+  await act(async () => {
+    renderer = create(createElement(Host, { value: { text: "" } }), {
+      createNodeMock: () => ({ focus: () => {} }),
+    });
+  });
+  mounted.push(renderer);
+  await act(async () => {
+    renderer.update(createElement(Host, { value: { text: "first" } }));
+  });
+  act(() => draftSyncer(HOP_KEY).flushNow());
+  await Promise.resolve();
+  expect(calls.length).toBe(1);
+  expect(calls[0]!.ifMatch).toBe("0");
+
+  // A further keystroke, then Continue — exactly the moment the bug fired.
+  await act(async () => {
+    renderer.update(createElement(Host, { value: { text: "first and second" } }));
+  });
+  const go = (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+  await act(async () => {
+    go();
+  });
+  expect(calls.length).toBe(1);
+  expect(went).toEqual([]);
+
+  releaseFirst();
+  await act(async () => {
+    await heldFirst;
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  });
+  // ONE request follows, not two: the newest state is the hop's, and it states
+  // the version the held write made.
+  expect(calls.length).toBe(2);
+  expect(calls[1]).toEqual({ ifMatch: "1", text: "first and second" });
+  expect(went.length).toBe(1);
+
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+// ── a never-sent chat mints a NEW draft, every press ────────────────────────
+//
+// Akshil, 2026-09-16: type, Schedule, Continue; Back to chat; type something
+// else, Schedule, Continue — and the second draft replaced the first. It had to:
+// a session-less composer's key was `new:<file>`, ONE record per folder, and
+// Continue stated the whole of it. A chat that has never been sent is not a
+// conversation with an unsent message in it, so there is no single record for it
+// to be: each press mints a `draft:<id>` task draft, the shape "+ New task"
+// makes, and each one is its own Upcoming row.
+
+interface Wrote {
+  url: string;
+  method: string;
+  body: Record<string, unknown>;
+}
+
+/** Records every request and answers each one as a task-draft write. */
+function watchTaskWrites(): Wrote[] {
+  const seen: Wrote[] = [];
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : {};
+    seen.push({ url: String(url), method: init?.method ?? "GET", body });
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ok: true,
+        draft_id: String(url).split("/").pop(),
+        draft: { ...body, created_at: 1, updated_at: 1, version: 1 },
+      }),
+    } as unknown as Response);
+  }) as typeof fetch;
+  return seen;
+}
+
+/** One press of Continue on a composer with no session, and the URL it left on. */
+async function pressNewChat(text: string): Promise<{ wrote: Wrote[]; went: string[] }> {
+  const wrote = watchTaskWrites();
+  const went: string[] = [];
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      createElement(SchedButton, {
+        file: "/w/app",
+        sessionId: "",
+        draft: () => text,
+        back: "/explorer/view/w/app?_side=claude",
+        onNavigate: (url: string) => went.push(url),
+      }),
+      { createNodeMock: () => ({ focus: () => {} }) },
+    );
+  });
+  mounted.push(renderer);
+  const go = (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+  await act(async () => {
+    go();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  });
+  return { wrote, went };
+}
+
+test("Continue from a never-sent chat writes a TASK draft, not `new:<file>`", async () => {
+  const real = globalThis.fetch;
+  const { wrote, went } = await pressNewChat("port the parquet reader\nstart with paths");
+  expect(wrote).toHaveLength(1);
+  // The record is a task draft under an id this press minted…
+  expect(wrote[0]!.method).toBe("PUT");
+  expect(wrote[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
+  expect(wrote[0]!.url).not.toContain("new%3A");
+  // …carrying the box's prose cut the card's way (`splitDraft`), the folder the
+  // chat is mounted on, and no answer at all to the questions a composer cannot
+  // answer.
+  expect(wrote[0]!.body.title).toBe("port the parquet reader");
+  expect(wrote[0]!.body.description).toBe("start with paths");
+  expect(wrote[0]!.body.target).toBe("/w/app");
+  expect(wrote[0]!.body.when).toBe(null);
+  expect(wrote[0]!.body.repeat).toBe(null);
+  expect(wrote[0]!.body.session_id).toBe("");
+  // …and the card opens through the arm every draft row presses, with the way
+  // back on it.
+  const id = wrote[0]!.url.slice("/api/drafts/task/".length);
+  // `hop=1`: this opening is a Schedule PRESS, so the card lands on now+2m and
+  // planning like the session hop's `?new=1` does — a draft ROW presses the same
+  // arm without it and keeps the reopen rule (Bugbot 4028344051).
+  expect(went).toEqual([
+    `/tasks?draft=${encodeURIComponent(id)}&hop=1`
+      + "&from=" + encodeURIComponent("/explorer/view/w/app?_side=claude"),
+  ]);
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
+test("…and a SECOND Continue out of the same folder is a SECOND draft", async () => {
+  // The bug, in one assertion: two presses, two ids, two records. The old shape
+  // wrote `new:/w/app` both times and the first draft was simply gone.
+  const real = globalThis.fetch;
+  const first = await pressNewChat("the first thing");
+  resetDraftSyncers();
+  const second = await pressNewChat("the second thing");
+  expect(first.wrote).toHaveLength(1);
+  expect(second.wrote).toHaveLength(1);
+  expect(second.wrote[0]!.url).not.toBe(first.wrote[0]!.url);
+  expect(first.went[0]).not.toBe(second.went[0]);
+  for (const w of [...first.wrote, ...second.wrote]) {
+    expect(w.url).toContain("/api/drafts/task/");
+  }
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
+test("an EMPTY never-sent composer mints nothing and opens a blank card", async () => {
+  // A draft with no words and no files is an Upcoming row saying nothing. The
+  // press still travels — the folder and the way back are what it knows — and
+  // the card is filled in there.
+  const real = globalThis.fetch;
+  const { wrote, went } = await pressNewChat("   ");
+  expect(wrote).toEqual([]);
+  expect(went).toHaveLength(1);
+  expect(went[0]).toContain("new=1");
+  expect(went[0]).toContain("target=" + encodeURIComponent("/w/app"));
+  expect(went[0]).not.toContain("new%3A");
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
+// ── ONE GESTURE AT A TIME ON ONE SET OF WORDS ───────────────────────────────
+//
+// Bugbot 4034977395 (HIGH) and 4034977406 (MED), PR #1180. Continue closed its
+// confirm and then spent a round trip per attachment with the composer still
+// fully live: `leaving` only ever blocked a SECOND Continue. So a Send, a
+// Discard or a leave-dialog answer landing in that window spent the same words,
+// and the hop wrote its latched copy afterwards anyway — on a session that put
+// `setText` behind the send's `markDeleted` and the spent sentence came back as
+// a scheduled follow-up. And a copy that failed was simply dropped: the hop
+// minted and navigated with a partial (even empty) set, wiping the attachments
+// the record was holding, where "Save as draft" had always refused.
+
+interface HopCall {
+  url: string;
+  method: string;
+  body?: Record<string, unknown>;
+}
+
+/** A tray chip whose bytes exist — the only kind either road carries. */
+const shot = (n: number): Attachment => ({
+  id: `a${n}`,
+  kind: "image",
+  view: `/w/app/shot${n}.png`,
+  name: `shot${n}.png`,
+});
+
+/**
+ * Every request the document makes, with the attachment's RAW READ held open —
+ * that gate is the whole window the bugs live in, so a test holds the hop there
+ * and does the competing thing.
+ */
+function hopFetch(opts: { failUpload?: number } = {}) {
+  const calls: HopCall[] = [];
+  let open!: () => void;
+  const gate = new Promise<void>((r) => {
+    open = r;
+  });
+  let uploads = 0;
+  let version = 0;
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const at = String(url);
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string"
+      ? (JSON.parse(init.body) as Record<string, unknown>)
+      : undefined;
+    calls.push(body ? { url: at, method, body } : { url: at, method });
+    if (at.startsWith("/api/fs/raw")) {
+      return gate.then(() => ({
+        ok: true,
+        status: 200,
+        blob: () => Promise.resolve(new Blob(["bytes"])),
+      }) as unknown as Response);
+    }
+    if (at === "/api/schedule/shot") {
+      uploads += 1;
+      const bad = opts.failUpload === uploads;
+      const n = uploads;
+      return Promise.resolve({
+        ok: !bad,
+        status: bad ? 500 : 200,
+        json: () => Promise.resolve(
+          bad ? { error: "no room" } : { path: `/task-shots/s${n}.png`, kind: "image" },
+        ),
+      } as unknown as Response);
+    }
+    version += 1;
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ok: true,
+        key: HOP_KEY,
+        draft_id: at.split("/").pop(),
+        removed: method === "DELETE",
+        draft: method === "DELETE" ? null : {
+          ...(body ?? {}),
+          text: (body?.text as string) ?? "",
+          attachments: (body?.attachments as unknown[]) ?? [],
+          updated_at: 1,
+          version,
+          form: {},
+        },
+      }),
+    } as unknown as Response);
+  }) as typeof fetch;
+  return { calls, open };
+}
+
+/** The real button, with a tray and the composer's two new wires. */
+function mountHop(o: {
+  sessionId?: string;
+  tray?: readonly Attachment[];
+  episode?(): number;
+}) {
+  const went: string[] = [];
+  const hops: boolean[] = [];
+  // Every `onHandedOff` — the call that EMPTIES the composer. An abort must
+  // never make it: the words and chips are still this box's to hold.
+  const cleared: true[] = [];
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(
+      createElement(SchedButton, {
+        file: "/w/app/page.html",
+        sessionId: o.sessionId ?? HOP_SESSION,
+        draft: () => "a scheduled line",
+        attachments: () => o.tray ?? [],
+        back: "/w/app/page.html",
+        ...(o.episode ? { episode: o.episode } : {}),
+        onHopChange: (on: boolean) => hops.push(on),
+        onHandedOff: () => cleared.push(true),
+        onNavigate: (url: string) => went.push(url),
+      }),
+      { createNodeMock: () => ({ focus: () => {} }) },
+    );
+  });
+  mounted.push(renderer);
+  const go = (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+  const trigger = () =>
+    renderer.root.findAll((n) => typeof n.type === "string" && n.type === "button")[0]!;
+  return { renderer, go, went, hops, cleared, trigger };
+}
+
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 12; i += 1) await Promise.resolve();
+};
+const draftCalls = (calls: HopCall[]): HopCall[] =>
+  calls.filter((c) => c.url.startsWith("/api/drafts"));
+
+test("a SEND during the hop aborts it — no PUT from the hop, and no resurrection", async () => {
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch();
+  // THE COMPOSER IS WATCHING THIS KEY, as a mounted one always is (`Composer`
+  // registers its conflict rule for the life of the chat). It is load-bearing
+  // here: a syncer nobody is watching and that wants nothing is swept out of the
+  // registry, and the next `draftSyncer(key)` is a fresh object with no memory
+  // of the delete — which is precisely how the spent draft came back.
+  const unwatch = draftSyncer(HOP_KEY).watch({
+    focused: () => false,
+    localText: () => "",
+    adopt: () => {},
+  });
+  const { go, went, hops } = mountHop({ tray: [shot(1)] });
+
+  await act(async () => {
+    go();
+  });
+  // The copy is out, nothing is written yet, and the composer has been told to
+  // shut its doors.
+  expect(hops).toEqual([true]);
+  expect(draftCalls(calls)).toEqual([]);
+
+  // THE SEND, in the only terms this record has: its one writer is told it
+  // should not exist. (The composer bumps its episode in the same breath; either
+  // half alone is enough, and the real gesture is both.)
+  await act(async () => {
+    draftSyncer(HOP_KEY).markDeleted();
+  });
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  // The hop wrote NOTHING. A PUT here is the bug: it would land behind the
+  // send's DELETE and put the spent sentence back as a scheduled follow-up.
+  expect(draftCalls(calls).some((c) => c.method === "PUT")).toBe(false);
+  expect(went).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect(getPopupNotification()?.title).toContain("already left the box");
+
+  unwatch();
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("a DISCARD during the hop aborts it — the never-sent chat's draft is never minted", async () => {
+  // The other half of the same guard, on the other road: a session-less press
+  // mints `draft:<id>`, and the box emptying under it (`clearComposer` bumps
+  // `episode`) says those words are not this card's any more.
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  let era = 0;
+  const { calls, open } = hopFetch();
+  const { go, went, hops } = mountHop({
+    sessionId: "",
+    tray: [shot(1)],
+    episode: () => era,
+  });
+
+  await act(async () => {
+    go();
+  });
+  era += 1;
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  expect(draftCalls(calls)).toEqual([]);
+  expect(went).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect(getPopupNotification()?.title).toContain("already left the box");
+
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
+test("a file that would not copy stops the whole hop (Bugbot 4034977406)", async () => {
+  // `copyToTaskShots` is `allSettled` and hands back only what landed. The hop
+  // used to mint and navigate with whatever that was — and on a session it
+  // `setText`s that shorter list straight over the record's own attachments.
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch({ failUpload: 2 });
+  const { go, went, hops } = mountHop({ tray: [shot(1), shot(2)] });
+
+  await act(async () => {
+    go();
+  });
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  expect(draftCalls(calls)).toEqual([]);
+  expect(went).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect(getPopupNotification()?.title).toBe(
+    "Could not attach every file — nothing was scheduled",
+  );
+
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("…and on a NEVER-SENT chat too — the mint is refused and the box keeps its files (Bugbot 4035104825)", async () => {
+  // The session road and the session-less road spend the same round trips and
+  // must fail the same way. This one is the harsher of the two: the mint is
+  // followed by `onHandedOff`, which EMPTIES the composer — so a hop that
+  // navigated with a short list took the missing chips off the card AND out of
+  // the box, and there was nowhere left to read them. Nothing written, nothing
+  // cleared, nowhere gone, and the trigger live again.
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch({ failUpload: 2 });
+  const { go, went, hops, cleared, trigger } = mountHop({
+    sessionId: "",
+    tray: [shot(1), shot(2)],
+  });
+
+  await act(async () => {
+    go();
+  });
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  expect(draftCalls(calls)).toEqual([]);
+  expect(went).toEqual([]);
+  expect(cleared).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(false);
+  expect(getPopupNotification()?.title).toBe(
+    "Could not attach every file — nothing was scheduled",
+  );
+
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  resetDraftSyncers();
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("the Schedule button is off while its own hop is out, and live again after", async () => {
+  // `leaving` refused the second press in silence; the button stayed bright. It
+  // is the same flag the composer freezes Send and its box on.
+  forgetDraftVersion(HOP_KEY);
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch();
+  const { go, went, hops, trigger } = mountHop({ tray: [shot(1)] });
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(false);
+
+  await act(async () => {
+    go();
+  });
+  expect(hops).toEqual([true]);
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(true);
+  // And a second Continue in that window uploads nothing twice.
+  await act(async () => {
+    go();
+  });
+  expect(calls.filter((c) => c.url.startsWith("/api/fs/raw")).length).toBe(1);
+
+  await act(async () => {
+    open();
+    await settle();
+  });
+  expect(went.length).toBe(1);
+  expect(hops).toEqual([true, false]);
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(false);
+
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
 // The patch comes off with the file (see the registry note above).
 process.on("beforeExit", () => {
   win.addEventListener = realWin.add;
   win.removeEventListener = realWin.remove;
+});
+
+// ---- what Continue is about to do, and what it no longer claims -----------
+
+test("the confirm NEVER says it is replacing a saved draft", async () => {
+  // Akshil, 2026-09-16: it used to, and the sentence was true of a bug. Continue
+  // from a never-sent chat wrote `new:<file>` — one record per FOLDER — so a
+  // second draft out of the same folder really did land on top of the first, and
+  // the line was the page apologising for it. It mints `draft:<id>` per press
+  // now (`composerTaskDraft`), nothing is ever replaced, and the confirm is two
+  // lines again: what it is, and what happens next.
+  const { renderer } = await openBody();
+  expect(subLines(renderer)).toEqual([
+    "This task will be scheduled to run at a specific time.",
+  ]);
+  expect(JSON.stringify(renderer.toJSON())).not.toContain("replaces");
 });

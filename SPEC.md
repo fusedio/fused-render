@@ -125,10 +125,8 @@ Left sidebar in the shell, always visible:
 - **SB-3** Capture UI: a bookmark button in the shell header area, one click, no prompt. Default name = basename of the viewed path (file or dir name). A new bookmark is appended to the end of the top-level list, so the sidebar scrolls the new row into view (`block: "nearest"` — minimum scroll of the sidebar's own overflow container) once it renders; the just-created row is never left below the fold. Scroll fires only for the create that just committed (a one-shot id handed off by the store), not on unrelated later mutations.
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click). While a row's rename input is open its whole hover-action cluster is hidden (**Save to disk**, **Rename**, **Delete** — folder rows likewise) — the input wants the row's full width, and every one of them fights the edit in progress: save would snapshot the pre-edit name, rename is what's already happening, and delete would destroy the row being named. Commit (Enter/blur) or cancel (Escape) first.
 - **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks, missing}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). **(D104):** the one-time legacy localStorage import has been removed — every pre-D75 install has long since migrated. **(D127):** `missing` is a bookmark-id side-channel — ids whose target is confirmed gone from disk, recomputed fresh on every GET (bounded, concurrent, mount-safe, fail-open) and never persisted/round-tripped through PUT. The sidebar keeps a flagged row's name at its normal color and shows a warning glyph + hover-card note (owner call: the icon alone carries the flag); nothing is auto-removed. The bookmark poll also fires immediately on window focus (in-flight guarded), not just every 30s. Contrast with Recents (§29, D115), which stays hidden-when-missing by deliberate owner choice.
-- **SB-6** Duplicate URLs allowed; **names are globally unique, case-insensitive** (D97 — names become `<name>.bookmark` filenames): a colliding create/rename auto-suffixes `-1`, `-2`, ... instead of rejecting, existing duplicates migrate once on GET (oldest by `created_at` keeps its name). Folder names are a separate namespace. List ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
+- **SB-6** Duplicate URLs allowed; **names are globally unique, case-insensitive** (D97): a colliding create/rename auto-suffixes `-1`, `-2`, ... instead of rejecting, existing duplicates migrate once on GET (oldest by `created_at` keeps its name). Folder names are a separate namespace. List ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
 - **SB-7** **REMOVED (D359, retiring D83): bookmark history is gone with the per-file sidecar.** Nothing mirrors bookmark create/update anywhere; `POST /api/bookmarks/history` and its frontend caller are deleted. Kept as a tombstone so older references resolve.
-- **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
-- **SB-9** **Double-click open** (macOS): the packaged app registers `.bookmark` as an Owner document type (D99); Finder-opening one routes to the `/view/_bookmark?file=<abs path>` sentinel, which reads the file (`GET /api/bookmark-file`), resolves its relative paths against the file's own directory (`lib/bookmark-file.ts` `bookmarkOpenUrl`, the inverse of SB-8's relativize) and `location.replace()`s to the described view — single, panel or tab. Browsing to a `.bookmark` file in the explorer opens it the same way (never a preview). Malformed / unsupported-version files render a readable error, no redirect.
 
 ### OS clipboard interop (D203)
 
@@ -244,7 +242,7 @@ const { text, usage, response, provider } = await fused.ai.text({
   PATH) — or through a model resident on this machine (§40). The CLI runs as a pure
   one-shot completion (no tools, no settings/CLAUDE.md, no session persistence, one
   turn). **`fused.ai` is a namespace, not a function** (D631): text is one verb among
-  `.image`/`.video`/`.transcribe`/`.embed`, takes **one options object** like them
+  `.image`/`.video`/`.transcribe`/`.embed`/`.decide`, takes **one options object** like them
   (`prompt` is a field, never a positional argument), and the former callable
   `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "apple" |
   "claude"`, optional) pins the **tier** that serves the call; omitted, the model decides:
@@ -258,9 +256,9 @@ const { text, usage, response, provider } = await fused.ai.text({
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
-  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe` and
-  `.embed`** (their D413 envelopes grow that one key), and every reply of the five
-  carries `provider`; those four have only a local tier today, so omitted means
+  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
+  carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
   against a tier that lacks the verb, not a malformed one — which becomes a real
   path the day a gateway serves them, with no page changing. Resolves with exactly
@@ -282,7 +280,8 @@ const { text, usage, response, provider } = await fused.ai.text({
   **This is THE result frame (D632): every `fused.ai` verb resolves with these six
   keys plus its own payload** — `text` here; `images: [{path, url, mediaType}]`,
   `videos: [...]`, `text` + `segments: [{text, startSecond, endSecond, speaker?,
-  words?}]` + `language` + `durationInSeconds`, `embeddings` + `values`. Learn it once.
+  words?}]` + `language` + `durationInSeconds`, `embeddings` + `values`, `answers`
+  (decide, D887). Learn it once.
   It is the AI SDK's `generateText` return contract, chosen because it is the shape
   page authors already know: **`provider`** the tier that answered, so which side of
   the machine boundary a call landed on is always inspectable; **`response`**
@@ -614,17 +613,17 @@ const page = await fused.runPython("./reader.py",
 
 ## 12. macOS Distribution (DMG) — M3
 
-Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
+Distribute as a DMG containing a menu-bar app. On macOS the UI lives in the app's own windows — `NSWindow` + `WKWebView` on the in-process server (`fused_render/mac_window.py`, decisions in `window_policy.py`): one shell window at launch, and a new window for what would have been a new tab (`target=_blank`, `window.open`, ⌘-click, a Finder open, a deep link). External links go to the default browser; "Open in Browser" (title bar, View menu, popover) still hands the current page to it. Windows and Linux stay browser-based. Should the window manager fail to build, every surface falls back to a browser tab.
 
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
 - **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and a documented library list may not promise a library the app lacks (`test_the_documented_library_list_only_promises_what_ships`, over `skills/fused-render-authoring/SKILL.md` — the Learn page's own table was the second copy that test pinned until the learn content left the app, D419). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
 - **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
-- **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open browser.
+- **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running (a second source run) ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open a Home window (`FUSED_RENDER_NO_BROWSER=1` suppresses it). A Dock click on the running app brings the front window forward, or opens a Home window when none is open.
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
 - **DM-9** **Quit is an ordered teardown that ends in `os._exit`, never in AppKit's termination (D357).** Every surface — the popover/tray Quit, the `fused-render://relaunch` deep link, and AppKit's own Dock-menu Quit / ⌘Q / logout-restart (via an `applicationShouldTerminate:` added to rumps' delegate class) — funnels through `app.begin_quit`, which claims exactly ONE teardown under `_quit_lock`, removes the pidfile on the calling thread, and runs `quit_teardown` off the AppKit main thread in a fixed order: drain the server → close duckdb (the reader's stashed HTTP connection AND duckdb's default connection) → detach every mount through the rc-unmount → force-unmount ladder → reap rcd. Each rung is a precondition of the next and each is independently guarded, and the whole thing is bounded by `QUIT_HARD_DEADLINE_S`, DERIVED from the imported budgets of the steps it waits on — an app that cannot be quit is worse than one that quits with a mount attached. When the teardown finishes (or that deadline fires) the shared `quit_ready` event is set and the process dies via `app.hard_exit` → a bounded log flush (`logging.shutdown()` on a daemon thread, joined for `QUIT_LOG_FLUSH_S`) + `os._exit`. Work that must complete before the process can die cannot be sequenced after `begin_quit` returns — a teardown with nothing to unmount can finish first — so it hangs off `begin_quit`'s `on_claim` hook, which runs inside the claim; the `fused-render://relaunch` spawn is the one caller. It must NOT die via `-[NSApplication terminate:]`/`exit()`: that runs `__cxa_finalize` over every dylib's static destructors with the GIL released (pyobjc drops it for the ObjC call), and a native extension's C++ global touching the Python C-API on the way out aborts the process after a teardown that fully succeeded (INCIDENT 2026-07-29 and 2026-08-19; D357 has the measurements). Skipping atexit and Python finalization is sound precisely because the teardown above is the shutdown. The AppKit hook still answers `NSTerminateLater` so the teardown stays off the main thread; `replyToApplicationShouldTerminate:` survives only as the last resort for a hard exit that somehow returned.
-- **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens a browser tab at `/view/<path>`. Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file view (no stray home tab).
+- **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens in a window of its own at `/explorer/view/<path>` (a `.fused` at its embed URL, D390). Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file window (no stray Home window). Each app and file remembers its own window frame (`window_policy.frame_autosave_name`); a second window of the same thing cascades from the first.
 
 ## 12b. Milestones
 
@@ -2094,6 +2093,63 @@ when one exists, else the folder itself.
   exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
   subdirectory itself, via the standard `/view/` URL codec.
+- **DL-7** Local app file payload (D889): `fused-render://open?file=<absolute
+  .fused path>`, the path percent-encoded once by the sender (Render App's
+  title-bar Edit button, `quote(path, safe="")`) and decoded once here; the
+  value is taken verbatim to end-of-string like `git=`. Only an absolute
+  `.fused` path is accepted. The OS handlers ferry it to `GET /clone` like
+  every link (DL-2 unchanged), but a file link gets **no page of its own**:
+  the route answers a 303 INTO the shell with the path as `?_edit_appfile=`
+  — to the existing local copy's entry page (`app_listing.app_entry`, else
+  the folder) when `appfile.clone_target` says one is there, else to Home; a
+  path it cannot read goes to Home too, carrying the path verbatim, so the
+  shell is the one error surface. Nothing is written on the GET (D3). The
+  shell's `EditAppFileBoot` (top document, `!IS_EMBED`) reads the param once,
+  strips it before any async work (a reload or Back never replays the
+  hand-off), then: **no copy** → `POST /api/appfile/clone` and move to the
+  copy's entry page (**no confirm**: the file is already on this machine and
+  was just open in Render App, the same trust posture as a Finder
+  double-click on a `.fused`); **copy exists** → the copy is already on
+  screen underneath, and a modal over it asks "A local copy of `<name>`
+  already exists — overwrite it with the files in `<file>.fused`?" with
+  *Overwrite* (`POST /api/appfile/overwrite`, the preview header's merge
+  overwrite: payload files replace their counterparts, `.venv`, `.fused` data
+  and files the payload does not carry stay; then a reload of the copy's
+  entry page) and *Cancel* / close (nothing written, keep working on the
+  copy). `/api/clone/info` and `POST /api/clone` stay git-only.
+- **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
+  a .fused>`, the link percent-encoded once by the sender and decoded once
+  here, verbatim to end-of-string like `git=`/`file=`. Render App's
+  `render-app://open?url=` ported one-to-one (fused-render-lite PRs #27/#30):
+  a web page's "Open in fused-render" link. Same no-page shape as DL-7:
+  `GET /clone` answers a 303 to Home with the link as `?_fetch_appfile=`
+  (nothing is on disk yet, and nothing is written on the GET, D3; a non-http(s)
+  payload rides along verbatim so the shell reports it). The shell's
+  `FetchAppFileBoot` (top document, `!IS_EMBED`, beside `EditAppFileBoot`)
+  reads the param once, strips it before any async work, then **downloads
+  without a confirm step** (owner call; the link click is the gesture) through
+  the X-Fused `POST /api/appfile/fetch {url} → {file}` (`appfetch.py`: http(s)
+  only, every redirect hop re-checked, 1 GB cap by `Content-Length` and while
+  streaming, temp file validated with `appfile.read_manifest` then
+  `os.replace`d, nothing left on disk on failure) into
+  `~/.fused-render/downloads/<app_id>.fused` — keyed on the app's stable id
+  (D884) so every link to one app updates one file and one Apps-hub row;
+  `<name>-<url sha 8>.fused` for files that predate the id — and opens the
+  saved file **as an app**, the Finder double-click shape (D390), never the
+  explorer's view of it: the top document hard-loads the file's embed URL
+  (a full load, since the embed/view prefix is read once at module init),
+  where the `fusedapp` template runs it and `exported_apps.record_open`
+  lists it under recents. Deliberately not `POST /api/windows/open`: a deep
+  link always arrives in a fresh native window parked on Home by the 303, and
+  loading the embed there makes that window the app's own (the URL observer
+  re-keys it, the title-bar Edit button is the way into the explorer) instead
+  of leaving it orphaned beside a second one. In a browser tab the same load
+  lands under the EmbedStrip, whose "Open in explorer" is the way out. A re-click on a link to
+  a NEW version of the same app overwrites the one saved file, extracts the
+  new bytes, and keeps everything the app saved in `.fused` (AF-13's shared
+  state dir): app files replaced, state retained. Recorded cost of the
+  missing gate: a web page that can navigate the browser to this origin with
+  `?_fetch_appfile=` gets a remote `.fused` downloaded and opened unprompted.
 
 ---
 
@@ -8680,29 +8736,46 @@ an AI Models page that could say what was on disk but not what was *running*.
   listed file still growing. The mtime half is not optional: a memo that outlived a
   completed download would hide the model the user just fetched, which is precisely
   the bug being fixed.
-- **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
-  path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
-  true and half the curated models are Qwen (Qwen3.5 since the 2026-08-21
-  refresh), so an ordinary question
-  emits a `<think>` block first — hundreds of tokens the caller cannot tell
-  apart from the answer, since `/generate` streams whatever the model produces.
-  At a few tokens a second on the CPU this runner exists to serve, that is
-  minutes of apparent silence on a machine already suspected of being slow. The
-  flag is passed to every model rather than to a list of known ones: kwargs land
-  in the Jinja render context, so a template that never mentions it does not
-  read it, and a tokenizer whose signature rejects it outright retries without —
-  a model that will not take the hint should still answer, just verbosely.
-  (Written for the transformers runner and inherited unchanged by
-  `runners/llama_text.py`, which renders the GGUF's own embedded template by hand
-  and passes `enable_thinking=False` into the render context — Jinja ignores an
-  unreferenced variable, so no retry is needed there at all. D416 removed the
-  other runner; the default did not move.) The same class of trap as the version
-  floor that used to sit beside it: `transformers>=5.15` is a release that knows
-  a `qwen3_5` exists, and a 4.x resolution installed perfectly and then failed
-  every Qwen3.5 Download with `KeyError: 'qwen3_5'`, which read as a broken model
-  rather than an environment a major version too old. The GGUF path has no such
-  floor to get wrong — a `.gguf` carries its own architecture and its own
-  template — which is one fewer way for a curated model to be unloadable.
+- **AI-11d** **Reasoning is ON by default (D886, reversing this entry's
+  original "OFF by default" — owner decision, 2026-09-21), and a caller can
+  now say otherwise with a per-request `thinking` flag.** The original
+  reasoning still applies to the cost: Qwen3's chat template defaults
+  `enable_thinking` to true and half the curated models are Qwen (Qwen3.5
+  since the 2026-08-21 refresh), so an ordinary question emits a `<think>`
+  block first — hundreds of tokens the caller cannot tell apart from the
+  answer, since `/generate` streams whatever the model produces, and at a few
+  tokens a second on the CPU this runner exists to serve, that is minutes of
+  apparent silence on a machine already suspected of being slow. What changed
+  is that unifying BOTH local text runners around one default was judged more
+  important than which default: `mlx_text/worker.py` never had a way to turn
+  thinking off at all (its text path passed no `enable_thinking` kwarg,
+  falling through to the template's own default, which is ON for Qwen) while
+  `runners/llama_text.py` passed `enable_thinking=False` unconditionally — two
+  runners silently disagreeing about the same setting, discovered when
+  `mlx-community/S1-mini-MLX-4bit` (a Qwen3-0.6B transcript normalizer) proved
+  unusable through the MLX runner without a way to force thinking off. The
+  fix threads a wire-level `thinking` boolean (client -> `server/ai.py` ->
+  worker's `enable_thinking`, tri-state: unset/true/false) through both
+  runners, **defaulting to ON when unset in both** — the CPU-silence cost this
+  entry originally weighed is accepted, not solved, and a caller who wants the
+  old behaviour back (or needs it, like S1-mini) now has an explicit knob
+  rather than a runner-specific accident. The flag is honoured by every model
+  rather than by a list of known ones: an explicit value lands in the Jinja
+  render context for `runners/llama_text.py` (a template that never mentions
+  it just never reads it) and as an `enable_thinking` kwarg to the
+  tokenizer's own `apply_chat_template` for `mlx_text/worker.py` — retried
+  once without the kwarg if the template's own `apply_chat_template` raises
+  `TypeError` on it, since (unlike Jinja) transformers can reject an
+  unexpected keyword outright. (Originally written for the removed
+  transformers runner, whose retry logic `mlx_text/worker.py` now carries;
+  D416 removed that runner, `runners/llama_text.py` never needed the retry at
+  all.) The same class of trap as the version floor that used to sit beside
+  it: `transformers>=5.15` is a release that knows a `qwen3_5` exists, and a
+  4.x resolution installed perfectly and then failed every Qwen3.5 Download
+  with `KeyError: 'qwen3_5'`, which read as a broken model rather than an
+  environment a major version too old. The GGUF path has no such floor to get
+  wrong — a `.gguf` carries its own architecture and its own template — which
+  is one fewer way for a curated model to be unloadable.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
   knowable from outside the process: **the default rows pin an unaccelerated
@@ -8809,10 +8882,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   (`llama_cpp.Llama.metadata`), which this runner renders by hand with
   jinja2 and hands to `create_completion(stream=True)` — never
   `create_chat_completion`, so the NDJSON contract stays identical to
-  `torch_text.generate`'s. `enable_thinking=False` rides into the render
-  context unconditionally, the same default AI-11d chose for the family of
-  models this shares (Qwen3.5), because Jinja silently ignores a context
-  variable a template never reads. **The chat template reads
+  `torch_text.generate`'s. `enable_thinking` rides into the render context,
+  defaulting to `True` when a caller leaves it unset (D886, reversing
+  AI-11d's original default for the family of models this shares, Qwen3.5) —
+  Jinja silently ignores a context variable a template never reads, so an
+  explicit value passes through with no retry needed either way. **The chat
+  template reads
   `Llama._model.token_get_text`/`add_bos_token`, not the public `Llama`
   surface** — `Llama` itself has no `token_get_text` at all, verified
   against the installed 0.3.29, and `add_bos_token` decides whether
@@ -9969,7 +10044,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   guard, so a hostile repo id answers False exactly as `has_vision_tower`
   already does.
 - **AI-28** **`registry.py` gains `tool-use`/`vision` TAGS on top of the
-  five existing capabilities -- never a reshape of them.**
+  the five capabilities of the time -- never a reshape of them.**
   `registry.supports_tool_use(repo_id, model_type=None, architecture=None)`
   matches a KNOWN-FAMILY allowlist (`TOOL_USE_FAMILIES`: qwen3, qwen2.5,
   command-r, hermes, llama-3+instruct, mistral+instruct, gemma-3/4+-it),
@@ -10064,6 +10139,66 @@ an AI Models page that could say what was on disk but not what was *running*.
   WITHIN one already-curated repo's own listing), and wiring it here would
   not be an honest caller, only a way to make it non-inert. It stays ready
   for a future UI that offers alternate quantizer conversions.
+- **AI-31** **A sixth capability, `text-classification`, and a sixth verb,
+  `fused.ai.decide({state, questions})` — the first capability that GENERATES
+  NOTHING (D887).** Laya is a typed-decision model: a bidirectional encoder
+  with decision heads that reads a `state` (a string, a JSON record or a
+  conversation) plus typed questions and answers with CALIBRATED
+  PROBABILITIES — `choice` over named labels, `score` as the expected
+  zero-based level of an ordered rubric, `noul` as P(true) — with zero output
+  tokens, so none of the five verbs fit and shoehorning it under `text` would
+  have meant parsing prose back into numbers the model already had. It runs
+  through `laya-mlx` as a LOCAL-tier `Runner` (`laya-mlx`, `_apple_silicon`,
+  its own runner venv pinning `laya-mlx 0.2.x`, which itself pins `mlx 0.32`), NOT a fourth provider: a tier is
+  an engine family (D700), and this is MLX weights in the Hub cache loaded by
+  a Python worker — exactly what `local` means — so it inherits the supervisor's
+  resident slot, download jobs, mirror and Local-tab card for free.
+  **The capability constant IS the Hub tag**, `registry.DECISIONS =
+  "text-classification"`, the way `SPEECH_TO_TEXT` is: `tasks.py`'s existing
+  row flips from unserved to `DECISIONS` and a cached Laya snapshot classifies
+  off its own card. Every sentiment BERT carries the same tag, so
+  `formats.DECISIVE` gains `laya-mlx` claiming ONLY a snapshot containing
+  `rl_agent_config.json` PLUS an `encoder/` folder (`formats.is_laya_snapshot`;
+  Laya's own manifest and layout, present in no other family) —
+  a plain text-classification repo reads as "capability known, no engine here
+  reads this format", which is the sentence the card already had.
+  **`POST /api/ai/decide` is the embed shape, not the image one**: closed
+  option envelope (`state`, `questions`, `model`, `provider`), `_provider_rejection`
+  answering `claude`/`apple` with 409 `unavailable`, `catalog.default_for(DECISIONS)`
+  when no model is named, a cold model raising `ModelNotReady` so the load
+  STARTS and the 409 carries its job id (AI-5) — one forward pass per question
+  answers in milliseconds once resident, so there is no job for a fetch to hide
+  inside and nothing to stream. `supervisor.generate_embed`'s body is lifted
+  into `_generate_sync(capability, model, body)` and both verbs call it.
+  **The worker hands `laya_mlx.load()` the snapshot DIRECTORY, never the repo
+  id**: the library's own `resolve_model` calls `snapshot_download` on a bare id,
+  which would fetch through the Hub behind the app's back — no disk-measured
+  progress (AI-5b), no mirror (AI-5l), no ✕ — so `download` goes through
+  `worker_base.download_snapshot` and `load` only ever reaches the local
+  branch. The reply is `common.ai_result` with `answers` as its payload; each
+  answer passes Laya's keys through (`type`, `confidence`, `choice`,
+  `probabilities`, `score`, `legend`, `noul`) except `action.act_probability`,
+  which becomes `actProbability` because D633 made the wire camelCase and that
+  is the one snake key in it; Laya's own `"model": "laya-rl-agent"` is dropped
+  for `response.modelId`, the catalog id. `usage.outputTokens` is always 0.
+  **Catalog**: the two pre-converted standalone FP16 repos,
+  `aac6fef/laya-multilingual-mlx` (322M, 0.68 GB, 1024-token context) at
+  position 0 by AI-7d's smallest-first rule and therefore the bare default, and
+  `aac6fef/laya-mlx` (421M, 0.85 GB, 512-token context, English) marked
+  `recommended` (AI-11i) so the Playground's pick and any English-first page
+  land on it; the upstream bundle `convaiinnovations/laya` was rejected (three
+  checkpoints in one download, `transformers`-tagged, needs a `subfolder=` no
+  other row has). Onboarding's Models step EXCLUDES the capability the way it
+  excludes video — a 0.85 GB download offered to every fresh install with no
+  visible use yet. The context is small and SHARED by instructions, criteria
+  and state, so the skill tells page authors to shortlist labels and keep
+  instructions to a sentence. **The two overflows fail differently**: too many
+  labels or rubric levels for the token budget is refused by the library
+  ("too many options for the token budget") and surfaces as `ai_error`; too long
+  a STATE is silently cut from the TAIL by `laya_mlx`'s `build_sequence`, so the
+  worker reports every question whose sequence hit the ceiling as a D633-style
+  entry in the reply's `warnings[]` (`{type: "other", message: "…state was cut to
+  N tokens…"}`) — `usage.inputTokens` sitting at the ceiling is the other tell.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
@@ -10845,39 +10980,22 @@ else: no editor, no Claude, no explorer chrome.
   never extract fresh, never rebuild, never record recency; the entry iframe
   carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
   thumb — a peek must not be the first run of a stranger's pages.
-  Export can BAKE one in: `exportAppFile` takes a NATIVE screen shot of
-  the app's on-screen rect (`POST /api/capture/shot-region`, the §45 still
-  behind `fused.capture.screenshot()` pointed at a browser-measured rect,
-  PNG bytes back and no file in `<home>/recordings`; chosen over DOM
-  serialization because canvas/WebGL apps rasterize blank) when and only
-  when the folder has no authored `preview.png`. The crop
-  source is the card's own thumbnail when it is on screen AND HAS PAINTED
-  the app — a card without a preview.png renders the live app there, so
-  nothing navigates or flashes, but only two card previews start at a time
-  (`createPreviewStartQueue(2)`), so an unpainted thumb is the ordinary
-  state of a card and cropping one would bake an empty box in as the
-  artifact's permanent thumbnail. The card states paintedness on the thumb
-  (`data-capture-ready`, set on the body iframe's load) because the surface
-  that opens the context menu is not the one holding that state; the
-  full-viewport stage is the fallback for a missing, off-screen or unpainted
-  thumb, sized so its shot lands under the width cap at this DPR (so nothing
-  downscales). The browser reports the rect in its screen units
-  (`screenX` + chrome + the element's box) plus `devicePixelRatio`; the
-  backend's `locate` hook maps that onto ONE display in its own units
-  (points on macOS, physical pixels on Windows/Linux) and REFUSES a rect that
-  is not entirely on one display rather than clipping it — a sliver baked
-  in is a valid PNG nothing later can catch. No share prompt and nothing
-  hinging on the click's transient user activation (the earlier tab-capture
-  version's whole ordering problem); on a Mac without Screen Recording
-  granted the first shot raises the TCC dialog and that export ships plain.
-  The
-  X-Fused `POST /api/appfile/export` variant writes it as
-  `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
-  wins; every capture failure — unsupported, permission denied, off-display,
-  blank, over-cap — exports plain: the route drops a too-big screenshot rather than
-  failing the download, where `export_app_file` itself still raises for a
-  caller that meant to supply a still). An injected preview extracts as a
-  real file in the app's read-only extract dir like any other member.
+  The payload's `preview.png` is the folder's AUTHORED one or none. Share
+  never photographs the screen (retired 2026-09-18): from D396 until then a
+  folder without a still got a native screen shot baked in at export time —
+  `POST /api/capture/shot-region` on the /apps card thumb or a full-viewport
+  stage — and each of its preconditions (Screen Recording granted, window on
+  one display, page zoom 100%, a pointer-learned viewport origin, overlay UI
+  hidden before the frame was read) failed at least once, baking a WRONG
+  picture into a permanent artifact that no downstream check can catch. App
+  Doctor's `preview` check surfaces the missing thumbnail as a fact the
+  owner fixes on purpose; the one capture left is the explorer's explicit
+  "Set Current View as Preview" (`appShot.captureAppPreview`, the shown
+  frame or nothing), which writes the folder's preview.png via
+  `POST /api/apps/preview`. The export and publish routes still accept an
+  optional `preview` upload (PNG magic + 8 MiB cap; the authored still
+  always wins; an over-cap upload is dropped rather than failing the
+  download) — no shell caller sends one any more.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
@@ -10911,6 +11029,23 @@ else: no editor, no Claude, no explorer chrome.
   Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
+- **AF-13** Shared `.fused` state per app id (port of Render App's lite PR
+  #32). Extracts are content-addressed (AF-6), so every re-export of an app
+  lands in a fresh dir and the state the app saved under `<extract>/.fused`
+  (D548, §47) used to stay behind. Now `open_app_file` makes
+  `<extract>/.fused` a symlink (a directory junction on Windows) to
+  `~/.fused-render/fused_data/<app_id>` for every file carrying a stable id
+  (D884): every extract of one app reads and writes one state dir, and
+  `app_fused_dir.ensure` scaffolds `data`/`cache`/`meta.json` through the
+  link on render exactly as before. **An update to the same app replaces the
+  app's files and keeps everything inside `.fused`** — the DL-8 contract. An
+  older extract that holds a real `.fused` dir is migrated on its next
+  non-preview open: its contents move into the shared dir when that is still
+  the bare scaffold, else the shared state wins and the local copy goes.
+  Files without an id keep local state, as before. Best-effort: a link that
+  cannot be made leaves the state local rather than failing the open.
+  `rmtree` of a damaged extract does not follow the link, so a rebuild never
+  touches the shared dir.
 
 ## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 
@@ -11794,10 +11929,11 @@ per-row fix.
   row is critical or warning, so a candidate still counts at its own severity
   for this one flag, though never in the modal's own presentation of it
   (AD-4).
-- **AD-3** Eleven checks, essentials then sharing, exactly:
+- **AD-3** Twelve checks, essentials then sharing, exactly:
   `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
   (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
-  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
+  `icon` (warning, fact) — then `device-paths` (warning, candidate),
+  `cross-browser` (warning, candidate, ON DEMAND — AD-8), `git`
   (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
   `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
   commits via `git rev-list --count @{upstream}..HEAD` — no network call,
@@ -11863,3 +11999,106 @@ per-row fix.
   0, the exact inverted urgency AD-2's severity table exists to prevent.
   Every finding still prints regardless of whether it blocks — only the exit
   code changes.
+- **AD-8** One row is MODEL-BACKED and ON DEMAND: `cross-browser`
+  (`fused_render/app_doctor_ai.py`), a one-shot `claude -p` at **Sonnet, low
+  effort** — fixed, not the user's pickers — over the app's `.html`/`.css`/
+  `.js`/`.svg` files (the `.fused` exporter's own gitignore-aware walk,
+  bounded to 40 files / 256 KB, numbered lines) with
+  `skills/fused-render-cross-browser/SKILL.md` read from disk as the rubric,
+  `--json-schema` for a structured verdict, prompt over stdin (newlines vs.
+  the Windows `.cmd` shim), `--no-session-persistence`, `--tools=`. It NEVER
+  runs on a GET: `report()`/`report_one()` only read the cache at
+  `.fused/cache/app-doctor/cross-browser.json`, whose `checksum` is a sha256
+  of exactly the bytes the model was shown. Cache matches → the stored
+  verdict (pass, or fail with `{rule, path, line, excerpt}` findings); no
+  cache, or the view files changed since → `state: "unrun"` ("Not run yet"),
+  which counts toward neither `ok` nor the header dot. `POST
+  /api/apps/doctor/run` `{path, check, force?}` (`X-Fused` required, 400 for
+  a row not in `app_doctor.ON_DEMAND`, 502 with one sentence when the model
+  could not answer, previous verdict kept, single-flighted per folder) runs
+  it and returns the refreshed row; the panel draws **Check** on an unrun
+  row, swaps the returned row in place, and keeps an icon-only **Re-check**
+  (`force: true` — ask again although the cache still matches) on a settled
+  one for what the checksum cannot see (a rubric that moved on). THE VERDICT
+  IS WRITTEN FOR THE AUTHOR: the schema's own `description`s cap `summary`
+  at one plain sentence and give every finding a `what` (what a visitor sees
+  go wrong, in which browser, no code) and a `fix` (one sentence) — the
+  panel draws those as wrapping prose, never the source line, and the fix
+  prompt carries `fix` as "suggested fix". No free text rides in argv
+  (system prompt via `--system-prompt-file`, `_popen_cmd` for the `.cmd`
+  shim, and on that shim the schema goes into the prompt instead of
+  `--json-schema`, whose quotes `_cmd_quote` refuses).
+  Every row carries `ondemand: bool` so the panel never keeps its own list.
+  The row is a `candidate` (a model's reading earns a second look), so its
+  fix task is the ordinary per-row task with the triage-first prompt, routed
+  by the app-doctor skill's `cross-browser` section to
+  `fused-render-cross-browser`; `POST /api/apps/doctor` 409s a fix on an
+  unrun on-demand row, since its findings would describe a folder that no
+  longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
+  findings real.
+
+## 49. App Python, Called Directly — Bots Run a Folder's `.py` Without the Page
+
+Goal: an app folder's `.py` files are the app's capability; the page is one UI
+over them. A bot (OpenBot's `py` action, a Claude-harness bot, any local
+script) can run one **without rendering the page**, with the page's own
+semantics, so a bot that builds an app can also drive it at the lowest level
+the app has. What a bot knows about those files is what the app's author
+wrote down in the app's `SKILL.md`, never something parsed out of the code.
+Design pages: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ (runner),
+https://claude.ai/artifact/PDhNwAeVBVfuAvNyrxicMz (SKILL.md discovery).
+
+- **AP-1 One runner.** Execution is `POST /api/run` `{py, html, params}`
+  (§PY-6) — the identical call the page's `fused.runPython` makes, with an
+  absolute `py` (`resolve_py` never needed the page). Nothing bot-specific
+  lives in that handler: engine preference, the missing-module diagnosis, the
+  folder-busy gate, the call log, git-status invalidation and the
+  `{ok, result, error:{type,message,traceback}, stdout, resolved_py,
+  duration_ms}` envelope are what the bot sees because they are what the page
+  sees. The 60 s bound (`DEFAULT_TIMEOUT`) is the bot's bound; there is no
+  bot-only budget, since a file that only works with one would then fail in
+  the page. There is no pre-flight arg check: `_binding.bind_params` drops a
+  key `main` does not take (silently, as it does for the page) and a missing
+  required one comes back as the runner's `ParamError` envelope — the bot's
+  cue to re-read the skill.
+  **Rejected:** a synthesized manifest-less tool through the openfused
+  `fused app serve` runner inside the bot's worker (a second semantics —
+  requirements venv instead of the engine pref, 180 s, no call log — and a
+  bundled `fused` import an exported copy of the bot lacks); a wrapper
+  endpoint that would add only a name.
+- **AP-2 Discovery is the app's `SKILL.md`, read by the caller.** One file
+  at the app root beside `index.html` (so it ships in a `.fused` export and
+  a clone), in Claude Code skill shape: YAML frontmatter `name` +
+  `description` (one line: what the app does for a bot), optional
+  `approve: [file.py, …]`, then prose for the model with one fixed
+  convention — a `## <file>.py` heading per callable file. That heading is
+  the only thing a caller parses out of the body: a file is callable only
+  when it exists AND has a section, so the approval card always has the
+  author's own line to show. The caller reads the file off disk (same Mac);
+  the server has **no** discovery route. An app without `SKILL.md` has no
+  bot-callable Python — a bot uses its page. **Rejected:** the AST listing
+  (`GET /api/apps/python` over `pyinspect.py`, PR #1359), removed: it showed
+  a signature but not what a call means or changes, and an author could not
+  correct it; a structured per-file `params:` schema in frontmatter (the
+  same drift as the AST, in YAML); a `GET /api/apps/skill` route (an
+  `open()` behind HTTP). `templates/mcp/inspect_app.py` keeps its own AST
+  read for the MCP panel's tool curation — a different feature.
+- **AP-3 Daemon apps.** A §46 resident process is not reachable through
+  `/api/run`; its `SKILL.md` says so in prose and documents only the
+  `main()` files a bot can run.
+- **AP-4 Author contract** — the "App SKILL.md" section of
+  `skills/fused-render-authoring/SKILL.md` (the skill every builder task
+  already loads; no separate skill): per file a top-level sync annotated
+  `main(**params)` (`_binding.coerce` still coerces by annotation inside
+  `/api/run`), JSON-native return, no argv/stdin, ≤ 60 s (longer →
+  `fused.trackJob` or a daemon), secrets never in params; per file a
+  `SKILL.md` section with what it does, what it changes, args, return shape
+  and one example call. Every change to a `.py` updates its section in the
+  same edit.
+- **AP-5 Approval is the caller's.** The server runs what it is asked; the
+  gate lives in the bot: OpenBot runs a `py` call at once when the folder is
+  one of that bot's own builds and pauses for the user otherwise, showing the
+  first line of the file's `SKILL.md` section. Frontmatter `approve:` can
+  only **add** a pause (an own build's destructive file); nothing in a
+  `SKILL.md` can remove one, since the author of a foreign app is not the
+  user.

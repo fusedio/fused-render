@@ -21,8 +21,13 @@
 // Both popups are position:fixed off the trigger's rect rather than absolutely
 // positioned: .panel-pane and the tab bar clip their overflow, and a menu that
 // works in three of four bars is a menu that will be reported as broken in the
-// fourth.
+// fourth. And they are PORTALED TO <body> (see ContextMenu.tsx for the why): a
+// fixed box left under the bar is pinned to whichever ancestor is a containing
+// block for fixed descendants — on WebKit before Safari 18.4 that includes the
+// explorer's `container-type` columns, and the kebab menu opened 500px off.
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { modeTitle } from "@platform/lib/mode-name";
 
 // Exactly one of left/right is set: a left-anchored popup grows rightwards from
@@ -45,11 +50,14 @@ interface MenuPos {
 function useMenuAnchor(align: "left" | "right" = "left") {
   const [pos, setPos] = useState<MenuPos | null>(null); // non-null = open
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // The popup is portaled out of `rootRef`'s subtree, so "inside" is either.
+  const popupRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!pos) return;
     const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setPos(null);
+      const t = e.target as Node;
+      if (!rootRef.current?.contains(t) && !popupRef.current?.contains(t)) setPos(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setPos(null);
@@ -89,7 +97,7 @@ function useMenuAnchor(align: "left" | "right" = "left") {
     );
   };
 
-  return { pos, rootRef, toggle, close: () => setPos(null) };
+  return { pos, rootRef, popupRef, toggle, close: () => setPos(null) };
 }
 
 function CaretIcon({ open }: { open: boolean }) {
@@ -164,7 +172,7 @@ interface ModeMenuProps {
 }
 
 export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
-  const { pos, rootRef, toggle, close } = useMenuAnchor();
+  const { pos, rootRef, popupRef, toggle, close } = useMenuAnchor();
   const activeEntry = entries.find((e) => e.mode === active) ?? null;
   // One ROW is not a choice — the same rule the icon strips used — unless
   // nothing is active (a caller whose surface can show no mode at all, e.g. the
@@ -218,8 +226,10 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
         </span>
         <CaretIcon open={pos !== null} />
       </button>
-      {pos && (
+      {pos &&
+        createPortal(
         <div
+          ref={popupRef}
           className="bar-menu-popup"
           role="menu"
           aria-label="View mode"
@@ -255,52 +265,46 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
               <span className="bar-menu-item-label">{modeTitle(e.mode)}</span>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
 }
 
-export interface OverflowItem {
-  label: string;
-  onClick: () => void;
-  // Optional leading glyph, in the same 16px slot the mode rows use
-  // (.bar-menu-item-icon). A menu is all-or-nothing about icons in practice —
-  // one iconless row among icon'd ones reads as a broken row — so a caller
-  // either gives every item one or none.
-  icon?: ReactNode;
-  // Listed but not clickable, with `title` saying why (the native tooltip, the
-  // same carrier ModeMenu's disabledReason uses). A row that vanishes while its
-  // precondition is unmet reads as a menu that changes shape; a dimmed row
-  // reads as the same menu with one thing unavailable right now.
-  disabled?: boolean;
-  title?: string;
-  // Something small after the label — a status dot, a spinner — in the row's
-  // trailing slot.
-  trailing?: ReactNode;
-}
-
-// A menu may group its items. Same shape as ContextMenu's entry list, so the
-// two menus describe a separator the same way.
-export type OverflowEntry = OverflowItem | "separator";
+// One vocabulary for every menu in the explorer: the bars' `⋮` rows are
+// ContextMenu's MenuItem, so a list built once (the folder menu, bar-menus'
+// folderMenu) renders in this dropdown and in a right-click <ContextMenu>
+// without conversion. `icon` is the same 16px slot the mode rows use
+// (.bar-menu-item-icon) — a menu is all-or-nothing about icons in practice, so
+// a caller either gives every item one or none. `disabled` + `title` is a row
+// listed but not clickable with the reason as the native tooltip: a row that
+// vanishes while its precondition is unmet reads as a menu that changes shape,
+// a dimmed row as the same menu with one thing unavailable right now.
+// `submenu` has no home in this flat dropdown and is rendered as a plain,
+// disabled row — the folder menu carries none.
+export type OverflowItem = MenuItem;
+export type OverflowEntry = MenuEntry;
 
 // THE PATH `···`/`⋮` IS GONE from this module. It held the two low-frequency
 // one-shots every view OF A PATH offers (reveal, copy path) plus — over a file —
 // the two splits, and it had two homes: the crumb bar for a file/preview and the
 // listing's own search row for a folder.
 //
-// Both callers took the items somewhere better. The folder's are in the listing
-// header's `⋮` (Listing.tsx), beside the rest of the folder's operations. The
-// file's are in the CRUMB BAR'S RIGHT-CLICK MENU (Breadcrumb's onBarContextMenu,
-// items from lib/bar-menus), which is where the hand goes first on a bar and
-// where they cost no chrome at all — and which is also how Rename and "Open in
-// Claude Code", both missing from the four-item dropdown, joined them.
+// Both callers took the items somewhere better. The folder's are in THE FOLDER
+// MENU (lib/bar-menus' folderMenu) — one list that the listing's kebab, its
+// background right-click and the crumb bar's right-click all open. The file's
+// are in the CRUMB BAR'S RIGHT-CLICK MENU (Breadcrumb's onBarContextMenu, items
+// from lib/bar-menus), which is where the hand goes first on a bar and where
+// they cost no chrome at all — and which is also how Rename and "Open in Claude
+// Code", both missing from the four-item dropdown, joined them.
 //
 // `OverflowMenu` below stays: the panel pane bars use it for their own one-shot
-// ("Open in a new tab"), and the file preview's crumb bar uses it as THE kebab
-// for the app-level actions that used to stand in that bar as bordered buttons
-// (EntryActionsMenu.tsx: App Doctor, Download app, Open as project, Open in
-// embed, MCP config).
+// ("Open in a new tab"), the file preview's crumb bar uses it as THE kebab for
+// the file menu (bar-menus' fileMenu: the app-level actions that used to stand
+// in that bar as bordered buttons — App Doctor, Share, Open as project, MCP
+// config — with the file's own rows), and the folder listing's search row uses
+// it for the folder menu.
 
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
 // pass a conditional list without guarding the control itself.
@@ -316,7 +320,7 @@ export function OverflowMenu({
   // row inside a closed menu is a dot nobody sees.
   badge?: ReactNode;
 }) {
-  const { pos, rootRef, toggle, close } = useMenuAnchor("right");
+  const { pos, rootRef, popupRef, toggle, close } = useMenuAnchor("right");
   if (items.length === 0) return null;
   return (
     <div className="bar-overflow" ref={rootRef}>
@@ -338,9 +342,11 @@ export function OverflowMenu({
         <EllipsisIcon />
         {badge && <span className="bar-overflow-badge">{badge}</span>}
       </button>
-      {pos && (
+      {pos &&
+        createPortal(
         <div
-          className="bar-menu-popup"
+          ref={popupRef}
+          className="bar-menu-popup bar-overflow-popup"
           role="menu"
           aria-label={title}
           style={{ top: pos.top, left: pos.left, right: pos.right }}
@@ -354,11 +360,11 @@ export function OverflowMenu({
                 type="button"
                 role="menuitem"
                 className="bar-menu-item"
-                disabled={item.disabled}
+                disabled={item.disabled || item.submenu !== undefined}
                 title={item.title}
                 onClick={() => {
                   close();
-                  item.onClick();
+                  item.onClick?.();
                 }}
               >
                 {item.icon && <span className="bar-menu-item-icon">{item.icon}</span>}
@@ -367,7 +373,8 @@ export function OverflowMenu({
               </button>
             )
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

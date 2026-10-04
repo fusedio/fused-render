@@ -20,6 +20,12 @@
 //     that answer a different question. Grouped rather than each given a tab
 //     because they are one question asked twice — which model, and with whose
 //     credentials.
+//   Fused account — sign in and out of the `fused login` provider Share and
+//     Canvases run on (shell/FusedAccountSection). Its own tab, not a section
+//     on Render or AI: the account is neither a rendering preference nor a
+//     model choice, and before it existed the only sign-in/out UI sat on the
+//     Canvases page behind that feature's flag (D427), so with the flag off
+//     there was no way to see which account this machine was on, or leave it.
 // **Inference engines used to be a tab here and is not any more** — it is the
 // Engines tab of /ai-models (shell/AiModelsEngines.tsx). It was the one control
 // on this page about MODELS rather than about rendering, and every consequence
@@ -35,8 +41,9 @@
 // The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  getConfig,
   getPrefs,
   putCallsEnabled,
   putCallsParamsMode,
@@ -44,12 +51,19 @@ import {
   cancelHfLogin,
   getHfAuth,
   hfLogout,
+  putAppSharingEnabled,
   putCanvasesEnabled,
-  putNativeChatEnabled,
-  putTaskPeekEnabled,
-  putTaskCardTitleMode,
-  putChatRecapEnabled,
+  putLivePreviewsEnabled,
+  putMonitorEnabled,
+  putNativeWindowsEnabled,
+  putGitAutoSyncEnabled,
+  putAutoDownloadUpdates,
+  putProjectQueueEnabled,
+  putTaskNotifyTerminalSessionsEnabled,
   putLanEnabled,
+  putLauncherHotkey,
+  putLauncherRowModifier,
+  postLauncherSuspend,
   getLanPairToken,
   getLanDevices,
   revokeLanDevice,
@@ -58,22 +72,32 @@ import {
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
+import type { UpdateStatus } from "@platform/lib/api";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import {
-  publishChatRecapEnabled,
-  publishNativeChatEnabled,
-} from "@apps/claude/feature-flag";
+import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
+import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
+import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
+import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { publishTaskPeekEnabled } from "./task-peek-flag";
-import { publishTaskCardTitleMode } from "./task-card-title-flag";
+import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
+import { FusedAccountSection } from "@shell/FusedAccountSection";
+import {
+  CHECK_RESULT_HOLD_MS,
+  checkForUpdates,
+  checkNowLabel,
+  updateLabel,
+  updateRelevant,
+  useUpdateStatus,
+  type ManualCheckPhase,
+} from "@platform/lib/update-status";
 
-type PrefsTab = "render" | "ai" | "indexing" | "lan";
+type PrefsTab = "render" | "ai" | "indexing" | "lan" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -124,6 +148,182 @@ function AppearanceSection() {
           <b>Dark</b> — always dark, whatever your desktop is set to.
         </span>
       </label>
+    </section>
+  );
+}
+
+// SPEC-update-notifications.md: the manual "is there something new?" check
+// used to live on `UpdateBadge` (deleted, sidebar row above Settings) next to
+// the install button. Splitting the UI in two ("Activity = progress,
+// Notifications = decisions") left this check with nowhere to live but here —
+// it is neither progress nor a decision, just a question a person asks once
+// in a while. The DECISION that follows an answer (download it? restart for
+// it?) is `UpdateNotifier`'s job now; this section only ever fires the check
+// and reports what it learned, never a download/restart button of its own.
+function UpdatesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const status = useUpdateStatus();
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoError, setAutoError] = useState<string | null>(null);
+  // Default OFF: absence (an older server) reads as off.
+  const autoDownload = prefs.update?.auto_download === true;
+  const toggleAutoDownload = async () => {
+    if (autoBusy) return;
+    setAutoBusy(true);
+    setAutoError(null);
+    try {
+      onChange(await putAutoDownloadUpdates(!autoDownload));
+    } catch (e) {
+      setAutoError((e as Error).message);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+  const [version, setVersion] = useState<string | null>(null);
+  // This row's own phase — local, not the shared store: it is about THIS
+  // press ("Checking…", then the answer for a few seconds), same split
+  // `UpdateBadge` used between its own phase and the durable store state.
+  const [phase, setPhase] = useState<ManualCheckPhase>("rest");
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(holdTimer.current), []);
+  // WHEN THE SERVER WAS ALREADY LOOKING (bugbot, PR #1097, carried over
+  // verbatim from the deleted `UpdateBadge.tsx:108-129` per the spec's Files
+  // section — "that is a real bug fix, not decoration"). A non-forced
+  // check() that lands while the auto tick's own fetch is already out
+  // returns at once with "checking" — a promise of an answer, not the answer
+  // — and without this flag the row would misread that arrival as "Up to
+  // date" the instant it landed rather than waiting for the real result.
+  const awaiting = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getConfig().then((c) => {
+      if (!cancelled) setVersion(c.version);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const settle = useCallback((result: UpdateStatus) => {
+    // `updateRelevant` gates "current" the same way the deleted `UpdateBadge`
+    // gated the whole row (finding #2, code review): that component only
+    // ever rendered this button INSIDE `if (!updateRelevant(status))`, so
+    // "Up to date" could never appear over an `available`/`installing`/
+    // `installed`/`error` status. Porting `settle` onto this section's own
+    // local `phase` state dropped that gate — the check's own answer (this
+    // press found nothing NEW beyond what the store already knew, e.g. a
+    // "checking" that resolved back to "idle") does not mean the OVERALL
+    // status is irrelevant, so a check that lands while the store is already
+    // sitting on `available` must not claim "Up to date" over the "Update
+    // available" notification popping at the same instant. `rest` (silently
+    // fall back to the render's own `updateRelevant(status)` gate below,
+    // which then shows the real state) rather than "failed" — nothing here
+    // actually failed.
+    setPhase(result.check_error ? "failed" : updateRelevant(result) ? "rest" : "current");
+    clearTimeout(holdTimer.current);
+    holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
+  }, []);
+
+  useEffect(() => {
+    if (!awaiting.current || !status || status.state === "checking") return;
+    awaiting.current = false;
+    settle(status);
+  }, [status, settle]);
+
+  const check = async () => {
+    if (phase === "checking") return;
+    clearTimeout(holdTimer.current);
+    setPhase("checking");
+    try {
+      const result = await checkForUpdates();
+      if (result.state === "checking") {
+        // Not an answer yet — see `awaiting` above.
+        awaiting.current = true;
+        return;
+      }
+      settle(result);
+    } catch {
+      // 404 (no updater), offline, server down — say so briefly; the poll
+      // that drives `UpdateNotifier` owns the durable story.
+      setPhase("failed");
+      holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
+    }
+  };
+
+  // `status === null` means one of two different things (finding #6, code
+  // review), and the old code could not tell them apart:
+  //   1. An unpackaged dev run with no mac.DEV_MANAGER_ENV, or a non-mac
+  //      build — genuinely no updater, forever.
+  //   2. `useUpdateStatus()` simply has not heard back from its first
+  //      `/api/config` poll yet — its `getSnapshot` starts at `null` and
+  //      only flips once that request resolves.
+  // The deleted `UpdateBadge.tsx` handled this with its own `if (!status)
+  // return null` — render NOTHING during the unknown window. Porting the
+  // section onto local state lost that: `hasUpdater = status !== null`
+  // read case 2 as case 1, so every packaged build flashed "Updates aren't
+  // managed from inside the app on this build" — a false claim — for the
+  // length of that first request, on every single visit to this tab.
+  // `awaitingFirstStatus` distinguishes "haven't heard yet" (render
+  // nothing) from "heard, and there is nothing" (say so) by reusing
+  // `version`'s own one-shot `getConfig()` fetch above as the "have we
+  // heard back at all" signal, rather than adding a second `useState` for
+  // the same fact.
+  const awaitingFirstStatus = status === null && version === null;
+  const hasUpdater = status !== null;
+
+  return (
+    <section className="prefs-section">
+      <h2>Updates</h2>
+      <p className="deploy-muted">{version ? `Running v${version}.` : " "}</p>
+      {awaitingFirstStatus ? null : hasUpdater ? (
+        // UPDATE_RELEVANT GATE (finding #2, code review): the deleted
+        // `UpdateBadge` only ever rendered this button INSIDE
+        // `if (!updateRelevant(status))` — an update already found,
+        // installing, installed or failed is a DECISION, and
+        // `UpdateNotifier`'s own notification is what is asking it; this
+        // row's job is only the idle "is there something new?" question, so
+        // it must get out of the way rather than contradict that
+        // notification with "Up to date" at the same instant.
+        updateRelevant(status) ? (
+          <p className="deploy-muted">{updateLabel(status)}</p>
+        ) : (
+          <div className="prefs-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={phase === "checking"}
+              onClick={() => void check()}
+            >
+              {checkNowLabel(phase, version)}
+            </button>
+          </div>
+        )
+      ) : (
+        <p className="deploy-muted">
+          Updates aren&rsquo;t managed from inside the app on this build.
+        </p>
+      )}
+      {hasUpdater && (
+        <>
+          <label className="prefs-radio">
+            <input
+              type="checkbox"
+              checked={autoDownload}
+              disabled={autoBusy}
+              onChange={toggleAutoDownload}
+            />
+            <span>
+              <b>Automatically download updates</b>
+              <span className="deploy-muted">
+                {" "}
+                When a new version is found it downloads in the background; you still
+                choose when to restart.
+              </span>
+            </span>
+          </label>
+          {autoError && <ErrorBanner>{autoError}</ErrorBanner>}
+        </>
+      )}
     </section>
   );
 }
@@ -225,33 +425,24 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
   );
 }
 
-// Native chat (beta): the React port of the Claude chat, behind a flag while
-// the migration lands PR by PR. Same one-checkbox section shape as Canvases.
-// `FUSED_RENDER_NATIVE_CHAT` beats this switch; the server reports the
-// effective value, so the box shows what the app is actually doing.
-function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+// App sharing: the unified Share sheet (public link + .fused file) in place of
+// the plain Export / Download action on every app surface. Off by default, and
+// this is the only place it can be turned on. Same one-checkbox section shape
+// as Canvases above, same publish-after-PUT so the surfaces already mounted
+// (the sidebar's app page, an /apps grid in a split) flip with the checkbox.
+function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.chat?.native ?? false;
-  // DEFAULT ON, so the fallback is `true` and the read is `!== false`: a server
-  // that predates the field is a server whose chat shows the fold.
-  const recap = prefs.chat?.recap !== false;
-  const [recapBusy, setRecapBusy] = useState(false);
-  // `FUSED_RENDER_NATIVE_CHAT` BEATS THE STORED SWITCH (prefs.py
-  // `native_chat_enabled`), so under it a click stores a value the server then
-  // reports back as the other one and the box snaps back with no explanation.
-  // Say which is deciding and take the control out of service, exactly as the
-  // engine section does with `engine.forced_by`.
-  const forcedBy = prefs.chat?.forced_by ?? null;
+  const enabled = prefs.app_sharing.enabled;
 
   const toggle = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const next = await putNativeChatEnabled(!enabled);
+      const next = await putAppSharingEnabled(!enabled);
       onChange(next);
-      publishNativeChatEnabled(next.chat?.native === true);
+      publishAppSharingEnabled(next.app_sharing.enabled);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -259,60 +450,177 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
     }
   };
 
-  const toggleRecap = async () => {
-    if (recapBusy) return;
-    setRecapBusy(true);
+  return (
+    <section className="prefs-section">
+      <h2>App sharing</h2>
+      <p className="deploy-muted">
+        Share an app as a public link on your Fused account, or as a <code>.fused</code> file,
+        from one Share button. Off by default — every app surface then offers the plain Export
+        that saves the <code>.fused</code> file to Downloads.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable Fused app sharing</b> — replace Export with a Share button offering a public
+          link or a file.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Thumbnails: whether the /apps cards and the explorer's bookmark, recent and
+// folder cards may render the live app in a scaled iframe — the body of a card
+// with no preview.png, and the hover swap on one that has it. OFF by default;
+// the checkbox is worded the way the reader thinks of it ("hide"), so checked
+// means the stored `live_previews_enabled` is not TRUE — the inversion lives
+// in this one component and the positive `enabled` flows everywhere else.
+// Same one-checkbox section shape and publish-after-PUT as App sharing above,
+// so a grid already mounted in a split swaps its iframes for stills and marks
+// the moment the checkbox settles. `?.enabled === true` because the key is
+// optional on the wire (an older server) and absence means off.
+function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.live_previews?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
     setError(null);
     try {
-      const next = await putChatRecapEnabled(!recap);
+      const next = await putLivePreviewsEnabled(!enabled);
       onChange(next);
-      publishChatRecapEnabled(next.chat?.recap !== false);
+      publishLivePreviewsEnabled(next.live_previews?.enabled === true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setRecapBusy(false);
+      setBusy(false);
     }
   };
 
   return (
     <section className="prefs-section">
-      <h2>Native chat (beta)</h2>
+      <h2>Thumbnails</h2>
       <p className="deploy-muted">
-        Render the Claude chat as part of the app instead of an embedded page. Off by default
-        while the port is in beta; every chat embed switches on the next paint.
+        With live previews on, app and bookmark cards show the live page in their thumbnail when
+        there is no <code>preview.png</code>, and swap it in on hover when there is one. Each live
+        thumbnail is a whole page booting in the background, so they are off by default.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={!enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Hide live previews in thumbnails</b> — show only authored stills; a card without one
+          gets a placeholder image, and hovering never loads the app.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Monitor: the status bar's System chip (this app's CPU and memory) and the
+// /monitor process page behind its "Open Monitor". Off by default, and this is
+// the only place it can be turned on. Same one-checkbox section shape and
+// publish-after-PUT as App sharing above, so the chip appears in the bar the
+// moment the checkbox settles. `?.enabled === true` because the key is optional
+// on the wire (an older server) and absence means off.
+function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.monitor?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putMonitorEnabled(!enabled);
+      onChange(next);
+      publishMonitorEnabled(next.monitor?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Monitor</h2>
+      <p className="deploy-muted">
+        A System chip in the status bar shows what fused-render and the processes it runs cost in
+        CPU and memory, with a Monitor page listing them live. Off by default.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable the process Monitor</b> — show the System chip and the Monitor page.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// The project queue: one task in progress per folder. Off by default, and this
+// is the only place it turns on. Same one-checkbox section shape as the two
+// above.
+//
+// ITS OWN SECTION, not a box inside a chat setting: the queue's most visible
+// half IS the chat — a send into a busy folder gets a Queued chip instead of a
+// run — but the switch also governs Run now, the scheduler's own dispatch and
+// the Tasks board's Queued lane. A control filed under a feature it is not part
+// of is a control nobody finds again when they go looking for the thing it
+// actually does. (The "Native chat" switch that used to sit above this left the
+// page on 2026-09-19 — the React chat is simply on; `native_chat_enabled` stays
+// a stored pref for the env override and old installs, shell/prefs.py.)
+function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `=== true`: OPT-IN, so a server that predates the field is a server with no
+  // queue — the opposite polarity from the native-chat switch, which defaults on.
+  const enabled = prefs.queue?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putProjectQueueEnabled(!enabled);
+      onChange(next);
+      // The same publish the native flag makes, for the same reason: the chat's
+      // send path reads this flag from a module cache that is otherwise only
+      // refreshed by a mount, and a composer already on screen would keep
+      // admitting (or not admitting) by the old answer until a navigation.
+      publishProjectQueueEnabled(next.queue?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Project queue</h2>
+      <p className="deploy-muted">
+        Keep one task running per folder. Anything else asked for in that folder —
+        a chat message, Run now, a scheduled message coming due — waits its turn
+        and starts the moment the folder frees, instead of running alongside. A
+        waiting task reads <b>Queued</b> on the Tasks page, and you can send it to
+        the front of the line without interrupting anything.
       </p>
       <label className="prefs-radio">
         <input
           type="checkbox"
           checked={enabled}
-          disabled={busy || !!forcedBy}
+          disabled={busy}
           onChange={toggle}
         />
         <span>
-          <b>Use the native chat</b> in the sidebar, Tasks cards and the canvas workspace.
-        </span>
-      </label>
-      {forcedBy && (
-        <p className="deploy-muted">
-          Set by <code>FUSED_RENDER_NATIVE_CHAT={forcedBy}</code> in this server's environment,
-          which overrides this switch.
-        </p>
-      )}
-      {/* A SETTING OF THE NATIVE CHAT'S, so it lives inside this section rather
-          than beside it — and it is NOT disabled when the chat is off: the box
-          says what the chat will do, and a control that disappears the moment
-          the feature it belongs to is off is a control nobody can find again.
-          Own `busy`, so one switch in flight does not freeze the other. */}
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={recap}
-          disabled={recapBusy}
-          onChange={toggleRecap}
-        />
-        <span>
-          <b>Session recap</b> — after you have been away a minute, one line at the
-          bottom of the chat saying where the conversation stands.
+          <b>Project queue</b> (one task at a time per folder).
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -320,27 +628,21 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
   );
 }
 
-// The task side peek (experimental): a click on a task opens it in a panel
-// beside the list instead of navigating to the Explorer. Same one-checkbox
-// section shape as Native chat above — and no `forced_by`, because this switch
-// has no env override to be beaten by (prefs.py `task_peek_enabled` says why).
-function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+// App git auto-sync (default ON, an opt-OUT): the app's own commits are pushed
+// to the remote and a behind repo is fast-forwarded when an app opens. Off is
+// the earlier behaviour: the Update card and the manual git flows only.
+function GitAutoSyncSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // `?? false`: a server that predates the switch sends nothing, which is off —
-  // both the pref's own default and the behaviour the page has always had.
-  const enabled = prefs.task_peek?.enabled ?? false;
+  // `!== false`: absence (an older server) reads as the default, ON.
+  const enabled = prefs.git?.auto_sync !== false;
 
   const toggle = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const next = await putTaskPeekEnabled(!enabled);
-      onChange(next);
-      // Published so the Tasks page picks it up on its next paint rather than
-      // on a reload — the same hand-over the native chat's switch makes.
-      publishTaskPeekEnabled(next.task_peek?.enabled === true);
+      onChange(await putGitAutoSyncEnabled(!enabled));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -350,15 +652,17 @@ function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
 
   return (
     <section className="prefs-section">
-      <h2>Task side panel (experimental)</h2>
+      <h2>Git sync</h2>
       <p className="deploy-muted">
-        Open tasks in a side panel instead of leaving the page. Experimental.
+        Push the commits the app makes itself (after a Claude turn, or when an app
+        is created, moved or deleted) and bring in newer commits when you open an
+        app. Only the default branch is synced, only by fast-forward, and nothing
+        is merged or forced. If it cannot, you get a notification.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
-          <b>Open a task beside the list</b> — the List, Board, Cards and Calendar stay on
-          screen and shrink to make room.
+          <b>Automatically pull and push app changes</b>
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -366,31 +670,32 @@ function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
   );
 }
 
-// What a task CARD is titled by (experimental): the task's own title, or the
-// newest message in its conversation. Same one-checkbox section shape as the
-// side peek above, same reasons — and it is a SEPARATE section rather than a
-// second box inside that one, because the two are independent: a reader can
-// want either, both or neither, and nesting would imply one turns the other on.
-function TaskCardTitleSection({
+// A finished-task notification is scoped to sessions started from
+// fused-render's own Claude template (2026-09-18 fix — the reported bug: a
+// plain `claude` session typed by hand in a terminal, nothing to do with
+// fused-render, raising a fused-render "Finished" notice). This is the
+// opt-BACK-in for an interactive terminal session too — default off, same
+// one-checkbox section shape as Native chat above.
+function TaskNotifyTerminalSection({
   prefs,
   onChange,
 }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // `?? false`: a server that predates the switch sends nothing, which is off —
-  // both the pref's own default and the card the wall has always drawn.
-  const enabled = prefs.task_cards?.last_message ?? false;
+  // `?? false`: a server that predates the switch sends nothing, which is off
+  // — both the pref's own default and the behaviour this branch shipped.
+  const enabled = prefs.task_notify?.terminal_sessions ?? false;
 
   const toggle = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const next = await putTaskCardTitleMode(!enabled);
+      const next = await putTaskNotifyTerminalSessionsEnabled(!enabled);
       onChange(next);
-      // Published so the Cards wall picks it up on its next paint rather than
-      // on a reload — the same hand-over the two switches above make.
-      publishTaskCardTitleMode(next.task_cards?.last_message === true);
+      // Published so useTaskStatusNotify picks it up on its next tick rather
+      // than on a reload — the same hand-over the switches above make.
+      publishTaskNotifyTerminalSessions(next.task_notify?.terminal_sessions === true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -400,17 +705,17 @@ function TaskCardTitleSection({
 
   return (
     <section className="prefs-section">
-      <h2>Tasks: show last message as the title</h2>
+      <h2>Tasks: notify when terminal sessions finish</h2>
       <p className="deploy-muted">
-        On every view of the Tasks page — List, Board and the Cards wall.
-        Experimental.
+        fused-render can't always tell every headless Claude session apart from its own — this
+        also raises finished-task notifications for a Claude session you started by hand in a
+        terminal.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
-          <b>Title a task by its last message</b> — the newest thing said in the
-          conversation, yours or Claude's, with the task number leading the row
-          instead. Tasks with nothing said yet keep their title.
+          <b>Notify when terminal sessions finish</b> — off by default, so a plain{" "}
+          <code>claude</code> session you started yourself stays quiet.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -422,6 +727,208 @@ function TaskCardTitleSection({
 // turns on. Same one-checkbox section shape as Canvases above. While the
 // listener is up it shows the QR code a phone scans to pair (the ONLY way in —
 // no PIN, no approval dialog), and the devices that have, with revoke.
+// Native windows (macOS, fused_render/mac_window.py): the shell in the app's
+// own windows instead of browser tabs. On by default; this is the only place
+// it turns off, and it applies live — on, the next open is a window; off, every
+// window closes and opens go back to the browser. The launcher below is not
+// behind it. Rendered only where the running app can honour it
+// (`prefs.native_windows.available`).
+function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nw = prefs.native_windows;
+  if (!nw || !nw.available) return null;
+  const enabled = nw.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putNativeWindowsEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Native windows</h2>
+      <p className="deploy-muted">
+        Open Fused Render in its own macOS windows instead of browser tabs: a window per app, the
+        Dock icon, ⌘N and the View menu. On by default. Turning it off closes the open windows and
+        the app opens everything in your default browser instead.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Use native windows</b> instead of browser tabs.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Shortcuts: the macOS launcher (fused_render/launcher_panel.py) — the
+// global hotkey that drops the Search Apps panel, and the modifier that with
+// a digit opens the Nth recently opened app from anywhere. Rendered only when the server
+// says the launcher exists on this platform (`prefs.launcher.available`).
+// The hotkey is RECORDED, not typed: click the keycap, press the combination,
+// and the browser's `KeyboardEvent.code` becomes the spec — what maps to a
+// Carbon keycode without caring about the keyboard layout. The bind happens
+// on the app's main thread a tick after the PUT, so the response's `bound`
+// is the previous state; the section re-reads shortly after.
+const ROW_MODIFIERS: { spec: string; label: string; title: string }[] = [
+  { spec: "alt", label: "⌥", title: "Option" },
+  { spec: "cmd", label: "⌘", title: "Command" },
+  { spec: "ctrl", label: "⌃", title: "Control" },
+  { spec: "alt+cmd", label: "⌥⌘", title: "Option-Command" },
+  { spec: "ctrl+alt", label: "⌃⌥", title: "Control-Option" },
+];
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
+const REBIND_REREAD_MS = 400;
+
+function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const launcher = prefs.launcher;
+  const [recording, setRecording] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+
+  const reread = useCallback(() => {
+    // The app rebinds on its main thread after the PUT returned; pick up the
+    // real `bound` state once it has.
+    window.setTimeout(() => {
+      getPrefs().then(onChange).catch(() => undefined);
+    }, REBIND_REREAD_MS);
+  }, [onChange]);
+
+  useEffect(() => {
+    if (!recording) return;
+    // The live bindings are Carbon's, not the page's: with them up, the
+    // combination being recorded would open the panel or an app instead
+    // of arriving here. Suspended for the recording, restored on its end —
+    // whichever way it ends (a key, Esc, unmount).
+    postLauncherSuspend(true).catch(() => undefined);
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecording(false);
+        setHint(null);
+        return;
+      }
+      if (MODIFIER_KEYS.has(e.key)) return; // wait for the key itself
+      const mods: string[] = [];
+      if (e.ctrlKey) mods.push("ctrl");
+      if (e.altKey) mods.push("alt");
+      if (e.shiftKey) mods.push("shift");
+      if (e.metaKey) mods.push("cmd");
+      if (!mods.length) {
+        setHint("Add ⌥ ⌘ ⌃ or ⇧…");
+        return;
+      }
+      setRecording(false);
+      setHint(null);
+      setBusy(true);
+      setError(null);
+      putLauncherHotkey(mods.concat([e.code]).join("+"))
+        .then((next) => {
+          onChange(next);
+          reread();
+        })
+        .catch((err) => setError((err as Error).message))
+        .finally(() => setBusy(false));
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      postLauncherSuspend(false).catch(() => undefined);
+    };
+  }, [recording, onChange, reread]);
+
+  if (!launcher || !launcher.available) return null;
+
+  const setModifier = async (spec: string) => {
+    if (busy || spec === launcher.row_modifier) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putLauncherRowModifier(spec));
+      reread();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unbound = launcher.bound === false;
+  const rowsUnbound = launcher.pinned_bound === false;
+  return (
+    <section className="prefs-section">
+      <h2>Shortcuts</h2>
+      <p className="deploy-muted">
+        The launcher is a search panel over every app on this machine, on a global shortcut. It
+        opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and
+        the menu-bar item as Search Apps.
+      </p>
+      <div className="prefs-shortcuts">
+        <div className="prefs-shortcut-row">
+          <div className="prefs-shortcut-label">
+            <b>Open the search</b>
+            <span className={unbound ? "prefs-shortcut-warn" : undefined}>
+              {unbound
+                ? `Could not bind ${launcher.display} — another app may own it. Pick a different shortcut.`
+                : "Click the key, then press the new shortcut. Esc cancels."}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={"prefs-keycap" + (recording ? " rec" : "")}
+            disabled={busy}
+            onClick={() => {
+              setRecording(true);
+              setHint("Press keys…");
+            }}
+            title="Click, then press the new shortcut"
+          >
+            {recording ? hint ?? "Press keys…" : launcher.display || launcher.hotkey}
+          </button>
+        </div>
+        <div className="prefs-shortcut-row">
+          <div className="prefs-shortcut-label">
+            <b>Open the Nth app</b>
+            <span className={rowsUnbound ? "prefs-shortcut-warn" : undefined}>
+              {rowsUnbound
+                ? `Some of ${launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.`
+                : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
+            </span>
+          </div>
+          <div className="prefs-seg" role="radiogroup" aria-label="Row shortcut modifier">
+            {ROW_MODIFIERS.map((m) => (
+              <button
+                key={m.spec}
+                type="button"
+                title={m.title}
+                className={m.spec === launcher.row_modifier ? "on" : undefined}
+                disabled={busy}
+                onClick={() => void setModifier(m.spec)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   // What the click asked for, held until the PUT answers. Turning sharing on
   // binds the listener, issues a certificate and announces two mDNS names
@@ -1033,6 +1540,7 @@ export default function Preferences() {
     requested === "indexing" ? "indexing"
     : requested === "ai" ? "ai"
     : requested === "lan" ? "lan"
+    : requested === "account" ? "account"
     : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
@@ -1093,17 +1601,32 @@ export default function Preferences() {
             >
               Render local network
             </button>
+            {/* Fused account — sign in/out for Share and Canvases. See the
+                header comment for why it is a tab of its own. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "account" ? " active" : "")}
+              onClick={() => setTab("account")}
+            >
+              Fused account
+            </button>
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
+                <ShortcutsSection prefs={prefs} onChange={setPrefs} />
+                <UpdatesSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
-                <NativeChatSection prefs={prefs} onChange={setPrefs} />
-                <TaskPeekSection prefs={prefs} onChange={setPrefs} />
-                <TaskCardTitleSection prefs={prefs} onChange={setPrefs} />
+                <AppSharingSection prefs={prefs} onChange={setPrefs} />
+                <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
+                <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />
+                <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
+                <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
+                <MonitorSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}
@@ -1114,6 +1637,7 @@ export default function Preferences() {
               </>
             )}
             {tab === "indexing" && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
+            {tab === "account" && <FusedAccountSection />}
           </div>
         </>
       )}

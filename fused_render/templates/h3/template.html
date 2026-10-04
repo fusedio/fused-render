@@ -154,7 +154,22 @@ function hideMapSkeleton(){ els.mapSkeleton.classList.remove('active'); }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 // ---------------- map ----------------
-const DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+// Esri's ArcGIS Online raster tiles are plain public REST endpoints, unlike
+// CARTO's vector basemap styles which now sit behind an API key.
+const DARK = {
+  version: 8,
+  sources: {
+    base: { type: "raster", tileSize: 256, maxzoom: 16,
+            tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"],
+            attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors" },
+    label: { type: "raster", tileSize: 256, maxzoom: 16,
+             tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"] },
+  },
+  layers: [
+    { id: "base", type: "raster", source: "base" },
+    { id: "label", type: "raster", source: "label" },
+  ],
+};
 const map = new maplibregl.Map({ container: 'map', style: DARK, center: [0, 20], zoom: 1.2,
   attributionControl: {compact: true}, fadeDuration: 80 });
 map.addControl(new maplibregl.NavigationControl({showCompass: false}), 'bottom-left');

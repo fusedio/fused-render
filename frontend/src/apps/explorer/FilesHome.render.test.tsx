@@ -34,13 +34,23 @@ import {
   PENDING_INDICATOR_MS,
   STALE_CLEAR_MS,
 } from "@platform/lib/instant-search";
-import { resetFsMutations } from "@platform/lib/index-freshness";
+import { noteIndexLifecycle, resetFsMutations } from "@platform/lib/index-freshness";
 
 // --- the module boundary: a fetch stub, not a module mock -------------------
 interface RankCall {
   root: string;
   q: string;
   resolve: (data: IndexRankResult) => void;
+  /** A wedged/abandoned index read or pool exhaustion — the real
+   * `/api/index/rank` sends a 503 for both (`_bounded_index_read`,
+   * fused_render/server/routers/index.py); this matches what `indexRank()`
+   * actually throws (an HttpError) rather than a network-level rejection. */
+  reject: (message: string) => void;
+  /** The fetch's own `init.signal` — the SOURCE's AbortController.signal,
+   * captured here so a test can prove a request already in flight was
+   * actually aborted (rank-starvation-fallback fix), rather than merely
+   * superseded by a later reply landing first. */
+  signal: AbortSignal | undefined;
 }
 interface StatCall {
   path: string;
@@ -55,6 +65,23 @@ const statCalls: StatCall[] = [];
 /** Every POST /api/index/scan, by URL — the observable trace of the note's
  * "index them now" button actually asking for a scan. */
 const scanCalls: string[] = [];
+/** Every POST /api/index/scan-folder, by the `path` in its JSON body — the
+ * observable trace of the covered-but-empty scan trigger
+ * (SPEC-empty-search-scan.md) actually firing, distinct from `scanCalls`
+ * above (the button's `/api/index/scan`, a different route entirely). */
+const folderScanCalls: string[] = [];
+/** How `/api/index/scan-folder` answers the NEXT call, settable per test —
+ * mirrors `FolderScanRequest`. A refusal (`why: "refused"`) is a normal,
+ * silent reply, not an error. */
+let folderScanReply: { started: boolean; why: string } = { started: true, why: "started" };
+/** When true, the next `/api/index/scan-folder` call rejects the fetch
+ * itself (a network failure), rather than resolving with a refusal body —
+ * the other silent-failure shape the trigger must swallow. */
+let folderScanThrows = false;
+/** Every POST /api/ai and /api/search/files, by URL — the observable trace of
+ * a committed AI search actually running (see the reload test below). */
+const aiCalls: string[] = [];
+const searchFilesCalls: string[] = [];
 /** How many times the box told its parent to re-poll the index status — the
  * one thing that turns the parent's idle ten-second beat into a look NOW, so
  * that a scan this box started is not invisible until then. */
@@ -72,7 +99,7 @@ const realFetch = globalThis.fetch;
  * settled only when the test calls `.resolve()`/`.reject()` — the same
  * leading-edge control the old Deferred-based mock gave, without touching
  * the module registry at all. */
-function fakeFetch(url: string | URL): Promise<Response> {
+function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
   const u = String(url);
   if (u.startsWith("/api/index/rank")) {
     const params = new URL(u, "http://localhost").searchParams;
@@ -81,6 +108,9 @@ function fakeFetch(url: string | URL): Promise<Response> {
         root: params.get("root") ?? "",
         q: params.get("q") ?? "",
         resolve: (data) => settle(new Response(JSON.stringify(data), { status: 200 })),
+        reject: (message) =>
+          settle(new Response(JSON.stringify({ error: message }), { status: 503 })),
+        signal: init?.signal ?? undefined,
       });
     });
   }
@@ -99,12 +129,69 @@ function fakeFetch(url: string | URL): Promise<Response> {
   // deferred like the two above: the test's interest is that the scan was
   // ASKED FOR, and the note's state after it comes from the status poll
   // (`indexScan`, a prop here), not from this reply.
+  if (u.startsWith("/api/index/scan-folder")) {
+    const path = (JSON.parse(String(init?.body ?? "{}")) as { path: string }).path;
+    // Pushed BEFORE the throw check (code review finding 8): the call was
+    // still ATTEMPTED even when the fetch itself is about to reject, and a
+    // test asserting the trigger is silent needs to first prove the call
+    // happened at all — otherwise "no error" and "never fired" are
+    // indistinguishable, which is exactly the bug that let the "thrown
+    // fetch is silent" test below pass with the trigger deleted.
+    folderScanCalls.push(path);
+    if (folderScanThrows) return Promise.reject(new Error("network down"));
+    return Promise.resolve(
+      new Response(JSON.stringify({ ...folderScanReply, run_id: "r1", root: path }), {
+        status: 200,
+      }),
+    );
+  }
   if (u.startsWith("/api/index/scan")) {
     scanCalls.push(u);
     return Promise.resolve(
       new Response(JSON.stringify({ ok: true, run_id: "r1", root: HOME, runs: [] }), {
         status: 200,
       }),
+    );
+  }
+  // The AI search pipeline's two calls (apps/explorer/lib/ai-search.ts):
+  // /api/ai (the model's spec reply) and /api/search/files (the engine
+  // query it drives). Answered immediately, unlike the deferred rank/stat
+  // calls above — the one test that exercises this (the reload-AI-search
+  // path, below) cares that the pipeline COMPLETES and RENDERS, not about
+  // controlling its leading edge.
+  if (u.startsWith("/api/ai")) {
+    aiCalls.push(u);
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          result: {
+            text: JSON.stringify({
+              name_terms: ["report"],
+              extensions: [],
+              kind: "any",
+              modified_after: null,
+              modified_before: null,
+              min_size_bytes: null,
+              max_size_bytes: null,
+              path_hints: [],
+            }),
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+  }
+  if (u.startsWith("/api/search/files")) {
+    searchFilesCalls.push(u);
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          entries: [{ path: HOME + "/report.csv", is_dir: false, size: 100, mtime: 1 }],
+          truncated: false,
+        }),
+        { status: 200 },
+      ),
     );
   }
   throw new Error("FilesHome.render.test.tsx: unexpected fetch " + u);
@@ -140,6 +227,11 @@ beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
   scanCalls.length = 0;
+  folderScanCalls.length = 0;
+  folderScanReply = { started: true, why: "started" };
+  folderScanThrows = false;
+  aiCalls.length = 0;
+  searchFilesCalls.length = 0;
   scanRequested = 0;
   navPushes.length = 0;
   globalThis.fetch = fakeFetch as typeof fetch;
@@ -232,6 +324,7 @@ function scanStatus(over: Partial<IndexStatus> = {}): IndexStatus {
 
 function mount(
   indexScan: IndexStatus | null = null,
+  initialQuery = "",
 ): {
   renderer: ReactTestRenderer;
   input: () => any;
@@ -243,7 +336,7 @@ function mount(
   const element = (scan: IndexStatus | null) =>
     createElement(FilesSearch, {
       home: HOME,
-      initialQuery: "",
+      initialQuery,
       indexScan: scan,
       onActiveChange: () => {},
       onScanRequested: () => {
@@ -307,6 +400,7 @@ function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
     total: 0,
     base: HOME,
     mode: "substring",
+    pattern: "",
     ...over,
   };
 }
@@ -489,6 +583,32 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
   });
 });
 
+describe("aborting a superseded request (rank-starvation fallback fix)", () => {
+  // The bug: the abort used to live only inside the debounced `run`
+  // closure. During a sustained typing burst (each keystroke's gap under
+  // INSTANT_DEBOUNCE_MS) `run` for the newer query never fires until the
+  // burst pauses, so the request already in flight kept running -- holding
+  // an interactive-lane permit and DuckDB threads -- for the whole burst
+  // instead of being cancelled at the first keystroke past it. The fix
+  // aborts at scheduling time (the effect body), before the debounce timer
+  // for the new query is even armed.
+  test("a keystroke mid-burst aborts the request already in flight before its own debounce elapses", async () => {
+    const box = mount();
+    await type(box, "readme");
+    const first = rankCalls[0];
+    expect(first.signal?.aborted).toBe(false);
+
+    // A follow-up keystroke that resets the debounce -- `run` for
+    // "readmex" has NOT fired yet at the point of the assertion below.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    clock.advance(INSTANT_DEBOUNCE_MS / 2);
+
+    expect(rankCalls.filter((c) => c.q === "readmex")).toHaveLength(0); // not fired yet
+    expect(first.signal?.aborted).toBe(true); // but the stale one is already cut loose
+    box.unmount();
+  });
+});
+
 describe("the latency readout", () => {
   test("reports the round-trip time next to the count", async () => {
     const box = mount();
@@ -512,6 +632,113 @@ describe("the latency readout", () => {
     await flush(() => box.input().props.onChange({ target: { value: "readme" } }));
     expect(rankCalls.filter((c) => c.q === "readme")).toHaveLength(1); // no re-ask
     expect(noteText(box)).toContain("120 ms");
+    box.unmount();
+  });
+});
+
+describe("the slow-search console warning", () => {
+  let warnCalls: unknown[][] = [];
+  const realWarn = console.warn;
+
+  beforeEach(() => {
+    warnCalls = [];
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+  });
+  afterEach(() => {
+    console.warn = realWarn;
+  });
+
+  test("a fast response does not warn", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(87);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a >=2s response warns with the client/server timing breakdown", async () => {
+    const box = mount();
+    await type(box, "readme");
+    // Realistic server timing: the server rounds to 1 decimal place, so
+    // these are never whole integers in production — a fixture that used
+    // whole numbers here would not have caught the float-noise bug the gap
+    // computation (`elapsedMs - timing.total_ms`) had (see DECISIONS.md).
+    await flush(() => clock.advance(2100));
+    await flush(() => rankCalls[0].resolve(answer({
+      hits: [hit("readme.md")], total: 1,
+      timing: { total_ms: 1600.1, lane_wait_ms: 50.3, worker_ms: 1549.8 },
+    })));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).toContain("readme");
+    expect(msg).toContain("2100"); // client-measured elapsed
+    expect(msg).toContain("1600.1"); // server total_ms
+    expect(msg).toContain("50.3"); // lane_wait_ms
+    expect(msg).toContain("1549.8"); // worker_ms
+    expect(msg).toContain("499.9"); // unaccounted gap: 2100 - 1600.1
+    // The line must never carry raw float-subtraction noise (e.g.
+    // `399.9000000000001`) — every number in it is at most 1 decimal place.
+    expect(msg).not.toMatch(/\d\.\d{2,}/);
+    box.unmount();
+  });
+
+  test("a >=2s response with timing absent warns without NaN", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).not.toContain("NaN");
+    expect(msg).toContain("2500");
+    expect(msg.toLowerCase()).toContain("unavailable");
+    box.unmount();
+  });
+
+  test("an aborted request never warns even past the threshold", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    // Supersede with a new keystroke: the next debounce's `run()` aborts the
+    // first controller before this resolve() lands on it.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a rejected request past the threshold warns with the error text", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    await flush(() => rankCalls[0].reject("index unavailable: 503"));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).toContain("readme");
+    expect(msg).toContain("2500");
+    expect(msg).toContain("index unavailable: 503");
+    // Must be tellable apart from the success-path line at a glance.
+    expect(msg.toUpperCase()).toContain("FAILED");
+    box.unmount();
+  });
+
+  test("an aborted rejection never warns even past the threshold", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    // Supersede with a new keystroke: the next debounce's `run()` aborts the
+    // first controller before this reject() lands on it — same shape as the
+    // success-path "an aborted request never warns" test above, but on the
+    // reject branch: `ctl.signal.aborted` is checked before `err.name`, so
+    // this must never warn regardless of what the settled error looks like.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].reject("superseded"));
+    expect(warnCalls).toHaveLength(0);
     box.unmount();
   });
 });
@@ -994,6 +1221,208 @@ describe("the empty (buildable) note paints no leading separator", () => {
   });
 });
 
+// The covered-but-empty scan trigger (SPEC-empty-search-scan.md): a settled
+// answer that says the root IS covered (reason === "") but found no files is
+// real evidence the index may be behind this exact query, so the box asks
+// for a background scan of the answer's own root via `requestFolderScan`
+// (POST /api/index/scan-folder) — silently, with no button and no error
+// surface either way. Mirrors the sibling coverage in
+// useListingSearch.render.test.ts for the in-folder box.
+describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empty-search-scan.md)", () => {
+  test("asks for a scan of the answer's own root", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    box.unmount();
+  });
+
+  test("does not fire when the answer has at least one file hit", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("report.csv")] })));
+    expect(folderScanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("does not fire for mount / package / ignored / disabled / fda / uncovered — no scan will ever cover them, or one is already offered separately", async () => {
+    for (const reason of [
+      "mount",
+      "package",
+      "ignored",
+      "disabled",
+      "fda",
+      "uncovered",
+    ] as const) {
+      const box = mount();
+      await type(box, "report");
+      await flush(() =>
+        rankCalls[0].resolve(answer({ covered: false, reason, hits: [] })),
+      );
+      expect(folderScanCalls).toEqual([]);
+      box.unmount();
+    }
+  });
+
+  test("does not fire for a one-character query (never even asks the index)", async () => {
+    const box = mount();
+    await type(box, "a");
+    expect(rankCalls).toHaveLength(0);
+    expect(folderScanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("fires once for a given query, not once per re-render or a lifecycle bump re-asking it", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+
+    // A lifecycle bump (the shared index-status poll noticing
+    // `last_completed_at` moved) re-runs the SAME query — Part 2 of the
+    // spec, no retyping needed. That must not fire a second scan for a
+    // query that already asked.
+    await flush(() => noteIndexLifecycle());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls.filter((c) => c.q === "report").length).toBeGreaterThan(1);
+    await flush(() => rankCalls[rankCalls.length - 1].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    box.unmount();
+  });
+
+  test("a DIFFERENT query fires its own scan", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+
+    await type(box, "reportx");
+    await flush(() => rankCalls[rankCalls.length - 1].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME, HOME]);
+    box.unmount();
+  });
+
+  test("a route refusal is silent — no error, no retry", async () => {
+    folderScanReply = { started: false, why: "debounced" };
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).not.toContain("could not");
+    expect(noteText(box)).toContain("No file name matched");
+    box.unmount();
+  });
+
+  test("a thrown fetch (the promise itself rejects) is silent too", async () => {
+    folderScanThrows = true;
+    const box = mount();
+    await type(box, "report");
+    // The rank resolve itself must not throw/reject the render even though
+    // the scan POST it triggers does. `folderScanCalls` still gets the
+    // attempted call (the fake `fetch` pushes to it BEFORE deciding whether
+    // to reject — code review finding 8): a bare `toEqual([])` here would
+    // pass just as well with the whole trigger deleted, which is exactly
+    // the "worthless test" the finding called out. Proving the call
+    // happened AND that the render stayed healthy is what actually verifies
+    // the rejection was swallowed rather than never attempted.
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("No file name matched");
+    box.unmount();
+  });
+
+  test("verified against a PRE-EXISTING answer object, not only a freshly created one", async () => {
+    const box = mount();
+    await type(box, "report");
+    const reply = answer({ base: "/Users/me/sub" });
+    await flush(() => rankCalls[0].resolve(reply));
+    expect(folderScanCalls).toEqual(["/Users/me/sub"]);
+    box.unmount();
+  });
+
+  test("bumps the caller's onScanRequested once the scan request resolves, restarting the poll's idle beat", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(scanRequested).toBe(1);
+    box.unmount();
+  });
+
+  // Part 3 of the spec: the note's own copy while the triggered scan runs.
+  // `displayAnswer.reason` is "" (covered) and was frozen at rank time; only
+  // a CONFIRMED-started scan of THIS root can say a build is in progress
+  // (code review findings 2 & 3 — gated on `emptyScanRunning`, set from
+  // `requestFolderScan`'s own `started` reply, never the live status poll's
+  // machine-wide `scanning`). With the default `folderScanReply = {started:
+  // true}`, that confirmation lands in the SAME flush as the rank reply —
+  // no separate `box.poll(...)` needed, unlike the old (wrong) design this
+  // test used to verify.
+  test("switches to the 'still building' copy the moment the scan request confirms started", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("still building");
+    box.unmount();
+  });
+
+  test("code review finding 2 regression: an unrelated machine-wide scan must not claim OUR root is building", async () => {
+    // The live poll (`scanning: true`) reports some scan running somewhere
+    // on the machine, but OUR OWN `requestFolderScan` was refused
+    // (`started: false`) — the note must stay plain, not read the unrelated
+    // scan as evidence a build is in progress for THIS root.
+    folderScanReply = { started: false, why: "debounced" };
+    const box = mount(scanStatus({ scanning: true, files: 42 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("No file name matched");
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("stays plain when the poll has not answered yet (null) and no scan of our own was confirmed", async () => {
+    // No confirmed scan of our own (a refusal) means no "still building",
+    // whatever the poll — here, absent (null) entirely — says.
+    folderScanReply = { started: false, why: "debounced" };
+    const box = mount(null);
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(noteText(box)).toContain("No file name matched");
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("a covered answer WITH hits never loses them to an unrelated scan running at the same time", async () => {
+    const box = mount(scanStatus({ scanning: true, files: 5 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("report.csv")] })));
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  // Code review finding 6: the covered branch used to read `displayAnswer`
+  // (which can hold a PREVIOUS query's answer across a failed request)
+  // rather than testing the current request's own outcome. A held
+  // covered-but-empty answer plus a now-failed request for a DIFFERENT
+  // query must never read as "our new query's scan is still building".
+  test("finding 6: a failed request does not read a held empty answer as evidence for the new query", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer())); // covered, empty -> held
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("still building");
+
+    await type(box, "reportx");
+    await flush(() => rankCalls[rankCalls.length - 1].reject("network error"));
+    // The held answer is still "" / empty, but THIS query's request failed —
+    // `failure !== ""` must keep the note from claiming a build is running
+    // for a query that never actually got a covered-but-empty verdict.
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+});
+
 // AI search executes its spec against the same file index
 // (routers/search._search_index), so offering it — or promising it "can
 // answer in the meantime" — when there is no index built is a dead end: the
@@ -1055,6 +1484,107 @@ describe("the All files control in the search bar", () => {
     expect(box.input().props.value).toBe("report");
     // No extra rank request went out as a side effect of the click.
     expect(rankCalls.filter((c) => c.q === "report")).toHaveLength(1);
+    box.unmount();
+  });
+});
+
+// A1 (code review): `q` used to be `query.trim()`, which silently dropped a
+// leading/trailing whitespace run before it ever reached `indexRank` —
+// defeating the whole search-trailing-space grammar (A3, DECISIONS.md) one
+// layer below where `expand_whitespace_query` (fused_render/index/query.py)
+// could ever see the space it exists to treat as meaningful.
+describe("A1: the query reaches indexRank verbatim, whitespace and all", () => {
+  test("a trailing space is sent to the server exactly as typed, not trimmed away", async () => {
+    const box = mount();
+    await type(box, "src ");
+    expect(rankCalls.filter((c) => c.q === "src ")).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("'src' and 'src ' are genuinely different queries: no memo hit across the trim boundary", async () => {
+    // Before the fix, `query.trim()` folded "src" and "src " into the
+    // identical memo key — a real bug independent of the server, since
+    // `expand_whitespace_query` resolves them to different patterns ("src"
+    // substring-mode vs "**src**" glob-mode).
+    const box = mount();
+    await type(box, "src");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("src.txt")], total: 1 })));
+    await type(box, "src ");
+    expect(rankCalls.filter((c) => c.q === "src ")).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("a single real character padded with spaces still fails the MIN_QUERY_CHARS gate", async () => {
+    // "a " is two raw characters but only one of real content — the same
+    // thin, near-noise query MIN_QUERY_CHARS exists to refuse, so the gate
+    // is measured on trimmed length, not raw length.
+    const box = mount();
+    await type(box, "a ");
+    expect(rankCalls.filter((c) => c.q === "a ")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a whitespace-only query never fires a request — nothing to search for (A2)", async () => {
+    const box = mount();
+    await type(box, "   ");
+    expect(rankCalls.filter((c) => c.q === "   ")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a whitespace-only query does not switch the page into search mode", async () => {
+    // `active` (and the panel it hands the page body to) reads a TRIMMED
+    // check, matching `expand_whitespace_query`'s own "nothing to search
+    // for" collapse (A2) — an all-space box is not meaningfully "active"
+    // search, however many spaces it holds.
+    let active = true;
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        createElement(FilesSearch, {
+          home: HOME,
+          initialQuery: "",
+          indexScan: null,
+          onActiveChange: (a: boolean) => {
+            active = a;
+          },
+          onScanRequested: () => {},
+        }),
+      );
+    });
+    mounted.push(renderer);
+    const input = () => renderer.root.findByProps({ className: "files-search-input" });
+    await flush(() => input().props.onChange({ target: { value: "   " } }));
+    expect(active).toBe(false);
+    renderer.unmount();
+  });
+});
+
+describe("reload with a ?q= that carries a committed AI search (code review finding)", () => {
+  test("a trailing space in the restored query does not blank the re-run AI result", async () => {
+    // `?q=report+` round-trips to `initialQuery === "report "` (a real,
+    // meaningful trailing space — see A1/D-new). Before the fix, the reload
+    // effect ran `runAi(initialQuery.trim())`, so `ai.query` ended up
+    // "report" while `q` (this box's live query state, seeded from the same
+    // untrimmed `initialQuery`) stayed "report ". `showingAi` requires
+    // `ai.query === q`, so it was permanently false: the model call still
+    // fired and got billed, but its result never rendered. `runAi` must get
+    // the SAME untrimmed string as `q` for the two to ever agree again.
+    const box = mount(null, "report ");
+    // The reload effect's AI call, then its two-step pipeline
+    // (/api/ai -> /api/search/files), all resolve on this file's fake fetch
+    // without needing to be driven by hand — see `fakeFetch` above.
+    await flush();
+    await flush();
+    await flush();
+    expect(aiCalls).toHaveLength(1);
+    expect(searchFilesCalls).toHaveLength(1);
+    // showingAi === true renders AiResults (fh-ai-badge), not the ordinary
+    // fh-panel note — this is the one observable proof the result actually
+    // reached the screen instead of being silently discarded.
+    expect(findByClass(box, "fh-ai-badge")).toHaveLength(1);
+    expect(
+      box.renderer.root.findAllByProps({ id: "fh-ai-hit-" + HOME + "/report.csv" }).length,
+    ).toBeGreaterThan(0);
     box.unmount();
   });
 });

@@ -1730,3 +1730,90 @@ than being left to read as if D663 no longer holds anywhere. See
 SPEC-toasts-become-notifications.md and
 DECISIONS-toasts-become-notifications.md for the full tier-assignment
 rationale this decision enables.
+
+## Sixteenth round — presence-based suppression for job rows (SPEC-quiet-notifications.md §2b / D-A)
+
+`SPEC-quiet-notifications.md` adds a client-side presence registry
+(`platform/lib/presence.ts`) so the panel can answer "is the page this job
+is about already open somewhere?" without a server round-trip. §2b uses that
+to keep a *successful* terminal job from popping or entering "Needs you"/
+"Worth keeping" when the user is already looking at its destination — a new
+`isRecentOnly(job, isOpenAnywhere)` predicate in `platform/lib/jobs.ts`,
+threaded as an optional trailing parameter through `jobRows`, `popupJobs`,
+`popupTick`, and `terminalNotifications`.
+
+**This is deliberately a new, narrower mechanism than anything already
+documented in this file, not a variant of D663's timer or of the
+error/cancelled promotion:**
+
+- It only ever excludes a job whose `state === "done"` **and** whose
+  `effectiveTier(job) !== "attention"` **and** whose `page` is open
+  somewhere — written as three explicit checks rather than folded into one
+  boolean, specifically so "an error/cancelled job is never suppressed"
+  reads as true in the source rather than as an accidental consequence of
+  the `state` check alone (`error`/`cancelled` jobs are never `"done"`
+  anyway, which would have made checking `state` alone sufficient by
+  accident — the explicit `effectiveTier` check is the deliberate,
+  defensive version, verified by reading `effectiveTier`'s definition, not
+  by assuming its promotion covers this case).
+- It composes with, and does not replace, D663: a suppressed row is not
+  dismissed. The server-side row is untouched; `fused.watchJob` still sees
+  it; the very next read (navigation away, the presence entry going stale
+  after `PRESENCE_STALE_MS`) re-evaluates the same job from scratch and can
+  put it back in view. There is no new timer anywhere in this mechanism.
+- `DownloadManager.tsx`'s existing `jobRows(mergedRows(reported))` call site
+  did not need to change: it only ever sees jobs already filtered to
+  non-terminal by `inFlightJobs`, so an *optional* trailing parameter (all
+  four signatures) left that call site correct by construction — pinned
+  with an explicit "omitting `isOpenAnywhere` preserves today's behavior"
+  test in `jobs.test.ts` rather than left to be true by coincidence.
+
+**Known gap, not a design decision:** `isRecentOnly` is wired into
+suppression now, but SPEC-quiet-notifications.md §4's "Recent" section
+(where these suppressed successes are supposed to land) has not been built
+yet. Today a suppressed job simply disappears from `jobRows`/`popupJobs`
+with nowhere else to land — see `DECISIONS-quiet-notifications.md` for the
+full accounting and where to pick this up.
+
+## D661 partially reversed — a scheduled/interactive task's own row now DOES notify (SPEC-quiet-notifications.md §5)
+
+D661 (`ActivityDock.tsx`'s header comment, and the `SCHEDULE_JOB_PREFIX`
+filter at `jobs.ts:265`/`:330`) says a scheduled/task job's own row is
+excluded from Activity in every state — "a task is not a job." That
+exclusion **stays intact and untouched**: this branch adds no task rows to
+`jobRows`/`popupJobs`, and nothing in `jobs.ts` changed for §5.
+
+What §5 reverses is the *belief that motivated* the exclusion, not the
+exclusion itself: that belief was "a task's own lifecycle needs no
+notification at all, because the Tasks page already shows it." That is
+false for exactly the case nobody is looking — a scheduled run firing at
+6am, or an interactive turn finishing while the tab is elsewhere, has
+nowhere else to surface until someone goes and checks. §5 gives that
+lifecycle its OWN notification path, parallel to (not routed through)
+Activity/`jobs.ts`:
+
+- `fused_render/schedule.py`'s event log (`started`/`done`/`failed`/
+  `missed`) → `frontend/src/platform/lib/schedule-toast.ts` →
+  `scheduleEvents.ts`'s `notify()` calls, narrator-gated.
+- The task-status poll's `in_progress`/`blocked`/`done`/`needs_attention`
+  transitions → `frontend/src/shell/task-status-notify.ts` →
+  `useTaskStatusNotify.ts`'s `notify()` calls, narrator-gated.
+
+**The reversal is conditional, per the spec's own table**: a successful run
+(`done`) still isn't news *when you are looking at it* — both new call
+sites suppress via `notify()`'s `source` check (SPEC-quiet-notifications.md
+§2a's `isFocusedHere`) exactly when the run's own chat/project is already
+on screen. Only `failed`/`missed`/`blocked`/`needs_attention` are never
+suppressed, per the table's "attention" column.
+
+**`needs_attention` specifically does not get a second retained row.**
+`tasks-lib.ts`'s `attentionRows` (built 2026-09-03, wired into
+`RepoUpdatesDock.tsx`) already gives this exact state a dedicated,
+always-current, dismissible Notifications-panel row. Routing the
+`*->needs_attention` transition through `notify()`'s ordinary
+`tone: "error"` shape would always-retain a SECOND, independently
+dismissible row for the same fact. `useTaskStatusNotify.ts` therefore
+raises this one transition with no tone/tier (resolves to `"transient"`:
+pops, does not retain) — the announcement `attentionRows` cannot give on
+its own (a popup at the moment of transition), while `attentionRows`
+keeps owning "is still parked."

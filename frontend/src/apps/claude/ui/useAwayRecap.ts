@@ -122,7 +122,8 @@ export interface AwayRecapOptions extends AwayRecapEnv {
    *  state and the host reads it off the textarea ref, so there is nothing to
    *  put in a dependency array and nothing that would re-render this hook. */
   hasDraft: () => boolean;
-  /** `prefs.chat.recap`. */
+  /** Whether this mount is one the recap applies to at all — a conversation
+   *  the reader opened, not the landing or an embed. */
   enabled: boolean;
   /** Override for `AWAY_MS`; tests pass 0. */
   awayMs?: number;

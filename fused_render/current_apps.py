@@ -299,11 +299,13 @@ def _added_epoch(ts) -> float | None:
 
 
 ICON_NAME = app_listing.ICON_NAME
+ICON_NAMES = app_listing.ICON_NAMES
 
 
 def app_icon(folder: str) -> dict | None:
-    """The app's optional ``icon.svg`` — ``{"icon": <canonical path>, "mtime":
-    <epoch>}`` when the file sits directly in the app folder, else None. The
+    """The app's optional icon (``icon.svg``, else ``icon.png``) — ``{"icon":
+    <canonical path>, "mtime": <epoch>}`` when one sits directly in the app
+    folder, else None. The
     resolution itself lives in `app_listing.app_icon` (which the /apps listing
     reads through `app_dict`, so a card carries the same mark this row does);
     this wrapper only restates the path in the shell's canonical (forward-slash)
@@ -318,7 +320,7 @@ def list_apps() -> list[dict]:
     """The desk, in stored (added) order. Each: ``path`` (canonical), ``name``
     (folder name), ``kind`` (``linked`` for a registry folder, ``workspace``
     otherwise), ``entry`` (the page to run, or None), ``exists``, ``icon`` /
-    ``icon_mtime`` (the optional ``icon.svg``, see `app_icon`), ``added_at``
+    ``icon_mtime`` (the optional ``icon.svg`` / ``icon.png``, see `app_icon`), ``added_at``
     (epoch), ``opened_at`` (epoch of the last `mark_opened`; 0 for a row a task
     put here that has never been opened), ``unread`` (a task finished under it
     since that open — the sidebar's green dot, see the unread section). A

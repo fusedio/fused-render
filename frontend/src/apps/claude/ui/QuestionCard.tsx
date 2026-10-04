@@ -24,6 +24,17 @@ import { cn } from "@platform/lib/utils";
 import type { ChatController } from "../protocol/controller-api";
 import { OTHER_MAX_H, questionModel, questionOptions } from "../protocol/summaries";
 import type { PermissionRow, Question, QuestionOption } from "../protocol/types";
+/** THE QUEUE'S LATCH, shared with the approval card rather than re-derived here
+ *  (project queue, prefs `queue.enabled`). A question goes through the very same
+ *  door — `answerQuestion` calls the controller's one `decide`, which posts to
+ *  `/api/tasks/queue/decide` under the flag — so "the folder was busy, the
+ *  answer is stored" is the same fact on both cards and has to be the same
+ *  sentence and the same rule. It was neither: this card read `row.decision`
+ *  alone, so a held answer painted the ordinary "✓ Answered" over a choice the
+ *  model has not been told, and a reload — which has no `decision` at all — put
+ *  the OPTIONS BACK, live, over a decision already waiting in the line (browser
+ *  QA round 2, 2026-09-12). */
+import { answerHeld, queuedAnswerText } from "./PermCard";
 
 /** The row Claude did not write, last always: it is the answer for when none of
  *  the ones above are, and the backend matches a multi-select join in exactly
@@ -154,7 +165,14 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
     setActive(0);
   }
 
-  const resolved = !!row.decision;
+  // LATCHED BY THE HELD FLAG TOO, not only by a landed verdict — the same rule
+  // the approval card takes (`answerHeld`). The click that made the answer says
+  // so through `queuedAhead`, and the SERVER says so through `held` on the poll
+  // row, which is the half that survives a reload: without it a restored card
+  // came back asking a question that is already answered, and the second answer
+  // is the one first-writer-wins would silently throw away down in agent.py.
+  const held = answerHeld(row);
+  const resolved = !!row.decision || held;
   // `answerQuestion` does not reject: the controller catches and writes
   // `row.sendError` (T:14108-14112). See PermCard's fuller note.
   const sendError = row.sendError || (threw ? "Could not send that: " + threw : "");
@@ -297,7 +315,15 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
      payload arrived in a shape this window could not read, the raw JSON is what
      is on screen and the chosen labels have nowhere else to go. */
   const joined = !answerable && chosen.length;
-  const status = resolved
+  const status = held
+    ? // FIRST, ahead of every verdict below and ahead of the chosen labels. A
+      // held answer HAS a decision — the one the reader made, which is what
+      // latches the card — but the model has not seen it, so "✓ Answered" would
+      // be a claim about something that has not happened yet. A card rebuilt by
+      // a reload has no `decision` of its own and still lands here (`held`),
+      // which is the whole reason the server sends the flag.
+      { cls: "queued", node: <>{queuedAnswerText(row.queuedAhead || "")}</> }
+    : resolved
     ? row.decision === "allow"
       ? joined
         ? { cls: "chose", node: <>{"✓ You chose: "}<span className="val">{chosen.join(" · ")}</span></> }
@@ -518,7 +544,14 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
                   is already on the row — it just was not being read. A question
                   with no key is one the reader SKIPPED, which is a fact worth
                   keeping: the record of what was sent has to show the gap. */}
-              {resolved ? <ResolvedAnswer answer={row.answers?.[q.question]} /> : null}
+              {/* `row.decision`, not `resolved`: a card the SERVER latched — a
+                  reload, or another tab — knows an answer was MADE and not what
+                  it was (`answers` rides on the click, and this document never
+                  made one). Printing the line anyway rendered every question as
+                  "◦ Skipped", which is a different answer and a wrong one. */}
+              {resolved && row.decision ? (
+                <ResolvedAnswer answer={row.answers?.[q.question]} />
+              ) : null}
               {resolved ? null : oneShot || multi ? (
                 <div className="qopts">{rows}</div>
               ) : (

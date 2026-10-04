@@ -38,6 +38,7 @@ function job(extra: Partial<Job> = {}): Job {
     unit: "bytes",
     message: "",
     page: "",
+    source: "",
     origin: "",
     owner: "server",
     cancellable: true,
@@ -48,6 +49,7 @@ function job(extra: Partial<Job> = {}): Job {
     stalled: false,
     waiting_for: "",
     tier: "trail" as const,
+    group: extra.id ?? "sys:ai-model:org-m",
     ...extra,
   };
 }

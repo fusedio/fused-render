@@ -120,7 +120,7 @@ export function useHoldTail(hold: () => void): void {
  * drawn inside the prose block and the run's members after it — two places in
  * one list — and a hook cannot be called from the loop that builds that list.
  * Two `useCardOpen(key)` calls with the same key do not work either: each holds
- * its own re-render, so the trigger would say `less ▾` while the members stayed
+ * its own re-render, so the trigger would say `show less` while the members stayed
  * unmounted. One reader, one toggle, one bump for the whole container.
  */
 export function useCardOpens(): readonly [(key: string) => boolean, (key: string) => void] {

@@ -71,6 +71,14 @@ export interface StartRequest {
    * scheduler's first fire on the same folder from claiming the draft.
    */
   draft_key?: string;
+  /**
+   * THE PER-SEND CLAIM `/api/tasks/queue/admit` MINTED, when it admitted this
+   * send (Bugbot, PR #1194). Proof this send is the one the project queue
+   * already counted, so `routers/run.py::_folder_busy` only looks — a claim
+   * it consumes rather than makes a second time. Absent for a flag-off
+   * admission, or a start that never asked admission at all.
+   */
+  queue_claim?: string;
 }
 
 export interface PollRequest {
@@ -80,6 +88,9 @@ export interface PollRequest {
   /** `"1"` from the React page: app-state reads come back as in-stream
    *  notice segments instead of being stripped (agent.py `app_reads`). */
   native?: string;
+  /** "1" while the project queue is on: the agent then answers `inbox` rows
+   *  (a mid-turn follow-up not yet in the transcript); "0" is main's payload. */
+  queue?: string;
 }
 
 /** `decide` for a permission card (T:13979-13996). */
@@ -133,6 +144,9 @@ export interface SendRequest {
   model: string;
   effort: string;
   permission_mode: string;
+  /** See `StartRequest.queue_claim` — the same per-send proof, forwarded on a
+   *  send into a folder's own live host rather than a fresh start. */
+  queue_claim?: string;
 }
 
 export interface FileRequest {
@@ -145,6 +159,9 @@ export interface FileSessionRequest {
   /** `"1"` from the React page (history): app-state reads come back as
    *  in-stream notice segments (agent.py `app_reads`). */
   native?: string;
+  /** "1" while the project queue is on: the agent then answers `inbox` rows
+   *  (a mid-turn follow-up not yet in the transcript); "0" is main's payload. */
+  queue?: string;
 }
 export interface RunIdRequest {
   run_id: string;
@@ -184,7 +201,11 @@ export interface AgentRequests {
   app_state: AppStateRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
-  defaults: FileRequest;
+  /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
+   *  answers for THAT conversation (off its own record and transcript), without
+   *  one from the GLOBAL Claude preference — never from the folder. See
+   *  `agent._defaults` and `ui/composer-defaults`. */
+  defaults: FileRequest & { session_id?: string };
   history: FileSessionRequest;
   snapshots: SnapshotsRequest;
   snapshot_plan: SnapshotPlanRequest;
@@ -309,6 +330,43 @@ export interface PermissionRow {
    *  live run, and the same click would then land on a process that never asked
    *  the question. */
   runId?: string;
+  /**
+   * THE ANSWER IS HELD, not delivered (the project queue, `/api/tasks/queue/
+   * decide`). The reader decided; the folder was busy with another task, so the
+   * server stored the decision and will write it the moment the folder frees —
+   * at the head of the line, ahead of every message, because an answer somebody
+   * is already waiting on outranks new work.
+   *
+   * The value is the holder's task id ("TASK-041"), or "" when the server could
+   * not name it. Present at all is what makes the card say so; the card is
+   * `resolved` either way, because from the reader's side the decision is MADE —
+   * it is latched, first-writer-wins, and a second click is ignored exactly as
+   * it is on a delivered one.
+   *
+   * CLIENT-ONLY, like every annotation above it: agent.py has never heard of it,
+   * and the poll that eventually reports the delivered decision simply replaces
+   * the row.
+   */
+  queuedAhead?: string;
+  /**
+   * THE SAME FACT, FROM THE SERVER — and a second field rather than the one
+   * above for what the one above cannot do: `queuedAhead` is stamped by the
+   * click that made the decision, so it lives exactly as long as this document
+   * does. Reload, or open the conversation in another tab, and the card came
+   * back UNANSWERED with live buttons over a decision that is already stored and
+   * waiting its turn — buttons a second reader would then press.
+   *
+   * `held` rides on the poll's own permission row (the server writes it for a
+   * request that has an entry in `held_answers.json`), so it survives the
+   * reload the annotation cannot. True means to the card exactly what
+   * `queuedAhead` means: latched, no buttons, "◷ Answer queued".
+   *
+   * IT CARRIES NO NAME. The store is keyed by folder, not by whatever happens to
+   * be holding it when a page is rebuilt, so a restored card says which folder
+   * it is waiting on rather than which task — and `queuedAhead` is what names
+   * the holder for as long as the page that clicked is still open.
+   */
+  held?: boolean;
 }
 
 /** An UNANSWERED app-state request (agent.py:1970-1996). */
@@ -427,6 +485,20 @@ export interface PollResponse {
    *  agent.py. */
   window?: number;
   /**
+   * THE CONTEXT READING MID-TURN, off the newest `message_start` (or finished
+   * `assistant` row) in THIS poll's window — the same `usage` shape history
+   * reports, and the same thing the CLI does with its statusline: it updates
+   * after every API response, and one turn that calls six tools is seven
+   * responses.
+   *
+   * `null` (or absent, on an older agent.py) when this poll's window held no
+   * API response at all, which is most polls of a long tool call. That is
+   * "nothing new to say", NEVER "no context": the page keeps the reading it
+   * has. Only history is allowed to clear the meter, because only history
+   * knows which conversation is on screen.
+   */
+  context?: ContextUsage | null;
+  /**
    * Where a mid-stream follow-up was ABSORBED into the reply already streaming
    * (agent.py `_absorbed_turn_breaks`). One entry per seam, in file order,
    * each the `segments` count and the `text` length of everything BEFORE that
@@ -439,6 +511,47 @@ export interface PollResponse {
    * loop falls back to treating the payload as one turn.
    */
   turn_breaks?: TurnBreak[];
+  /**
+   * FOLLOW-UPS THE LIVE RUN HAS TAKEN AND THE MODEL HAS NOT ANSWERED YET —
+   * the CLI's undrained inbox, in the order they were typed (agent.py `_poll`).
+   *
+   * THE GAP IT CLOSES. A line typed into a running chat is absorbed by the live
+   * host: it goes into the CLI's queue and is answered when the current turn
+   * ends. Until then it exists in exactly two places — the CLI's stdin queue,
+   * and this page's own optimistic bubble — and the second of those is client
+   * memory. So a reload, or the standing watch's `refreshHistory`, replaced the
+   * transcript with the JSONL, which does not have the message either (nothing
+   * has consumed it), and the reader's own words simply vanished until the
+   * model got to them (Akshil, 2026-09-12).
+   *
+   * The run has the list, so the run reports it. Absent on an older agent.py,
+   * which is the same as an empty one: the optimistic bubbles are all there is.
+   */
+  inbox?: InboxMessage[];
+}
+
+/**
+ * One undrained follow-up (`PollResponse.inbox`).
+ *
+ * `id` is the send's own identity, stable across polls, so a bubble drawn for it
+ * is the SAME bubble on the next lap rather than a new one in the same place.
+ * `text` is what the reader typed. `at` is when the host took it — an ISO stamp
+ * or an epoch, whichever the server sends, and this page only ever ORDERS by it.
+ */
+export interface InboxMessage {
+  id: string;
+  text: string;
+  at?: string | number;
+  /**
+   * THE HOST HAS TAKEN IT OFF THE PILE — but the transcript has not echoed it
+   * back yet (the project queue's inbox, agent.py). The server lists these ANYWAY
+   * and the client draws them exactly as it draws an undrained one: for the
+   * reader they are the same fact, "my words are with the run", and a bubble that
+   * blinked out at the drain and back in when the turn echoed would be the app
+   * narrating its own plumbing. It is the echo — a real user turn — that retires
+   * the bubble, and nothing else.
+   */
+  drained?: boolean;
 }
 
 /** One seam in a poll payload — see `PollResponse.turn_breaks`. */
@@ -471,8 +584,15 @@ export interface ErrorOnly {
   error: string;
 }
 
-/** agent.py:2452 / 2350 (+ main()'s own guards 5188-5191). */
-export type StartResponse = { run_id: string; error?: undefined } | ErrorOnly;
+/** agent.py:2452 / 2350 (+ main()'s own guards 5188-5191).
+ *
+ * `session_id` is THE ID THIS TURN RUNS IN, answered at spawn: the resumed one,
+ * or the uuid the server minted for a brand-new chat. Optional because an older
+ * server omits it — the first poll's `session_id` is the fallback, and always
+ * agrees with this one (`run-controller.ts` `noteSessionId` is a no-op the
+ * second time). Having it HERE is what lets the url param, the state and the
+ * running mark all happen at the send instead of one poll later. */
+export type StartResponse = { run_id: string; session_id?: string; error?: undefined } | ErrorOnly;
 
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
@@ -508,7 +628,17 @@ export interface RunIdResponse {
 export interface DefaultsResponse {
   model: string;
   effort: string;
-  source: "" | "session" | "settings";
+  source: "" | "record" | "session" | "settings";
+  /** THE APP'S OWN RECORD of what this conversation runs with — written by
+   *  every spawn, every send and every pill pick (`tasks_store`'s
+   *  `session_settings.json`), and `""` on both for a chat that has none.
+   *
+   *  It rides back BESIDE the resolved pair above, rather than only inside it,
+   *  because the composer has to rank it above its own `?model=`/`?effort=`
+   *  params: those are a SEED for a brand-new chat (the New task card's deep
+   *  link, "Fix with AI"), and a seed that outranked the record would undo a
+   *  pill the reader changed mid-chat every time the page was reopened. */
+  recorded: { model: string; effort: string };
 }
 
 /** agent.py:4625-4627 (`_cli_sessions`), newest first. */
@@ -522,6 +652,29 @@ export interface SessionRow {
   /** File the pane was opened on, "" if none. */
   pane: string;
   running: boolean;
+  // ── the three below are NOT the agent's. ────────────────────────────────
+  //
+  // A chat whose first message was QUEUED has no transcript — nothing of it has
+  // run — so `sessions` cannot list it and the landing had no row for it at all
+  // (`sched/waiting-chats`). Its row is built from the `/api/tasks` listing and
+  // folded into this same list, because a waiting chat is not a different kind
+  // of thing from one that ran: it is the same conversation, earlier.
+  //
+  // Absent on every row the agent produced, which is what tells the two apart.
+  /** The leader entry this conversation is waiting AS — its only name until the
+   *  scheduler gives it a session (`platform/lib/queue.QUEUED_PARAM`). */
+  queuedEntry?: string;
+  /** Its number, for the row: the task exists the moment the entry does. */
+  taskId?: string;
+  /** The Claude session its leader's run has opened, when the tasks read already
+   *  knows one — "" otherwise. Only the MERGE reads it (`mergeWaitingChats`): a
+   *  conversation whose transcript has landed is listed by that session id and
+   *  by this entry key at the same time for one lap, and this is what lets the
+   *  two be recognised as one chat. */
+  leaderSession?: string;
+  /** Where the row opens — the queued chat URL, built once where the task's own
+   *  target is in hand rather than re-derived by the component drawing it. */
+  href?: string;
 }
 export interface SessionsResponse {
   sessions: SessionRow[];
@@ -575,8 +728,62 @@ export interface HistoryResponse {
    *  cards, so transcript and card paint in one frame. `""` = nothing live (an
    *  answer too); absent = an older server, and the page discovers as before. */
   live_run?: string;
+  /** The transcript is gone AND the task was deleted (`/api/tasks/erase`
+   *  tombstoned it): a stale row was pressed. Absent for a chat that has not
+   *  written its first row yet — the other way a transcript can be missing. */
+  deleted?: boolean;
   permissions?: PermissionRow[];
   mode?: PermissionMode | "";
+  /**
+   * THE LIVE RUN'S UNDRAINED FOLLOW-UPS — the same list `PollResponse.inbox`
+   * carries, on the read a RELOADING chat makes first (agent.py `_history_live`).
+   *
+   * This is the half that actually fixes the reload. The poll's copy keeps the
+   * bubbles up while a page stays open; a page that comes BACK reads `history`
+   * before it has a run to poll, and without the list here the reader's held
+   * follow-ups would be missing for the whole of that window — which is exactly
+   * the moment they are looking for them. Only meaningful beside `live_run`:
+   * nothing is held when nothing is running.
+   */
+  inbox?: InboxMessage[];
+  /**
+   * HOW FULL THE MODEL'S CONTEXT WINDOW IS, off the LATEST USABLE assistant
+   * record's `message.usage` (agent.py `_context_usage` / `_usage_row`).
+   *
+   * `null` when no reply has carried usage yet (a brand-new chat, an older
+   * transcript, a compaction whose `postTokens` the boundary row did not
+   * record): the composer draws no meter at all rather than a truthful-looking
+   * 0%, which is what the CLI's own statusline does too — `current_usage` is
+   * `null` until the next API call. Optional on the wire for an older server,
+   * same reading.
+   */
+  context?: ContextUsage | null;
+}
+
+/**
+ * ONE REPLY'S `usage`, as the API reported it — the four counts RAW, not summed.
+ *
+ * Raw because the two readings drawn off it have different numerators: the
+ * pill's percentage is input-only (`input + cache_creation + cache_read`, the
+ * statusline's own definition, which the docs state does NOT include output)
+ * and the auto-compact arithmetic behind the warning line adds `output_tokens`
+ * in. Summing on the wire would force one of the two to be wrong;
+ * `ui/context-window.ts` owns both sums.
+ *
+ * `model` is the id that reply was made with, which is what decides the
+ * window's SIZE (`[1m]`, Sonnet 5, Fable, Opus 5 → a million; everything else
+ * 200k) — "" when the row does not say, and the composer falls back to the
+ * picker's value. `compacted` marks a reading taken from a `compact_boundary`
+ * row's own `postTokens` rather than from the API: an ESTIMATE the compactor
+ * made, which the meter labels as one.
+ */
+export interface ContextUsage {
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  model: string;
+  compacted: boolean;
 }
 
 /** agent.py:904 / 868,883. */

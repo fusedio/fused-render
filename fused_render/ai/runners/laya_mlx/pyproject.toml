@@ -1,0 +1,46 @@
+# The Laya typed-decisions runner's environment (SPEC §40, D887).
+#
+# This folder exists so that `laya-mlx` is named in exactly one place and lives
+# in exactly one interpreter — not fused-render's, and not `mlx_text`'s or
+# `mlx_embed`'s. It pins its own `mlx` line (`>=0.32.2,<0.33` at 0.2.0), which
+# is a narrower window than `mlx-vlm` or `mlx-embeddings` ask for, so sharing a
+# folder with either would tie an unrelated bump in one to a forced rebuild —
+# or an unresolvable sync — of the other.
+#
+# `envinstall` (PY-18) builds this on first use with the same detached
+# `uv sync`, progress record and verbatim errors any declaring folder gets.
+#
+# **The engine line carries a CEILING**, for the reason `mflux_image/
+# pyproject.toml` states at length: no lockfile is committed beside these
+# manifests and `uv sync` runs bare, so an unbounded requirement re-resolves
+# from PyPI on every new venv key. `laya-mlx` is pre-1.0 (0.2.0, six commits,
+# first release 2026-09-19), where a minor is the breaking one, hence
+# `>=0.2,<0.3` rather than a looser `<1`.
+#
+# What each earns:
+#   laya-mlx        loads a Laya checkpoint (`laya_mlx.load`) and runs its
+#                   encoder + decision heads (`Agent.predict`). Pulls `mlx`,
+#                   `numpy`, `tokenizers` and `huggingface_hub` in itself;
+#                   the last is named below anyway because `worker_base`'s
+#                   own download path imports it directly and must not
+#                   depend on a transitive pin.
+#   huggingface_hub downloads (see above)
+#   psutil          the RSS half of "how much memory is this costing" — the
+#                   MLX half comes from mlx's own allocator (see `memory()`),
+#                   exactly `mlx_text/pyproject.toml`'s reasoning.
+[project]
+name = "fused-render-runner-laya-mlx"
+version = "0.1.0"
+# laya-mlx itself declares `>=3.11`; the app's runner interpreter is 3.12
+# (D214), so the floor here is the package's, not a looser one that would
+# resolve on a machine the package refuses.
+requires-python = ">=3.11"
+dependencies = [
+    "laya-mlx>=0.2,<0.3",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

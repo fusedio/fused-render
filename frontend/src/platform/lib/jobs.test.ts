@@ -3,13 +3,25 @@
 // the total was zero, a pair of byte counts scaled to two different units, a
 // header counting finished work as running.
 import { expect, test } from "bun:test";
-import {
+// jobs.ts -> api.ts -> presence.ts -> router.ts, and router.ts reads
+// `location` at module scope — bun has no DOM, so the shim has to land
+// before jobs.ts's own module body runs, via a dynamic import exactly like
+// restart-store.test.ts's own (see testDomShim.ts's header).
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
+const {
   aggregateProgress,
   jobTypeLabel,
   SCHEDULE_JOB_PREFIX,
   activeJobByModel,
+  EMPTY_GROUP_POPUP_STATE,
   effectiveTier,
   GRACE_MS,
+  GROUP_GAP_MS,
+  groupEffectiveTier,
+  groupJobs,
+  groupPopupTick,
+  isGroupTerminal,
   jobAmount,
   jobDetail,
   jobFraction,
@@ -24,10 +36,16 @@ import {
   popupTick,
   terminalNotifications,
   trackSeenIds,
-  type Job,
-} from "@platform/lib/jobs";
+} = await import("@platform/lib/jobs");
+type Job = import("@platform/lib/jobs").Job;
 
 function job(over: Partial<Job> = {}): Job {
+  // `source` defaults to whatever `page` resolved to (ordinary-producer
+  // parity, same as the server's own default) unless a test explicitly
+  // overrides it — this is what lets every pre-existing fixture in this file
+  // keep passing unchanged once `familyKey` reads `source` instead of
+  // `page`.
+  const page = over.page ?? "/tmp/index.html";
   return {
     id: "j1",
     title: "FLUX.2-klein-4B",
@@ -41,7 +59,8 @@ function job(over: Partial<Job> = {}): Job {
     total_estimated: false,
     unit: "bytes",
     message: "",
-    page: "/tmp/index.html",
+    page,
+    source: page,
     origin: "",
     owner: "page",
     cancellable: true,
@@ -52,6 +71,7 @@ function job(over: Partial<Job> = {}): Job {
     stalled: false,
     waiting_for: "",
     tier: "trail",
+    group: over.id ?? "j1",
     ...over,
   };
 }
@@ -598,22 +618,22 @@ test("a job parked on a question says Waiting whatever its title", () => {
 // ------------------------------------------------------------------ popups
 //
 // The floating pop-up card (SPEC actionable-notifications, "the latest
-// notification always pops up"): `tier` governs RETENTION for
-// `attention`/`trail`/`transient` only (whether a row survives in the
-// panel), never whether a terminal job is shown at all, so `popupJobs`
-// reads none of that for those three — a `transient` job pops exactly like
-// an `attention`/`trail` one. `silent` is the one tier that also suppresses
-// the pop itself on a clean finish (a resident model load/unload: the
-// running row already said as much, so "done" is not news) — see the
-// dedicated tests below for the gate on stored `tier` + `state === "done"`.
+// notification always pops up"). As of 2026-09-23 (D888), a successful
+// `done` job never pops at all, regardless of `tier` — the Activity chip's
+// own progress indicator already told the user work was happening, so a
+// success card is redundant chatter. Only `error`/`cancelled` (promoted to
+// `effectiveTier === "attention"`) pop, and `tier` plays no role in that
+// decision either — an `error`/`cancelled` job pops even when its stored
+// tier is `silent` (see the dedicated test below).
 
-test("popupJobs pops every terminal job regardless of tier, transient included", () => {
+test("popupJobs excludes every successful done job regardless of tier, transient included", () => {
   const jobs = [
     job({ id: "a", state: "done", tier: "transient" }),
     job({ id: "b", state: "done", tier: "trail" }),
-    job({ id: "c", state: "running", tier: "attention" }),
+    job({ id: "c", state: "error", tier: "attention" }),
+    job({ id: "d", state: "running", tier: "attention" }),
   ];
-  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["a", "b"]);
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["c"]);
 });
 
 test("popupJobs pops nothing for a silent job that finishes done", () => {
@@ -651,9 +671,12 @@ test("popupJobs hides the underlying job a running waiter merges over it (merged
 // very first read after a page load or refresh sees every already-terminal
 // job at once. `popupTick` must seed its `seen` set from that first read
 // without popping any of it — the frontend twin of `_seen_running`
-// (fused_render/server/routers/index.py).
+// (fused_render/server/routers/index.py). Uses `error` rather than `done`
+// as its terminal state throughout, since a successful `done` job never
+// pops at all any more (D888) — these tests exercise the dedup/seeding
+// mechanics, which apply identically to error/cancelled jobs.
 test("popupTick seeds the first tick's already-terminal jobs with no popup", () => {
-  const jobs = [job({ id: "a", state: "done", finished_at: 100 })];
+  const jobs = [job({ id: "a", state: "error", finished_at: 100 })];
   const { seen, popped } = popupTick(jobs, new Set(), true);
   expect(popped).toBe(null);
   // A second call with the exact same snapshot must still not pop — proof
@@ -663,14 +686,14 @@ test("popupTick seeds the first tick's already-terminal jobs with no popup", () 
 
 test("popupTick pops a job that crosses into terminal on a later tick", () => {
   const first = popupTick([job({ id: "a", state: "running" })], new Set(), true);
-  const second = popupTick([job({ id: "a", state: "done" })], first.seen, false);
+  const second = popupTick([job({ id: "a", state: "error" })], first.seen, false);
   expect(second.popped?.id).toBe("a");
 });
 
 test("popupTick does not re-pop an id it has already popped", () => {
-  const first = popupTick([job({ id: "a", state: "done" })], new Set(), false);
+  const first = popupTick([job({ id: "a", state: "error" })], new Set(), false);
   expect(first.popped?.id).toBe("a");
-  const second = popupTick([job({ id: "a", state: "done" })], first.seen, false);
+  const second = popupTick([job({ id: "a", state: "error" })], first.seen, false);
   expect(second.popped).toBe(null);
 });
 
@@ -683,8 +706,8 @@ test("popupTick pops only the latest of several jobs turning terminal in the sam
   );
   const { popped } = popupTick(
     [
-      job({ id: "a", state: "done", finished_at: 100 }),
-      job({ id: "b", state: "done", finished_at: 200 }),
+      job({ id: "a", state: "error", finished_at: 100 }),
+      job({ id: "b", state: "error", finished_at: 200 }),
     ],
     running.seen,
     false,
@@ -706,8 +729,8 @@ test("popupTick picks the job with the newest finished_at, not the array's tail"
   );
   const { popped } = popupTick(
     [
-      job({ id: "render", state: "done", finished_at: 200 }),
-      job({ id: "load", state: "done", finished_at: 100 }),
+      job({ id: "render", state: "error", finished_at: 200 }),
+      job({ id: "load", state: "error", finished_at: 100 }),
     ],
     running.seen,
     false,
@@ -717,14 +740,14 @@ test("popupTick picks the job with the newest finished_at, not the array's tail"
 
 // `job_id_for(model)` (fused_render/ai/supervisor.py) mints one id shared by
 // a resident model's load, its weights-only download and its unload — so
-// the SAME id can go terminal twice in a card's lifetime (a completed load,
-// later followed by an unload finishing on that identical id). Each of
-// those is its own notification and must pop on its own, so "have I popped
-// this?" cannot be keyed on the bare id alone.
+// the SAME id can go terminal twice in a card's lifetime (an errored load,
+// later followed by an errored unload finishing on that identical id). Each
+// of those is its own notification and must pop on its own, so "have I
+// popped this?" cannot be keyed on the bare id alone.
 test("popupTick pops a second terminal event that lands on an id already popped once", () => {
   const loading = popupTick([job({ id: "m", state: "running" })], new Set(), true);
   const loaded = popupTick(
-    [job({ id: "m", state: "done", finished_at: 100 })],
+    [job({ id: "m", state: "error", finished_at: 100 })],
     loading.seen,
     false,
   );
@@ -734,7 +757,7 @@ test("popupTick pops a second terminal event that lands on an id already popped 
   // leaving the candidate set null in between (a resident model's row stays
   // present, just no longer terminal, while it's loaded).
   const unloaded = popupTick(
-    [job({ id: "m", state: "done", finished_at: 200 })],
+    [job({ id: "m", state: "error", finished_at: 200 })],
     loaded.seen,
     false,
   );
@@ -752,4 +775,410 @@ test("aggregate progress: nothing running draws no line, no totals sweep, else t
       job({ state: "running", done: null, total: null }),
     ]),
   ).toBeCloseTo(0.5);
+});
+
+// ------------------------------------------------------- presence suppression
+// SPEC-quiet-notifications.md §2b / D-A, reversed 2026-09-17 for the ROW (the
+// "Recent" section is gone — see DECISIONS-quiet-notifications.md): a
+// successful terminal job whose own page the user is already looking at no
+// longer loses its seat in Notifications. Presence-based popup suppression
+// (formerly `isPopupSuppressed`) was itself removed 2026-09-23 (D888): a
+// clean finish never pops a card any more, regardless of presence, so
+// `jobRows` below is exercised only for its ROW behavior (still unaffected
+// by presence) and its now-inert `isOpenAnywhere` parameter.
+
+const openHere = (page: string) => (source: string) => source === page;
+const openNowhere = () => false;
+
+test("jobRows: a done job still shows as an ordinary row (no more Recent section to drop into)", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs, openHere("/ai-models/local")).map((j) => j.id)).toEqual(jobs.map((j) => j.id));
+});
+
+test("jobRows: the same job still shows when nothing has its page open", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs, openNowhere)).toEqual(jobs);
+});
+
+test("jobRows: an error still shows even though its page is open — errors are never suppressed", () => {
+  const jobs = [job({ state: "error", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs, openHere("/ai-models/local"))).toEqual(jobs);
+});
+
+test("jobRows: omitting isOpenAnywhere entirely preserves today's behavior (no suppression)", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs)).toEqual(jobs);
+});
+
+// `popupJobs`/`popupTick` no longer take an `isOpenAnywhere` predicate at all
+// (2026-09-23, D888): a successful `done` job never pops regardless of
+// presence, and an `error`/`cancelled` job was never presence-suppressed to
+// begin with — so there is no presence-gated popup behavior left for these
+// two functions to exercise.
+
+// --------------------------------------------------------------- §3 grouping
+// SPEC-quiet-notifications.md §3: rows are keyed by `(page, group)`, not by
+// id. Every job's `group` defaults, server-side, to its own id when it has
+// no `sys:<name>:` family prefix — so an ungrouped job is a group of one BY
+// CONSTRUCTION, which is what makes "a lone job behaves exactly as today"
+// true without any of `jobRows`/`groupJobs` special-casing
+// group size 1. `job()`'s own default (`group: over.id ?? "j1"`) mirrors
+// that server default, so every pre-existing test above — none of which set
+// `group` explicitly — already IS the single-member regression suite: if
+// grouping had broken lone-job behavior, they would have failed already.
+// The tests below name that guarantee explicitly, then move on to what's new.
+
+test("groupJobs: a lone job is its own group of one, keyed by its own id", () => {
+  const jobs = [job({ id: "dl", page: "/ai-models/local" })];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].group).toBe("dl");
+  expect(groups[0].jobs.map((j) => j.id)).toEqual(["dl"]);
+});
+
+test("groupJobs: two jobs sharing (page, group) fold into one group, arrival order preserved", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:a", page: "/ai-images", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:b", page: "/ai-images", group: "sys:ai-image" }),
+  ];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].jobs.map((j) => j.id)).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
+});
+
+test("groupJobs: the same group id on two different pages is two groups, not one — grouping is per-page too", () => {
+  const jobs = [
+    job({ id: "a", page: "/one", group: "shared" }),
+    job({ id: "b", page: "/two", group: "shared" }),
+  ];
+  expect(groupJobs(jobs)).toHaveLength(2);
+});
+
+// Finding 3 (code review 2026-09-16): grouping by `(page, group)` alone
+// folds a family's ENTIRE history into one group, since terminal rows are
+// kept until dismissed (D663). A group must mean one BURST of work — see
+// `GROUP_GAP_MS`'s own doc comment in jobs.ts for the fix (cluster a family
+// by activity gap before grouping). Both sides of the gap boundary, pinned:
+test("groupJobs: two family members just inside GROUP_GAP_MS of each other's last activity are one burst", () => {
+  const jobs = [
+    job({
+      id: "sys:ai-model:a",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 0,
+      finished_at: 1000,
+    }),
+    job({
+      id: "sys:ai-model:b",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 1000 + GROUP_GAP_MS - 1,
+      finished_at: 1000 + GROUP_GAP_MS - 1 + 500,
+    }),
+  ];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].jobs.map((j) => j.id)).toEqual(["sys:ai-model:a", "sys:ai-model:b"]);
+});
+
+test("groupJobs: a family member starting more than GROUP_GAP_MS after the burst's last activity starts its own group", () => {
+  const jobs = [
+    job({
+      id: "sys:ai-model:a",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 0,
+      finished_at: 1000,
+    }),
+    job({
+      id: "sys:ai-model:b",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 1000 + GROUP_GAP_MS + 1,
+      finished_at: 1000 + GROUP_GAP_MS + 1 + 500,
+    }),
+  ];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(2);
+  expect(groups.map((g) => g.jobs.map((j) => j.id))).toEqual([
+    ["sys:ai-model:a"],
+    ["sys:ai-model:b"],
+  ]);
+});
+
+test("groupJobs: an old finished burst never absorbs a job that starts long after, keeping the new job popping/attention behavior independent", () => {
+  // The concrete regression named by the finding: a page that has ever had
+  // two model downloads used to fold every FUTURE download in that family
+  // into the same permanent group — so a lone new download stopped popping
+  // on completion (multi-member groups are excluded from `popupJobs`) the
+  // moment it joined that group. Clustering by activity gap means the old,
+  // long-finished burst and today's new download are different groups, so
+  // today's download is a group of ONE and pops exactly like a fresh job.
+  const oldBurst = [
+    job({
+      id: "sys:ai-model:old-a",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 0,
+      finished_at: 100,
+    }),
+    job({
+      id: "sys:ai-model:old-b",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 200,
+      finished_at: 300,
+    }),
+  ];
+  const today = job({
+    id: "sys:ai-model:today",
+    page: "/ai-models/local",
+    group: "sys:ai-model",
+    state: "done",
+    started_at: 300 + GROUP_GAP_MS + 1,
+    finished_at: 300 + GROUP_GAP_MS + 1 + 50,
+  });
+  const groups = groupJobs([...oldBurst, today]);
+  expect(groups).toHaveLength(2);
+  const todaysGroup = groups.find((g) => g.jobs.some((j) => j.id === "sys:ai-model:today"));
+  expect(todaysGroup?.jobs).toHaveLength(1);
+});
+
+test("isGroupTerminal: false while any member is still running, however many siblings finished", () => {
+  const members = [
+    job({ id: "a", state: "done" }),
+    job({ id: "b", state: "running" }),
+  ];
+  expect(isGroupTerminal(members)).toBe(false);
+});
+
+test("isGroupTerminal: true once every member is terminal", () => {
+  const members = [job({ id: "a", state: "done" }), job({ id: "b", state: "error" })];
+  expect(isGroupTerminal(members)).toBe(true);
+});
+
+test("groupEffectiveTier: one attention member promotes the whole group, regardless of the rest", () => {
+  const members = [job({ id: "a", state: "error" }), job({ id: "b", tier: "silent", state: "done" })];
+  expect(groupEffectiveTier(members)).toBe("attention");
+});
+
+test("groupEffectiveTier: the loudest non-attention tier present wins (trail over transient over silent)", () => {
+  const members = [
+    job({ id: "a", tier: "silent", state: "done" }),
+    job({ id: "b", tier: "trail", state: "running" }),
+    job({ id: "c", tier: "transient", state: "done" }),
+  ];
+  expect(groupEffectiveTier(members)).toBe("trail");
+});
+
+test("groupEffectiveTier: all silent stays silent", () => {
+  const members = [job({ id: "a", tier: "silent", state: "done" })];
+  expect(groupEffectiveTier(members)).toBe("silent");
+});
+
+// The Recent section is gone (2026-09-17): a two-member group where one
+// member is individually popup-suppressible (done, its page open) and the
+// other is failing must appear EXACTLY ONCE, in `jobRows` — there is nowhere
+// else for it to go.
+test("jobRows: a two-member group with one popup-suppressed success and one failure appears exactly once", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:ok", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:boom", state: "error", tier: "trail", page: "/p", group: "sys:ai-image" }),
+  ];
+  const open = openHere("/p");
+  const rows = jobRows(jobs, open).map((j) => j.id).sort();
+  expect(rows).toEqual(["sys:ai-image:boom", "sys:ai-image:ok"]);
+});
+
+test("jobRows: a two-member group where every member's popup would be individually suppressed still shows both rows", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:a", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:b", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+  ];
+  const open = openHere("/p");
+  expect(jobRows(jobs, open).map((j) => j.id).sort()).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
+});
+
+test("jobRows: a two-member group with one member still running shows both rows, even if its sibling's page is open and done", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:a", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:b", state: "running", tier: "trail", page: "/p", group: "sys:ai-image" }),
+  ];
+  const open = openHere("/p");
+  expect(jobRows(jobs, open).map((j) => j.id).sort()).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
+});
+
+// The single-member regression this build was told to pin explicitly: a
+// job whose group is itself (the id-derived default) behaves byte-for-byte
+// like today's ungrouped path — one running + one done job that do NOT
+// share a group must never be folded together.
+test("jobRows: two UNRELATED single-member jobs are never folded into each other's group just because they share a page", () => {
+  const jobs = [
+    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
+    job({ id: "b", state: "running", tier: "trail", page: "/p" }),
+  ];
+  const open = openHere("/p");
+  expect(jobRows(jobs, open).map((j) => j.id).sort()).toEqual(["a", "b"]);
+});
+
+// --------------------------------------------------------- D-C pop rule
+// SPEC-quiet-notifications.md §3: a multi-member group pops on START (no
+// running members to some) and on FAILURE (any member error/cancelled), and
+// on nothing else — never on an ordinary completion, never when the whole
+// group finishes. A single-member group is unaffected: `popupTick`/
+// `popupJobs` above already own its pop-on-every-terminal-event behavior
+// unchanged (see the "popupJobs pops every terminal job" tests already in
+// this file, all running with a default group-of-one).
+
+test("popupJobs excludes a multi-member group's own members entirely — their popping is groupPopupTick's job now", () => {
+  const jobs = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", finished_at: 1000 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g" }),
+  ];
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual([]);
+});
+
+test("popupJobs still pops a SINGLE-member job's own terminal event unchanged, even sharing a page with an unrelated group", () => {
+  const jobs = [
+    job({ id: "lone", state: "error", finished_at: 1000, page: "/p" }),
+    job({ id: "sys:g:a", state: "error", group: "sys:g", page: "/p", finished_at: 2000 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", page: "/p" }),
+  ];
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["lone"]);
+});
+
+test("groupPopupTick: ordinary member completion pops nothing (no start, no failure)", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneDone: Job[] = [
+    job({ id: "sys:g:a", state: "done", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(oneDone, t0.state, false);
+  expect(t1.popped).toBeNull();
+});
+
+test("groupPopupTick: the whole group finishing pops nothing", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const bothDone: Job[] = [
+    job({ id: "sys:g:a", state: "done", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "done", group: "sys:g", started_at: 100, finished_at: 950 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(bothDone, t0.state, false);
+  expect(t1.popped).toBeNull();
+});
+
+test("groupPopupTick: any member failing pops a FAILURE, even mid-run", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(oneFailed, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:a");
+});
+
+test("groupPopupTick: a cancelled member also pops a FAILURE (effectiveTier promotes it the same as error)", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const cancelled: Job[] = [
+    job({ id: "sys:g:a", state: "cancelled", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(cancelled, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:a");
+});
+
+test("groupPopupTick: a failure already popped is not popped again while it stays failed", () => {
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(oneFailed, EMPTY_GROUP_POPUP_STATE, true);
+  expect(t0.popped).toBeNull(); // seeded on the first tick, same as popupTick's own backlog rule
+  const t1 = groupPopupTick(oneFailed, t0.state, false);
+  expect(t1.popped).toBeNull();
+});
+
+test("groupPopupTick: single-member groups are ignored entirely — never a candidate here", () => {
+  const jobs = [job({ id: "lone", state: "running", started_at: 100 })];
+  const t0 = groupPopupTick(jobs, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(jobs, t0.state, false);
+  expect(t0.popped).toBeNull();
+  expect(t1.popped).toBeNull();
+});
+
+// -------------------------------------------------- finding 8: shrink-to-1
+// A group shrinking to one member (a sibling dismissed/swept) must not
+// re-pop an already-popped failure via popupTick's singleton path.
+
+test("groupPopupTick: a failed member's key survives in failedSeen after its sibling disappears and the group shrinks to one", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(oneFailed, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:a");
+
+  // "b" is dismissed/swept — the group now has just one member, "a".
+  const shrunk: Job[] = [job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 })];
+  const t2 = groupPopupTick(shrunk, t1.state, false);
+  expect(t2.popped).toBeNull();
+  // The key must still be carried forward for popupTick to consult.
+  expect(t2.state.failedSeen.has("sys:g:a:900")).toBe(true);
+});
+
+test("popupTick: a group failure already popped by groupPopupTick does not re-pop once its group shrinks to one member", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const g0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const g1 = groupPopupTick(oneFailed, g0.state, false);
+  expect(g1.popped?.id).toBe("sys:g:a");
+  // While the group still has two members, popupJobs excludes "a" entirely
+  // — popupTick has never seen its key.
+  const p0 = popupTick(oneFailed, new Set(), false, g1.state.failedSeen);
+  expect(p0.popped).toBeNull();
+  expect(p0.seen.has("sys:g:a:900")).toBe(false);
+
+  // "b" is dismissed/swept — "a" is now a group of one, and is for the
+  // FIRST time ever a `popupJobs` candidate for popupTick. Without the
+  // fix, popupTick would treat this as a brand-new terminal event (its
+  // key is absent from `seen`) and pop it again.
+  const shrunk: Job[] = [job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 })];
+  const g2 = groupPopupTick(shrunk, g1.state, false);
+  const p1 = popupTick(shrunk, p0.seen, false, g2.state.failedSeen);
+  expect(p1.popped).toBeNull();
+  // It is now recorded, so any later tick behaves normally too.
+  expect(p1.seen.has("sys:g:a:900")).toBe(true);
 });

@@ -104,9 +104,31 @@ const SHARED_APPS = new Set(["apps/claude"]);
  * BY MODULE, not by layer: `apps/claude` may import THESE files and nothing else
  * out of shell, so the hole cannot quietly widen into "apps import shell".
  */
+/*
+ * `shell/tasksPulse` is the fourth, and it is a TRANSPORT rather than a view:
+ * the one `GET /api/tasks` + `/api/tasks/changes` long-poll this document is
+ * allowed to run (2026-09-15). It lives in shell because it imports
+ * `shell/tasks-lib` — the pulse summary, the seen map and `mergeTaskChanges`
+ * are all that module's — so it cannot move down to `platform/lib` without
+ * dragging the whole task model with it. The chat subscribes because the
+ * alternative is the bug this hole was opened to close: every ClaudeChat mount
+ * opening its own long-poll, twelve cards on the Tasks wall exhausting the
+ * browser's six-socket budget, and the page's boot reads queueing behind them.
+ */
+/*
+ * `terminalDockStore` (the one-boolean + one-slot-pending-request store the
+ * status-bar terminal drawer and chip share) lives in `platform/lib`, not
+ * shell, even though `TerminalDrawer.tsx` and the explorer's "Open in
+ * Terminal" row are shell/apps files: it imports only React's
+ * `useSyncExternalStore`, nothing shell-only, so `platform/ui` (which may not
+ * import shell at all) can reach its `openTerminal` directly for the Claude
+ * health strip and the trouble card's run affordances, and shell consumes it
+ * as "anything" it's allowed to import — no hole needed for it here.
+ */
 const SHELL_OPEN_TO_APPS = new Set([
   "shell/ScheduleTaskViews",
   "shell/tasks-lib",
+  "shell/tasksPulse",
   "shell/TaskPeekWho",
 ]);
 

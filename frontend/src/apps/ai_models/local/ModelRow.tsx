@@ -14,7 +14,7 @@
 import type { ReactNode } from "react";
 
 import type { AiFitVerdict } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl, spaLinkProps } from "@platform/lib/router";
 
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { tabHref } from "@apps/ai_models/routes";
@@ -201,14 +201,7 @@ function Drawer({
       )}
       <div className="acts">
         {model.have && model.path && (
-          <a
-            className="btn-link"
-            href={urlForFsPath(model.path, "?_mode=model_card")}
-            onClick={(e) => {
-              e.preventDefault();
-              navigate(model.path!, { isDir: true, mode: "model_card" });
-            }}
-          >
+          <a className="btn-link" {...spaLinkProps(model.path, { isDir: true, mode: "model_card" })}>
             Open model card
           </a>
         )}

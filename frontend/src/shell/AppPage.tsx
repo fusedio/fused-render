@@ -1,8 +1,8 @@
 // The app page — `/apps/<folder path>` (D488, widened 2026-08-26): one app
 // folder — a workspace app under any shelf, or a linked app anywhere on disk —
 // as a place rather than as a folder. Five tabs, named by the `_tab` query
-// param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api` —
-// current-apps-lib):
+// param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api`,
+// `?_tab=doctor` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -17,20 +17,37 @@
 //   API       every .py in the folder as an endpoint, Swagger-style
 //             (shell/AppApi.tsx): entrypoint, parameters as a form, Execute,
 //             response — the api template's view, for the whole app at once.
+//   App Doctor the share-readiness checklist (platform/ui/AppDoctorModal.tsx's
+//             `AppDoctorPanel`) — used to be a header button opening a
+//             dialog; it is a place on this page now, and the trigger carries
+//             the header dot it used to.
 //
 // A VERSION PICKER (AppVersionPicker.tsx), not a sixth Git tab: this page used
 // to frame the folder's `git` template as a Git tab, offered only inside a
-// work tree. That is GONE (docs/app-page-version-dropdown-plan.html) —
-// staging, committing, branches and push/pull are not this page's job; they
-// stay in the explorer's folder view, where the `git` template still lives.
-// What replaces it is read-only and page-wide: a dropdown beside the tab
-// strip puts ALL THREE tabs above (Overview/Files/API — Tasks is unaffected,
-// it has no notion of a commit) on a past commit of the app folder, via the
-// same `_snapshot` shell URL param and extraction machinery
+// work tree. That is GONE (docs/app-page-version-dropdown-plan.html) — a
+// dropdown beside the tab strip puts THREE tabs above (Overview/Files/API —
+// Tasks is unaffected, it has no notion of a commit, and App Doctor always
+// checks the live folder, see AppDoctorPanel) on a past commit of the app
+// folder, via the same `_snapshot` shell URL param and extraction machinery
 // (`fused_render/server/routers/git_snapshot.py`) the explorer's own snapshot
 // preview already uses. `useAppPageSnapshot.ts` holds this page's own
 // resolution of that param; every read below rewrites against it directly
-// (`rewritePathAgainst`), never a shared singleton.
+// (`rewritePathAgainst`), never a shared singleton. This picker stays
+// read-only and page-wide — it is not what the git column below is for.
+//
+// THE GIT COLUMN is a later, separate addition (opened only from App Doctor's
+// "Open in git" row — see the git-peek block further down in this file for
+// the full argument): the folder's `git` template beside the page — the WHOLE
+// template, with its ordinary write actions (stage, commit, branches,
+// push/pull) — in a slim peek of its own (AppPageGitPeek.tsx), styled after
+// the Tasks tab's own side peek rather than the explorer's file-preview
+// sidebar it first borrowed (owner's correction, 2026-09-22: "I just want the
+// git template. not the full right sidebar."). This page is NOT read-only
+// about git any more; it is read-only about the VERSION PICKER'S past
+// commits, which is a different thing, and the two must not be conflated.
+// There is still no Git TAB: a tab put the working tree on the same footing
+// as the app and took the app off the screen to reach it, and that argument
+// is what this page still declines.
 //
 // Opened from the sidebar's "Current apps" rows and NOWHERE ELSE (owner's
 // brief): the hub's cards and the explorer keep opening the entry page as they
@@ -39,8 +56,7 @@
 // Not the explorer. The explorer answers "what is in this folder"; this page
 // answers "how is this app going" — the app, its work and its pieces side by
 // side. The folder is one caption-click away for the operations (rename, move,
-// new file) this page deliberately does not offer — including, now, every git
-// write action: this page is read-only about git.
+// new file) this page deliberately does not offer.
 //
 // Mounted per FOLDER, not per nav epoch (App.tsx): the Overview frame holds live
 // app state, and a tab switch — a navigation, since the tab is in the path —
@@ -63,26 +79,32 @@ import {
   type Config,
 } from "@platform/lib/api";
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
-import { useThemedIconSrc } from "@platform/lib/app-icon-src";
+import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { IS_NATIVE_WINDOW, navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { openAppWindow } from "@platform/lib/native-window";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
-  Files,
   Download,
+  Files,
+  FolderOpen,
   ListTodo,
+  Loader2,
+  Share2,
+  Stethoscope,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { exportAppFile } from "@platform/lib/appShot";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { AppDoctorPanel } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { Button } from "@platform/shadcn/ui/button";
@@ -103,6 +125,13 @@ import AppVersionPicker from "./AppVersionPicker";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import SnapshotError from "./SnapshotError";
 import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
+import { TaskPeekFrame } from "./TaskPeekFrame";
+import { APP_PAGE_FIT_LABEL, useAppHeadFit, useAppTabbarFit } from "./app-page-fit";
+import { useTaskPeekEnabled } from "./task-peek-flag";
+import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
+import AppPageGitPeek from "./AppPageGitPeek";
+import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
+import { peekSearch } from "./task-peek-store";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -119,7 +148,6 @@ type TabCtx = {
   slug: string;
   dir: string;
   entry: string | null;
-  folderHref: string;
   /** This page's OWN resolution of the URL's `_snapshot` sha, including the
    *  PENDING window a caller must refuse to render live content into (code
    *  review finding 4: the old shape returned null for "live" and "still
@@ -131,6 +159,10 @@ type TabCtx = {
    *  view's resolution by the time a caller reads it — there is no such
    *  singleton here at all, deliberately). */
   snapshot: AppPageSnapshotState;
+  /** Opens this page's git column (see useAppPageGitColumn.ts's `GIT_COLUMN_MODE`).
+   *  Only the Doctor tab takes it — its "Open in git" row is the one and only
+   *  way in. */
+  openGit: () => void;
 };
 
 type TabDef = {
@@ -161,7 +193,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // (finding 3) — not `entry` (the LIVE tree's) rewritten by directory
     // prefix alone, which gets the wrong FILENAME whenever the app's entry
     // was renamed since that commit.
-    render: ({ slug, entry, folderHref, snapshot }) => {
+    render: ({ slug, dir, entry, snapshot }) => {
       if (snapshot.pending) {
         // `error` (finding 1, second round): a transient resolve failure
         // stays `pending` forever — nothing re-runs the resolve on its own —
@@ -188,6 +220,9 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
       return frameSrc ? (
         <div className="app-page-frame-wrap">
           <iframe
+            // Keyed on the src: a snapshot -> Live switch mounts a NEW
+            // element rather than navigating the old one in place.
+            key={frameSrc}
             className="app-page-frame"
             src={frameSrc}
             title={`App: ${slug}`}
@@ -201,7 +236,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
       ) : (
         <p className="app-page-empty">
           This folder has no entry page yet.{" "}
-          <a href={folderHref}>Open the folder</a> to see what is there.
+          <a {...spaLinkProps(dir, { isDir: true })}>Open the folder</a> to see what is there.
         </p>
       );
     },
@@ -220,13 +255,8 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Files,
     // Not keepMounted: the selection is in the URL, so a return costs one walk
     // and one stat — cheaper than a hidden frame that keeps running.
-    render: ({ dir, entry, folderHref, snapshot }) => (
-      <AppFiles
-        dir={dir}
-        entry={entry}
-        folderHref={folderHref}
-        snapshot={snapshot}
-      />
+    render: ({ dir, entry, snapshot }) => (
+      <AppFiles dir={dir} entry={entry} snapshot={snapshot} />
     ),
   },
   api: {
@@ -234,9 +264,15 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Webhook,
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
-    render: ({ dir, folderHref, snapshot }) => (
-      <AppApi dir={dir} folderHref={folderHref} snapshot={snapshot} />
-    ),
+    render: ({ dir, snapshot }) => <AppApi dir={dir} snapshot={snapshot} />,
+  },
+  doctor: {
+    label: "Doctor",
+    Icon: Stethoscope,
+    // Not keepMounted: the report is fetched fresh on every mount, so coming
+    // back to the tab IS the re-run (the panel also offers one in place).
+    // Ignores the version picker on purpose — see AppDoctorPanel.
+    render: ({ dir, openGit }) => <AppDoctorPanel dir={dir} onOpenGit={openGit} />,
   },
 };
 
@@ -340,6 +376,13 @@ export default function AppPage({
       notify({
         title: "Could not change the icon: " + (e as Error).message,
         tone: "error",
+        // Opt-in only (SPEC-quiet-notifications.md §2a) — this app's own
+        // page already shows the icon that didn't change, so a suppression
+        // check is meaningful here. A no-op today (this is always
+        // tone:"error", which `isSuppressed` never suppresses), but it keeps
+        // the two "raised on this app's own page" call sites the spec
+        // named consistent with each other.
+        source: dir,
       });
     }
     loadIcon();
@@ -408,7 +451,10 @@ export default function AppPage({
       const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
       e.preventDefault();
       if (i < 0 || i >= APP_PAGE_TABS.length) return;
-      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], location.search));
+      // The same address a click would take (`tabUrl`): `?peek=` stays behind
+      // here too, or an arrow-key switch would carry a dead param to Overview
+      // and re-open the panel on the way back (Bugbot, PR #1249).
+      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], peekSearch(location.search, null)));
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -419,41 +465,94 @@ export default function AppPage({
     e.preventDefault();
     // The query rides along: it is the tab's own (`?view=` on Tasks), and a
     // switch away and back should find it as it was.
-    if (next !== tab) navigateUrl(appPageUrl(dir, next, location.search));
+    if (next !== tab) navigateUrl(tabUrl(next));
   };
+  // A tab's address. `?peek=` is the ONE param that does not ride along: it
+  // names a panel only the Tasks tab can show, and a switch away is a close
+  // (the tab unmounts its Scheduled, which is the peek's host). Carrying it to
+  // Overview would only put a dead param on the URL and re-open the panel on
+  // the way back — a Back that lands on Tasks with the peek up is the history
+  // entry's job, not the link's.
+  const tabUrl = (next: AppPageTab) => appPageUrl(dir, next, peekSearch(location.search, null));
+  // THE SIDE PEEK, HOSTED BY THIS PAGE (2026-09-20 — the same panel `/tasks`
+  // has, TaskPeekFrame.tsx): the frame is this WHOLE page, header and tab
+  // strip included, so the panel runs the full height of the content area
+  // exactly as it does there. Only the Tasks tab can open one, and only while
+  // the feature is on; any other tab (and the flag's first null frames) leaves
+  // the page bare.
+  // THE HEADER AND THE TAB STRIP FOLD TO ICONS when the room runs out
+  // (shell/app-page-fit.ts): measured, never a breakpoint. `data-fit` is how
+  // many rungs have had to go; the stylesheet hides the words by it.
+  const [headFit, headRef] = useAppHeadFit();
+  const [tabbarFit, tabbarRef] = useAppTabbarFit();
+  const peekOn = useTaskPeekEnabled();
+  const peekable = peekOn === true && tab === "tasks";
 
-  const folderHref = urlForFsPath(dir);
+  // ---- THE GIT PEEK -----------------------------------------------------------
+  //
+  // The folder's `git` template beside the whole page, in a slim peek of its
+  // own (AppPageGitPeek.tsx) — the FULL template, ordinary write actions and
+  // all, framed like the Tasks tab's own side peek rather than through the
+  // explorer's borrowed-companion sidebar (apps/explorer/PreviewSidebar) the
+  // first draft used. See AppPageGitPeek.tsx's own header for why: no mode
+  // rail, no tab header, no panel-toggle — just the template, a close
+  // affordance and a resize seam.
+  //
+  // This does NOT bring back the Git TAB the header above says was removed, and
+  // the distinction is the whole design. A tab put the working tree on the same
+  // footing as the app itself, so reaching it took the app off the screen; a
+  // peek does not. Staging and committing are things you do WHILE looking at
+  // the app. What the header says about the VERSION PICKER is untouched: that
+  // stays read-only and page-wide, and this peek always shows the LIVE folder,
+  // never a `_snapshot` tree (there is no working tree to stage in an
+  // extracted copy).
+  //
+  // ONE WAY IN, by the owner's choice: App Doctor's "Open in git" row, which
+  // until now left this page for the explorer. No header button, so the peek
+  // costs a page nobody opened it from nothing at all — not a probe, not a
+  // frame. The way OUT is the peek's own close button.
+  //
+  // The open/probe state lives in useAppPageGitColumn.ts, not here: it is the
+  // one piece of this page with real behaviour to pin (the probe gate, the
+  // auto-close race against `useDirMode`'s own async settling, and now telling
+  // a rejected probe apart from a settled "no git here"), and this file has no
+  // render-test precedent to pin it against directly (see AppPage.test.tsx's
+  // header) — the hook gets its own test instead. The peek's WIDTH is a
+  // separate, purely-visual concern (useAppPageGitPeekWidth.ts) kept out of
+  // that hook for the same reason: nothing about "how wide" belongs beside
+  // "is it open and did the probe fail".
+  const { open: gitOpen, openGit, closeGit, gitMode, gitSrc } = useAppPageGitColumn(dir);
+  const gitSplitRef = useRef<HTMLDivElement | null>(null);
+  const gitPeekLayout = useAppPageGitPeekWidth(gitSplitRef);
+  const gitTaken = gitOpen ? gitPeekLayout.width : 0;
+
   // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
   // Windows) while `dir` and the root are forward-slash, and a prefix test
   // between the two spellings prints the full path instead of "~/…".
   const home = config.home.replace(/\\/g, "/");
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 
-  // App Doctor: the share-readiness checklist for this folder, opened from the
-  // header beside "Open in explorer". It stands where the fused-API "Migrate" button
-  // stood, and subsumes it — a stale `fused-api-version` tag is one row of the
-  // checklist now, beside the things migrate never covered (a leaked key, a
-  // path tied to one machine, stray generated files, an uncommitted tree). The
-  // dialog owns the whole flow: it runs the checks, and its "Explain and fix"
-  // creates the one task that hands the report to a session
-  // (platform/ui/AppDoctorModal).
-  const [doctorOpen, setDoctorOpen] = useState(false);
-  useEffect(() => {
-    setDoctorOpen(false);
-  }, [dir]);
+  // App Doctor: the share-readiness checklist is the `doctor` tab. This copy
+  // of the checks only colours the dot on that tab's trigger; the panel
+  // fetches its own report when it mounts (platform/ui/AppDoctorModal). It
+  // stands where the fused-API "Migrate" button stood, and subsumes it — a
+  // stale `fused-api-version` tag is one row of the checklist now.
   // Fetched after first paint, never blocking it — see useAppDoctorChecks.
-  // Opening the modal re-fetches its own copy; this one is only for the
-  // header dot and is never reused to seed the dialog.
   const doctorChecks = useAppDoctorChecks(entry ? dir : null);
 
-  // ---- export "at the selected version" -------------------------------------
+  // ---- share "at the selected version" --------------------------------------
   //
-  // The picker only ever writes/reads `_snapshot`; this is the one place that
-  // turns "which version is selected" into "which folder to export" — a
-  // resolved snapshot's OWN extracted tree (`snap.dir`, never `snap.app_dir`:
-  // that is the LIVE folder the sha resolved FROM, and exporting it would
-  // silently ship the live app labelled as the picked commit) when one is
-  // picked, the live app folder otherwise.
+  // One Share button opens the unified sheet (ShareAppModal): the public link
+  // and the `.fused` download as two cards. The picker only ever writes/reads
+  // `_snapshot`; this is the one place that turns "which version is selected"
+  // into "which folder the FILE card exports" — a resolved snapshot's OWN
+  // extracted tree (`snap.dir`, never `snap.app_dir`: that is the LIVE folder
+  // the sha resolved FROM, and exporting it would silently ship the live app
+  // labelled as the picked commit) when one is picked, the live app folder
+  // otherwise. The LINK card is live only — the shared canvas is named after
+  // the app's id and always carries "the app", so publishing an old commit
+  // under it would silently downgrade every link already sent — and the sheet
+  // says so for a snapshot rather than hiding the route.
   //
   // Gated on `snapshot.pending`/`snapshot.error` (not just disabled — the
   // click handler also refuses) for the same reason every frame/fetch on this
@@ -463,233 +562,285 @@ export default function AppPage({
   // version being resolved — that is exactly the class of bug this branch
   // has already had several of.
   const versionLabel = useAppVersionLabel(dir, snapshot.sha);
+  // BEHIND THE FLAG (share-app-flag.ts, default off): ON, the button is Share
+  // and opens the sheet; OFF, it is the plain Export the header carried before
+  // the sheet existed — the same `.fused` saved straight to Downloads, with a
+  // toast saying where — and shows its own busy state, since there is no sheet
+  // to narrate the save. Same version computation either way.
+  const sharing = useAppSharingFeature();
   const [exporting, setExporting] = useState(false);
-  const exportDisabled = exporting || snapshot.pending || snapshot.error;
-  const handleExport = async () => {
-    if (exportDisabled) return;
-    setExporting(true);
-    try {
-      const isLive = snapshot.sha === null;
-      const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
-      // The filename carries the version so an exported v7 sitting beside a
-      // live export in Downloads is never ambiguous about which is which.
-      const exportName = isLive ? slug : `${slug}-${versionLabel}`;
-      await exportAppFile(
-        {
-          path: exportPath,
-          name: exportName,
-          // A preview capture is only attempted for a LIVE export. For a
-          // snapshot, `exportAppFile`'s stage fallback (no on-screen capture
-          // element is threaded to this page) would reload the ENTRY PAGE'S
-          // LIVE copy to shoot it — a screenshot of the wrong era baked into
-          // a file labelled as the old commit. Omitting `entry_html` here
-          // skips preview capture entirely rather than risk that; the
-          // snapshot export ships with no preview.png, which
-          // `downloadAppFile` already handles.
-          entry_html: isLive ? entry ?? undefined : undefined,
-        },
-        null,
-      );
-    } catch (e) {
-      notify({
-        title: "Could not export " + slug + ": " + (e as Error).message,
-        tone: "error",
-      });
-    } finally {
-      setExporting(false);
+  const shareDisabled = snapshot.pending || snapshot.error || exporting;
+  const handleShare = async () => {
+    if (shareDisabled) return;
+    const isLive = snapshot.sha === null;
+    const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
+    // The filename carries the version so an exported v7 sitting beside a
+    // live export in Downloads is never ambiguous about which is which.
+    const exportName = isLive ? slug : `${slug}-${versionLabel}`;
+    const file = { path: exportPath, name: exportName };
+    if (!sharing) {
+      setExporting(true);
+      try {
+        await exportAppFileOnly(file);
+      } finally {
+        setExporting(false);
+      }
+      return;
     }
+    openShareApp({ path: dir, name: slug }, {
+      file,
+      link: isLive,
+      versionLabel,
+    });
   };
 
   return (
-    <div className="app-page">
-      <header className="app-page-head">
-        <div className="app-page-title">
-          {/* The app's mark, and the way to change it: a click opens the same
-              icon picker the sidebar's Projects row does (below). The app's
-              own icon.svg drawn as is — the author's colours, no tint — or
-              the generic star when it has none, which is also the affordance
-              for an app that has never had an icon. */}
-          <button
-            type="button"
-            className="app-page-icon app-page-icon-toggle"
-            title="Change icon"
-            aria-label="Change icon"
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              setIconAnchor((cur) =>
-                cur ? null : { top: rect.top, left: rect.left },
-              );
-            }}
-          >
-            {iconSrc ? (
-              <img src={iconSrc} alt="" draggable={false} />
-            ) : (
-              <AppStar />
+    // The page-level split, laid out exactly the way `TaskPeekFrame`'s own
+    // on-branch row is (Notion-style: a shrinking frame beside an absolutely
+    // positioned panel sliding in over the row's right edge) — but ONE LEVEL
+    // UP, so the git peek and the Tasks tab's own peek never share a right
+    // edge. `.app-page-frame-slot` is the frame's own width (100% minus
+    // whatever the git peek has taken); `TaskPeekFrame` renders inside it
+    // untouched, so the Tasks peek — when it opens — narrows to whatever room
+    // THIS split has already left it, rather than reaching for the same edge.
+    <div
+      className={"app-page-split" + (gitPeekLayout.dragging ? " is-dragging" : "")}
+      ref={gitSplitRef}
+    >
+      <div
+        className="app-page-frame-slot"
+        style={{ width: `calc(100% - ${gitTaken}px)` }}
+      >
+        <TaskPeekFrame peekable={peekable}>
+          <div className="app-page">
+          <header className="app-page-head" ref={headRef} data-fit={headFit}>
+            <div className="app-page-title">
+              {/* The app's mark, and the way to change it: a click opens the same
+                  icon picker the sidebar's Projects row does (below). The app's
+                  own icon.svg drawn as is — the author's colours, no tint — or
+                  the generic star when it has none, which is also the affordance
+                  for an app that has never had an icon. */}
+              <button
+                type="button"
+                className="app-page-icon app-page-icon-toggle"
+                title="Change icon"
+                aria-label="Change icon"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setIconAnchor((cur) =>
+                    cur ? null : { top: rect.top, left: rect.left },
+                  );
+                }}
+              >
+                {iconSrc ? (
+                  // An icon.png is clipped to the button's own rounded square
+                  // (`is-raster`, app-page.css); an svg keeps its own plate.
+                  <img
+                    className={isRasterIconUrl(iconHref) ? "is-raster" : undefined}
+                    src={iconSrc}
+                    alt=""
+                    draggable={false}
+                  />
+                ) : (
+                  <AppStar />
+                )}
+              </button>
+              {/* The name and the folder keep their own baseline row: the mark is
+                  a column beside the PAIR (it centers against both), and a
+                  baseline-aligned box in the same row would drop the text off
+                  center against it. */}
+              <div className="app-page-name">
+                <h1>{slug}</h1>
+                {/* Reads as the folder and IS the folder: opens its listing in the
+                    explorer. The app's entry page is the "Open in explorer"
+                    button opposite. */}
+                <a className="app-page-folder" title={dir} {...spaLinkProps(dir, { isDir: true })}>
+                  {tildePath(dir, home)}
+                </a>
+              </div>
+            </div>
+            {entry && (
+              <div className="app-page-actions">
+                {/* ONE button: Share (the sheet behind it holds both the public
+                    link and the .fused download) with the flag on, plain Export
+                    with it off — see the `handleShare` comment above. Disabled
+                    through the same pending/error window every other read on
+                    this page already gates on, so a click mid-resolve can never
+                    silently export the wrong era. */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="app-page-share"
+                  disabled={shareDisabled}
+                  title={
+                    snapshot.pending
+                      ? "Waiting for this version to finish loading"
+                      : snapshot.error
+                        ? "This version failed to load; retry it from the version picker"
+                        : sharing
+                          ? versionLabel === "Live"
+                            ? "Share the app — public link or .fused file"
+                            : `Share the app as of ${versionLabel} as a .fused file`
+                          : versionLabel === "Live"
+                            ? "Export the live app as a .fused file"
+                            : `Export the app as of ${versionLabel} as a .fused file`
+                  }
+                  onClick={() => void handleShare()}
+                >
+                  {sharing ? (
+                    <>
+                      <span className={APP_PAGE_FIT_LABEL}>Share</span>
+                      <Share2 data-icon="inline-end" />
+                    </>
+                  ) : (
+                    <>
+                      <span className={APP_PAGE_FIT_LABEL}>{exporting ? "Exporting…" : "Export"}</span>
+                      {exporting ? (
+                        <Loader2 data-icon="inline-end" className="animate-spin" />
+                      ) : (
+                        <Download data-icon="inline-end" />
+                      )}
+                    </>
+                  )}
+                </Button>
+                {/* The app's entry page in the EXPLORER — sidebar, crumb, header
+                    and all. This button used to open the chrome-free embed in a
+                    new tab; the explorer's own header now carries a fullscreen
+                    control that does that hop, so this page offers one route (the
+                    explorer) and the explorer offers the next (the embed). The
+                    folder link opposite is the same route one level up. */}
+                {/* Inside a macOS native window the app RUNS in a window of
+                    its own instead (native-window.ts) — the sidebar row keeps
+                    landing here, and this is the door out to the app; that
+                    window's title-bar Edit is the way into the explorer. */}
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="app-page-open"
+                  title={IS_NATIVE_WINDOW ? "Open the app in its own window" : "Open the app in the Explorer"}
+                  onClick={() => {
+                    const inPlace = () => navigateUrl(urlForFsPath(entry), { isDir: false });
+                    if (IS_NATIVE_WINDOW) void openAppWindow(dir).then((ok) => ok || inPlace());
+                    else inPlace();
+                  }}
+                >
+                  <span className={APP_PAGE_FIT_LABEL}>Open</span>
+                  <FolderOpen data-icon="inline-end" />
+                </Button>
+              </div>
             )}
-          </button>
-          {/* The name and the folder keep their own baseline row: the mark is
-              a column beside the PAIR (it centers against both), and a
-              baseline-aligned box in the same row would drop the text off
-              center against it. */}
-          <div className="app-page-name">
-            <h1>{slug}</h1>
-            {/* Reads as the folder and IS the folder: opens its listing in the
-                explorer. The app's entry page is the "Open in explorer"
-                button opposite. */}
-            <a className="app-page-folder" href={folderHref} title={dir}>
-              {tildePath(dir, home)}
-            </a>
-          </div>
-        </div>
-        {entry && (
-          <div className="app-page-actions">
-            {/* Every app gets this, current or not: what an app about to be
-                shared needs checked is never only its API version. */}
-            <Button
-              size="sm"
-              className="app-page-doctor"
-              variant="outline"
-              title="Check this app before you share it: leaked credentials, paths tied to this machine, stray generated files, uncommitted work, a stale fused API version"
-              onClick={() => setDoctorOpen(true)}
-            >
-              App Doctor
-              <AppDoctorStatusDot checks={doctorChecks} />
-            </Button>
-            {/* The app's entry page in the EXPLORER — sidebar, crumb, header
-                and all. This button used to open the chrome-free embed in a
-                new tab; the explorer's own header now carries a fullscreen
-                control that does that hop, so this page offers one route (the
-                explorer) and the explorer offers the next (the embed). The
-                folder link opposite is the same route one level up. */}
-            <Button
-              size="sm"
-              variant="outline"
-              className="app-page-open"
-              onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
-            >
-              Open in explorer
-            </Button>
-            {/* Exports the folder AT THE PICKER'S SELECTED VERSION — the live
-                folder for "Live", the resolved snapshot's own extracted tree
-                for a commit (see the `handleExport` comment above). Disabled
-                through the same pending/error window every other read on
-                this page already gates on, so a click mid-resolve can never
-                silently export the wrong era. */}
-            <Button
-              size="sm"
-              variant="outline"
-              className="app-page-export"
-              disabled={exportDisabled}
-              title={
-                snapshot.pending
-                  ? "Waiting for this version to finish loading"
-                  : snapshot.error
-                    ? "This version failed to load; retry it from the version picker"
-                    : versionLabel === "Live"
-                      ? "Export the live app as a .fused file"
-                      : `Export the app as of ${versionLabel} as a .fused file`
-              }
-              onClick={handleExport}
-            >
-              {exporting ? "Exporting…" : "Export"}
-              <Download data-icon="inline-end" />
-            </Button>
-          </div>
-        )}
-      </header>
-      {iconAnchor && (
-        <IconPicker
-          anchor={iconAnchor}
-          toggleSelector=".app-page-icon-toggle"
-          onPick={(pick) => onPickIcon(pick)}
-          onRemove={() => onPickIcon(null)}
-          onClose={() => setIconAnchor(null)}
-        />
-      )}
-      {/* The checklist, and the task that fixes it. It reports its own errors
-          inside the dialog — a failure to create the fix task is about the
-          dialog you are standing in, not about this page. */}
-      {doctorOpen && (
-        <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} />
-      )}
+          </header>
+          {iconAnchor && (
+            <IconPicker
+              anchor={iconAnchor}
+              toggleSelector=".app-page-icon-toggle"
+              onPick={(pick) => onPickIcon(pick)}
+              onRemove={() => onPickIcon(null)}
+              onClose={() => setIconAnchor(null)}
+            />
+          )}
+          <div className="app-page-body">
+            {/* The tab strip and the version picker share one row: the picker is
+                page-wide state (task 3 puts all three visible tabs on the
+                selected commit), so it sits beside the strip rather than inside
+                any one panel. */}
+            <div className="app-page-tabbar flex-none" ref={tabbarRef} data-fit={tabbarFit}>
+              {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
+                  ctrl/middle-click on a trigger opens the address elsewhere without
+                  also switching this page. Real anchors under the triggers (base-ui's
+                  `render`), same reason as before — a tab is an address (D420). */}
+              <Tabs value={tab} className="app-page-tabs flex-none">
+                <TabsList
+                  variant="line"
+                  aria-label="App page"
+                  className="h-auto w-full justify-start rounded-none border-b-0 p-0 pb-1"
+                >
+                  {APP_PAGE_TABS.map((id) => {
+                    const { label, Icon } = TAB_DEFS[id];
+                    return (
+                      <TabsTrigger
+                        key={id}
+                        value={id}
+                        className="flex-none px-4 py-2.5"
+                        // Base UI assumes a native <button> unless told otherwise:
+                        // without this the anchor gets type="button" and Space
+                        // does not activate it (Bugbot on #851).
+                        nativeButton={false}
+                        render={
+                          <a
+                            href={tabUrl(id)}
+                            // The word is what the fold hides; the tooltip and the
+                            // accessible name keep saying it (app-page-fit.ts).
+                            title={label}
+                            aria-label={label}
+                            onClick={(e) => pickTab(e, id)}
+                          />
+                        }
+                      >
+                        {id === "doctor" ? (
+                          // The at-a-glance signal the old header button carried:
+                          // worst failing severity, neutral while unknown. It sits
+                          // as a badge on the icon's top-right corner (owner's
+                          // brief), not after the label.
+                          <span className="app-page-doctor-mark">
+                            <Icon data-icon="inline-start" />
+                            <AppDoctorStatusDot checks={doctorChecks} />
+                          </span>
+                        ) : (
+                          <Icon data-icon="inline-start" />
+                        )}
+                        <span className={APP_PAGE_FIT_LABEL}>{label}</span>
+                      </TabsTrigger>
+                    );
+                  })}
+                </TabsList>
+              </Tabs>
+              <AppVersionPicker dir={dir} />
+            </div>
 
-      <div className="app-page-body">
-        {/* The tab strip and the version picker share one row: the picker is
-            page-wide state (task 3 puts all three visible tabs on the
-            selected commit), so it sits beside the strip rather than inside
-            any one panel. */}
-        <div className="app-page-tabbar flex-none">
-          {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
-              ctrl/middle-click on a trigger opens the address elsewhere without
-              also switching this page. Real anchors under the triggers (base-ui's
-              `render`), same reason as before — a tab is an address (D420). */}
-          <Tabs value={tab} className="app-page-tabs flex-none">
-            <TabsList
-              variant="line"
-              aria-label="App page"
-              className="h-auto w-full justify-start rounded-none border-b-0 p-0 pb-1"
-            >
-              {APP_PAGE_TABS.map((id) => {
-                const { label, Icon } = TAB_DEFS[id];
+            {resolved === undefined && (
+              <SkeletonLines rows={2} label="Loading app" />
+            )}
+            {resolved?.kind === "missing" && (
+              <ErrorBanner>
+                No folder at <strong>{tildePath(dir, home)}</strong>.
+              </ErrorBanner>
+            )}
+            {resolved?.kind === "error" && (
+              <ErrorBanner>
+                Could not open {slug}: {resolved.message}
+              </ErrorBanner>
+            )}
+
+            {resolved?.kind === "app" &&
+              APP_PAGE_TABS.map((id) => {
+                const def = TAB_DEFS[id];
+                const active = tab === id;
+                if (!active && !def.keepMounted) return null;
                 return (
-                  <TabsTrigger
+                  <section
                     key={id}
-                    value={id}
-                    className="flex-none px-4 py-2.5"
-                    // Base UI assumes a native <button> unless told otherwise:
-                    // without this the anchor gets type="button" and Space
-                    // does not activate it (Bugbot on #851).
-                    nativeButton={false}
-                    render={
-                      <a
-                        href={appPageUrl(dir, id, location.search)}
-                        onClick={(e) => pickTab(e, id)}
-                      />
+                    className={
+                      "app-page-panel app-page-" + id + (active ? "" : " is-hidden")
                     }
+                    role="tabpanel"
+                    aria-hidden={!active}
                   >
-                    <Icon data-icon="inline-start" />
-                    {label}
-                  </TabsTrigger>
+                    {def.render({ slug, dir, entry, snapshot, openGit })}
+                  </section>
                 );
               })}
-            </TabsList>
-          </Tabs>
-          <AppVersionPicker dir={dir} />
+          </div>
         </div>
-
-        {resolved === undefined && (
-          <SkeletonLines rows={2} label="Loading app" />
-        )}
-        {resolved?.kind === "missing" && (
-          <ErrorBanner>
-            No folder at <strong>{tildePath(dir, home)}</strong>.
-          </ErrorBanner>
-        )}
-        {resolved?.kind === "error" && (
-          <ErrorBanner>
-            Could not open {slug}: {resolved.message}
-          </ErrorBanner>
-        )}
-
-        {resolved?.kind === "app" &&
-          APP_PAGE_TABS.map((id) => {
-            const def = TAB_DEFS[id];
-            const active = tab === id;
-            if (!active && !def.keepMounted) return null;
-            return (
-              <section
-                key={id}
-                className={
-                  "app-page-panel app-page-" + id + (active ? "" : " is-hidden")
-                }
-                role="tabpanel"
-                aria-hidden={!active}
-              >
-                {def.render({ slug, dir, entry, folderHref, snapshot })}
-              </section>
-            );
-          })}
+        </TaskPeekFrame>
       </div>
+      <AppPageGitPeek
+        open={gitOpen}
+        mode={gitMode}
+        src={gitMode.pending ? null : gitSrc}
+        onClose={closeGit}
+        layout={gitPeekLayout}
+      />
     </div>
   );
 }

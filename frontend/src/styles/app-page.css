@@ -6,12 +6,75 @@
 
    After schedule.css / tasks.css in the barrel: the nested Tasks page is drawn
    by those, and this file adds only the frame around it. */
+/* THE PAGE-LEVEL SPLIT (shell/AppPage.tsx): the page, and the git peek beside
+   it when one is open (AppPageGitPeek.tsx, useAppPageGitPeekWidth.ts). This
+   used to be the explorer's own companion-column component
+   (apps/explorer/PreviewSidebar) reused wholesale; the redesign (2026-09-22,
+   "I just want the git template... more like the tasks tab sidebar") gave the
+   git peek its own slim component instead, styled below, so PreviewSidebar no
+   longer renders on this page at all and its `SPLIT_SEL` no longer names
+   `.app-page-split` (see PreviewSidebar.tsx).
+
+   `.app-page-frame-slot` is the frame's own share of the row — 100% minus
+   whatever the peek has taken — so the Tasks tab's own side peek
+   (TaskPeekFrame, styles/task-peek.css) always measures against the row this
+   slot leaves it, never against the git peek's edge directly. The two peeks
+   can never fight over one edge because of that nesting: this split's other
+   child is `.app-git-peek`, and TaskPeekFrame lives entirely inside the slot.
+
+   Always rendered, so a page with no peek open is the single-column layout it
+   has always been: the slot filling the row, the peek collapsed to nothing. */
+/* `overflow: hidden` is what keeps a panel parked off the right edge (the git
+   peek, `transform: translateX(100%)` while shut) from growing a horizontal
+   page scrollbar — a transformed box's border box still counts toward
+   scrollable overflow even with `visibility: hidden`. Same rule, same reason,
+   as `.tasks-peek-host` (styles/task-peek.css). MEASURED without it: shut,
+   `document.documentElement.scrollWidth` 1807 vs `clientWidth` 1390. */
+.app-page-split {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Width transitions on the same clock as the peek's own slide
+   (`--peek-dur`/`--peek-ease`, styles/task-peek.css), so the frame's reflow
+   and the peek's slide run off one number instead of the frame snapping
+   while the peek animates — `.tasks-frame`'s own `transition: width` is the
+   precedent this mirrors. A floor on top of that width: `.app-git-peek`'s own
+   `max-width` below leaves this slot no less than CONTENT_MIN_W
+   (apps/explorer/lib/side-width.ts) at rest, but a JS state briefly out of
+   sync with a fast resize is still possible, and a floor here is what stops
+   the app underneath from being crushed to nothing rather than merely
+   narrow. */
+.app-page-frame-slot {
+  min-width: 320px;
+  min-height: 0;
+  display: flex;
+  transition: width var(--peek-dur) var(--peek-ease);
+}
+
 .app-page {
   flex: 1 1 auto;
+  /* Was never needed while this element was the only child of #content; as a
+     flex ITEM in the row above it is, or a wide tab body would push the git
+     peek off the window instead of scrolling inside its own. */
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+
+/* Both sides of the seam are inert for the drag's duration — the git peek's
+   document is an iframe and would otherwise swallow the captured pointer
+   stream, and so would the Overview's frame opposite it. The explorer states
+   the same rule over `.stat-split` (preview.css); `useAppPageGitPeekWidth.ts`
+   is what sets `.is-dragging` on this row for the drag's duration. */
+.app-page-split.is-dragging iframe {
+  pointer-events: none;
 }
 
 .app-page-head {
@@ -24,7 +87,10 @@
      tab strip and the frame instead of hugging the window edge. */
   width: min(1050px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 14px 0 10px;
+  padding: 24px 0 10px;
+  /* Two lines of text on the left (name over folder), so the row is
+     ~50px tall; the actions opposite center against it. */
+  min-height: 50px;
 }
 
 /* Mark, then the name/folder pair. CENTER, not baseline: the mark is a square
@@ -35,30 +101,34 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
+/* Name over folder, two stacked lines — the mark spans both:
+     [icon][title]
+     [icon][path]   */
 .app-page-name {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 /* The app's mark and the icon picker's toggle in one: a plain button, since
    nothing here wraps it in a link (the sidebar's glyph is a span for exactly
-   that reason). 26px against the 18px name — the same posture as the card's
-   mark, sized to the text beside it rather than the other way round. */
+   that reason). 50px: tall enough to span the name AND the folder line
+   stacked beside it. */
 .app-page-icon {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 50px;
+  height: 50px;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: 11px;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -77,17 +147,27 @@
   object-fit: contain;
 }
 
+/* The icon.png fallback: fitted to the button's own rounded square (same 7px
+   radius), cover so it fills the slot — an svg owns its plate, a raster gets
+   one from the shell. */
+.app-page-icon img.is-raster {
+  object-fit: cover;
+  border-radius: 11px;
+}
+
 /* The generic star (AppStar) is a bare sparkle where an authored icon is a
    whole tile of artwork — inset, so it does not shout louder than the name. */
 .app-page-icon svg {
-  width: 16px;
-  height: 16px;
+  width: 26px;
+  height: 26px;
 }
 
 .app-page-title h1 {
   margin: 0;
+  max-width: 100%;
   font-size: 18px;
   font-weight: 600;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -97,7 +177,9 @@
 .app-page-folder {
   flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   font-size: 12px;
+  line-height: 1.3;
   color: var(--fg-muted);
   text-decoration: none;
   overflow: hidden;
@@ -110,15 +192,25 @@
   text-decoration: underline;
 }
 
-/* "Open app" sits opposite the title, centred on its line. */
+/* "Open in explorer" sits opposite the title, centred on its line. */
 .app-page-open {
   flex: 0 0 auto;
 }
 
+/* The head's buttons: a step up from the `sm` size they are declared with,
+   so they hold their own against the two-line title and the 50px mark. */
+.app-page-actions > button {
+  height: 36px;
+  padding-inline: 14px;
+  font-size: 13px;
+}
+
 /* The head's right-hand group: the fused-API "Migrate" button (only when the
-   app is behind the runtime) beside "Open app". */
+   app is behind the runtime) beside "Open app". Centered against the
+   two-line title by the head's own align-items: center. */
 .app-page-actions {
   flex: 0 0 auto;
+  align-self: center;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -246,6 +338,24 @@
   pointer-events: none;
 }
 
+/* The App Doctor trigger's icon wears the status dot as a corner badge
+   (shell/AppPage.tsx): the wrapper is the icon's box, the dot is pinned to its
+   top-right and drawn smaller than the standalone dot (app-doctor.css). */
+.app-page-doctor-mark {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.app-page-doctor-mark .appdoc-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 5px;
+  height: 5px;
+  margin: 0;
+}
+
 /* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).
    A `keepMounted` panel — the Overview — stays behind the active one as
    display:none, not unmounted, so the running app keeps its state. */
@@ -283,11 +393,27 @@
    (schedule.css); inside the gutter frame both would be a second gutter. */
 .app-page-tasks .schedule-page {
   padding-inline: 0;
+  /* THE GUTTER THE PEEK'S ARITHMETIC READS (shell/task-peek-store.ts
+     `measureTasksBaseline`): on `/tasks` it is the 44px of padding above; here
+     the padding is gone and the 48px is the app page's own gutter frame
+     (`.app-page-body`'s `calc(100% - 48px)`), so the var says that instead.
+     Declared here and NOT under the tight rule below, for the reason
+     styles/task-peek.css gives: the frozen baseline's gutter must not move. */
+  --tasks-page-gutter: 48px;
 }
 
 .app-page-tasks .prefs-page.schedule-page > *,
 .app-page-tasks .schedule-page > .prefs-section {
   max-width: none;
+}
+
+/* …but the peek's arithmetic still counts the cap `/tasks` has: the store
+   reads `--tasks-column-max` off this element (`measureTasksBaseline`) where
+   there is no rendered max-width, so floors, tight and the default width fall
+   at the same window widths on both pages. (The body above is capped at the
+   same 1050px, so nothing on screen depends on this — only the measurement.) */
+.app-page-tasks .schedule-page > .prefs-section.schedule-main {
+  --tasks-column-max: 1050px;
 }
 
 .app-page-empty {
@@ -604,4 +730,161 @@
 .app-page-body > .error-banner,
 .app-page-body > .skeleton-lines {
   margin: 0;
+}
+
+/* ---- the header and the tab strip fold to icons (shell/app-page-fit.ts) ----
+   `data-fit` is how many rungs have had to go for the row to fit the width
+   it has — measured, never a breakpoint. EVERY selector names `[data-fit]`
+   and a non-zero level, so a page that has room (level 0) is exactly the
+   page it was. The tooltips and aria-labels keep the words. */
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions .app-page-fit-lbl,
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs .app-page-fit-lbl {
+  display: none;
+}
+
+/* An icon-only button is square-ish: the word's trailing-icon gap goes too. */
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions > button {
+  padding-inline: 10px;
+}
+
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions > button [data-icon="inline-end"] {
+  margin-inline-start: 0;
+}
+
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs a {
+  padding-inline: 12px;
+}
+
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs a [data-icon="inline-start"] {
+  margin-inline-end: 0;
+}
+
+/* Rung 1 of the tab bar: the "Version" eyebrow goes; the picker itself stays. */
+.app-page-tabbar[data-fit="2"] .app-version-picker-eyebrow {
+  display: none;
+}
+
+/* ---- THE GIT PEEK (AppPageGitPeek.tsx) -----------------------------------
+   Same slide as the Tasks tab's own side peek (`.task-side-peek`,
+   task-peek.css) — same `--peek-*` vars, same absolute-over-the-row-edge
+   arrangement — but its own classes and its own component, because it is not
+   that peek: it has no cover mode, no drag-to-close (a plain floor clamp in
+   useAppPageGitPeekWidth.ts; the close button is the only way out), and none
+   of task-peek-store.ts's state. `.app-page-split` (above) is its row,
+   `position: relative` there is what an absolutely-positioned child needs. */
+.app-git-peek {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Same floor as `.app-page-frame-slot`'s `min-width` (CONTENT_MIN_W,
+     apps/explorer/lib/side-width.ts) applied from the other side: on a narrow
+     window `useAppPageGitPeekWidth`'s `clampSideWidth` leaves `current`
+     UNCHANGED once the container can no longer hold both floors (below
+     ~700px), on the documented assumption that "the CSS min-widths hold
+     there" — which was never true here, since this panel's width is set
+     purely from JS state and the frame slot had no CSS floor of its own
+     either. Below ~380px the un-clamped width could reach the full
+     container, leaving the app behind it 0px wide. This caps the panel at
+     the same number the slot is floored to, so the two together hold the
+     line the JS clamp gives up on. */
+  max-width: calc(100% - 320px);
+  background: var(--bg-panel);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 4px 12px -2px var(--shadow-sm);
+  transform: translateX(100%);
+  transition:
+    transform var(--peek-dur) var(--peek-ease),
+    visibility 0s linear var(--peek-dur);
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.app-git-peek.is-open {
+  transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    transform var(--peek-dur) var(--peek-ease),
+    visibility 0s;
+}
+
+.app-git-peek-seam {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--peek-seam-w);
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.app-git-peek-head {
+  flex: 0 0 auto;
+  height: var(--peek-head-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-inline: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-git-peek-title {
+  font-weight: 600;
+}
+
+/* A plain `<button>` with no reset of its own: this project ships Tailwind
+   WITHOUT preflight (styles/tailwind.css — its `@layer base` is scoped to
+   `[data-slot]`, deliberately not bare `button`), and `base.css`'s hand-named
+   reset list does not cover this class, so without these declarations the
+   button keeps native UA chrome. MEASURED before this rule: `border: 2px
+   outset`, `background-color: rgba(255,255,255,0.247)`, `cursor: default`,
+   `font-size: 11px`, `padding: 2px 6px 3px`. Mirrors the sibling
+   `.task-side-peek-btn` (styles/task-peek.css). */
+.app-git-peek-close {
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-git-peek-close:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.app-git-peek-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-git-peek-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+}
+
+.app-git-peek-resolving,
+.app-git-peek-error {
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-muted);
 }

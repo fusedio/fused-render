@@ -357,7 +357,7 @@ Security layer (token, Origin/Host validation, sandboxed bridge — see threat n
 |---|---|---|---|
 | D111 | In-app Fused account surface (SPEC §27, M18): `/view/_account` + `/api/account/*` do `fused cloud login`, `cloud setup`, `env default/delete`, and `cloud logout` from the app; scope = the **managed `fused` backend only**, AWS provisioning stays terminal; the §1 "no authentication/user accounts" non-goal is **clarified, not reversed** | Login: spawn `fused cloud login --no-browser`, capture the authorize URL from child output (PYTHONUNBUFFERED=1), client opens it, `OPENFUSED_LOGIN_RETURN_URL` (loopback-validated) 302s the browser back into the app; completion polled via the DP-2b presence signal, deeper truth via `fused cloud orgs` (`?probe=1`). Setup: `fused cloud setup` as the one tracked background job (202 + job_id, polled `{state, detail}` with the CLI's own lines, 409 when signed out or busy, env-name defaults `fused`/`fused-<env>`). Logout kills-and-waits-out any in-flight login before the CLI deletes credentials. Deploy modal's DP-2b warning and no-envs guidance become working buttons (sign in in place / route to the setup panel); DP-16's bundled terminal wrapper demoted to a power-user escape hatch. Full contract: SPEC §27 (AC-1…AC-11) | Owner ask 2026-07-15 ("login and setup directly in fused-render, no copying CLI commands out of the app"). Mechanics ported from the flow app's proven connect-fused surface rather than reinvented — same CLI, same failure modes already shaken out (stdout buffering, return-URL hook, job polling, logout/login race). Managed-backend-only scope mirrors flow's line: AWS `env create`/`infra serve` provisioning is a long, credential-heavy, terminal-native flow with poor modal ergonomics — not worth blocking the 90% path for. Non-goal clarified because the surface manages the *fused CLI's* credentials for deploy targets; fused-render itself still has no accounts/tokens/users (D3 stands, X-Fused guard unchanged) |
 | D112 | The account surface **shells the fused CLI** (subprocess through the DP-3 seam, extracted to `fusedcli.py`) — never the fused Python API in-process, and fused-render never reads or writes a credential itself | All auth/env state lives where the CLI puts it (JWT file, OS-keyring secrets store, envs.json); the app reads presence/status only. The seam module is shared by deploy.py and account.py, both routers mutually acyclic and neither importing server.py | In-process `fused.agent_core` calls were rejected: they'd bind fused-render to fused's internal APIs and version (the app must also drive an EXTERNAL `FUSED_RENDER_FUSED_BIN` CLI it can't import), couple the server's process to the CLI's credential/keyring behavior, and put token bytes in this process's memory for no gain. Subprocess keeps the CLI the single authority (DP-2b's posture), matches deploy.py and flow, and costs only stdout parsing + status polling — both proven. Cost accepted: `login`/`setup` have no `--json`, so the login URL is regex-captured from output and completion is polled |
-| D113 | **Stale-request cancellation for `runPython` (SPEC RH-9).** A third `opts` arg: `opts.key` (a string) names a **latest-wins channel** — a newer call on a key aborts the prior in-flight call on that same key; `opts.signal` (a standard `AbortSignal`) composes with it. A superseded/aborted call rejects with a plain `AbortError`, which the runtime's `unhandledrejection` handler treats as benign (no traceback overlay, no console noise). Implemented identically in the local runtime (`static/runtime.js`, fetch to `/api/run`) and the hosted/exported runtime (`fused` repo `widgets/static/fused_render_runtime.js`); the sine example passes `{ key: "sine" }` to demonstrate | The slider loop (`onChange` → `runPython`) fires one request per intermediate value while scrubbing; without cancellation every stale value is still computed server-side and its response can land out of order over the value the slider stopped on. Aborting the fetch frees the browser connection and lets the server drop the now-irrelevant subprocess when it notices the closed socket. AbortError is swallowed (not surfaced) so the existing fire-and-forget pattern (`onChange(draw)`, no `.catch`) keeps working — the losing re-render simply stops at its `await` without an overlay | Owner ask 2026-07-16 ("moving a slider through values should cancel the requests that are no longer relevant"). **Opt-in by key, not automatic by pyPath:** RH-4 allows concurrent calls, and shipped templates fire concurrent same-file calls that must all complete — `claude/agent.py` poll loops, `tar`/`sqlite` readers keyed by action, the netcdf/zarr tile browsers — so auto-cancelling by path would break them. Keying is a deliberate author choice; the default (no key) leaves RH-4 untouched. `AbortSignal` is the web-standard escape hatch for authors who want raw control; the `key` convenience is the one-liner that covers the slider case. Rejected "never-resolve superseded promise" (would strand suspended async frames and hide the reason) in favour of a real AbortError that authors *can* inspect but need not catch |
+| D113 | **Stale-request cancellation for `runPython` (SPEC RH-9).** A third `opts` arg: `opts.key` (a string) names a **latest-wins channel** — a newer call on a key aborts the prior in-flight call on that same key; `opts.signal` (a standard `AbortSignal`) composes with it. A superseded/aborted call rejects with a plain `AbortError`, which the runtime's `unhandledrejection` handler treats as benign (no traceback overlay, no console noise). Implemented identically in the local runtime (`static/runtime.js`, fetch to `/api/run`) and the hosted/exported runtime (`fused` repo `src/fused/agent_core/static/fused_render_runtime.js`; `widgets/static/` before fusedio/fused#371); the sine example passes `{ key: "sine" }` to demonstrate | The slider loop (`onChange` → `runPython`) fires one request per intermediate value while scrubbing; without cancellation every stale value is still computed server-side and its response can land out of order over the value the slider stopped on. Aborting the fetch frees the browser connection and lets the server drop the now-irrelevant subprocess when it notices the closed socket. AbortError is swallowed (not surfaced) so the existing fire-and-forget pattern (`onChange(draw)`, no `.catch`) keeps working — the losing re-render simply stops at its `await` without an overlay | Owner ask 2026-07-16 ("moving a slider through values should cancel the requests that are no longer relevant"). **Opt-in by key, not automatic by pyPath:** RH-4 allows concurrent calls, and shipped templates fire concurrent same-file calls that must all complete — `claude/agent.py` poll loops, `tar`/`sqlite` readers keyed by action, the netcdf/zarr tile browsers — so auto-cancelling by path would break them. Keying is a deliberate author choice; the default (no key) leaves RH-4 untouched. `AbortSignal` is the web-standard escape hatch for authors who want raw control; the `key` convenience is the one-liner that covers the slider case. Rejected "never-resolve superseded promise" (would strand suspended async frames and hide the reason) in favour of a real AbortError that authors *can* inspect but need not catch |
 | D114 | **Make `runPython` stale-request cancellation the DEFAULT (SPEC RH-9, supersedes D113's opt-in).** The channel key now **defaults to the `.py` path** instead of being absent: a new call for a file aborts the prior in-flight call for that same file with no author effort, so an ordinary `runPython("./x.py", params)` slider loop cancels its own stale scrubs. `opts.key` regroups the channel; **`opts.key: null` opts out** (fully concurrent, D113's old default); `opts.signal` composes unchanged. A **superseded** call now **never settles** (instead of rejecting with `AbortError`); an abort from the caller's own `signal` still rejects with `AbortError`. Shipped templates that fire concurrent same-file calls were audited and given `opts.key: null` at the call sites that must all complete (writes, poll loops, detached-worker kickoffs). Local + hosted runtimes stay in lockstep; the sine example now demonstrates the zero-config default | Owner ask 2026-07-16 ("create new PRs for it being default"). The dominant `runPython` use is "recompute this view from current params", where the last value is the only one that matters — making that the default means every slider/scrub page gets smooth behaviour for free instead of each author remembering a `key`. The `.py` path is the natural channel: a page almost always calls one file per logical view. **Never-settle (reversing D113's "rejected never-resolve"):** with cancellation opt-in, only authors who keyed in saw the rejection and could filter `AbortError`; as a *default* it must be invisible to pages that already wrap `runPython` in `try/catch` (the canonical authoring pattern) — a rejected `AbortError` would flash a stale error through their own catch while the latest value is still computing. Never-settling makes the stale continuation simply stop; the "stranded async frame" worry from D113 is bounded (an unreferenced suspended awaiter + its pending promise form a GC-collectible cycle). The safety cost — auto-cancel would abort in-flight writes/polls — is paid once via the `opts.key: null` template audit, and is documented so page authors hitting the same pattern know the escape hatch. `opts.signal` keeps the standard `AbortError` reject because there the caller explicitly asked to abort and expects to observe it |
 
 ### Canvas layout viewer — the first conditional template (2026-07-13, SPEC §28)
@@ -952,7 +952,7 @@ Security layer (token, Origin/Host validation, sandboxed bridge — see threat n
 
 | # | Decision | Choice | Rationale / rejected alternatives |
 |---|---|---|---|
-| D397 | **A `.fused` clones into the workspace from a preview-header button — `<workspace>/local/<slug>`, plain files, and the DESTINATION FOLDER EXISTING is the whole definition of "already cloned" (the button then reads "Go to local version" and only navigates)** | An opened `.fused` is read-only on purpose (0444 payload, RO-7/D386) and embed mode has no editing surface at all, so up to now the artifact was a dead end: you could run someone's app and not develop on it. Clone is the way out, and it is deliberately the SHOWCASE CLONE's shape — `CloneCommunityButton` copies a showcase app into `Fused/local/<slug>` and opens the copy, so the second thing in the app that hands you an editable copy of a read-only one should not invent a second vocabulary, a second destination, or a second button position. **Presence, not a record, is the state** (owner's call). A records file keyed on the source path loses the answer when the file moves; keyed on the content hash it loses the answer when the app is re-exported — and both go stale against a folder the user renamed or deleted, which is the one thing an `isdir` cannot get wrong. So `clone_target` is one bounded manifest read plus one `isdir`, cheap enough to run on every preview of a `.fused`, and there is no store to migrate, reconcile or garbage-collect. The named cost is the converse and is accepted rather than hedged: an UNRELATED folder the user keeps at `local/<slug>` reads as this app's clone and the button offers to open it. *Rejected: `community._claim_dir`'s `-2..-9` suffix loop*, which is what the neighbouring code does on a collision — the owner rejected it outright, and the reasoning holds on its own: a suffix invents a path nobody asked for, and "clone twice, get `sine` and `sine-2`" is a worse answer to "I already have this" than "here is the one you have". A second Clone is therefore a REPORTING no-op — it copies nothing, so a user's edits in the clone cannot be clobbered by a button they pressed twice. **The copy rides `open_app_file`, not a second unzip** (D386's one-hardened-extractor rule), so a file never opened before extracts on the way through and nothing re-implements the zip guards. Two mechanics are load-bearing: `copytree` carries the extract's **0444** across, so the bits are lifted to 0644 **in staging, before the rename** — a clone that shipped them read-only would be an uneditable "development copy", i.e. the whole feature failing silently, and lifting after the rename would make the copy briefly visible in the workspace as unwritable; and staging sits INSIDE `local/` so the claim is a same-filesystem `os.rename` (community's reason: a home-dir staging area can be on another volume, where the rename fails outright). A lost rename race answers `cloned: true`, the same reading as finding the folder there to begin with. **The manifest `name` is attacker-controlled zip data** and reaches the filesystem only through `_slug`, whose character class admits no separator, no dot and no drive letter — `"../evil"`, `"/etc/evil"` and `"C:\\evil"` collapse to ordinary segments — and it is the SAME slug the extract cache key already used, extracted into a shared helper so the two namings cannot drift. An empty name falls back to the **file stem**, not a shared `"app"` literal: two unnamed app files would otherwise collide on one `local/app` folder and the second would read as the first's clone, which is the presence rule turned into a bug. *Rejected: `git init` with a pristine first commit*, which the showcase Clone does — owner's call, and the asymmetry is real: the showcase clone has an UPSTREAM to diff against and to fast-forward from, while a `.fused` is a snapshot whose only baseline is the copy itself; the app-git machinery picks the folder up once it is edited anyway. *Header-only at first, so a double-clicked `.fused` showed no Clone* — embed mode hides the whole topbar by construction (D386/D390), which is also why `ExportAppButton` never appears there; the owner accepted that gap over a bar inside the fusedapp template. **Reversed 2026-09-07 (owner, D390 amendment):** the top-level embed's strip now carries this same `CloneAppFileButton` — one control, one label rule — with a `toView` prop, because from the embed shell `navigate` keeps the embed prefix and would drop the clone folder into a chrome-free listing with no way out (D282's dead end); the strip's copy lands on the folder's VIEW URL. Dismissing the strip is per page load, never persisted: it is the only route to Clone from an opened `.fused`, and a remembered dismiss would rebuild the dead end it closes. Export and Migrate stay out of the strip — they act on an app's entry folder, not a read-only artifact. The GET probe is unguarded like `/api/appfile/preview` (it reports a path and touches nothing); the POST carries the D3 X-Fused guard like `/api/appfile/open`, because it writes. |
+| D397 | **A `.fused` clones into the workspace from a preview-header button — `<workspace>/local/<slug>`, plain files, and the DESTINATION FOLDER EXISTING is the whole definition of "already cloned" (the button then reads "Go to local version" and only navigates)** | An opened `.fused` is read-only on purpose (0444 payload, RO-7/D386) and embed mode has no editing surface at all, so up to now the artifact was a dead end: you could run someone's app and not develop on it. Clone is the way out, and it is deliberately the SHOWCASE CLONE's shape — `CloneCommunityButton` copies a showcase app into `Fused/local/<slug>` and opens the copy, so the second thing in the app that hands you an editable copy of a read-only one should not invent a second vocabulary, a second destination, or a second button position. **Presence, not a record, is the state** (owner's call). A records file keyed on the source path loses the answer when the file moves; keyed on the content hash it loses the answer when the app is re-exported — and both go stale against a folder the user renamed or deleted, which is the one thing an `isdir` cannot get wrong. So `clone_target` is one bounded manifest read plus one `isdir`, cheap enough to run on every preview of a `.fused`, and there is no store to migrate, reconcile or garbage-collect. The named cost is the converse and is accepted rather than hedged: an UNRELATED folder the user keeps at `local/<slug>` reads as this app's clone and the button offers to open it. *Rejected: `community._claim_dir`'s `-2..-9` suffix loop*, which is what the neighbouring code does on a collision — the owner rejected it outright, and the reasoning holds on its own: a suffix invents a path nobody asked for, and "clone twice, get `sine` and `sine-2`" is a worse answer to "I already have this" than "here is the one you have". A second Clone is therefore a REPORTING no-op — it copies nothing, so a user's edits in the clone cannot be clobbered by a button they pressed twice. **The copy rides `open_app_file`, not a second unzip** (D386's one-hardened-extractor rule), so a file never opened before extracts on the way through and nothing re-implements the zip guards. Two mechanics are load-bearing: `copytree` carries the extract's **0444** across, so the bits are lifted to 0644 **in staging, before the rename** — a clone that shipped them read-only would be an uneditable "development copy", i.e. the whole feature failing silently, and lifting after the rename would make the copy briefly visible in the workspace as unwritable; and staging sits INSIDE `local/` so the claim is a same-filesystem `os.rename` (community's reason: a home-dir staging area can be on another volume, where the rename fails outright). A lost rename race answers `cloned: true`, the same reading as finding the folder there to begin with. **The manifest `name` is attacker-controlled zip data** and reaches the filesystem only through `_slug`, whose character class admits no separator, no dot and no drive letter — `"../evil"`, `"/etc/evil"` and `"C:\\evil"` collapse to ordinary segments — and it is the SAME slug the extract cache key already used, extracted into a shared helper so the two namings cannot drift. An empty name falls back to the **file stem**, not a shared `"app"` literal: two unnamed app files would otherwise collide on one `local/app` folder and the second would read as the first's clone, which is the presence rule turned into a bug. *Rejected: `git init` with a pristine first commit*, which the showcase Clone does — owner's call, and the asymmetry is real: the showcase clone has an UPSTREAM to diff against and to fast-forward from, while a `.fused` is a snapshot whose only baseline is the copy itself; the app-git machinery picks the folder up once it is edited anyway. *Header-only at first, so a double-clicked `.fused` showed no Clone* — embed mode hides the whole topbar by construction (D386/D390), which is also why `ExportAppButton` never appears there; the owner accepted that gap over a bar inside the fusedapp template. **Reversed 2026-09-07 (owner, D390 amendment):** the top-level embed's strip now carries this same `CloneAppFileButton` — one control, one label rule — with a `toView` prop, because from the embed shell `navigate` keeps the embed prefix and would drop the clone folder into a chrome-free listing with no way out (D282's dead end); the strip's copy lands on the folder's VIEW URL. Dismissing the strip is per page load, never persisted: it is the only route to Clone from an opened `.fused`, and a remembered dismiss would rebuild the dead end it closes. Export and Migrate stay out of the strip — they act on an app's entry folder, not a read-only artifact. The GET probe is unguarded like `/api/appfile/preview` (it reports a path and touches nothing); the POST carries the D3 X-Fused guard like `/api/appfile/open`, because it writes. **Amended 2026-09-17 (owner): once a copy exists the header offers a second button LEFT of "Go to local version" — "Clone & overwrite" (`POST /api/appfile/overwrite`, `appfile.overwrite_app_file`) — behind a danger confirm.** It MERGES the payload over `clone_target`'s path (the id-resolved folder, not a fresh `local/<slug>`): payload files replace their counterparts, everything else stays — `.venv`, `.fused` (the app's data, D548), `.git`, and anything the export left home (gitignored `dist/`, data, `node_modules`). *Rejected: wipe-then-copy* — the export was built to exclude exactly that content, so a tree replace would delete it; the named cost is that a file the author deleted between exports lingers. Not atomic (no staging trick avoids copying the `.venv`); a retry finishes. A plain re-Clone stays the reporting no-op above — the overwrite is a separate, confirmed verb, so the "a button pressed twice cannot clobber edits" promise holds. |
 
 ### The explorer menus say what they do (2026-08-20)
 
@@ -1565,7 +1565,7 @@ Security layer (token, Origin/Host validation, sandboxed bridge — see threat n
 | D738 | **`_mirror_one_run_job` (server/routers/index.py) withholds the Activity bridge's estimated `total` (forces it to `None`) while `run.get("phase")` is one of `_UNCOUNTABLE_PHASES = {"starting", "checking for changes"}` — D737's new phase, plus `derive_state`'s own seeded default for the sliver of time before any phase event has landed at all — and restores it the instant a real phase lands, no separate flag needed since the check re-runs every tick against the run's current phase.** The decision lives entirely on the backend: `jobFraction` (`jobs.ts`) already renders a `null` total as an indeterminate sweep, so no frontend phase-string comparison was added or needed. Verified, not assumed, for every phase past this window: the plain full/incremental pool path already increments `files`/`reused` every `res.wait(0.5)` (scan.py ~526-543, unchanged, and out of scope per the brief); the fsevents-journal walk loop already beat-emits at ~scan.py:636-647; D739 (below) makes the SAME phase's bulk-reuse tail loop beat-emit too, which is why `"scanning (fsevents journal)"` was left OFF this withhold list even though its early portion used to look exactly as broken as Window 1 — its ultimate fix is incremental credit, not indeterminacy. `"writing index"`/`"writing signatures"` (store.py's compaction phases) were also left off deliberately: read the code and confirmed compaction emits no `progress` events of its own, so `done` sits frozen at the walk's final, accurate count throughout — an already-honest number next to an ESTIMATED total (`total_estimated`, D733), not a meaningless one. | `tests/test_index_jobs.py::test_an_uncountable_phase_withholds_the_estimated_total` (verified red against the pre-fix `_mirror_one_run_job`, which had no phase gate on `prev_total` at all) |
 | D739 | **`_run_fsevents`'s "keep every cached dir the journal didn't touch" tail loop (scan.py, the credit for Window 2 of the same report — `files + reused` sitting near zero through an entire incremental walk and then leaping to ~total the instant this loop finishes) now beat-emits mid-loop instead of only once after it returns.** Reuses the exact gate already sitting a few lines above it in the same function (`now - last_beat >= 0.5`, same `last_beat` variable) rather than a second cadence — but the `time.time()` call itself sits behind a cheap `beat_i & 0xFFF == 0` integer check first (an int increment plus a bitwise-and per iteration, nothing else — no syscall, no allocation), so a loop over hundreds of thousands of cached dirs pays for `time.time()` roughly once every 4096 iterations rather than once per iteration, and a loop that finishes inside one beat interval (the common small-incremental-run case) still emits nothing beyond the pre-existing single post-loop emit. Per-iteration cost delta: one `int` add and one `&` comparison; everything else (the `time.time()` call, the subtraction, the `_emit`) is amortized behind that gate and unchanged in the common case. Driven with a synthetic in-memory `cache` (no real filesystem — thousands of directories would make the test slow and add nothing the dict-shaped cache doesn't already exercise) and a fake `time.time()` advancing a whole second per call, so the 0.5s cadence is exercised deterministically rather than by chance under real sleeping. | `tests/test_index_scan.py::test_the_bulk_reuse_tail_credits_progress_more_than_once` (verified red against the pre-fix loop, which emitted exactly one `progress` event for 8,300 synthetic cached dirs) |
 | D740 | **`POST /api/tasks/erase` deletes the Claude session itself — transcript, subagent sidecars and every record we keep — beside `/api/tasks/delete`, which keeps the transcript untouched (D306) exactly as before.** | Asked for in those words (Akshil, 2026-09-07): deleting a task should go "through and through: deleting the claude session itself". D306's promise — a deleted row's conversation is still there, and later activity in it revives the row — is right for the Calendar's soft delete and is why that verb is unchanged rather than upgraded; a gesture that destroys a transcript must be its own endpoint with its own confirmation, not a quiet widening of an existing one. Erase reuses delete's first halves verbatim (the 409 while a run is in flight, `_every_rule_behind` then the task's own pending entries) and then takes the session off the disk: `<session_id>.jsonl` globbed across EVERY project dir, because copy-on-resume can leave a second copy under another encoded cwd and one survivor keeps the conversation readable and the row revivable, plus the sibling `<session_id>/` sidecar dir via `rmtree`. Every candidate is realpath-checked against `PROJECTS_DIR` and anything outside is skipped, not raised on — this is the only endpoint in the app that removes trees, so a symlinked project dir must never be able to aim it at `~`. State goes with it: the triage record WHOLE (`sessions.forget_triage`, not `clear_triage` — there is no session left for a note or a tag to be about) and the read marks (`tasks_store.forget_session`). The task NUMBER is the one thing kept, as a reservation: allocation is "max seen plus one" read straight off `task_ids.json`, so dropping the mapping would hand TASK-007 to somebody else's work — the record stays, stamped `erased`, and gaps stay the correct price. The tombstone (`mark_deleted`) is still written even though nothing should be left to revive, so a straggler landing between the cancel and the erase cannot put the row back for a poll. | `fused_render/server/routers/tasks.py::api_task_erase`, `_erase_session_files`, `routers/claude_sessions.py::forget_triage`, `tasks_store.py::forget_session`, `tests/test_tasks_api.py` |
-| D741 | **A macOS in-app update now reports itself into the Activity dock as a server-owned job (`sys:update:<version>`, `update/mac.py`'s `JOB_PREFIX`) instead of counting bytes only inside the sidebar badge's own panel, and is CANCELLABLE while downloading.** The row is the same bridge shape an index rescan uses (`server/routers/index.py::_mirror_one_run_job`): `title` "Update to vX", `kind: download`, `unit: bytes` with `done`/`total` from `download_verified`'s progress callback, `message` carrying the phase — "Downloading" (cancellable) then "Installing" (indeterminate, `total: None`, `cancellable: false`) — and a terminal "Installed — restart to finish" / the error text / "Cancelled". Cancel arrives exactly as every job cancel does, as `cancel_requested` on the reply to the byte tick the manager was going to send anyway; a new `common.UpdateCancelled` raised from `download_verified`'s per-chunk `should_abort` unwinds the download, the partial file is discarded by the same `finally` a checksum mismatch uses, and `_install` puts the manager back to "available" with `_latest` intact (a cancel is not a failure, so "error" would be the wrong state and would hide the install button behind a retry). `UpdateBadge`'s installing panel drops its own percentage for one line, "Updating — progress is in Activity". | Rejected: a second progress readout in the badge panel (the same download counted twice by two pollers, only one of which can offer the ✕); a dedicated update component in the dock (the generic job row already renders label, `jobAmount`'s bytes→MB, status line and Cancel — nothing new was needed, and `jobAmount` already had its `bytes` branch); cancelling during the swap (there is no point between the `ditto` and the two renames where stopping leaves anything better than finishing, so the ✕ is withdrawn at the phase flip rather than lying). **A separate completion notification was NOT added:** `ActivityDock`'s `onJobsReported` → `terminalNotifications` already carries every terminal job into Notifications, so the finished row IS the announcement; a click-to-`fused-render://relaunch` affordance was skipped with it, since `ServerStatusBanner`'s restart card already owns the relaunch button once `installed_version` drifts. Job reporting is best-effort throughout (`_job_report` logs and swallows) — an install must never fail because its row could not be drawn — and `jobs.upsert` is never called while `self._lock` is held, so the two locks are never ordered against each other. Tests: `tests/test_mac_update.py`'s six `sys:update:` cases (opening row, success, failure, bytes→Installing flip, a real-download-loop cancel that reverts to "available" and leaves the updates dir empty, and a retry starting from a clean flag) plus `tests/test_win_supervisor_update.py::test_download_verified_aborts_mid_stream_and_discards_the_partial`. |
+| D741 | **A macOS in-app update now reports itself into the Activity dock as a server-owned job (`sys:update:<version>`, `update/mac.py`'s `JOB_PREFIX`) instead of counting bytes only inside the sidebar badge's own panel, and is CANCELLABLE while downloading.** The row is the same bridge shape an index rescan uses (`server/routers/index.py::_mirror_one_run_job`): `title` "Update to vX", `kind: download`, `unit: bytes` with `done`/`total` from `download_verified`'s progress callback, `message` carrying the phase — "Downloading" (cancellable) then "Installing" (indeterminate, `total: None`, `cancellable: false`) — and a terminal "Installed — restart to finish" / the error text / "Cancelled". Cancel arrives exactly as every job cancel does, as `cancel_requested` on the reply to the byte tick the manager was going to send anyway; a new `common.UpdateCancelled` raised from `download_verified`'s per-chunk `should_abort` unwinds the download, the partial file is discarded by the same `finally` a checksum mismatch uses, and `_install` puts the manager back to "available" with `_latest` intact (a cancel is not a failure, so "error" would be the wrong state and would hide the install button behind a retry). `UpdateBadge`'s installing panel drops its own percentage for one line, "Updating — progress is in Activity". | Rejected: a second progress readout in the badge panel (the same download counted twice by two pollers, only one of which can offer the ✕); a dedicated update component in the dock (the generic job row already renders label, `jobAmount`'s bytes→MB, status line and Cancel — nothing new was needed, and `jobAmount` already had its `bytes` branch); cancelling during the swap (there is no point between the `ditto` and the two renames where stopping leaves anything better than finishing, so the ✕ is withdrawn at the phase flip rather than lying). **A separate completion notification was NOT added:** `ActivityDock`'s `onJobsReported` → `terminalNotifications` already carries every terminal job into Notifications, so the finished row IS the announcement (SUPERSEDED by D885 — a clean install now writes no terminal row at all, and the restart dialog is the only announcement); a click-to-`fused-render://relaunch` affordance was skipped with it, since `ServerStatusBanner`'s restart card already owns the relaunch button once `installed_version` drifts. Job reporting is best-effort throughout (`_job_report` logs and swallows) — an install must never fail because its row could not be drawn — and `jobs.upsert` is never called while `self._lock` is held, so the two locks are never ordered against each other. Tests: `tests/test_mac_update.py`'s six `sys:update:` cases (opening row, success, failure, bytes→Installing flip, a real-download-loop cancel that reverts to "available" and leaves the updates dir empty, and a retry starting from a clean flag) plus `tests/test_win_supervisor_update.py::test_download_verified_aborts_mid_stream_and_discards_the_partial`. |
 
 ## Notification card unification (7-task spec build)
 
@@ -1861,6 +1861,4408 @@ Verification: `bun test` scoped runs (`hubSearchView.test.ts`, `capabilityMeta.t
 | D880 | Finding H: ABANDON_S raised from 5.0s to 15.0s (index-search-wedge review) | Review finding H: 5.0s left under 2.3x headroom over `run_startup_warm`'s own measured cold-read cost (~2.2s for the first search of a fresh process against a 164k-entry home, before duckdb is even imported) — close enough that a merely slow-but-correct read against a bigger corpus than the one benchmarked, or a slower disk, could realistically trip the abandon path and hand the caller a spurious 503, not just a genuinely wedged mount. Raised to 15.0s, close to 7x headroom over the measured cold cost. Confirmed this does not slow down anyone else's recovery: the interactive lane permit and the pool-exhaustion count both release the moment `_bounded_index_read`'s `wait_for` fires (whatever the value), so raising `ABANDON_S` only changes how long the ONE caller whose own read is slow waits before its own request gets the 503 — it does not change how quickly the lane or pool clears for other, unrelated requests. Not asked to, and did not, touch the frontend: a `503 {"error": "index read timed out"}` is unchanged and however it degrades client-side today keeps doing so, just less often. | Rejected: leaving 5.0s and instead making the 503 "gracefully degradable" client-side — out of scope (frontend explicitly off-limits) and does not fix the underlying problem, which is that 5.0s was simply too close to a real, already-measured cold-read cost. Rejected: an adaptive/measured timeout (e.g. scaling with corpus size) — meaningfully more machinery for a constant that only needs to clear a known worst case with margin; revisit if a corpus large enough to threaten even 15s shows up in practice. |
 | D881 | Finding I: close the schema-cache staleness holes review raised, don't just re-argue them (index-search-wedge review) | Review finding I said the schema cache's (item 5, D707/D708) correctness argument was overstated in two ways: (1) `dirs_src(cfg)` names `dirs.parquet` directly, a single file compaction overwrites in place (`store.py` COPY to `.new` then `os.replace`) BEFORE the manifest naming the new generation is written — unlike `files/*.parquet`, which are named per-generation and never overwritten, so `dirs.parquet`'s bytes are not actually pinned to the generation number a cache key claims to scope them by; (2) `delete_store` removes the manifest, so the next compaction's `generation` resets to 1 — the same cache key an earlier life of the same store dir could have already populated, which would silently shadow a rebuilt store's real schema. Decision: (1) is real but benign for what this cache answers — a column SET, not row content — because compaction never changes `dirs.parquet`'s schema between generations, only its rows; documented this precisely in `_cached_src_cols`'s docstring rather than adding machinery for a hazard that requires a future schema-varying-by-generation change to actually bite (and flagged what such a change would need to do instead). (2) was closed for real rather than just documented: added `query.forget_src_cols_for(cfg_dir)`, called from `store.delete_store` (via a deferred import — `query.py` imports from `store.py` at load time, so a top-level import the other way would be circular) before it returns, evicting every `_src_cols_cache` entry for that `cfg.dir`. Pinned with two new tests in `tests/test_index_store.py`: `test_delete_store_evicts_the_schema_cache_for_this_store` (evicts this store's entries, leaves an unrelated store's alone) and `test_delete_store_on_an_empty_store_still_evicts_the_cache` (still runs the eviction when there was nothing on disk to unlink — delete-twice must stay safe). Scoped runs (module + `-n auto`, twice each): `tests/test_index_store.py` — 33 passed; combined `test_index_api/query/search/rank_concurrency/doc_duplicate_ids/store.py` — 307 passed; `-k index` across `tests/` — 790 passed, 8 skipped. | Rejected: making `dirs_src` per-generation too (e.g. copying or hardlinking a generation-named snapshot of `dirs.parquet` at swap time) to fully close hole (1) — real machinery (extra I/O every compaction, extra reclaim bookkeeping) for a hazard that is inert today and only matters if the schema itself starts varying, which nothing in this codebase does; revisit if that ever changes. Rejected: leaving hole (2) undocumented/unfixed on the theory that deleting and rebuilding the same store within one process is rare — it is rare, but the fix is cheap (one linear scan of a 16-entry-bounded cache, run only on an interactive delete) and the alternative is a silent wrong-schema answer with no error, which is worse than the fix's cost. |
 | D882 | index-search-wedge FIX round: CI-only fixes — exhaustion tests' wall-clock bound was measuring runner load, not the fast-503 property; the Windows-only rank-reason failure traced to a TEST shim gap, not to `MountGuard`/`_walk_from` (D878) | Two independent CI-only failures, both fixed without touching D874-D881's production logic. **Failure 1** (`test_index_read_pool_exhaustion_is_a_fast_503`, `test_stats_and_search_also_get_the_fast_exhaustion_503`, both parametrizations): these assert the pre-submission exhaustion check (D879 finding D) returns fast rather than queueing unboundedly — `elapsed < 0.3` was measuring wall-clock on a loaded shared CI runner (observed 0.366-0.658s), not the property "refused before ever reaching the pool", and the failure mode being guarded against (an unbounded queue, or worst case the full `ABANDON_S=15.0s` wait) is nothing like 0.3-0.7s, so the assertion was catching runner noise, not a regression. Per D875's already-established distinction, tightening is only legitimate for a fake-driven test with no real I/O; these ARE fake-driven (a monkeypatched `_abandoned_reads` set) but the thing making them slow under load isn't the fake — it's ASGI/TestClient overhead on a busy box, which a wall-clock bound cannot distinguish from a real regression no matter where it's set. Fixed by asserting the property directly instead of guessing a bound: monkeypatched `_submit_index_read` to `pytest.fail` if ever called, so the test fails loudly the moment the exhaustion check stops short-circuiting BEFORE submission — a real regression to the unbounded-queue path is now caught unconditionally, not probabilistically past whatever bound was chosen. Kept a loosened wall-clock assertion alongside it (`elapsed < 3.0`) as a secondary sanity check with real headroom under `ABANDON_S` (15.0s) — a couple of seconds is comfortably not "the 15s abandon wait" and not "an unbounded queue", while giving a loaded runner room the old 0.3s never had. Did NOT touch `test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot`'s or the wedged-stats/search sibling's own `elapsed < 0.3` assertions (D877/D879) — those are not in CI's failing set and drive a genuinely different property (a request racing past an ALREADY-abandoned lane permit, not a pre-submission short-circuit); tightening THOSE was D875's call to make and is unrelated to this finding. **Failure 2** (`test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of`, Windows-only): traced to `tests/test_index_api.py::_point_home_at`, not to `MountGuard.blocks()`/`_walk_from`/the `blocked_out` side channel (D878) themselves. That helper's own docstring already knew `monkeypatch.setenv("HOME", ...)` alone doesn't redirect Windows' `ntpath.expanduser` (it reads `USERPROFILE`), so it also monkeypatched `os.path.expanduser` — but only for the literal string `"~"`, falling through to the REAL `expanduser` for anything else, including the compound `"~/.fused-render"` `ignore.default_home_dirs()` calls directly (every `MountGuard(...)` construction in the codebase passes `home_dirs=None`, so this is always on the path). On POSIX that fallthrough happens to work: `posixpath.expanduser` re-reads `os.environ["HOME"]` at call time regardless of which function object `os.path.expanduser` is currently bound to, so the monkeypatched `HOME` still took effect for the compound form even though the override function never handled it explicitly. On Windows, `ntpath.expanduser` never consults `HOME` at all — so the real function resolved `"~/.fused-render"` against the CI runner's ACTUAL profile, not the test's `os_home`, and `MountGuard`'s guarded-roots list silently never included the directory this test expected it to guard. `guard.blocks()` then correctly (per its own contract) never matched the test's escape query, `_walk_from` fell through to a real `os.path.isdir` on a directory that genuinely doesn't exist (the test never created it), stopped there with `blocked=None`, and `_rank_reason` had nothing to elevate to `"mount"` — hence `"uncovered"`. Ruled out an actual production separator/case-sensitivity/drive-letter bug in `MountGuard.blocks()` by tracing both sides of the comparison through `os.path.abspath`: `_walk_from`'s candidates are built from `norm()`-canonicalized (forward-slash) strings, and `MountGuard.__init__`'s roots are stored as `os.path.abspath(...)` of the same kind of string — `ntpath.abspath`/`ntpath.normpath` converts BOTH sides to backslash form identically before the comparison runs, so a same-drive, correctly-cased pair compares equal on Windows exactly as it does on POSIX; this is a general property of using `abspath` symmetrically on both the stored root and the probed candidate, not something that only happens to hold for the values this test happened to use. Fixed `_point_home_at` to handle every `~`-prefixed path directly (`~`, `~/...`, `~\...`) via a plain string join instead of delegating compound forms to the platform-varying real implementation, and to also set `USERPROFILE` for any other code that might call the real `expanduser` directly. This is a test-infrastructure fix, not a weakening: the test's own assertions (`reason == "mount"`, `blocked_query_path` never leaking) are unchanged, and the fix makes the test's home-simulation correct on the platform where it was previously wrong, rather than loosening what it checks. Also added `tests/test_index_query.py::test_resolve_captures_the_blocked_candidate_even_though_base_stops_short`, exercising the SAME base-shortfall/`blocked_out` contract directly against an explicit `guard=MountGuard(mounts_dir=..., home_dirs=[...])` with no HOME monkeypatching of any kind — this would fail on macOS (or any platform) if `_walk_from`/`resolve_query`'s actual logic regressed, closing the coverage gap a Windows-only assertion left. Scoped runs (`-n auto`, twice each): `tests/test_index_api.py` — 116 passed; `tests/test_index_api.py` + `test_index_query.py` + `test_index_search.py` + `test_index_store.py` + `test_index_rank_concurrency.py` — 305 passed. | Rejected: simply raising the exhaustion tests' bound to something like 1.0-2.0s without also asserting the property — would still be a guess at "how loaded can CI get", and the brief explicitly warned against repeating D875's own lesson (a loose bound that later hides a real regression). Rejected: weakening `test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of`'s assertions to accept `"uncovered"` on Windows — the brief explicitly ruled this out, and doing so would ship a real product regression (the frontend's live-walk fallback silently not firing for a typed mount-escaping query on Windows) that this investigation found was never actually present in `MountGuard`/`_walk_from`, only in the test's own environment simulation. Rejected: changing `MountGuard.blocks()` or `_walk_from`'s signature to "fix" the Windows lane — no defect was found in either, and the brief's own constraint (narrow blast radius, enumerate callers before touching a shared helper) argues against touching either on a hunch once the real cause was isolated elsewhere. | 
+
+| D883 | Breadcrumb-up landed on the parent folder with NOTHING selected, even though Mod+Up through the exact same folder always worked — root cause was `PathCrumbs` (`listing/path-crumbs.tsx`), not `useListingSelection` | `StatView` keys its subtree on `epoch + ":" + fsPath` (App.tsx), so `Listing` — and `useListingSelection` with it — hard-REMOUNTS on every folder navigation; there is no "same hook instance, `fsPath` changed" case in this app, so the hook's existing `useState` lazy initializer (recall, then `?sel=`) already re-seeds correctly on every arrival with no change needed. A prior pass at this bug (since reverted) misdiagnosed the hook as rendering unkeyed and added a `useRef`-gated reseed-during-render block that could never run in the real app — dead code, now removed. The actual defect: whenever a folder's bar is "claimed" (folder-chrome.ts — the default view for an ordinary folder, confirmed live in the browser via `#breadcrumb`'s own rendered markup), `Breadcrumb.tsx`'s `.crumbs` strip does not render at all; the merged search field's own `PathCrumbs` component renders instead, a separate, parallel breadcrumb implementation. Its two crumb `onClick` handlers called `navigate(target, { isDir: true })` with no `sel` — never computing `cameFromSelParam(target, fsPath)` the way `Breadcrumb.tsx`'s own crumbs and `useListingShortcuts.ts`'s Mod+Up chord both already did. So a plain crumb click in the common claimed-bar view never wrote `?sel=` at all, and the fresh mount's seed had nothing to read. Fixed by adding the same `cameFromSelParam` call to both of `PathCrumbs`'s `onClick` handlers. **Deliberately unchanged**: `useListingSelection`'s seeding logic, `Breadcrumb.tsx`, `useListingShortcuts.ts`, and `App.tsx`'s keyed remount — none of them needed a fix; no folder auto-select (FS-16/D278) — a folder with no recall and no `?sel=` still seeds `EMPTY_SELECTION`; a `?sel=` naming a row this folder doesn't have still resolves to nothing, not row one (D279). | Browser-verified against a live dev server (not just from source): clicking an ancestor crumb in the ordinary claimed-bar view now lands on the parent with the child folder highlighted and `?sel=` in the URL; Mod+Up (already correct) still works; a fresh folder open with no `?sel=` and no recall still selects nothing; a `?sel=` naming a row absent from the folder still selects nothing, not row one. `path-crumbs.render.test.tsx` (new) drives `PathCrumbs`'s two `onClick` handlers directly and asserts the `navigate` call carries `sel: cameFromSelParam(target, fsPath)` — fails without the fix (no `sel` key at all), passes with it. `useListingSelection.render.test.ts`'s "arrival seeding" cases were rewritten to mount/unmount two separate hook instances (the real remount shape) instead of rerendering one instance across an `fsPath` change (a harness-only shape no code path here produces, which is why an earlier pass's tests kept passing against a no-op fix). SPEC FS-16. |
+
+### walk-from-cancel-token build (2026-09-15)
+
+| D-new | Thread `CancelToken` (optional, default `None`) into `resolve_query`/`_walk_from` (index/query.py), checked once between segments before each segment's `os.path.isdir` | Build brief for the file-index search latency bug: a path-shaped rank query's filesystem walk had no cancellation check at all, so an abandoned request under a slow/wedged mount held an interactive-lane permit until `os.path.isdir` returned or `ABANDON_S` elapsed. `token.check()`/`Cancelled` matches the existing pattern in `search_ranked`/`stats`/`search_under`; `token=None` preserves every existing caller/test unchanged. Docstrings (both functions) say explicitly this bounds damage to one in-flight slow segment, not N, and cannot make an `isdir` already in flight return faster — no threads-within-threads, no signal tricks, no `ABANDON_S` change, per the brief. |
+| D-new | Also check the token immediately before `_rank_reason`'s `MountGuard.blocks_root(root)` realpath fallback, threaded from `_rank_worker` | That call sits in the identical per-request worker-thread path (`_rank_worker` → `_rank_body` then `_rank_reason`, both off the event loop via the index-read pool) the brief called out as "IF it sits inside the same walk/request path" — it does. Same honest limit as above: skips the realpath if cancellation is already known, cannot interrupt one already in flight. `run_startup_warm`'s OWN `blocks_root` call (routers/index.py ~line 750) was NOT touched — it runs at startup with no request/token in scope at all, outside this bug's blast radius. |
+| D-new | Client-cancel simulation for the burst test uses monkeypatching `starlette.requests.Request.is_disconnected` (keyed on the request's `q` param), not `task.cancel()` on the httpx call | Verified via a throwaway experiment script (not checked in) that cancelling an `asyncio.create_task`-wrapped httpx call over `ASGITransport` propagates `asyncio.CancelledError` straight through the in-process call chain and never makes `request.is_disconnected()` observe anything server-side — so `task.cancel()` cannot exercise the real `cancellable()`/`_watch_disconnect()` path this route depends on in production. The `is_disconnected` monkeypatch does exercise that real path, the same mechanism the three existing `test_*_route_answers_a_disconnected_client_with_a_quiet_499` tests bypass entirely (they fake the whole `Request`). Confirmed `fastapi.Request is starlette.requests.Request` before relying on the patch reaching FastAPI's own `request` object. |
+| D-new | Added the missing wedge-then-release regression test for `stats`/`search`, parametrized, mirroring the existing `rank`-only version | Both routes submit to the identical `_INDEX_READ_POOL`, share the identical width-2 interactive lane, and go through the identical `_bounded_index_read` abandon-on-timeout path as `rank` — but only `rank` had a test proving a wedged worker's abandonment releases the lane permit rather than holding it. New test: `test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot`. |
+| D-new | Burst test (`test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency`) asserts the lane semaphore is back to width 2 via `index_router._interactive_lane_loops.get(loop)._value` directly, not a timing proxy | `asyncio.Semaphore` has no public "current value" API; `._value` is the internal attribute (confirmed by inspection) and gives a direct, non-flaky proof every permit was actually returned, on top of (not instead of) the `< 0.5s` final-request latency bound and the `_abandoned_reads`-drains-empty check. |
+| D-new | Burst test's wedged-worker mechanic (every 4th call blocks forever on an unset `threading.Event`) and its client-cancel mechanic (roughly half the 20 requests, by even index) are independent and can overlap on the same call — not kept mutually exclusive | The brief's scenario is exactly this overlap: a fast typist's real-world burst has both classes of trouble (some requests superseded/abandoned by the client, and separately, the small chance of landing on a genuinely wedged mount) happening at once; keeping them separate would have understated the regression this test guards. Verified stable across 5 repeated local runs with no flakes. `ABANDON_S` monkeypatched to 0.15s (CI-safe, well above the 20 staggered 7ms-apart requests' total burst duration of ~140ms) rather than fighting a tighter bound. |
+
+Tests added: `tests/test_index_query.py` (`test_resolve_an_uncancelled_token_changes_nothing`, `test_resolve_a_token_cancelled_before_the_call_raises_promptly`, `test_walk_from_a_token_cancelled_before_the_call_raises_promptly`, `test_resolve_cancels_between_segments_not_mid_segment`, `test_resolve_with_no_token_behaves_exactly_as_before`); `tests/test_index_api.py` (`test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot` parametrized over stats/search, `test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency`).
+
+Verified: `.venv/bin/python -m pytest tests/test_index_query.py tests/test_index_api.py -q` → 174 passed, no failures, no changes to any pre-existing test's behavior. File:line references in the original brief (`_walk_from` 547-607, `resolve_query` 610-727, `_rank_body`/`_rank_worker`/`_rank_reason` in routers/index.py, `_bounded_index_read` 244-289, wedge test 448-551) all matched the actual worktree contents at build time — no drift found.
+
+### walk-from-cancel-token build — review fixes (2026-09-15)
+
+A code review of the above build found `fused_render/index/query.py` and
+`fused_render/server/routers/index.py` (the production changes) correct as
+written — no production logic was changed in this round. Every finding was
+about the TESTS added by the original build being largely inert; this round
+made them able to actually fail.
+
+**Correction to the build entry above**: the claim "only `rank` had a test
+proving a wedged worker's abandonment releases the lane permit" is **false**.
+`test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot`
+already existed on `origin/main` (added by #1131), parametrized over
+`stats`/`search` via `_make_fake_index_stats`/`_make_fake_index_search`. The
+build added a SECOND function with the exact same name earlier in the file;
+Python binds the later (pre-existing) definition, so pytest only ever
+collected the original — the ~70 new lines were dead code that could never
+fail (`pytest --collect-only -k wedged_stats_or_search` showed 2/117
+collected, both ids from the original parametrization, before and after this
+fix). The duplicate has been deleted; nothing of substance was lost, since
+the original already covers the exact same abandon-then-release contract for
+both routes.
+
+| D-new | Deleted the shadowed duplicate `test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot` (the build's own copy, not the pre-existing one) | Confirmed via `pytest --collect-only` that Python's later-definition-wins rule meant pytest only ever ran the pre-existing (origin/main) version; the build's copy was unreachable dead code and tested nothing beyond what already existed. Kept the original, corrected the false "only `rank` had this test" claim above. |
+| D-new | Burst test (`test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency`): keyed the wedge decision (`n % 4 == 0`) on the request's own `q` value (`q{N}`) instead of a shared call counter incremented in call-arrival order | The counter's increment order depended on how many client-cancelled requests got cancelled before vs. after the route's pre-submission `if token.cancelled` check — a split that moves with machine load (reproduced by the reviewer: 6/12 runs failed under 16 background CPU spinners). Keying on `q` fixes the wedge assignment regardless of arrival order, and also means the unrelated final "clean" request (`q == "final-clean-request"`, never matching the `q{N}` shape) can never accidentally land on the wedge branch — making its outcome deterministic. |
+| D-new | Burst test: shortened the non-wedged worker's poll loop from 15×0.01s (= `ABANDON_S`, exactly tied) to 5×0.01s (materially shorter) | At the old value every non-wedged call always lost the abandon race, so zero burst responses could ever be 200 (instrumented: `[499, 503, 499, 503, ...]`, never 200) — the wedge mechanic and "answered normally" were indistinguishable, and a regression that time-out-ed every overlapping request would not have been caught. Added `assert 200 in statuses`. |
+| D-new | Burst test: replaced the misleading `assert 499 in statuses` (which the old comment claimed proved cancellation reached the worker thread) with a dedicated, event-synchronised sub-request (`q == "cancel-proof"`) plus a `worker_cancelled` set recorded from INSIDE the worker's poll loop | Instrumentation showed most 499s in the racy 20-request burst come from the route's pre-submission `if token.cancelled` check, firing before `_rank_worker` is ever called — `499 in statuses` would still pass even if `Cancelled` never propagated out of a worker thread at all. Tying the proof to a real wall-clock race against 19 other requests and lane contention (which the reviewer showed is itself load-dependent — 11-13 of 20 requests reach the worker at all, varying by run) was rejected as still flaky; instead one dedicated request's worker signals (`threading.Event`) that it has genuinely entered `_rank_worker` before the test flips its `is_disconnected` response, so any `Cancelled` recorded into `worker_cancelled` can only have come from inside an already-in-flight worker thread — deterministic regardless of load. `ABANDON_S` is raised to 1.0s only for this sub-request (ample margin over the real, unpatched `DISCONNECT_POLL_S` of 0.1s). |
+| D-new | `fused_render/index/query.py`: added `CancelToken` to the existing `from fused_render.index.cancel import Cancelled` line | Pyright's `reportUndefinedVariable` flagged the `"CancelToken | None"` string annotations on `_walk_from` and `resolve_query` as unresolvable — `CancelToken` was never imported, only used in forward-ref strings (no runtime effect, static-analysis-only). `Cancelled` was already imported from the same module (`fused_render.index.cancel`), which imports nothing from `query.py`, so there is no import cycle; added `CancelToken` to the same line rather than a `TYPE_CHECKING` guard. |
+
+Demonstrated each fix can actually fail: reverted `token=token` → `None` in
+`api_index_rank`'s call into `_rank_worker` (routers/index.py ~line 1901) —
+the dedicated `cancel-proof` sub-request's assertions failed as expected
+(`cancel_proof_resp.status_code == 499` and `"cancel-proof" in
+worker_cancelled`), since the worker never saw a live token to check.
+Separately, commented out `_abandoned_reads.discard(fut)` in `_reap_abandoned`
+(routers/index.py ~line 241) to simulate a leaked lane/pool permit — both
+parametrizations of the retained stats/search wedge test and the burst test
+failed on `assert not index_router._abandoned_reads`, as expected. Both
+changes were reverted immediately after (routers/index.py has no diff from
+`origin/main` in this round).
+
+Verified: `.venv/bin/python -m pytest tests/test_index_api.py
+tests/test_index_query.py -q` → 174 passed. The burst test alone run 10x in a
+row (all green) and 12x more under sustained CPU load (16 background `yes`
+spinners) — all green, no flakes observed in either condition.
+| D-new | **`expand_whitespace_query` (`fused_render/index/query.py`) is one shared transform both `resolve_query` and `search_under` run the raw typed string through, rather than a naive `" " -> "*"` substitution** — trim, no-op when whitespace-free, collapse whitespace RUNS to a single `*` (never `**`, which means something different — cross-directory), then imply a leading/trailing `*` on the FINAL `/`-separated segment only, and only when that segment has no user-typed `*` of its own | A plain `" " -> "*"` substitution anchors both ends of the filename and regresses the motivating case: `hello world` naively becomes `hello*world`, which does NOT match `hello world.txt` itself (the substitution never wraps the ends). Implying the wrap only on the un-`*`-typed final segment, not every segment, is what keeps `~/My Documents/report` from over-widening its folder path to `~/*My*Documents*/...` when the user only meant the trailing name to be fuzzy. **Known, accepted edge case**: `report *.pdf` (a literal `*` typed adjacent to a space) expands to `report**.pdf` — the whitespace-inserted `*` lands directly next to the user's own `*`, and the two collapse into the grammar's `**` (cross-directory) token rather than staying two independent single-segment wildcards. No escape hatch or smarter collision handling was added for this: SPEC-search-space-wildcard.md deliberately keeps quoting/escaping out of scope, and the shape is rare enough (an explicit `*` right beside a space) that it was accepted as a corner of the grammar rather than special-cased. |
+| D-new | **`search_under` (the `fused.fileIndex.search` public JS bridge) runs its OWN `q` param through the identical `expand_whitespace_query`, not a second copy of the whitespace rule** — confined to any depth under `root` (this function never walks a base off `q`, unlike `resolve_query`), and an explicit `*` typed with NO whitespace anywhere stays a literal character under `ILIKE`, exactly as before | The public API changing its search grammar out from under existing callers was an accepted, deliberate consequence (SPEC-search-space-wildcard.md), not an oversight — "apply everywhere" includes this route. Keeping one shared function rather than porting the rule twice is what makes the two search boxes and the public bridge agree by construction rather than by two authors' care. |
+| D-new | **`/api/index/rank`'s new `pattern` field (`_rank_body`, `server/routers/index.py`) is populated in BOTH `mode: "substring"` and `mode: "glob"` responses, not empty/omitted in substring mode** | It costs nothing extra (`resolve_query` already computes it) and keeping the field's presence unconditional means the TypeScript wire type (`IndexRankResult.pattern: string`, `frontend/src/platform/lib/api.ts`) can stay a required field rather than optional — simpler for every consumer, at the cost of one field the substring branch's own client code never reads (it re-derives highlight positions from its own typed text via `substringMatch`, not from `pattern`). |
+| D-new | **`globToHighlightRegex` (`frontend/src/platform/lib/fuzzy.ts`) excludes the trailing `/` of a `**/ ` (whole-segment recursive) token from the literal-piece capture group that precedes it** — a literal run immediately followed by `**/` stops capturing before that slash, so `src/**/util.ts` marks `[src]` and `[util.ts]`, never `[src/]` | The pattern's own author-typed `/` between `src` and `**/` is the path separator introducing the next token, not part of the `src` segment's own name — SPEC-search-space-wildcard.md §4's own example (`marks [src]/lib/util[.ts]`) is explicit that the separator stays unmarked even though it is syntactically adjacent to a literal run. |
+| D-new | **`glob-broaden.ts`'s `broadenGlobOffer` zero-match widening ladder gate changed from `if (!query.includes("*")) return null` to also admit a query containing whitespace** (`looksLikeGlob`, checked before the ladder runs) | The old gate predated whitespace-as-wildcard and assumed "no literal `*` typed" meant "not a glob query at all" — no longer true once a plain `hello world` search can settle in `mode: "glob"` server-side with zero typed `*` characters. Every caller (`zero-match-offer.ts`'s `settledZeroMatchOffer`) already independently confirms `mode === "glob"` before calling this function, so the fix only needed to stop this function's OWN gate from second-guessing that — it does not change what `settledZeroMatchOffer` itself checks. Caught via a red TDD test (`broadenGlobOffer("hello world")` returned `null` instead of `{pattern: "hello world*", label: "Widen the name"}`) before the fix landed. |
+| D-new | **Investigated, resolved as a non-issue: `ranked-hits.ts`'s `hitsFromRank` initially appeared to have no production call site** — an earlier grep during this feature's build suggested it, which would have meant the glob-highlighting wiring for the in-folder listing was dead code | A full read of `frontend/src/apps/explorer/listing/useListingSearch.ts` showed it DOES import and call `hitsFromRank` (inside its debounced `indexRank` fetch effect, building each `RankAnswer`) — the earlier grep was faulty, or matched against stale file state. No code change was needed; this is recorded only so a future session doesn't re-open the same dead end. |
+| D-new | **REVERSED** (code review, finding #1): `glob-broaden.ts`'s `looksLikeGlob` gate is back to `query.includes("*")` only — the "also admit a query containing whitespace" widening from the D-new row above this one is undone | That widening was itself broken: `expand_whitespace_query` implies a leading+trailing `*` on a whitespace-derived final segment ONLY when that segment has no user-typed `*` of its own. Rung 1 ("widen the name") appends a trailing `*` to the raw query TEXT, which — run back through the same expansion on the next search — gives that segment a user-typed `*` and SUPPRESSES the implied leading `*` the original zero-hit search already had. The "widened" pattern was therefore a strict SUBSET of the original, guaranteed to also return zero hits: offering it was actively misleading, not a broadening. Root cause: `looksLikeGlob`'s whitespace admission conflated "this query resolves to `mode: glob` server-side" with "this ladder has something safe to offer it" — true for a query with a literal `*`, false for a pure-whitespace one, because the ladder's own rungs are defined in terms of literal `*` placement. Fix: pure-whitespace queries (no literal `*`) now get `null` from `broadenGlobOffer` — they are already at their broadest expressible form, and there is no rung on this ladder that can safely widen them further without first-classing whitespace-as-glob into each rung's own logic, which was out of scope for this fix. |
+| D-new | **REVERSED** (code review, finding #7): the "Known, accepted edge case" note on `expand_whitespace_query`'s `report *.pdf` -> `report**.pdf` collision (D-new row, `expand_whitespace_query` is one shared transform...) is undone — this is now a bug fix, not an accepted corner of the grammar | The "accepted" framing assumed the collision was rare and harmless; it is neither. `**` is a load-bearing, DIFFERENT token in this grammar (cross-directory, unbounded depth) from a single-segment `*` — SPEC-search-space-wildcard.md is explicit that whitespace must never produce it. `report *.pdf` silently crossing a folder boundary the user never typed (no `/` anywhere in the query) violates that constraint outright, and "the user typed an explicit `*` right beside a space" is not actually rare: it is exactly what happens with any pre-existing extension glob typed as a second word (`report *.pdf`, `notes *.md`, `draft *.docx` — the common case of "narrow to a name, keep the extension pattern"). Fixed in `expand_whitespace_query` (`fused_render/index/query.py`) by having the whitespace-run substitution check its own neighbors: when a run already borders a literal `*` (before or after), the run is dropped instead of replaced, since the existing star already does the job the inserted one would have. The identical fix was ported to the TS mirror (`expandWhitespaceQuery`, `frontend/src/apps/explorer/lib/home-search.ts`) added for finding #5 below, so the two stay in agreement by construction the same way `expand_whitespace_query`/`search_under` already do server-side. Pytest (`test_expand_whitespace_query_never_stacks_a_star_beside_a_user_star`) and a `bun test` counterpart pin `report *.pdf` -> `report*.pdf`. |
+
+---
+
+## Rank timing on the wire + browser slow-search warning (2026-09-16, worktree-rank-timing-warn)
+
+- **Test placement**: put the Python test in `tests/test_index_search.py`,
+  not `tests/test_index_api.py`. The brief said "put it with the existing
+  index API tests" — but the actual HTTP-level `/api/index/rank` happy-path
+  tests (`test_rank_route_answers_ranked_hits`,
+  `test_rank_route_logs_the_request_total_at_debug`, etc.) all live in
+  `test_index_search.py`; `test_index_api.py` mostly covers lane/pool/
+  concurrency machinery via lower-level fixtures. Added the new test right
+  next to `test_rank_route_answers_ranked_hits`, which builds a real index
+  and hits the route the same way.
+
+- **`.then()` aborted-guard position**: confirmed before editing — the guard
+  is `if (ctl.signal.aborted) return;` as the very first line of the success
+  callback in `FilesHome.tsx`. Placed the elapsed-time computation and
+  `warnSlowSearch` call immediately after it, so an aborted/superseded
+  request never warns and this required no restructuring.
+
+- **Memo-hit path never warns**: confirmed by reading the effect — a memoized
+  answer (`memo.current.get(q)`) returns early via a separate branch (abort
+  inflight, `setAnswer(remembered)`, return) and never reaches
+  `indexRank(...).then(...)` at all, so it structurally cannot call
+  `warnSlowSearch`. No extra guard was needed.
+
+- **Message shape**: one `console.warn` call with a single formatted string
+  (not multiple args) so a screenshot of it is self-contained and grep/read
+  order isn't ambiguous. Labeled the gap "unaccounted/outside-handler"
+  deliberately, per the brief, rather than "network" or "queueing" — none of
+  that is actually measured.
+
+- **`timing` rounding**: rounded server-side to 1 decimal place as specified.
+  Frontend does no further rounding/formatting of the server numbers — they
+  are echoed as received (e.g. `total=1800.0ms`), since the brief did not
+  ask for client-side reformatting and doing so would risk hiding precision
+  a support engineer might want.
+
+No other deviations from the brief.
+
+### rank-timing-warn — code review fixes (2026-09-16)
+
+Code review of the build above found 4 issues; fixed 1-3, left 4 as
+informational per the brief.
+
+| D-new | Finding 1 (float noise): added `r1()` (round to 1 decimal) in `FilesHome.tsx` and applied it to `unaccountedMs` AND to the echoed `timing.total_ms`/`lane_wait_ms`/`worker_ms` | Confirmed directly: `2100 - 1600.1 === 499.9000000000001` in JS. The server already rounds its own three numbers to 1 decimal, so `r1()` is a no-op on those today — but the subtraction is a fresh float op the server's rounding cannot protect, and wrapping all four numbers means the printed line can never regress into a long float run even if a future server change stops pre-rounding one of the echoed fields. The old fixture (`total_ms: 1800`, an integer) could never have produced this bug; rewrote it to `total_ms: 1600.1, lane_wait_ms: 50.3, worker_ms: 1549.8` (1-decimal, as the real server emits) and added `expect(msg).not.toMatch(/\d\.\d{2,}/)` so the test fails without the fix. |
+| D-new | Finding 2 (silent reject branch): added `warnSlowSearchFailed(query, elapsedMs, error)`, called from the `.then()` reject handler in the same effect, guarded by the pre-existing `if (ctl.signal.aborted \|\| err.name === "AbortError") return;` check which was verified to already sit as the first line of that handler (no restructuring needed) | This is the scenario the whole feature exists for: `_bounded_index_read` (fused_render/server/routers/index.py) answers a wedged index read with 503 after `ABANDON_S`, which makes `indexRank()`'s fetch throw — previously that path warned nothing. The new line is prefixed `FAILED` and carries `error.message`, deliberately distinguishable from the success line at a glance rather than requiring a reader to notice the absence of a `server:` clause. |
+| D-new | Finding 2 tests: added "a rejected request past the threshold warns with the error text" and "an aborted rejection never warns even past the threshold"; extended the test harness's `RankCall` with a `reject(message)` that settles the mocked fetch with a 503 + `{error: message}` body (mirrors the existing `StatCall.reject` pattern and matches what the real route sends, so `indexRank()` throws a real `HttpError` rather than a network-level rejection) | The abort case does not depend on the rejected error's identity: `ctl.signal.aborted` is already true from the superseding keystroke by the time `reject()` lands, so the existing guard short-circuits before ever inspecting `err.name` — matching how the pre-existing success-path abort test also relies on the signal check rather than a particular resolve/reject payload. |
+| D-new | Finding 3 (bare `clock.advance` calls): wrapped the three `clock.advance(2100)`/`advance(2500)` calls at (old) lines 545/564/577 in `flush()`, matching every other multi-hundred-ms advance in the file | These three cross `PENDING_INDICATOR_MS` (`setSlow(true)`, outside `act()` if bare) and the 300ms warm-up fallback (`indexRank(WARM_QUERY)`, left unstripped in `rankCalls` if bare — the tests passed before only because the warm call appends at index 1 and `rankCalls[0]` happened to still be the real query). Confirmed no `act()` warnings remain: `bun test src/apps/explorer/FilesHome.render.test.tsx` output has zero "not wrapped in act" lines, before this fix it had 3. |
+| — | Finding 4 (informational, NOT fixed) | `elapsedMs` derives from `Date.now()`, so an NTP step or a sleep/resume during the request window can fabricate or hide a multi-second warning. Pre-existing behavior for the latency readout this diff reuses (`answerFrom`'s elapsed-time field) — this diff makes the same wall-clock exposure support-facing via `console.warn`, but switching to `performance.now()` (monotonic, but NOT wall-clock-comparable across the fetch boundary in the same way, and a larger change to the existing readout) is out of scope for this PR per the brief. Left as a known limitation. |
+
+Verified: `bun test src/apps/explorer/FilesHome.render.test.tsx` → 48 pass, 0
+fail, no act() warnings. `bunx tsc --noEmit` over `frontend/` → clean. No
+Python files touched in this round, so `test_index_search.py` was not
+re-run (nothing in it could have changed).
+
+## App identity: `<meta name="fused-app-id">` (2026-09-17, app-id-meta)
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D884 | **An app's stable identity is a `<meta name="fused-app-id" content="<kebab name>-<8 hex>" />` tag in its ENTRY PAGE (`fused_render/app_id.py`), minted ONCE on the app's first `.fused` export and never rewritten; `export_app_file` copies it into the container index as `app_id`, and `open_app_file`/`clone_target` answer it** | Owner asked for one identifier that tells "an update of the same app" from "a different app that happens to share a name" — D397's slug (the folder basename) is neither: two people's `dashboard/` collide, a rename loses lineage. Where the id lives was the decision. **Rejected: `.fused/appfile.json`** (PR #1136's stamp) — the owner's call: `.fused/` is gitignored and rebuilt at will, so nothing tracking identity may live there. **Rejected: a new `fused.json`/`app.json` manifest at the app root** — a whole new file convention (explorer noise, docs, "what is this file") to carry one field, worth it only if a manifest is wanted for other reasons. **Rejected: git root-commit sha** — no repo for clones (D397) and one shared root for every app in the `local` monorepo (D626). **Chosen: the entry page**, because it is the one file every app must have, it is committed with the app, it ships in every `.fused`, and it already carries two markers read through the same 4 KiB head budget (`fused-app`, `fused-api-version`) — same parser shape, same migration path, zero new files. **Id shape by owner**: readable name part plus 8 random hex, not a bare uuid; validated by `ID_RE` on every read (untrusted file) and NEVER joined into a path — `_slug` stays the only path-maker. **Minted at export, not at app creation**: an identity exists to outlive the folder, and a folder that never left the machine needs none; the starter template therefore carries NO tag (a fixed id there would be copied into every new app). *Amended 2026-09-25 (owner): minted at CREATION after all — `routers/apps` stamps the fresh copy BEFORE `init_repo`'s boilerplate commit, so the tag is in history from commit one; the template still carries no tag, a fresh id is minted per copy. Observed cost of export-time minting: the stamp was a server write nothing committed, and in `~/Fused/local` every id line sat dirty until an unrelated later commit swept it in (one such sweep was a 27-file, 95 MB unscoped `add -A`). Export-time minting stays as the fallback for apps created before this; its commit gap is still open.* **Invariant**: `app_id` in a manifest ⇔ the tag is in the shipped entry — when the page cannot take the tag (read-only extract of an older `.fused`, no `<head>` anchor, or a folder that HEADS its own repo with a REMOTE — `app_git._repo_scope` resolves only an app's own `.git` or the shared `local` repo, so this is `meta_migration._has_remote`'s hands-off rule for showcase/deeplink clones, and an app nested deeper inside a user's bigger checkout IS stamped and left for them to commit) the export goes out with no `app_id` rather than a manifest-only id the next export would mint differently. **The unguarded GET `/api/appfile/export` now performs this one write** — deliberate: `downloadAppFile` (api.ts) still takes the GET whenever there is no preview capture, so gating the stamp behind the X-Fused POST would leave most real exports without an id; the write is a server-minted random tag into a folder the caller already named, never caller-chosen bytes. **Sniffable without extraction** (owner's ask): the id rides in the deflated index, one bounded `read_manifest` away; a raw-bytes `strings` grep would need a plaintext container header field (a v3 format, two hardened readers) and was not done. `clone_target` now prefers identity to slug: a `local/` folder whose entry declares the file's id is "already cloned" whatever it is named. **Known cost**: copying an app folder to start a new app copies the id; a "Duplicate app" action that re-mints is the follow-up. PR #1136 (unmerged) keys prior-version matching on the slug and should rekey on `app_id` when it rebases. | Scratch round-trip against a tmp app: first export mints `my-app-test-<8hex>` and inserts the tag right after `fused-api-version`; `has_fused_meta`/`app_entry` still hold on the stamped page; second export and an export after renaming the folder answer the SAME `app_id`; `read_manifest(...)["app_id"]` reads it with nothing extracted; a 0o444 entry exports with no `app_id`; `open_app_file` returns it. `tsc --noEmit` over `frontend/`: only pre-existing missing-module errors in `apps/claude/protocol/markdown.ts`, none in touched files. |
+| D885 | **A self-update that installs cleanly now REMOVES its Activity row from the registry (`jobs.forget`, new) instead of finishing it; there is no success row, no `DONE_MESSAGE`, and no `done` upsert at any tier. Error and cancelled rows are untouched.** The row used to end on "Installed — restart to finish" — moved to `jobs.SILENT` by #1214 so it at least stopped popping a card, but still a row in Notifications with a click. That click was the bug (Akshil, 2026-09-19): its destination was `_job_report`'s `/preferences` fallback, a LAZY CHUNK, and by the time the row existed the installer had already swapped the `.app` on disk — so the old window's fetch of that chunk 404'd and the page went blank. No tier fixes a row whose only affordance is a trap, and the row had nothing to say either: reaching "installed" is exactly what raises the blocking restart dialog (D2), which carries the same sentence AND the button. `jobs.forget(job_id)` is a third verb beside `dismiss` (a user's ✕, which refuses live work) and `_sweep`'s age-out (a clock): the PRODUCER saying its row has nothing left to say, so it may take a row that is still `RUNNING`. It funnels through the same `_forget`, so the id is remembered and a straggling tick cannot re-create the row, while a genuinely fresh attempt (an opening report stating `state: "running"`) reopens it. There is no HTTP route into it — a page reports, it never deletes. **The running row is unchanged** (bytes, phase, ✕, heartbeat) and so are the `error`/`cancelled` rows: those carry information nothing else on screen does, and neither path has swapped the app, so their `/preferences` destination still loads. **`page="/preferences"` is therefore KEPT**, not dropped with the success row: a terminal notification with neither `action` nor `page` resolves to `transient` (`notifications.ts::isTransient`), so dropping it would quietly stop a cancelled update from being KEPT in the list. **Second half, the modal:** `ServerStatusBanner` now probes `/api/config` the instant the shared update store transitions to `installed`, instead of waiting out its own 5 s `POLL_MS`. `bannerSurface` already opened the dialog on either door (D2), but only the probe carries `installed_version` — the version the dialog's title is made of — so the seconds between the two clocks were spent on a title falling back to `latest_version`. One probe per transition INTO `installed` (a ref re-arms only when the state leaves it), and it only ASKS: no restart is started and `restart-store`'s wake semantics are untouched. | `fused_render/jobs.py::forget`, `update/_manager.py::_install`/`_job_forget` (shared by mac and linux — neither platform writes its own terminal row), `frontend/src/platform/ui/ServerStatusBanner.tsx`. Tests: `tests/test_mac_update.py::test_a_successful_install_leaves_no_row_behind` / `test_a_removed_row_cannot_be_resurrected_by_a_late_tick` / `test_the_running_download_row_is_untouched_by_the_removal`, `tests/test_linux_update.py::test_a_successful_install_swaps_the_appimage_and_writes_the_stamp`, `tests/test_jobs_api.py::test_forget_takes_a_running_row_a_dismiss_would_refuse` / `test_a_forgotten_row_refuses_late_ticks_but_not_a_fresh_start`, and the new `frontend/src/platform/ui/ServerStatusBanner.test.tsx` (the probe fires on the transition, once, with no timer advanced). |
+| D886 | **A per-request `thinking` boolean, threaded client -> wire -> worker -> chat template, unifies the two local text runners under ONE default: thinking ON when unset. This reverses AI-11d's "off by default".** | `mlx-community/S1-mini-MLX-4bit` (a Qwen3-0.6B transcript normalizer used by the OpenWhisper app) was unusable through `mlx_text/worker.py`: its model card requires `enable_thinking=False`, and that runner's text path passed no such kwarg at all, so the template's own default (ON for Qwen3-family models) always won — there was no way for a caller to ask for anything else. Investigating turned up that the two local runners already silently disagreed: `mlx_text/worker.py` defaulted thinking ON (by omission), `runners/llama_text.py` passed `enable_thinking=False` unconditionally (AI-11d's choice). The GGUF build of S1-mini therefore worked BY ACCIDENT while the MLX build was broken. Owner decision (2026-09-21): unify on ON by default in BOTH runners, accepting the two costs AI-11d originally weighed against this — S1-mini's GGUF build (which worked by accident) now needs `thinking: false` passed explicitly, same as its MLX build always will; and a slow CPU machine gets think tokens (invisible latency) by default unless a caller opts out. Wire/client name is `thinking` (boolean); the worker's own vocabulary stays `enable_thinking` — `server/ai.py`'s `_local_relay` is the one place camelCase meets snake_case (D633), same as `maxTokens`/`topP`. Tri-state throughout: unset/`true`/`false`, with unset kept distinguishable from `false` end-to-end (the `{k: v for k, v in d.items() if v is not None}` filter in `_local_relay` already gives this for free; `mlx_text/worker.py::_messages_to_prompt` passes NO `enable_thinking` kwarg at all when unset, so the templated prompt stays byte-identical to before this flag existed). `_TEXT_OPTIONS`/`_OPTION_NAMES` (`server/ai.py`) validate the type (400 on non-bool) and treat it as a D631 *tunable*, not a *semantic* flag: Apple and Claude tiers warn (`{type: "unsupported-setting", ...}`) rather than 400. `mlx_text/worker.py`'s retry-on-`TypeError` (a tokenizer whose `apply_chat_template` rejects an unexpected keyword) is carried over from the removed transformers runner (AI-11d); `runners/llama_text.py` needs no such retry since Jinja silently ignores a context variable a template never reads. Client surfaces kept 1:1 (D470): `runtime.js`'s `textKeys`/body-population and `fused_ai.py`'s `text()`/`stream()` both gained `thinking`, and a new drift-guard test (`test_the_bridges_accepted_text_keys_match_the_servers_constant`) now pins `textKeys` against `_TEXT_OPTIONS` — the guard the other three AI capabilities (`imageKeys`, `transcribeKeys`, `videoKeys`) already had but text never did. **Rejected: keep the per-runner status quo** (MLX thinking ON, GGUF thinking OFF) — the bug this fixes IS that disagreement; a caller cannot reason about one setting that means opposite things depending on which runner happened to load the model. **Rejected: unify OFF, matching AI-11d's original reasoning** — the owner's call: the invisible-CPU-latency cost is real but is now something a caller can opt out of per-request, where OFF-by-default would have left `mlx_text/worker.py` with the SAME structural gap this bug report is about (never mind that it currently defaults on by omission — a hardcoded OFF would remove the freedom to turn it back on for a model that benefits from it). **Rejected: per-model catalog metadata that sets the flag automatically** — a real alternative design, not chosen; out of scope for this build, and left as a candidate follow-up (S1-mini's catalog entry could carry `thinking: false` as a default the page needn't specify itself). | `tests/test_ai_runtime.py` (wire validation, drift guard, tri-state reaching the worker as `enable_thinking`, Apple/Claude-tier warnings) — 577 passed; `tests/test_fused_ai_client.py` (client mirror) — 50 passed; `tests/test_ai_mlx_worker.py` (unset passes no kwarg, explicit true/false, `TypeError` retry, image-path default+override) — 34 passed; `tests/test_ai_llamacpp_worker.py` (default flip to `True`, explicit override, threaded from `generate`) — 64 passed. |
+| D887 | **A sixth `fused.ai` verb, `fused.ai.decide({state, questions})`, backed by Laya through `laya-mlx` as a LOCAL-tier `Runner` (`laya-mlx`) — not a fourth provider — under a new capability constant `DECISIONS = "text-classification"` that IS the Hub tag.** | Laya is a typed-decision model, not an LLM: a bidirectional encoder with decision heads reads a `state` (string, JSON record or conversation) plus typed questions and answers with CALIBRATED PROBABILITIES — `choice` over labels, `score` as the expected zero-based level of an ordered rubric, `noul` as P(true) — with ZERO output tokens. None of the five verbs fit (owner, 2026-09-22: "we can add a new verb"), and forcing it under `text` would have meant parsing prose back into numbers the model already holds. **Local tier, not a provider**: a tier is an engine family (D700's correction of D631), and this is MLX weights in the Hub cache loaded by a Python worker — exactly what `local` means — so the runner inherits the supervisor's resident slot (AI-4), download jobs (AI-5), disk-measured progress, mirror (AI-5l) and the Local-tab card unchanged; `AI_PROVIDERS` is untouched and `claude`/`apple` answer 409 `unavailable` through `_provider_rejection`, as image/video/embed already do. **Constant equals tag** (the `SPEECH_TO_TEXT` precedent): the repos' `pipeline_tag` is `text-classification`, so `tasks.py`'s existing row flips from unserved to `DECISIONS` and a cached Laya snapshot classifies off its own card with no invented vocabulary. Every sentiment BERT shares the tag, so `formats.DECISIVE` gains `laya-mlx` claiming ONLY a snapshot holding `rl_agent_config.json` PLUS an `encoder/` folder (`formats.is_laya_snapshot`) — Laya's own manifest and layout, present in no other family — and a plain text-classification repo keeps reading as "capability known, no engine here reads this format". **Route is the embed shape**: `POST /api/ai/decide` with a closed envelope (`state`, `questions`, `model`, `provider`; D633), `catalog.default_for(DECISIONS)` when unnamed, cold model = `ModelNotReady` → load STARTS and the 409 `model_loading` carries its job id; one forward pass per question answers in milliseconds once resident, so there is no job to hide a fetch in and nothing to stream. `supervisor.generate_embed`'s body becomes `_generate_sync(capability, model, body)` and both verbs call it. **The worker hands `laya_mlx.load()` the snapshot DIRECTORY**, never the repo id — the library's `resolve_model` calls `snapshot_download` on a bare id and would fetch behind the app's back (no progress row, no mirror, no ✕); `download` goes through `worker_base.download_snapshot` and `load` only ever reaches the local branch. Reply = `common.ai_result` (D632) with `answers` as payload; Laya's per-answer keys pass through except `action.act_probability` → `actProbability` (the one snake key on a camelCase wire, D633); Laya's `"model": "laya-rl-agent"` is dropped for `response.modelId`; `usage.outputTokens` is always 0. **Catalog**: the two pre-converted standalone FP16 repos — `aac6fef/laya-multilingual-mlx` (322M, 0.68 GB, 1024-token context) at position 0 by AI-7d's smallest-first rule and therefore the bare default, `aac6fef/laya-mlx` (421M, 0.85 GB, 512 tokens, English) `recommended` (AI-11i) so the Playground pick and English-first pages land on it (owner: accept the size rule, mark English recommended). Onboarding's Models step EXCLUDES the capability like video (owner: exclude) — a 0.85 GB offer to every fresh install with no visible use. Playground gets a Decide stage in the same PR (owner: "do it now"). **Rejected: `provider: "laya"`** — a tier per model skips everything the local tier already gives and contradicts D700's definition. **Rejected: verb names `classify`** (score and noul are not classes) **and `judge`** (LLM-as-judge connotation; nothing here generates). **Rejected: an invented tag `"typed-decisions"`** — breaks constant-equals-tag and a cached Laya repo would classify off its card as unknown, dropping it from the Local tab. **Rejected: the bundle repo `convaiinnovations/laya`** — three checkpoints in one download, `transformers`-tagged, needs a `subfolder=` no other row has; and the `typed-decisions` variant, useful only with upstream's preset workflows. **Rejected: job-backed or streaming shape** — nothing to show progress on for a ~13 ms call, no tokens to stream. | `tsc --noEmit` over `frontend/` and `py_compile` over the touched modules; owner runs the UI (owner skips test runs, D-row-per-feature default waived for this one by owner's ask). SPEC §40 AI-31; `skills/fused-render-ai/SKILL.md` decide section. |
+| D888 | **App Doctor's `pyproject` row is now required (`fail` when `pyproject.toml` is absent, at unchanged `warning` severity), and `ci/app_check.py`'s floor engine gained a matching `structure:missing-pyproject` fact at `suggested` — a step below `readme`'s/`preview`'s tier only in that it never blocks `main`'s exit code, so no repo passing CI today starts failing.** A folder's dependencies used to be declared, or not, with no signal either way (D230 says they belong in `pyproject.toml`; App Doctor never checked). Two gaps accepted deliberately rather than overlooked. First: for an app OUTSIDE `fused_dir()`, `projectenv.project_root_for` resolves the environment to the TOPMOST ancestor `pyproject.toml`, so a correctly-declared monorepo app still fails this folder-local check, and adding a folder-level file makes the row green without changing which environment the app actually runs on — accepted as in scope for "always required, folder-local" (owner's confirmed decision, not reopened here); revisit if adopted-into-a-monorepo apps become common. Second: `ci/app-check.yml` runs `pip install -e "$app"` once a folder carries a `pyproject.toml` at all, and an install failure only skips that app's tests with a `::warning::` rather than failing the run — pre-existing behavior, but this change makes it more reachable since more folders now carry the file. | Rejected: promoting the modal row past `warning` — sits with `readme`/`icon`/`preview`, not `critical`. Rejected: making the floor engine's rule anything but `suggested` — `critical`/`warning` fact findings are the only ones that exit `main` 1, and a required-by-default file across every existing app would otherwise turn on CI failures with no fix in hand. | `fused_render/app_doctor.py`, `skills/fused-render-app-doctor/ci/app_check.py`, `tests/test_app_doctor_report.py`, `tests/test_app_doctor_housekeeping.py`, `tests/test_app_doctor_cli.py`. |
+| D889 | **`tests/test_apps_api.py`'s `workspace` fixture now isolates `FUSED_RENDER_HOME` per test (`monkeypatch.setenv` + `exported_apps._clear_cache()`), matching `test_appfile.py`/`test_appfile_clone.py`/`test_exported_apps.py`, which already did this for the same documented reason.** Windows CI on the pyproject-required branch (D888) showed 10 NEW failures, all in `test_apps_api.py`, all showing a `demo`/`Fused-App`-tagged entry leaking into `/api/apps` listings that never created one. Root cause: `GET /api/apps` unconditionally unions in `exported_apps.exported_apps()`, which is keyed off `storage.home_dir()` (`FUSED_RENDER_HOME`); `tests/conftest.py` only allocates that env var ONCE, at import time, for the whole pytest-worker session — so any test that records an exported `.fused` open (`exported_apps.record_open`, the same call `POST /api/appfile/open` makes) into that shared, un-isolated home leaks a `Fused-App` row into every LATER `/api/apps` assertion made in the same worker. `test_apps_api.py`'s own `workspace`/`client` fixtures isolated only `FUSED_RENDER_DIR`, never `FUSED_RENDER_HOME` — the one file touching `/api/apps` that didn't defend against a hazard three sibling files already isolate against by name (`test_appfile.py` even carries a comment naming this exact leak). The PR itself (D888) touches none of these files; it is an ordering/scheduling side effect (new tests shift which files land in which Windows CI worker, or in what order), not a direct code coupling — which is why it could not be reproduced by serial execution on macOS, and why the exact upstream writer was never pinned down with certainty. Given that, the fix applied is the same isolation already proven correct elsewhere in this codebase, not a guess: it removes the ONLY structural gap found across every `/api/apps`/`exported_apps`-touching test file, regardless of which specific test is the actual writer on Windows CI. A companion regression test, `test_an_export_recorded_by_a_prior_test_does_not_leak_into_apps`, reproduces the leak directly on macOS (confirmed to fail without the fix and pass with it) by recording an export against a stand-in "prior shared home" outside this file's fixtures, then asserting a client built the normal way never sees it. | Rejected: renaming the test fixture's `demo`/leaking app instead of isolating the home dir — would hide the fixture-isolation gap rather than close it, and the same class of leak would resurface under any other app name. Not attempted: reproducing the exact Windows CI failure locally (macOS, no Windows runner available) — the fix instead targets the proven structural gap (missing isolation) rather than a guessed exact trigger. | `tests/test_apps_api.py` (`workspace` fixture + new regression test). Targeted run: `tests/test_apps_api.py`, `tests/test_app_doctor_report.py`, `tests/test_exported_apps.py`, `tests/test_appfile.py`, `tests/test_appfile_clone.py`, `tests/test_registered_apps.py` — 231 passed, `-n0` (no xdist). Not run: full suite (out of scope; orchestrator's job) or actual Windows CI (unavailable in this environment). |
+| D890 | **Page-side task management joins `window.fused` as a public `fused.tasks` namespace (list/get/create/send/cancel/archive/unarchive/delete/markRead/messages/transcript/settings/watch + a `TaskHandle` that follows the `pending:<entry>` → session-id rekey), built over the existing `/api/tasks` routes plus three thin new ones — `POST /api/tasks/create` (schedule.create + run_now, origin `"page"`), `POST /api/tasks/{key}/send` (live host inbox or spawn_helper resume; project-queue flag → `queued:true`), `POST /api/tasks/{key}/cancel` (agent._cancel: interrupt then kill) — and `GET /api/tasks` + `/changes` gain `?scope=app` / `?under=<dir>`. Present-and-throws on hosted pages; the `/api/tasks` write routes' missing X-Fused guard is closed.** | Owner decisions 2026-09-29. (1) PUBLIC, not a `_fused*` internal: the D205 precedent for going internal was a clobber footgun; there is none here, so hiding it would only hide it from authors. (2) App scope by DEFAULT, filtered SERVER-side: a page's board is about its own folder, and filtering client-side would ship every task title on the machine to every page. `scope:"all"` stays opt-in. (3) `permissionMode` defaults to `"default"`, NOT the scheduler's `"auto"`: a page can start work nobody is watching, so asks park as `needs_attention` for the human in the Tasks page; `"auto"` is an explicit author choice. (4) `markRead` + `archive`/`unarchive`/`delete` allowed; `erase` (deletes the transcript) is NOT — irreversible, Tasks-page only. Also withheld: queue doors admit/skip/force/decide and the running/idle marks (those are the scheduler's and the shell's bookkeeping, not an app's). (5) Exporter NOT taught to block it: dotted `fused.tasks.list(` slips the `fused.<name>(` check exactly like `fused.ai.image(`, and it stays a `fused.env === "local"` gating obligation for the same reason (a board behind that branch is legitimately exportable); hosted runtime throws like `writeFile` rather than stubbing, since an empty board would lie. (6) Coexists with `_fusedAskClaude`: that opens the sidebar for the human; `tasks.create` is headless and returns a handle. Rejected: a stub on hosted (silent empty board); client-side scope filter (leaks); reusing scheduler's `"auto"` default (unattended tool use from any page). Guard gap: read/archive/unarchive/delete/erase/settings/running/idle lacked the X-Fused check every other write router had ; now required, matching the rest. Also adds the missing EXPORT.md row for `fused.daemon.*` (❌, needs a local server). No fused-api-version bump: additive namespace. Cost: one shared long-poll of `/changes` per document; status is derived per listing so a board can flicker for ~15 s after a send. Docs: docs/EXPORT.md portable-subset rows, skills/fused-render-tasks/SKILL.md, authoring-skill `window.fused` row. *(Follow-up, same day: `fused.tasks.ui({view, task, scope}) -> Promise<url>` hands a page the shell's own Tasks page for an `<iframe>` — `GET /api/tasks/ui` builds `/tasks?embed=1[&project=<dir>][&view=..][&peek=<key>]` server-side, so the page never guesses its app folder and the shell's param names live on one side of the wire. NEW SHELL RULE: `?embed=1` on ANY route is embed mode, beside the `/explorer/embed/` path prefix (`router.ts` `IS_QUERY_EMBED`; `IS_EMBED` is the OR), because the Tasks page has no embed path and one flag beats a second sentinel route; `IS_TOP_EMBED` stays false when framed, so no EmbedStrip; the flag is read once at load, so in-app navigation that drops it keeps the chrome hidden until a reload. `?project=<dir>` scopes `/tasks` like the app page's Tasks tab but draws its own peek frame (`TasksScope.ownFrame`), the peek never writes the host's shared `sidebarstate` under embed, and `body.embed .schedule-page` drops the page gutter so the host frame's is the only one. Not done: lifting the 760/1050px column cap inside the frame — owner's call.)* | `py_compile` + `node --check`; the six task-API test files plus `test_tasks_queue_api.py` pass with the `X-Fused` header added (692), and the seven other files that touch the task API pass (192); the runtime namespace is not under test — owner verifies live |
+
+## Search grammar follow-up: trailing space + icon*copy agreement (2026-09-17, worktree-search-trailing-space)
+
+Follow-up to PR #1184 (D-series that shipped `expand_whitespace_query`). Two
+bug reports: (1) a trailing space was silently trimmed (`*.js ` searched for
+`*.js`); (2) `icon copy` found `icon copy.png` but `icon*copy` found nothing,
+because the typed `*` produced an anchored pattern requiring the name to END
+in "copy" — the two spellings of "contains both pieces" disagreed.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **`expand_whitespace_query` no longer trims, and its one no-op condition is now "neither whitespace nor `*` anywhere" (not "no whitespace")** | Rule 2 in SPEC-search-space-wildcard.md ("a whitespace-free trimmed string is returned unchanged") was the actual root cause of both bugs: trimming ate the trailing space, and a whitespace-free glob like `icon*copy` skipped the final-segment wrap entirely, so it stayed anchored. Removing both — no trim, and wrapping fires on `*` too — fixes both reports with the SAME rule, not two patches. | `tests/test_index_query.py::test_expand_whitespace_query_required_behavior_table` (12 rows) and its TS mirror in `home-search.test.ts` pin every row; `test_expand_whitespace_query_does_not_trim` and `_wraps_a_whitespace_free_glob_too` isolate each bug's fix individually. |
+| D-new | **Rule 4 wraps each END of the final segment independently (`prepend unless starts with *`, `append unless ends with *`) rather than "wrap unless the segment has any `*` at all"** | The old all-or-nothing check (`!segment.includes("*")`) is what anchored `icon*copy` — the segment had a `*`, so wrapping was skipped entirely, including the leading `*` that would have let it match a "copy" prefix too. Checking each end separately means a segment with a `*` in the MIDDLE (not touching either edge) still gets both ends wrapped, while a segment already ending in `*` (`report*`) only gets the missing end (`*report*`, not `**report*`). | `test_expand_whitespace_query_wraps_only_the_end_that_needs_it` and `test_expand_whitespace_query_never_stacks_a_star_beside_a_user_star` (both files) pin the per-end and never-`**`-invented behavior. |
+| D-new | **Accepted, not special-cased: every glob query now ends in `*` after expansion, including a bare `*.pdf` (`*.pdf*`), and a single space (`"icon "`) now flips straight into unranked glob mode** | Both are the SPEC's own "known, accepted consequence" — precision loss on a previously-precise extension glob (`*.pdf` also matches `report.pdf.bak`, `notes.pdfx`), and relevance ranking lost the instant a query gets ANY trailing whitespace typed mid-search. `_glob_sql` deliberately gains no scoring to compensate, per the SPEC's explicit "do not add scoring to `_glob_sql`" instruction. | No test asserts precision is preserved for a whitespace-free glob (the opposite is pinned: `test_expand_whitespace_query_wraps_a_whitespace_free_glob_too`, `test_search_under_a_star_query_now_globs_instead_of_staying_literal`). |
+| D-new | **`search_under`'s mode switch changed from `expanded != q_trimmed` ("did the transform do anything") to `"*" in expanded`, mirroring `resolve_query`'s own `is_glob` check** | The old predicate's implicit guarantee — "a whitespace-free `*`-containing `q` stays literal" — is now false, since Rule 4 wraps a whitespace-free glob too. The predicate had to be re-derived from what it actually needs to answer ("does the expanded string want glob-to-regex matching"), not patched to special-case the new wrap. | New test `test_search_under_a_star_query_now_globs_instead_of_staying_literal` (`tests/test_index_search.py`) pins `q="*.md"` now matching `beta.md.bak` too, not staying a literal-`*` `ILIKE` match. |
+| D-new | **`glob-broaden.ts`'s "genuinely widens" check now compares RESOLVED patterns (`expandWhitespaceQuery(candidate) !== expandWhitespaceQuery(current)`), not raw query text** | Exactly the bug class the ladder was previously patched for on the whitespace-only path (`looksLikeGlob`'s doc comment), now generalized: since every glob query's resolved pattern already ends in `*`, rung 1 ("append a trailing `*` to the raw text") almost always resolves to the IDENTICAL pattern the zero-hit search already ran — a raw-string comparison would offer a rerun of the exact same search. Fixed by running each candidate back through `expandWhitespaceQuery` before comparing. Direct, measurable consequence: a bare slash-free glob like `*.js` now has **nothing left to offer** (`broadenGlobOffer("*.js")` is `null`, not `{pattern: "*.js*", ...}`) — there is genuinely nothing broader to search for any more, since `expandWhitespaceQuery` already gave it maximum breadth. `looksLikeGlob` (gating pure-whitespace queries with no literal `*` out of the ladder entirely) was deliberately left in place, not generalized to "would this resolve to glob mode" — narrowing scope to the correctness bug rather than also expanding rung-2 eligibility to whitespace-only multi-segment queries, which the SPEC never asked for. | `glob-broaden.test.ts` (15 tests) rewritten in place: 5 assertions changed from a "Widen the name" offer to either "Look in subfolders" (when a genuine rung 2 exists) or `null` (when it doesn't); `zero-match-offer.test.ts`'s one now-null case switched its `q` fixture to one with a `/` so it still demonstrates a genuine offer landing. All pass. |
+| D-new | **`SearchField.tsx`'s `SEARCH_GRAMMAR_HINT` reworded, not just appended to** | The existing `*.pdf — a pattern, at any depth below` line became actively misleading once `*.pdf` behaves like the space rule (matches the pattern anywhere in the name, not just as a suffix). Reworded to `*.pdf — names containing that pattern, at any depth below` / `/*.pdf — same, in this folder only`, matching the phrasing already used for `hello world`. No test pins the literal hint string (confirmed via grep — `search-completion-width.test.ts` only checks the constant NAME is referenced in the JSX, not its text), so this was a documentation-only change. | `search-completion-width.test.ts` still passes (6/6). |
+
+No deviations from the brief's required-behavior table, property test, or file list — every file named in the brief (`query.py`, `home-search.ts`, `SearchField.tsx`, `query.md`, `server-api.md`, `glob-broaden.ts`, and the six named test files) was touched. `tests/test_index_rank.py` needed no edits: its `resolve_query`/`expand_whitespace_query`-adjacent tests all call `search_ranked` with an already-resolved pattern string (`glob=True`), never a raw query run through the new transform, so nothing in that file was affected by this round — confirmed by running it (`141 passed` alongside `test_index_search.py`, both unmodified-and-green before any new tests were added to the latter).
+
+Verified this round: `pytest tests/test_index_query.py -q` → 113 passed. `pytest tests/test_index_rank.py tests/test_index_search.py -q` → 141 passed before new tests, still green with the 2 new `search_under` tests added. `bun test src/apps/explorer` → 1249 passed, 0 fail (includes `home-search.test.ts`, `glob-broaden.test.ts`, `zero-match-offer.test.ts`, `zero-match-offer-wrap.test.ts`, `ranked-hits.test.ts`). `bun test src/platform/lib/fuzzy.test.ts` → unaffected, all pass (it exercises `globMatch` directly against pre-built pattern strings, never `expandWhitespaceQuery`).
+
+## Search grammar follow-up, continued: `**` not `*`, and glob results now rank (2026-09-17, worktree-search-trailing-space)
+
+A2/A3/A4 landed (`bc8d139c5`, `c5214dcc2`) after the entry above was written,
+and changed the wildcard the whitespace transform inserts from a single `*`
+to `**` — shipped without a DECISIONS entry of its own. Recorded here
+alongside this round's own addition (glob ranking), since both change the
+same two functions the prior entry describes and the prior entry's own
+`*`-language is now inaccurate.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **`expand_whitespace_query` collapses a whitespace run to `**`, and wraps the final segment's ends with `**`, not `*` (superseding the `*`-wrap language in the entry above)** | A single `*` cannot cross a `/` — it is confined to one path segment by `_glob_to_regex`'s own tokenizer. Collapsing `hello world` to `hello*world` would therefore NARROW what a typed space matches (losing `hello/sub/world.txt`), the opposite of what typing a space is supposed to do (widen). `**` is the only token both this function and `_glob_to_regex` already treat as "any number of whole segments," so it is the only correct choice for a wildcard the function itself inserts. A `*` the USER types remains single-segment always; only inserted wildcards (the step-3 collapse, the step-4 wrap) are `**`. | `tests/test_index_query.py`'s `expand_whitespace_query` table and `home-search.test.ts`'s TS mirror pin `**` (not `*`) at every collapse/wrap site; `_glob_to_regex`'s own tokenizer tests (pre-existing) already required `**/ ` / `**` to be recognized as multi-segment tokens, so no new machinery was needed on the matching side — only the string the transform emits changed. |
+| D-new | **Whitespace-only input resolves to `""`, not to a bare `*`/`**`** | Before this rule a query that was all spaces would collapse-and-wrap into a pattern matching literally everything under the root — a user who cleared their search back to spaces (easy to do with a held backspace/space key) would get a full, unranked, unbounded glob dump instead of "nothing typed." `.strip()`-then-check is cheap and matches how an actually-empty query is already handled. | `test_expand_whitespace_query_whitespace_only_is_empty` (new, `tests/test_index_query.py`) and its TS mirror. |
+| D-new | **Part B: glob-mode results ARE scored when `ranked=True` (the default), reversing the "glob is never scored" rule the SPEC and the entry above both stated** | The `**`-insertion change above means an ordinary two-word query like `icon copy` now ALWAYS resolves to glob mode (any query containing whitespace does) — so "glob is unscored" stopped being a rare edge case affecting only power-user glob syntax and started being the common path for the everyday two-word search, which absolutely needs relevance ranking (a tight match like `icon copy.png` must outrank `icon-a-very-long-thing-copy.png`). The old "equal match, no ranking signal" premise was true when globs were narrow and hand-typed; it stopped being true the moment whitespace started producing wide `**` patterns with many arbitrarily-ordered hits. | `test_glob_ranking_a_tight_match_beats_a_long_wildcard_swallow`, `test_glob_ranked_hits_carry_a_real_score` (`tests/test_index_rank.py`). |
+| D-new | **Scoring formula: per literal run (the pieces of the pattern between `*`/`**` tokens), reuse `_rank_sql`'s `n + 3*(n-1)` run-length term, `segment_starts` hump-bonus, and basename `name_bonus`; sum across runs; subtract a wildcard-swallow penalty `length(rel) - sum(literal lengths)`; apply NO bonus for total matched length** | Reusing the substring scorer's per-run terms means a glob hit and a substring hit that happen to match the same characters are scored the same way — one scoring vocabulary, not two. The swallow penalty is new: for a glob, unlike a substring, the total matched length is a `*`-swallowed segment, not something the user typed — a longer swallow means the pattern matched a WORSE (less specific) target, so it is penalized, not rewarded. This is the opposite of substring scoring's run-length term, which is why no "longer match wins" bonus was carried over: for a glob, longer is never better. | `test_glob_ranking_a_tight_match_beats_a_long_wildcard_swallow` (`icon copy.png` beats `icon-a-very-long-thing-copy.png` for the same pattern) pins the penalty; `test_glob_ranked_hits_carry_a_real_score` pins that the two hits get DIFFERENT (not tied) scores from the reused per-run terms. |
+| D-new | **`ranked=False` and "pattern has zero literal runs" (e.g. `**/*` from a bare `*`) both take a SEPARATE, unscored SQL branch (`_glob_sql`'s `literals=()` case) — no scoring expression is ever built, then discarded** | D703's cancellation-gap lesson: every scored statement must be one thing `con.interrupt()` can reach, so a "compute the score, then don't use it" path would be both wasted work and a second code path to keep correct. Unifying `ranked=False` with "no literals to score" avoids a third branch and a divide-by-zero (an empty `literals` list has no runs to sum a penalty over). | `test_glob_unranked_reproduces_the_old_depth_then_alpha_order`, `test_glob_unranked_sql_has_no_scoring_apparatus` (asserts `"score"`/`"segment_starts"`/`"strpos"` are textually absent from the generated SQL, not merely unused), `test_glob_pattern_with_no_literal_runs_uses_the_unscored_order`. |
+| D-new | **Literal-run extraction (`_glob_literal_runs`) walks the pattern with the SAME three-way tokenizer `_glob_to_regex` uses (`**/ ` as one token, then bare `**`, then lone `*`), not `re.split(r"\*+", pattern)`** | The naive split is wrong: for `"**/*"` it reports a literal `"/"` between two star-runs, but `"**/ "` is a SINGLE token that can match ZERO whole segments — there is no `/` guaranteed to exist in a match, so scoring a bogus `"/"` run computes a real-looking but meaningless score. Caught by a failing test before this was noticed, not by inspection. | `test_glob_pattern_with_no_literal_runs_uses_the_unscored_order` failed with a real but wrong score (`-3` instead of `0`) under the naive-split version; passes now that `_glob_literal_runs` returns `[]` for `"**/*"`. |
+| D-new | **Hit dict key sets stay identical across substring / ranked-glob / unranked-glob branches** | The HTTP layer's `_WIRE_DROP` (`server/routers/index.py`) strips `score`/`tier`/`depth`/`longest_run`/`positions` unconditionally before the response goes out, regardless of which branch produced the hit — so any branch-specific key would be invisible on the wire but would still break internal callers (tests, any future in-process reader) that inspect the dict directly. | `test_glob_ranked_hits_carry_a_real_score` asserts the exact key set `{"rel", "is_dir", "size", "mtime", "score", "longest_run", "tier", "depth"}` on a ranked-glob hit; existing substring/unranked-glob tests already pinned the same set. |
+
+**Docs**: `fused_render/index/specs/query.md` §3 rewritten for `**` (not `*`)
+insertion, the whitespace-only→empty rule, and glob-mode scoring (was
+"never scored," now describes the literal-run/swallow-penalty formula).
+`server-api.md` §7 updated to match, and its `hits` shape corrected in the
+same pass to name the wire-dropped fields — `{rel, is_dir, size, mtime}` on
+the wire, not the full `{..., score, longest_run, tier, depth}` set the text
+previously implied every consumer sees (a pre-existing inaccuracy, unrelated
+to this round's grammar change, fixed while already rewriting the adjacent
+text). `SearchField.tsx`'s `SEARCH_GRAMMAR_HINT` reworded ("in that order,
+even split across a subfolder" instead of "space works like *") since a
+two-word query can now match across a folder boundary, which the old copy
+did not describe and would have undersold.
+
+**Open finding, not fixed here**: `useListingSearch.ts`'s own header comment
+states plainly that no live-walk fallback path exists any more — every
+in-folder query resolves through `/api/index/rank`, with an on-demand scan +
+poll for an uncovered folder, never a client-side walk. This appears to
+contradict older comments still present in `query.py`, `server-api.md`
+("reserves the live streamed walk for the folders no scan can ever cover"),
+and this file's own now-superseded September 16 entry above ("`fuzzy.ts` ...
+still ranks the live streamed walk for the folders no scan will ever
+cover"). Flagging rather than resolving: reconciling which statement is
+current needs someone who can confirm whether the live-walk code path was
+actually deleted or merely stopped being reachable, which is outside this
+round's Part B/docs scope.
+
+Verified this round: `pytest tests/test_index_query.py -q`,
+`pytest tests/test_index_rank.py -q` (56 passed, including 4 new glob-ranking
+tests), `pytest tests/test_index_search.py -q` — all green.
+`bun --cwd frontend test src/apps/explorer` → 1266 passed, 0 fail (the one
+`document is not defined` line in the output is a pre-existing React/JSDOM
+console warning in `FilesHome.render.test.tsx`, not a test failure).
+
+
+## Search grammar follow-up, code review round: interior-only swallow penalty, tier restored, and three smaller fixes (2026-09-17, worktree-search-trailing-space)
+
+Code review of the "continued" round above (glob ranking) found the swallow
+penalty it landed was charged over the WHOLE root-relative path, not just the
+`*`s' own interior span — inverting rankings whenever a shallow, weak match
+competed with a deep, exact one. Fixing that also meant restoring `tier` as
+glob mode's primary sort key (dropped to a fixed placeholder when ranking was
+added), since a score-only ordering is exactly what let the inversion reach
+the user in the first place. Four smaller, independently-found issues from
+the same review are recorded here too, since all six touch the same round's
+files.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **The glob wildcard-swallow penalty is charged on INTERIOR gaps only — `(last literal run's end position) - (first literal run's start position) - (sum of literal lengths)` — never the leading or trailing `**`** | The previous formula, `length(rel) - sum(literal lengths)`, charged the swallow over the ENTIRE root-relative path, including everything the pattern's own leading `**` legitimately reaches across (every ancestor directory) and everything past the last literal run. That is not "wasted" match, it is the leading/trailing `**` doing exactly what a glob wildcard is defined to do — reaching arbitrarily far. The bug this produced: a deep, EXACT match (`deeply/nested/path/report`, basename == query) scored WORSE than a shallow, non-exact one (`xreport.txt`) for `**report**`, because the deep file's long ancestor path was charged against it as "swallow" even though no `*` in the pattern had to eat through anything to find the match — the leading `**` simply started further from the root. The interior-only formula charges nothing for that: with a single literal run (the common case — most everyday queries produce one literal run bracketed by `**`), the interior span is empty and the penalty is always 0, restoring `name_bonus`'s +100 exact-basename bonus to its intended weight instead of being swamped by a path-length term that had nothing to do with match quality. **Rejected: keep the whole-path penalty and compensate with a bigger name_bonus** — papering over a wrong formula with a bigger fudge factor on top of it either over- or under-corrects for every OTHER depth, since the whole-path penalty scales with depth linearly and unboundedly while any fixed bonus does not. | `test_glob_single_literal_run_score_matches_rank_sql_substring_score` (new, `tests/test_index_rank.py`): a single-literal-run glob query's score is compared row-for-row against `_rank_sql`'s substring score for the equivalent query across a 4-file corpus (including a folder/file name collision case, excluded per the fixture gotcha below) — every score matches EXACTLY (0 diff), which is the algebraic identity the interior-only formula guarantees (a telescoping sum of zero interior gaps). Before the fix this same test failed with real, non-trivial diffs (e.g. `39 == 43`), confirming the whole-path formula was not merely imprecise but actively wrong. `test_glob_tier_restores_correct_order_over_the_swallow_penalty` pins the motivating case directly: `deeply/nested/path/report` now outranks `xreport.txt` for `**report**`. |
+| D-new | **`tier` is generalized to glob mode (re-running the pattern's own resolved regex against `nm`, the basename alone — a match is tier 1, anything else is tier 3) and restored as the PRIMARY sort key: `tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC`, for both modes** | The glob-ranking round (entry above) added scoring but left `tier` as a fixed placeholder (`0`) and dropped it from the glob branch's `ORDER BY` entirely — meaning a basename match could rank below an ancestor-only match purely on score, which is exactly the class of bug the whole-path swallow penalty produced. Restoring tier as the PRIMARY key (ahead of score) makes that structurally impossible regardless of how the score expression is computed — a basename match always sorts before an ancestor-only one, full stop, the same guarantee substring mode already had. Substring mode's tier 2 (straddling the basename boundary) has no glob equivalent and is not synthesized for one: a glob pattern's own tokenizer already treats `/` as a hard boundary between segments, so there is no partial-basename-match case for a glob to straddle. **Rejected: keep tier as a glob-mode no-op and rely on the swallow-penalty fix alone** — even a correct score expression is one future edit away from a similar inversion; a structural sort-key guarantee is cheaper to keep correct than a formula is. | `test_glob_tier_generalization_ancestor_only_ranks_below_a_name_match` (new): a basename match (tier 1) ranks above an ancestor-only match (tier 3) even though the ancestor-only file has a numerically higher raw score potential; `test_glob_ranked_hits_carry_a_real_score` updated (`tier == 0` -> `tier == 1`, since both fixture files' basenames contain both literal runs) to assert the REAL computed tier, not the old placeholder; `test_glob_unranked_sql_has_no_scoring_apparatus` extended to also assert `"tier"` is textually absent from an unranked glob's generated SQL — `ranked=False` still emits no scoring apparatus at all, tier included. |
+| D-new | **Fixture gotcha, recorded so the next test author doesn't rediscover it**: every folder that holds an indexed file gets its own row in the dirs table (`Sink.add`), so a folder whose NAME equals the search query shows up as its own tier-1, `name_bonus`-boosted hit alongside whatever the test actually meant to assert about the files inside it — it must be excluded explicitly (`if h["rel"] != "<folder name>"`) or it silently dominates any ordering assertion. | Not a code change — a testing-methodology note. Both new tier tests above hit this directly (`test_glob_tier_generalization_...`'s `alpha/` folder, and the swallow-penalty invariant test's `icons/` folder) and needed the explicit filter; recorded here so it is not treated as a flake or a fixture bug the next time it appears. | Both tests pass with the filter in place; removing the filter (checked by hand, not left as a lingering assertion) reproduces the extra `alpha`/`icons` row exactly as described. |
+| D-new | **`FilesHome.tsx`'s reload effect calls `runAi(initialQuery)` UNTRIMMED, not `runAi(initialQuery.trim())`; the `.trim()` stays only on the guard (`if (initialQuery.trim())`)** | `query`'s `useState` is seeded from the same `initialQuery`, byte-for-byte, so the page's live `q` can carry a real trailing space (`?q=report+` round-trips to `"report "`). `showingAi` requires `ai.query === q` exactly; trimming only on the AI-call side meant a restored trailing-space query billed a model call on every reload but its `ai.query` ("report") could never equal `q` ("report "), so the result never rendered — paid for, never shown. The guard keeps its own trim because a PURELY whitespace `?q=` genuinely has nothing to search for and must not re-bill anything. **Rejected: trim `q` itself on mount instead** — would reintroduce the trailing-space-is-meaningful regression this whole round of work (D-new entries above) exists to fix; the two sides of `showingAi`'s equality must agree on the SAME untrimmed string, not both be trimmed. | New reload test in `FilesHome.render.test.tsx` (fetch stubs added for `/api/ai` and `/api/search/files`, and an `initialQuery` override added to the file's `mount()` helper): mounting with `initialQuery: "report "` resolves the AI pipeline and asserts the `fh-ai-badge`/AI hit actually renders. Confirmed to fail for the right reason against the pre-fix `.trim()` call (temporarily reintroduced by hand, reverted after confirming) — `fh-ai-badge` count 0 instead of 1. |
+| D-new | **`narrowAnswer` also takes the glob-matching branch when `willResolveToGlobMode(q)` is true, even while the HELD answer's own `mode` is still `"substring"`** | `behind` (a query that only grew, e.g. `"report"` -> `"report "`) used to imply the held answer's mode was still a valid lens to re-filter through — no longer true, since a trailing space alone now flips the resolved mode to glob (this round's `**`-wrap change) while the held answer is whatever the server last actually returned, i.e. still `"substring"`. Without this, that single keystroke ran the SUBSTRING branch (`substringMatch`) against a query that had just gained a wildcard-worthy trailing space, matched nothing, and blanked the whole list for a full debounce + round trip — precisely the flash `narrowAnswer` exists to prevent. Proven safe, not just patched: a held substring hit already satisfies "contains X" literally, and `expandWhitespaceQuery` only wraps that in `**...**` when the sole change is appended whitespace, so `globMatch` against the wrapped pattern reduces to the identical test the substring hit already passed. The REVERSE direction (glob-mode held answer, query stops needing glob) is deliberately NOT symmetrized: it still only enters this branch via `answer.mode === "glob"` and still bails to `[]` there, because a glob answer's hits are not provably a subset of what a fresh substring answer would be. | New test in `home-search.test.ts`: a held substring answer for `"report"` (`["report.csv", "other.txt"]`), narrowed against `"report "`, now returns `["report.csv"]` instead of `[]`. Confirmed to fail (blank result) against the pre-fix `answer.mode === "glob"`-only condition. |
+| D-new | **`home-search.ts`'s `expandWhitespaceQuery` no longer relies on JS's native `\s`/`String.trim()`; a `NON_BOM_WS` (`[^\S﻿]`) class is used everywhere the function needs "whitespace," matching Python's `\s` exactly** | The function's own docstring claims byte-equivalence with `expand_whitespace_query` (query.py) — that claim was false for one input: JS's `\s` (and `.trim()`) treat U+FEFF (a leading BOM some editors/OSes prepend) as whitespace; Python's `\s` does not (Unicode category Cf, not a whitespace category). A BOM-prefixed literal therefore took DIFFERENT branches of the same documented rule in the two languages — substring mode server-side, glob mode client-side — which matters because `willResolveToGlobMode` predicts the server's mode client-side before a response comes back. **Chosen: make the two languages agree**, not merely document the exception, since the divergence is an observable behavior bug (a client-side misprediction), not just an inaccurate comment. **Rejected: leave JS's native `\s` and document the BOM exception in prose only** — considered, since this is a genuinely rare input (nobody types a BOM), but rejected once it was clear a one-line character-class change removes the exception entirely rather than merely writing it down; a documented-but-unfixed divergence is still a divergence the next reader has to remember to work around. `query.py`'s docstring did NOT, before this round, claim any equivalence with the TS side at all — only `home-search.ts` made that (one-sided) claim; both docstrings now cross-reference each other and this fix. | `home-search.test.ts`'s new "does not treat a leading BOM as whitespace" test and `tests/test_index_query.py`'s new `test_expand_whitespace_query_does_not_treat_a_bom_as_whitespace` pin the SAME input/output pair on both sides. Confirmed the TS test failed pre-fix (`"﻿abc"` resolved to `"**abc**"`, glob mode) and the Python test passed unmodified (Python was already correct). |
+| D-new | **Stale comments in `glob-broaden.ts` corrected, not just deleted**: `alreadyMaximallyBroadOnDepth`'s doc no longer references "rung 2"/"rung 1" (renumbered away when the name-widening rung was deleted — there is only one rung, "Look in subfolders," left); `genuinelyWidens`'s worked example no longer claims `/home/x/*.js` and `/home/x/*.js*` "resolve to the IDENTICAL server pattern" under "a trailing `*`" wrap — under the actual leading+trailing `**` wrap (this round's own change) they resolve to DIFFERENT patterns (`/home/x/*.js**` vs `/home/x/*.js*`, since the second already ends in `*` and skips the wrap) | Comment rot from two rounds of the same file's evolution (rung deletion, then `*` -> `**`) left worked examples that were not just outdated but actively FALSE about current behavior — a reader trusting the comment would conclude two genuinely-different resolved patterns are the same one. Replaced with the case the check actually guards today: the now-deleted "widen the name" rung, whose raw output differed from the raw query while resolving to an identical-or-narrower pattern (the real reason raw-string comparison isn't safe). | Comment-only change; `glob-broaden.test.ts` (16 tests) passes unmodified. |
+
+No deviations from the brief's five numbered issues or its docs/DECISIONS
+requirement — all five items, both spec files, and this entry were completed.
+One place the brief's own description did not match the code: it stated the
+byte-equivalence claim was "asserted outright in both docstrings" (query.py's
+and home-search.ts's) — only home-search.ts's docstring made that claim;
+query.py's `expand_whitespace_query` docstring did not reference the TS
+mirror at all before this round (it now does, added as part of this fix).
+
+Verified this round: `pytest tests/test_index_query.py tests/test_index_rank.py
+tests/test_index_search.py -q` -> 270 passed. `bun test
+src/apps/explorer/lib/home-search.test.ts` -> 140 passed. `bun test
+src/apps/explorer/FilesHome.render.test.tsx` -> 54 passed. `bun test
+src/apps/explorer/listing/glob-broaden.test.ts` -> 16 passed.
+
+
+## `*.js` ranked below `.json`: a basename-TAIL bonus, the symmetric twin of the basename-prefix bonus (2026-09-17, worktree-search-trailing-space)
+
+User-reported, with a screenshot: typing `*.js` in file search returned
+`.json` files (`~/Downloads.json`, `~/Work.json`, `~/Downloads/canvas_39.json`)
+ranked above a real `.js` file (`~/Downloads/Archive/script.js`).
+
+**Root cause, confirmed empirically before any code changed** (built a
+synthetic index over exactly the reported paths and read `score`/`tier` off
+the real `search_ranked` return, filtering out the folder rows `Sink.add`
+creates for every directory holding an indexed file): `*.js` resolves
+(`resolve_query`) to the glob pattern `**/*.js**`, whose only literal run is
+`[".js"]`. `.json` starts with the literal `.js`, so it is exactly as good a
+match for that one run as an actual `.js` extension — same run length, same
+segment-start count, same tier (1, both are substrings of their own
+basename). With a single literal run, `_glob_score_sql`'s interior-swallow
+penalty is provably 0 (nothing lies "between" one run), so nothing in the
+score told the two apart; the only thing left was the depth tie-break, which
+favoured the shallower `.json` files. Measured before the fix: all four
+candidates scored 14, tier 1, identical — order fell through to `depth ASC,
+lower(rel) ASC, rel ASC`, putting `Downloads.json` first.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **A new `_TAIL_BONUS` (+25), applied in BOTH `_rank_sql` and `_glob_score_sql`: a match ending exactly at the end of `rel` (equivalently, at the end of the basename, since the basename is `rel`'s own tail) earns +25** | `name_bonus` already rewards a match starting at the basename's first character (+25 prefix) or spanning it exactly (+100 exact) — nothing rewarded the SYMMETRIC case, a match reaching the basename's last character, which is exactly what distinguishes a true `.js` file from a `.json` file that merely starts with the same three characters. Applied to `_rank_sql` too (not glob-only): the brief's own load-bearing constraint is that a single-literal-run glob score stays algebraically IDENTICAL to `_rank_sql`'s substring score for the same query (`test_glob_single_literal_run_score_matches_rank_sql_substring_score`) — a glob-only bonus would have broken that invariant the moment a single-run glob and its equivalent substring query disagreed on whether the match reached the end. In glob mode the bonus is computed off the LAST literal run's end position only (the only run that can ever reach the end of `rel`, by definition of "last"), which is what keeps that invariant holding by construction (for one run, `first_p_alias`/`last_e_alias` are the same run's own start/end). **Magnitude, derived not guessed**: built a 2-file corpus (one shallow `.json`, one `.js` file at increasing depth, everything else held constant) and read the real score gap off `search_ranked` at each depth. The gap the deep `.js` file must overcome grows as `4 * (depth - 2)` for depth > 2 (the existing `_DEPTH_PENALTY=4`/`_SHALLOW_FREE=3` terms, confirmed empirically: 4 at depth 3, 16 at depth 6, 24 at depth 8, 32 at depth 10). `+25` covers every case up to depth 8 — comfortably past the reported bug's own depth of 2, and past any realistically nested project tree — while staying equal to (not exceeding) the existing basename-prefix bonus, so a bare tail match cannot outrank a true prefix match, and staying well under the +100 exact bonus. **Sanity-checked that a larger value is genuinely wrong, not merely untidy**: tried `+100` (level with the exact-basename bonus) by hand — a merely-tail-matching `app-config` then scored high enough to threaten a true exact-basename match `config` for the query `config` once `config`'s own extra segment-start credit (its match starts at position 0, itself a segment start) is accounted for; pinned as a permanent regression guard by `test_the_basename_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_match` and its glob-mode counterpart, both of which assert `config` still ranks first at `+25`. **Rejected: score the whole basename length reached instead of a binary end-of-name test** — would reward a longer basename for merely being longer, the same "sheer length is not a better match" trap `query.md §3` already calls out for the swallow penalty; a binary "did the match reach the edge" test carries the actual signal (this IS the file's extension) without rewarding length for its own sake. | New tests in `tests/test_index_rank.py`: `test_glob_reported_bug_extension_match_beats_a_json_file_that_merely_contains_js` (the exact reported corpus — confirmed to fail pre-fix, `Downloads.json` first), `test_the_basename_suffix_bonus_ranks_a_tail_match_above_an_interior_one` (substring-mode counterpart, every other scoring term held equal by construction — confirmed to fail pre-fix), and the two guard tests above. Full targeted suite: `.venv/bin/python -m pytest tests/test_index_rank.py tests/test_index_query.py tests/test_index_search.py -q` -> 274 passed, no regressions. Before/after on the reported corpus: all four candidates were 14/14/14/14 (tier 1, `Downloads.json` first); after, `script.js` scores 39 (tier 1, first), the three `.json` files stay at 14. |
+
+**One correction to the initial analysis, found empirically rather than assumed**: the brief's requirement that the fix land "in BOTH scorers... AND in the TS mirror `fuzzyMatch` in `frontend/src/platform/lib/fuzzy.ts`" does not hold — `fuzzyMatch` has no equivalent scoring apparatus to mirror. The `name_bonus`/`_DEPTH_PENALTY`/`_SHALLOW_FREE` machinery `_rank_sql` documents as "mirroring fuzzy.ts's DEPTH_PENALTY / SHALLOW_FREE" (a comment left in `query.py` above `_DEPTH_PENALTY`'s own definition, itself now stale) lived in `frontend/src/apps/explorer/listing/search.ts` (`scoreEntries`/`rankCompare`), which was DELETED in commit `0dcaf98bf` ("Unify home and explorer search into one query language") — `fuzzy.ts`'s own `fuzzyMatch` never had a name bonus of any kind, and its `globMatch` is explicitly required to carry **zero** score (`SPEC-search-space-wildcard.md` line 160: "Do not add scoring to `_glob_sql`" — itself stale now that `_glob_sql` legitimately does score, per the "continued" round's own DECISIONS.md entry above and `query.md §3`; `globMatch`'s own docstring in `fuzzy.ts` states the still-true half: "glob mode has no scoring... nothing here reads either field for a glob hit"). `scripts/gen-rank-fixture.ts` (the fixture regenerator the brief's requirement 3 named) is consequently ALSO broken independent of this change — it imports the same deleted `listing/search.ts` (`bun scripts/gen-rank-fixture.ts` fails with `Cannot find module`), a pre-existing break from the same commit, not introduced here. Since `fuzzy.ts` has nothing to change and the fixture generator cannot regenerate anything client-side-derived, `tests/fixtures/rank-parity.json` is left untouched: this round adds no new claim of substring-order parity with the JS ranker (the tail bonus is Python-only, additive, and the existing `test_sql_ranking_matches_the_js_ranker_on_substring_hits` — which already tolerates several Python-only scoring terms `fuzzyMatch` lacks, e.g. `name_bonus` and the depth penalty — still passes unmodified against the fixture as committed). Fixing the fixture generator itself is a separate, pre-existing bug outside this round's scope.
+
+## Scoring rework: position-free predicate columns + lexicographic ORDER BY, replacing the scalar weighted-sum score (2026-09-17, worktree-search-trailing-space)
+
+Follow-up to the two entries directly above. The scalar formula those two
+entries kept patching (`n + 3(n-1) + 5*segment_starts - 4*max(0, depth-3) +
+name_bonus + _TAIL_BONUS`) had a structural defect underneath the specific
+bugs already fixed: every positional term read `strpos(lrel, q)` — the
+position of the query's FIRST occurrence — while the filter itself
+(`LIKE '%...%'`) matched ANY occurrence. `_TAIL_BONUS` was itself evidence of
+the pattern: a new scalar term bolted on to patch one specific first-
+occurrence miss (`.js` vs `.json`), sized by hand-measured score gaps against
+the OTHER terms it had to out-weigh. That is not a one-off; it is the shape
+every future edge case in this scorer would take. This round replaces the
+whole approach rather than adding a fourth term.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **Replace the scalar `score` with position-free boolean predicate columns (`nm_exact`, `prefix`, `suffix`, `contains`, all read off the basename `nm` only, never `strpos`-derived positions over `rel`) ordered lexicographically via SQL `ORDER BY`; `score` is kept only as a coarser, display/debug-only weighted sum that does NOT decide order** | Removes the first-occurrence bug class at its root instead of patching each symptom (`.js`/`.json` was one instance; there was no reason to believe it was the last). A lexicographic column vector (`nm_exact DESC, prefix DESC, suffix DESC, contains DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC`) also does not need hand-tuned relative weights at all — the `_TAIL_BONUS`/`name_bonus` sizing exercise (measuring score gaps against depth penalties to pick `+25` vs `+100`) is structurally impossible to need again, because a column strictly dominates every column after it regardless of magnitude. **Rejected: keep patching the scalar sum** (e.g. add a fifth term to also fix the next reported case) — every prior fix in this area was already this shape; the review that prompted this round explicitly called it out as a pattern, not a one-off. **Rejected: keep the scalar as the real order and use `ORDER BY` only as a tie-break on top of it** — this is what `_TAIL_BONUS` already tried and it still lost to depth in some cases purely from weight collisions; a lexicographic vector has no weight-collision failure mode by construction. | `tests/test_index_rank.py`'s golden-corpus tests (`test_golden_corpus_pins_the_hand_reasoned_top_order`, parametrized over 5 query groups spanning the extension-confusion, prefix-vs-tail, and depth-tie-break cases) plus dedicated regression tests for the three named cases (`js`/`js/lib/app.js`/`json/script.js`, `config.json` vs `app-config`, the `.js`/`.json` extension bug) — all pass. Full file: `.venv/bin/python -m pytest tests/test_index_rank.py -q` -> 43 passed. |
+| D-new | **DuckDB has no implicit `BOOLEAN -> INTEGER` cast for arithmetic — every predicate is wrapped `CAST(pred AS INTEGER)` before it is weighted/summed in the display-only `score` expression** | Found empirically: the first version of `score` (`1000 * (nm = lower(q)) + ...`) raised `BinderException: *(INTEGER_LITERAL, BOOLEAN)` on every ranked query (53 test failures on first run). DuckDB, unlike Python (`True == 1`), does not coerce a boolean into an arithmetic context. | All 53 originally-failing tests passed once every predicate in `score`'s expression was `CAST(... AS INTEGER)`-wrapped. |
+| D-new | **Glob mode's `nm_exact` is `regexp_matches(nm, regex) AND length(nm) = sum(len(lit) for lit in literals)`, not plain `regexp_matches(nm, regex)`** | Also found empirically: `test_glob_single_literal_run_score_matches_rank_sql_substring_score` failed after the initial rewrite — `icon.png` scored higher under `**icon**` (glob) than under `icon` (substring), which should be identical for a single-literal-run glob. Cause: for a wildcard-flanked pattern, the compiled regex (`.*icon.*`) is true whenever the literal occurs ANYWHERE in `nm` — i.e. it is the SAME condition as `contains`, not "exact" — so using it as `nm_exact` double-credited every `contains`-true row with an extra, unwarranted `nm_exact` credit. Requiring the matched basename's length to equal the sum of literal lengths (zero wildcard slop) is what "exact" actually means for a glob. | Same test, after the fix: glob and substring scores agree exactly for every single-literal-run case checked (0 diff), restoring the invariant `query.md §3` documents. |
+| D-new | **`tier` collapses from three values (1/2/3, tier 2 = "straddles the basename boundary") to two (1/3)** | `tier` is no longer a primary sort key — the lexicographic predicate vector ahead of it in `ORDER BY` already separates match quality more finely and more correctly than a 3-way tier ever did (tier 2's own boundary was itself part of the surface area the old scorer's bugs lived in). Keeping a 3-value tier would have meant maintaining a distinction nothing downstream reads for ordering purposes any more; `tier`'s only remaining job on the wire is "did the basename match at all," which 1-vs-3 (kept, not renumbered to 1-vs-2, so the wire value for an ancestor-only hit is unchanged) already answers. **Rejected: keep tier 3-valued for wire-compatibility** — no caller was found (grepped `frontend/`) that branches on `tier === 2` specifically; every consumer either displays it or treats it as "not tier 1." | `test_tier_1_and_3_boundaries_including_a_match_straddling_the_basename` (rewritten from the old 1/2/3 version): the previously-tier-2 straddling case (`oo/ba` across a `/`) now asserts `tier == 3`, matching the new binary definition. |
+| D-new | **The camelCase/segment-start "hump" bonus is dropped, not reimplemented in occurrence-independent form** | `nm` is stored pre-lowercased in the index; recovering case information to detect a hump (a match starting right after a case change) would require a new stored column, which is out of scope for this round. This is a deliberate, reported feature loss, not an oversight. **Rejected: add a case-preserving column just for this** — no other consumer of the index needs case-preserving basenames; adding storage for one scoring term this round is dropping anyway is the wrong trade. | `test_the_camelcase_hump_counts_as_a_segment_start` deleted, replaced with a standalone comment recording the deliberate drop (no test asserts hump behavior any more, positive or negative). |
+| D-new | **`tests/fixtures/rank-parity.json` and `scripts/gen-rank-fixture.ts` deleted from disk (not regenerated); the JS-parity test `test_sql_ranking_matches_the_js_ranker_on_substring_hits` deleted along with them; replaced by a hand-reasoned "golden corpus" (~285 files, 5 named query groups) directly in `tests/test_index_rank.py`** | Two independent reasons, either alone sufficient: (1) `scripts/gen-rank-fixture.ts` imports `frontend/src/apps/explorer/listing/search.ts`, deleted in commit `0dcaf98bf` — the generator cannot run and the fixture can never be regenerated, a pre-existing break documented in the entry above, not introduced by this round. (2) Even if it could run, `fuzzy.ts` is no longer the right authority for the SPECIFIC dimensions this round changed: `fuzzy.ts` never had `_TAIL_BONUS`, never had a 3-value tier, and never had a camelCase bonus of the kind this round drops — a parity fixture generated from it was already only a partial check before this round, and asserting "parity" against an authority that doesn't model the differences being introduced would be testing the wrong thing. The replacement golden corpus instead pins expected order by hand-deriving it directly from the documented `ORDER BY` column vector, the same authority the code itself uses, filtered to an explicit allowlist of intentionally-placed paths (mirroring how the deleted fixture test filtered to its own `fixture_rels`) so real on-disk implied-ancestor-directory rows can't leak into an ordering assertion. **Rejected: fix the generator's import and regenerate** — would still only assert parity with an authority (`fuzzy.ts`) that structurally cannot model this round's own changes; not worth unblocking a generator to produce a fixture that can't test the thing that changed. | `tests/test_index_rank.py`'s `test_golden_corpus_pins_the_hand_reasoned_top_order` (5 parametrized cases) and `test_golden_corpus_noise_never_leaks_into_a_targeted_query`; both pass. `grep -rn` confirms no remaining code references to `_index_from_fixture`/`FIXTURE` in `tests/`. |
+
+**Deviations from the architecture review, both already covered above, restated together for visibility**: (1) the camelCase/segment-start hump bonus was dropped rather than ported into position-free form, for the storage-column reason given above; (2) `tier` was collapsed to two values instead of the review's original three, because it stopped being a primary sort key. Both are reported deviations, not silent ones.
+
+Out of scope for this round, unchanged: the `explain=1` endpoint, in-memory perf work, `search_under` folding into this same model, segment-frequency IDF, and a docs sweep beyond the files this round actually touched (`query.py`, `tests/test_index_rank.py`, `tests/test_index_search.py`, `index/specs/query.md`, `index/specs/server-api.md`, this file).
+
+Verified this round: `.venv/bin/python -m pytest tests/test_index_rank.py -q` -> 43 passed. `.venv/bin/python -m pytest tests/test_index_query.py tests/test_index_search.py tests/test_index_rank_concurrency.py tests/test_index_scan.py tests/test_index_scan_on_demand.py -q` -> 271 passed (one pre-existing test, `test_search_ranked_honours_the_limit_in_sql_not_just_in_python`, updated to key its SQL spy off `"AS score"` instead of the now-gone literal string `"ORDER BY tier ASC"` — same assertion, updated to match the new SQL shape, not a behavior change). `.venv/bin/python -m pytest tests/test_index_api.py tests/test_index_cancel.py tests/test_index_config.py tests/test_index_fda_gate.py tests/test_index_freshness.py tests/test_index_guarded_query.py tests/test_index_ignore.py tests/test_index_jobs.py tests/test_index_mount_safe.py tests/test_index_runner.py tests/test_index_runtime.py tests/test_index_skill_reader.py tests/test_index_store.py tests/test_index_touch.py -q` -> 406 passed, no collateral breakage found elsewhere in the index test suite.
+
+## Code-review round on the position-free lexicographic rework: four findings fixed (2026-09-17, worktree-search-trailing-space)
+
+Follow-up to the entry directly above ("Scoring rework: position-free predicate
+columns..."). A review of commit `49d1a0dbc` found four defects in that
+otherwise-correct rewrite. All four are fixed here; the core position-free
+`ORDER BY` design from that commit is unchanged.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **`_final_segment_pattern(pattern)` extracts only the pattern text after the last directory boundary (`/`, or a `**/ ` token) before computing `_glob_literal_runs` for scoring; a new `boundary` local marks a literal `/` or a `**/ ` token, but NOT a bare `**`, as a segment break** | `_glob_literal_runs` previously ran over the WHOLE pattern, so a path-shaped glob like `**/src/*.ts` collected `"src/"` as a literal run alongside `".ts"`. The `contains` predicate then required `nm` (the basename alone) to contain `"src/"`, which no basename ever does — so `tier` was permanently 3 for any glob with a directory-segment literal, defeating the tier fix the reviewed commit thought it had made. Restricting literal-run extraction to the text after the final boundary fixes this at the source: `**/src/*.ts`'s final segment is `*.ts`, whose only literal is `.ts`, which a basename like `main.ts` DOES contain. | `test_glob_final_segment_tier_fix_for_path_shaped_patterns`: pattern `"**/src/*.ts**"` over `["src/main.ts", "a/b/src/deep.ts"]` — before the fix both scored `tier == 3`; after, both are `tier == 1`. |
+| D-new | **`_glob_sql` gains an explicit `score: bool` parameter, decoupled from whether `literals` (now final-segment-only) is non-empty; `search_ranked` computes it separately as `bool(_glob_literal_runs(qs))` over the WHOLE pattern** | Restricting literal extraction to the final segment (the fix above) has a side effect: an ancestor-only pattern like `**/alpha/*` has NO literal content in its final segment (`*` alone), so `literals` is empty — which, before this fix, meant "nothing to score," collapsing its `tier` from the correctly-computed `3` down to a placeholder `0`. That is a real regression the final-segment fix would otherwise introduce. Passing `score` explicitly (true because the WHOLE pattern's literal run `"alpha/"` is non-empty) keeps `_glob_sql` on the real scoring branch, which still correctly computes `tier == 3` for this pattern via `contains` being false. **Rejected: infer `score` from `literals` as before** — this is exactly the regression described above; the two questions ("does the final segment have literal content to build predicates from" vs. "does this glob deserve real scoring at all") are genuinely different and were conflated by the reviewed commit. A downstream bug in the same area: `search_ranked`'s hit-dict branch keyed unpacking 7-vs-5 SQL columns off `literals` too (`if glob and literals:`) — now wrong for the same ancestor-only case, since `score=True` with `literals=[]` still returns the 7-column scored shape. Fixed alongside by keying that branch off `score` instead, and renaming the unpacked loop variable from `score` to `score_val` to stop it shadowing the outer boolean. | `test_glob_final_segment_tier_ancestor_only_stays_tier_3`: pattern `"**/alpha/*"` over `["alpha/unrelated.txt"]` — confirms `tier == 3` is preserved (would have silently become `tier == 0` without the `score` parameter). |
+| D-new | **A new position-free `boundary` predicate — `regexp_matches(nm, '(^|[^a-z0-9])' \|\| lower(re.escape(first_literal)))` — is added as a new `ORDER BY` column, placed between `contains` and `depth`: `..., (contains) DESC, (boundary) DESC, depth ASC, ...`** | The prior scalar scorer's word-boundary/segment-start bonus (rewarding a match starting right after a natural break, e.g. `zz_config.py` over `aaaconfig.py` for query `config`) was dropped with no replacement when the reviewed commit switched to boolean predicates — leaving such ties to fall through to `depth`/`length(nm)`/`rel`, which have no opinion on word-boundary quality and can pick the wrong file. `boundary` restores the signal in the same position-free style as its neighbors (a boolean over `nm`, no `strpos`), placed AFTER `contains` (an exact/prefix/suffix/plain-contains match must still win outright regardless of boundary quality) and BEFORE `depth` (a boundary match should be preferred over a merely-shallower non-boundary one). Regex, not `LIKE`, is required to express "a non-alphanumeric character or the start of the string precedes the match" — hence `re.escape` (NOT `like_literal`) on the literal being embedded, a third, distinct escaping discipline in this file. **Rejected: reimplement the old camelCase-hump detection too** — already deliberately dropped in the prior round for a documented, separate reason (needs original-case `nm`, out of scope); `boundary` only restores the separator-character half of the old bonus, not the case-transition half. | `test_boundary_bonus_ranks_a_word_boundary_match_above_a_mid_word_one`: `zz_config.py` vs `aaaconfig.py`, query `config` — `zz_config.py` ranks first (previously fell through to alphabetical/length tie-break and could rank second). `test_boundary_predicate_escapes_regex_metacharacters`: a deliberately adversarial pair (`decoy = "xa.b_azb.txt"`, whose unescaped-`.`-as-wildcard reading would falsely register as boundary-true via a `"_azb"` decoy substring, vs `genuine = "_a.b_extra_padding_here.txt"`, made LONGER so the length tie-break argues AGAINST it) for query `a.b` — `genuine` ranks first only because `re.escape` treats the literal `.` in `a.b` as literal, not wildcard; an unescaped version would flip this. |
+| D-new | **`score`'s depth term is capped: `- LEAST(depth, _SCORE_DEPTH_CAP)` with `_SCORE_DEPTH_CAP = 99`, strictly less than the smallest gap between adjacent score LEVELS (0/100/250/500/1000, smallest gap 100)** | `score` is display/debug-only (the real order comes from the `ORDER BY` column vector, per the prior round's own decision), but its own docstring claimed a "coarser, monotonic-with-order" guarantee that was false at depth: an uncapped `- depth` term can push a row with SOME predicate true below a row with NONE true once depth exceeds the smallest weight gap, reproduced concretely at depth 601 (a tier-1 match 601 levels deep can score lower than a tier-3 ancestor-only match 2 levels deep, inverting what any weight ordering intends). Capping the subtracted depth at a value smaller than every possible weight gap makes this structurally impossible: even in the worst case (one extra true predicate at the smallest weight gap versus the maximum possible depth penalty difference, 99), the predicate-having row still wins. **Correction (2026-09-17, this round):** this row originally read "smallest gap 150," counting only the four explicit weights (100/250/500/1000) and ignoring the implicit fifth level — 0, "nothing matched" — which a row with zero true predicates actually scores. The TRUE smallest gap is between 0 and 100, i.e. **100**, not 150. `_SCORE_DEPTH_CAP = 99` was already numerically correct under this tighter, correct bound (`99 < 100`); only this row's reasoning was wrong, not the shipped constant. See the new finding below ("`_SCORE_DEPTH_CAP`'s justifying comment cited the wrong weight gap"). **Rejected: fix the docs instead of the code** — the false guarantee was actively relied on by a caller reading `score` as a display proxy for rank; a silently-invertible display score is worse than a capped one, and the cap costs nothing (depths beyond 99 are already firmly split apart by every column ahead of `score` in the real `ORDER BY`, so no real ordering decision depends on uncapped depth). | `test_score_never_inverts_the_real_order_at_depth`: `deep_name` (basename `xxxconfigxxx.txt`, tier 1, depth 601) vs `shallow_ancestor` (ancestor-only, tier 3, depth 2), query `config` — asserts the real order (from `ORDER BY`) puts `deep_name` first AND that `deep_name`'s `score` value is also numerically greater than `shallow_ancestor`'s (both would have been reproducibly false pre-fix). Now also `test_score_depth_cap_is_below_the_actual_smallest_weight_gap` (added this round, see below). |
+| D-new | **Two stale references to the deleted `rank-parity.test.ts`/`tests/fixtures/rank-parity.json` fixture updated to point at the current authority** — `SPEC-search-space-wildcard.md`'s "existing tests" list (was silently describing a file that no longer exists as still pinning behavior) and a code comment in `frontend/src/apps/explorer/listing/ranked-hits.ts` (dangling mention of the deleted fixture in an explanation of why the two rankers "agree on substring hits") | Both were left over from the prior round's fixture deletion (see that round's own DECISIONS.md entry) and not caught at the time because neither file was part of that round's own edit set. A spec describing a deleted test as authoritative, and a code comment citing a deleted fixture as evidence, are both misleading to the next reader with no functional effect — caught by this round's own pre-finish `grep -rn` sweep for stale symbol references, the same sweep this round's brief required. | `grep -rn "rank-parity"` across the repo: every remaining hit (`DECISIONS.md`, `tests/test_index_rank.py`, `fused_render/index/specs/server-api.md`, and the two files fixed here) is now an explanatory "this was deleted, here is why, here is the replacement" note, not a live claim that the file still exists or still governs behavior. |
+
+Also fixed as part of this round, doc-only: `fused_render/index/specs/server-api.md` §7 was rewritten — it still described the deleted `_glob_score_sql` scoring model, falsely claimed `tier` sits in the `ORDER BY` as a primary sort key (superseded by the entry above titled "`tier` is generalized to glob mode... and restored as the PRIMARY sort key" — itself now stale, since `tier` is NOT a primary sort key in this round's column-vector design), and quoted a stale `ORDER BY` string (`tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC`) that predates both the position-free rewrite and this round's `boundary` column. Now matches `query.md` §3, including the full corrected vector `(nm_exact) DESC, (prefix) DESC, (suffix) DESC, (contains) DESC, (boundary) DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC`.
+
+Verified this round: `.venv/bin/python -m pytest tests/test_index_rank.py tests/test_index_search.py tests/test_index_query.py -q` -> 259 passed, 10 warnings, no regressions to any previously-passing case.
+
+## Code-review round two on the position-free lexicographic rework: five more findings fixed (2026-09-17, worktree-search-trailing-space)
+
+Follow-up to the two entries directly above. A second review pass on the same
+area (`query.py`'s glob/whitespace-wildcard grammar, `home-search.ts`'s TS
+mirror, and the position-free predicate scoring) found five more defects.
+All five are fixed here.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **A trailing `*` a caller appends to wrap a typed pattern (both `expand_whitespace_query` in `query.py` and `expandWhitespaceQuery` in `home-search.ts`) is now collapsed to a single `*` instead of being concatenated onto an existing trailing `*`, and the leading-space path-escape case in `resolve_query` no longer double-counts an already-stripped leading space** | A query already ending in `*` (typed by the user, or itself already the product of a prior whitespace expansion) got a SECOND `*` appended by the trailing-wrap step, producing patterns like `foo**` where a single `*` was intended; glob semantics make `**` in a non-path-separator position behave differently from a single `*` in some engines and is simply redundant clutter in all of them. Collapsing to exactly one trailing `*` keeps the pattern text minimal and matches what a user typing `foo*` themselves would produce. Separately, `resolve_query`'s path-escape handling for a LEADING space (`" foo"` meaning "search literally for foo, not for the wildcard-expanded form") was found to mis-resolve when combined with this trailing-wrap step, addressed in the same pass (see the earlier commit `c29d37739`, "Fix: leading space breaks path-escape resolution in resolve_query," which is this same round's Finding 1/2 landing point). | `test_expand_whitespace_query_...` (Python) and the mirrored `home-search.test.ts` cases assert a single trailing `*`, not `**`, for patterns that already end in `*`. Full detail already committed and described in `c29d37739`'s own message. |
+| D-new | **`search_under`'s `q` parameter now distinguishes "absent" (`q` falsy — its documented no-filter, whole-corpus contract, unchanged) from "present but whitespace-only" (`q` truthy but `expand_whitespace_query(q)` resolves to `""`) via a new `no_match = bool(q) and not expanded` flag that gates the branch-execution block (`if branches and not no_match:`)** | Before this fix, a whitespace-only `q` fell through every existing filter guard exactly like an absent `q` (both `q_trimmed` and `qlit` are empty, and `"*" in expanded` is also false), so `search_under` silently returned the WHOLE unfiltered corpus for a query a user would expect to search for literally nothing and get zero hits — indistinguishable from never having typed a query at all. This mirrors `search_ranked`'s own pre-existing `if not qs: return {hits: []}` guard, which already gets this case right; `search_under` had no equivalent. | `test_search_under_a_whitespace_only_query_has_nothing_to_search_for` (new, `tests/test_index_search.py`): a whitespace-only `q` (e.g. `"   "`) now returns zero hits; confirmed the function's genuine "no filter" contract (`q` omitted or `None`) is completely unaffected by the same test file's existing whole-corpus cases. |
+| D-new | **`_SCORE_DEPTH_CAP`'s justifying comment (in `query.py`, and its docstring counterpart in `_lex_order_and_score`, and a copy of the same claim inside `test_index_rank.py`) is corrected from "smallest gap 150" to "smallest gap 100"** | The comment computed the smallest gap between adjacent `score` weights by considering only the four EXPLICIT weights (100/250/500/1000) and ignoring the implicit fifth level — 0, "nothing matched" — which any row with zero true predicates actually scores. The TRUE smallest gap is between 0 and 100, i.e. 100, not 150 (the gap between 100 and 250). The shipped constant, `_SCORE_DEPTH_CAP = 99`, was ALREADY numerically correct under this tighter, correct bound (`99 < 100`) — this finding is a documentation/reasoning correction, not a functional regression; no behavior changed. Also fixed the same stale "150" claim in the D-new row of the round directly above this one (line ~2102), for consistency. | `test_score_depth_cap_is_below_the_actual_smallest_weight_gap` (new, `tests/test_index_query.py`): directly asserts `smallest_gap == 100` and `_SCORE_DEPTH_CAP < smallest_gap`, independent of the pre-existing end-to-end ranking test that already implicitly exercised the correct 100-gap case. Since the constant was already right, this test pins the corrected invariant rather than catching a live bug. |
+| D-new | **`_glob_sql` now asserts `not (literals and nm_regex is None)` immediately after computing its `score` default** | `nm_regex=None` was the parameter's default, so a caller that (now, or in some future change) passes `literals` truthy without also supplying `nm_regex` would silently get `regexp_matches(nm, 'None')` baked into the generated SQL — a query that runs without error and simply never matches, rather than a loud, debuggable failure at the call site that got it wrong. `search_ranked`, the sole real caller today, already ties `literals`/`nm_regex` together correctly, so this is a latent-bug guard, not a fix for an observed wrong answer. | `test_glob_sql_refuses_literals_without_a_matching_nm_regex` (new, `tests/test_index_rank.py`): calls `_glob_sql` directly (bypassing `search_ranked`) with `literals` truthy and `nm_regex=None`, asserts the `AssertionError` fires. |
+| D-new | **`_name_predicate_sql`'s `boundary` predicate strips a literal's own leading non-alphanumeric run before building its regex core** (`_boundary_core = re.sub(r"^[^A-Za-z0-9]+", "", literals[0]) or literals[0]`), **falling back to the untouched literal if stripping would leave nothing** | `boundary` requires a separator (or string start) immediately BEFORE the literal being matched. For an ordinary word literal like `config` this correctly rewards `zz_config.py` over `aaaconfig.py`. But for an extension-glob literal like `.pdf` or `.ts`, the literal itself already starts with punctuation (the dot), so the regex was effectively demanding a separator before THAT dot too — a condition essentially never true for a real file (`report.pdf`'s character before the dot, `t`, is alphanumeric), making `boundary` structurally dead for the entire class of extension-shaped globs. Stripping the literal's own leading punctuation before building the boundary core fixes this: the regex now asks "is there a separator (or start) before the alnum content that follows the punctuation," which `report.pdf` satisfies. The fallback to the untouched literal (when stripping leaves nothing, e.g. a literal that is ALL punctuation) avoids a degenerate, over-permissive regex. | `test_boundary_predicate_is_not_dead_for_a_leading_punctuation_literal` (new, `tests/test_index_rank.py`): evaluates the generated `boundary` SQL fragment directly via `duckdb.connect()` against literal `nm` values — `report.pdf` -> `True`, `readme.txt` -> `False`. Confirmed the pre-existing word-literal case (`zz_config.py`/`aaaconfig.py`, literal `config`, no leading punctuation to strip) is unaffected — full suite green after this fix. |
+
+| D-new | **`NON_BOM_WS` (`frontend/src/apps/explorer/lib/home-search.ts`) is widened from `[^\S﻿]` to `(?:[^\S﻿]|[-])`** | Finding 7's part (b): the BOM fix (a prior round) closed the ONE direction where JS's `\s` over-matches relative to Python's `\s` (U+FEFF), but there is a second, opposite-direction gap — Python's `\s` (and `str.isspace()`) ALSO matches the four C0 "information separator" control characters U+001C-U+001F (FS/GS/RS/US) and U+0085 (NEL), via CPython's Unicode bidirectional-class tables, while JS's native `\s` (which follows the `White_Space` property exactly) does not match any of the five. Confirmed empirically: `.venv/bin/python3 -c "import re; [print(hex(c), bool(re.match(r'\s', chr(c)))) for c in [0x1c,0x1d,0x1e,0x1f,0x85]]"` -> all `True`; `bun -e` the JS equivalent -> all `false`. Left unfixed, a query containing one of these (rare — non-printing control characters, unlikely to be typed but reachable via paste or a scripted client) would silently widen server-side but not widen in this TS mirror, a real byte-inequivalence the file's own docstring claims does not exist. | `test("treats the C0 separators (U+001C-U+001F) and NEL (U+0085) as whitespace (matches Python's \\s)")` (new, `home-search.test.ts`): for each of the five codepoints, confirms both the whitespace-only case (resolves to `""`) and the mid-string collapse case (`"icon<ch>copy"` -> `"**icon**copy*"`, matching the existing plain-space row in the required-behavior table). |
+
+Disagreement flagged for the record: none of these six findings changed an already-shipped WRONG answer for a real caller today (Finding 4 and Finding 5 are latent-bug/reasoning guards; `search_ranked`'s only real caller already passes `literals`/`nm_regex` correctly paired, `_SCORE_DEPTH_CAP`'s value was already numerically sound, and the five C0/NEL codepoints are vanishingly unlikely to appear in a real typed query). Each is nonetheless fixed as requested, since a silent guard against a future misuse, a corrected comment that no longer teaches the next reader a wrong bound, and a genuinely closed byte-equivalence gap are all worth having even though nothing user-visible changes for realistic input today.
+
+Verified this round: `.venv/bin/python -m pytest tests/test_index_query.py tests/test_index_rank.py tests/test_index_search.py -q -n0` -> 270 passed, 1 warning (the same pre-existing unrelated `anyio` deprecation warning noted in earlier rounds). `cd frontend && bun test src/apps/explorer/lib/home-search.test.ts src/apps/explorer/listing/glob-broaden.test.ts src/apps/explorer/listing/ranked-hits.test.ts src/apps/explorer/listing/zero-match-offer.test.ts` -> 183 pass, 0 fail, 302 expect() calls.
+
+## Extension-shaped queries rank the basename SUFFIX above the basename PREFIX (2026-09-17, worktree-search-trailing-space)
+
+Reported defect: searching `.js` in the home search box returned fifteen `.jshintrc` files ABOVE the one real `script.js`. Root cause: `.jshintrc` satisfies `_name_predicate_sql`'s `prefix` predicate for the literal `.js` (`nm LIKE '.js%'`), while `script.js` only satisfies `suffix` (`nm LIKE '%.js'`) — and the unmodified `ORDER BY` vector checks `prefix` before `suffix`, so `.jshintrc`'s own leading dot (an accident of it being a dotfile, not a better match for the user's intent) wins outright. A dot-leading literal is an extension query — the user means "ends with this extension," i.e. a suffix, not "starts with the literal dot."
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **`_name_predicate_sql` gains a sixth, Python-only (non-SQL) entry in its returned dict, `"suffix_before_prefix"`, set to `literals[-1].startswith(".")` (and `False` for the empty-`literals` branch); `_lex_order_and_score` reads it and swaps which of `prefix`/`suffix` occupies the higher-priority `ORDER BY` column and the higher (500 vs. 250) `score` weight** | Keyed on the LAST element of `literals` because that is the element `suffix` itself is built from (`last_like = like_literal(literals[-1])`) — not the first, which is what `prefix`/`boundary` read. This makes both callers correct without special-casing either one: `_rank_sql` passes the single-element `[qs]` (first == last for a plain substring query), and `_glob_sql` passes the final-segment's literal runs (`_final_segment_pattern`/`_glob_literal_runs`), so `*.js` -> final segment `.js*` -> `['.js']` gets the identical swap keyed on the same last element. Every other column (`contains`, `boundary`, `depth`/`length(nm)`/`rel`) is untouched, and the weight SCALE (1000/500/250/100, `_SCORE_DEPTH_CAP=99`) is unchanged — only which predicate occupies the 500-slot vs. the 250-slot moves, so `score` stays coherent with whichever order `order_by` actually emits rather than contradicting it. **Rejected: filter dotfiles out of the prefix predicate instead of swapping the vector** — that would make `prefix` simply false for any dot-leading literal, discarding real information (a query like `.env` still legitimately wants dotfile-prefix matches to rank via `prefix` when there is no competing suffix-only candidate); swapping preserves both predicates' meaning and only reorders which wins a tie. | `test_extension_query_ranks_suffix_above_prefix` (new, `tests/test_index_rank.py`): substring query `.js` over a corpus of three `.jshintrc`-shaped dotfiles plus one `script.js` — `script.js` now ranks first (previously last, behind all three dotfiles). `test_extension_glob_query_ranks_suffix_above_prefix` (new): the glob-mode counterpart — see the note below on why its corpus needed a `.d` directory segment purely to satisfy `query_wants_hidden`, a separate, pre-existing, unrelated behavior. `test_non_dot_query_keeps_prefix_before_suffix` (new): a non-dot literal (`config`) is unaffected — `config.json` (prefix) still ranks ahead of `app-config` (suffix only). |
+
+A glob-mode wrinkle surfaced while writing the glob counterpart test, worth recording since it cost real investigation time: a plain `**/*.js*` pattern (what `*.js` resolves to via `resolve_query`) can **never** actually exercise this bug end-to-end, because its query text neither starts with `.` nor contains `/.`, so `query_wants_hidden` hides every dotfile candidate (including `.jshintrc`) outright before ranking ever runs — a separate, pre-existing, documented behavior (glob-mode dot-intent does not survive `resolve_query`'s implicit-prefix handling), not part of this fix. The first draft of the glob test used exactly that pattern and PASSED before any implementation existed — for the wrong reason (only one file, `script.js`, ever reached scoring at all; the swap was never exercised). Caught by checking why a supposedly-still-red TDD test was already green, before treating it as confirmation the glob path needed no fix. Corrected test uses `**/.d/**/*.js*` over both files nested under a literal `.d` directory — a directory segment purely to satisfy `query_wants_hidden` (it contains `/.`) while keeping the SCORED final segment identical (`*.js*`, literal run `['.js']`) to the realistic case.
+
+Exact `ORDER BY` vectors now emitted (`_lex_order_and_score`'s output, confirmed by direct call): for `.js`, `(nm = lower('.js')) DESC, (nm LIKE '%' || lower('.js') ESCAPE '\') DESC, (nm LIKE lower('.js') || '%' ESCAPE '\') DESC, (nm LIKE '%' || lower('.js') || '%' ESCAPE '\') DESC, (boundary) DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC` — suffix (`LIKE '%...'`) now sits in the second slot, prefix (`LIKE '...%'`) in the third. For `config` (non-dot, regression guard): `(nm = lower('config')) DESC, (nm LIKE lower('config') || '%' ...) DESC, (nm LIKE '%' || lower('config') ...) DESC, (contains) DESC, (boundary) DESC, ...` — prefix still second, suffix still third, unchanged from before this round.
+
+Verified this round: `.venv/bin/python -m pytest tests/test_index_rank.py -q -n0 -k "extension_query or extension_glob_query or non_dot_query"` -> 3 passed. Full `.venv/bin/python -m pytest tests/test_index_rank.py tests/test_index_search.py tests/test_index_query.py -q` (both `-n0` and default `-n auto`, each run twice) -> 276 passed both ways, no regressions.
+
+## Cap how many hits share one basename: at most 3 rows per `nm` in a single response (2026-09-17, worktree-search-trailing-space)
+
+Reported defect: once the fifteen `.jshintrc` files above tied on every predicate column, the remaining tie-breaks (`depth`, then `length(nm)`, then `rel`) CLUSTERED identical basenames together instead of spreading distinct names across the visible window — one machine-generated tree (`~/.bun/install/cache`-shaped: many directories, one repeated filename) could fill the entire response with copies of a single filename, crowding out every other match a user might actually be looking for.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **A new `_MAX_PER_BASENAME = 3` constant and a shared `_qualify_basename_cap(order_by)` helper build a `QUALIFY row_number() OVER (PARTITION BY nm ORDER BY <order_by>) <= 3` fragment, spliced into all FOUR `ORDER BY ... LIMIT`-ending branches — `_rank_sql`'s ranked and unranked branches, and `_glob_sql`'s scored and unscored branches — each passed that SAME branch's own `order_by` string (the ranked branches' full lexicographic vector; the unranked branches' own simpler `depth ASC, rel/lower(rel) ASC, rel ASC`), placed BEFORE that branch's `ORDER BY ... LIMIT`** | Applied in SQL, before `LIMIT`, not as a Python-side post-filter after fetching — capping after `LIMIT` would silently return FEWER rows than the caller's `limit` asked for, since the trimmed duplicates have already left the result set by then. DuckDB evaluates `QUALIFY` after `WHERE`/window functions but BEFORE the statement's own outer `ORDER BY`/`LIMIT`, which is exactly what makes "cap before LIMIT" achievable in one statement rather than two round trips. The window's own `ORDER BY` must be the IDENTICAL vector the statement's own `ORDER BY` uses (not merely a similar one) — passing anything else would let the 3 survivors per basename be an arbitrary 3 rather than the 3 the statement's own ordering considers best, defeating the point of applying the cap in ranked order at all. All four branches need it, not just the ranked/scored ones: an unranked (`ranked=False`) or unscored (`score=False`) caller can hit the identical clustering defect using its own simpler ordering, and there was no principled reason to leave those two branches uncapped while fixing the other two. **Rejected: cap in Python after `search_ranked` fetches rows** — this is exactly the "fewer rows than `limit` asked for" bug described above; the whole point of doing it in SQL is that the cap and the `LIMIT` are decided together, in the right order, in one statement. | `test_basename_cap_limits_to_top_3_per_name` (new, `tests/test_index_rank.py`): 6 files sharing one basename (`dup.txt` under 6 different directories) — exactly 3 come back, and they are the 3 alphabetically-first paths (the actual tie-break these rows fall through to once every predicate/depth/length(nm) column ties). `test_basename_cap_does_not_shrink_the_limit_or_break_truncation` (new): 10 distinctly-named matches plus 6 more sharing one basename (capped to 3 survivors), `limit=50` — all 13 survivors come back, `truncated` stays `False`, `total == 13`. `test_glob_basename_cap_limits_to_top_3_per_name` (new): same 6-files-one-basename setup, glob mode (`**dup**`) — also capped to exactly 3, confirming `_glob_sql` needed the identical treatment. |
+
+Two things the brief asked to be checked and reported on, both resolved by reading `search_ranked`'s own return-construction code rather than by additional changes:
+
+1. **Does the "Showing top 20 of 200+" total reflect the cap, or a pre-cap count?** `search_ranked` computes `total = len(hits)` and `truncated = len(rows) > limit`, both read directly off the SAME SQL statement's result set (the `limit + 1`-row fetch, sliced to `limit`) — not a separate `COUNT(*)` query. Since `QUALIFY` runs inside that same statement, before its own `ORDER BY`/`LIMIT`, the capped rows never existed in the fetched set to begin with, so `total`/`truncated` naturally and correctly reflect the POST-cap reality with no additional plumbing. This is also the right answer by design, not just the cheap one: `frontend/src/apps/explorer/listing/result-cap.ts`'s own docstring states "the count stays TRUE... reporting the capped number would be a lie about the folder" — the folder's TRUE match count, once a basename cap exists, is the capped count (a user is never shown 15 identical `.jshintrc` entries to choose from, so telling them there are 15 would itself be the lie).
+2. **Does the `limit + 1` overfetch logic still behave?** Yes, unaffected — `_rank_sql`/`_glob_sql` are called with `limit + 1` exactly as before; `QUALIFY` narrows the candidate set the outer `ORDER BY ... LIMIT {limit + 1}` then draws from, so the overfetch-by-one-row trick (used to compute `truncated` without a separate count query) operates on the already-capped set and needs no change.
+
+No deviation from the brief. No frontend/JS change needed: `_name_predicate_sql`/`_lex_order_and_score`/`_rank_sql`/`_glob_sql` are backend-only SQL generators with no client-side scoring equivalent (`frontend/src/platform/lib/fuzzy.ts` is a wholly separate subsequence-based ranker used only by `search_under`'s live-walk path, confirmed by `grep`, and untouched by either fix in this round).
+
+Verified this round: `.venv/bin/python -m pytest tests/test_index_rank.py -q -n0` -> 56 passed (up from 53 pre-fix + 3 new failing). Full `.venv/bin/python -m pytest tests/test_index_rank.py tests/test_index_search.py tests/test_index_query.py -q` run twice with `-n0` and twice with default `-n auto` -> 276 passed every time, no regressions and no flakes observed.
+
+## Reverse the `icon*copy` == `icon copy` equivalence: a user-typed `*` anywhere in the final segment now suppresses the trailing wrap (2026-09-18, worktree-search-trailing-space)
+
+Deliberate reversal of a documented equivalence from an earlier round in this worktree (`expand_whitespace_query` rule 4): a previous fix made `icon*copy` agree with `icon copy` on whether they find the same file, by appending a trailing `*` to the final segment whenever it did not already END in `*` — so `icon*copy`'s own user-typed `*` (mid-segment) did not count, and it still got wrapped to `**icon*copy*`, same result set as `icon copy`. This round reverses that: the trailing append is now ALSO suppressed when the final segment carries a user-typed `*` **anywhere** in it, not only at its very end. `icon*copy` now resolves to the anchored `**icon*copy` and no longer matches `icon copy.png`; `icon*copy*` (a user-typed trailing `*`) is unaffected and still reproduces the old, loose behavior — the capability is opt-in, not removed.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **`expand_whitespace_query` (`fused_render/index/query.py`) and its TypeScript mirror `expandWhitespaceQuery` (`frontend/src/apps/explorer/lib/home-search.ts`) both capture whether the FINAL `/`-separated segment contains a user-typed `*` anywhere, BEFORE the whitespace-collapse step runs (collapse only ever inserts `**`, never a bare `*`, so this capture always and only sees a `*` the user typed themselves) — and gate the trailing-`*` append on `not (final.endswith("*") or final_has_user_star)` instead of the old `not final.endswith("*")`. The leading `**` prepend is untouched: still unconditional apart from its own "already starts with `*`" guard. Scope is the FINAL segment only — an earlier segment's `*` (`src/*/index`) is a directory wildcard and must not suppress the final segment `index`'s own trailing wrap.** | Two independent reasons, both from the original build brief: (1) results are capped — a caller sees roughly the top 20 of 200+ matches — so a loose filter does not just rank a correct answer lower, it CONSUMES one of those 20 slots and can push the correct answer out of the visible window entirely; ranking only reorders a fixed set, it can never enlarge the window, so a precision problem here cannot be fixed by ranking alone. (2) before this reversal the grammar had no way to express "ends with .parquet" at all — `*.parquet` also matched `report.parquet.bak` — and after it, `*.parquet` means exactly that. The `icon*copy` == `icon copy` equivalence itself was a convenience, not a correctness property: nothing downstream depended on it, and preserving it would have required deleting the precision capability entirely, since whitespace itself must stay loose (a typed space is a widening operation, and taking that away breaks the "type two words, find the file with both in order" case the whole function exists for). | `tests/test_index_query.py`: `test_icon_star_copy_is_now_anchored_reversal` (new) pins the reversal itself against concrete filenames (`icon copy`/`iconcopy` match, `icon copy.png`/`icon copy extra` do not); `test_icon_copy_still_matches_the_same_files_unchanged` (new) confirms pure-whitespace `icon copy` is untouched; `test_icon_star_copy_star_reproduces_pre_reversal_behavior` (new) confirms the opt-in (`icon*copy*`) still reproduces the old loose match; `test_star_dot_parquet_means_exactly_ends_with_parquet` (new) pins the new capability (`report.parquet` matches, `report.parquet.bak`/`report.parquetx` do not); `test_src_star_dir_index_still_matches_final_segment_wrap` (new, with an explicit guard comment) pins that a MIDDLE-segment `*` never suppresses the final segment's own wrap, against a future "simplify to a whole-path check" regression. Sixteen PRE-EXISTING tests in `tests/test_index_query.py` (the `resolve_query` suite: leading-slash/tilde/dotdot/Windows-drive-letter cases whose final segment was a bare extension glob like `*.csv`/`*.c`/`*.conf`) and one in `tests/test_index_search.py` (`test_search_under_a_star_query_now_globs_and_stays_precise`, renamed from `..._now_globs_instead_of_staying_literal`) asserted the OLD trailing-wrap output (`*.csv*`, `*.conf*`, `beta.md.bak` matching) and were REWRITTEN in place (not deleted) to assert the new, unwrapped output — keeping the reversal visible in the suite rather than just adding new tests alongside stale ones. The TypeScript mirror (`home-search.test.ts`) got the identical treatment: its own required-behavior table and dedicated tests (wraps-a-whitespace-free-glob-too, wraps-only-the-end-that-needs-it, never-stacks-a-star-beside-a-user-star, trailing-wrap-does-not-cross-a-directory) were updated in lockstep, plus a new `describe("the icon*copy reversal, matched against concrete filenames", ...)` block mirroring the five new Python regression tests via `globMatch` (`@platform/lib/fuzzy`) as the match oracle. `frontend/src/apps/explorer/listing/glob-broaden.test.ts` and `zero-match-offer.test.ts` needed comment-only fixes (their assertions/outcomes were already unaffected, since neither test's query carries a user `*` in a position this reversal changes). |
+
+No frontend site other than `expandWhitespaceQuery` itself needed a logic change: `globToHighlightRegex` and `willResolveToGlobMode` (both grepped for per the brief) only ever consume an ALREADY-resolved pattern or wrap `expandWhitespaceQuery`'s own output — they do not reimplement the whitespace/star expansion rule, so fixing the one shared function was sufficient on both sides.
+
+Verified this round: `.venv/bin/python -m pytest tests/test_index_query.py tests/test_index_rank.py tests/test_index_search.py -q` (both `-n0` and default `-n auto`) -> 290 passed both ways, no regressions, no flakes. `cd frontend && bun test src/apps/explorer/lib/home-search.test.ts src/apps/explorer/listing/glob-broaden.test.ts src/apps/explorer/listing/zero-match-offer.test.ts src/apps/explorer/listing/useListingSearch.render.test.ts` -> 232 pass, 0 fail, 447 expect() calls.
+
+## `fused render` outranked by a bare `fusedrender`: `_glob_sql`'s `nm_exact` becomes separator-tolerant for multi-literal patterns (2026-09-18, worktree-search-trailing-space)
+
+|  |  |  |  |
+|---|---|---|---|
+| D-new | **`_glob_sql`'s `nm_exact` construction (`fused_render/index/query.py`) is keyed on `len(literals)`: exactly one literal run keeps the pre-existing `regexp_matches(nm, nm_regex) AND length(nm) = total_len` byte-for-byte; MORE than one literal run instead builds `regexp_matches(nm, '^' || lower(<lit0, re.escape'd>) || '[^a-z0-9]*' || lower(<lit1, re.escape'd>) || ... || '$')` — the literals in order, joined and bookended by the SAME separator character class `_name_predicate_sql`'s `boundary` predicate already uses (`[^a-z0-9]` — `nm` is already lowercased, so no case handling), permitting zero or more non-alphanumeric characters (including none at all) between and never before/after the literal run.** | Reported: home search for `fused render` (-> glob pattern `**fused**render*`, final-segment literals `["fused", "render"]`) ranked `~/ios/FusedRender` and two `.../rclone/vfs/Volumes/FusedRender*` cache directories (all `nm == "fusedrender"`, 11 characters) ABOVE the obviously-wanted `~/Work/fused-render` (`nm == "fused-render"`, 12 characters). Root cause: `nm_exact`'s `length(nm) == total_len` test is correct for a SINGLE literal run (`_rank_sql`'s only case — "matched the whole name and nothing more" is a fair reading of exact there) but for MULTIPLE literal runs it silently narrows "exact" to "the one spelling with zero separators between every word," which is not what a user typing two words separated by a space means, and it excludes every natural multi-word spelling (`fused-render`, `fused_render`, `fused render`) from the top-priority `ORDER BY`/`score` column, so the zero-separator spelling wins outright and the tie never reaches `depth`, where the shallow, correct answer would win. Put the fix inside `_glob_sql` (not a new `_name_predicate_sql` predicate) because `nm_exact` is caller-supplied to `_lex_order_and_score` in both modes already — `_rank_sql` builds its own `nm = lower(qq)` inline — so this is the existing seam, not a new one, and it keeps `_name_predicate_sql`'s four predicates (`prefix`/`suffix`/`contains`/`boundary`) and their docstring untouched, matching the brief's "only the definition of `nm_exact` changes" constraint. Reused `boundary`'s `[^a-z0-9]` character class rather than inventing a second, subtly different "separator" notion — the two questions ("is there a separator directly before literal N" vs. "is every gap between literal runs nothing but separators") are naturally expressed with the identical class. Each literal is `re.escape`'d individually (this is a `regexp_matches` pattern, not a `LIKE` one — an unescaped `.` in `a.b c` must not be read as "any character") and lowered in SQL via `lower(...)`, not Python's `.lower()`, for the same DuckDB/Python Unicode-folding-agreement reason `_rank_sql`/`boundary` already lower in SQL. | `tests/test_index_rank.py`: `test_glob_multi_literal_exact_is_separator_tolerant_fused_render_defect` (new) reproduces the exact reported scenario — `Work/fused-render` now ranks first among the four directories. `test_glob_multi_literal_exact_all_four_spellings_tie_above_a_non_exact_hit` (new) confirms all four spellings (`fusedrender`, `fused-render`, `fused_render`, `fused render`) satisfy the new `nm_exact` and all four outrank a `contains`-only, non-boundary basename (`xfusedrenderx`). `test_glob_single_literal_nm_exact_sql_is_unchanged` (new) pins the single-literal branch's generated SQL byte-for-byte against its pre-existing form and asserts the new `[^a-z0-9]*` separator token never appears in it — the hard constraint that `_rank_sql`'s single-literal callers (and single-literal-run globs like `*.js`) see zero behavior change. `test_glob_multi_literal_exact_escapes_regex_metacharacters` (new) evaluates the generated `nm_exact` fragment directly against synthetic `nm` values, confirming a literal dot in the query only matches a literal dot in the name (not "any character") and that an alphanumeric character between the two literal runs does NOT count as a separator. Full targeted suite (`test_index_rank.py`, `test_index_query.py`, `test_index_search.py`) stayed green with no pre-existing test's expected order changing — this change reorders results only for multi-word (2+ literal run) glob queries that previously had a zero-separator spelling competing with a separated one, a pattern shape none of the existing pinned-order tests happened to exercise. | Mirror check: grepped `frontend/src/platform/lib/fuzzy.ts` and `frontend/src/apps/explorer/lib/` for a client-side reimplementation of the exact-match/tier notion — none exists. `fuzzy.ts` is a subsequence-based ranker for the live-streamed walk over folders the index has never covered (a separate code path from index-backed `search_ranked`), and `home-search.ts` only mirrors the whitespace/glob GRAMMAR (`expand_whitespace_query`/`expandWhitespaceQuery`) — it consumes `search_ranked`'s server-computed order as-is and does no client-side re-sorting of ranked hits, so no frontend change was needed or made. |
+
+## Perf: a cheap LIKE-chain prefilter ahead of the glob regex (2026-09-18, worktree-search-trailing-space)
+
+|  |  |  |  |
+|---|---|---|---|
+| D-new | **`_glob_like_guard(literals)` (`fused_render/index/query.py`) builds a `lrel LIKE '%lit0%lit1%...%litN%' ESCAPE '\\' AND ` prefix from `_glob_literal_runs` run on the WHOLE resolved pattern (NOT `_final_segment_pattern`'s narrower slice, which is what `_glob_sql`'s scoring predicates read instead), each run escaped with `like_literal` (LIKE-metachar escaping) and the whole chain wrapped in one `lower(...)` call. `_glob_sql` splices this — a new `like_guard: str = ""` parameter — directly in front of `regexp_matches(lrel, '{regex}')` in BOTH its unscored and scored WHERE clauses, so every glob query pays the cheap LIKE scan before the pricier regex ever runs on the survivors (DuckDB's `AND` short-circuits left to right). Gated: `_glob_like_guard` returns `""` (no guard emitted, `_glob_sql` falls back to its pre-existing regex-only WHERE) when the literal runs' summed length is below `_GLOB_LIKE_GUARD_MIN_LEN = 2`.** | A perf review measured the read path against a real 745k-file index and found filtering (the WHERE clause) at ~55-60% of total query time — the single largest cost, ahead of projections, ranking, and the QUALIFY basename cap combined. Every literal run in a glob pattern is text the compiled regex REQUIRES verbatim, in order, somewhere in a match (directory segments included), so `lrel LIKE '%lit0%lit1%...%'` is a STRICT SUPERSET of `regexp_matches(lrel, <that pattern's regex>)` — the same "in-order, anything-between" reading `_name_predicate_sql`'s `contains` predicate already gives literal runs elsewhere in this file, never a narrower test that could exclude a row the regex would still match. Re-measured on the same real index this round (`~/.fused-render/branches/worktree-md/index`, 745356 rows, via the actual current `search_ranked`/`_glob_sql` code with `_glob_like_guard` monkeypatched to `""` for the "before" side): `icon copy` 109→82ms, `**fused*render**` 147→96ms, `**/*.js` 150→94ms, `**/*.png` 147→88ms — all with byte-identical hit lists before/after (asserted, not just counted). The `_GLOB_LIKE_GUARD_MIN_LEN = 2` gate exists because a degenerate pattern whose literal runs are all trivial (`**/**e**` → one 1-character run `["e"]`) prunes almost nothing with the extra LIKE scan, so the guard becomes pure overhead ahead of the regex rather than a real prune: forcing the guard on for this exact query, with the gate disabled, measured 296→320ms — WORSE with the guard than without. 2 is the smallest threshold that still guards every combination measured above the cutoff (`icon copy` total_len 9, `**fused*render**`'s final-segment-derived score literals aside, its WHOLE-pattern guard literals total_len 11, `**/*.js` → whole-pattern literal `[".js"]` total_len 3) while excluding the measured-worse 1-character case. A stricter gate (e.g. 3 or 4) was considered and rejected: nothing in this round's measurements showed a 2-or-3-character run behaving like the 1-character degenerate case, and a tighter gate would forgo real prefilter wins on short-but-selective literals (a 2-character extension-shaped run, for instance) without measured justification. Superset property proven, not merely argued, against an adversarial fixture covering every requested class in one test (below) — none broke the superset property, so no pattern class was special-cased or excluded from guarding. `_rank_sql`'s own unscored branch (`depth ASC, rel ASC`) and `_glob_sql`'s unscored branch (`depth ASC, lower(rel) ASC, rel ASC`) were reviewed for the same round: left DELIBERATELY diverged, not aligned, because `test_glob_unranked_reproduces_the_old_depth_then_alpha_order` and `test_glob_unranked_sql_has_no_scoring_apparatus` (`tests/test_index_rank.py`) explicitly pin `_glob_sql`'s current order as "the exact order glob mode always used before this round, byte-for-byte" — a documented legacy-compatibility contract, not an oversight — and aligning it would both flip visible order for depth-tied, case-differing filename pairs in glob-unscored results and require editing that pinned contract, for a correctness/consistency nit with no measured performance benefit of its own. | `tests/test_index_rank.py`: `test_glob_like_guard_is_a_strict_superset_of_the_regex_it_prefilters` (new) runs `search_ranked` twice per adversarial pattern — once with the real, gated guard, once with `_glob_like_guard` monkeypatched to always return `""` — and asserts the FULL hit list (not just counts) comes back byte-for-byte identical both times, for both `ranked=True` and `ranked=False`, across one fixture file/pattern pair per class: a regex metacharacter in a literal run (`.`), LIKE metacharacters (`%`, `_`) in both the query and decoy filenames, a literal backslash, a case variation, unicode text, a literal run occurring multiple times in one filename, and two literal runs whose required occurrences overlap character-for-character. Full targeted suite (`test_index_rank.py`, `test_index_query.py`, `test_index_search.py`) stayed green at 296 passed with no pre-existing test's expected row set or order changing. | Mirror check: glob mode's WHERE-clause filtering is server-only SQL (`_glob_sql`) — `fuzzy.ts` (the live-streamed-walk ranker) has no equivalent regex/LIKE filtering stage to mirror, so no frontend change was needed or made. |
+
+## Perf: `search_ranked` reads the stored `depth` column instead of recomputing it per row (2026-09-18, worktree-search-trailing-space)
+
+|  |  |  |  |
+|---|---|---|---|
+| D-new | **`_rel_depth_sql(cols, rel_expr, prefix_slashes)` (`fused_render/index/query.py`) replaces `search_ranked`'s old `rel_depth = (depth_expr('rel') + 1)` — a per-row `length(rel) - length(replace(rel, '/', ''))` slash-count over every candidate row — with `(depth - {prefix_slashes} + 1)` when the branch's own `_src_cols` probe reports a stored `depth` column (both the `files` and `dirs` schemas carry one, store.py's `schemas()`, as the full path/dir's own ABSOLUTE slash count at scan time). `prefix_slashes = prefix.count("/")` is computed once per request in Python, not per row. Falls back to the old slash-counting expression, run over the branch's own `rel_expr` text, for an index predating the column — the same `_name_col`/`_depth_col` capability-probe pattern this file already uses.** | Same perf review as above measured projections (columns computed per row, depth expression included) at ~10% of total query time on the real 745k-file index. Root identity: `count("/", abs_path) == count("/", prefix) + count("/", rel)` since `rel` is exactly `abs_path` with the request's own fixed `prefix` sliced off the front, and root-relative depth is defined as `count("/", rel) + 1` — substituting the stored absolute depth for `count("/", abs_path)` gives `stored_depth - prefix_slashes + 1` directly, a constant-offset arithmetic expression instead of a per-row string walk. Re-measured on the same real 745k-row index this round (`_rel_depth_sql` monkeypatched back to the old `depth_expr`-based fallback for the "before" side, real code for "after", `search_ranked` in ranked/substring mode): `e` (200 matches, the largest matched set) 315→264ms, `cache` (200 matches) 221→190ms; small matched sets (`download`, `screenshot`, ~70-200 hits but a shallower/smaller matched set overall) showed ~0 delta, consistent with a fixed per-row cost that only shows up once the matched set is large enough to dominate. All before/after hit lists (including every `depth` value returned) were asserted byte-for-byte identical, not merely counted. Both `files` and `dirs` branches now call `_cached_src_cols` (previously only the `files` branch did, for `_name_col` — the `dirs` schema has no `name` column to reuse), so a request against a fresh generation now pays one DESCRIBE per source instead of one total; this is a deliberate, measured trade (one more cache-amortized metadata read per generation, in exchange for the per-row win above), not an oversight. | `tests/test_index_search.py`: `test_rel_depth_sql_stored_and_fallback_paths_agree` (new) asserts `_rel_depth_sql`'s stored-column and fallback expressions return IDENTICAL relative-depth values, executed directly against DuckDB, across the root itself (`rel == ""`), a top-level file, a deeply nested file, and a directory row — pinning the `+1` semantics independent of `search_ranked`'s own row-inclusion policy (which never actually surfaces the root as a hit). `test_search_ranked_describes_the_files_source_only_once` and `test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction` (both pre-existing) had their asserted DESCRIBE counts updated (1→2, and the post-compaction count 3→4) to reflect the `dirs` branch now legitimately probing its own schema once per generation — an internal cost-count assertion, not a row-set-or-order regression; no other pre-existing test's expected rows or ordering changed. Full targeted suite (`test_index_rank.py`, `test_index_query.py`, `test_index_search.py`) green at 296 passed. | Mirror check: `search_ranked`'s depth computation is server-only SQL with no client-side equivalent (`fuzzy.ts`/`home-search.ts` consume `search_ranked`'s output as-is), so no frontend change was needed or made. |
+
+## `edge` replaces the query-shape `suffix_before_prefix` swap; a `nm_exact_natural` tie-break fixes the equal-depth `fused render` residual (2026-09-18, worktree-search-trailing-space)
+
+Two defects found by an automated PR reviewer against this worktree's own prior rounds above, plus a test-quality defect (B2) discovered while investigating the second.
+
+**Defect A.** `suffix_before_prefix` (the "extension-shaped queries rank the basename SUFFIX above the basename PREFIX" fix, above) swapped `prefix`/`suffix` wholesale whenever the QUERY's last literal started with `.`. That fixed `.js` (`script.js` above `.jshintrc`) but broke `.env`: it made `database.env` (a SUFFIX match) outrank `.envrc`/`.env.local` (PREFIX matches) — the opposite of the wanted order, for the identical query SHAPE (a `.`-leading literal). No rule keyed on the query string alone can resolve both reports, since they disagree on what a `.`-leading literal should mean.
+
+**Defect B.** `370441e8b`'s separator-tolerant `nm_exact` fix made `FusedRender` (zero separators) and `fused-render`/`fused_render`/`fused render` (one) all `nm_exact` for a multi-literal glob. At UNEQUAL depth `depth` already picks the shallower, correct answer (the originally reported case). At EQUAL depth, `depth` cannot break the tie, so it falls to `length(nm) ASC`, which picks the SHORTEST — the zero-separator spelling — reintroducing the original bug's flavor in the one case depth does not already resolve.
+
+**Defect B2.** `test_glob_multi_literal_exact_is_separator_tolerant_fused_render_defect`'s docstring claimed to rank the fix above "same-depth `FusedRender` cache directories," but its fixture (`rclone/vfs/Volumes/FusedRender1`/`FusedRender2`) put them at a DIFFERENT depth AND their trailing digit blocks `nm_exact`'s `^...$` anchor — they were never exact matches at all, so the test passed on `depth` alone and never exercised the equal-depth tie its docstring described.
+
+|  |  |  |  |
+|---|---|---|---|
+| D-new | **`_name_predicate_sql` (`fused_render/index/query.py`) replaces the Python-only `suffix_before_prefix` flag with a fifth SQL boolean, `edge` — `prefix_edge OR suffix_edge`, where `prefix_edge` is true when the character immediately after the matched run is the end of `nm` or a separator (`[^a-z0-9]`, `boundary`'s own class), and `suffix_edge` is true when either the literal itself starts with a separator (self-anchored — `.js`/`.env`) or, when it does not, the character immediately before the match is the start of `nm` or a separator. `_lex_order_and_score` no longer swaps `prefix`/`suffix` at all (they are now ALWAYS `prefix` before `suffix`, in both `order_by` and `score`); `edge` is spliced into `order_by` ahead of them instead, and excluded from `score` (like `boundary`).** | This is a CANDIDATE-side question ("does this match consume a whole segment, on either side"), not a query-side one — the one axis that can distinguish `script.js` (suffix, self-anchored, edge) from `.jshintrc` (prefix, followed by alnum `h`, fragment) without also having to read whether the query happens to be `.js` or `.env`. Verified by hand and by test against all four relevant filename pairs: `script.js` beats `.jshintrc` (acceptance case 1, unchanged from the old fix); `.env.local` beats `database.env` (half of acceptance case 2 — both become `edge`, tying, and the now-fixed, never-swapped `prefix DESC` column picks the prefix match); `config.json` still beats `app-config` (the non-dot regression guard — both become `edge`, `prefix DESC` still wins). **Escape-hatch invoked, partially, and reported rather than hidden:** `.envrc` (a PREFIX fragment — followed by alnum `r`, structurally IDENTICAL to `.jshintrc`'s PREFIX fragment) does NOT beat `database.env` (a SUFFIX edge match) under this rule, though the brief's acceptance case 2 asked for it to. Exhaustive analysis (four other candidate rules tried and rejected: pure coverage fraction, absolute unmatched-length, a majority-coverage threshold, and a remainder-length tie-break — each either regressed `config`/`app-config` or actively broke `.js`) found no per-candidate/per-row structural rule can separate `.envrc` from `.jshintrc` at all, since they are byte-for-byte identical in every measurable structural respect; the only feature that tells them apart is which literal the query happens to be ("env" vs "js"), which is exactly the classifier the brief forbade. Shipped anyway rather than reverting entirely, because: (1) it is a STRICT improvement — `.js` and `.env.local` newly correct, `config`/`app-config` unchanged, and (2) `.envrc` vs `database.env` is UNCHANGED from the pre-fix behavior (the old swap already ranked `database.env` first too) — not a new regression, a pre-existing, now-explicitly-documented one. | `tests/test_index_rank.py`: `test_extension_query_ranks_suffix_above_prefix`/`test_extension_glob_query_ranks_suffix_above_prefix`/`test_non_dot_query_keeps_prefix_before_suffix` (pre-existing, all still pass unmodified — the `.js` fix and the non-dot regression guard survive the redesign). `test_dotfile_extension_query_ranks_prefix_matches_above_a_suffix_match` (new) pins `.env.local` above `database.env`. `test_dotfile_prefix_fragment_still_loses_to_a_suffix_edge_match_known_gap` (new) pins, rather than hides, the `.envrc`-vs-`database.env` gap as a documented, asserted CURRENT behavior. | Defect B: `_glob_sql`'s multi-literal branch also computes `nm_exact_natural` — the same `nm_exact` pattern but with `[^a-z0-9]+` (one or more) at every literal-run gap instead of `[^a-z0-9]*` (zero or more), true only when the candidate is genuinely word-broken. Passed through a new `_lex_order_and_score(nm_exact, preds, nm_exact_natural="true")` parameter (every other caller keeps the no-op default) and spliced into `order_by` right after `nm_exact`, ahead of `edge`/`prefix`/`suffix` — so it wins the equal-depth tie before `length(nm)` is ever reached, in the direction the reported defect wants (favoring the separated spelling, not penalizing it for being longer). This IS worth fixing, not acceptable arbitrary tie-breaking: `length(nm) ASC` was never a deliberate "prefer fewer characters" ranking decision, it was a leftover generic tie-break that happens to encode "prefer the spelling with no separators" once `nm_exact` stopped requiring zero separators — an accidental, not intentional, bias reintroducing the exact bug shape the separator-tolerance fix was meant to remove. The replacement is non-arbitrary: "does every word boundary in this candidate's spelling have an explicit separator" is a real, candidate-side notion of "how deliberately this name was spelled," reusing the same separator class every other predicate here already uses, not a new one invented for this fix alone. Test: `test_multi_literal_exact_tie_at_equal_depth_prefers_the_separated_spelling` (new) — `Work/fused-render` and `Work/FusedRender` at the SAME depth, only `fused-render` wins. | Defect B2: `test_glob_multi_literal_exact_is_separator_tolerant_fused_render_defect` was REWRITTEN (not weakened) to add a genuinely same-depth `Work/FusedRender` sibling directly alongside the pre-existing `Work/fused-render` (both one level under `Work/`) — its old fixture's `FusedRender1`/`FusedRender2` cache directories are kept too, for the depth-alone case, but the docstring now explains why they never exercised the equal-depth claim. Rewriting this test FIRST (before writing the Defect B fix) reproduced Defect B as a genuine, real test failure — confirming B2's premise and B's existence in one step, not two independent guesses. `test_glob_multi_literal_exact_all_four_spellings_tie_above_a_non_exact_hit` (the sibling test named in the brief) was inspected for the same class of problem and found NOT to have it: its four fixture files are genuinely same-depth (`/r/*.txt`, all siblings) and genuinely `nm_exact` (no trailing characters blocking the anchor for any of the four spellings), and its assertion only checks SET membership of the first four positions, not a specific order among them, so it was not affected by (and needed no rewrite for) either Defect A or B — left unchanged. |
+
+No frontend change: grepped `frontend/src/platform/lib/fuzzy.ts` (a separate subsequence-based ranker for the live-streamed walk, unaffected) and every file in `frontend/src/apps/explorer/lib/` for `prefix`/`suffix`/`nm_exact`/`edge`/`suffix_before_prefix` — no reimplementation of the predicate/tier logic exists on the client; `home-search.ts` only mirrors the whitespace/glob grammar, confirmed by grep, not touched.
+
+Every existing test's expected row ORDER was checked, not just whether it still passed: the full targeted suite (296 pre-existing tests) passed UNCHANGED after both fixes, meaning no pre-existing assertion's expected order shifted — the two intentional order changes this round makes (`.env.local` above `database.env`; the naturally-spelled multi-literal-exact spelling above the fused one at equal depth) are both covered by NEW tests, because no pre-existing test happened to exercise either shape (a dotfile-prefix-vs-suffix query, or an equal-depth multi-literal-exact tie) before now.
+
+Verified this round: `.venv/bin/python -m pytest tests/test_index_rank.py tests/test_index_query.py tests/test_index_search.py -q` -> 299 passed (296 pre-existing + 3 net-new: `test_dotfile_extension_query_ranks_prefix_matches_above_a_suffix_match`, `test_dotfile_prefix_fragment_still_loses_to_a_suffix_edge_match_known_gap`, `test_multi_literal_exact_tie_at_equal_depth_prefers_the_separated_spelling`; the rewritten B2 test replaces its prior version in place, net zero count change).
+
+## Two more code-review findings against this worktree: `escapesFsPath` trims edge whitespace; the subfolder-widen offer is proven safe, not patched (2026-09-18, worktree-search-trailing-space)
+
+**Finding 1 (real, fixed).** `useListingSearch.ts` passed the raw, untrimmed deferred query straight into `escapesFsPath` (query-base.ts) while a sibling computation in the same hook, `isPathShapedQuery` (path-shaped-query.ts), already trims before doing the equivalent `escapesBase` check. Concretely: `escapesFsPath("/Users/iamsdas ", "/Users/iamsdas", home)` (the box's own pre-filled `fsPath` text plus one trailing space, no `*` typed at all) returned `true` — "escapes the folder being searched" — where the untrailing-spaced text returns `false`. The trailing space glued onto the last compared path segment (`"iamsdas "` vs `fsPath`'s `"iamsdas"`) and broke the segment-equality check that decides whether a query's base is still the folder on screen. Same root cause also defeated `escapesBase`'s own exact-match checks the other way: `escapesFsPath("~ ", fsPath, home)` returned `false` (not escaping) before the fix, because `"~ " !== "~"` and `"~ ".startsWith("~/")` is false, so a trailing-spaced tilde query silently skipped the home-relative walk entirely. User-visible symptom of the first case: per this hook's own design comment ("the box always arrives pre-filled with `fsPath`'s own absolute path... appending a pattern to what's already there... should live-filter... not wait for Enter"), a bare trailing space typed right after the pre-filled path — which the whitespace grammar treats as a real, meaningful keystroke, not a no-op — spuriously flips the query into the Enter-gated path, silently withholding the live filter a user would reasonably expect to already be running.
+
+**Finding 2 (claim investigated, disproven; no change made).** The reviewer's claim: `genuinelyWidens` (`glob-broaden.ts`) can pass a "look in subfolders" offer that is not a strict superset of the original zero-hit query, specifically one that drops direct children of the current folder. Investigated three ways before touching anything: (1) structural proof — `widenSubfolders` always splices a brand-new `"**/"` segment immediately before the query's own unmodified last segment; `expandWhitespaceQuery`'s per-segment collapse/wrap only ever reads a segment's own text and its own index, so every other segment (including the one right after the insertion point) resolves identically before and after, meaning the widened pattern is ALWAYS exactly "the original pattern with one `**/` token spliced in front of its own tail" — never a differently-shaped pattern. (2) `_glob_to_regex` (fused_render/index/query.py) compiles `"**/"` to `(?:[^/]*/)*` — zero-or-more WHOLE segments, confirmed both by its own doc comment ("collapses to zero-or-more whole segments so it can match nothing, `**/*.csv` reaching a root-level file") and by direct regex construction: the zero-repetition case reduces byte-for-byte to the un-widened pattern, so every match the original had (direct children included) survives, and the widened form can only match a superset. (3) Empirically: a Python fuzzer imported the real `expand_whitespace_query`/`_glob_to_regex` from `fused_render/index/query.py`, generated 3001 (query, widened-query) pairs whose resolved patterns actually differ, and checked all of them against 1316 candidate relative paths (including direct children at every level) for a case where the original matched but the widened form did not — zero violations. `resolve_query` against a real temp directory tree (`/tmp/wtest/project` with a direct-child file, a subfolder file) additionally confirmed the server-side `base` never shifts between the original and widened query (the insertion point is always at or after the position of the query's own first pre-existing wildcard, so the directory walk that picks `base` stops at the identical place both times) — so the widen can't silently point the search at a different, narrower root either. No code changed for this finding: `glob-broaden.ts` and its test file are exactly as they were on this branch.
+
+|  |  |  |  |
+|---|---|---|---|
+| D-new | **`escapesFsPath` (`frontend/src/apps/explorer/listing/query-base.ts`) now trims its input at the top of the function, before calling `escapesBase` or doing any segment comparison — the parameter was renamed `rawQuery` (the exported symbol name and signature order are unchanged; only the internal binding name changed) with a local `const query = rawQuery.trim();` used for everything else in the function body. The one call site (`useListingSearch.ts`'s `escapes = escapesFsPath(q, fsPath, home)`) is left passing the raw deferred value, matching every other read of `q` in that hook (A1) — the trim now lives once, inside the predicate that actually needs it, rather than being duplicated at the call site.** | Consistency was the ask: `isPathShapedQuery` already trims before its own `escapesBase` check; `escapesFsPath` (a stricter, `fsPath`-aware sibling of the same question) was the one predicate in this flow still comparing raw, untrimmed text. Trimming inside the function rather than at the call site protects every future caller of `escapesFsPath`, not just this one — the bug is in what the base-comparison predicate does with edge whitespace, not in what any one caller passes it. Edge whitespace is never part of a query's BASE under the whitespace grammar (`expand_whitespace_query`/`expandWhitespaceQuery`): it only ever becomes a wildcard on the final segment's TEXT, and trimming the two ends of the whole string can never remove a `*`/`?`/`..`-segment, so this cannot mask a genuine escape — it only strips characters that were never going to affect the verdict on purpose. | `frontend/src/apps/explorer/listing/query-base.test.ts`: three new cases added to the existing `escapesFsPath` describe block — `"/Users/iamsdas "`, `"/Users/iamsdas/"` and `" /Users/iamsdas"` (edge whitespace around the exact folder) all stay `false`; `"/Users/iamsdas2 "` (edge whitespace around a genuinely different folder) stays `true`; `"~ "` (trailing-spaced tilde) resolves home and stays `false`. All 35 tests in the file pass, including the pre-existing ones. `bun run typecheck` (`tsc --noEmit`) clean. | Mirror check: `escapesFsPath` has no Python/server counterpart — it is a frontend-only Enter-gating heuristic (query-base.ts's own header comment); `fused_render/index/query.py` was read only to confirm the whitespace grammar's semantics (no server file touched). |
+| — | Finding 2: no change. `broadenGlobOffer`/`genuinelyWidens`/`widenSubfolders` (`frontend/src/apps/explorer/listing/glob-broaden.ts`) are unchanged from this branch's prior state. | See the reasoning paragraph above — proven a strict (possibly non-strict-equal but never narrower) superset by structural argument, `_glob_to_regex` semantics, and a 3001-pair/1316-path empirical fuzz with zero violations, plus a real-filesystem `resolve_query` check that `base` never shifts. | No test added — nothing to pin for a claim that was disproven; the existing `glob-broaden.test.ts` (23 tests) already passes unmodified. | Recorded here so a future reader doesn't have to re-derive this proof if the same reviewer claim resurfaces. |
+
+Grepped `tests/` for `escapesFsPath`, `genuinelyWidens`, and `widenSubfolders`: no hits — no Python test asserts on a literal line of either touched/reviewed file, so pytest was correctly left unrun for this round (per this task's own instruction).
+
+Pre-existing, unrelated to this round: `frontend/src/apps/explorer/listing/search-dropdown-actions.render.test.tsx` (and several sibling `*.render.test.tsx` files in the same directory) fail with `ReferenceError: location is not defined` (`platform/lib/router.ts`'s module-init `rewriteLegacyPath`) when run standalone or in a small subset — they depend on a DOM global (`happy-dom`) registered by a different test file earlier in a full, alphabetically-ordered `bun test src` sweep, not by anything in `bunfig.toml`. Reproduced on this checkout with `bun test src/apps/explorer/listing/` (13 failures, all the same error, none touching `query-base.ts`/`useListingSearch.ts`/`glob-broaden.ts`) — a test-harness load-order artifact, not a regression from either finding above.
+
+## Bound the basename cap's own candidate pool: overfetch before QUALIFY, not after LIMIT (2026-09-18, worktree-search-trailing-space)
+
+Reported defect: `_qualify_basename_cap`'s `QUALIFY` (previous section) is spliced ahead of each branch's own `ORDER BY ... LIMIT`, so it runs its `row_number() OVER (PARTITION BY nm ...)` window function over the ENTIRE `WHERE`-matched set before the statement's own `LIMIT` ever applies — correct (a page whose matches span enough distinct basenames to fill it still comes back full; verified directly, see below), but means a broad query pays the window function's cost over the WHOLE match set (documented elsewhere in this file as up to 353k rows) just to hand back a `limit`-sized page, on an index where filtering alone is already ~55-60% of total query cost (prior round's measurement). Moving the `QUALIFY` after the final `LIMIT` instead does not fix this — it starves the page a different way, capping an already-truncated page rather than the candidate pool.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **`_basename_candidate_pool(limit) = max(limit, min(limit * 20, 20_000))` (`_BASENAME_POOL_FACTOR = 20`, `_BASENAME_POOL_MAX = 20_000`) sizes an intermediate `ORDER BY <order_by> LIMIT <pool>` stage, wrapped around the filtered `(inner)` subquery, in all FOUR branches (`_rank_sql` ranked/unranked, `_glob_sql` scored/unscored) — placed BEFORE `_qualify_basename_cap`'s own `QUALIFY`, which now runs over the bounded pool instead of the full match set, followed by the branch's existing final `ORDER BY <order_by> LIMIT {limit}`. The pool's own `ORDER BY` is the SAME `order_by` vector the QUALIFY window and the final `ORDER BY` both already use.** | Drawing the pool by the identical ordering the cap and the final page both use means nothing in the pool can outrank a row the old unbounded approach would have kept, and nothing that belongs on the final page is ranked below the pool's cutoff by a different criterion than the one that decides the page. The factor (20) and max (20,000) are empirical, not derived from a worst-case guarantee — no finite pool can be one: a single basename whose duplicate count exceeds `pool` AND whose every copy ranks ahead of every OTHER matching basename in the shared ordering (verified constructible: a 215,000-file corpus with one 200,000-copy basename that is also the SHORTEST matching name, so `length(nm) ASC` puts every one of its copies ahead of all 30 other distinct, legitimately-matching basenames) can fill the entire pool by itself, and the cap then reduces that single-basename pool to 3, starving the other basenames out — a shape the old, unbounded `QUALIFY` did NOT starve. Widening the factor/max only requires a proportionally larger adversarial duplicate run to reproduce the same failure, at the cost of scanning that much more of the match set on every broad query (most of which will never hit this shape). 20x/20,000 was chosen because a search corpus overwhelmingly has at most a handful of basenames repeated more than a few times (`__init__.py`, `README.md`, `index.ts`), so `limit * 20` candidates, by the statement's own ordering, come from far more than `limit / 3` distinct names in the ordinary case, while `20_000` bounds the absolute cost even at `MAX_GLOB_RANK_LIMIT` (5,000 * 20 = 100,000 would erase most of the win). **Rejected: `QUALIFY` after the final `LIMIT`** — starves the page differently (trims an already-truncated page) rather than fixing anything. **Rejected: no pool bound (status quo)** — correct but pays the window function's cost over the full match set on every broad query. **Rejected: a much larger fixed pool (e.g. 100,000) to further shrink the adversarial window** — the adversarial shape cannot be closed by any finite pool, only made proportionally rarer, and a 5x-larger pool measurably narrows the perf win this round exists to buy back. | New (`tests/test_index_rank.py`): `test_basename_cap_pool_still_fills_a_full_page_with_many_distinct_names`, `..._unranked`, `test_glob_basename_cap_pool_still_fills_a_full_page_scored`, `..._unscored` — 30 distinct basenames x 4 copies each, `limit=21`: all four branches return a full 21-row page, `truncated=True`, no basename over 3. The three pre-existing basename-cap tests (previous section) pass unchanged. Full targeted suite (`test_index_rank.py`, `test_index_query.py`, `test_index_search.py`) green: 303 passed (was 299 before this round's 4 new tests). Timed against a synthetic 745,000-row index (`745,000` files/`623,344` dirs, matching this file's other 745k-row measurements): narrow substring `render` 1729ms -> 817ms; broad substring `e` 4462ms -> 1816ms; broad glob `**e**` 3237ms -> 2046ms; broad glob unranked `e` 1406ms -> 993ms; two narrow/duplicate-heavy queries (`icon copy`, `__init__`, 3 hits each either way) were within noise of each other (both sub-second, no consistent direction) — the win is specifically on BROAD queries, where the unbounded `QUALIFY` previously had to scan the largest match sets. |
+| — | The pathological, intrinsically-unfixable case this round's task description used as its own motivating example — 500 matching files spread across only 2 distinct basenames, `limit=21` — returns exactly 6 rows (`2 basenames * cap 3`) both BEFORE and AFTER this fix. Verified directly (own repro script): this is the mathematically correct maximum for that shape, not a symptom of QUALIFY placement — a page cannot contain more distinct-basename rows than distinct basenames times the cap exist to give it, regardless of where in the SQL the cap is applied or how large the pool is. | Confirming this before implementing anything: the "500 matches, 2 basenames, 6 rows back" behavior is correct and must NOT change; only the "many distinct basenames but still starved" case is the actual bug, and that case was independently verified to already work correctly pre-fix at every scale tried (500 rows/50 basenames, and a boundary case at exactly `limit / cap` distinct names) — the overfetch/pool-bounding work in this round is a performance fix (bringing the cost of an always-correct unbounded QUALIFY down to a bounded one), not a correctness fix for a starvation bug that was reproducible pre-fix under the task's own stated terms. | Scratch repro scripts (not committed; kept under the session scratchpad per this round's own constraints). | 
+| — | `search_ranked`'s `truncated`/`total` fields (the frontend's "more results" signal) are computed from `len(rows)`/`rows[:limit]` off the SAME statement that now includes the bounded pool — this is unchanged from the previous round's (already-correct) design of reading these fields off the executed statement's own result set rather than a separate `COUNT(*)`. In the ordinary case this stays accurate. In the SAME adversarial pool-starvation shape documented above, `truncated` can now read `False` (and `total` report the small starved count) even though the true, full corpus has far more matches than the page shows — the pool ran out of basename diversity before the real corpus did, and the statement itself has no way to distinguish "the corpus is exhausted" from "the pool is exhausted" once QUALIFY has already discarded the excluded rows. **This was accepted as a known consequence at the time, and is now CLOSED — see the fallback entry immediately below, added the following round; `truncated`/`total` are accurate in both the bounded and fallback paths, because both are read off whichever statement actually produced the returned rows, never a mix.** | Same reasoning as the pool-size trade-off above: an honest `truncated` in the adversarial shape would require scanning past the pool once QUALIFY has already thinned it, which is exactly the cost this round's fix removes. | Not separately tested in THIS round — the adversarial shape is not present in the new pinning tests above (which are deliberately sized so the pool comfortably holds every distinct basename), matching the "ordinary case" this fix targets. The follow-up round below adds the adversarial-shape tests this round explicitly deferred. |
+| D-new | **The basename-cap pool's starvation gap (two entries above: a single over-large, top-ranked basename can fill the whole `pool` and squeeze out every other legitimately-matching basename) is CLOSED with a bounded-then-verify fallback, not left as an accepted trade-off. `_bounded_or_full_candidates(base_select, order_by, limit, bounded)` is a new shared helper (used by all FOUR branches — `_rank_sql` ranked/unranked, `_glob_sql` scored/unscored — both of which now take a `bounded: bool = True` parameter) that either wraps `base_select` in the existing `ORDER BY <order_by> LIMIT <pool>` stage (`bounded=True`, the prior round's fast path, unchanged) or returns `base_select` UNMODIFIED (`bounded=False` — `QUALIFY` then runs over the whole `WHERE`-matched set, the pre-pool-bound shape). `search_ranked` runs the bounded query first and, whenever it comes back with FEWER rows than the caller's `limit`, reruns the identical query with `bounded=False` and uses THAT result (wholesale, not merged) instead.** | A short bounded-pool result is the only observable symptom starvation can produce, and it is unambiguous: a basename large enough to fill the pool and outrank every other matching name still leaves every OTHER basename capped at `_MAX_PER_BASENAME` (3), so a FULL page (`>= limit` rows) is proof nothing was starved — no false negative is possible. A short page means either (a) the corpus genuinely has fewer than `limit` real matches, in which case the unbounded rerun re-scans a correspondingly small `WHERE`-matched set and is cheap, or (b) the pool actually starved a fillable page, in which case correctness is worth the rerun. Both branches of both `_rank_sql` and `_glob_sql` share the one new helper specifically so the bounded/unbounded subquery shape can't independently drift between them the way the codebase's own docstrings elsewhere warn about. `truncated`/`total` are computed from whichever query actually produced `rows` — the two prior rounds' `truncated`-lies-in-the-adversarial-shape gap (entry immediately above) is closed as a side effect, not by a separate accounting change. **Rejected: a single-query solution that avoids the second round-trip** — no SQL shape was found that both (a) lets DuckDB's heap-based Top-N optimization bound the window function's input on a broad query (`13ff8332a`'s whole reason to exist) and (b) guarantees the window sees every row a single dominant basename could need excluded ahead of it, since (a) requires committing to a LIMIT before the window runs and (b) requires NOT committing to one; verify-then-rerun trades a second query, paid only when the first one's result proves inconclusive, for the guarantee instead. **Rejected: widening the pool instead of adding a fallback** — even `_BASENAME_POOL_MAX` (20,000) does not eliminate the gap, only requires a proportionally larger adversarial duplicate run to reproduce it (documented two entries above); no finite pool closes this, only a fallback that can see the ENTIRE match set when needed can. | New (`tests/test_index_rank.py`): `test_bounded_pool_alone_starves_the_adversarial_shape_but_unbounded_recovers_it` (SQL-level, standalone `VALUES`-built `inner`, pins the raw mechanism independent of the parquet/index plumbing: `_rank_sql(bounded=True)` returns exactly the dominant basename's capped 3 rows on a fixture sized to exceed `_basename_candidate_pool(21)`, `_rank_sql(bounded=False)` recovers a full, diverse 21-row page); `test_starvation_fallback_recovers_the_reported_adversarial_shape` (parametrized over all 4 branches: substring ranked/unranked, glob scored/unscored) reproduces, at a runtime-tractable ~1,120-file scale, the exact shape a previous investigation reported directly reproducing at 215,000 files / one 200,000-copy `dup.txt` (returning a starved 3-row page) — `search_ranked` now recovers a full 21-row page spanning >= 7 distinct basenames, for every branch; `test_starvation_fallback_recovers_the_milder_reported_shape` (same 4-way parametrization) reproduces the milder reported shape VERBATIM at its reported scale (2,000 dominant copies against 30 other basenames x 500 copies each, 17,000 files total — this size builds and runs in well under a second, so no scaling-down was needed) — previously reported as returning only 18 of 90 possible rows; now recovers a full 90-row page spanning >= 25 distinct basenames, for every branch. Full targeted suite (`test_index_rank.py`, `test_index_query.py`, `test_index_search.py`) green: 312 passed (was 302 before this round's 9 new tests, plus one pre-existing test's expectation updated — see below). Timed against the same synthetic 745,000-file index the prior round measured: broad-query wins are UNCHANGED (`e` 4462ms -> 1816ms substring, `**e**` 3237ms -> 2046ms glob, `render` 1729ms -> 817ms — all still ~4462/3237/1729ms before either round's fix, since a full-page result never triggers the fallback and the bounded query alone still runs); the fallback's cost lands entirely on queries whose bounded run comes back short: a genuinely zero-hit query on the same 745k-file index went from ~38ms (bounded-only, this round's baseline for comparison) to ~70ms (bounded, then the unbounded rerun) — real but small in absolute terms, and it cannot be avoided without either giving up the guarantee or the broad-query win, per the rejected single-query alternative above. One pre-existing test's expectation changed as a DIRECT, correct consequence of the fallback, not a workaround: `tests/test_index_search.py::test_search_ranked_honours_the_limit_in_sql_not_just_in_python`'s fixture has exactly 1 genuine substring match for its query against `limit=3`, so the bounded run now always comes back short and the fallback fires a second query — `seen_limits` changed from `[4]` to `[4, 4]` (both carrying the same `limit + 1` overfetch), documented in the test itself. |
+
+## Third Bugbot round against this worktree: `escapesFsPath`'s own trim was the bug, the fallback's `< limit` trigger was off by one, the glob-widen claim re-confirmed (2026-09-18, worktree-search-trailing-space)
+
+Three findings against this PR. Kept brief per an explicit scope change mid-round (land the logic fixes, minimal tests, short doc entries, no full suite).
+
+**Finding A (real, fixed) — `escapesFsPath` (`frontend/src/apps/explorer/listing/query-base.ts`).** The `.trim()` from the "Finding 1" fix two sections up was itself wrong: trailing whitespace is not edge noise to the server. `expand_whitespace_query` turns a trailing space into a wildcard on the query's FINAL segment, which can peel that segment off the walked base entirely. Verified live against the running dev server's `/api/index/rank`: `q="/Users/iamsdas "` (root `/Users/iamsdas`) resolves `base: "/Users"`, not `/Users/iamsdas` — a genuinely different (parent) subtree the old trim-based check called "still inside the folder." Symmetrically, `q="~ "` resolves `base` to the box's own root with pattern `"**/**~**"`, never `home` — the trailing space turns `"~"` into a glob token, so it is never a home escape, yet the old trim (`"~ "` -> `"~"`) read it as one. Fix: `escapesFsPath` now mirrors `resolve_query`'s own two-step process — strip a leading whitespace run only when what remains already looks like an escape form, then run `expandWhitespaceQuery` (the exact TS mirror of `expand_whitespace_query`) — never a bare trim — before any escape-shape or segment comparison. Tests (`query-base.test.ts`): a trailing space on the exact open folder now gates (previously silent); `"~ "` stays non-escaping even when `home !== fsPath` (the case that tells the old, coincidentally-correct-for-the-wrong-reason trim apart from the real fix); plain in-folder queries unaffected. 37/37 pass.
+
+**Finding B (real, fixed) — the starvation fallback's own trigger (`fused_render/index/query.py`, `search_ranked`).** The immediately-preceding entry's fallback reruns unbounded "whenever [the bounded run] comes back with fewer rows than the caller's `limit`" — but the query underneath is always issued with `LIMIT limit + 1` (the same one-extra-row trick `truncated` is read from everywhere else in this function). A bounded run landing at EXACTLY `limit` rows (one short of `limit + 1`, not merely "short") read as a full page under `len(rows) < limit` and never reran, even though the pool boundary could still be hiding a distinct, better-ranked basename that the unbounded query's `(limit + 1)`th row would surface — silently reporting `truncated: False` when a real further match exists. Confirmed reachable (not theoretical) with a constructed adversarial corpus (one dominant basename plus one "just inside the pool" basename summing to exactly `limit` capped survivors, and one more basename ranked just past the pool boundary): the pre-fix trigger produced `truncated: False`; fixed to `len(rows) < limit + 1`, matching the query's own overfetch. The returned hit LIST is unaffected by this bug either way (`search_ranked` never returns more than `limit` hits regardless) — only `truncated` was wrong. Test: `tests/test_index_rank.py::test_starvation_fallback_misses_a_page_short_by_exactly_one_row` — written to fail against the pre-fix trigger (verified: `assert False is True` on `truncated`) and pass against the fix. Targeted suite: `tests/test_index_rank.py tests/test_index_search.py` — 171 passed. The "tighten the trigger to fire only when the pool actually filled" optimization mentioned as a possible follow-up was explicitly out of scope this round and was not investigated.
+
+**Finding C (re-confirmed, no change) — `glob-broaden.ts`'s `genuinelyWidens`/`widenSubfolders`.** Same claim as "Finding 2" two sections up (inserting `**/` before a query's final segment could, in principle, produce a narrower or equal pattern rather than a strict superset). Re-derived independently rather than taken on trust: `_glob_to_regex` compiles `**/` to `(?:[^/]*/)*` (zero-or-more WHOLE segments), whose zero-repetition case reduces byte-for-byte to the un-widened pattern, so the widened pattern can only match a superset; `widenSubfolders` always splices the new segment immediately before the query's own unmodified final segment, so no other segment's resolution changes. Current code (`glob-broaden.ts`) matches the already-documented, already-fuzz-tested conclusion exactly — no code changed, no new test added (the existing 23-test `glob-broaden.test.ts` still passes unmodified).
+
+**Finding D (real, fixed) — `isPathShapedQuery` (`frontend/src/apps/explorer/listing/path-shaped-query.ts`) still trimmed.** A fourth Bugbot pass caught that Finding A's fix only touched `escapesFsPath`; `isPathShapedQuery` (the path chip, and the gate on whether a rank request is sent at all — `useListingSearch.ts`'s `runsSearch = searching && !isPathQuery`) still did a bare `query.trim()` before its own `escapesBase` check, the exact bug Finding A fixed in the other function. Verified live: `q="/Users/iamsdas "` (the box's OWN pre-filled path plus a trailing space) resolved server-side to a glob search of the PARENT (`base: "/Users", pattern: "**iamsdas**"`), yet the trimmed check saw a clean, glob-free `"/Users/iamsdas"` and classified it as an exact path — showing the "Path" chip and suppressing the search entirely, so `runsSearch` never fired and the user's keystroke did nothing. Fixed by extracting the exact normalization `escapesFsPath` already used into a shared, exported `normalizeQueryForResolution` (`query-base.ts`) and having `isPathShapedQuery` run it too, adding an explicit `!normalized.includes("*")` check (the whitespace-injected glob has no literal `*` in the raw text, so `listingAddress`'s own substring check can't see it) — the two predicates now share one normalization step and cannot diverge from each other or the server again. Enumerated before changing anything: `listingAddress` (used by `isPathShapedQuery`, `useTypedPathAddress.ts`, `completion-target.ts`) was left untouched — its job (what would Enter open / what should complete) is deliberately whitespace-naive per its own header comment, and the fix lives entirely in the caller that needed server-parity, not in the shared resolver the other two callers rely on staying as-is. Tests (`path-shaped-query.test.ts`): a folder path plus trailing space is no longer path-shaped; `"~ "` is no longer path-shaped. 50/50 pass across `path-shaped-query.test.ts` + `query-base.test.ts`. All three named consumers (path chip via `isPathQuery`, Enter gate via `escapes`/`gateOpen`, and the eventual `/api/index/rank` request) now agree: neither query is treated as an exact path, both fall through to a real search, and `"/Users/iamsdas "` additionally waits for Enter (a genuine base change to the parent) while `"~ "` live-filters immediately (stays anchored at the box's own root) — matching `escapesFsPath`'s verdict in both cases.
+
+
+## Linux auto-update build log (worktree-linux-auto-update, docs/LINUX_AUTO_UPDATE_SPEC.md)
+
+Read in full before resuming a build session on this branch. Append, do not rewrite this file — it is also the whole project's decision log (above); a prior session on this branch mistakenly overwrote it with only this section, and it has been restored from main.
+
+## Task 1 — extract manager.py
+
+- Base class in `fused_render/update/manager.py`, `MacUpdateManager(UpdateManager)`
+  in `mac.py`. `tests/test_mac_update.py` patches `mac.<name>` for a long list of
+  names (`__version__`, `MAC_STARTUP_DELAY_S`, `MIN_CHECK_GAP_S`,
+  `FAILED_CHECK_GAP_S`, `time.sleep`/`time.monotonic` via the `time` module
+  object, `INSTALL_HEARTBEAT_S`, `PHASE_DOWNLOADING`, `PHASE_INSTALLING`,
+  `DEV_MANAGER_ENV`, `_manager`, `bundle_path`, `UpdateManager` class attrs like
+  `start_auto_checks`) — all of these are re-exported/aliased on `mac` so
+  `monkeypatch.setattr(mac, "X", ...)` still resolves and is actually read by
+  the code path under test. Mirrors `_win32/update.py`'s
+  `_PUBLIC_KEY = _common.PUBLIC_KEY` pattern: module-level aliases, read at
+  call time through `mac.<name>` inside methods that live in `mac.py`
+  (`start_auto_checks`, `check`, is overridden or calls through self so the
+  patched *instance*'s class (`mac.UpdateManager` = `MacUpdateManager`) is what
+  gets exercised).
+- Decision: `mac.UpdateManager` stays the name tests import and construct
+  (`mac.UpdateManager(bundle=..., method=...)`) — so `mac.py` does
+  `UpdateManager = MacUpdateManager` is wrong (shadows the base import); instead
+  `MacUpdateManager` IS what test code calls `mac.UpdateManager` — i.e. in
+  `mac.py`, name the subclass `UpdateManager` directly (not aliased), since
+  nothing outside mac.py needs the base class name from mac's namespace.
+- `time` module: mac.py imports `time` (stdlib) directly; tests patch
+  `mac.time.sleep`/`mac.time.monotonic`. Since `time` is a shared stdlib module
+  object, if `manager.py` also does `import time` and mac.py re-exports its own
+  `import time`, patching `mac.time.sleep` patches the *same* module object
+  manager.py's `time.sleep` calls read from — no re-export needed for `time`
+  itself, only for the mac-specific constants/functions defined in mac.py or
+  moved to manager.py that tests reach through `mac.<name>`.
+- THE REAL PROBLEM, found only once I actually wrote manager.py: re-exporting
+  a constant on `mac` (`mac.PHASE_DOWNLOADING = manager.PHASE_DOWNLOADING`,
+  the `_win32/update.py` idiom) is NOT enough by itself once the CODE that
+  reads the constant has also moved to manager.py. `_win32/update.py`'s
+  aliases work because the functions reading them are defined in that same
+  file — a bare module-global lookup resolves in that module's own
+  namespace. Here, `check()`/`install()`/`_beat_installing()` etc. live in
+  manager.py, so a bare `MIN_CHECK_GAP_S` read there is manager.py's OWN
+  global, immune to `monkeypatch.setattr(mac, "MIN_CHECK_GAP_S", ...)` no
+  matter how faithfully mac.py re-exports the name.
+  Fix: `UpdateManager._const(self, name)` in manager.py — looks `name` up on
+  `sys.modules[type(self).__module__]` first (i.e. on whichever concrete
+  module — mac.py or linux.py — actually defined the running instance's
+  class), falling back to manager.py's own module global only if the
+  subclass's module doesn't define that name at all. Every constant a test
+  patches through `mac.<name>` (`MIN_CHECK_GAP_S`, `FAILED_CHECK_GAP_S`,
+  `INSTALL_HEARTBEAT_S`, `PHASE_DOWNLOADING`, `PHASE_INSTALLING`,
+  `JOB_PREFIX`, `DONE_MESSAGE` — deleted by D885 — , `CANCELLED_MESSAGE`) is read through
+  `self._const("NAME")` inside manager.py instead of a bare global. `time`
+  needed no such treatment (see above — same module object either way), and
+  neither did `DEV_MANAGER_ENV` (only read inside mac.py's own `start()`,
+  which never moved) nor `MAC_STARTUP_DELAY_S` (read only via the
+  `_STARTUP_DELAY_S` class-attr hook below).
+- `_STARTUP_DELAY_S` (the class-attr hook `start_auto_checks()` reads) is
+  overridden in mac.py's `UpdateManager` as a `@property` returning the
+  module global `MAC_STARTUP_DELAY_S`, rather than a plain class attribute
+  set once at class-body time — a plain assignment would freeze whatever
+  `MAC_STARTUP_DELAY_S` was at import time, and `test_mac_update.py` patches
+  `mac.MAC_STARTUP_DELAY_S` at runtime expecting `start_auto_checks()` (which
+  lives in manager.py) to see the patched value on its very next read.
+- Naming: the mac subclass really is named `UpdateManager` inside `mac.py`'s
+  own namespace (matches `mac.UpdateManager(bundle=..., method=...)` in every
+  test). The shared base class is imported as `from fused_render.update
+  import manager as _base` and subclassed `class UpdateManager(_base.
+  UpdateManager)`. The module-level singleton (`mac._manager`,
+  `mac.manager()`, `mac.start()`) is untouched by any of this — it is a
+  separate name (`_manager`) from the `_base` import alias, so there is no
+  collision between "the shared manager module" and "this module's
+  singleton instance", which an earlier draft of this file conflated.
+- `_updates_dir()` / `_sweep_stale_downloads()`: moved to manager.py
+  VERBATIM, including their macOS-flavoured wording ("`~/Library/Application
+  Support/fused-render/updates`", "DMGs and staged bundles") — Task 1 is a
+  pure move for mac's own behaviour, and the spec lists `_updates_dir()` as a
+  concrete (non-hook) base method. `LinuxUpdateManager` (Task 2) overrides
+  `_updates_dir()` with a Linux-appropriate path rather than inheriting the
+  macOS one; see the Task 2 section below for where that directory lives.
+- Task 1 done, committed. `tests/test_mac_update.py` — all 63 tests green,
+  unmodified.
+
+### Task 2/3 design decisions: stamp location, `_updates_dir()` override
+
+Stamp file (Task 3) lives at `os.path.join(shell.storage.home_dir(), "linux-update-stamp.json")` —
+`shell/storage.home_dir()`, not `supervisor.paths.DesktopPaths`. Reasoning:
+`DesktopPaths.discover_linux()`'s own docstring says its `state` field IS
+`shell/storage.home_dir()` with no `FUSED_RENDER_HOME` override — "the exact
+dir the dev/CLI and the released macOS app use... byte-for-byte the same".
+Reading `home_dir()` directly gets the same directory the supervisor's
+`DesktopPaths` resolves to (via the `FUSED_RENDER_HOME` env var the
+supervisor sets on its child) without `update/` (server-side code, runs
+inside the child server process, not the supervisor) importing
+`supervisor.paths` and creating an `update` -> `supervisor` coupling that
+doesn't otherwise exist. `write_json`/`read_json` in `shell/storage.py` are
+reused as-is for the stamp's atomic write / tolerant-of-corruption read.
+
+`LinuxUpdateManager._updates_dir()` overrides the base (macOS-hardcoded)
+implementation to return the AppImage's own parent directory (falling back
+to `home_dir()/updates` only for the check-only dev-manager case, where
+there is no AppImage at all). This isn't spelled out verbatim in the spec's
+Task 2 list, but it's required for correctness: the base class's
+`start_auto_checks()` unconditionally calls `_sweep_stale_downloads()`,
+which calls `self._updates_dir()` — left unoverridden on Linux that would
+create and sweep a macOS `~/Library/Application Support/...` path on Linux,
+which is harmless but pointless, and `_install_appimage`'s own
+`_check_disk_space` call needs the AppImage's parent dir anyway (Task 2 step
+2), so the override makes both call sites and the download-dir consistent:
+downloads, the disk-space check, and the stale-download sweep all agree on
+"next to the current AppImage".
+
+Class naming: kept `UpdateManager` in `linux.py`'s own namespace (not
+`LinuxUpdateManager`), subclassing the shared base under the `_base` alias —
+same reasoning as `mac.py` (see the Task 1 notes above): nothing outside
+`linux.py` needs the base class's own name from there, and `linux.UpdateManager`
+mirrors `mac.UpdateManager` for the dispatch in `update/__init__.py` (Task 4).
+
+## Task 4 — platform dispatch: two spec deviations forced by naming and by the test host's real platform
+
+The spec (docs/LINUX_AUTO_UPDATE_SPEC.md) says to add `manager()`/`start()`
+to `fused_render/update/__init__.py` and to keep the shared state machine at
+`fused_render/update/manager.py` (from Task 1). Both cannot be true at once:
+
+`fused_render/update/manager.py` is a submodule literally named `manager`.
+Python's import machinery stamps every submodule onto its parent package's
+namespace under the submodule's own name as a side effect of import — from
+ANY importer, via ANY import spelling (`from a.b import c`, `import a.b.c`,
+`import a.b.c as x` — all of them) — and this happens unconditionally,
+overwriting whatever the package's own `__init__.py` had bound to that same
+name. Since `update/__init__.py` defines a function ALSO named `manager`,
+the first time anything anywhere imports the `manager` submodule (which
+`mac.py`/`linux.py` do, to reach the shared base class), that import
+permanently clobbers `fused_render.update.manager` back to the submodule
+object for the rest of the process — breaking every OTHER caller that
+expects `update.manager()` to be a callable (routers/update.py's
+`_manager()` helper hit this directly: `TypeError: 'module' object is not
+callable`). This is not an import-ordering bug fixable by import style; it
+recurs the instant the submodule is imported from anywhere, by construction.
+
+Resolution: renamed the submodule to `fused_render/update/_manager.py`
+(leading underscore) instead of renaming the Task 4 dispatch functions —
+this keeps `manager()`/`start()` exactly as the spec names them, which
+matters more since those are the actual external contract (what the routers
+call), while the shared-base-class module's filename is a pure
+implementation detail nothing outside `update/` cares about by name.
+Updated `mac.py`'s and `linux.py`'s `_base` imports and `__init__.py`'s
+`TYPE_CHECKING` import accordingly; the `import fused_render.update.manager
+as _base` workaround from an earlier attempt (which only fixed the symptom
+inside mac.py/linux.py's own module bodies, not the underlying collision)
+was reverted back to a plain `from fused_render.update import _manager as
+_base` now that there is nothing left to collide with.
+
+Second deviation, found immediately after the rename fixed the collision:
+`update/__init__.py`'s `manager()` dispatching strictly on `sys.platform`
+(as the spec's wording literally says) breaks two pre-existing
+`tests/test_mac_update.py` router-integration tests
+(`test_config_carries_update_with_manager`,
+`test_install_endpoint_passes_expected_version_through`) whenever this
+suite actually runs on a non-darwin host — which this worktree's sandbox
+always is (`sys.platform` is genuinely `"linux"` here). Those tests
+monkeypatch `mac._manager` directly (bypassing `mac.start()`) and then
+exercise the FastAPI routes; a `manager()` gated on the real host platform
+routes every call to `linux.manager()` instead on this host, which finds
+nothing and 404s/omits `update`. Before Task 4, this was moot: the routers
+imported `mac` unconditionally, with no platform branch, so they worked on
+any host regardless of what `sys.platform` actually was.
+
+Resolution: split the two functions' gating. `start()` stays exactly as
+specced — strictly `sys.platform`-gated — because it is the one that
+actually touches the OS (spawns the background-check thread, resolves a
+bundle/AppImage path), and running the wrong platform's `start()` for real
+would be a genuine bug, not just a test inconvenience. `manager()` (a
+read-only accessor with no side effects) instead checks `mac.manager()`
+then `linux.manager()` directly, returning whichever is non-None, with no
+`sys.platform` branch at all. This is behaviorally identical to strict
+platform dispatch in any real single-platform process — `start()`'s own
+gating guarantees at most one of the two module-level singletons is ever
+non-None to begin with — and it costs nothing on Windows or any other
+non-mac/non-linux host (both `mac.manager()` and `linux.manager()` just
+return `None` there, same as the spec's `else -> None` branch). Confirmed
+both `mac.py` and `linux.py` import cleanly on any host (neither has a
+platform-gated import — no `AppKit`, no POSIX-only stdlib module), so
+importing both unconditionally inside `manager()` carries no risk of an
+`ImportError` on the wrong platform.
+
+Also: `server/app.py`'s pre-existing `_startup_update_dev_manager` hook
+(previously hardcoded to `mac_update.start()`, gated on
+`os.environ.get(mac_update.DEV_MANAGER_ENV)`) now calls the dispatched
+`update.start()` unconditionally, with no outer env-var gate — the gate was
+already redundant: `mac.start()`/`linux.start()` each check
+`DEV_MANAGER_ENV` internally when no bundle/AppImage is found, so the
+caller-side check bought nothing. This one hook now serves three cases at
+once: it is the REAL Linux bootstrap (Task 4's server/app.py requirement —
+there is no separate native wrapper process on Linux the way `app.py` is
+for mac, so this server's own startup IS "wherever the Linux server
+bootstraps"), a harmless redundant no-op-turned-idempotent-real-start on a
+packaged mac app (which also gets its own explicit call from `app.py`
+after its desktop-probe wait), and the pre-existing check-only dev-run
+opt-in for either platform. The function is kept named
+`_startup_update_dev_manager` (not renamed to something broader) purely
+because `tests/test_app_lifespan.py` pins the exact registered handler
+names as a record of an unrelated past `on_event` -> `on_startup`
+migration; renaming it would cost that test for no benefit.
+
+Verified via `.venv/bin/python -m pytest -q tests/test_mac_update.py
+tests/test_linux_update.py tests/test_installed.py tests/test_app_lifespan.py`
+— 91 passed, all four files, including the two previously-broken
+`test_mac_update.py` router-integration tests.
+
+## Task 5 — Linux relaunch: a capability probe on `startup`, not a `sys.platform` check
+
+`supervisor/core.py` is genuinely platform-neutral — it reaches every
+OS-specific behavior only through the `_backend` seam (`Job`, `instance`,
+`startup`, `ui`, plus the optional `update`/`integrate`/`deintegrate` hooks) —
+and it is shared, unmodified, between the win32 and Linux backends. A
+`fused-render://relaunch` link therefore has to be handled in code both
+backends run, but the actual respawn only makes sense on Linux (there is no
+`.AppImage` to `Popen` on Windows, which has its own separate updater in
+`supervisor/_win32/update.py`). Rather than importing `sys` into the decision
+(the module already avoids `sys.platform` branches everywhere else, matching
+`_backend.py`'s "module namespace, not an ABC" seam), the gate is a plain
+capability probe: `hasattr(startup, "appimage_path")`. `startup` is the
+per-backend module already re-exported at the top of `core.py`
+(`startup = _backend.startup`) — the Linux backend's `startup.py` has
+`appimage_path()` (it needs it for `.desktop` `Exec=` lines and the autostart
+entry), the win32 one never has and never will. This means the SAME check
+that decides "should `_open_command` signal a relaunch at all" and "does
+`_respawn_after_relaunch` have anything to `Popen`" is one attribute lookup,
+with no platform string to keep in sync between them, and it fails safe on
+any future third backend that doesn't have the hook either (falls through to
+the pre-Task-5 no-tab no-op, exactly like win32 today).
+
+The relaunch signal itself follows the exact idiom `_event_loop`'s
+`exit_confirm`/`uninstall_confirm` queues already established: a
+`queue.Queue[None]` created INSIDE `_event_loop` (not passed in as a
+parameter — this matters, since `_event_loop`'s call sites in
+`tests/test_supervisor_core.py` all call it positionally with exactly 5 args,
+and keeping its signature unchanged means every one of those pre-existing
+tests keeps passing with zero edits), threaded down through
+`_spawn_open`/`_safe_open`/`_open_command` as an optional trailing parameter
+that defaults to `None` everywhere. `None` is also what `run()`'s
+INITIAL-launch `_spawn_open` call (before `_event_loop`, and therefore before
+any `relaunch_requested` queue exists, even starts) passes implicitly — a
+relaunch link arriving as the very first launch argv is not a real scenario
+(there is nothing running yet to relaunch away from), so silently degrading
+that one call site to the old no-op costs nothing.
+
+`_teardown` needed zero changes for RELAUNCH, confirmed by re-reading its
+branches: only `SERVER_DIED` (hard `job.close()`, no graceful shutdown) and
+`UPGRADE` (skips `_stop_pipe`, answers `upgrade_response` at the end) get
+special-cased; RELAUNCH — like the pre-existing `TRAY_EXIT` — automatically
+takes the shared `_stop_pipe` -> `_safe_graceful_shutdown` -> `process.wait`
+-> `job.close()` path.
+
+`fused-render://relaunch?reason=fda` needed no explicit guard either:
+`deeplink.is_relaunch_url` and `deeplink.is_fda_relaunch_url` match disjoint,
+mutually exclusive frozensets of URL forms by construction, so special-casing
+only `is_relaunch_url` in `_open_command` already leaves the `?reason=fda`
+form falling through to the `is_launch_url` branch exactly as it did before
+this change — there was nothing to "leave alone" beyond checking the right
+function.
+
+Verified via `.venv/bin/python -m pytest -q tests/test_supervisor_core.py
+tests/test_supervisor_deep_link.py tests/test_supervisor_shutdown.py
+tests/test_win_supervisor_update.py tests/test_mac_update.py
+tests/test_linux_update.py tests/test_installed.py` — 156 passed, 1 skipped
+(a pre-existing, unrelated darwin-only skip guard in
+`tests/test_supervisor_core.py`'s module docstring convention), zero
+failures.
+
+## Task 6 — Publish the Linux manifest: carrying $APPIMAGE across steps, and the bash -n check
+
+`scripts/windows/generate_update_manifest.py` takes `<version> <artifact>
+<base-url> <output>` and signs whatever artifact it is given — nothing in it
+is actually Windows-specific despite the path it lives at (the macOS job
+already reuses it for the DMG). Reusing it for the AppImage needed no changes
+to the script itself, only a new step in `build-linux-release` that calls it
+the same way the macOS/Windows jobs do.
+
+The one wrinkle: unlike the macOS job (which exports `$DMG_PATH`/
+`$DMG_SHA256` to `$GITHUB_ENV` in its upload step, so its later manifest step
+can read them back), the Linux job's existing "Publish AppImage + attach to
+release" step only wrote `version`/`appimage_url` to `$GITHUB_OUTPUT` (step
+outputs, visible to later JOBS via `needs.*.outputs`, not to later STEPS in
+the same job via a bare `$VAR`). A new step after it would have had no
+`$APPIMAGE` to read. Fixed by adding one more `echo "APPIMAGE=$APPIMAGE" >>
+"$GITHUB_ENV"` line to that existing step, mirroring `$DMG_PATH`'s exact
+pattern — the new "Publish signed Linux update manifest" step then re-derives
+`$VERSION` from it with the same `sed` the artifacts step itself uses, rather
+than also exporting `$VERSION` separately (again matching how the macOS
+step re-derives `VERSION` from `$DMG_PATH` instead of getting its own env var).
+
+The spec's verification block's second line, `bash -n
+.github/workflows/release.yml`, fails identically on both `main` and this
+branch (confirmed by diffing `bash -n` against `main`'s copy of the file) —
+it's a YAML file, not a bash script, and GitHub Actions' `${{ }}` /
+mapping syntax is not valid bash grammar at all (the failure is at line 113,
+in a step name unrelated to this change: `Select an Xcode with the macOS 26
+SDK (apple tier helper)`, whose parenthesized name bash reads as a subshell).
+`bash -n` is not a meaningful syntax check for this file; actionlint (the
+spec's suggested alternative) is not installed in this sandbox, so this
+change is instead verified with `python3 -c "import yaml;
+yaml.safe_load(open('.github/workflows/release.yml'))"`, which parses clean.
+
+No test file covers this workflow step (nothing in the spec's Tests section
+calls for one, and there is no CI-yaml test harness in this repo to hook a
+new test into) — verification here is the yaml-parse check above plus the
+diff-against-mac-job comparison recorded here.
+
+## Task 7 — Scoping `_sweep_stale_downloads()` to the download naming pattern
+
+On mac, `_updates_dir()` is a dedicated `…/fused-render/updates` directory the
+app owns outright, so an unscoped `os.listdir()` + delete-everything sweep
+only ever hit the app's own leftovers. On Linux, `_updates_dir()` is
+deliberately the AppImage's own parent directory (`os.replace()` is only
+atomic within one filesystem, so the download has to land next to the
+artifact it will replace) — a directory the USER owns (`~/Applications`,
+`~/Downloads`, …) and shares with whatever else they keep there. Run
+unscoped, `start_auto_checks()`'s sweep (which runs ~1s after boot for every
+non-`check_only` manager) deleted every sibling file in that directory on
+every boot, including the running AppImage itself — reproduced first as a
+failing test (`test_sweep_spares_the_running_appimage_and_an_unrelated_sibling`
+in `tests/test_linux_update.py`), which raised `FileNotFoundError` against
+the running AppImage before the fix.
+
+The fix stays in the shared base class (`_manager.py`), not overridden per
+platform: it scopes the sweep to entries whose name matches the manager's own
+`_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`, which is a no-op change in behavior on
+mac (the dedicated updates dir never held anything else) but is the whole fix
+on Linux.
+
+Name-matching alone is not sufficient, though: the released artifact is named
+`FusedRender-<version>-x86_64.AppImage`, which matches
+`FusedRender-`/`.AppImage` exactly as well as a stale download would. The
+sweep therefore also resolves its own bundle path with `os.path.realpath()`
+and excludes any listing entry whose realpath equals it, on top of the name
+match — this is what actually keeps the running AppImage (referenced by a
+symlink, a relative path, or a bind mount, not just the literal listed name)
+out of the deletion set.
+
+
+## Task 7 — Scoping `_sweep_stale_downloads()` to the download naming pattern
+
+On mac, `_updates_dir()` is a dedicated `…/fused-render/updates` directory the
+app owns outright, so an unscoped `os.listdir()` + delete-everything sweep
+only ever hit the app's own leftovers. On Linux, `_updates_dir()` is
+deliberately the AppImage's own parent directory (`os.replace()` is only
+atomic within one filesystem, so the download has to land next to the
+artifact it will replace) — a directory the USER owns (`~/Applications`,
+`~/Downloads`, …) and shares with whatever else they keep there. Run
+unscoped, `start_auto_checks()`'s sweep (which runs ~1s after boot for every
+non-`check_only` manager) deleted every sibling file in that directory on
+every boot, including the running AppImage itself — reproduced first as a
+failing test (`test_sweep_spares_the_running_appimage_and_an_unrelated_sibling`
+in `tests/test_linux_update.py`), which raised `FileNotFoundError` against
+the running AppImage before the fix.
+
+The fix stays in the shared base class (`_manager.py`), not overridden per
+platform: it scopes the sweep to entries whose name matches the manager's own
+`_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`, which is a no-op change in behavior on
+mac (the dedicated updates dir never held anything else) but is the whole fix
+on Linux.
+
+Name-matching alone is not sufficient, though: the released artifact is named
+`FusedRender-<version>-x86_64.AppImage`, which matches
+`FusedRender-`/`.AppImage` exactly as well as a stale download would. The
+sweep therefore also resolves its own bundle path with `os.path.realpath()`
+and excludes any listing entry whose realpath equals it, on top of the name
+match — this is what actually keeps the running AppImage (referenced by a
+symlink, a relative path, or a bind mount, not just the literal listed name)
+out of the deletion set.
+
+
+## Task 8 — Routing `_running_version()` through `_const()`, and why `tests/test_mac_update.py` needed no changes
+
+`_running_version()` read `fused_render.__version__` (the package attribute)
+directly, rather than going through `_const("__version__")` like every other
+module-level constant this class reads back from the concrete subclass's own
+module. This made the documented test seam — `monkeypatch.setattr(mac,
+"__version__", ...)` / `monkeypatch.setattr(linux, "__version__", ...)` —
+dead: rebinding `mac.__version__` or `linux.__version__` never touched
+`fused_render.__version__`, so every test using that pattern was actually
+exercising the real installed version (0.5.52) against whatever fixture
+value it was compared to, not the patched value its own docstring promised.
+Confirmed as a real defect, not a hypothetical one, with a test
+(`test_running_version_reads_the_patched_module_seam` in
+`tests/test_linux_update.py`) that picks a `current` value on the OPPOSITE
+side of the manifest's `available` version from where the real
+`fused_render.__version__` sits — a manager reading the unpatched package
+attribute lands on `"available"`; only one that actually reads the patched
+seam lands on `"idle"`. This failed against the unfixed code as designed.
+
+Fixed by routing `_running_version()` through `self._const("__version__")`,
+matching every other constant lookup in the class.
+
+`tests/test_mac_update.py`'s own eight `monkeypatch.setattr(mac, "__version__",
+...)` call sites needed no changes: every one of that file's fixture helpers
+already brackets `current` and `available` consistently on both sides of
+both the patched value (always `0.4.10`) and the real installed version
+(0.5.52) — e.g. `current="0.4.10"` against `available="9.9.9"` or
+`available="0.0.1"`, never a value that would flip outcome depending on
+which of the two versions a test happened to actually be comparing against.
+The vacuous seam was accidentally safe on mac, not incidentally correct;
+re-running the full mac suite after the fix (all 5 designated test files,
+141 passed) confirms none of its assertions were relying on the dead seam to
+land on the right answer.
+
+
+## Task 9 — Releasing the election lock before, not after, the relaunch respawn
+
+`_respawn_after_relaunch()` `Popen`s the new AppImage while this process
+still holds the `flock` on `supervisor.lock`. `PrimaryInstance.release()` is
+only ever called from the early `ShutdownForUpgrade` branch in `run()`; the
+normal teardown path just lets the process exit and relies on the kernel to
+drop the flock when the last fd closes. If the freshly spawned AppImage
+reaches `instance.acquire()` before this interpreter finishes unwinding, it
+gets `EWOULDBLOCK`, demotes itself to a `SecondaryInstance`, and forwards its
+open request to a primary whose accept loop (`_stop_pipe`, torn down inside
+`_teardown`, which by then has already run) is no longer listening — the
+relaunch produces no app at all. Reproduced as a failing test
+(`test_relaunch_releases_the_lock_before_respawning` in
+`tests/test_supervisor_core.py`) asserting `release` happens before
+`respawn`; it failed with `['respawn'] == ['release', 'respawn']` against the
+unfixed `run()` (no `release` call at all).
+
+Fixed by calling `inst.release()` immediately before
+`_respawn_after_relaunch(paths)` in `run()`'s post-event-loop block, so the
+lock comes off on the same thread, before the child process is even
+`Popen`'d — closing the race window rather than narrowing it.
+
+That call was moved into a `finally` around `_teardown(...)`, to also cover
+`_teardown` raising `SupervisorStoppedError` (the child process tree did not
+stop in time). Without the `finally`, a `RELAUNCH` whose child tree is slow
+to exit would skip the respawn entirely and just crash out of `run()` with
+nothing to show for it. By the time `_teardown` can raise that error, it has
+already stopped the tray, torn down the pipe, and sent the graceful-shutdown
+request — the only thing left unfinished is the child tree actually exiting,
+which is not a reason to also refuse to bring up the replacement process:
+`_available_port()` already tolerates a lingering old server still holding
+its port (it falls back to another one), so the new AppImage can start
+either way. The decision here is to respawn regardless and let the
+`SupervisorStoppedError` continue to propagate out of `run()` afterwards,
+exactly as it would for any other exit reason — covered by
+`test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error`,
+which asserts both `release`/`respawn` happened AND that the error still
+raises.
+
+
+## Task 10 — Resolving `$APPIMAGE` through `realpath` before swapping, matching mac's `_install_dmg`
+
+`_install_appimage` swapped `$APPIMAGE`'s path verbatim, unlike mac's
+`_install_dmg`, which deliberately resolves `self._bundle` through
+`os.path.realpath()` first (with a comment explaining why: swapping onto a
+symlink's own path would replace the link with a plain file and orphan the
+real artifact it used to point at). This is latent today — the type-2
+AppImage runtime resolves `/proc/self/exe` itself before setting
+`$APPIMAGE`, so it is never actually a symlink in production — but nothing
+in `_install_appimage` should depend on that being true forever, and the fix
+is one line. Reproduced as a failing test
+(`test_install_resolves_a_symlinked_appimage_before_swapping` in
+`tests/test_linux_update.py`) that points `_bundle` at a symlink to a real
+file in a different directory and asserts the download lands next to the
+REAL file, not the link; it failed against the unfixed code with the staged
+download's `dir` argument matching the symlink's parent instead of the real
+file's parent.
+
+Fixed by resolving `appimage = os.path.realpath(self._bundle)` before
+deriving `parent = os.path.dirname(appimage)`, both in `_install_appimage`
+and in `_updates_dir()` (which needs to agree with the swap target's actual
+filesystem for the same `os.replace()`-atomicity reason `_install_appimage`
+does) — mirroring mac's existing pattern rather than inventing a new one.
+
+
+## Task 11 — Merging origin/main's `tier=jobs.SILENT` install-done report into the `_manager.py` extraction
+
+`origin/main` landed the update -> restart dialog work (#1214) while this
+branch had already moved the platform-neutral half of `UpdateManager` out of
+`mac.py` into `_manager.py`. The two touched the same terminal-install
+report from opposite directions: #1214 changed WHAT it reports (the done
+row now carries `tier=jobs.SILENT`, since the blocking restart dialog is now
+the whole announcement and a `trail`-tier toast beside it is a duplicate),
+this branch changed WHERE the code reporting it lives.
+
+Resolved the `mac.py` conflict by keeping this branch's side: `mac.py`
+itself now defines only `_install_artifact`, a two-line override that calls
+`_install_dmg`, with `install()`, `_install()`, `_job_report()`,
+`_job_clear_cancel()`, `_beat_installing()` and `_cancel_requested()` living
+solely in `_manager.py`. The incoming `tier=jobs.SILENT` argument and its
+comment (why silence is a property of success only, why it also means the
+row is not retained) were ported verbatim into the terminal `_job_report`
+call inside `_manager.py._install()`, which both `mac.UpdateManager` and
+`linux.UpdateManager` share — the dialog is platform-neutral chrome, so the
+tier belongs there rather than duplicated per platform. The incoming
+job-upsert-fallback comment (dropping the mention of "ServerStatusBanner.tsx's
+restart card" for the blocking restart dialog wording) moved the same way,
+into `_manager.py._job_report`. `mac.py`'s own docstring line already read
+"raises the restart dialog", so nothing there needed to change.
+`tests/test_mac_update.py`'s three new tests (`test_a_finished_install_pops_nothing`,
+`test_a_failed_install_is_as_loud_as_it_ever_was`,
+`test_the_running_download_row_is_untouched_by_the_silent_finish`) pass
+unmodified against the refactor, since they only observe `mac.jobs` /
+`mac.DONE_MESSAGE` / the job registry, not which module owns the code. (D885
+has since deleted the success row those first and third tests were about —
+they are now `test_a_successful_install_leaves_no_row_behind` /
+`test_a_removed_row_cannot_be_resurrected_by_a_late_tick` /
+`test_the_running_download_row_is_untouched_by_the_removal`, and
+`DONE_MESSAGE` is gone.)
+
+## Task 12 — Windows-only CI fixes: the tray fake's update contract, and gating the symlink-resolution test to Linux
+
+CI's first Windows run turned up three test-only failures, none touching
+production behaviour.
+
+`tests/test_supervisor_core.py`'s two relaunch tests failed with
+`AttributeError: '_FakeTrayHandle' object has no attribute
+'set_update_available'`. `core.run()` calls
+`update.start_auto_checks(paths, tray_handle.set_update_available)`
+whenever the backend supplies an `update` module — true on Windows, `None`
+on Linux, so the two tests' `_FakeTrayHandle` (tray-only, no update method)
+never hit that line on Linux and only broke where a real backend `update`
+module exists. Rather than skip past the branch, gave `_FakeTrayHandle`
+`set_update_available` (recording each call) and installed a fake `update`
+module in `_patch_run_up_to_the_event_loop` so the branch runs here on
+Linux too — both tests now assert the tray handle actually received the
+"9.9.9" notification, so the fake's contract is exercised, not merely
+satisfied.
+
+`tests/test_linux_update.py::test_install_resolves_a_symlinked_appimage_before_swapping`
+asserts `os.path.realpath()` returns the plain resolved path; on Windows
+that call prepends the `\\?\` extended-length marker, so the assertion is
+inherently POSIX-only, not a bug in the swap logic. Added a `linux_only`
+marker (`skipif sys.platform != "linux"`, mirroring `test_app_relaunch.py`'s
+`mac_only`) and applied it to only that one test — the rest of the module
+exercises `UpdateManager`'s state machine and stamp-file logic, which holds
+on any OS.
+
+## Task 13 — Linux download naming must never take a released-artifact shape
+
+`linux.UpdateManager`'s `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` were
+`"FusedRender-"`/`".AppImage"` — exactly the shape of the released artifact's
+own filename, `FusedRender-<version>-x86_64.AppImage`. `_updates_dir()` on
+Linux is the running AppImage's own parent directory, a directory the USER
+owns and may keep other files in (a rollback copy of the previous version, a
+newer build not yet switched to), and `_sweep_stale_downloads()` deletes
+every entry matching that prefix/suffix on every boot, sparing only the
+manager's own bundle by realpath. A second AppImage sitting there with a
+real release name matched the sweep pattern exactly as well as a stale
+partial download did, so it got silently `os.unlink`ed on the next boot —
+destruction of a file the updater never downloaded and does not own.
+
+Fixed at the root: changed `_DOWNLOAD_PREFIX` to `".fused-render-update-"`
+(kept `_DOWNLOAD_SUFFIX` as `".AppImage"`), a shape a released artifact's
+filename can never take — `FusedRender-*` never starts with a dot. The sweep
+now matches only the manager's own partials and cannot match a release name
+at all; the realpath exclusion of the running bundle stays as a second line
+of defence, not the only thing standing between the sweep and a user's file.
+The leading dot is also a Linux convention for "hidden, in progress" — a
+partial download no longer shows up in the user's file manager while it's
+still downloading. mac's `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`
+(`"FusedRender-"`/`".dmg"`) were left unchanged: mac's `_updates_dir()` is a
+dedicated `…/fused-render/updates` directory the app owns outright, never
+shared with a user's own files, so the same collision cannot occur there.
+
+The rule going forward: a platform's download naming must be a shape its own
+released artifact's filename can never take, whenever `_updates_dir()` is a
+directory the app does not own outright.
+
+## Task 14 — The Linux stamp is keyed by the AppImage's resolved path, on both sides
+
+`update/linux.py`'s `_install_appimage` stamps
+`os.path.realpath(self._bundle)` (`installed.write_linux_stamp`), because the
+swap itself resolves any symlink before `os.replace()` — same rationale as
+mac's `_install_dmg` resolving `self._bundle` first. But both readers were
+passing the UNRESOLVED path: `installed.installed_version()` used
+`startup.appimage_path()` straight (that function only wraps `$APPIMAGE`, it
+never realpaths), and `update/linux.py`'s `_disk_version()` used
+`self._bundle` straight. Whenever `$APPIMAGE` or an ancestor directory is a
+symlink — exactly the case the swap deliberately resolves — the stamp's
+`path` field never equalled what the readers compared it against,
+`_linux_installed_version()` always returned `None`, and the "restart to
+finish updating" banner never appeared after an otherwise successful
+install, silently.
+
+Fixed by resolving once, on the read side, inside
+`installed._linux_installed_version()` itself, rather than at each call
+site: `installed_version()` and `update/linux.py`'s `_disk_version()` both
+already route through it, so one `os.path.realpath()` there — documented as
+the enforced invariant "the stamp is keyed by the AppImage's resolved path"
+— fixes both readers without a `realpath` call sprinkled at every caller
+that happens to have a Linux update path in hand. Any future reader of the
+stamp inherits the correct behaviour by construction instead of needing to
+remember it.
+
+`test_install_resolves_a_symlinked_appimage_before_swapping` did not catch
+this: it only asserts `manager.status()["state"] == "installed"`, which is
+in-memory state set unconditionally at the end of a successful swap and
+never touches the stamp file at all. Added
+`test_disk_version_reads_back_through_a_symlinked_appimage`, which installs
+behind a symlinked AppImage and then reads the version back the same way
+production code does — `manager._disk_version()` and
+`installed.installed_version()` — confirmed to fail with `None` against the
+unfixed reader before the `realpath()` was added.
+
+## Task 15 — Linux manifest upload must happen before the invalidation that is supposed to cover it
+
+`release.yml`'s Linux job invalidated `/${LINUX_PREFIX}/*` in the "Publish
+AppImage + attach to release" step, then uploaded `dist/linux-latest.json`
+in a later step, with a comment claiming the earlier invalidation "already
+covers this manifest's path". It does not: a request for `latest.json`
+landing in the window between the two steps re-caches whatever manifest was
+live before this release, and CloudFront then serves that stale manifest
+until something else invalidates the path again. The macOS job in the same
+workflow already has the right shape — upload `dist/macos-latest.json`, then
+invalidate — this job just had the two steps in the other order.
+
+Reordered to match: the AppImage upload step no longer invalidates at all;
+a new "Invalidate CloudFront" step runs last, after both the AppImage and
+the manifest are on S3. `VERSION` (computed once from the built artifact's
+filename, the same rule as the DMG/installer) is now exported via
+`$GITHUB_ENV` from the upload step instead of being re-derived by a second
+`sed` in the manifest step. The comment above the invalidation step now
+says what actually holds — the ordering removes the stale-cache window; the
+manifest upload's own `--cache-control no-cache` is noted as the reason that
+window was survivable even before the reorder, not as a substitute for it.
+
+## Task 16 — Stop re-deriving VERSION from the AppImage filename with a fragile sed
+
+`release.yml`'s "Publish signed Linux update manifest" step re-derived
+`VERSION` from `$APPIMAGE`'s basename with
+`sed -E 's/^FusedRender-(.*)-x86_64\.AppImage$/\1/'`, even though the
+preceding step already computed the same `VERSION` from the same filename
+one step earlier. `sed` passes its input through unchanged when a pattern
+doesn't match, and `set -euo pipefail` does not catch that — a future
+filename change (an arch-suffix rename, say) would silently publish a
+manifest whose `version` field is the entire filename instead of failing
+the build.
+
+Removed the second parse: the "Publish AppImage + attach to release" step
+now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
+same pattern already used to carry `$APPIMAGE` across steps, so there is
+only one place the filename is ever parsed.
+
+## Task 17 — App Doctor's `git`/`pushed` rows consolidate into one `git` row, backed by `git_upstream`'s existing cache rather than a new fetch mechanism
+
+SPEC-doctor-git-ai-errors.md asks for the two existing Sharing-section rows
+("Every change is committed" / `git`, "Every commit is pushed" / `pushed`)
+to merge into one row that ALSO reports being behind origin — which needs a
+real `git fetch`, something App Doctor had never done before, without ever
+blocking `report()` on the network.
+
+Rather than build new fetch/polling plumbing, this reuses
+`fused_render/git_upstream.py`'s existing throttled background-fetch
+machinery (`note_app_opened`, `CHECK_TTL_S=300s`, a single process-wide
+fetch slot) — the same service that already backs the status-bar Repo
+Updates card, left completely unchanged per the spec's own constraint. Added
+one new read-only accessor, `git_upstream.repo_state_for(root)`: the last
+known `check_repo()` result for a root, or `None` when never successfully
+checked (never asked, still checking, or every attempt failed — the
+module's own silence-on-failure rule). Unlike `known_repos()` (filtered to
+`behind > 0`, for the status-bar card's own purpose) this is unfiltered, so
+a caller can tell "confirmed up to date" (`{"behind": 0, ...}`) apart from
+"unknown" (`None`) — which App Doctor's row needs and the status-bar card
+never did.
+
+The consolidated row (`app_doctor._repo_health_check`, kept at check id
+`git` — `pushed` is retired, not renamed, since the row now covers strictly
+more than either predecessor) computes local commit/push state exactly as
+before (`_git_pending`/`_pushed_pending`, no network), then calls
+`git_upstream.note_app_opened(app_dir)` (fire-and-forget, never blocks) and
+reads back `repo_state_for(root)` — fresh, stale, or still `None` if the
+background check hasn't landed. `GET /api/apps/doctor` already recomputes
+`app_doctor.report()` fresh on every call (confirmed by reading
+`server/routers/apps.py` — no caching layer), so a later re-open or
+re-fetch naturally picks up whatever `git_upstream`'s cache has accumulated
+by then; no new polling endpoint was needed.
+
+**State logic, and the one non-obvious call**: FAIL if uncommitted,
+unpushed, or (once known) behind origin. PASS only when local is clean AND
+`behind` is a confirmed non-None value (i.e. the remote was actually
+checked and found current). SKIP — not PASS — when local is clean but the
+remote state is still unknown: a repo with no remote configured at all can
+therefore never resolve to PASS on this row, only SKIP with a stated
+reason ("no upstream remote configured", "not a git repository", or
+"origin status could not be checked"). This is a deliberate reading of the
+spec's "a failed fetch...must report as SKIPPED rather than FAILED":
+"unconfirmed" and "confirmed clean" are different facts, and folding the
+former into a silent PASS would misreport exactly the case the async
+design exists to be honest about. This is a visible behavior change from
+the OLD `git` row (which passed on local cleanliness alone, with no
+opinion about remote) — call sites/tests updated accordingly
+(`tests/test_app_doctor_report.py`).
+
+Tests needing a deterministic remote-confirmed result use the same
+`_runner` test seam `tests/test_git_upstream.py` already established
+(`git_upstream.note_app_opened(path, _runner=lambda fn: fn())`) to run a
+REAL `git fetch` against a local bare-repo remote synchronously, rather
+than racing app_doctor's own real background thread dispatch. Because
+almost every git-touching test in this file now triggers a real background
+thread (any test whose app folder is a real git repo, not only the ones
+that explicitly warm the cache), the file's own `_clean_git_upstream_state`
+autouse fixture deliberately does NOT defensively release
+`git_upstream._check_slot` the way `test_git_upstream.py`'s fixture does —
+that file never dispatches real threads (`_sync` only), so its release is
+safe; here a still-running thread from the previous test releases the slot
+itself, exactly once, in its own `finally`, and a second release from the
+fixture races it into `RuntimeError: release unlocked lock` (observed and
+fixed during this task — see the fixture's own docstring for the full
+explanation).
+
+The same double-release hazard turned out to reach across files, not just
+within one: `tests/test_git_upstream.py`'s own long-standing autouse
+fixture ALSO defensively released `_check_slot` ("just in case a test
+acquired it and never released"), which is safe when that file runs alone
+(every test in it uses the `_sync` seam, never a real thread) but not when
+it runs in the same pytest session as `tests/test_app_doctor_report.py` —
+confirmed by running both files together, which reproduced the exact same
+`RuntimeError: release unlocked lock` a still-running real thread from the
+other file. Every direct acquire in `test_git_upstream.py` already
+guarantees its own release via `try/finally`
+(`test_a_busy_slot_does_not_stamp_the_throttle_for_a_different_repo`), so
+the fixture's defensive release had no legitimate target — removed it too,
+with a docstring recording why. Re-ran the two files together 3x after the
+fix (102 passed each time, no thread exceptions) and the full related group
+(`test_app_doctor_report.py` + `test_git_upstream.py` +
+`test_app_doctor.py` + `test_app_doctor_housekeeping.py`, 146 passed).
+
+## Task 18 — Part A (error-banner AI affordance) scoped down to shared infrastructure, not a full ~20+ call-site sweep
+
+SPEC-doctor-git-ai-errors.md's Part A asks for `ErrorBanner.tsx` (shared
+across ~20+ call sites) to grow an explain-with-AI action on system/runtime
+errors. Given this session's turn budget was consumed primarily by Part B's
+TDD conversion (the `git`/`pushed` consolidation above, which touched more
+surface than expected once the test file's real-thread interactions were
+accounted for), Part A was NOT implemented this round. This is a scope
+decision, not an oversight: shipping Part B correctly and fully tested was
+judged higher-value than a partial, undertested Part A. See the final
+handoff report for the concrete next-step plan (the `onExplain?` prop
+shape, the `explain-with-ai.ts` helper reusing `stageClaudeAsk`, and the
+`Config.fused_dir`-based default-folder fallback modeled on
+`home-path.ts`).
+
+## Task 19 — App Doctor's git row: Pull/Open-in-git UI reuses the status-bar card's own mutation endpoint; no GitHub brand icon ships in this lucide-react version
+
+Frontend half of Task 17's consolidation: `frontend/src/platform/lib/api.ts`'s
+`AppCheck` grew `behind?`/`ahead?`/`gitRoot?`; `appdoctor-lib.ts` grew three
+pure helpers (`showsPullAction`, `showsOpenInGitAction`,
+`gitRowFetchPending`), each unit-tested (appdoctor-lib.test.ts); and
+`AppDoctorModal.tsx`'s `CheckRow` draws up to three simultaneous actions on
+the `git` row — Pull, Fix (unchanged), and a new icon-only "Open in git" —
+per the spec's "every applicable action simultaneously" requirement.
+
+Pull does NOT call a new endpoint. It reuses the exact
+`POST /api/git-upstream {action: "update", root}` mutation
+`shell/RepoUpdatesDock.tsx`'s own Update button already calls
+(`fused_render/server/routers/git_upstream.py`) — the status-bar card stays
+completely unchanged (spec constraint), and this is what makes the reuse
+sound: `git_upstream.is_known_repo(root)`, that endpoint's own allowlist,
+checks membership in `_state`, the same cache `_repo_health_check` reads via
+`repo_state_for`. By the time a Doctor row can show Pull at all (`behind >
+0`, a CONFIRMED value), `_state` already holds that root, so the allowlist
+always accepts it — no new guard needed, and no risk of the two surfaces'
+mutation paths drifting apart. On success the whole report is re-`load()`ed
+(a pull can change more than the one row — e.g. an incoming `.gitignore`
+turning an uncommitted-path failure into a pass), unlike the async-fetch
+retry below, which patches only the `git` row in place.
+
+"Open in git" calls the confirmed mechanism from the prior session's
+research, `navigate(check.gitRoot, { isDir: true, mode: "git" })` — the
+in-app git mode, never an external client (explicitly out of scope). Shown
+on ANY row that resolved a real repo root, passing or failing: there is
+always somewhere to look even when there is nothing to fix, so
+`CheckRow`'s `hasAction` gate was widened to include
+`showsOpenInGitAction(check)`, not just `failing || check.ondemand`.
+
+**Deviation from the spec's literal wording**: it asks for a "Pull button
+(GitHub icon)". This version of `lucide-react` (1.34.0) ships no GitHub
+brand icon — lucide dropped brand/logo glyphs some releases back — and no
+other icon package is installed. Used `GitPullRequest` instead (semantically
+apt for "Pull" and already in the dependency), and `GitBranch` for
+"Open in git". Flagged for human review in the final report rather than
+adding a new icon dependency for one button without asking.
+
+**The async-fetch UI resolution**: `useAppDoctorReport` never blocks its
+initial paint on `git_upstream`'s background fetch — the row lands SKIP
+("not checked yet") on first paint. A new effect
+(`appdoctor-lib.ts`'s `gitRowFetchPending` reads the landed report) fires
+AT MOST ONE delayed silent re-ask (2s, via a `gitRetried` ref reset once per
+mount) that patches only the `git` row into the existing report — never
+`load()`'s reset-to-null, which would re-skeleton the whole panel over one
+row's late answer. Deliberately not a poll loop: a repo with no remote at
+all reads identically to "fetch still pending" (both are `gitRoot` set,
+`behind`/`ahead` both null) and would never resolve no matter how many times
+this asked again, so the retry is bounded to exactly one attempt per mount,
+and a still-unresolved row after that one retry simply stays SKIP until the
+person presses the panel's own Re-run.
+
+Frontend tests: `bun test src/platform/ui/appdoctor-lib.test.ts` — 30 pass
+(15 new, covering the three helpers above; no dedicated `AppDoctorModal.tsx`
+component test exists or was added — that file's own header comment
+explains why: it renders through a portal chassis `react-test-renderer`
+cannot mount, which is exactly why every decision worth pinning was already
+split out into `appdoctor-lib.ts`, and the same rule applies to this
+round's new UI wiring). `bunx tsc --noEmit` clean; `bun run build` succeeds.
+The Pull/Open-in-git BUTTONS THEMSELVES (their exact placement, the "Pull"
+label copy, the icon substitution above) were not visually/interactively
+verified in a running app and are called out in the final report's NEEDS
+HUMAN VERIFICATION list.
+
+## Task 20 — Part A implemented: `explain-with-ai.ts` helper + `ErrorBanner`'s `onExplain` prop (shared infrastructure landed; call-site sweep still scoped down)
+
+Following on from Task 18's scope-down, this round actually lands Part A's
+shared plumbing:
+
+**`frontend/src/platform/lib/explain-with-ai.ts`** (new): `explainErrorPrompt(message,
+context?)` builds the seeded prompt — modeled on `repo-updates-lib.ts`'s own
+`repoFixPrompt` for style/structure, but deliberately NOT a copy of its
+behavior: `repoFixPrompt` ends with "Explain what the error means, then fix
+it"; this one ends with "Explain what this means... Do not fix anything or
+make any changes yet — just help me understand the error first." A single
+click must never start edits, per spec.
+
+`resolveDefaultFolder()` / `resetDefaultFolderCache()`: a module-level cache
+for `Config.fused_dir`, modeled on `home-path.ts`'s `cachedHome`/`inFlight`
+pair (same rationale — several folderless call sites resolving "the default
+folder" at once should share one `/api/config` round trip, not each fire
+their own). A failed fetch resolves to `undefined` and does NOT poison the
+cache — `inFlight` is nulled so a later call gets to retry.
+
+`explainWithAi(prompt, folderPath?)`: the actual hand-off. Given a
+`folderPath` (a surface with its own folder-scoped chat), it stages+navigates
+straight there. Given none (a folderless surface — AI Models, settings), it
+awaits `resolveDefaultFolder()` first. If that resolves to nothing (no
+config, no fused_dir, network down), this is a SILENT no-op — there is no
+sensible folder to open a chat in, and failing loudly over an "explain this"
+click would just be a second, more confusing error on top of the first.
+Reuses `stageClaudeAsk`+`navigate` (pending-claude-ask.ts) — the same
+cross-navigation staging primitive `RepoUpdatesDock.tsx`'s own "Fix with
+Claude" button already uses to hand an ask to whichever Listing/Preview
+surface mounts next; not `claude-ask.ts`'s `takeClaudeAsk`/
+`claudeEntryReady`, which is explorer-surface-INTERNAL plumbing for once a
+target surface is already mounted, not a cross-navigation entry point.
+
+**`frontend/src/platform/ui/ErrorBanner.tsx`**: gained an optional
+`onExplain?: () => void` prop. The component itself still knows nothing
+about what its `children` describe (it never has — a bare `{children}`
+wrapper), so the validation-vs-system distinction is entirely a CALL-SITE
+decision: pass `onExplain` for a system/runtime error, never for a plain
+input-validation message. When passed, renders a small `Button`
+(`variant="ghost"`, `size="xs"`, a `Sparkles` icon, "Explain with AI" label)
+below the existing children, inside the same bordered card — the exact
+`<div className="flex gap-2 pt-2">` action-row shape `Preview.tsx`'s own
+snapshot-error banner already uses for its Retry/Back-to-Live buttons, so
+this isn't a new layout idiom.
+
+**Deviation from a strict TDD write-test-first-and-watch-it-fail ceremony**:
+for `explain-with-ai.ts` specifically, the module and its test file were
+written in the same pass rather than red-then-green — a lapse under turn
+pressure, caught and corrected in spirit immediately after by actually
+running the tests before wiring anything else in and fixing two real bugs
+the tests caught (see below), so the tests did their job even though the
+strict ordering slipped. `ErrorBanner.tsx`'s test file WAS written test-first
+in the conventional sense (written once the prop's shape was decided, run
+against the pre-existing 13-line component to confirm it would fail to find
+an explain action, then the prop was added and the same run turned green).
+
+**Two real bugs the tests caught before commit**:
+1. `router.ts` reads `location` at MODULE INIT (its legacy `/embed/` rewrite,
+   line 54) — since `explain-with-ai.ts` transitively imports `router.ts`, a
+   plain static `import` at the top of the test file (even just to reach
+   `explainErrorPrompt`, which never touches routing) blew up with
+   `ReferenceError: location is not defined`, because static imports are
+   hoisted ahead of ANY top-level statement regardless of where they're
+   written textually — so a `beforeEach`-time global stub is always too
+   late. Fixed the same way `RepoUpdatesDock.test.tsx` already documents:
+   stub `location`/`window`/`history` as top-level statements FIRST, then
+   load the module under test via a dynamic `await import(...)` (which runs
+   in written order, not hoisted).
+2. A test-hygiene bug in the `explainWithAi` describe block itself: its
+   `beforeEach` cleared `pending-claude-ask.ts`'s one-slot store with a fixed
+   `takePendingClaudeAsk("/anything")` guess (mirroring
+   `pending-claude-ask.test.ts`'s own convention) — but that call only clears
+   the slot when the path MATCHES, by design (a mismatched take must not
+   consume an ask still waiting for its own target). Since this describe's
+   own tests stage real, DIFFERENT paths across tests, a stale ask from one
+   test survived into the next and made an unrelated assertion fail
+   (`peekPendingClaudeAsk()` returned the PREVIOUS test's path instead of
+   `null`). Fixed by peeking the actual pending path (if any) and clearing
+   that one specifically, instead of guessing a fixed sentinel path.
+
+**Also fixed for the type checker**: `globalThis.fetch = fakeImpl as typeof
+fetch` fails on this TS/lib version — `typeof fetch` now carries a
+`preconnect` static property real mock functions don't have — so every fetch
+stub in the new test file casts through `as unknown as typeof fetch` instead
+(the same double-cast TS's own error message suggests), matching what
+`FilesHome.render.test.tsx`'s `fakeFetch` already does.
+
+**Verification**: `bun test src/platform/lib/explain-with-ai.test.ts` — 11
+pass; `bun test src/platform/ui/ErrorBanner.test.tsx` — 3 pass; `bunx tsc
+--noEmit -p .` clean.
+
+**Still not done, still out of scope for this round**: no ErrorBanner call
+site has been wired to pass `onExplain` yet. The next step (if turns
+remain) is at least one folder-scoped call site (a candidate: `Preview.tsx`'s
+own snapshot-error banner, or `AppFiles.tsx`'s file-listing error) and one
+folderless call site (AI Models' `PlaygroundTab.tsx`), each with its own
+test. A full sweep of the ~20+ remaining `ErrorBanner` call sites is
+explicitly NOT attempted — each one needs a real judgment call about
+whether its message is a system/runtime error or plain validation, which is
+exactly the kind of per-call-site review this task's turn budget cannot
+absorb in one pass without risking a rushed, wrong classification on some
+of them.
+
+## Task 21 — Part A: two representative call sites wired + an import-boundary fix
+
+Wired `onExplain` at exactly the two representative call sites picked in
+Task 20's plan, deliberately NOT sweeping the rest (same rationale as
+above — per-call-site classification judgment doesn't fit this round):
+
+1. **Folder-scoped**: `Preview.tsx`'s snapshot-error banner (the "Could not
+   load this commit" error). Passes `parentDir` (already in scope, `=
+   dirname(fsPath)`) as `explainWithAi`'s `folderPath` — Preview.tsx is
+   already showing `fsPath` inside that folder, so this reuses the
+   "already mounted at this path" `stagedVersion` mechanism rather than a
+   fresh navigation.
+2. **Folderless**: `PlaygroundTab.tsx` (AI Models has no folder-scoped
+   chat) at both its `catalog.status === "error"` banner and its
+   `actionError` banner. Neither passes a `folderPath`, so `explainWithAi`
+   resolves `Config.fused_dir` via `resolveDefaultFolder()`.
+
+**Import-boundary violation found and fixed**: `bun run build` (which runs
+`scripts/check-boundaries.mjs` first) failed once `explain-with-ai.ts`
+(a `platform/lib` module) imported `stageClaudeAsk` from
+`@apps/explorer/lib/pending-claude-ask` — `platform/**` may only import
+`platform`. This wasn't a false positive: `pending-claude-ask.ts` really is
+now needed from `platform` (via `explain-with-ai.ts`) and, transitively,
+from apps other than `explorer` (`ai_models`) that the boundary rules
+already forbid from reaching into `apps/explorer` directly. Rather than
+work around the check, relocated the module: `git mv
+src/apps/explorer/lib/pending-claude-ask.ts
+src/platform/lib/pending-claude-ask.ts` (+ its test file likewise), and
+updated the import specifier in all six referencing files
+(`RepoUpdatesDock.tsx`, `explain-with-ai.ts`, `explain-with-ai.test.ts`,
+`pending-claude-ask.test.ts`'s own self-import, `Listing.tsx`,
+`Preview.tsx`'s pre-existing unrelated import of the same module). This is
+a principled fix, not a workaround: the module has zero dependencies of its
+own (a plain module-level store) and was already consumed by both `shell/`
+and `apps/explorer/`, so `platform/lib` is a better-fitting home than either
+app. Added a paragraph to the module's header comment explaining the move
+and why (quoted in the module itself, not repeated here).
+
+**Pre-existing, unrelated test failure ruled out**: running
+`RepoUpdatesDock.test.tsx` together with the new test files surfaced `bun
+test`'s error: `window.addEventListener is not a function`, thrown from
+`apps/claude/feature-flag.ts:289` (a module-init-time
+`window.addEventListener("storage", ...)` call against that test file's own
+minimal `window` stub, which lacks `addEventListener`). Verified this is
+pre-existing and unrelated to this task's changes by stashing
+`Preview.tsx`/`PlaygroundTab.tsx` (`git stash push -u -m
+"wip-explain-ai-check" -- <two files>`, captured the SHA via `git stash
+list --format='%H %gs'`) and re-running `bun test
+src/shell/RepoUpdatesDock.test.tsx` alone — it failed identically with none
+of this task's new files even present. Restored via `git stash apply
+<sha>` (never `pop`, shared stash stack), confirmed via `git status
+--short`, then dropped the entry via `git stash drop stash@{0}` (re-found
+by index, since `drop` — unlike `apply` — doesn't take a bare full SHA).
+Excluded `RepoUpdatesDock.test.tsx` from this task's own verification runs
+accordingly; it is NOT caused by this work and is not this task's to fix.
+
+**Verification**: `bunx tsc --noEmit -p .` clean. `bun test
+src/platform/lib/pending-claude-ask.test.ts
+src/platform/lib/explain-with-ai.test.ts src/platform/ui/ErrorBanner.test.tsx
+src/shell/repo-updates-lib.test.ts` → 52 pass, 0 fail. `bun run build` →
+boundaries OK (864 files), tsc clean, vite build succeeds (remaining build
+warnings — dynamic-vs-static import overlap on `router.ts`/`api.ts`, and the
+500kB+ chunk-size notice — are pre-existing and unrelated to this change).
+
+**Not done, flagged for the final report**: neither `Preview.tsx`'s nor
+`PlaygroundTab.tsx`'s wiring has a component-mount test (matching this
+codebase's existing pattern of not mounting these heavy stateful components
+under `react-test-renderer`) — both need human/manual verification that
+clicking "Explain with AI" actually opens the right chat with the right
+prompt.
+
+## Fix round 1 (FIXES-round-1.md) — builder session, sha range 8cb5895dd..285de6281
+
+Worked every item top-down. Summary of design decisions worth remembering:
+
+**B1/B2/F2 (`app_doctor.py::_repo_health_check`)**: `git_upstream`'s cached
+`behind`/`ahead` compare `HEAD...origin/<default_branch>` — a DIFFERENT
+number from `_pushed_pending`'s path-scoped `@{upstream}..HEAD -- .`
+count, which feeds the row's `state`/`detail` on its own. This meant (a) a
+no-upstream branch with a stale cached `behind: 0` could read PASS despite
+real unpushed commits (`_SKIP_NO_UPSTREAM` now short-circuits PASS, checked
+before the `behind is not None` branch), and (b) a Pull button gated on
+`behind > 0` alone was a guaranteed `update_repo` refusal off the default
+branch or over a dirty tree — the two most common failure shapes for this
+row. Fixed by computing `on_default`/`clean` server-side (the exact same
+`_is_clean(root, include_untracked=False)` check the preflight itself
+uses) and exposing them as `onDefault`/`clean` on the row/`AppCheck`;
+`can_pull = bool(behind) and on_default is True and clean is True` drives
+both the extracted `_repo_health_advice()` helper's wording and the
+frontend's `showsPullAction` gate (`appdoctor-lib.ts`). Per the user's
+prior decision, Pull is never silently hidden — the row's own `detail`
+names the specific blocker ("switch to <default>" / "commit or stash your
+changes") instead.
+
+**C1/C2 (test isolation)**: `note_app_opened`'s non-blocking
+`_check_slot.acquire` means a real background fetch thread from ONE test
+file can silently starve another file's `_sync`-warmed assertions when
+they share a pytest-xdist worker. Fixed with two changes: a `_warm()`
+helper in `test_app_doctor_report.py` that populates the cache directly
+via `git_upstream._record(git_upstream.check_repo(root))`, bypassing the
+slot entirely (replaces three `note_app_opened(..., _runner=_sync)` call
+sites); and `test_git_upstream.py`'s autouse fixture now blocks
+(`_check_slot.acquire(timeout=TIMEOUT_S + 5)` then immediately releases)
+to drain any foreign in-flight holder before resetting its own module
+state, rather than only avoiding a double-release. Verified stable across
+5+ repeated combined runs of both files (105 passed every time, up from
+103 after adding 2 more B1 regression tests).
+
+**B3 (`AppDoctorModal.tsx`, git-row retry)**: the one-shot retry effect set
+its "used" ref the moment the timer was SCHEDULED, not when it fired. Any
+OTHER row's `runCheck` completing within the 2s window calls `setReport`
+with a new object, which cancels the pending timer via the effect's own
+cleanup and re-runs the effect — but the ref was already flipped, so the
+re-armed effect bailed immediately and the git row was permanently
+stranded on SKIP. Fix: move the ref-set inside the `setTimeout` callback
+itself, so a cancelled attempt leaves the ref untouched and a later re-run
+gets to reschedule.
+
+**B4/D1 (`AppDoctorModal.tsx`, Open-in-git)**: `onDone` (which the dialog
+passes as `onClose` to `useAppDoctorReport`, but the hook previously did
+NOT return in its result object) had to be added to the hook's return
+value, then threaded through `AppDoctorChecklist` -> `CheckRow` as a new
+optional prop, so "Open in git" could call it after `navigate()` — matching
+`fixRow`/`followLive`/`runFix`'s existing idiom. D1 (user decision, same
+click handler) restyled the button from a bare ghost icon to a secondary
+text button ("Open in git") matching Fix's size/variant, moved to sit
+BEFORE Fix in JSX order.
+
+**B5 (`explain-with-ai.ts`)**: `fetchDefaultFolder`'s module-level
+`inFlight` promise was only cleared on `.catch`. A SUCCESSFUL fetch that
+resolves an empty/falsy `fused_dir` leaves `cachedDefaultFolder` at
+`undefined` (the sentinel this module reads as "still unresolved") while
+`inFlight` keeps pointing at that already-settled promise forever — so
+every later call re-enters `fetchDefaultFolder`, sees `inFlight` truthy,
+and hands back the SAME stale (still-falsy) promise with no way to ever
+retry, even once a real value becomes available. Fixed by moving the
+`inFlight = null` clear into a `.finally()` so every settlement (success
+or failure) releases the slot.
+
+**E (`SKILL.md`)**: added a third mode alongside the existing single-row
+and no-panel modes, for a task naming check `` `all` `` with one `##`
+block per failing row (`doctor_prompt_all`) — work every block in order,
+one end-of-run commit, still scoped to exactly the blocks handed over
+(never re-derive the checklist, never invent a check). The git/pushed
+consolidation's own SKILL.md edit (already landed earlier in this branch)
+needed no further reconciliation — it already described the single
+consolidated row correctly.
+
+No test harness exists for `AppDoctorModal.tsx` itself (component-level
+render tests) in this repo — only `appdoctor-lib.ts`'s pure helpers are
+unit-tested. B3/B4 (both localized to that file) shipped without new
+component tests as a result; verified by reading the effect/handoff logic
+against the described repro rather than by an automated assertion. Flagged
+in the final report rather than building new render-test infra for this
+round.
+
+
+## index-live-watch — 2026-09-21
+
+Branch `index-live-watch`, built against `SPEC-index-live-watch.md` (worktree
+root). Status: **tree clean, 5 commits landed**, all in-scope. What follows
+is what the next reader needs that isn't in the commits themselves.
+
+**What was built.** `fused_render/server/index_watch.py`: a `WatchLoop`
+policy class (fully dependency-injected — event source, clock, sleeper,
+forward call, gate — same convention as `index_touch.RescanQueue`'s tests)
+that filters watchfiles events at arrival, reduces to parent folders,
+forwards to `index_touch.note_index_folders` no more than every
+`WATCH_FLUSH_FLOOR_S` (30s), collapses a >`MAX_FOLDERS` burst to the whole
+root, runs an hourly (`WATCH_RESCAN_S`) per-root safety net on idle ticks,
+and backs off (5/30/120s) on a raising source. Wired into `create_app` as
+paired `_startup_index_watch` / `_shutdown_index_watch` hooks right after
+the existing index-scan hook. `index_touch.outermost_folders` was extracted
+from `RescanQueue._outermost` so both the mutation-endpoint queue and the
+watcher's MAX_FOLDERS collapse share one "does folder A cover folder B"
+definition. Three stale "there is no filesystem watcher" claims were
+corrected (`index_touch.py`'s module docstring, `fs_mutate.py`'s
+`_note_index_mutation`, `query.py`'s `FRESH_MAX_AGE_S` comment), and
+`scan-incremental.md` gained a §6 documenting the design.
+
+**Verified, not reasoned (per spec's explicit instruction):**
+- `watchfiles.watch` ends its generator cleanly (no exception) when
+  `stop_event` is set — confirmed by running it, not by reading the source.
+  `WatchLoop._run_one_watch` relies on this: a clean end forwards nothing and
+  backs off nothing.
+- `watch_filter` dropping every raw change in a batch does **not** make the
+  generator yield an empty set — only a genuine `rust_timeout` does (with
+  `yield_on_timeout=True`). This is why the periodic-safety-net check in
+  `_run_one_watch` keys off `batch` being empty (a real tick with nothing in
+  it), not off "nothing survived the filter."
+- `setup_py2app.py`'s `bundled_force_lists()` was run live in the venv after
+  adding `watchfiles>=1.0` to `pyproject.toml`'s core `dependencies`:
+  `watchfiles in packages: True`, `watchfiles in includes: False` — it is
+  forced as a `package` (has `__init__.py` on disk) automatically through the
+  existing transitive-closure derivation. **No `setup_py2app.py` code change
+  was needed**, confirmed by running the derivation rather than assuming it.
+
+**Live measurement (spec §6).** Ran a throwaway script
+(`WatchLoop._run_one_watch` against the real `watchfiles.watch`, real filter,
+`flush_floor_s=30.0`) over the real `~` (`/Users/iamsdas`) for the full
+5 minutes the spec asks for:
+
+```
+[   30.4s] raw~ 2617  folders=  1  ['/Users/iamsdas']
+[   60.5s] raw~ 3693  folders=  1  ['/Users/iamsdas']
+[   90.9s] raw~ 3789  folders=  1  ['/Users/iamsdas']
+[  121.0s] raw~ 3205  folders=  1  ['/Users/iamsdas']
+[  151.2s] raw~ 2653  folders=  1  ['/Users/iamsdas']
+[  181.2s] raw~ 2828  folders=  1  ['/Users/iamsdas']
+[  211.9s] raw~ 3016  folders=  1  ['/Users/iamsdas']
+[  242.2s] raw~ 3796  folders=  1  ['/Users/iamsdas']
+[  272.5s] raw~ 2736  folders=  1  ['/Users/iamsdas']
+9 flushes total, ~28,300 post-filter raw events over ~272s
+```
+
+Every flush's outermost-folder set was `{~}` — the whole root — for the
+**entire run**. My first read of this (now corrected — see the superseded
+code comments removed in commit `85be45c4c`) was "MAX_FOLDERS(16) is being
+exceeded on every flush." That's wrong. Two follow-up diagnostics (60s each,
+same filter, aggregating `outermost_folders()` over the whole window instead
+of per-30s-tick) showed the real cause: **something writes directly inside
+`$HOME` on almost every tick**, and `outermost_folders()` correctly collapses
+every other candidate folder into that single root entry the moment the root
+itself is in the pending set (any folder under it necessarily starts with
+`~/`). It is not an overflow; `len(outermost)` was **1**, not >16.
+
+`stat` on `~/.claude.json` during the run showed its mtime matching "now" —
+**this Claude Code CLI session's own state file**, written directly into
+`$HOME` on effectively every tool call, was itself a large source of the
+churn (measured separately: 77.9% of a 60s sample's raw post-filter event
+count, 2540/3260). This is the same class of problem as the "instrumenting
+kills the repro" lesson: the agent doing the measuring is also writing to
+the disk being measured. Excluding `~/.claude.json` and `~/.claude/*`
+explicitly from a repeat 60s sample **still** left the outermost set as
+`{~}` — so at least one more thing (unidentified; a `.DS_Store`, Spotlight,
+iCloud, or some other always-on macOS/user-tool file directly under `$HOME`)
+also churns there, independent of this CLI session.
+
+**What this means for the design, and what it does not:** the 30s flush
+floor is doing real work — it is the only thing standing between this
+level of churn and a rescan storm — and collapsing to a whole-root rescan
+when the root itself is touched is *correct*, not a bug: the root's own
+listing did change. What the numbers don't establish is whether the
+`MAX_FOLDERS` collapse path is ever actually exercised on a normal desktop
+by folder-scoped churn (as opposed to root-scoped churn) — this measurement
+never got a clean read on that, because root-scoped churn dominates every
+window. **Not resolved, left for whoever picks this up next:** identify the
+second (non-CLI) source of direct-`$HOME` writes, and re-measure with a
+Claude Code session NOT running concurrently (impossible for me to do, since
+I am that session) to see real per-folder batching behavior. Per spec's
+"propose, do not apply" instruction: `~/.claude.json` and `~/.claude/`
+becoming default-ignored is worth proposing once the index team decides
+whether AI-tool session state belongs in the index at all (today it isn't
+excluded, so it isn't excluded from the watcher either — consistent, just
+maybe not intended).
+
+**Scope deviation from spec §7's commit plan:** the spec lists commit 5 as
+"hourly safety-net rescan; docs and spec prose updated," implying the
+periodic safety net is a separate commit from the core watcher (commit 3).
+In practice `_maybe_periodic_rescan` is a few lines inside the same
+per-tick loop `_run_one_watch` already has to walk for filtering and
+flushing — splitting it into its own commit would mean writing the same
+scaffolding twice (once inert, once wired) for no reviewable benefit. It
+shipped as part of commit 3 (`2e6daa4b6`) with its own tests
+(`test_a_stale_root_is_rescanned_on_an_idle_tick` and its three siblings).
+Commit 5 (`f82620a57`) is docs/prose only, as the spec's commit 5 title
+already half-describes.
+
+**Extra prose fixes beyond the spec's explicit list:** the spec named
+`index_touch.py`'s docstring for the "no filesystem watcher" fix. Grepping
+for the same claim elsewhere found two more instances
+(`fs_mutate.py:_note_index_mutation`, `query.py`'s `FRESH_MAX_AGE_S`
+comment) that were equally stale once `index_watch.py` existed; both fixed
+in commit `f82620a57` alongside the specced one.
+
+**Not verified — the true end-to-end check is the user's, with `dev.sh`:**
+the Linux non-recursive fallback (`_shallow_watch_paths`,
+`_is_watch_limit_error`) is code-reviewed only — this dev machine is macOS,
+so the `errno.ENOSPC` branch never actually ran. `start()`/`stop()` were
+exercised directly (not through a running server): calling `index_watch.start()`
+spawned a real thread watching `/Users/iamsdas` through the real
+`watchfiles.watch`, and `index_watch.stop()` stopped it within 1s — but this
+was never driven through an actual `dev.sh`-started app, an actual file
+mutation reaching the explorer's search results, or the indexing-pref
+toggle's live effect on a running watch thread.
+
+### Follow-up fix round — 2026-09-21
+
+A second builder picked this branch up from an open PR to fix eleven
+findings from review (a full-suite regression, nine MUST-FIX defects, two
+judgement calls), strict TDD: a failing test before every code change.
+
+**A. Full-suite regression.** `tests/test_engine_requirements.py::
+test_the_import_map_covers_everything_the_app_ships` failed because
+`watchfiles` (a real, declared dependency — `pyproject.toml`'s
+`dependencies`) had no `_IMPORT_TO_DIST` entry. Added `"watchfiles":
+"watchfiles"`. Confirmed genuine (not a fake artifact): the whole file
+passes clean after.
+
+**B.1–B.9, all confirmed genuine defects** (none were dismissed — each
+reproduced with a failing test before the fix, per the TDD mandate):
+
+1. **The silent no-op.** `_make_loop`'s `forward=note_index_folders` handed
+   `WatchLoop` a callable that, called as `forward(folders)` (a single
+   iterable argument, per `WatchLoop`'s own contract — see
+   `self.forward({self.root})` / `self.forward(set(outermost))`), queued
+   nothing: `note_index_folders(*folders)` wants folders unpacked as
+   separate positional args, so the set itself became one bad argument and
+   failed `note_index_folders`'s `isinstance(f, str)` filter silently. This
+   is the textbook case the finding warned about: 15+ existing tests used a
+   `Fake.forward` with a *more permissive* shape (`forward(self, folders):
+   self.forwarded.append(set(folders))`) that could never catch this
+   mismatch. Fixed at the wiring seam only (`forward=lambda folders:
+   note_index_folders(*folders)`), not by changing `WatchLoop`'s contract —
+   that would have broken every other test relying on it. New test:
+   `test_a_real_flush_actually_reaches_the_rescan_queue`, which calls the
+   real `note_index_folders` instead of a fake.
+2. **Root-vs-parent clamp.** A change reported directly on a watched root
+   (`_folder_of` walks to the path's *parent*) could escape upward past the
+   root itself. Added `WatchLoop._clamp_to_root`, applied at the one place
+   folders are accumulated in `_run_one_watch`.
+3. **`.git` writes reached the filter.** `.git` is deliberately a
+   `LEAF_DIR_NAME`, not an ignore pattern, so `make_dropped`'s `dropped()`
+   never checked `is_inside_leaf_dir` — meaning `~/repo/.git/objects/ab/cdef`
+   survived the filter and forwarded a folder the index never indexes. An
+   active git repo writes under `.git/objects` constantly, making this the
+   hottest of the nine in practice. Fixed by adding the same
+   `is_inside_leaf_dir` check the real FSEvents journal gate
+   (`scan.py::_run_fsevents`) already uses, and correcting the docstring's
+   false claim of parity with that gate.
+4. **`_canon_folder` accepted a bare root.** Unlike `_folder_of` (used by
+   `note()`), `_canon_folder` (used by `note_folders()`/the watcher) did not
+   refuse a bare POSIX `/` or Windows drive root, so a raw root-level event
+   could queue a scan of `/` itself. Made it refuse the same way
+   `_folder_of` does.
+5. **Backoff reset on empty ticks.** The real `watchfiles.watch(...,
+   yield_on_timeout=True, rust_timeout=5000)` yields an empty `set()` every
+   5s even with zero activity. The old code reset `self._backoff_i = 0`
+   unconditionally on every tick, including empty ones — meaning a watch
+   that opens, gets one empty timeout tick, then raises (a vanished mount,
+   a permissions change) restarts at the first backoff rung forever instead
+   of ever escalating. Reset now gated on `if batch:` (a real change).
+6. **Periodic safety net re-fired every idle tick.** `_maybe_periodic_rescan`
+   asked for a rescan on every stale tick without remembering it had
+   already asked, so a refused ask (gate closed, scan in flight, whatever)
+   re-fired on the very next idle tick instead of waiting out its own
+   interval. Added `self._last_periodic_rescan_at` and folded it into the
+   staleness check.
+7. **`start()` could raise into the FastAPI lifespan.** `app.py`'s
+   `_lifespan` awaits every startup handler with no `try` — any raise from
+   `index_watch.start()` (an *optional* background feature) would have
+   killed server boot entirely. Rewrote `start()` so `_stop_event`/
+   `_threads` are assigned before determining roots, config-load/scan-roots
+   failures are caught and logged without raising, and a failure creating
+   one root's thread does not strand the others. `_lifespan` itself is
+   unchanged — the fix is entirely in the optional hook, per the finding's
+   framing.
+8. **Non-interruptible sleep.** `_make_loop` wired `sleep=time.sleep`, so a
+   thread parked in the 30s gate poll or a backoff delay ignored
+   `stop_event` for up to that long after shutdown was requested. Changed
+   to `sleep=stop_event.wait`, the same `sleep(delay)`-shaped call
+   `WatchLoop` and its tests already assume.
+9. **`MAX_FOLDERS` overflow was dropped, not deferred.** `_outermost`
+   truncated to `MAX_FOLDERS` and discarded the rest; a mutation burst
+   above the cap silently lost folders instead of catching them on a later
+   cycle, unlike every other case this same queue already defers (a folder
+   waiting out a live scan, or a floor). Care was taken (per the finding's
+   explicit warning) not to change `note()`'s existing shared-path
+   behavior beyond fixing the loss: `_outermost` now returns
+   `(this_cycle, excess)`, and `_fire` folds `excess` into the existing
+   `defer` dict rather than a new mechanism.
+
+**C.10 — judgement call, fixed.** `make_dropped`'s docstring claimed the
+index store's own directory (`cfg.dir`) was "already in `default_ignore()`"
+— false; `default_ignore()` only appends the per-home `**/mounts` patterns
+and `~/Library/Caches`. `cfg.dir` is a *settable* config key
+(`index/config.py`'s `IndexConfig.dir`), only incidentally covered by
+`MountGuard` because its default sits under the fused-render home. An index
+dir configured outside the home but under a watched root would reopen the
+exact self-trigger loop this filter exists to prevent (a scan writes
+parquet into `cfg.dir`, the watcher observes its own write, triggers the
+scan that triggered it). Took the "derive the filter from `cfg.dir`
+directly" option explicitly offered by the finding, since `cfg` is already
+in scope at every call site: `make_dropped` gained an optional `index_dir`
+parameter with an equal-or-under check, wired through all three production
+call sites (`_real_open_source`, `_shallow_watch_paths`'s fallback,
+`_make_loop`) as `index_dir=cfg.dir`. New test:
+`test_a_configured_index_dir_outside_the_fused_render_home_is_blocked`.
+
+**C.11 — judgement call, NOT fixed; documented here as a known
+limitation.** `index_watch.py:296`'s ignore filter (`make_dropped(...)`) is
+built once per watch loop at thread-start / watch-reopen time from
+`load_config()`, not re-read live. Concretely: `_make_loop` builds
+`WatchLoop.dropped` once, for the life of the thread (never rebuilt until
+process restart); `_real_open_source` rebuilds its own `dropped` fresh each
+time it is *called* — but that function is only called once per
+`watchfiles.watch(...)` open, which for a healthy watch with no errors can
+run for the process's entire lifetime. Net effect: editing the ignore list
+in the Indexing panel has no effect on an already-open live watch until
+either a reconnect (error/backoff) or a full server restart happens to
+occur.
+
+Investigated whether this is "genuinely cheap" to fix, per the finding's
+explicit permission not to force it: it is not. `load_config()` does an
+uncached disk read (`storage.read_json` on `config.json`) on every call —
+fine at "once per watch (re)open," but the only way to make the *live*
+filter honor an edit immediately is either (a) re-read config on every
+single filtered filesystem event, which adds a disk read to the hottest
+path in the module (the same path Finding #3's `.git/objects` churn
+measurement showed can run at thousands of events per minute), or (b)
+proactively interrupt and reopen every running watch thread when the
+ignore list is saved, which means wiring a new signal from the Indexing
+panel's save handler through to every live `WatchLoop`/`stop_event` pair —
+a real cross-cutting change, not a local one. Neither is "clean and cheap"
+by the finding's own bar. Left as-is: a saved ignore-list edit lags behind
+until the watch naturally reconnects or the server restarts, no worse than
+before this fix round, and explicitly flagged here rather than silently
+left unaddressed.
+
+**Verification.** Scoped tests only, per instruction:
+`tests/test_index_watch.py` (26 passed), `tests/test_index_touch.py`,
+`tests/test_index_ignore.py`, `tests/test_app_lifespan.py`,
+`tests/test_engine_requirements.py` (397 passed) — all green together.
+
+**Not verified on this macOS machine** (same caveat as the prior builder's
+entry above): the Linux `errno.ENOSPC` shallow-fallback branch
+(`_is_watch_limit_error`, `_shallow_watch_paths`) is code-reviewed only.
+`start()`/`stop()`'s new failure-isolation paths were exercised through
+unit tests with faked `load_config`/`scan_roots`/thread-creation failures,
+not through an actual `dev.sh`-started server hitting a real partial
+failure.
+
+### Windows-only CI failure fix — 2026-09-21
+
+The macOS local suite and every CI lane went green except
+`test-python-windows`, where exactly two `tests/test_index_watch.py` tests
+failed: the forwarded folder set collapsed to the bare watched root instead
+of the expected per-folder union.
+
+**Root cause.** `WatchLoop._clamp_to_root` compared `folder` (which arrived
+through `_folder_of`'s `norm(os.path.abspath(...))` canonicalization
+pipeline) against `self.root` RAW — `root` is handed to `WatchLoop` exactly
+as `_make_loop`/tests pass it, never canonicalized. On POSIX this
+coincidentally worked, because `os.path.abspath` of an already-absolute
+path is a no-op. On Windows it does not: `os.path.abspath("/home/me/proj/
+a.txt")` resolves against the current drive and prepends it (`C:\home\me\
+proj\a.txt`), which `norm()` then converts to `C:/home/me/proj`. `self.
+root` stayed `"/home/me"` — a prefix the canonicalized folder no longer
+shares — so `folder == root or folder.startswith(root + "/")` failed for
+every real folder, and `_clamp_to_root` fell through to its "not under the
+root" fallback, replacing every folder with the bare root. That the whole
+union collapsed to `{root}` (not just one clamp) is exactly the CI
+assertion failure.
+
+**Fix.** `WatchLoop.__init__` now computes `self._root_canon =
+_canon_folder(root) or root` once (`_canon_folder`, imported from
+`index_touch.py`, is the *same* `norm(os.path.abspath(...)).rstrip("/")`
+pipeline `_folder_of` already uses — the established convention this
+module's own docstring points at, not a new one), and `_clamp_to_root`
+compares `folder` against `self._root_canon` instead of raw `self.root`.
+The fallback still returns the original `self.root` (unchanged) — forwarded
+folders are re-canonicalized downstream by `note_folders`/`_canon_folder`
+regardless of which spelling reaches it, so this only had to fix the
+*comparison*, not what gets forwarded.
+
+**Blast radius.** Touched `index_watch.py` only (`WatchLoop.__init__`,
+`_clamp_to_root`, plus importing `_canon_folder`). `_folder_of`,
+`_canon_folder`, and `norm` themselves are unchanged — the shared mutation
+path (`note_index_mutation`) and `RescanQueue` are unaffected.
+
+**Test.** This machine is macOS and cannot run the Windows lane, so the
+regression test does not rely on Windows actually running it — it
+reproduces the underlying disagreement directly: `os.path.abspath` is
+monkeypatched to prepend `"C:"` the way Windows' real one does, and
+`ignore.WINDOWS` is forced on so `norm()`'s backslash conversion (normally
+a no-op off Windows) engages too. Against the unfixed code this
+monkeypatched test failed with the identical symptom the Windows lane
+reported — a two-folder union collapsed to `{"/home/me"}`. Confirmed
+failing before the fix, passing after
+(`test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form`).
+
+**Verification.** `tests/test_index_watch.py`, `tests/test_index_touch.py`,
+`tests/test_index_ignore.py`, `tests/test_app_lifespan.py` — 83 passed.
+Both previously Windows-failing tests
+(`test_two_batches_inside_the_floor_forward_once_with_the_union`,
+`test_max_folders_or_fewer_forward_the_actual_set`) also pass locally, as
+they already did before this fix (macOS never reproduced the bug) — the
+new monkeypatched test is what actually pins this defect.
+
+**Not verified from here:** the Windows CI lane itself. This machine is
+macOS; the fix and its regression test are reasoned from `os.path.abspath`'s
+documented Windows behavior (drive-letter resolution of a POSIX-style
+absolute path) and `norm()`'s own `WINDOWS`-gated backslash conversion, not
+from an actual Windows run.
+
+## SPEC-empty-search-scan.md — 2026-09-21
+
+Same branch (`index-live-watch`, PR #1279 — folds into it, no new PR).
+Status: tree clean, 4 commits landed (`b0f338bad`, `398f08eec`, plus two
+more this round: `824ec55b0`, `a137ca73b`). All in-scope.
+
+**What was built.** A settled search answer that says its root IS covered
+(`reason === ""`) but finds zero file hits now asks for a background scan
+of the answer's own root via the existing `requestFolderScan`
+(`POST /api/index/scan-folder`), once per distinct trimmed query, silently
+(a route refusal or a thrown fetch are both swallowed — no error surface,
+no retry). Re-querying once the scan lands needed no new code in either
+box: both fetch effects already depend on `lifecycle`
+(`subscribeIndexLifecycle`), bumped whenever the shared `useIndexStatus`
+poller notices `last_completed_at` move. The "No matches" copy switches to
+"the index is still building" while that scan is confirmed running, in
+both the in-folder box (`empty-result.tsx`'s `gap` computation) and the
+home box (`FilesHome.tsx`'s own, separate `gap` computation) — both had the
+identical blind spot: `gap` was only ever computed for an UNcovered
+answer, so a covered-but-empty answer had no way to say a scan it itself
+triggered was running.
+
+**Attribution deviation (flagged per orchestrator instruction).** The
+original task spec asked for `Co-Authored-By: Claude Opus 5 (1M context)
+<noreply@anthropic.com>` on every commit. A system-reminder mid-session
+stated it "replaces Claude Code's own earlier attribution guidance" and to
+use `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` instead. All
+four commits on this branch (across both build sessions) used the Sonnet 5
+line per that later, more explicit override.
+
+**Spec imprecision, not a defect.** The spec described `requestFolderScan`
+as having no call site anywhere. It already has one: the home page's own
+"uncovered, no scan running" note already calls it via a different path
+(`gap === "buildable"`'s on-demand affordance) — confirmed by reading
+`FilesHome.tsx` before writing any code, and covered by an explicit test
+("does not ALSO fire for uncovered — the existing on-demand-scan affordance
+already asked, exactly once") so the two triggers were verified not to
+double-fire. The core gap the spec describes — no trigger for the
+COVERED-but-empty case specifically — was real and is what this round
+fixes.
+
+**Deliberately not done:**
+- `nextStep()`/`SearchStep` (`apps/explorer/listing/index-source.ts`) was
+  not touched or widened — the trigger lives entirely in the two
+  components' own fetch-success handlers, not in the shared classifier.
+- No new client-side debounce/timer was added; the server's own
+  `SCAN_DEBOUNCE_S` is the only cross-query floor, matched by a plain
+  per-query `Set` (`firedEmptyScan`) on each side.
+- The four open PR #1279 items (Windows test portability, Linux ENOSPC
+  fallback, startup-frozen ignore rules, unidentified `$HOME` churn source)
+  were left alone, out of scope for this spec.
+
+**Test-pollution artifact (self-resolving, not a real bug).** While the
+`useListingSearch.render.test.ts` tests were still red (TDD's expected
+first state), the full file showed up to 12 failures in UNRELATED describe
+blocks (`ReferenceError: window is not defined`, wrong array lengths in
+the ranked-search-preference tests). Root cause: an assertion throwing
+mid-test skips that test's own `box.unmount()` call (written after the
+assertion), leaking a mounted hook's subscriptions into later tests
+sharing the same process-global `Clock` and module-level pub-sub
+registries (`subscribeIndexLifecycle`, `subscribeFsMutations`). Confirmed
+by reverting to the pre-edit file (45/45 pass) and by rechecking after the
+real implementation made the new assertions pass instead of throw (0/56
+failures, no harness change needed).
+
+**`Listing.test.tsx` standalone-run anomaly — confirmed pre-existing,
+unrelated.** Running `bun test src/apps/explorer/Listing.test.tsx` alone
+throws `ReferenceError: location is not defined` at
+`platform/lib/router.ts:54` (a module-init-time `/embed/` rewrite that
+reads the global `location` before any test's `beforeEach` can stub it).
+Reproduced identically against a stash of this round's own diff
+(`git stash push -u -m` on `Listing.tsx`/`FilesHome.tsx` only, `git stash
+apply`, never `pop`) — same error, same line, with or without this
+feature's changes. Passes cleanly (140/140) when run in the same `bun
+test` invocation as `FilesHome.render.test.tsx`, which stubs `location` at
+module scope before importing anything that reaches `router.ts`. This is
+an existing test-ordering dependency in the suite, not something this
+diff introduced or fixed (out of scope — `router.ts` was never touched).
+
+**Verification run (this round's touched files, one invocation):**
+`bun test src/apps/explorer/FilesHome.render.test.tsx
+src/apps/explorer/listing/empty-result.test.tsx
+src/apps/explorer/listing/useListingSearch.render.test.ts
+src/apps/explorer/Listing.test.tsx` → **140 pass, 0 fail, 345 expect()
+calls**. `bunx tsc --noEmit -p .` → clean. Grepped `tests/` (the Python
+suite) for every symbol/line touched this round (`indexGap`,
+`firedEmptyScan`, `requestFolderScan`, `onScanRequested`, `gap ===
+"scanning"`, `"No matches"`, `"still building"`) — the only hits are
+pre-existing, unrelated string literals in `test_tasks_api.py` and
+`test_git_repos_api.py` (chat/task copy, not this feature's).
+
+**TDD check on the FilesHome.tsx note fix specifically.** Reverted just the
+`gap` computation's new branch, reran `FilesHome.render.test.tsx`: the new
+"switches to the 'still building' copy…" test failed as expected (note
+stayed "No file name matched" instead), the other 66 tests stayed green.
+Restored the fix; all 67 pass again. This is the same TDD confirmation the
+`empty-result.tsx` fix already had from the prior round, extended to the
+home page's independent implementation.
+
+**To verify (browser/layout, not exercised by these tests):**
+- The actual visual appearance of the "still building" copy in both boxes —
+  these are `react-test-renderer` assertions on flattened text content, not
+  a rendered/screenshotted page.
+- The real end-to-end timing: a real `/api/index/scan-folder` POST, a real
+  scan run, and the real `useIndexStatus` poll noticing `last_completed_at`
+  move — this round's tests drive all of that through fake timers and a
+  stubbed poll prop, never a live server.
+
+## Task 22 — git template confirmations: inline `.confirm` bars → centered modals
+
+Every destructive confirmation in `fused_render/templates/git/template.html` used to
+render as an inline `.confirm` bar spliced into the section/pane the question was
+about (discard, discard-all, stash-drop, resolve, app-restore/checkout, revert, reset).
+In practice the bar often landed below the fold — under a long inline diff, at the
+bottom of a list — so a click on "Discard" produced no visible reaction. Converted
+every one of the seven `DESTRUCTIVE` ops to a single centered modal over a scrim,
+reusing the existing `stashModal`/`publishModal` pattern (`.scrim` + `.modal` +
+`.panel`, mounted once at the page root). Only *where/how* the question renders
+changed — the `ask=` URL grammar and the `DESTRUCTIVE` set are untouched.
+
+- `confirmBar(question, run, verb)` → `confirmModal(question, run, verb)`, same `wrap`
+  shape as the other two modals: scrim (click cancels via `setParams({ ask: null })`),
+  `.panel.danger` with a `.panel-head` (title = `verb`), the question as body text, and
+  a foot with the danger confirm button then Cancel. `role="alertdialog"`,
+  `aria-modal="true"`, `aria-labelledby` set via `setAttribute` (not reliable as plain
+  `el()` props). `focusSoon()` lands on Cancel, never Confirm, so a stray Enter can't
+  fire the destructive action.
+- `pendingConfirm(data, stashes)` now owns all seven keys and returns the modal node
+  directly (or `null`) — no more `{ where, node }`, `askIn`, `folded.delete(ask.where)`,
+  or `|| changesAsk` / `|| stashesAsk` guards that existed only to keep a section
+  rendered around a confirmation. A section may render empty again while its
+  confirmation is open; that's correct now, the question isn't inside it any more.
+  `stashes` isn't module-level (it's threaded `draw()` → `render(data, stashes, diff)`),
+  so it became `pendingConfirm`'s second parameter, needed for `stash_drop`'s message
+  lookup.
+- `resolve`, `app_restore`, `revert`, `reset` used to return `null` from
+  `pendingConfirm` and build their own bar at their own call site
+  (`resolveConfirmBar()`, the checkout banner, the commit pane). All four guards moved
+  into `pendingConfirm` UNCHANGED — every one of them is load-bearing (a stale `ask=`
+  in the URL must not arm a confirmation for a commit/preview the user never actually
+  selected: `rest !== proposal.path`, `rest !== previewed`, `sha !== selectedRev()`).
+  This was fully achievable because every guard's inputs (`proposal`, `previewed`,
+  `selectedRev()`, `canPreview`) are module-level and reachable by closure from
+  anywhere in the file — no site needed the spec's "guard cannot move" escape hatch.
+  `resolveConfirmBar()` was deleted outright; its logic is now `pendingConfirm`'s
+  `resolve` branch.
+- Button call sites (`confirmable(...)`) were left exactly where they were (proposal
+  panel foot, preview banner, commit pane) — only the inline `confirmBar`/`run(...)`
+  append at each was deleted. Their local question-text variables
+  (`checkoutQuestion`/`revertQuestion`/`resetQuestion`) were kept, now used only as
+  button tooltip text; the modal's actual (richer, subject-enriched) question text is
+  built independently inside `pendingConfirm`. Accepted as minor, deliberate
+  duplication rather than exporting a helper across an odd boundary — the spec allows
+  this explicitly.
+- Precedence: `askModal` (from `pendingConfirm`) wins at the page-root mount over
+  `panel=stash`/`panel=publish` — if a confirmation is pending, neither other modal
+  mounts. `publishOpen` became `!askModal && param("panel") === "publish"`, with
+  `ghStartPolling`/`ghStopPolling` gated on it.
+- Danger styling needed no dark-mode-specific rule: `--danger` / `--danger-bg` /
+  `--danger-line` were already defined once in the default (dark) `:root` block and
+  overridden in `:root[data-theme="light"]`, so `.panel.danger` inherits
+  theme-correctness for free.
+- Question-text pass: `stash_drop` now names the stash's own message when available
+  (`stash@{N} (message)`); `resolve`/`app_restore`/`revert`/`reset` add the path or the
+  commit's short sha + subject when not already implied. Long paths wrap via
+  `overflow-wrap: anywhere` on `.modal .q` instead of widening the modal.
+- Deleted the `.confirm` CSS block, `@keyframes confirm-in`, its `@media (max-width:
+  560px)` rule, and its reduced-motion rule; verified by grep that no `.confirm`
+  selector/className remains anywhere in the file.
+
+Tests: `tests/test_git_conflicts.py::test_view_never_applies_a_resolution_without_the_confirmation`
+had two literal-source-grep assertions anchored on `function resolveConfirmBar()` and
+`confirmBar(`; both needed updating for the rename and the deleted function — replaced
+the anchor with `pendingConfirm`'s `if (op === "resolve") { ... }` branch bounds, same
+guarantee (one `{ op: "resolve" }` call site, reached only through the confirmation).
+
+Two more tests in `tests/test_git_view.py` broke for a reason beyond a simple rename:
+`test_checkout_lives_in_the_previewing_banner_and_sends_app_restore` and
+`test_revert_appears_on_the_expanded_commit_and_sends_its_own_sha` asserted the actual
+`{ op: "app_restore" }` / `{ op: "revert" }` write happened at the button's own call
+site — true under the old inline-bar architecture, false now that the write lives in
+`pendingConfirm`. Rewrote both to check the button still lives at its original site
+and that the write + its guard now live in `pendingConfirm`'s matching branch.
+
+Grepped all of `tests/` for `confirmBar`, `askIn`, `folded.delete(ask`, `ask.where`,
+`where:` after finishing — zero real matches (a few `where`-adjacent hits are
+unrelated prose like "anywhere:"/"elsewhere:").
+
+`.venv/bin/python -m pytest -q tests/test_git_view.py tests/test_git_conflicts.py`:
+45 passed.
+
+Note for future readers: a builder note file for this specific task briefly
+overwrote this file's entire prior content (Write tool, no Read-before-overwrite
+guard caught it because the file existed but the mistake was made anyway) before
+being caught and reverted via `git checkout -- DECISIONS.md`; this Task 22 section is
+the only change that survived. If a future session finds this file suspiciously
+short, that is a sign the same mistake happened again and was not caught.
+
+### Task 22 follow-up — fixing the two failing tests and three review findings
+
+Two `tests/test_git_view_renders.py` tests were red 3/3: they asserted the OLD
+inline `.confirm` bar's copy verbatim (`REVERT_QUESTION`/`CHECKOUT_QUESTION` module
+constants), and the earlier symbol-only grep (`confirmBar`, `askIn`, `where:`) never
+caught them because they assert rendered STRINGS, not identifiers. `confirmModal`'s
+question text for `revert`/`app_restore` is richer than the button's own tooltip
+(it now names the commit's own short sha + subject, since a modal has no adjacent
+row to supply that) — the old constants were fixed strings with no subject at all,
+so a straight copy-paste update would not have worked; they had to become functions
+(`_revert_question(commit)` / `_checkout_question(commit)`) that build the expected
+text the same way `pendingConfirm` does, from the same commit fields. The
+regression guarantee both tests exist for — a stale armed `ask=` must not follow the
+user to a commit/preview they never confirmed it against — is unchanged: the
+"not in" assertion still checks for the SPECIFIC armed commit's question text, so a
+guard failure that re-armed the wrong commit's modal would still be caught.
+Re-swept `tests/` for the old literal copy (`"Revert this commit? This adds a new
+commit"`, `"Commit the app folder back to this version? Other folders"`,
+`"Reset history to this commit? Every commit made"`) — the only remaining hits are
+the button-tooltip `titleIncludes` click actions in these same two tests, which are
+still correct because the button's own tooltip text (`revertQuestion`/
+`checkoutQuestion` in `template.html`) was deliberately left unchanged; only the
+modal's body text is new and richer.
+
+Three code-review findings fixed in `fused_render/templates/git/template.html`:
+
+- `focusSoon()` (~line 2127) called `input.setSelectionRange(...)` unconditionally.
+  Every pre-existing call site passed a text input; `confirmModal` (this task) is
+  the first to pass a `<button>` (Cancel), which has no `setSelectionRange` —
+  every confirmation threw inside the rAF callback, silently (focus itself still
+  landed), and the window error handler turned each throw into a repeating
+  page-error POST for as long as the modal stayed open. Fixed by guarding the call
+  with `typeof input.setSelectionRange === "function"` rather than skipping the
+  focus — Cancel keeping focus is deliberate (a stray Enter must not fire the
+  destructive action).
+- `.modal` (~line 276) had no `max-height`/`overflow`, so `confirmModal`'s plain
+  `.q` paragraph (unbounded, unlike the stash/publish dialogs' `.rows`, which are
+  already capped at `40vh`) could push the Confirm/Cancel row below the fold on a
+  short viewport — the exact bug this whole PR exists to fix, relocated from the
+  section into the modal. Capped `.modal` itself at `calc(82vh - 24px)` (82% being
+  what's left below its `top: 18%`) with `overflow-y: auto`, so the WHOLE dialog
+  scrolls and the button row stays reachable, for any dialog sharing `.modal`
+  (stash/publish included — their `.rows` sub-scroll is untouched and sits well
+  under this new outer cap in practice).
+- `listSection`'s doc comment (~line 3807) still described `footer` as carrying
+  "the confirm bar directly under the rows it is about" — no longer true, sections
+  never own a confirmation now. Rewrote it to say what `footer` actually is: a
+  trailing element appended inside the rows box, used today for the truncation
+  note (Changes), the "load more"/end-of-history note (Commits), or `null`
+  (Stashes). Not collapsed to a single use as speculated in the handoff — Commits
+  still passes `loadMore`, not `truncNote` — so the comment says that plainly
+  instead of claiming a generality (or a single-use fact) that isn't true either.
+
+Coverage investigation (finding 1, `focusSoon`/Cancel): checked whether
+`tests/_git_view_probe.mjs` can observe the TypeError. Its `requestAnimationFrame`
+stub is `setTimeout(fn, 0)`, and Node genuinely crashes (non-zero exit) on an
+uncaught synchronous throw inside a timer callback — confirmed empirically with a
+throwaway `node -e` script — and `tests/test_git_view_renders.py`'s `render()`
+helper already asserts `proc.returncode == 0`, so a probe crash IS a test failure,
+not a silently swallowed one. So the crash mechanism itself is observable. But the
+probe's `El` stub never implements `isConnected` at all (grepped for it — zero
+hits), so `!input.isConnected` inside `focusSoon` is always `true` for every node in
+this harness, and the function returns before ever reaching the buggy
+`setSelectionRange` line — for every call site, not just Cancel. Verified this is
+the actual blocker, not a guess: temporarily reverted the `focusSoon` fix, ran the
+probe, and it passed (bug unreachable); then temporarily added a one-line
+`get isConnected() { return true; }` to the stub's `El` class (throwaway, not kept)
+with the same reverted fix, re-ran, and got the exact expected crash:
+`TypeError: input.setSelectionRange is not a function` inside the timer callback,
+`proc.returncode == 1`. That confirms the mechanism and pinpoints the reason
+today's probe can't see it. Did not add `isConnected` to the shared stub to make
+this observable — the spec's own instruction is "if it CANNOT, do not contort the
+harness," and faking `isConnected` for every node changes behavior for every other
+`focusSoon` call site (filter/message/branch-name inputs) and every other test that
+happens to run one, well past this fix's scope. Restored both files to their
+pre-investigation state (verified with `diff`) and left the real
+`typeof input.setSelectionRange === "function"` guard as the only surviving change.
+Recorded as a genuine coverage gap: this probe cannot catch a `focusSoon` bug of any
+kind, on any element, because it never marks anything connected to the document.
+
+`.venv/bin/python -m pytest tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
+58 passed.
+
+#### `test-python-windows` red: the probe's stdout decode, not the assertion
+
+CI's Windows lane failed on
+`test_revert_confirm_bar_only_shows_for_the_commit_it_was_armed_on` with the expected
+question text — em dash and all — missing from `proc.stdout`, even though the failure
+message showed that exact sentence rendered correctly inside the HTML. Not a logic
+bug: `subprocess.run([node, PROBE, ...], capture_output=True, text=True, timeout=90)`
+at line ~204 (and three siblings at ~387/425/618) never pinned `encoding=`. `text=True`
+alone falls back to `locale.getpreferredencoding(False)`, which on a Windows CI runner
+with no LANG/LC_ALL resolves to the ANSI codepage (cp1252), not UTF-8. The Node probe
+writes its JSON as real UTF-8, and `_revert_question(commit)`/`_checkout_question(commit)`
+(added in the Task 22 follow-up above) build the first non-ASCII string this file has
+ever compared — the earlier `REVERT_QUESTION`/`CHECKOUT_QUESTION` constants were
+ASCII-only, so `origin/main` never exercised this path. Confirmed the mechanism
+directly: encoding `"Revert 3541e7e — second commit?"` as UTF-8 and decoding those
+bytes as cp1252 yields `'Revert 3541e7e â€” second commit? ...'` — the same mojibake
+shape as the CI failure — while decoding as UTF-8 round-trips correctly.
+
+Fix is the harness, not the assertion: added `encoding="utf-8"` to all four
+`subprocess.run` calls in `tests/test_git_view_renders.py` (the ones invoking
+`PROBE`/`_git_view_probe.mjs` and the inline `node -e` check at ~line 618), plus a
+comment at the first call site naming the Windows cp1252 failure this prevents, in the
+voice of the existing UnicodeEncodeError comments a few lines below it (~line
+373–378, `test_the_probe_fails_on_a_template_that_throws`). `_revert_question` /
+`_checkout_question` were left exactly as they are — weakening them back to an
+ASCII-only prefix would have thrown away the sha/subject assertion those two tests
+exist for.
+
+Blast radius: `_git_view_probe.mjs` is imported/invoked only from
+`tests/test_git_view_renders.py` — no other test file spawns it, so nothing else needed
+touching. Swept the rest of `tests/` for other `subprocess.run([node, ...])` calls
+decoding a similar probe; several other files (`test_claude_permission_bridge.py`,
+`test_claude_live_run.py`, `test_annotate_template.py`, `test_map_template_escaping.py`,
+`test_claude_config_api.py`, and others) run `node -e <script>` with bare `text=True`
+and no `encoding=`. These are the same latent Windows-decode risk, but each is a
+different probe/file with its own author and scope; per this task's instructions they
+are reported here, not fixed — fixing them is out of scope for the confirm-modal branch.
+
+`.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
+58 passed.
+
+### SPEC-scan-cost.md part 2 — the watcher supplies its own changed-dir hint
+
+Built on top of part 1 (the small-changed-set merge in `index/store.py`, already
+landed as `11434990f`). Part 2's ask: the scanner already has `_run_fsevents`
+(`index/scan.py`), which visits only an explicit `(forced, subtrees)` hint and
+otherwise derives one by replaying the FSEvents journal (`fsevents.hint()`, 5-17s,
+spuriously returns `None`). The live watcher (`index_watch.py`) and the app-mutation
+queue (`index_touch.py`) already observe exactly what changed, in process, with no
+replay needed — they just weren't passing that along.
+
+**`runner.start(cfg, root, hint=None)`** (already landed as `a3c496540`): serializes
+a supplied hint into `spec.json`. The join-check's correctness trap (a live run
+hinted with dirs A must not silently answer a request hinted with dirs B): picked
+the conservative "identical hint or nothing" rule over a subset check, explicitly
+rejecting the subset-check as more optimal but a wrong-subset-check being exactly
+the bug class the existing `ignore_sig` conservatism was written to avoid. When a
+hinted request supersedes a differently-hinted live run, the replacement inherits
+the UNION of both hints — the cancelled run's own hint dirs were never applied to
+the store (a cancelled worker never compacts), so dropping them would silently lose
+coverage.
+
+**`scan.py`'s `run_scan`** (already landed as `0de2affef`): a `hint_is_supplied`
+flag distinguishes a caller-supplied hint from a journal-derived one. A supplied
+hint skips spawning the journal-replay thread entirely; falls back to a full scan
+when there is no dir cache (trap a — a hint only names what to VISIT, and with
+nothing cached there's nothing to carry the rest forward from); and — this is the
+one most worth flagging for the next reader — `fsevents.save_state()` (which
+advances the journal cursor) is called ONLY for a journal-derived hint, never a
+supplied one (trap c). A supplied hint never replayed the journal, so stamping the
+cursor forward would tell a LATER journal-based scan that everything up to that
+point was accounted for, when only the caller's specific dirs were.
+
+**This session: the actual wiring** (`index_touch.py`, `index_watch.py`). Read
+`_run_fsevents`'s full body (`index/scan.py:628-707`) to answer the one open
+correctness question before writing any of this: does a `forced` (non-recursive)
+hint on a folder correctly cascade to a brand-new child subdirectory discovered
+under it? Confirmed yes — `stack.append((s2, True))` fires exactly when a
+discovered subdir `s2` is NOT already in the dir cache (line 682), i.e. a genuinely
+new subtree gets its own forced visit; an EXISTING cached subdir is left untouched
+(carried forward as-is by the tail reconciliation loop at line 689+), which is
+correct — nothing about it needs re-reading, and if it secretly did change too, the
+watcher would have noted IT separately as its own folder.
+
+That last clause is the one design decision the spec didn't spell out, and it drove
+most of this session's work: `RescanQueue._fire` (`index_touch.py`) already collapses
+several separately-pending folders down to one outermost scan root via
+`outermost_folders` (e.g. a flush of `{proj, proj/sub}` starts only `proj`). A hint
+of `[proj]` alone would silently miss `sub` — `sub` is neither named in the hint nor
+a brand-new subtree `_run_fsevents` would discover on its own, since it's already in
+the cache. **Fix**: the hint now carries every originally-noted folder a collapse
+absorbed, not just the representative root — `RescanQueue._fire` computes
+`members = [f for f in pending if f == folder or f.startswith(folder + "/")]` and
+hints all of them, keyed off a per-folder `hinted` bit that's ANDed across every
+`note()`/`note_folders()` call the folder received before firing (any `note()` in
+the mix — an app mutation, e.g. a rename needing a real recursive read of the new
+name's subtree — poisons the whole group back to an unhinted, full scan).
+
+The same information-loss shape existed one level up: `WatchLoop._flush`
+(`index_watch.py`) was ALSO pre-collapsing to `outermost_folders(pending)` before
+ever forwarding to `RescanQueue`, which threw away exactly the folders the fix above
+needs to see. Changed `_flush` to forward the raw observed-folder set (still capped
+by `MAX_FOLDERS` on the outermost count, for the same "pathological burst" reason as
+before) and let `RescanQueue` do its own collapse-with-hint-preservation. This is
+also where `~/a.txt`'s specific cost actually lived: `_folder_of("~/a.txt") == "~"`
+directly (no `_clamp_to_root` escalation needed — that path only fires for folders
+OUTSIDE root), and `outermost_folders` swallows any deeper pending folder into `{~}`
+whenever `~` itself is also pending in the same flush window. Before this session,
+`{~}` reaching `RescanQueue._start` meant an UNHINTED `runner.start(cfg, "~")` —
+the full journal-replay-driven incremental machinery over the whole home directory.
+After: `note_folders("~")` hints `forced=["~"]`, so `run_scan` skips the journal
+thread and `_run_fsevents` non-recursively re-lists `~` alone.
+
+Worth being explicit about what "expensive" meant here, since this is my own
+reasoning this session, not a number I measured: the spec's `dirs: 79188` figure is
+a cumulative walk+keep summary total, not directories actually re-listed by an
+unhinted incremental scan — the FSEvents fast path only visits what the journal
+names plus new subtrees. The actual cost an unhinted `~` scan pays is dominated by
+the journal replay itself (`fsevents._replay`, 5-17s per the existing code comment
+in `scan.py`, itself from an EARLIER measurement not this session's), not a literal
+79k-directory crawl. This session's fix removes that replay for a watcher-observed
+change; it does not change what an unhinted (journal-derived or full) scan costs.
+
+**hinted=False escape hatch**: `RescanQueue.note_folders`/`note_index_folders` gained
+a `hinted: bool = True` kwarg. Three `WatchLoop.forward({self.root})` call sites
+carry no real observed-dirs information at all and must NOT be hinted, or a forced
+non-recursive visit of just `root` would silently under-cover what they exist to
+catch:
+  - the burst-overflow branch of `_flush` (too many distinct folders to attribute to
+    anything narrower — almost none of them would be covered by hinting root alone);
+  - the watch-error-recovery forward in `_run_one_watch`'s except block (the watch
+    itself broke; nothing was observed, and only a real scan or journal replay
+    recovers what was missed);
+  - the periodic Syncthing-style backstop in `_maybe_periodic_rescan` (exists
+    specifically for changes this loop never observed — server was off, the kernel
+    dropped events — so there is nothing to hint).
+
+**Deviation from the spec worth flagging**: the spec's own text for part 2 doesn't
+explicitly call out the "collapse absorbs multiple folders" and "flush pre-collapses
+before forwarding" cases — it says the watcher "passes its observed dirs as forced"
+without spelling out what happens when `outermost_folders` merges several of them
+into one scan root first. Treated this as within the spec's stated intent (a hint
+that is silently incomplete for the exact multi-folder-burst case the watcher is
+built to handle would be a correctness regression, not a simplification), and chose
+the conservative "any unhinted member poisons the whole group" rule over trying to
+partially hint a mixed group — consistent with the same conservative posture the
+`runner.start` join-check comment already argues for.
+
+**Commit attribution deviation**: a system-reminder appeared mid-session (after the
+work described in the earlier `runner.start`/`scan.py` part of this entry, i.e.
+after `a3c496540`/`0de2affef`) stating new attribution text supersedes prior
+guidance: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`, replacing the
+original spec/harness text (`Claude Opus 5 (1M context) <noreply@anthropic.com>`).
+Used the newer line for every commit made after it appeared, per the reminder's own
+"this replaces… earlier attribution guidance" wording.
+
+**To verify** (cannot be done from here): the real end-to-end `~/a.txt` latency on
+the user's own running server — this session has no access to it, and `scripts/dev.sh`
+is explicitly the user's own to start/stop. Also worth an eyeball check once the
+branch is running for real: that a genuine `touch ~/a.txt` followed by a search for
+`a.txt` lands quickly, and that a burst mixing a root-level touch with a deep nested
+edit (the specific case `test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_root`
+pins at the policy level) still finds both changes.
+
+Test results (`.venv/bin/pytest`, this worktree's own venv — bare `pytest`/`python3`
+on PATH lack `pytest-xdist` and choke on this repo's `-n auto` addopt):
+
+`tests/test_index_touch.py`: 39 passed (after the hinted-forced-hint wiring), then
+39 passed again (after the `hinted=False` kwarg addition), final count after both:
+39 passed.
+`tests/test_index_watch.py`: 28 passed.
+`tests/test_index_scan.py`: 35 passed (part 2's earlier scan.py commit).
+`tests/test_index_runner.py`: 44 passed (part 2's earlier runner.py commit).
+Combined final run, `.venv/bin/pytest tests/test_index_touch.py tests/test_index_watch.py tests/test_index_scan.py tests/test_index_runner.py -q`:
+146 passed.
+
+Not run this session: the full suite (orchestrator's job, per the working rules —
+"run only the touched test files while iterating").
+
+
+### Windows CI still red after c92d8045b — the tests, not the code, were wrong — 2026-09-21
+
+`c92d8045b` fixed the one real production bug (`_clamp_to_root` comparing an
+un-canonicalized `root`), but PR #1279's `test-python-windows` lane still
+failed the SAME 9 tests afterward, deterministically. Six were in
+`tests/test_index_watch.py`.
+
+**Root cause: none of the six was a remaining production bug.** Every one
+was a test that hardcoded a POSIX-literal path (`"/home/me/proj"`, or
+`str(tmp_path)` compared without canonicalizing it) as the *expected* side
+of an equality assertion, against folders that `_folder_of`/`_clamp_to_root`
+correctly ran through `norm(os.path.abspath(...))` before forwarding. On
+POSIX that pipeline is a no-op on an already-absolute path, so the literal
+and the real output happened to agree. On Windows, `os.path.abspath` of a
+leading-`/` path resolves against the CURRENT DRIVE — and GitHub-hosted
+Windows runners check the repo out onto `D:`, not `C:` — so the literal
+(`"/home/me/proj"`) and the real output (`"D:/home/me/proj"`) disagreed.
+That is the reported "separator mismatch" symptom
+(`test_a_batch_of_file_paths_is_reduced_to_parent_folders_and_forwarded`,
+`test_two_batches_inside_the_floor_forward_once_with_the_union`,
+`test_max_folders_or_fewer_forward_the_actual_set`,
+`test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_root`,
+`test_a_real_change_arrives_through_the_real_filter`).
+
+The sixth, `c92d8045b`'s own regression test
+(`test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form`),
+carried a DIFFERENT bug: its `windows_style_abspath` monkeypatch simulated
+Windows by prepending `"C:"` only when the string didn't already start with
+`"C:"` — a check that is a no-op on this (macOS) machine, where the
+captured `real_abspath` never adds a drive letter at all. Run for real on a
+Windows runner, `real_abspath` is the genuine `ntpath.abspath`, which
+resolves the test's leading-`/` input against the runner's actual current
+drive (`D:` on GitHub Actions) BEFORE the mock's own prepend ever runs —
+producing `"D:/home/me/proj"`, which does not start with `"C:"`, so the mock
+prepended `"C:"` anyway: `"C:D:/home/me/proj"`. That is exactly the
+"duplicate drive letter" symptom CI reported for this test.
+
+**Fix — tests only, `tests/test_index_watch.py`, no production code
+touched.** Added a `_canon(path)` helper that calls
+`index_touch._canon_folder(path)` (the exact pipeline `_folder_of`/
+`_clamp_to_root` already use) and routed every hardcoded-literal expectation
+through it, so the expected side is canonicalized the same way the real
+side is, on whatever OS/drive the test actually runs under. Fixed the
+`windows_style_abspath` mock to strip any drive letter the HOST's real
+`abspath` already attached (via `re.sub(r"^[A-Za-z]:", "", p)`) before
+applying its own synthetic `"C:"`, so the simulation is deterministic
+regardless of which drive the process actually runs on — verified by
+re-simulating a `D:`-drive host locally (monkeypatching `abspath` to prepend
+`"D:"` the way a GitHub Windows runner's cwd would) and confirming
+`WatchLoop`'s real forwarded output matches `_canon_folder`'s output
+exactly, not just trivially by construction.
+
+This is a **test-expectation fix, not a behavior fix**: `index_watch.py` is
+byte-for-byte unchanged from `c92d8045b`. The tests' own hardcoded
+literals/mock were the thing wrong on Windows, per the working rules'
+explicit carve-out for that case.
+
+**The two NOT-proven failures — verdict: neither is branch-caused.**
+- `tests/test_tasks_sent_mark.py::test_the_row_lands_in_the_project_the_send_named`
+  — `git diff origin/main...HEAD` is empty for
+  `fused_render/server/tasks_watch.py`, `fused_render/server/routers/
+  tasks.py`, and `tests/test_tasks_sent_mark.py` itself. This branch touches
+  none of them. Pre-existing Windows-lane issue on `main`, out of scope here.
+- `tests/test_appfile.py::test_export_to_disk_writes_the_real_file_and_notes_the_mutation`
+  — `git diff origin/main...HEAD -- fused_render/server/fs_mutate.py` shows
+  only a docstring edit to `_note_index_mutation` (explaining the watcher's
+  relationship to the explicit notify call); zero logic changed. The test
+  file itself has zero diff from `origin/main` and already canonicalizes
+  both sides of its one path comparison via `canonical_fs_path`. A
+  docstring-only change cannot alter runtime behavior. Pre-existing
+  Windows-lane issue, out of scope here.
+
+**Verification.** `.venv/bin/pytest tests/test_index_watch.py -q`: 28
+passed (macOS — this machine cannot run the Windows lane; CI is the real
+signal for this fix, per the working rules). Pushed and watched
+`gh pr checks 1279`'s `test-python-windows` lane for the actual verdict.
+
+---
+
+### Fix round 2 — the 22 CI frontend failures: a hand-rolled, torn-down DOM stub
+
+Root cause confirmed, not assumed. `explain-with-ai.test.ts` (added by this branch)
+needed `location`/`window`/`history` in place before its dynamic import of
+`@platform/lib/explain-with-ai` (which transitively imports `@platform/lib/router`,
+whose module-init reads `location` once). The committed version hand-rolled a
+3-property partial stub (`window: { parent, top, dispatchEvent }`, no `setInterval`,
+no `Element`/`HTMLElement`) with no teardown. Since `bun test` shares one
+`globalThis` across every file in a run but does NOT share the module cache (each
+file gets its own fresh module instances), that partial `window` survived into
+whichever suite ran next and exploded the moment that suite's own module-init code
+or a React effect touched a member the stub never provided —
+`TypeError: window.setInterval is not a function` in `ServerStatusBanner.tsx` /
+`update-status.ts` (`scheduleEvents.test.ts`'s own narrator-tick timer), and
+`@base-ui`'s `isHTMLElement`/`isButtonElement` throwing on a `window` with no
+`Element`/`HTMLElement` (`ErrorBanner.test.tsx`'s `Button`). Reproduced directly:
+`bun test src/platform/lib/explain-with-ai.test.ts src/platform/ui/ErrorBanner.test.tsx
+src/platform/ui/NotificationHost.test.tsx src/platform/ui/UpdateBadge.render.test.tsx
+src/platform/lib/scheduleEvents.test.ts src/platform/lib/restart-store.test.ts
+src/platform/ui/ServerStatusBanner.test.tsx` on the committed HEAD version threw
+`window.setInterval is not a function` inside `scheduleEvents.test.ts`'s narrator
+effect — 6 of 42 tests failing, 36 passing.
+
+The previous builder's UNCOMMITTED candidate fix (three `delete (globalThis as
+...)` lines right after the import, mirroring `RepoUpdatesDock.test.tsx`'s
+documented install/delete pattern) was itself broken and was NOT used: `bun test
+src/platform/lib/explain-with-ai.test.ts` alone failed 2 of its own 12 tests with
+`ReferenceError: location is not defined` inside `router.ts`'s `navigate()`, because
+`explainWithAi()` calls `navigate()` at *test-call* time (`explain-with-ai.ts:87`),
+not just at the one-shot module-init read the comment described — deleting the
+globals right after the import pulled the rug out from under the file's own later
+test bodies. Deleting also risked stranding suites like `DownloadManager.test.tsx`'s
+`useJobs` describe block, which reads `globalThis.window` without installing it
+itself, relying on an earlier file's shim already being up (verified this file
+crashes standalone too, for an unrelated, pre-existing, order-dependent reason —
+its own static `jobs.ts → api.ts → presence.ts → router.ts` import chain resolves
+before its own `installDomShim()` call runs; left alone, out of scope for this
+round).
+
+Fix actually shipped: replaced the hand-rolled stub + delete with the shared,
+idempotent `installDomShim()` helper from `@platform/lib/testDomShim.ts` — the same
+one `UpdateBadge.render.test.tsx`, `restart-store.test.ts`, `scheduleEvents.test.ts`,
+and `ServerStatusBanner.test.tsx` already call. It provides the full member set
+(`setInterval`/`clearInterval`, `Element`/`HTMLElement`/`HTMLIFrameElement`,
+`requestAnimationFrame`, etc.) every suite in the process actually needs, uses `??=`
+so it never overwrites a shim another file already installed, and is deliberately
+never torn down — exactly the design its own header documents. This fixes both
+symptoms at once and needs no delete: the file's own `navigate()` calls keep working
+for the file's whole run, and later suites see a complete `window` instead of a
+partial one.
+
+Verified both orders clean post-fix (same 7-file set, forward and reversed):
+`42 pass, 0 fail` in both directions, and `explain-with-ai.test.ts` alone: `12 pass,
+0 fail`. `bunx tsc --noEmit`: clean. `ErrorBanner.test.tsx`'s `onExplain` test also
+now passes in every combination tried — the diagnosis's "second, independent
+problem" turned out to be the same partial-stub cause once `installDomShim()`
+supplies `Element`/`HTMLElement`.
+
+Excluded `DownloadManager.test.tsx` from the both-orders repro set after confirming
+it fails even fully standalone, unmodified, unrelated to this branch — logged above
+as a pre-existing, out-of-scope, order-dependent local issue (its own static import
+chain resolves `router.ts` before its own `installDomShim()` call), not one of the
+things this round is meant to fix.
+
+Commands run: `bun test <7-file set>` (both orders), `bun test
+src/platform/lib/explain-with-ai.test.ts` (alone), `bun test
+src/platform/ui/ErrorBanner.test.tsx` (alone), `bunx tsc --noEmit`.
+
+
+## 2026-09-21 — SPEC-empty-search-review-fixes.md: the eight review findings
+
+All eight findings are frontend-only
+(`frontend/src/apps/explorer/listing/useListingSearch.ts`,
+`frontend/src/apps/explorer/FilesHome.tsx`,
+`frontend/src/apps/explorer/listing/empty-result.tsx`,
+`frontend/src/apps/explorer/FileSearchField.tsx`), scoped to the
+covered-but-empty search scan trigger (`SPEC-empty-search-scan.md`). This
+entry records the design decisions the brief asked to be recorded rather
+than left implicit in a commit message.
+
+**Finding 1 — the third call site (`FileSearchField.tsx`).** Excluded
+deliberately, not wired up. `FileSearchField.tsx` mounts `useListingSearch`
+purely to decide WHEN to hand a query off to the parent folder's own
+Listing (`isPristineQuery`/`gateOpen`) — it never renders a single result.
+The parent folder's own `Listing.tsx` mounts its own `useListingSearch`
+instance with the trigger fully wired (`onScanRequested`, the "still
+building" copy) the moment navigation lands. Letting the file-view instance
+ALSO fire the trigger would ask the server to scan the same root a second
+time for a query no UI would ever explain. Implemented as a 6th parameter,
+`fireEmptyScan = true`, defaulting on for every real search box;
+`FileSearchField.tsx` passes `false`.
+
+**Findings 2 and 3 — "still building" must key on OUR OWN confirmed scan,
+not the machine-wide poll.** `/api/index/status`'s `scanning` flag is true
+for ANY scan of ANY root; `_scan_in_flight` applies `_covers` in both
+directions, so an unrelated scan elsewhere made a genuinely-empty result
+claim a build was in progress for a root nothing was scanning. Fixed (per
+the review's own explicit steer, NOT `reason === "scanning"`) by adding
+dedicated state — `ourScanRunning` in `useListingSearch.ts`,
+`emptyScanRunning` in `FilesHome.tsx` — set `true` only from
+`requestFolderScan`'s own reply, and only when `r.started` (finding 3: a
+`refused`/`debounced`/`joined` refusal is durable and expected, not
+evidence of a running build). Both flags reset to `false` at the start of
+every new request (a fresh query's request has nothing to say yet about
+whether it needs a scan) and on a folder/root change.
+
+**Finding 4 — epoch/staleness guard on the reply handler.**
+`useListingSearch.ts` already had `sourceEpoch` for exactly this; the new
+handler now checks it (`if (sourceEpoch.current !== epoch) return;`),
+matching its sibling twelve lines up. `FilesHome.tsx` has no epoch
+mechanism at all (a different design from the listing hook), so it got a
+narrower equivalent: a `homeRef` ref updated on every render, checked in
+the reply handler (`if (homeRef.current !== home) return;`) — a reply for
+an abandoned root is discarded the same way, without introducing a new
+epoch counter just for this one path.
+
+**Finding 5 — the dedup key and its reset scope.** Two decisions, made
+independently and then unified across both files:
+
+1. *Key*: `SPEC-empty-search-scan.md` asks for "at most once per distinct
+   TRIMMED query string". Both implementations were keying on the raw
+   query instead. Implemented as specified — both now key
+   `firedEmptyScan` on `trimmedQ`, not `q`/`deferredQuery`. This is
+   deliberately looser than the rank-request key itself (A1's `q`, which
+   stays untrimmed so `"report"` and `"report "` hit different server
+   patterns): the SCAN target is a folder (`res.base`/`next.base`), and two
+   queries that differ only by whitespace resolve to the same folder, so
+   asking twice would be a wasted duplicate request for the identical
+   evidence.
+2. *Reset scope*: the two implementations disagreed (`[fsPath, pinned]` vs
+   `[home]` alone). Decided: **root-only reset, in both files** — reset
+   only when the folder/root itself changes, never on a generation/
+   lifecycle bump. Reasoning: a scan completing is exactly the event that
+   bumps the generation/lifecycle counter that would trigger the reset;
+   resetting the dedup on that same signal would immediately re-arm the
+   very query whose scan just finished, and the very next matching
+   fetch-effect re-run (which DOES fire on a lifecycle bump, by design —
+   Part 2 of the original spec) would re-fire a scan for a root that was
+   JUST scanned. Root-only reset is the only rule under which "a lifecycle
+   bump re-asking the identical still-empty query does not refire" (an
+   existing, still-passing test in both `*.render.test.*` files) is
+   actually true rather than true by accident.
+
+**Finding 6 — the covered branch could read a stale held answer.** Traced
+`noteAnswer`/`rankingSettled`/`heldAnswerRef` in `FilesHome.tsx` and the
+`searchState.status === "error"` early-return in `Listing.tsx`/
+`useListingSearch.ts`. Verdict, per file:
+- `Listing.tsx` / `useListingSearch.ts`: **not a live bug** — `searchState`
+  computes `status: "error"` on any live failure and `Listing.tsx` already
+  gates `EmptyResultMessage` away from rendering at all in that state
+  before `reason`/`ourScanRunning` are ever read off a stale answer.
+  Confirmed by reading the render branch directly; no code change made
+  here.
+- `FilesHome.tsx`: real, if narrow — `displayAnswer` (via `noteAnswer`) can
+  hold a PREVIOUS query's covered-but-empty answer across a request that
+  has since failed for a NEW query, and the old `gap` computation read
+  `hits.length === 0` off that held state without checking the live
+  request's own outcome. Fixed cheaply per the review's own suggested
+  option: added `failure === ""` to the `gap` ternary's covered-but-empty
+  branch, so a failed request for the current query can never inherit a
+  "still building" verdict that was actually evidence about an earlier,
+  unrelated query.
+
+**Finding 7 — spec citation.** Verified, not just trusted: grepped every
+shipped comment citing `SPEC-empty-search-scan.md` across the four files in
+scope; all resolve to the filename exactly as committed at the worktree
+root (`219518870`). No stale citations found. Closed with no code change.
+
+**Finding 8 — the "thrown fetch is silent" test passed with the feature
+deleted.** Root cause: `FilesHome.render.test.tsx`'s fake `fetch` for
+`/api/index/scan-folder` pushed to `folderScanCalls` AFTER checking
+`folderScanThrows`, so a thrown-fetch test's `expect(folderScanCalls).
+toEqual([])` was trivially true whether or not the trigger code ran at all.
+(`useListingSearch.render.test.ts`'s own mock does not have this bug — its
+`scanCalls.push` already runs before the `scanThrows` check.) Fixed by
+moving the push above the throw check, and rewrote the test's assertion
+from `toEqual([])` to `toEqual([HOME])` — proving the call was attempted
+AND that the rejection was swallowed, rather than proving nothing.
+
+**Test changes beyond finding 8's fix**, all in the three touched test
+files (`empty-result.test.tsx`, `useListingSearch.render.test.ts`,
+`FilesHome.render.test.tsx`): added `ourScanRunning`/`emptyScanRunning` to
+every mount helper and rewrote every test whose premise depended on the old
+(wrong) "gate on the live poll" design, replacing the poll-based "still
+building" timing test with one asserting the confirmation arrives with the
+scan-request reply itself (no separate `box.poll(...)` needed under the new
+design), and added explicit regression tests for findings 2 (unrelated
+machine-wide scan must not claim our root is building), 5 (trimmed-key
+dedup), 1 (`fireEmptyScan=false` never fires), 3/4 (`ourScanRunning`
+gated on `started`, discarded across a folder change), and 6 (a failed
+request does not inherit a held answer's "still building" verdict).
+
+**To-verify (unverifiable headlessly).** The rendered appearance of the
+"still building" copy in both search boxes — layout, spacing, whether it
+reads naturally alongside the file count — needs a human looking at a
+browser; `react-test-renderer` confirms the TEXT is present, not that it
+renders acceptably.
+
+## FIXES-round-3: G1 (Open in git → sidebar Git tab) and G2 (duplicate advice clause) — both landed
+
+G1: "Open in git" no longer navigates to a separate page. Threaded an `onOpenGit`
+callback from whichever surface owns the live `_side` state (Listing.tsx's
+confirm-leave-aware `setSide`, Preview.tsx's `applySide`) down through
+`useAppActionRows` → `AppDoctorModal` → `AppDoctorChecklist` → `CheckRow`, which
+calls it (then `onDone?.()`) in place of `navigate(...)` when provided. Falls back
+to the old cross-page `navigate()` only where there is no sidebar to open:
+`AppPage.tsx` (architecturally has no Git tab at all) and split-incapable
+panes/snapshots. Button styling unchanged. Commit `776e6e390`.
+
+G2: fixed `_repo_health_advice()` in `fused_render/app_doctor.py` duplicating
+"commit" — it read "commit or commit or stash your changes to pull..." whenever
+this row's own uncommitted path was ALSO the thing making the whole-repo `clean`
+signal false (the normal case, since a dirty subpath always dirties the whole
+repo). Now: `"stash your changes" if commit else "commit or stash your changes"`.
+Added a direct unit test over every single- and multi-bit combination
+(`test_repo_health_advice_names_only_what_actually_failed_no_git_needed`) and
+tightened the real-git dirty+behind test to the full fixed string. `65 passed` in
+`tests/test_app_doctor_report.py` before this note was written (the coordinator's
+wrap-up message afterward asked for no further test runs this round — none were
+run past that point). Commit `e28ae4890`.
+
+Nothing left unfinished from FIXES-round-3.md's G1/G2 scope. Not done in this
+round (out of scope per the brief): Pull gating, skip reasons, the consolidated
+check's state logic, the ErrorBanner call-site sweep, a Switch action.
+
+## FIXES-round-4: mixed ref bases in the "Repo in sync" row, and fetch-on-Doctor-open
+
+Reported bug: the in-app Git panel's "Send 1" and Doctor's green "Repo in sync"
+PASS on the same folder contradicted each other. Traced the panel's count first
+(read-only): `fused_render/templates/git/log.py:844-845` —
+`git rev-list --left-right --count HEAD...@{upstream}`, whole-repo, no pathspec,
+rendered at `template.html:1999`/`2033` as `"Send " + plural(ahead, "commit")`.
+`app_doctor._pushed_pending` (app_doctor.py:405) already used the SAME `@{upstream}`
+base for its ahead count — the only difference is `-- .` path scoping (D626:
+sibling apps share one `local` repo; an unscoped count would quote a neighbour
+app's commits into this app's fix prompt).
+
+The user ruled the path-scoped verdict itself is CORRECT, not the bug: a
+folder's own row should read PASS when the only unpushed work is elsewhere in
+the same shared repo ("if the issue was outside of the project, then it is
+fine"). No change was made to `_pushed_pending`'s scoping or to `_repo_health_check`'s
+verdict logic — D626 stands exactly as before.
+
+What WAS a real "doctor should never lie" defect: `_repo_health_check` folded
+two different ref-base comparisons into one sentence without saying so.
+`p_state`/`p_subjects` (unpushed) compare `@{upstream}..HEAD` — this branch's own
+tracking ref. `behind`/`ahead` (from `git_upstream.check_repo`) compare
+`HEAD...origin/<default_branch>` — deliberately, since the row's Pull button
+always fast-forwards onto the default branch, never onto `@{upstream}`. On the
+default branch these two usually coincide, so the row says "behind origin". Off
+the default branch they answer different questions on purpose, and the old
+"N commits behind origin" wording there misleadingly implied the same base as
+the unpushed count. Fixed by naming the real target: `behind_target = "origin"
+if on_default else (default_branch or "the default branch")`, used in both the
+FAIL detail ("N commits behind main") and the PASS detail ("up to date with
+main"). No ref base was changed — this is a wording-only fix so the row states
+what it actually checked. Test: extended
+`test_pull_is_not_offered_off_the_default_branch_and_the_row_says_why` to assert
+`"behind origin" not in detail` and `"1 commit behind main" in detail`.
+
+Fetch-on-Doctor-open (item 3): added `git_upstream.force_check(path, *, _runner=None)`
+— an explicit, throttle-bypassing fetch+check, bounded by a new
+`DOCTOR_TIMEOUT_S = 3.0` constant. It acquires the process-wide check slot
+non-blocking (falls straight back to `repo_state_for` if another check already
+holds it — never piles a second `git fetch` onto one repo), dispatches the real
+`check_repo` on a background thread, and blocks the caller for at most 3s via
+`threading.Event.wait(DOCTOR_TIMEOUT_S)`. Past that budget it returns whatever
+`repo_state_for` has (fresh, stale, or None) while the fetch keeps running;
+`check_repo`'s own existing silence-on-failure (`fused_render/git_upstream.py`)
+already covers offline/no-remote/auth-failure by returning None, which
+`_repo_health_check` already turned into SKIP-with-reason — untouched.
+Wired in at `fused_render/server/routers/apps.py`'s `GET /api/apps/doctor`
+handler (the modal's own "load" call), calling `git_upstream.force_check(folder)`
+before `app_doctor.report(folder)` so `_repo_health_check` reads whatever landed.
+
+Live-update after the modal's first render: already existed and needed no
+change — `AppDoctorModal.tsx`'s `useAppDoctorReport` already does a single
+delayed (2s) re-`getAppDoctor` when `gitRowFetchPending` (behind/ahead both
+still null), patching only the `git` row in place. Since the initial GET itself
+now blocks up to 3s for a fresh answer, most cases resolve before that retry
+even fires; the retry remains the catch-all for the slow-remote case where
+`force_check`'s own budget expired first.
+
+Tests added: `tests/test_git_upstream.py` —
+`test_force_check_bypasses_the_throttle` (proves it re-fetches inside
+CHECK_TTL_S, unlike `note_app_opened`), `test_force_check_falls_back_to_cache_when_the_slot_is_already_held`,
+`test_force_check_on_a_path_outside_any_repo_returns_none`, and
+`test_force_check_gives_up_after_its_own_budget_and_the_fetch_finishes_later`
+(DOCTOR_TIMEOUT_S monkeypatched to 0, proves the background thread still lands
+the state after `force_check` itself already returned None). `tests/test_app_doctor_report.py`
+got the wording assertion above. Ran `tests/test_git_upstream.py`,
+`tests/test_app_doctor_report.py`, and the doctor-scoped subset of
+`tests/test_apps_api.py`: 114 passed. No TypeScript touched, so no `bunx tsc`
+run.
+#### TerminalView TDZ crash: `fit.fit()` firing `onResize` before `session` existed
+
+Live check on the running dev server (http://127.0.0.1:2575) after the padding
+round (ce9561da9) found the drawer rendering a black, dead pane on every open,
+reproduced 2/2: `Error: Cannot access 'c' before initialization` inside
+`TerminalView`'s mount effect, thrown from `fit.fit()`. The effect wired
+`term.onResize(({rows,cols}) => session.resize(rows,cols))` and then called
+`fit.fit()` *before* `const session = new TerminalSession(...)` ran. `fit()`
+recomputes rows/cols from the container's real size and fires `term.onResize`
+SYNCHRONOUSLY whenever that differs from xterm's 80x24 default — which it
+always does once the container has a real layout size — so the handler
+dereferenced `session` while it was still in its temporal dead zone. The
+effect threw before `new TerminalSession(...)`, ever ran, so: no session, no
+WebSocket, a dead pane; the effect's cleanup was never returned, leaking the
+`Terminal`, both subscriptions and the `ResizeObserver` on every unmount; and
+`TerminalDrawer` had already called `createTerminalSession` server-side by
+that point, so every open leaked a live pty (`GET /api/terminal` showed 3
+alive after a few opens).
+
+Confirmed via `git log -L` that the ordering is not new in ce9561da9 — it
+dates to 05ccaee8b, the feature's first commit — but was latent until the 8px
+padding changed the container's initial computed size enough that the first
+`fit()` now always disagrees with the 80x24 default and always fires
+`onResize`. Treated as a pre-existing latent bug the padding exposed, not a
+regression of the padding itself; did not touch the padding.
+
+Fix (`frontend/src/platform/ui/TerminalView.tsx`): construct `session` before
+wiring `term.onData`/`term.onResize` and before the first `fit.fit()`, so no
+synchronous callback can run while `session` is uninitialized. Also wrapped
+the whole body in try/catch with a `teardown` stack that each resource
+(`Terminal`, `TerminalSession`, the two subscriptions, the `ResizeObserver`)
+pushes onto as soon as it is created, so a throw anywhere past that point
+unwinds everything already built instead of leaking it, and the effect always
+returns a cleanup function on every reachable path. Left the `onStatus ===
+"open"` handler's eager `session.resize()` and its no-op-until-OPEN reasoning
+untouched, and did not add a second eager-resize path — the reordered
+`fit.fit()` can still fire `onResize` before the socket opens, but
+`TerminalSession.resize()` already no-ops in that case, so there is nothing
+new to guard.
+
+Test decision: did not add an automated test for this. The concrete
+regression-catcher the task description describes — a fake `Terminal`/
+`FitAddon` whose `fit()` synchronously invokes the registered `onResize`
+handler — needs a way to hand `TerminalView` fakes instead of the real
+`@xterm/xterm`/`@xterm/addon-fit` classes it imports directly. `mock.module`
+is process-wide (forbidden per this task's constraints — it would leak into
+every other test file in the same `bun test` process), so the only route left
+is adding test-only constructor injection to `TerminalView`'s props, the same
+shape `TerminalSession` already uses for its `wsFactory`. That is a real
+production-surface change to a component whose own header commits to staying
+a thin, deliberately-untested xterm/DOM wrapper (a headless renderer cannot
+run a real resize/layout pass here) — bigger than this fix's scope, and it
+would sit oddly next to a header still saying "deliberately untested" a few
+lines above a test-only prop that exists only so a test can drive it. The
+ordering fix itself is also now structurally awkward to break by accident:
+`session` is constructed immediately after `term.open()`, before anything
+else in the effect touches it, so a future edit would have to deliberately
+move a callback above that line to reintroduce the TDZ window. Scoped tests
+run: `bun test src/platform/lib/terminalSession.test.ts` (10 pass) and
+`bun test src/shell/TerminalDock.test.tsx` (5 pass) — both exercise code paths
+this change touches (`TerminalSession` construction/dispose order,
+`TerminalDrawer`'s mount of `TerminalView`) and were unaffected.
+
+#### TerminalView black pane on open (second fix round, after the TDZ fix)
+
+Second-round task on the same branch: even after the TDZ fix above, opening
+the drawer on a brand-new session (and reloading into an already-populated
+one) showed a solid black pane — no prompt, no cursor — with zero console
+errors and `GET /api/terminal` reporting `alive: true`. Focusing the hidden
+textarea and typing made the correct prompt/scrollback appear instantly.
+
+Distinguished the three candidate mechanisms live, by instrumenting
+`term.write(chunk, callback)`'s completion callback and `.xterm-rows`'
+DOM text directly (temporary `console.log`s, removed before commit):
+
+- **Bytes never arrived**: ruled out. `onData` fired reliably with real,
+  non-empty payloads (up to ~1.3KB) on every repro, including reload/reattach
+  to an existing session.
+- **Bytes arrived but were cleared**: ruled out. `term.reset()` (called from
+  `onStatus("open")`) always runs before any scrollback reply can arrive —
+  confirmed via `terminalSession.ts` and the WebSocket spec's onopen-before-
+  onmessage guarantee, and no interleaving was ever observed in the logs.
+- **Bytes are in the buffer but unpainted**: confirmed. `write()`'s callback
+  fired (proving the bytes were parsed into xterm's buffer) while
+  `.xterm-rows` stayed empty for 10+ seconds afterward, with no
+  `visibilitychange` ever logged in that window.
+
+Root cause, confirmed by reading `@xterm/xterm`'s own compiled source
+(`node_modules/@xterm/xterm/lib/xterm.js`): xterm's `RenderDebouncer.refresh()`
+coalesces ALL repaint work behind a single `requestAnimationFrame`, latched
+with `this._animationFrame ||= requestAnimationFrame(() =>
+this._innerRefresh())` — `_animationFrame` only clears inside
+`_innerRefresh()`, once that exact rAF actually runs. A page/webview that
+isn't currently receiving compositor ticks can leave that one rAF request
+sitting unfired indefinitely, so xterm's internal buffer can be fully correct
+while nothing ever reaches the screen.
+
+Fix (`frontend/src/platform/ui/TerminalView.tsx`): added a bounded repaint
+watchdog. After each `write()`, if xterm's own `onRender` event (its public
+"a real paint just happened" signal) hasn't fired shortly after, call
+`term.refresh(0, term.rows - 1)` again on a `setTimeout` (100ms, 200ms, ...
+600ms, ~2.1s total, capped at 6 attempts) — `setTimeout` still runs on a
+throttled/backgrounded page, unlike a starved rAF, so this recovers the
+*ordinary* form of this bug (a real browser tab that throttles rAF while
+backgrounded but does still eventually run it).
+
+**This fix could NOT be verified to close the reported symptom end-to-end.**
+Live-tested against the running dev server via the cmux browser automation
+surface used for this task: with the fix built and served (confirmed via the
+bundle hash), opening a brand-new session's drawer and waiting still showed a
+solid black pane with no prompt — screenshot taken with zero interaction,
+`.xterm-rows` empty. Diagnosed one level further: a bare `requestAnimationFrame`
+call scheduled directly on that page (no xterm involved at all) never fired
+even once across several seconds, while a real keystroke on the same page
+immediately produced a correct paint. That proves the keystroke's effect
+comes from WKWebView doing an out-of-band paint on a native input event, not
+from anything requestable via JS — so no JS-level scheduling trick, including
+this watchdog, can close the gap when rAF is this fully dead. That same
+surface's `focus-webview` command also errored `invalid_state: WebView is not
+in a window`, which is consistent with this being specific to that automation
+surface's detached-from-a-window state rather than a normal, on-screen,
+foregrounded app window — but this was NOT confirmed either way for the real
+shipped app within this task's scope. Keeping the watchdog as a real, bounded,
+harmless partial mitigation for genuine tab-backgrounding; explicitly not
+claiming it fixes the reported black-pane symptom in general.
+
+Orphan-session reaper (secondary task, scope-gated — not built): confirmed
+`PtySessionRegistry._reap_dead_locked()` (`fused_render/pty_session.py`) only
+reaps sessions whose child process has exited (`not s.alive`); there is no
+mechanism anywhere in the registry that reaps a session that is alive but has
+no attaching client, or has been idle a long time. Observed live: `GET
+/api/terminal` on the dev server used for this task returned 7 alive sessions
+(cap is `MAX_SESSIONS = 8`) accumulated across this and the prior round's
+testing, none killed. Building a reaper is a real design question (idle
+threshold? does a closed-but-not-killed drawer count as "orphaned," given
+`TerminalDrawer`'s whole point is that the shell survives a closed drawer?) —
+out of scope for this round per the task's own instructions; recorded here as
+a known gap.
+
+Scoped tests run: `bun test src/platform/lib/terminalSession.test.ts
+src/shell/TerminalDock.test.tsx` — 15 pass, 0 fail (unaffected by this
+change; `TerminalView.tsx` remains deliberately untested per the header
+comment's own reasoning, unchanged from the prior round). `bun run build`
+succeeded.
+
+## Toggle shortcut + exit-hides-drawer (build subagent round)
+
+Two features requested together: a keyboard shortcut to toggle the terminal
+drawer, and making a process exit hide the drawer instead of showing a
+dead-shell banner with an Enter-to-restart listener.
+
+Shortcut: bound BOTH the user's requested chord (Cmd+Shift+` on macOS,
+Ctrl+Shift+` elsewhere, via `isMod()` from `platform/lib/platform.ts` — the
+same exclusive Mac-vs-other test every other app shortcut uses) AND VS Code's
+own Ctrl+` (no Shift) as a permanent alias on every platform, because the Cmd
+chord collides with macOS's own window-cycling shortcut and may never reach
+the page. Matched on `e.code === "Backquote"`, not `e.key` (which is `"~"`
+once Shift is held, and layout-dependent). Registered in `TerminalDrawer.tsx`
+itself via a `useEffect` with an empty dependency array, unconditional on
+`open` — this component already stays mounted while closed (early-returns
+`null` after all hooks run), so it is the one listener that has to fire
+while the drawer is closed, to open it. Did not move it to `App.tsx` or
+`terminalDockStore.ts`: `TerminalDrawer.tsx` already owns the store's
+setter/toggle calls used elsewhere in this file (drag-to-resize, etc.), so
+adding the keydown effect here keeps all of the drawer's own input handling
+in one file rather than splitting it across the store and the shell shell.
+Advertised the alias (not the Cmd chord) in `TerminalDock.tsx`'s tooltip
+(`⌃\``) since it's the one guaranteed to work everywhere, and added the
+user's chord to the `ShortcutsOverlay` cheat sheet data
+(`platform/lib/shortcuts.ts`, View group) as the one canonical binding shown
+there, following the sheet's own existing convention of documenting one
+chord per action even when an alias exists.
+
+Exit-hides-drawer: removed the old "Process exited... press Enter to start a
+new shell" banner, the `exitCode` state, and the global Enter-to-restart
+keydown listener entirely. `TerminalView`'s `onExit` now calls a new
+`handleExit()` which clears the React `sessionId` state and calls an
+exported pure function `clearExitedSession(height)` that clears the
+persisted `sessionId` in localStorage and calls `closeTerminalDock()`. Next
+open (chip or shortcut) finds `sessionId === null` and the existing
+verify-or-create effect mints a fresh shell rather than trying to reattach
+to a dead one.
+
+Dead end / architectural finding: "process exits while the drawer is already
+closed" (explicitly called out in the task) is not literally reachable
+through `TerminalView.onExit` in the current design — `TerminalView` (which
+owns the pty WebSocket and is the only thing that can receive a server exit
+frame) only ever mounts while `open` is true; the whole `TerminalDrawer`
+subtree past the `if (!open) return null` unmounts it the instant the drawer
+closes, so there is no live connection while closed to receive an exit frame
+on. Rather than force an unreachable path through a full render (and rather
+than touching `TerminalView.tsx`, which is off-limits and deliberately
+untested — a headless renderer can't run its real resize/layout pass),
+`clearExitedSession` was factored out as an exported, pure, idempotent
+function callable and testable directly regardless of `open`, covering both
+starting states (drawer open, drawer already closed) without mounting
+`TerminalView` at all.
+
+Test-infra note: firing a captured keydown handler synchronously inside a
+plain `act(() => {...})` produced "not wrapped in act(...)" warnings, because
+`toggleTerminalDock()`'s `useSyncExternalStore` notification resolved on a
+microtask past that synchronous callback's return. Fixed by making the
+test's `fireKeyDown` helper `async` and awaiting
+`act(async () => { ...; await Promise.resolve(); })` instead — mirrors the
+`await act(async () => ...)` pattern already used elsewhere on this branch
+for store-notification timing.
+
+New file: `frontend/src/shell/TerminalDrawer.test.tsx` — 12 tests covering
+both directions of the toggle (chord + VS Code alias), every non-matching
+modifier/key-code combination, `isMod()`'s platform exclusivity, and
+`clearExitedSession` in both drawer states plus `closeTerminalDock`'s
+idempotency. Scoped run:
+`bun test src/shell/TerminalDock.test.tsx src/shell/TerminalDrawer.test.tsx
+src/platform/lib/terminalSession.test.ts` — 27 pass, 0 fail, 53 expect()
+calls. `bun run build` succeeded (boundaries OK, 869 files; `tsc --noEmit`
+clean; `✓ built in 5.69s`; only pre-existing, unrelated
+static+dynamic-import and chunk-size Rollup warnings, unchanged from before
+this round).
+
+Not verified: live/browser behavior (no cmux, no dev-server restart, per
+task instructions) — the shortcut firing through a real DOM keydown and the
+drawer actually closing on a real process exit were not exercised end to
+end; only the unit-level behavior above was. The user should confirm the
+chord doesn't collide with anything OS/browser-level in their actual
+environment before relying on it.
+
+## Rank starvation fallback: a short page is not starvation evidence
+
+`13ff8332a`'s bounded-candidate-pool fast path (`fused_render/index/query.py`,
+`_rank_sql`/`_glob_sql`, `_bounded_or_full_candidates`) added a starvation
+fallback in `search_ranked`: if the bounded pass returns fewer than
+`limit + 1` rows, rerun the same query unbounded (`bounded=False`, `QUALIFY`
+over the entire WHERE-matched set) in case the pool's own `LIMIT <pool>`
+squeezed out a distinct basename that would have filled the page. Correct as
+far as it went, but the trigger condition — "the page came back short" — is
+not evidence the pool actually did anything: a query with genuinely few
+matches returns a short page too, and a zero-match query returns a short page
+*unconditionally* (`0 < limit + 1` is always true). Because the substring
+filter is `lrel LIKE '%q%'`, an unanchored pattern DuckDB cannot index, both
+the bounded and unbounded passes scan the entire WHERE-matched set regardless
+of how few rows survive — so a sparse or zero-match query paid for two full
+corpus scans to answer "still nothing" or "still not much." Measured on a
+440k-row index: a zero-match query went from 71.4ms to 186.6ms (2.6x), a
+sparse query (`openbot`) from 100.1ms to 222.8ms (2.2x); a page-filling query
+stayed at 1.0x (only ever one pass).
+
+The fix replaces "was the page short" with two provable equivalences, each of
+which proves the unbounded rerun can only reproduce the bounded result, so
+skipping it changes nothing:
+
+1. **Zero rows.** `_qualify_basename_cap`'s `QUALIFY row_number() OVER
+   (PARTITION BY nm ORDER BY <order_by>) <= _MAX_PER_BASENAME` keeps at least
+   the `row_number() = 1` row for every distinct `nm` the candidate pool
+   holds — a non-empty pool can never produce zero output rows. Zero rows
+   back therefore proves the pool itself was empty, which proves the WHERE
+   clause matched nothing at all: the unbounded query, filtering the
+   identical WHERE-matched set, must also return zero rows. No rerun.
+
+2. **The pool did not fill.** `_pool_n_column` adds `count(*) OVER ()` (no
+   `PARTITION BY`) to the SELECT that reads FROM the candidate-pool subquery
+   — i.e. strictly AFTER that subquery's own `ORDER BY <order_by> LIMIT
+   <pool>` stage, in the same window-function evaluation phase as
+   `_qualify_basename_cap`'s `QUALIFY row_number()`, both computed over the
+   same FROM-clause input before QUALIFY filters anything out. The resulting
+   `pool_n` is therefore the pool subquery's actual row count: `min(pool,
+   actual WHERE-matched count)`. `pool_n < pool` means the inner `LIMIT
+   <pool>` never bound — the pool subquery returned every WHERE-matched row,
+   so this bounded query's `QUALIFY` ran over the exact same input the
+   unbounded query's `QUALIFY` would run over. The two are equivalent by
+   construction; the fallback cannot produce a different result and must not
+   fire.
+
+Only when the pool genuinely truncates (`pool_n >= pool`) AND the page still
+comes up short of `limit + 1` is real basename-cap starvation still possible
+(one basename's duplicate count exceeds the pool and outranks every other
+matching name, `13ff8332a`'s own reported defect) — the unbounded rerun still
+fires in exactly that case, unchanged from before.
+
+Deliberately NOT placed: `count(*) OVER ()` inside the un-`LIMIT`ed WHERE-
+matched subquery, or above the whole statement's own `QUALIFY`/`ORDER
+BY`/`LIMIT`. Either placement would force DuckDB to materialise every
+matching row just to answer it, defeating the heap-based Top-N scan the
+pool's own `LIMIT <pool>` exists to enable — reintroducing, on a broad query,
+the exact full-corpus-scan cost this fix removes for a narrow one. It has to
+sit strictly between the pool's `LIMIT` and the cap's `QUALIFY`.
+
+Verified: `tests/test_index_rank.py`'s
+`test_zero_match_query_issues_exactly_one_rank_statement` and
+`test_sparse_query_whose_pool_does_not_fill_issues_exactly_one_rank_statement`
+fail on the pre-fix trigger (2 statements each) and pass after (1);
+`test_starvation_fallback_still_fires_when_the_pool_genuinely_truncates`
+guards against over-fixing (the real starvation case still reruns, 2
+statements, result matches the unbounded ground truth);
+`test_starvation_fallback_fix_does_not_change_any_result` pins byte-identical
+`hits`/`truncated` across a query spread (zero-match, sparse, starved broad,
+starved glob, ordinary broad) against a ground truth computed by forcing the
+candidate pool arbitrarily large.
+
+## Rank starvation fallback follow-ups: a stale test, a stale docstring, a duplicated derivation
+
+Code review on the previous entry's fix (PR #1308) surfaced four loose ends,
+all addressed in the same round:
+
+1. **A test pinned the old, buggy behavior as correct.**
+   `tests/test_index_search.py::test_search_ranked_honours_the_limit_in_sql_not_just_in_python`
+   builds 50 noise files plus one real match, so the bounded candidate pool
+   comes back with exactly 1 row — Tier 2 (`1 < pool`, `_basename_candidate_pool(4)`
+   is 20) proves the unbounded rerun would be identical, so it is correctly
+   skipped. The test asserted `seen_limits == [4, 4]` (two SQL statements),
+   which was true only under the pre-fix behavior this PR removes. Updated
+   the assertion to `[4]` and rewrote the trailing comment, which had stated
+   the old rule ("fewer than `limit` is the starvation-fallback's trigger")
+   as fact; it now explains why exactly one statement is correct here.
+
+2. **`_bounded_or_full_candidates`'s docstring asserted the inverse of the
+   shipped contract** — it still said a short page alone (fewer than
+   `limit + 1` rows) triggers the `bounded=False` rerun. Rewritten to state
+   the two-tier gate: a short page is necessary but not sufficient: it must
+   be combined with the pool actually having filled.
+
+3. **The pool size was derived in three independent places**: twice inside
+   the `_build_sql` closures (via `_bounded_or_full_candidates`, called from
+   `_rank_sql`/`_glob_sql`), and a third time in `search_ranked` itself
+   (`pool = _basename_candidate_pool(limit + 1)`, used only to compare
+   against `pool_n`). All three agreed today, but nothing enforced that —
+   if the Python-side value ever exceeded the SQL's, `pool_n >= pool` could
+   never be true and the starvation fallback would silently stop firing,
+   with no exception anywhere, for exactly the failure mode this whole PR
+   exists to close off.
+
+   Fixed by making `_bounded_or_full_candidates` the single source: it now
+   returns `(sql, pool)` instead of just `sql`, and callers pass that `pool`
+   straight into `_pool_n_column`, which emits the comparison AS SQL —
+   `count(*) OVER () >= {pool} AS pool_filled` — instead of the raw
+   `pool_n` count. `search_ranked` reads the boolean straight off
+   `pool_rows[0][-1]` and no longer computes `pool` at all. Chose "compare
+   in SQL" over "hand the pool size back to Python and compare there"
+   because it removes the second comparison site entirely rather than just
+   removing the second derivation site — there is now exactly one place
+   `pool` is computed (`_bounded_or_full_candidates`) and exactly one place
+   it is compared against `count(*) OVER ()` (the SQL text `_pool_n_column`
+   emits). Observable behavior (`hits`, `truncated`, statement count) is
+   unchanged — no test pins the generated SQL's column name or expression
+   text, so nothing else needed updating for this rename.
+
+4. **Over-broad `monkeypatch.undo()`** in `tests/test_index_rank.py`'s
+   `_unbounded_ground_truth`: it called `monkeypatch.undo()` in a `finally`,
+   which reverts EVERY patch registered on the fixture the caller passed in,
+   not just the `_basename_candidate_pool` patch this helper itself sets.
+   Scoped it with `monkeypatch.context()` instead, so only this helper's own
+   patch is undone when it returns.
+
+Verified: `tests/test_index_search.py tests/test_index_rank.py
+tests/test_index_query.py tests/test_index_rank_concurrency.py` — 342
+passed. The updated test
+(`test_search_ranked_honours_the_limit_in_sql_not_just_in_python`) run 3x in
+isolation to confirm it is not flaky post-fix: 3/3 passed.
+
+## LIKE ... ESCAPE blocks DuckDB's optimizer; contains()/bare LIKE where safe
+
+Every predicate in `fused_render/index/query.py` was written as
+`col LIKE '...' ESCAPE '\'` (via `like_literal()`), including unanchored
+substring scans (`%needle%`) and simple prefix scans (`prefix%`). DuckDB's
+`LikeOptimizationRule` only rewrites `LIKE` into `contains()` or a sargable
+range when the statement has NO `ESCAPE` clause; with one present, it falls
+back to the opaque `like_escape()` function — no fast path, no parquet
+row-group pruning. Measured directly: substring `LIKE ... ESCAPE` 9.74ms vs.
+`contains()` 5.00ms (~1.95x); prefix `LIKE ... ESCAPE` 2.39ms vs. plain
+`LIKE 'prefix%'` 1.48ms (~1.6x — the unescaped form compiles to a real
+`>= / <` range, enabling row-group pruning that the escaped form cannot get).
+`starts_with()` was also measured (2.11ms) and rejected: essentially no win
+over the escaped form, so it isn't worth trading away for.
+
+Two changes, split by whether dropping `ESCAPE` is always safe:
+
+1. **Unconditional**: every unanchored substring predicate (`_rank_sql`'s
+   `lrel` filter, `search_under`'s path/dir substring filter, and the
+   single-literal leg of `_name_predicate_sql`'s `contains` key) now emits
+   `contains(col, lower('lit'))` instead of
+   `col LIKE '%'||like_literal(lit)||'%' ESCAPE '\'`. `contains()` has no
+   wildcard semantics at all, so it is exactly equivalent for any literal —
+   including literals containing `%`, `_`, or `\` — with no escaping
+   needed. (`_name_predicate_sql`'s multi-literal `%`-chain leg keeps the
+   escaped form: `contains()` only takes one needle, so a chain of several
+   literals still needs a real LIKE pattern.)
+
+2. **Conditional**, via a new `_prefix_predicate_sql(col, prefix)` helper
+   used by `stats`, `search_under`, and `search_ranked`'s prefix scans: it
+   drops `ESCAPE` only when `like_literal(prefix) == prefix`, i.e. the
+   prefix contains no LIKE metacharacter. Metacharacter-free prefixes (the
+   overwhelming common case — ordinary path segments) get the fast
+   unescaped `LIKE 'prefix%'`. A prefix containing `_` or `%` keeps the
+   escaped form, because those are the two characters `LIKE` treats as
+   wildcards: an unescaped `dir LIKE '/x/proj_a/%'` would also match
+   `/x/proj-a/...` (`_` matches any single character), silently returning a
+   sibling directory's files as if they were under `proj_a`. This is
+   exactly the scoping bug the gate exists to prevent — proven by a
+   red/green cycle: temporarily forcing `_prefix_predicate_sql` to always
+   drop `ESCAPE` turned 5 tests red (the proj_a/proj-a scoping tests in all
+   three of `test_index_query.py`, `test_index_search.py`, and
+   `test_index_rank.py`, plus the two pre-existing lookalike-sibling tests
+   for `stats`/`search_under`), then restoring the gate brought all 330
+   back to green. `starts_with()` was not used here either, for the same
+   reason it was rejected above — it has no gated/ungated split of its own
+   and measured no meaningful improvement over the escaped `LIKE`.
+
+New/updated tests (all in the targeted 3-file suite,
+`tests/test_index_query.py tests/test_index_rank.py
+tests/test_index_search.py`): `test_prefix_predicate_drops_escape_for_a_metachar_free_prefix`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_an_underscore`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_a_percent`,
+`test_search_under_scoping_ignores_proj_a_lookalike_and_a_percent_literal`,
+`test_search_under_substring_filter_compiles_to_contains_not_like_escape`,
+`test_name_predicate_sql_contains_leg_uses_contains_for_a_single_literal`,
+`test_search_ranked_scoping_ignores_a_proj_a_lookalike_sibling`,
+`test_rank_sql_substring_filter_compiles_to_contains_not_like_escape`. Two
+pre-existing tests already covered the `stats`/`search_under` lookalike
+case (`test_stats_does_not_count_a_lookalike_underscore_sibling`,
+`test_search_under_ignores_a_lookalike_underscore_sibling`) and needed no
+changes. 330 passed in the targeted suite.
+
+**Correction (same session):** the first end-to-end benchmark run here was
+invalid and its "no measurable improvement" conclusion is retracted. Its
+index was never "covered" — every `search_ranked` call returned
+`{'covered': False, 'hits': [], 'total': 0, 'scanned_partitions': 0,
+'reason': 'uncovered'}`, so both arms were timing an early return that
+never touched the parquet at all; the ~3.1ms vs. ~3.0ms medians were
+measuring the no-op path, not the query. Lesson for any future benchmark
+of this kind: an uncovered root turns `search_ranked` into a no-op, so the
+harness must assert `covered is True` and `scanned_partitions >= 1` (and
+non-zero hits, for a query expected to match) before timing anything —
+otherwise it silently benchmarks the wrong code path.
+
+End-to-end honesty check (re-measured): built a fresh, premise-asserted
+450,100-row index across 10 partitions and timed `search_ranked` through
+the public API, alternating this branch (HEAD) against the pre-change code
+(`45fa6c8d8`), fresh subprocess per arm, 6 rounds with round 0 discarded as
+warmup, 5 timed reps per arm per round, reporting medians with
+[min, max] across rounds:
+
+| query | scope | pre-change (45fa6c8d8) | HEAD | ratio |
+|---|---|---|---|---|
+| broad substring `file_` | root `/r`, ~442k matches | 75.10 ms [72.86, 80.75] | 71.02 ms [69.19, 74.39] | 1.06x |
+| sparse substring `special_marker` | root `/r`, 100 matches | 19.17 ms [18.73, 22.51] | 14.05 ms [13.82, 14.86] | 1.37x |
+| zero match | root `/r` | 17.50 ms [16.60, 18.97] | 12.63 ms [11.90, 13.64] | 1.39x |
+| subfolder-scoped `file_` | root `/r/A5`, 2/10 partitions scanned | 23.73 ms [23.59, 23.91] | 19.60 ms [19.45, 19.83] | 1.21x |
+
+Interpretation, stated at exactly this strength and no stronger: the raw-SQL
+predicate win (~1.95x substring, ~1.6x prefix) does NOT survive intact
+end-to-end. The end-to-end win is 1.06x on the broadest query and ~1.4x on
+sparse/zero-match queries — real and consistently in the right direction,
+but modest. The dilution is scoring and ordering work downstream of the
+WHERE clause, which this change does not touch and which dominates when
+many rows survive the filter; connection setup was measured at only ~7% of
+the call (3.8ms of 54ms) and is not the diluent. Sparse and zero-match
+queries keep more of the win because there is little or no scoring work to
+dilute it.
+## bun test heap leak investigation (fix/bun-test-heap-leak, 2026-09-21)
+
+Task: find/fix the memory leak that makes `bun test` (frontend) OOM the machine.
+Working copy: this clone's `frontend/`. No PR opened per instructions; findings only.
+
+### Tooling built
+- `guarded-test.sh` (kept in scratchpad, NOT this repo, since it is a throwaway
+  investigation harness, not project code): runs `bun test <args>` with a hard
+  wall-clock timeout and a 1s-polling `footprint <pid>` watchdog that SIGKILLs
+  the process the instant phys_footprint crosses a caller-given ceiling.
+  Verified to actually fire (OOM_KILLED case) before being trusted for real runs.
+  Caveat: the poll interval is 1s and JSC growth here has been observed to add
+  ~4-5GB in a single second once the blow-up starts, so the measured "peak" can
+  overshoot the configured ceiling by a few GB — treat the ceiling as a rough
+  trip wire, not an exact cap. Set ceilings with several GB of headroom below
+  whatever the machine can actually absorb.
+
+### Reproduced safely
+Full `bun test src` under the guarded runner: stable ~150-340MB footprint for
+the first ~64s, then explodes to 9.1GB within the next ~8s (watchdog fired at
+peak_kb=9147392, elapsed_s=72, cap was 6291456 KB). This matches the original
+bug report exactly (sudden late blow-up, not a slow climb).
+
+### Bisection (file-set, from `src/apps/claude`)
+Isolated combination that was suspected to reproduce it stand-alone —
+feature-flag.test.tsx, ClaudeChat.{ann,boot,attach}.test.tsx,
+ui/useArtifacts.test.tsx, ui/useSnapshots.test.tsx, ui/home-lists.test.tsx,
+ui/placement.test.tsx, ui/cards.test.tsx, pane/appState.test.ts,
+ann/useAnnotations.test.tsx, protocol/run-controller.pr4.test.ts (12 files,
+same order as they run inside the full suite) — does NOT reproduce the leak
+when run alone: 331 pass, 0 fail, peak 210MB, 9.85s. This RULES OUT "these 12
+files alone" as sufficient; whatever leaks needs the preceding ~64s/hundreds
+of files of the full suite to have already run first. Ruling stands: the leak
+requires accumulated state from the broader suite, not just this file set.
+
+### Listener-count instrumentation (temporary, uncommitted)
+Added a temporary diagnostic to `src/apps/claude/feature-flag.ts`: a
+`console.error` in `set()`/`setQueue()` gated behind `process.env.LEAK_DIAG`
+that prints `listeners.size` / `queueListeners.size` on every call, plus a
+`__debugListenerCounts()` export (both still uncommitted in the working tree —
+see `git status` before doing anything else with this branch).
+
+Ran the full suite again with `LEAK_DIAG=1`: `queueListeners.size` peaks at 16
+(not the "thousands" a runaway-listener theory would predict) right as
+`run-controller.pr4.test.ts` starts (its `beforeEach`/`afterEach` call
+`publishProjectQueueEnabled(true/false)` on every one of its ~70 tests). This
+RULES OUT "unbounded listener-Set growth in feature-flag.ts fans out to a
+catastrophic number of re-renders" as the direct memory driver — 13-16
+listeners firing ~70 times is a few hundred calls, not an 8GB event.
+
+What the 13-16 residual listeners DO confirm: they are stale — pr4.test.ts
+itself never calls `useProjectQueueEnabled`/`useNativeChatFlag` and mounts no
+React tree, so every listener firing at that point was registered by an
+EARLIER test file (a `ClaudeChat.*.test.tsx` or `feature-flag.test.tsx` mounted
+component) that was never unmounted/cleaned up. This is real evidence of a
+leaked-mount bug (something in ClaudeChat.tsx's mount path, or one of its
+consumers, is not being unmounted by its owning test), but it is NOT itself
+big enough to explain the observed blow-up.
+
+Read of the last ~150 lines before the OOM in the LEAK_DIAG run: a bounded
+number of `Warning: An update to Harness inside a test was not wrapped in
+act(...)` warnings (66 total in the whole run, not runaway/infinite) fire
+right as pr4.test.ts starts — consistent with the ~70 afterEach-triggered
+setQueue() fanout calls hitting a small number of stale "Harness"/"Probe"
+components left mounted from earlier files. `run-controller.pr4.test.ts`
+itself contains no `render(`/React usage at all (grepped; it's pure
+protocol-logic tests) — the "Harness"/"Probe" names in the warnings belong to
+OTHER files' test harnesses, still alive.
+
+### Current best hypothesis (NOT YET CONFIRMED)
+The 8-9GB blow-up is not driven by listener-Set size. It's more likely that
+one or more of the ~13-16 stale, still-mounted "Harness"/"Probe" component
+trees (leaked from an earlier `ClaudeChat.*.test.tsx` or
+`feature-flag.test.tsx` run, never unmounted) is itself large or contains an
+effect/render path that allocates unboundedly per re-render (e.g. an
+unbounded array/string build in a render or effect body triggered by the
+`queueEnabled`/`nativeChatFlag` state change), and `run-controller.pr4.test.ts`
+repeatedly re-triggering that stale tree's setState (via the shared
+`publishProjectQueueEnabled` broadcast) is the detonator, not the cause. NOT
+CONFIRMED — the specific component and its unbounded allocation have not been
+identified yet.
+
+### Not yet done / exact resume point
+1. Find which test file(s) leave a `ClaudeChat`/`Harness`/`Probe` tree mounted
+   past their own test (grep each of ClaudeChat.ann/boot/attach.test.tsx and
+   feature-flag.test.tsx for a `render()`/`create()` without a matching
+   `.unmount()` in every test, including error paths / early returns).
+2. Once found, inspect what that mounted tree's re-render path does on a
+   `queueEnabled`/`nativeChatFlag` change — look for unbounded state growth
+   (array push, string concat, snapshot/log ring buffer without a cap) that
+   would explain multi-GB growth from ~70 repeated fanout calls hitting a
+   handful of stale trees.
+3. Confirm by instrumenting that specific allocation site (or by taking a heap
+   snapshot / using `bun test --smol` or `BUN_JSC_*` env knobs — not yet tried)
+   during a guarded run of just `<offending file>.test.tsx` +
+   `run-controller.pr4.test.ts` (2 files) with a tight (~1GB) cap, to isolate
+   the minimal repro before touching source.
+4. `--isolate`/`--parallel` (bun 1.3.14 flags, not yet tried) are a viable
+   fallback IF the root cause turns out to be systemic/hard to fix per-file,
+   but source-level bisection ruled out a generic bun/JSC-level cause (an
+   unrelated 11-file set from src/platform/lib did not reproduce it earlier),
+   so a real leaked-mount bug in app test code is still the most likely
+   explanation and should be fixed at the source first.
+5. `git status` in this clone currently shows ONLY the uncommitted temporary
+   diagnostic in `frontend/src/apps/claude/feature-flag.ts` (gated behind
+   `LEAK_DIAG` env var, inert unless set) — no real fix, no commit yet.
+
+No PR opened, per instructions. No commit made yet — still investigating.
+
+## bun test heap leak: root cause found and fixed (fix/bun-test-heap-leak, 2026-09-21, part 2)
+
+Continuing from the resume point above. Root cause found; fix committed.
+
+**Root cause.** `frontend/src/apps/claude/ui/sched-block.test.tsx` has a local
+`mount()` helper that `create()`s a `Harness` (which calls `useSchedule`, which
+calls `useProjectQueueEnabled()`) for each of its 13 tests, but the file has
+**no `afterEach`, no `mounted` array, and not one call to `.unmount()`**
+anywhere (`grep -n unmount sched-block.test.tsx` → zero matches). Every other
+file in `src/apps/claude` that mounts a `react-test-renderer` tree follows the
+same convention (a module-level `mounted` array pushed to by the mount helper,
+drained by a shared `afterEach` that calls `act(() => r.unmount())`) — this
+file was the one exception. Confirmed via a throwaway preload script (outside
+the repo, dynamic-imported `feature-flag.ts`'s internals to log
+`listeners.size`/`queueListeners.size` after every test): `queueListeners`
+climbed 1-by-1, exactly 13 times, strictly inside this file's own run, and
+never came back down (this superseded and corrects the earlier 12-file
+bisection above, which never included this file and so never reproduced the
+leak).
+
+**What rooted the retained memory.** `bun test` runs the whole `src` tree in
+ONE process with no per-file isolation, so `feature-flag.ts`'s
+`listeners`/`queueListeners` module-level `Set`s are one shared global for the
+entire run. The 13 un-unmounted `Harness` trees stay mounted — and subscribed
+— for the rest of the process. `useSchedule`'s internal `watcher` and its
+`setInterval`-driven poll, plus every later file's `publishProjectQueueEnabled`
+broadcast (e.g. `protocol/run-controller.pr4.test.ts`'s ~70 calls across its
+`beforeEach`/`afterEach`), then re-render those 13 permanently-live trees over
+and over for the remaining ~250+ files/6900+ tests of the run. Isolating just
+this file alone (13 tests, guarded, 1GB cap) stayed flat at ~71MB — no
+blowup. Isolating this file plus `run-controller.pr4.test.ts` together (the
+originally-hypothesized minimal repro) ALSO stayed flat and fast (~12MB,
+<1s) — so the hypothesized second "production unbounded-allocation" defect
+(DEFECT #2) does **not exist as a separate bug**: the growth to multi-GB only
+shows up when the 13 stale trees are left alive and re-rendering across the
+*entire* remaining suite (hundreds of files), not from any one or two files'
+broadcasts. 13 leaked subscriptions, compounded over the full run's re-render
+traffic, was sufficient by itself. There is one defect, not two.
+
+**Minimal repro.**
+```
+GUARDED_OUTLOG=/tmp/x.log GUARDED_STATUSFILE=/tmp/y.log \
+  ./guarded-test.sh 1048576 60 src/apps/claude/ui/sched-block.test.tsx \
+  --preload <scratchpad>/leak-preload.ts
+```
+run alone: no leak signal (flat ~71MB). The leak only manifests as a
+full-suite blowup — `bun test src` — because it needs the rest of the suite's
+re-render/broadcast traffic to compound. Before the fix, a full guarded
+`bun test src` run (6GB cap) got OOM_KILLED at ~69s elapsed after climbing
+past 6GB; the earlier full-suite run recorded in this file's part-1 entry
+above hit 9.1GB.
+
+**Peak memory, full `bun test src`, guarded, 3GB cap, no diagnostic preload:**
+- Before fix: OOM_KILLED (uncapped runs observed up to 9.1GB; this session's
+  6GB-capped run also tripped the cap).
+- After fix: `RESULT status=EXITED_0 peak_kb=330752 peak_gb_x100=31
+  elapsed_s=73` — **~323MB peak**, 7098 pass, 0 fail, 26185 expect() calls
+  across 331 files, well inside the previously-established healthy baseline
+  (150-340MB).
+
+**The fix (one commit, `frontend/src/apps/claude/ui/sched-block.test.tsx`).**
+Added the same `mounted: ReactTestRenderer[]` + shared `afterEach(() => { for
+(const tree of mounted.splice(0)) act(() => tree.unmount()); ... })` pattern
+already used by every other file in this directory; `mount()` now pushes its
+tree onto `mounted` instead of only returning it.
+
+**Regression guard (same commit).** Rather than a global cross-suite
+assertion (higher blast radius, and other files have their own valid
+per-file-not-per-test cleanup timing), the guard is local and targeted: the
+new `afterEach` also asserts
+`listenerCountsForTests().queueListeners` returns to the value captured
+before this file's first test ran. `listenerCountsForTests()` is a small,
+permanent, side-effect-free accessor added to `feature-flag.ts` for exactly
+this purpose — it exports `{ listeners, queueListeners }` sizes and does
+nothing else. If this file's cleanup ever regresses (or a future test in this
+file adds a `mount()` call without going through the helper), the assertion
+fails loudly in this file's own output instead of silently inflating memory
+hundreds of files later.
+
+**Temporary diagnostic disposition.** The previous agent's `LEAK_DIAG`
+`console.error` lines inside `set()`/`setQueue()` in `feature-flag.ts` were
+reverted entirely (not shipped). The `__debugListenerCounts()` export was
+renamed to `listenerCountsForTests()`, kept as a permanent, minimal, side-effect-free
+test-only accessor (matches this file's existing `resetNativeChatFlagForTests()`
+naming/doc-comment convention), and is now load-bearing for the regression
+guard described above rather than being a leftover diagnostic.
+`grep -rn "__debugListenerCounts\|LEAK_DIAG" frontend/src` → no matches.
+
+**Exact command to run the full suite safely, and its duration:**
+```
+GUARDED_OUTLOG=/tmp/out.log GUARDED_STATUSFILE=/tmp/status.log \
+  ./guarded-test.sh 3145728 240 src
+```
+(from `<scratchpad>/guarded-test.sh`, 3GB cap, 240s timeout — actual run
+finishes in ~73s at ~323MB peak, comfortably under the cap). Plain `bun test
+src` with no cap is still NOT safe to run outside this guard until/unless the
+guarded run has been repeated a few more times on a clean checkout to build
+confidence; this session's evidence is one clean full-suite pass post-fix.
+
+**Not done / explicitly out of scope for this pass:** no PR opened; no
+broader `--isolate`/`--parallel` bun flag adoption (rendered unnecessary once
+the actual leaking file was fixed); no changes to any file other than
+`sched-block.test.tsx`, `feature-flag.ts`, and this log.
+
+## App page git column (branch `app-page-git-sidebar`) — draft review, a real race bug, and its fix
+
+A prior pass on this branch had already landed a draft (commit `2e3560a7e`)
+giving the app page (`shell/AppPage.tsx`) a right-hand git column: the same
+`git` template, the same `PreviewSidebar` companion the explorer's file
+preview already hosts, opened only from App Doctor's existing "Open in git"
+row (no header button, no new URL param — closing is the column's own close
+button or dragging it through its floor). That draft's architecture held up
+under review — `PreviewSidebar`'s widened `SPLIT_SEL`, the `useDirMode(open ?
+dir : null, "git")` gate, the `gitSrc` URL shape, the CSS split/drag rules,
+and `onOpenGit` threaded through `AppDoctorModal.tsx` all matched every
+relevant precedent (`Preview.tsx`'s `sideSrcFor`, `.stat-split`'s CSS,
+`dir-mode.ts`'s contract). Two non-behavioral fixes were made directly on it:
+a stale header comment still claiming the page was "read-only about git" (a
+prior, unrelated change — the version picker — had already made that false),
+and a JSX indentation slip where the new `.app-page-split` wrapper's children
+were left at the wrapper's own indentation level instead of one deeper.
+
+**No existing test was found asserting the old contract.** Grepped
+frontend `*.test.{ts,tsx}` and Python `tests/*.py` for `onOpenGit`, `Open in
+git`, `read-only about git`, `app-page`, `stat-split`, `SPLIT_SEL`,
+`app_doctor` — nothing pins "AppDoctorPanel has no onOpenGit" or "the app
+page is read-only about git" as a passing assertion anywhere. The risk
+flagged in the handoff did not materialize as a blocking test.
+
+**A real bug, found by TDD, not by review.** The draft's inline auto-close
+effect —
+
+```ts
+useEffect(() => {
+  if (gitOpen && !gitMode.pending && gitMode.entry === null) setGitOpen(false);
+}, [gitOpen, gitMode.pending, gitMode.entry]);
+```
+
+— closes the column the instant it opens, before the probe is ever
+dispatched. `useDirMode`'s own state does not move in the same render that
+flips its `dir` argument from `null` to real; it only updates once ITS OWN
+effect runs, one commit later. On the transitional render, `gitMode` still
+reads the old `{ entry: null, pending: false }` — indistinguishable, at that
+instant, from "asked, and the folder has no git" — and the draft's effect
+(which runs immediately after `useDirMode`'s own effect in the same commit,
+per hook declaration order) reads that stale value and calls `setGitOpen(false)`
+before `useDirMode`'s placeholder (`pending: true`) has had a chance to land.
+Nothing in `bun run typecheck`/`check:boundaries`/`build` could have caught
+this — it is a runtime effect-ordering race, not a type or lint issue, and
+the draft shipped with no tests at all covering this path.
+
+Extracted the whole git-column state (`open`/`openGit`/`closeGit`/`gitMode`/
+`gitSrc`) out of `AppPage.tsx` into `shell/useAppPageGitColumn.ts`, mirroring
+`useAppPageSnapshot.ts`'s precedent (`AppPage.tsx` itself has no render-test
+path — mounting it pulls in base-ui's Tabs, a document-dependent keyboard-nav
+effect, `useFavicon`, and the Tasks subtree — so behavior worth pinning gets
+its own hook and its own test, driven through `useDirMode`'s real code path
+with only the network boundary stubbed). The fix adds a `probed` ref that
+only trusts a "not offered" verdict once the probe has actually been seen
+`pending` at least once:
+
+```ts
+const probed = useRef(false);
+useEffect(() => {
+  if (!open) { probed.current = false; return; }
+  if (gitMode.pending) { probed.current = true; return; }
+  if (probed.current && gitMode.entry === null) setOpen(false);
+}, [open, gitMode.pending, gitMode.entry]);
+```
+
+`shell/useAppPageGitColumn.test.ts` covers, against the real `useDirMode`
+fetch path (stubbed `fetch`, one directory string per test — `dir-mode.ts`
+caches per-directory answers for 30s with no reset hook, so sharing a
+directory across tests would let one test's resolution silently answer
+another): no probe at all until `openGit()` is called; `openGit` probes the
+FOLDER (not some file inside it) and frames the git template's `src` against
+it; `closeGit` shuts the column; the column auto-closes once the folder
+genuinely settles as not offering git. All four passed only after the
+`probed` fix — before it, the "opens" / "closes" / "auto-closes" tests all
+failed with `open` snapping back to `false` immediately, which is what
+surfaced the race in the first place. `AppPage.tsx` was then refactored to
+call the hook instead of carrying its own (buggy) copy of the same logic —
+same bug, same fix, now covered.
+
+`bun run typecheck`, `bun run check:boundaries`, and `bun run build` all
+pass post-integration. Scoped tests run: `AppPage.test.tsx`,
+`useAppPageGitColumn.test.ts`, `appdoctor-lib.test.ts`, `panel-seams.test.ts`
+— 55 pass, 0 fail. No full suite run (left to the orchestrator, per this
+branch's build instructions).
+
+**CI fix: the split wrapper's indentation, not its structure, broke a pinned
+test.** `TaskPeekFrame.test.tsx`'s "the app page frames the WHOLE page..."
+test asserted a literal source substring —
+`<TaskPeekFrame peekable={peekable}>\n    <div className="app-page">` —
+against `AppPage.tsx`. Wrapping the page in the new `.app-page-split` flex
+container nested `TaskPeekFrame` one level deeper, shifting `<div
+className="app-page">`'s indentation from 4 to 8 spaces; the substring no
+longer matched and CI went red (1 of 7176). The real invariant the test
+exists to protect — `.app-page` is `TaskPeekFrame`'s immediate child, so the
+frame still encloses the whole page (header, tab strip, panels) and not just
+some inner section — still holds; only the whitespace pinned alongside it
+went stale. Updated the assertion's expected indentation to match rather
+than touching `AppPage.tsx` or `TaskPeekFrame.tsx`: the split wrapper is
+exactly where the design calls for it (mirrors `.stat-split`, `PreviewSidebar`
+finds its container by `closest` on either class name), and reverting the
+nesting to dodge the test would be fixing the code to fit a test that was
+checking the wrong thing. The updated assertion still fails if `.app-page`
+stops being `TaskPeekFrame`'s direct child (moved out, or another element
+inserted between them) — it only stopped caring about the wrapper's absolute
+depth. Scoped tests (`TaskPeekFrame.test.tsx`, `useAppPageGitColumn.test.ts`)
+— 13 pass, 0 fail — plus `bun run typecheck` and `bun run check:boundaries`,
+both clean. No full suite run, per this task's scope.
+
+**Git column redesign: the template alone, framed like the Tasks tab's own
+side peek, not the explorer's borrowed-companion sidebar.** The owner's own
+words: "I just want the git template. not the full right sidebar. I want the
+UI to be similar more like the tasks tab sidebar." The draft above shipped
+with `PreviewSidebar` — a mode rail, a "Git" tab header, a panel-toggle icon,
+a close button — because it was the nearest existing component that already
+framed a borrowed template beside a page. All of that chrome is now gone.
+The FULL template (staging, committing, branches, push/pull — nothing
+trimmed) is unchanged; only the frame around it changed, to a new
+`AppPageGitPeek.tsx` + `useAppPageGitPeekWidth.ts` pair that mirrors
+`TaskPeek.tsx`'s own side peek: a slim aside sliding in over the row's right
+edge via `translateX`, width and slide animated in lockstep over the same
+200ms `ease` (`--peek-dur`/`--peek-ease`, reused from `styles/task-peek.css`
+— declared globally on `:root` for exactly this kind of reuse), its own
+44px header with a title and a close button, a 12px resize seam on its left
+edge, and a body that shows the template's iframe, a loading state, or an
+error state. `useAppPageGitColumn.ts`'s existing probe/open/auto-close logic
+and its tests are unchanged in substance (extended, not replaced — see the
+failed-probe fix below). App Doctor's "Open in git" row stays the only entry
+point; still no header toggle, no new URL param.
+
+**Interaction with the Tasks tab's own side peek: nested outside it, one
+level up — decided, not discovered.** `AppPage.tsx`'s `.app-page-split` is
+now the row both peeks ultimately live in. Its two children are
+`.app-page-frame-slot` (width `calc(100% - <git-peek-width>px)`, holding
+`TaskPeekFrame` and everything inside it unchanged) and `.app-git-peek`
+(the new peek, absolutely positioned over the split's own right edge). The
+Tasks tab's own `.tasks-peek-host` row is entirely inside the slot, so it
+only ever measures against the width the git peek has already taken; the two
+peeks can never fight over one right edge because they are not siblings at
+the same DOM level — the git peek's edge is the split's edge, the Tasks
+peek's edge is the slot's edge, and the slot's own width already accounts
+for the git peek. Width state for the new peek is deliberately NOT routed
+through `apps/explorer/lib/side-store.ts` (the module-level width the
+explorer's companion column and the listing's preview pane already share) —
+reusing it would make dragging the git peek silently resize the next file
+preview the reader opens in the explorer, and vice versa. `side-width.ts`'s
+pure clamp/default arithmetic is reused directly; only the storage is not.
+No persistence, no drag-to-close (`panel-drag.ts`'s overdrag/resistance
+arithmetic is not used) — the peek only has an explicit close button, so a
+plain floor clamp is enough. A `dragging` flag drives `.app-page-split
+.is-dragging iframe { pointer-events: none }` (app-page.css), mirroring the
+explorer's own "both sides of the seam go inert mid-drag" rule, so neither
+the Overview's iframe nor the git template's own iframe swallows the
+captured pointer stream while resizing.
+
+`TaskPeekFrame.test.tsx`'s pinned literal (`<TaskPeekFrame
+peekable={peekable}>\n<div className="app-page">`) shifted its indentation
+again, from 8/8 to 8/10 spaces, because `TaskPeekFrame` now nests one level
+deeper inside the new `.app-page-frame-slot`. Same call as the prior CI fix
+above: the DIRECT-CHILD relationship the test protects is untouched, so the
+expectation's whitespace was updated to match rather than reindenting
+`AppPage.tsx`'s whole inner JSX tree to "fix" it (the inner JSX — header,
+icon picker, tab strip, tab panels — was deliberately left at its old
+indentation depth: cosmetic only, and a bulk re-indent via string-matching
+edits over ~230 lines was judged higher-risk than the alternative of a
+locally 2-space-shallow block).
+
+`PreviewSidebar.tsx`'s `SPLIT_SEL` reverted from `".stat-split,
+.app-page-split"` back to `".stat-split"`: nothing renders `PreviewSidebar`
+on the app page any more (confirmed by grep — its only remaining renderer is
+`apps/explorer/Preview.tsx`, inside `.stat-split`), so the selector list that
+existed only to let one component serve two different containers is no
+longer doing anything.
+
+**Bugfix carried over from code review: a REJECTED probe could not be told
+apart from a settled "no git here", so the column auto-closed on a transient
+fetch failure with nothing for the reader to act on.** `useDirMode`
+(`dir-mode.ts`) resolved both a genuine "this folder has no git template"
+settle and a rejected `/api/fs/stat` fetch to the identical shape — `{
+entry: null, pending: false }` — and `useAppPageGitColumn.ts`'s auto-close
+guard (`if (probed.current && gitMode.entry === null) setOpen(false)`) fired
+on either. Fixed by giving `DirMode` a `failed: boolean` discriminant and a
+new `FAILED` singleton distinct from the existing `ABSENT` one; the
+rejection handler in `useDirMode`'s effect now sets `FAILED` instead of
+`ABSENT`. The auto-close guard gained `&& !gitMode.failed`, so a rejected
+probe leaves the panel open and `AppPageGitPeek.tsx` shows an explicit error
+state ("Could not check this folder for git. Close this panel and open it
+again to retry.") instead of silently vanishing. No new retry API was
+needed: `loadDirModes` already evicts a rejected directory's cache entry on
+the spot, so the existing close → reopen cycle (a real `dir` transition,
+string → null → string, across two user-triggered handlers) is already a
+working retry once the auto-close bug stops preventing it from being
+reached. New test: "does not auto-close on a probe that failed" in
+`useAppPageGitColumn.test.ts`, verified RED (temporarily reverting the
+`!gitMode.failed` guard reproduced the auto-close and the test failed for
+the right reason — `gitMode.failed` read `false` instead of `true` because
+the stale logic closed the panel and reset `dir` to `null`, falling back to
+`ABSENT`) then GREEN.
+
+Tests run: `TaskPeekFrame.test.tsx` + `useAppPageGitColumn.test.ts` (14
+pass), `AppPage.test.tsx` (11 pass) — 25 pass, 0 fail across the three files
+touched by this rework. `bun run typecheck`, `bun run check:boundaries`, and
+`bun run build` all clean. No full suite run, per this task's scope.
+
+Deviations from the brief, and why: (1) no dedicated unit test file for
+`useAppPageGitPeekWidth.ts` — it is pure `ResizeObserver` + pointer-event
+plumbing with no branching logic beyond what `side-width.ts` (already
+tested) already covers, and `AppPage.test.tsx`/`AppPageGitPeek`'s own
+rendering exercises it indirectly; a from-scratch DOM-pointer-event harness
+was judged lower value than the time it would cost given the rest of the
+scope. (2) `AppPage.tsx`'s inner JSX (header, icon picker, tab strip, tab
+panels) was not reindented to reflect its new nesting depth — noted above.
+
+## App page git peek: code-review follow-up, seven findings
+
+A code review of the git-peek redesign (previous entry) flagged seven
+issues; all seven are fixed here, no disagreements.
+
+1. HIGH — `.app-page-split` had no `overflow: hidden`, so the always-
+   rendered, `translateX(100%)`-when-shut peek grew a horizontal page
+   scrollbar on every app page even with git closed (measured:
+   `scrollWidth` 1807 vs `clientWidth` 1390). Fixed by adding
+   `overflow: hidden` to `.app-page-split`, the same rule
+   `.tasks-peek-host` already carries for the identical reason.
+2. MEDIUM — `.app-git-peek-close` rendered with native `<button>` UA chrome
+   (measured `border: 2px outset`, translucent background, `cursor:
+   default`, off font-size/padding) because this project runs Tailwind
+   without preflight. Fixed by adding explicit `padding: 0; border: 0;
+   background: transparent; font: inherit; cursor: pointer;`, matching
+   `.task-side-peek-btn`'s own reset.
+3. MEDIUM — `useAppPageGitPeekWidth.ts`'s `onSeamPointerDown` attached three
+   `window` listeners (`pointermove`/`pointerup`/`pointercancel`) whose
+   only removal path was `onSeamPointerUp` — a component that unmounts
+   mid-drag left all three attached for the life of the document, each
+   still firing `setChosen`/`setDragging` on a dead hook. Fixed with a
+   `useEffect` cleanup that removes the same three listeners on unmount.
+4. MEDIUM — the seam's `pointerdown` did neither `preventDefault()` nor
+   `setPointerCapture()`, so dragging it swept a native text selection
+   across the page. Fixed by adding both, mirroring
+   `PreviewSidebar.tsx`'s own divider handler; pointer events still bubble
+   to `window` from a captured element, so the existing move/up listeners
+   keep working unchanged.
+5. LOW/MEDIUM — `.app-page-frame-slot` had no width transition while
+   `.app-git-peek` slides on a 0.2s ease, so the page's own content
+   snapped to its new width instead of animating with the peek. Fixed by
+   adding `transition: width var(--peek-dur) var(--peek-ease);` to the
+   slot, reusing the same global timing variables the peek already does.
+6. LOW — `useDirMode` resets to `ABSENT` one commit AFTER `open` flips
+   false, so `src` went to `null` while the panel was still visible for
+   its whole 200ms slide-out, and every close blinked "Loading…" right
+   before sliding away. Fixed in `AppPageGitPeek.tsx`: a `lastSrc` ref
+   captures the most recent non-null `src`; while shut, the panel renders
+   `src ?? lastSrc.current` instead of `src` directly. Reopening still
+   shows "Loading…" correctly, because the fallback is only consulted
+   when `!open`.
+7. LOW/MEDIUM — `clampSideWidth` (apps/explorer/lib/side-width.ts)
+   deliberately leaves the width unchanged once a narrow container can't
+   hold both floors (below ~700px), assuming CSS min-widths on both sides
+   would hold instead — they didn't, so below ~380px the app content
+   behind the peek could be squeezed to 0px wide. Fixed with actual CSS
+   floors: `.app-page-frame-slot` gained `min-width: 320px`, and
+   `.app-git-peek` gained `max-width: calc(100% - 320px);` so the two
+   floors can never both lose to the same pixel.
+
+New tests: `AppPageGitPeek.test.tsx` (2 tests, pins finding 6's close/
+reopen sequence against the panel's actual props, not just a comment),
+`useAppPageGitPeekWidth.test.ts` (2 tests, pins findings 3 and 4 against
+the hook directly — a `window`-listener net-count spy for the unmount
+case, a captured `preventDefault` call for the capture case), and
+`app-page-git-peek-layout.test.ts` (4 tests, a stylesheet-parse test in
+the same style as `notifications-width.test.ts`, pinning findings 1, 5,
+and 7's exact CSS declarations since a DOM-less `react-test-renderer` run
+has no `getComputedStyle` to check them against). Findings 2 and 4's
+button/CSS-only halves needed no dedicated test per this repo's "CSS-only
+rounds skip tests" convention; finding 2 has no behavioral test at all
+(there is no behavior to assert, only an appearance fix) and is verified
+by code review of the rule against `.task-side-peek-btn`'s reset.
+
+One test-harness wrinkle worth recording: `useAppPageGitPeekWidth.test.ts`
+originally created the pointer-event watch (a spy patching
+`window.addEventListener`/`removeEventListener`) BEFORE mounting the probe
+component in the "unmount removes all three listeners" test. React can
+flush an EARLIER test's still-pending passive-effect cleanup as a side
+effect of committing a brand new tree, and that flush landed inside the
+watch's own counting window, corrupting it. Fix: mount the probe first,
+install the watch only after, so any such leftover flush from a prior test
+happens before the watch exists to see it.
+
+Tests run: `useAppPageGitColumn.test.ts`, `TaskPeekFrame.test.tsx`,
+`AppPage.test.tsx`, `AppPageGitPeek.test.tsx`,
+`useAppPageGitPeekWidth.test.ts`, `app-page-git-peek-layout.test.ts` — 33
+pass, 0 fail across the six files. `bun run typecheck`,
+`bun run check:boundaries`, and `bun run build` all clean (the build's
+existing >500kB chunk-size warnings are pre-existing and unrelated to this
+change). No full suite run, per this task's scope.
+
+## Lean wheel / Intel Mac compatibility (2026-09-23)
+
+Building LEAN_WHEEL_SPEC.md's four items. Item 1 (platform-conditional
+version ceilings for zeroconf/cryptography on x86_64 macOS) verified and
+shipped as-specced: 0.148.0 and 48.0.1 are both the correct real boundaries
+(checked against `https://pypi.org/pypi/<name>/json`, including
+universal2 wheels for cryptography, which do cover x86_64 until 48.0.1 —
+48.0.2/48.0.3 shipped no macOS wheel at all, 49.0.0+ ship arm64-only).
+`uv pip compile --python-platform x86_64-apple-darwin` resolves both to
+their ceilings; `aarch64-apple-darwin` resolves both unconstrained to
+latest. Confirms the spec's numbers.
+
+**Item 2 (bump fused pin to 2.9.3b9) is DEFERRED — the spec's claim does
+not hold up.** `https://pypi.org/pypi/fused/2.9.3b9/json` returns a full,
+non-yanked release record (uploaded 2026-09-23T09:13:37Z, correct
+`requires_dist` matching the spec's "23 core dists, no pyarrow/geopandas/
+shapely/boto3/cryptography" claim) — but the version is **not present in
+PyPI's simple index** (`https://pypi.org/simple/fused/`, which is what
+pip/uv actually resolve against). Verified three ways:
+  - `curl https://pypi.org/simple/fused/` lists 2.9.3b8 as the newest;
+    2.9.3b9 does not appear.
+  - `uv pip compile --extra fused` fails: "no version of fused==2.9.3b9".
+  - `python3 -m pip download fused==2.9.3b9` fails: "No matching
+    distribution found", and its own available-versions list tops out at
+    2.9.3b8.
+  - The wheel file itself IS live on files.pythonhosted.org (direct URL
+    200s), so this is not a broken/corrupt upload — just not indexed.
+
+Bumping the pin right now would make `pip install "fused-render[bundled]"`
+/ `[fused]` **unsatisfiable** on every platform, which is the opposite of
+this branch's goal. Left at `fused==2.9.3b8` in both `[bundled]` and
+`[fused]`. Re-check `https://pypi.org/simple/fused/` before bumping — if
+this was an index-propagation lag rather than a permanently withdrawn
+release, 2.9.3b9 should appear there once it catches up, at which point
+the bump is a one-line, well-verified change (dependency reduction already
+confirmed above).
+
+**Item 3 (manifests for undeclared template imports) — also NOT done,**
+because of a genuine conflict with an existing test, not a mistake in either
+side.
+
+Re-derived the "roughly 18" count using `tests/test_engine_requirements.py`'s
+own AST machinery (`_template_graph()`, `_imported_dists()`, `_app_dists()`),
+comparing each template file's app-dist imports against ONLY the core
+dependencies with no PEP 508 marker (a marker-scoped core dep, e.g. `pillow`
+on win32/linux, is not guaranteed present, so an unconditional import of it
+counts as undeclared same as a `[bundled]`-only one). Result: **10 folders**,
+not 18 — `autocad_viewer` (pillow), `claude` (pillow), `excel` (duckdb,
+fpdf2, openpyxl, pyarrow), `las` (numpy), `log_studio` (drain3), `netcdf`
+(numpy — `grid_tile_server.py` is self-managed/DAEMON_VENV and correctly
+excluded), `photos` (pillow), `slides` (fpdf2, pillow, python-pptx), `usd`
+(msgpack, numpy), `xlsx` (openpyxl).
+
+`xlsx/reader.py` is `INPROCESS_HELPERS` (`executor.py:71`) — it always runs
+on the server's own interpreter, never a spawned child or project venv, so a
+manifest cannot help it. Skipped for that reason, per the spec's own
+`structure/reader.py` precedent.
+
+For the other 9, wrote a real manifest for `autocad_viewer` (`dependencies =
+["pillow"]`, matching `model_card/pyproject.toml`'s shape — no `uv.lock`,
+since none is required by any test) and ran
+`tests/test_bundle_contents.py -k autocad_viewer`. It failed:
+
+```
+test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks[autocad_viewer]
+AssertionError: fused_render/templates/autocad_viewer/pyproject.toml declares
+['pillow'], all of which the macOS bundle already ships — so it only costs a
+venv build and a download. Delete the file (and its lock).
+```
+
+That test (D176) requires `declared - _macos_dists()` to be non-empty — a
+folder's manifest must name at least one distribution the macOS **bundle**
+does not already carry, else it is pure waste: `has_lock()`'s own comment
+confirms a *locked* project always skips the fused engine's `app_satisfies`
+fast path (`engine.py:547`), forcing a real venv build + download even when
+the app interpreter already has everything declared — and the 10
+already-declaring folders (`docs`, `geometry_editor`, `geotiff`,
+`joblib_model`, `latex`, `map`, `model_card`, `pano`, `pdf_studio`, `vector`)
+all ship a `uv.lock`, so that convention is real, not incidental.
+
+Checked all 9 flagged folders against `[bundled]`'s current contents
+(pyproject.toml:206-269): every single flagged import — pillow, openpyxl,
+fpdf2, python-pptx, drain3, msgpack, numpy, duckdb, pyarrow — is already
+there. D276 never removed any of these from `[bundled]` (only the geo stack,
+PDF-viewer stack, polars, scipy and matplotlib left). So **none of the 9
+folders has even one dist that would clear D176's bar** — this is not
+specific to `autocad_viewer`; every one of the 9 would fail the same
+assertion.
+
+Two mechanisms were checked as a way to reconcile "helps lean-wheel users"
+with "costs nothing for DMG/`[bundled]` users", and both are dead ends:
+- The **built-in executor** (`executor.py`, always active) never builds a
+  venv at all — `_run_python` unconditionally spawns
+  `[sys.executable, CHILD]` on the app's own interpreter. A manifest changes
+  nothing about where code runs there; its only effect is unlocking
+  `explain_missing_module`'s better error text. So under the built-in
+  executor alone, adding these 9 manifests is free for DMG users (no venv,
+  no lock consulted for interpreter choice) — but D176's test does not
+  distinguish "built-in executor only" from "fused engine also enabled", and
+  correctly so: once a user turns on `engine = fused` (or installs
+  `fused-render[fused]`), the SAME manifest starts mattering for real, and a
+  locked one then does force the wasted build+download D176 exists to catch.
+- `explain_missing_module` (`executor.py:155`) is deliberately gated on the
+  folder DECLARING the missing module ("blaming the environment for a user's
+  typo is worse than saying nothing", `executor.py:186`) — it will not fire
+  for an import that's merely *known to be `[bundled]`-only* with no
+  manifest at all. Loosening that gate to cover this case would reintroduce
+  the exact false-positive risk it was written to avoid (a real user typo
+  getting told "this is a lean-install problem").
+
+**Left undone**, rather than either breaking D176 silently or unilaterally
+relaxing it. Two real options for whoever picks this up, both requiring a
+product call this branch should not make on its own:
+1. Add the 9 manifests anyway and extend D176's necessity test with a named,
+   reasoned exemption list (same shape as `_OPTIONAL_IMPORTS` in
+   `test_engine_requirements.py`) for folders whose declaration exists only
+   to serve users without `[bundled]` — accepting the venv-build+download
+   cost for DMG/full-bundle users as the tradeoff.
+2. Leave these 9 templates undeclared and accept they stay
+   broken-with-a-bare-traceback on a lean/wheel-only install (same failure
+   mode as today) until `[bundled]` (or an equivalent) is actually
+   obtainable on that install path.
+
+No `pyproject.toml`/`uv.lock` files were left behind for any of the 9 —
+the trial `autocad_viewer/pyproject.toml` was deleted after the test run
+above. Re-run recipe for a future builder: write the manifest per the
+per-folder dependency lists above (full app-dist import set per folder, not
+just what's missing — `test_a_declared_environment_is_complete` requires the
+COMPLETE set once any manifest exists, core deps included, no baseline
+credit, D172), then `.venv/bin/python -m pytest tests/test_bundle_contents.py
+tests/test_engine_requirements.py -k <folder>` to re-confirm the D176
+conflict before deciding which of the two options above to take.
+
+**Item 4 (CI gates) — done.** Ported the three gates from the sibling
+openfused repo's `.github/workflows/ci.yml` (`local-extra`/wheel/d68ddb45's
+import-weight technique), adapted to this repo's job graph:
+
+- `minimal-install` (new job in `.github/workflows/test.yml`, after
+  `fused-engine`): `pip install -e ".[dev]"` (no `[bundled]`/`[fused]`), then
+  an explicit `python -c "import fused_render.cli"` +
+  `create_app(tempfile.mkdtemp())`, then `tests/test_import_weight.py`
+  (new file), then a real boot of `python -m fused_render.cli serve
+  --port 8781 --no-browser` and a `curl -sf http://127.0.0.1:8781/api/config`
+  retry loop, killed after.
+- `wheel` (new job, same location): `uv build --wheel` (this repo's build
+  uses hatchling + a custom hook in `scripts/hatch_build.py` that shells to
+  npm itself for a non-editable build — confirmed by reading the hook, so
+  the job needs Node 22 but does not need the `frontend` job's shell-dist
+  artifact), asserts `fused_render/static/shell-dist/index.html` and
+  `fused_render/skills/` are present in the built wheel via `unzip -l | grep
+  -q`, installs into `/tmp/fr-wheel-venv` via `uv pip install`, `cd /tmp`,
+  boots `fused-render serve --port 8782 --no-browser`, same curl retry loop.
+- `tests/test_import_weight.py` (new file): the d68ddb45 technique —
+  `sys.meta_path.insert(0, _BlockHeavy())` in a subprocess (`sys.meta_path`
+  is process-global and the suite runs under pytest-xdist, so mutating it
+  in-process would leak into whatever else that worker imports next),
+  `find_spec` raises `ModuleNotFoundError` for any HEAVY root, HEAVY =
+  `{numpy, pandas, requests, openpyxl, pptx, msgpack, fpdf, drain3,
+  botocore}` — every one a `[bundled]`-only distribution today (re-checked
+  against `pyproject.toml`'s `bundled` extra). Deliberately excludes
+  `pillow`: it is a CORE dependency on `sys_platform in {"win32", "linux"}`
+  (the capture-backend entries around pyproject.toml:120), so blocking it on
+  the Linux CI runner this test actually runs on would not be testing a lean
+  install — it would just always pass regardless of whether the code path
+  under test needs it. `fused_render.cli` and `fused_render.server` are
+  asserted importable under the block.
+- `test-status`'s aggregator `needs:`/result-check was extended to include
+  both new jobs (they gate on `app` like `fused-engine`, no legitimate
+  "skipped" outcome, same treatment as `test-python`/`fused-engine`/etc.).
+
+Local verification actually run, not just read: `tests/test_import_weight.py`
+passed against the current dev `.venv` (which HAS `[bundled,fused]`
+installed) — confirming the block genuinely makes the import fail rather than
+passing by accident (a `sys.modules`-absence check would have false-passed
+here regardless of whether the code was reachable). The full frontend was
+built locally (`cd frontend && npm install && npm run build` — the
+`setting-up-dev-env` skill's documented one-time step, no dev server
+started), then the `minimal-install` boot step was run for real (`python -m
+fused_render.cli serve --port 18781 --no-browser` in the background, curl
+retry loop, `kill` + `wait` after) and succeeded: `GET /api/config HTTP/1.1"
+200 OK`, clean shutdown. The `wheel` job's steps were also run for real:
+`uv build --wheel` (which shells to npm itself, confirmed by reading
+`scripts/hatch_build.py`'s `ShellBuildHook.initialize`) produced
+`dist/fused_render-0.5.82-py3-none-any.whl`; `unzip -l` confirmed both
+artifact paths present (32 `shell-dist` entries including `index.html`, 18
+`fused_render/skills/` entries); `uv venv --python 3.12
+/tmp/fr-wheel-venv-smoke` + `uv pip install` installed the wheel cleanly.
+
+**That last step surfaced a real, unscoped, high-priority bug — not fixed
+here, flagged for a follow-up.** Booting the installed wheel from `/tmp` (no
+extras) crashed at FastAPI startup:
+
+```
+ModuleNotFoundError: No module named 'cryptography'
+  File ".../fused_render/server/app.py", line 1032, in _startup_update_dev_manager
+    update.start()
+  File ".../fused_render/update/__init__.py", line 50, in start
+    from fused_render.update import mac
+  File ".../fused_render/update/mac.py", line 67, in <module>
+    from fused_render.update import common
+  File ".../fused_render/update/common.py", line 28, in <module>
+    from cryptography.exceptions import InvalidSignature
+ERROR:    Application startup failed. Exiting.
+```
+
+Root cause: `update/__init__.py:start()` unconditionally imports
+`fused_render.update.mac` when `sys.platform == "darwin"` (no try/except),
+and `mac.py` imports `common.py` at module load, which does `from
+cryptography.exceptions import InvalidSignature` / `from
+cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey`
+at the top level (the self-update manifest's ed25519 signature check) — also
+with no guard. `cryptography` is not a core dependency anywhere in
+`pyproject.toml`; it only arrives via `[dev]` (test tooling) or, per item 1's
+finding, transitively through `mcp` in `[bundled]`/`[fused]`. A bare `pip
+install fused-render` on **any macOS** (not just x86_64 — this is unrelated
+to the item 1 version ceiling) has none of those, so the server's own
+startup lifespan (`_startup_update_dev_manager`, `app.py:1032`) crashes the
+whole process before it ever serves a request.
+
+This is the actual remaining blocker for this spec's stated goal — item 1
+fixes dependency *resolution* on x86_64 macOS, but the installed app still
+cannot *run* on any Mac without `[dev]`/`[bundled]`/`[fused]` also being
+installed. It surfaced only because this item's CI gates do a REAL boot,
+which items 1–3 never do. The two new CI jobs run on `ubuntu-latest`
+(matching the sibling repo and every other non-desktop job in this
+workflow), so this darwin-only crash will NOT reproduce there — CI will be
+green on every PR despite the bug being real; catching it in CI would need a
+`macos-latest` leg, which is outside this item's stated scope (port the
+sibling's three gates, adapted — not add new platform coverage) and a real
+runner-cost/scope tradeoff, so it was not added unilaterally.
+
+Not fixed in this branch: it touches a security-critical,
+signature-verification import path (`update/common.py`'s ed25519 manifest
+check) and deserves its own reviewed change, not a rushed patch riding along
+with the CI-gates commit. The likely-safe shape, for whoever picks this up:
+guard the `from fused_render.update import mac` import in
+`update/__init__.py:start()` (or the `cryptography` import inside
+`update/mac.py`/`common.py` itself) with `except (ImportError,
+ModuleNotFoundError)`, treating a missing `cryptography` the same as the
+module's own documented "nothing to swap" no-op convention (`manager()`
+already tolerates `mac.manager()` returning `None`) — log once, disable
+self-update, let the server boot. Repro: build a wheel (`uv build --wheel`),
+`uv venv /tmp/x && uv pip install --python /tmp/x/bin/python dist/*.whl`,
+`cd /tmp && /tmp/x/bin/fused-render serve --no-browser` on a real Mac with
+no other extras installed.
+
+### Follow-up (2026-09-23): the bare-install crash fixed, plus a macOS CI leg
+
+Picked up the flagged fifth finding above. Fixed in `fused_render/update/common.py`:
+the `cryptography` import is now inside `try/except ModuleNotFoundError`,
+checked on `exc.name == "cryptography"` (a genuinely broken install — present
+but corrupt — still raises; only a truly absent package is swallowed).
+`CRYPTO_AVAILABLE` records which branch ran. `verify_signature()` raises
+`RuntimeError` if it is somehow called while `CRYPTO_AVAILABLE` is False,
+rather than silently skipping the check — the security property (no update
+path that ships bytes unverified) is preserved, not traded for boot safety.
+
+`mac.start()`/`linux.start()` each gained the same guard, first thing, before
+the existing "nothing to swap" bundle/AppImage check: if `cryptography` is
+absent, log a WARNING once and return `None`, exactly like the existing
+unpackaged-dev-run no-op. `update/__init__.py` needed no change — with
+`common.py` fixed, importing `mac`/`linux`/the win32 supervisor updater no
+longer raises on any platform, so the platform dispatch already reaches the
+per-module guard correctly.
+
+Verified for real, not just reasoned about: `uv build --wheel`, installed the
+built wheel into a throwaway venv with `uv pip install --python
+<venv>/bin/python dist/*.whl` (no extras), confirmed with `python -c "import
+cryptography"` that the venv genuinely lacks it, then `cd /tmp &&
+<venv>/bin/python -m fused_render.cli serve --port 8971` — booted and served
+`/api/config` as 200. Separately confirmed the log line fires
+(`logging.basicConfig(level=WARNING); fused_render.update.start()` prints the
+"cryptography is not installed..." warning and returns `None`).
+
+Added `.github/workflows/test.yml`'s missing macOS leg for this class of bug:
+`minimal-install` is now a `strategy.matrix` over `[ubuntu-latest, macos-14]`
+rather than a second, hand-duplicated job — same steps run on both, so they
+cannot drift apart. `macos-14` is pinned explicitly (not `macos-latest`),
+with a comment explaining why: this repo's `macos-desktop` job carries its
+own history of a floating-image Python-launch failure (D468, macos-14 vs. a
+bundled framework Python), and while that specific failure mode doesn't apply
+here (this job never bundles its own interpreter, only whatever
+`actions/setup-python` installs), the runner image is pinned on the same
+general principle rather than left to float. A comment in the workflow also
+says explicitly not to delete the macOS leg as "redundant" with
+`ubuntu-latest` — it is the only leg that exercises `update/mac.py`'s import
+chain on a lean install; `sys.platform != "darwin"` means `ubuntu-latest`
+structurally cannot catch this class of bug.
+
+`test_import_weight.py` and its CI wiring into `test-status` were left as the
+previous builder built them — `needs.minimal-install.result` already
+aggregates across the whole matrix (any leg failing fails the aggregate), so
+`test-status` needed no change.
+
+New tests: `test_mac_update.py::test_start_noop_when_cryptography_is_unavailable`,
+`test_linux_update.py::test_start_noop_when_cryptography_is_unavailable`, and
+`test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`.
+All scoped update/*-test files plus the new tests pass locally (119 passed,
+2 skipped — the 2 are pre-existing POSIX-only skips on this run's platform,
+unrelated to this change).
+
+## D888 — Quiet notifications, round 2: no more start or success popups, only failures
+
+D-C (SPEC-quiet-notifications.md, this same file's earlier "Quiet
+Notifications" work) already earned the panel its quiet floor: a folded
+"Recent" section for successes (D-B, later reversed 2026-09-17 — see the
+`isPopupSuppressed` code comments in `jobs.ts`), presence suppression, and a
+multi-member group's own pop-on-start/pop-on-failure rule. Two sources of
+noise survived that round: a job crossing into a *successful* `done` still
+popped a floating card (every model download, AI render, index scan,
+self-update, etc.), and a multi-member group's first running member still
+popped a "started" card (two clustered `sys:index:*` scans, a parallel AI
+image/video batch). Both were reported as chatter the Activity chip's own
+progress line already made redundant — the chip counts up and shows a
+running total the instant anything starts, and its row stays in the panel
+until dismissed, so a floating card announcing the same fact added nothing
+a user needed to see arrive as a toast.
+
+Changed, in `frontend/src/platform/lib/jobs.ts`:
+
+- `popupJobs` now excludes every `state === "done"` job outright, for every
+  job kind, regardless of `tier` — a `done` job never pops any more. This
+  subsumes the old `tier === "silent" && state === "done"` gate (silent was
+  a special case of an already-more-general rule) and makes the
+  presence-suppression check (`isPopupSuppressed`/`isOpenAnywhere`) dead for
+  this call path: `isPopupSuppressed` only ever returns non-`false` for a
+  `done` job, and no `done` job reaches it any more. `popupJobs`/`popupTick`
+  both dropped their `isOpenAnywhere` parameter as a result.
+- `groupPopupTick`'s START edge (a group going from no running members to
+  some) is removed entirely, along with the `GroupPopupState` fields it
+  needed (`runningMemberIds`, `lastStartPopAt`) and the key-churn-immunity
+  machinery built around them. Only the FAILURE edge remains: any member
+  entering `error`/`cancelled` (`effectiveTier === "attention"`) still pops,
+  same as before, and the Finding-8 shrink-to-one carry-forward (a group's
+  already-popped failure survives its sibling being dismissed/swept) is
+  unchanged.
+
+Kept unchanged, on purpose: `UpdateProgressCard` (the self-update's own
+progress card is not a notification, it is the install's own UI); the
+Activity chip's label/count/progress line and its hover-preview/click-pin
+behavior (`platform/lib/statusChip.ts`); the Notifications chip and
+`RepoUpdatesDock`'s terminal-jobs feed (`ActivityDock`'s `onTerminalRef`
+plumbing is untouched — a successful job still gets a row there, it simply
+no longer also pops a floating card); schedule toasts
+(`platform/lib/schedule-toast.ts`); the "engine retired (idle)" toast in
+`ActivityDock.tsx`; and app-level `notify()` toasts. `isPopupSuppressed` is
+kept as an exported, independently-tested pure function (other doc comments
+in `presence.ts`/`RepoUpdatesDock.tsx`/`task-status-notify.ts` still
+reference it) even though nothing in the popup pipeline calls it any more.
+
+`SPEC-quiet-notifications.md`'s D-C bullet and its two restatements (§3's
+"Pop rule (D-C)", and the verification checklist) are annotated in place
+with a "Reversed 2026-09-23 (D888)" note each, rather than rewritten, so the
+original scoping decision stays legible next to what changed and why.
+
+Tests: `frontend/src/platform/lib/jobs.test.ts` (117 pass) and
+`frontend/src/shell/ActivityDock.test.tsx` (9 pass), run individually per
+this repo's `mock.module`-is-process-wide convention. Every generic
+popup-mechanics test that used to exercise a `done` job as its terminal
+state (seeding, dedup, latest-wins, id-reuse) was rewritten against
+`error` instead, since `done` can no longer demonstrate those mechanics at
+all. Every `groupPopupTick` START/key-churn test was removed outright (the
+edge they covered no longer exists); the FAILURE and
+ordinary-completion/whole-group-completion tests were kept unchanged.
+`jobs.test.ts` additionally gained an `installDomShim()` call (converting
+its static `@platform/lib/jobs` import to a dynamic one, matching
+`restart-store.test.ts`'s own pattern) — the file could not previously run
+standalone at all, only as part of the full suite, because `jobs.ts`
+transitively imports `router.ts` (`api.ts` -> `presence.ts` -> `router.ts`),
+which reads `location` at module scope. A full `bun test` run (339 files,
+7174 tests) stayed green throughout.
+
+### Code-review fix-up (2026-09-23): six review findings on PR #1320
+
+Picked up a code review of this branch's items 1 and 4 and implemented all
+six fixes as directed — no redesign, every mechanism below was the
+reviewer's own decision, not derived here. Six commits, TDD where a test
+was involved.
+
+1. **`minimal-install` was decorative.** It installed `.[dev]`, and `[dev]`
+   declares `cryptography` on every platform, so the macOS leg could never
+   reproduce the boot crash the job exists to catch — reverting
+   `update/common.py`'s fix would have stayed green. Changed to
+   `pip install -e .` + `pip install pytest` (no pytest-xdist: the job's own
+   pytest invocation doesn't use `-n`), and added an explicit assertion step
+   before the import-check step that `python -c "import cryptography"`
+   fails. Confirmed the found-wrong premise is real: a bare `[dev]` install
+   on this checkout does have `cryptography` present.
+
+2. **`test_import_weight.py`'s HEAVY set.** The docstring already claimed
+   google-auth collapsed to `google`, but `google` was never actually in the
+   set — added it, plus `mcp` and `fused` (both `[bundled]`-only, both
+   verified locally to still yield IMPORT_OK when blocked). Left pillow out,
+   per the existing comment (core on win32/linux).
+
+3. **`test_import_weight.py`'s own blind spot.** The child subprocess never
+   imported anything from `fused_render.update`, and `cryptography` was not
+   in HEAVY, so this PR's own regression (an unguarded top-level `import
+   cryptography` in `update/common.py`) could have shipped without any gate
+   in this PR catching it. Added `cryptography` to HEAVY and had the child
+   import `fused_render.update.mac`/`.linux` unconditionally (both pure
+   Python, import cleanly on any host platform — verified locally, no
+   platform-specific skip needed, so the brief's fallback instruction
+   ("report back, don't skip") never had to be exercised).
+
+4. **`verify_signature()`'s `RuntimeError`.** Callers
+   (`supervisor/_win32/update.py:95`/`:119`, and the manual
+   `/api/update/check` route) catch exactly `(OSError, ValueError,
+   http.client.HTTPException)`, so a `RuntimeError` from a missing
+   `cryptography` escaped both the tray "Check for updates" handler and the
+   API route instead of producing the existing "could not check for updates
+   right now" dialog. Changed to `ValueError` per the reviewer's directive —
+   still a raise (never a silent skip of the security check), blast radius
+   kept to `common.py` alone. Updated
+   `test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`
+   (TDD: watched it fail against the RuntimeError-raising code first).
+
+5. **`lan_tls.py`/`lan.py` bare-install 500.** `lan_tls.py`'s docstring
+   claimed cryptography "is already a dependency" — false, that's this
+   whole PR's premise — corrected. `GET /lan/ca.pem` and `GET /api/lan/tls`
+   called into `lan_tls` unguarded. **Found something the brief didn't
+   state:** `lan_tls.py` has NO top-level `cryptography` import — it imports
+   lazily inside `ca_pem()`/`ca_fingerprint()` themselves — so wrapping only
+   the `from fused_render import lan_tls` line in `try/except
+   ModuleNotFoundError` (which is what a literal reading of the brief's
+   phrasing suggested) would not actually have caught anything; the
+   `ModuleNotFoundError` only fires from the CALL. The `try` block has to
+   wrap the call too. Verified this the hard way: wrote the tests first with
+   only the import wrapped, watched them still fail with an uncaught
+   `ModuleNotFoundError` escaping `_route`, then widened the `try` to cover
+   the call and re-ran green. Both routes now return `PlainTextResponse(...,
+   status_code=503)`, matching this file's existing convention (the "phone
+   grid not built" 503 a few lines above `LanApp._route`) rather than an
+   `HTTPException` — this file's routing is a hand-rolled `_route()` method
+   returning `Response` objects directly, not FastAPI route handlers, so
+   `HTTPException` isn't the local idiom. The other three call sites
+   (`lan.py:1017`, `:1197`, `:1457`) are already inside broad `except
+   Exception` and were left untouched, per instruction. New tests in
+   `tests/test_lan_mdns.py` (the only existing lan test file with content
+   that fit — `test_engine_requirements.py`'s one `lan` mention is an
+   unrelated mDNS-dependency-declaration check).
+
+6. **Stale job count.** `test.yml:924`'s comment said "these six always run"
+   under a loop that now iterates eight jobs
+   (`frontend`/`test-python`/`test-python-windows`/`fused-engine`/`minimal-install`/`wheel`/`linux-desktop`/`bundle-contents`).
+   Corrected to "eight".
+
+Scoped tests only, per instruction: `tests/test_import_weight.py`,
+`tests/test_win_supervisor_update.py`, `tests/test_mac_update.py`,
+`tests/test_linux_update.py`, `tests/test_lan_mdns.py` — 139 passed, 2
+skipped (pre-existing platform skips), across all six commits' final state.
+Workflow YAML re-parsed with `yaml.safe_load` after each `test.yml` edit.
+Did not run the full suite — that's the orchestrator's job. Did not touch
+the `fused` version pin, `fused_render/templates/*`,
+`tests/test_bundle_contents.py`, `tests/test_template_locks.py`, or
+`fused_render/index/`, all deliberately out of scope per instruction.
+
+## Item 2 (fused pin) deferral resolved: bumped to 2.9.3b9 (2026-09-23)
+
+The `2.9.3b8`→`2.9.3b9` deferral recorded above no longer holds. At the
+time it was written, `2.9.3b9`'s metadata existed on PyPI but the release
+was absent from the simple index (`https://pypi.org/simple/fused/`), which
+is what pip/uv actually resolve against — so `uv pip compile --extra
+fused` failed with "no version of fused==2.9.3b9" even though the wheel
+itself was live on files.pythonhosted.org. That was an index-propagation
+lag, not a withdrawn release, and it has since caught up.
+
+Verified with a real install, not a metadata fetch (a metadata fetch is
+not a resolve): `uv pip install --no-cache --refresh 'fused==2.9.3b9'` in
+a fresh 3.12 venv succeeds, and `uv pip show fused` reports `2.9.3b9`.
+(`fused.__version__` itself misreports as `2.8.2.dev...` — a known
+upstream quirk, not evidence of anything; `pip show`/`uv pip show` is the
+source of truth for the installed version.)
+
+Bumped `fused==2.9.3b8` → `fused==2.9.3b9` in both `pyproject.toml`'s
+`[bundled]` and `[fused]` extras (the two pins the earlier entry's own
+byte-identical-pin comment requires stay in lockstep). Re-ran the full
+resolve this PR's platform-conditional `cryptography<=48.0.1` ceiling
+(x86_64 macOS, item 1) was meant to guard, since a `fused` dependency
+change is exactly the kind of thing that could collide with it:
+
+- `uv pip compile pyproject.toml --extra bundled` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1` (unconstrained, arm64 host).
+- `uv pip compile pyproject.toml --extra bundled --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1` (ceiling still binds correctly).
+- `uv pip compile pyproject.toml --extra fused` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1`.
+- `uv pip compile pyproject.toml --extra fused --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1`.
+
+No collision: `fused` 2.9.3b9 does not pull in a `cryptography` floor
+above the x86_64 ceiling. Grepped the whole worktree for `2.9.3b8`
+afterward — the only other hits were prose in `LEAN_WHEEL_SPEC.md` (its
+"Deferred" note, updated separately) and this file's own history above,
+which is append-only and was left untouched. No lockfile, test, or
+template manifest pins the version string.
+
+Scoped tests only, per instruction: `tests/test_engine_requirements.py`,
+`tests/test_bundle_contents.py` — 436 passed, 0 failed, 0 skipped. Did not
+run the full suite — that's the orchestrator's job. Did not touch
+`fused_render/templates/*`, `tests/test_template_locks.py`,
+`fused_render/index/`, or anything else outside the pin bump and its
+directly-affected docs, per instruction.
+
+## D889 — `fused-render://open?file=` opens a local `.fused` for editing inside the shell: clone unasked, overwrite only from a modal
+
+Render App (fused-render-lite) only runs a `.fused`. Its title-bar Edit
+button needs a way to say "open this file in the editor, as a copy I can
+change" — and fused-render already has every half of that except the link:
+the `open` action with query-param payloads (D110 said future kinds become
+new params on it), `appfile.clone_app_file` / `overwrite_app_file` (D397,
+the preview header's Clone and Clone & overwrite), and the OS handlers on
+all three platforms that ferry any `fused-render:` link to `/clone?src=`.
+
+Decided:
+
+- **Shape**: `fused-render://open?file=<absolute .fused path>`. The path is
+  percent-encoded exactly once by the sender (`quote(path, safe="")`) and
+  `unquote`d exactly once here, taken verbatim to end-of-string like `git=`.
+  Only an absolute `.fused` path parses.
+- **No gated page** (owner's call — the first cut reused `clone.html` as a
+  confirm/progress page and was rejected: "we do not want a separate gated
+  page"). `GET /clone` answers a 303 INTO the running shell with the path as
+  `?_edit_appfile=` — to the existing copy's entry page when there is one,
+  else Home. The GET writes nothing (D3: every write stays an X-Fused POST
+  from the same-origin shell), which is why a first clone flashes Home for a
+  moment before the shell moves to the copy. A malformed or unreadable path
+  goes to Home carrying the path verbatim: one error surface, in-app.
+- **The shell does the work** (`shell/EditAppFileBoot.tsx`, mounted once
+  beside `UpdateNotifier`): read the param once at module init, strip it
+  BEFORE any async work so a reload or Back never replays the hand-off, then
+  probe `/api/appfile/clone`. No copy → `POST /api/appfile/clone`, land on
+  the copy's entry page (Preview.tsx `land`'s rule). Copy exists → the copy
+  is already on screen; a `ConfirmDialog` over it asks whether to overwrite
+  it with the `.fused` — *Overwrite* → `POST /api/appfile/overwrite` (merge
+  semantics, D397) then a reload of the entry page (a boot-time hand-off has
+  no module-store state to lose, so router.ts's reload caution does not
+  apply); *Cancel*/close → nothing written. The Edit button's common case is
+  "I re-exported the app and want to keep editing the newest version":
+  silently landing on the stale copy hid the newest files, silently
+  overwriting would eat edits, and the question fires only when there is
+  something to lose.
+- **No confirm on a first clone** — the deliberate divergence from DL-3. The
+  git link confirms because it pulls arbitrary remote content onto the
+  machine. Here the payload is a file already on disk that the user just had
+  open in Render App; Finder double-clicking that same file extracts and runs
+  it in fused-render with no prompt today, so a confirm on the clone would
+  guard less than the existing path already allows. The browser's own "open
+  fused-render?" prompt on a custom scheme still stands between a web page
+  and this link.
+- `/api/clone/info` and `POST /api/clone` stay git-only; `clone.html` is
+  untouched. No change to `app.py`, `winopen.py` or the supervisor.
+
+Skew: a FusedRender older than this change lands a `file=` link on the
+clone page's error ("unsupported fused-render link"); Render App's button
+does not version-check, so the page's error text is the message.
+
+## fused pin bumped to 2.9.3b10: `fused[aws,mcp]` + direct `anthropic` (2026-09-25)
+
+fused 2.9.3b10 (https://github.com/fusedio/fused/releases/tag/fused-py-v2.9.3b10)
+moved mcp, pyarrow/pandas/numpy, boto3 and pyjwt[crypto]/cryptography out of
+its core requirements and behind opt-in extras (`aws`, `mcp`, `verify`, ...).
+It has no `ai` extra (pip only warns on an unknown extra, so `fused[ai,aws]`
+would have silently dropped anthropic).
+
+- `[bundled]` and `[fused]` now pin `fused[aws,mcp]==2.9.3b10` (still
+  byte-identical, `python_version >= "3.11"`), plus `anthropic>=0.40.0`
+  directly. Not `fused[verify]`: that extra also pulls `ty`, which must not
+  ship in the bundle.
+- The direct `mcp<2` pin is dropped: fused's own `mcp` extra carries
+  `mcp>=1.8.0,<2`.
+- The platform-conditional `cryptography<=48.0.1` ceiling (x86_64 macOS) is
+  kept. cryptography now arrives via pyjwt[crypto] from fused[aws] and mcp;
+  `uv pip compile --python-platform x86_64-apple-darwin` for both extras
+  resolves `fused==2.9.3b10`, `cryptography==48.0.1`; the arm64 compile
+  resolves `cryptography==50.0.1`.
+- `scripts/setup_py2app.py`'s derived force-list used to skip every
+  extra-gated requirement, so with `mcp<2` gone it would have stopped reaching
+  mcp's closure (and boto3/pyjwt behind fused[aws]). The closure walk is now
+  extras-aware: it follows `name[extra]` requests and evaluates markers with
+  `extra == <requested>`.
+- New tests: the fused pin must request `mcp`; every requested extra must be
+  in the installed fused's `Provides-Extra`; `anthropic` is byte-identical in
+  both extras.
+
+## Terminal hook: open the drawer in a folder / run a command in it (2026-09-30)
+
+Four pieces wired end to end: `POST /api/terminal/{sid}/input` (writes raw
+bytes into the pty), `terminalDockStore`'s one-slot pending-request queue
+(`openTerminal`/`takePendingTerminalRequest`), `TerminalDrawer`'s consume-once
+send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
+
+- **Delivery pattern: stop-at-first-match, not broadcast.** `runtime.js`'s
+  `noteOpenTerminal` climbs the same-origin ancestor chain and calls the
+  first `_fusedOpenTerminal` it finds, then stops — the same choice
+  `noteAskClaude`/`_fusedClaudeAsk` made over `noteSnapshotSelected`'s
+  broadcast-to-every-ancestor pattern, for the same reason: opening a
+  terminal (or running a command in one) is a real, non-idempotent shell
+  action, not state every ancestor should independently observe.
+- **`sendPendingRequestIfAny`'s `createdCwd` opt.** A brand-new session is
+  created directly in the pending request's own `cwd` (no separate `cd`
+  needed), so the create path calls `sendPendingRequestIfAny(id, {
+  createdCwd: createCwd })`; the `cd` is skipped only if the request
+  `take()` actually returns still carries that same `cwd` — compared against
+  the taken request, never the one peeked before the create POST, because a
+  newer request can replace the one-slot pending request during that
+  `await`. A reattach to an existing/cached session (which was not created
+  in that directory) always sends the full `cd '<cwd>' && <command>`.
+- **Client-side Windows gating exists for the terminal chip/drawer/shortcut
+  and the explorer's "Open in Terminal" row** — `platform/lib/platform.ts`'s
+  `isWindows` (same `userAgentData`/`userAgent` detection as `isMac`,
+  anchored `/^win/i` so it cannot match "Darwin"). `App.tsx` mounts neither
+  `TerminalDrawer` (and, with it, its `Ctrl+`` toggle listener) nor
+  `TerminalDock`'s chip when `isWindows`; `EntryActionsMenu.tsx`'s `terminal`
+  row is empty under the same check. This is best-effort and client-side
+  only — the server 501s on Windows regardless (`terminal_profiles.py`,
+  `os.name == "nt"`) and remains the real guard, surfaced through
+  `TerminalDrawer`'s `createError` banner if the UA check is ever wrong.
+  `runtime.js`'s `terminalUnsupportedReason()` is the separate,
+  page-author-facing check for `fused.terminal.open`/`.run`, using the same
+  anchored regex (it previously used an unanchored `/win/i`, which matched
+  "Darwin", macOS's own `uname` string) and now shares one
+  `noteTerminalRequestOrReject` helper with both calls instead of repeating
+  the reject/note/resolve sequence twice.
+- **`window._fusedOpenTerminal` is not installed under `IS_EMBED`.**
+  `App.tsx` mounts `TerminalDrawer` only outside embed, so an embedded page's
+  `fused.terminal.open()` gets the same "no shell host" rejection a
+  standalone page gets, not a promise that resolves into a drawer that never
+  appears.
+- **Explorer's "Open in Terminal" lives in `EntryActionsMenu.tsx`'s
+  `useAppActionRows`, in its own returned `terminal` array** (mirroring
+  `embed`), not folded into `app`: it acts on the folder/file itself, not on
+  whether it happens to be an app, so it must show on a plain folder too.
+  Each caller (`Listing.tsx`, `Preview.tsx`) slots it into the `open`
+  bar-menu group (Reveal in Finder, Open in New Tab, the splits) — "the same
+  place, elsewhere" is exactly what the row does. `dir` (the hook's existing
+  folder-vs-parent-of-file derivation) is already the right cwd for both
+  callers, so no new path logic was needed. Empty under `IS_EMBED`, for the
+  same reason `_fusedOpenTerminal` is not installed there.
+- **`fused.terminal.*` in `docs/EXPORT.md`'s portable-subset table**: ❌, not
+  a blocking export error (dotted call, like `fused.capture.*`) — the local
+  runtime already rejects with a plain Error when there is no shell host, so
+  the hosted stub does the same unconditionally; gate any UI on
+  `fused.env === "local"`.
+- **`shell/terminalDockStore` is in `check-boundaries.mjs`'s
+  `SHELL_OPEN_TO_APPS` allowlist**, alongside `tasksPulse`/`tasks-lib`: the
+  explorer's "Open in Terminal" row calls its `openTerminal` directly rather
+  than importing `TerminalDrawer.tsx` or any other shell component, and the
+  store itself imports only React's `useSyncExternalStore` — a pure module
+  with no shell component riding along, the same shape that earns the other
+  allowlisted modules their entry.
+- **Directory rows' "Open in Terminal" opens the directory itself, not its
+  parent.** `Preview.tsx`'s `fileGroups()` cwd is `stat.is_dir ? fsPath :
+  dirname(fsPath)` — a bare `dirname(fsPath)` (right for a file) opened a
+  directory's own PARENT when reached through `FallbackPreview`'s
+  unconditional `onContextMenu`. The duplicate "Open in Terminal" row
+  `buildFileMenu` assembled from `appRows.terminal` on top of `fileGroups()`'s
+  own `own.open` (which already carries one) is removed from `open`.
+- **`TerminalDrawer` re-verifies its held session id on every closed→open
+  transition**, not just once per page load (`wasOpenRef`/`useEffect`
+  resetting `sessionId` to `null` on a `true`→`false`→open transition): the
+  shell can die, or a dev-server restart can reap the whole registry, while
+  the drawer is closed and no mounted `TerminalView` is around to observe an
+  exit frame and clear the cached id. Resetting costs nothing —
+  `loadState().sessionId` still holds the cached id — so the verify-or-create
+  effect re-reads and reattaches (or re-creates) on the next open instead of
+  handing `TerminalView` a dead id.
+- **Failed `sendPendingRequestIfAny` calls surface in the drawer's error
+  banner** (`reportPendingSendFailure`) instead of the previous
+  `.catch(() => {})`: a 409 (the pty's foreground process isn't the shell
+  itself — see below) gets its own actionable line, anything else falls back
+  to the generic "Couldn't send the pending terminal request" line, rather
+  than a request silently vanishing with nothing typed and no explanation.
+- **`POST /api/terminal/{id}/input` 409s while the shell isn't the pty's
+  foreground process group.** `PtySession.shell_is_foreground()` compares
+  `os.tcgetpgrp(master_fd)` against `os.getpgid(proc.pid)` — true only when
+  the shell itself, not some child it's running, currently owns the
+  terminal. Without this, "open in terminal / run a command" could type
+  `cd ... && cmd\r` into whatever foreground program the shell is already
+  running (e.g. `sleep 30`) instead of refusing. But the check goes stale
+  the instant a session is created: the child's own `setsid()` (inside
+  `_pty_exec_helper.py`) races the create POST's response landing, so
+  `tcgetpgrp` reads back `0` (no exception) until it lands, and an
+  interactive login shell's rc files (nvm, a git-aware prompt) can briefly
+  run a foreground job of their own right after that — so
+  `fused.terminal.run(cmd)` into a brand-new shell, the headline use case,
+  could spuriously 409. The route gives it a grace period instead of
+  checking once: `PtySession.wait_shell_foreground(timeout)` polls
+  `shell_is_foreground()` every 50ms for up to 1.5s (a plain `time.sleep`
+  loop — the route is a sync `def`) before the route gives up and 409s. A
+  dead session still 404s immediately (`session.alive` short-circuits both
+  `shell_is_foreground()` and the poll loop). `test_terminal_routes.py`'s
+  plain-input-right-after-create coverage needs no pre-poll of its own
+  anymore; its still-busy coverage (`sleep 30` holding the foreground) waits
+  for the child to actually take it, so the route's own 1.5s grace window
+  correctly times out and still 409s.
+- **The WS receive loop ignores a non-dict control frame** (`5`, `[1, 2]`
+  parsed as valid JSON but with no `.get`) instead of letting an
+  `AttributeError` propagate past `except WebSocketDisconnect` and kill the
+  whole socket over one stray frame; a resize whose `rows`/`cols` fall
+  outside `1..65535` is similarly ignored rather than reaching
+  `struct.pack`'s `"HHHH"` format, which raises `struct.error` outside that
+  range. `PtySession.resize()` carries its own `try/except struct.error`
+  guard as a second line of defense for any other caller.
+- **`terminal_profiles.resolve_profile()` falls through `$SHELL` → `/bin/bash`
+  → `/bin/sh`**, each checked with `executable()`, instead of trusting a SET
+  `$SHELL` unconditionally. A stale `$SHELL` (uninstalled, a path that never
+  existed on this machine) is not "the user asked for no terminal" — it
+  falls through to the next candidate, and only reports unsupported once
+  none of the three resolve.
+- **`platform/lib/api.ts`'s `deleteJson` is gone; `mutateJson` is exported
+  and takes `"PUT" | "POST" | "DELETE"` with an optional `body`.** It had
+  exactly one caller (`terminalSession.ts`'s `killTerminalSession`), so
+  there was no reason to keep a thin single-purpose wrapper duplicating
+  `mutateJson`'s header/body logic — `mutateJson` now only attaches
+  `Content-Type`/a JSON body when `body !== undefined`, which a bodyless
+  DELETE relies on.
+- **`TerminalView`'s xterm instance does not set `convertEol`.** The pty
+  already sends `\r\n` line endings (a real terminal, not raw `\n` text), so
+  forcing every `\n` to render as `\r\n` doubled blank lines that were
+  already CRLF.
+- **`TerminalView` swallows the drawer's own toggle chord before xterm sees
+  it** (`attachCustomKeyEventHandler`, `isDrawerToggleChord`): without this,
+  focus inside the terminal meant Ctrl+`` / Cmd+Shift+`` typed a backtick
+  into the shell instead of closing the drawer, since xterm's own keydown
+  handler ran before the drawer's document-level listener could. The
+  document-level listener itself is registered with `{ capture: true }` so
+  it fires before xterm's own (bubble-phase) handler regardless of DOM
+  order.
 
 ### Diffusers admission is unconditional — call-site audit + fix (2026-09-15)
 

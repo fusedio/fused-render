@@ -27,9 +27,24 @@
    scrolls inside itself. `min-height: 0` is what allows a flex child to be
    SHORTER than its content — without it this floors at its content height and
    the scroller never engages. Every ancestor already carries it (schedule.css
-   `.schedule-page`, `.schedule-main`). */
+   `.schedule-page`, `.schedule-main`).
+
+   THE SCROLLER IS THE BORDERED BOX (Akshil, 2026-09-16: "bring the scrollbar
+   inside the box"). It wore no border for a round and the border sat on the
+   `.tasks-list-frame` inside it, which put the bar in a column of bare page
+   BESIDE the box — a scrolling table whose bar is outside its own frame, which
+   is not what a scrolling table looks like anywhere else in this app. The bar
+   now runs down the inside of the border, where the reader expects it.
+
+   `flex: 0 1 auto`, NOT `1 1 auto`, and that is the whole reason the border
+   could not simply be moved here before: a growing scroller is the pane's full
+   height, so three tasks would be three rows adrift at the top of a box that
+   reached the fold. Shrink-only means the box is its content's height until the
+   content outgrows the pane, and only then does it stop and scroll — exactly
+   the hug the frame inside used to do, now done by the thing that has the
+   border. `min-height: 0` still lets it shrink past its content. */
 .schedule-page .schedule-main > .tasks-list {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   /* A wheel that reaches the list's end must STOP there. Without this the
@@ -38,22 +53,31 @@
      overshoot, which reads as the page saying "nothing to scroll" while the
      list is scrolling fine (Akshil, 2026-08-20). */
   overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
-/* The border is on a FRAME inside the scroller, not on the scroller. A bordered
-   scroller wears its bar inside its own border, which leaves a bar-wide column
-   between the rows' edge and the frame — every hairline stopped 10px short of
-   the box (Akshil, screenshot, 2026-08-27). With the frame inside, the bar
-   stands beside the frame and the rows run edge to edge. */
+/* THE FRAME KEEPS THE BORDER EVERYWHERE ELSE. The Explorer's Claude side panel
+   renders `.tasks-list-frame` on its own — the Tasks page's rows inside a
+   column that scrolls somewhere far above them (apps/claude/ui/Lists.tsx) — so
+   this is still where the box comes from for every caller that is not the List.
+   On the List the scroller above wears it, and the frame stands down rather
+   than drawing a second hairline one pixel inside the first. */
 .tasks-list-frame {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
-/* The scroller used to clip the row washes to the corners. The frame must NOT
+
+.schedule-page .schedule-main > .tasks-list > .tasks-list-frame {
+  border: 0;
+  border-radius: 0;
+}
+
+/* The scroller clips the row washes to its own corners. The frame must NOT also
    do it with `overflow: hidden`: the ring's unread-count tooltip hangs below
    the last row, and a clipping frame cut it off (Bugbot, 2026-08-27). So the
-   END rows round their own outer corners instead — one px inside the frame's
-   8px so the wash meets the border's inner edge — and nothing is clipped. */
+   END rows round their own outer corners instead — one px inside the box's 8px
+   so the wash meets the border's inner edge. */
 .tasks-list-frame > .tasks-node:first-child > .tasks-row {
   border-top-left-radius: 7px;
   border-top-right-radius: 7px;
@@ -64,6 +88,43 @@
 .tasks-list-frame > .tasks-node:last-child > :last-child {
   border-bottom-left-radius: 7px;
   border-bottom-right-radius: 7px;
+}
+
+/* AND THE LAST ROW'S COUNT TOOLTIP FLIPS UP, because the clip the note above
+   refuses is now the SCROLLER's and the scroller ends at the last row.
+
+   A `[data-tip]` panel (schedule.css) is an absolutely positioned `::before`
+   that opens `calc(100% + 6px)` below its ring. Anywhere but the bottom of the
+   content that lands on the rows underneath and is seen; on the ring that IS at
+   the bottom it lands outside the scroll box, and the reader has to scroll past
+   the end of the list to read it — the same cut `overflow: hidden` on the frame
+   once made (Bugbot, 2026-08-27), arriving by the other door now that the box
+   hugs its rows.
+
+   Only ONE ring can be at that edge: the last node's own row, and only while
+   that node is closed (an open one has its thread below it, so the panel has
+   somewhere to fall) — which is exactly what `> .tasks-row:last-child` says.
+   That one raises its panel above the ring instead. Preferred over padding the
+   frame's floor: 20px of dead page inside the border would move the bottom
+   hairline off the last row at every width, to make room for something that is
+   only there on hover. */
+.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child
+  [data-tip]:not([data-tip=""]):hover::before,
+.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child
+  [data-tip]:not([data-tip=""]):focus-visible::before {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* A ONE-ROW LIST HAS NOWHERE TO FLIP TO (Bugbot, PR #1174): its only row is
+   first and last at once, so a panel raised above it lands outside the box just
+   as one dropped below it does. But a box with one row in it has nothing to
+   scroll either, so it does not need to clip: `overflow: visible` here lets the
+   panel fall below the ring the ordinary way and be seen. `:not(:only-child)`
+   above is what keeps that row's panel pointing down. The bar stays declared
+   (`scrollbar-color`, schedule.css) and simply has nothing to draw. */
+.schedule-page .schedule-main > .tasks-list:has(> .tasks-list-frame > .tasks-node:only-child) {
+  overflow: visible;
 }
 
 /* Hairlines between TASKS only. A task and its thread are one thing, and a
@@ -113,7 +174,7 @@
   --tasks-row-pad-y: 10px;
   --tasks-msg-pad-y: 8px;
   --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
-  --tasks-row-gap: 10px; /* the flex gap every row here uses */
+  --tasks-row-gap: 4px; /* the flex gap every row here uses (10px until 2026-09-16: "consistent, 4px, no more") */
   --tasks-rail-w: 16px; /* the status ring's width — what a rail slot is sized to */
   --tasks-msg-indent: 13px; /* a message row's own left padding */
   --tasks-rail-x: calc(
@@ -131,6 +192,14 @@
   gap: var(--tasks-row-gap);
   padding: var(--tasks-row-pad-y) var(--tasks-row-pad);
   font-size: 13px;
+  /* ONE LINE BOX FOR EVERY WORD IN THE ROW (Akshil, 2026-09-18: "T056", the
+     title, the count and the time did not sit on one line). Flex centres each
+     child's BOX, and with `line-height: normal` every font draws its own box —
+     the monospace id 13px tall, the system title 16px, the 11px time 13px — so
+     the glyphs land at different heights even though the boxes are centred.
+     One explicit line height makes the boxes equal, and equal boxes centred
+     put the text on one visual line. */
+  line-height: 16px;
   cursor: pointer;
   transition: background-color 0.08s ease;
   /* What `.tasks-rowlink` below is measured against. The row's navigation is a
@@ -346,6 +415,62 @@ button.tasks-caret,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* First line of Claude's newest reply, filling the space after the title in the
+   List row only: grey, italic, same size. Gives way before the title does. */
+.tasks-title-reply {
+  flex: 1 1 0;
+  min-width: 0;
+  /* Twice the row gap between the title and the reply (Akshil, 2026-09-19):
+     the flex gap gives one, this margin gives the other. */
+  margin-left: var(--tasks-row-gap);
+  color: var(--fg-muted);
+  font-style: italic;
+  /* Thin (Akshil, 2026-09-19, screenshot): the reply reads as a quiet aside
+     next to the title, not as a second title. */
+  font-weight: 100;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* THE ROW'S HOVER CAPTION (hints.ts `renderTaskHint`): the title line and the
+   reply line whole, each in the style the row prints it in — same size, same
+   weight, same ink, same box — only allowed to wrap instead of clamp. The
+   panel widens for it: a full first line is longer than a 46ch caption. */
+.hint-panel.is-task {
+  max-width: min(90ch, 80vw);
+  font-size: 13px;
+  line-height: 16px;
+  padding: 6px 8px;
+}
+/* The Board card's reply-only caption (Akshil, 2026-09-20: "have a max-width
+   smaller, this max-width is just too big"): one italic line of reply, so the
+   plain caption's measure, not the row's 90ch. */
+.hint-panel.is-task.is-reply {
+  max-width: min(46ch, 60vw);
+}
+.hint-task {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  white-space: normal;
+}
+.hint-task-title {
+  font-weight: 500;
+  color: var(--fg);
+}
+.hint-task-reply {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-weight: 100;
+}
+
+/* With a reply in the row, the row's one spacer stops growing: the reply is the
+   element that takes the free width, the spacer keeps only its minimum. */
+.tasks-row:has(.tasks-title-reply) .tasks-grow {
+  flex-grow: 0;
 }
 
 /* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
@@ -723,6 +848,28 @@ button.tasks-caret,
    focus. `-4px/-6px` negative margins with matching padding, so growing the box
    costs no layout — the chip occupies the same space it did as a bare label and
    nothing beside it moves when the pointer arrives. */
+/* ONE FUNNEL FOR EVERY FILTER CHIP ON A ROW (Akshil, 2026-09-17). The folder
+   tag and the draft pill sit side by side at the row's right end and read as one
+   group of controls — the draft pill's own skin is the folder tag's "verbatim …
+   two nearly-identical pills with two different pressed states would be the one
+   thing this seat was chosen to avoid" (see `.tasks-draft-pill`, below). Two
+   different CURSORS would say the same wrong thing, so the value is named once
+   here and both chips take it.
+
+   Two-tone by construction: a black-outlined white funnel reads on the light
+   surface and on the dark one, which a single-colour cursor cannot — a cursor is
+   an image, resolved once, with no `currentColor` to follow. `pointer` rides
+   behind it as the fallback for anything that will not take an SVG cursor
+   (WebKit), so the worst case is the hand these chips used to wear. */
+:root {
+  /* Typicons' filter (react-icons `TiFilter`), drawn at 16px — the 24px funnel
+     before it was too big beside a 13px chip (Akshil, 2026-09-19). */
+  --cur-filter:
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24'%3E%3Cpath d='M19 6h-14c-1.1 0-1.4.6-.6 1.4l4.2 4.2c.8.8 1.4 2.3 1.4 3.4v5l4-2v-3.5c0-.8.6-2.1 1.4-2.9l4.2-4.2c.8-.8.5-1.4-.6-1.4z' fill='%23fff' stroke='%23000' stroke-width='3' stroke-linejoin='round'/%3E%3Cpath d='M19 6h-14c-1.1 0-1.4.6-.6 1.4l4.2 4.2c.8.8 1.4 2.3 1.4 3.4v5l4-2v-3.5c0-.8.6-2.1 1.4-2.9l4.2-4.2c.8-.8.5-1.4-.6-1.4z' fill='%23fff'/%3E%3C/svg%3E")
+      3 3,
+    pointer;
+}
+
 /* AND THE CARDS WALL'S HEAD ROW, on every rule of this tag from here down: the
    folder chip in a card's head is this same tag (Akshil, 2026-09-05: "project
    name ui as is from list view"), and a skin scoped to `.tasks-row` alone left
@@ -731,10 +878,17 @@ button.tasks-caret,
 .task-card-head-row .schedule-tv-id--tag,
 .tasks-row .schedule-tv-id--tag {
   appearance: none;
-  border: 0;
+  /* A HAIRLINE BOX (Akshil, 2026-09-19): moved here from the reply line. In
+     the THEME's ink at a quarter strength — a fixed white hairline vanished on
+     the light surface (Akshil, 2026-09-20). */
+  border: 0.5px solid color-mix(in srgb, var(--fg) 25%, transparent);
   background: none;
   font: inherit;
-  cursor: pointer;
+  /* A FUNNEL, NOT A HAND (Akshil, 2026-09-17). Every other pointer in a task
+     row opens something; this one filters the wall in place, and a hand said
+     the same thing as the row behind it. The glyph IS the answer to "what does
+     pressing this do" before the press — the tooltip says it a second later. */
+  cursor: var(--cur-filter);
   /* ITS OWN SIZE — the pill is the pill again (Akshil, 2026-08-24, final pass:
      "keep the tag/button size same", "remove the padding part and the whole
      hovering part"). Two passes tried to make this box the hit area by growing
@@ -877,6 +1031,10 @@ button.tasks-caret,
    (2026-08-24): the state and the thing it is a state OF are one box. */
 .task-card-head-row .schedule-tv-id--tag.is-on,
 .tasks-row .schedule-tv-id--tag.is-on {
+  /* AND THE HAND COMES BACK WHEN THE FILTER IS ALREADY ON (review): the press
+     CLEARS it, so a funnel over an ON chip would be a glyph saying the opposite
+     of what the click does. */
+  cursor: pointer;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
@@ -1052,6 +1210,109 @@ button.tasks-caret,
   color: var(--activity);
   background: color-mix(in srgb, var(--activity) 12%, transparent);
   border-color: color-mix(in srgb, var(--activity) 32%, transparent);
+}
+
+/* FORCE START wears this seat since 2026-09-21 (`FORCE_START_LABEL`,
+   ScheduleTaskViews). The CLASS NAME is the seat's history: Run next — "Skip the
+   queue" until 2026-09-12 — held it first, and the PR that deletes that endpoint
+   renames the class with it rather than this one renaming it twice. Same group,
+   same height, same silence at rest.
+
+   THE ONE BUTTON IN THE STRIP THAT IS WORDS. Its siblings are glyphs in a 22px
+   square, and this one is not: a bolt sat here for a day and the strip beside it
+   already holds a play triangle meaning "start this early", so two start-ish
+   shapes one press apart is a hover a reader should not have to spend. So the
+   box gives up the square — `width: auto`, its own side padding — and keeps the
+   height, which is what holds the strip's line straight. `nowrap` because the
+   label is two words and half of "Force" is not a control; on a list row it
+   still gives way entirely before the title does (the rule below), which is the
+   right end for a label that cannot be abbreviated. */
+.tasks-act--skip,
+.prefs-section .tasks-act--skip {
+  width: auto;
+  flex-basis: auto;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* …AND ON A LIST ROW IT GIVES WAY BEFORE THE TITLE DOES, like the caption it
+   belongs to (browser QA round 2, 2026-09-12).
+
+   `.tasks-act` reserves its box at rest (`flex: 0 0 22px`) so a row does not
+   reflow under the pointer, and that is right for the actions it was written
+   for: SHOW_ROW_ACTIONS is down, so those exist on no row at all. This one is
+   drawn on every queued row, always — so the queue was charging 22px plus a
+   10px gap of PERMANENT chrome to a row that, measured at a 400px pane, has
+   about 40px left for its title in the first place. With it the title read
+   2.8px: a queued row could not say what it was about, while every row above
+   and below it truncated normally.
+
+   So it shrinks, hard, and the caption and this button are both gone before the
+   title gives a pixel. A ratio and an overflow, not a width and not a
+   breakpoint — the browser measures the real row. The capability is not lost
+   with it: the Board's drag and the chat's own card over the composer both still
+   run next, and at the width this happens at there is no room to draw a control
+   anyway.
+
+   THE LIST ROW'S ONLY, which is where the shortfall is: a Board card's act
+   strip has one or two glyphs and all the room it needs, and a control that
+   shrank there would be answering a question nobody asked. */
+.tasks-row .tasks-act--skip {
+  flex-shrink: 100;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* …EXCEPT WHEN SOMEBODY REACHES FOR IT. A keyboard reaches this button whatever
+   its width, and a focus ring around nothing is the dead click design-principles
+   §0 forbids — so focus takes the box back and the title gives way for exactly
+   as long as the control is the thing being used. */
+.tasks-row .tasks-act--skip:focus-visible {
+  flex-shrink: 0;
+}
+
+/* …AND THE SHRINK STOPS AT THE HOVER STRIP (Akshil QA, 2026-09-16, chasing
+   "Run next does nothing on a Recent chats row").
+
+   The rule above is older than the strip and was written for a different box.
+   It gave way "before the title does" because the button was then IN THE ROW'S
+   OWN FLEX LINE, a sibling of the title, competing with it for a 400px pane.
+   It is not one any more: `.tasks-row > .tasks-acts` is a zero-width seat whose
+   `.tasks-acts-inner` is absolutely positioned and shrink-to-fit (below), so the
+   strip's flex line holds the marks, Open and this button and sizes itself to
+   them — the title is not in it and gives up nothing for it either way.
+
+   Measured on the served build at a 350px pane, with and without the shrink:
+   22px both times, because a shrink-to-fit line never overflows and
+   `flex-shrink` therefore never engages. So the declaration does nothing where
+   it now lands, which is exactly why it should not be left there — the day
+   anything constrains this strip's width, the ratio-100 child is the one that
+   silently collapses to a control nobody can press, and the `:focus-visible`
+   escape above would hide it by making the keyboard the only road that worked.
+   The button keeps its 22px box inside the strip, and the legacy in-flow case
+   above keeps its shrink. */
+.tasks-row > .tasks-acts > .tasks-acts-inner > .tasks-act--skip {
+  flex-shrink: 0;
+  min-width: auto;
+}
+
+/* NEUTRAL UNDER THE POINTER, deliberately NOT Run now's `--activity` blue —
+   and the reason CHANGED with the verb (2026-09-21) rather than the rule
+   changing. Run next was neutral because it started nothing. Force start very
+   much does start something, so by that hue's own rule ("this STARTS
+   something") it would qualify; it stays neutral because this is the one press
+   on the page that puts a SECOND turn in a working tree, and a button the page
+   colours as its happy path is a button the page is recommending. The hint is
+   where the cost is said (`FORCE_START_HINT`); the skin's job is not to
+   invite. */
+.tasks-act--skip:hover:not(:disabled),
+.prefs-section .tasks-act--skip:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
 }
 
 /* Mark read. Same group, same size, same silence at rest — and NEUTRAL under the
@@ -1785,12 +2046,151 @@ button.tasks-caret,
   opacity: 0.75;
 }
 
-/* ---- "and that one was stopped" --------------------------------------------
-   A run the user stopped settles in Done — the stop was asked for, so it is an
-   outcome and not a fault — and the lane's ring is then the same green ring a
-   completed run wears. This is the word that closes that gap
-   (tasks-lib.outcomeTag), beside the task id on both the List row and the Board
-   card.
+/* ---- where a task stands in its folder's line -------------------------------
+   The project queue's one sentence — "after TASK-038 | 2nd" — worn by a
+   List row (`.tasks-row-queue`, in the flow after the title's marks) and by a
+   Board card (`.tasks-card-queue`, its own line under the title). One builder
+   writes the words (tasks-lib.queueCaption); these two only place them.
+
+   NOT A PILL and not a chip. The outcome tag below is the page's only bordered
+   object and it earned that by having to INTERRUPT — this is the opposite kind
+   of fact: it is the state the reader came to a Queued lane to read, so it sits
+   in the muted register every other caption on this page uses and lets the
+   status ring and the lane header carry the emphasis.
+
+   NO WIDTH ANYWHERE, AND NO BREAKPOINT. The sentence's length is entirely the
+   data's — an id can be TASK-7 or TASK-1041, and a folder can hold a dozen
+   waiting tasks — so each surface is told how to give way instead of being told
+   a size: the row SHRINKS and ellipsises inside itself, the card WRAPS and gets
+   taller. Both are the browser measuring the real text; neither asks how wide
+   the viewport is, because the row does not know and must not guess. */
+.tasks-row-queue {
+  /* SHRINKABLE, unlike the title marks beside it (`flex: 0 0 auto`): this is the
+     one caption on the row that may be cut, because its front — "after TASK-038"
+     — is the part that matters and reads fine on its own. (That ordering is why
+     the holder leads the sentence: the ellipsis eats the END, and the id is the
+     one token on the line a reader can press.) `min-width: 0` is what
+     actually lets a flex item go below its content width.
+
+     AND IT GIVES WAY FIRST, WHICH IS WHAT THE SHRINK FACTOR IS FOR (browser QA
+     round 2, 2026-09-12). It shipped `0 1 auto` beside a title that is also
+     `shrink: 1`, and flexbox distributes a shortfall in proportion to each
+     item's BASE size — so at a 400px pane the 150px caption and the 72px title
+     took roughly two thirds and one third of a 180px deficit and BOTH landed at
+     ~1px: the row's two pieces of writing, invisible together, with the id, the
+     folder and the time beside them at full size. Measured: title 40.8px →
+     0.9px, caption → 1.9px.
+
+     A large factor makes the order explicit instead of proportional: the
+     caption absorbs the whole shortfall and freezes at zero before the title
+     gives a pixel, which is the priority this row has always had (`.tasks-title`
+     is the element that ellipsises, and it must be the LAST one to). Not a
+     width and not a breakpoint — a ratio, applied to whatever the browser
+     measures. */
+  flex: 0 100 auto;
+  min-width: 0;
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: calc(var(--tasks-row-gap) * -1 + 6px);
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* THE WORDS, IN A BOX THAT CAN ACTUALLY ELLIPSISE THEM.
+   `text-overflow` applies to a block container's inline content, and the
+   caption above is an `inline-flex` box — its text is an anonymous FLEX ITEM,
+   which no ellipsis ever reaches. So the sentence shipped clipped mid-glyph
+   instead of trailing off, which reads as a rendering fault rather than as a
+   sentence with more to it (browser QA round 2). One span around the words
+   restores the ordinary block-with-inline-content the property needs, and
+   leaves the ⤒ beside it un-shrinkable and whole. */
+.tasks-queue-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-card-queue {
+  /* A LINE OF ITS OWN on the card — the card is a column flex box, so this is a
+     row rather than something trailing the title. Wraps freely for the reason
+     the title does: a long sentence makes a taller card, which is accepted here
+     and is not on a List row. */
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* NO `.is-next` RULE ANY MORE, AND THAT IS THE POINT (Akshil, 2026-09-19).
+   A skipped row's caption used to drop out of the muted register into
+   `--status-queued` and lead with a ⤒, so one row in a lane of waiting rows read
+   as a different KIND of object. A skip does not change what a row IS — it
+   changes where it stands, and where it stands is the whole of what this caption
+   says. One register for every waiting row; the ORDER tells them apart. The ⤒
+   survives as the Run next BUTTON's face (`.tasks-act--skip`) and decorates
+   nothing. */
+
+/* THE ID INSIDE THE CAPTION — "after TASK-038", where TASK-038 is a press into
+   the conversation that is in the way (ScheduleTaskViews.QueueCaptionText).
+   It is the ONE part of the caption with a destination of its own: every other
+   pixel of the span opens the row it sits on (see the row's own note).
+   It inherits the caption's size and colour and takes only the underline, so the
+   sentence still reads as one sentence rather than as a label with a link glued
+   to the end. The holder's own title is on the pointer, where it stopped being
+   ink. */
+.tasks-queue-ahead {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+.tasks-queue-ahead:hover {
+  color: var(--status-queued);
+  text-decoration-color: currentColor;
+}
+
+/* ---- what one message in an expanded thread is doing ------------------------
+   The state word between the id and the body (tasks-lib.messageState). It used
+   to exist only as the ring's tooltip, which is to say nowhere a person reading
+   down a thread would find it — and with the queue on, a `running` row and a
+   `queued` row sit one line apart in two strengths of one hue, which is exactly
+   the pair a tooltip is the wrong place to distinguish.
+
+   IT IS NOT A PILL. Every other caption on this page is muted inline text and
+   this is the same kind of fact; the ring beside it already carries the colour,
+   so the word only has to be readable and out of the body's way. `flex: 0 0 auto`
+   for the reason the id chip beside it is: the BODY is the element that gives
+   way on a narrow pane, and it must be the last one to. */
+.tasks-msg-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+/* …and the two the queue actually separates take the ring's own hue, because
+   that is the pair a reader has to tell apart at a glance. Everything else stays
+   in the muted register: "done" on forty rows in forty colours would be a thread
+   nobody can scan. */
+.tasks-msg-state--in_progress {
+  color: var(--status-progress);
+}
+.tasks-msg-state--queued {
+  color: var(--status-queued);
+}
+
+/* ---- the page's one pill --------------------------------------------------
+   Born as the "Stopped" mark beside the task id (retired 2026-09-24 — the
+   row's own "Interrupted by you" reply line says it now); today worn by the
+   Draft chip (ScheduleTaskViews.DraftChip). The shape and its reasons stay.
 
    THE ONLY PILL ON THIS PAGE, and the reason is the failure that produced it.
    It shipped as bare 11px muted text in the card's foot, in the same register as
@@ -1904,7 +2304,9 @@ button.tasks-draft-pill {
   margin-block: -3px;
   align-self: center;
   background: none;
-  cursor: pointer;
+  /* The same funnel the folder tag wears, for the same reason and out of the
+     same custom property: this press narrows the page too. */
+  cursor: var(--cur-filter);
   transition: background-color 120ms ease;
 }
 
@@ -1983,6 +2385,9 @@ button.tasks-draft-pill:focus-visible {
    gives the wash an edge on the dark theme, where 14% of a light red over a
    dark ground is nearly nothing on its own. */
 button.tasks-draft-pill.is-on {
+  /* The hand again on an ON chip, exactly as on the folder tag: the press
+     clears the filter rather than setting one. */
+  cursor: pointer;
   background: color-mix(in srgb, var(--error) 14%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--error) 28%, transparent);
 }
@@ -2307,4 +2712,116 @@ button.tasks-draft-pill.is-on:focus-visible {
   white-space: nowrap;
   text-decoration: none;
   border-color: var(--border);
+}
+
+/* -- The hover strip floats over the title's tail (Akshil, 2026-09-16) -------
+   The row actions used to be flex items at rest (opacity 0, but 22px+ of
+   layout each), so the title ellipsised early to leave room for buttons nobody
+   could see. Now they sit in a ZERO-WIDTH seat after the spacer, positioned off
+   its right edge and drawn over whatever the title's tail put there, on a wash
+   that fades in from the left so the words run under the buttons rather than
+   stopping dead against them. The message count and the time after the seat
+   are untouched — the strip grows leftwards, over the title only.
+
+   The suffix marks (`.tasks-row-file`, `.tasks-row-sched`) stay above the wash
+   (z-index 3 < the buttons' 4) so their tooltips keep answering when a long
+   title parks them under the fade. */
+/* THE SUFFIX MARKS RIDE THE STRIP TOO (Akshil, 2026-09-16, second pass: "no
+   spacer min-width; before the Open button, if there is an icon, show the
+   icon"). A long title parks its file/clock mark under the fade, so the strip
+   repeats it — same glyph, same tooltip — immediately before Open. The inline
+   marks stay for the unhovered read; the strip's copies are what the hover
+   shows. Plain-flow, hover-revealed with the buttons around them; the row's
+   own `.tasks-row-file` skin (colour, opacity, glyph nudge) is reused. */
+.tasks-row > .tasks-acts .tasks-row-file,
+.tasks-row > .tasks-acts .tasks-row-sched {
+  position: static;
+  margin: 0 2px 0 0;
+  padding-inline: 2px;
+  align-self: center;
+  padding-block: 0;
+  margin-block: 0;
+  pointer-events: auto;
+  cursor: default;
+}
+.tasks-row > .tasks-acts {
+  position: relative;
+  flex: 0 0 0px;
+  width: 0;
+  align-self: stretch;
+  /* Cancels the flex gap on both sides — the seat must not cost the row a px. */
+  margin-left: calc(var(--tasks-row-gap) * -1);
+}
+.tasks-row > .tasks-acts > .tasks-acts-inner {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 28px;
+  padding-right: calc(var(--tasks-row-gap) / 2);
+  background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+  z-index: 3;
+}
+.tasks-row:hover > .tasks-acts > .tasks-acts-inner,
+.tasks-row:has(.tasks-act:focus-visible) > .tasks-acts > .tasks-acts-inner {
+  opacity: 1;
+}
+.tasks-row > .tasks-acts .tasks-act {
+  z-index: 4;
+}
+.tasks-row > .tasks-row-file,
+.tasks-row > .tasks-row-sched {
+  z-index: 3;
+}
+/* A peeked row is filled with its own colour (task-peek.css); the wash follows.
+   Peeked (task-peek.css: `--row-bg-selected`, the deeper of the two neutrals)
+   is its own rule so it does not inherit the plain-selected wash below — the
+   two rows are filled a whole step apart and a shared value would leave one
+   of them with a visibly mismatched patch over the title. */
+.tasks-peek-host .tasks-row.is-peeked > .tasks-acts > .tasks-acts-inner {
+  background: linear-gradient(to right, transparent, var(--row-bg-selected) 28px);
+}
+.tasks-row.is-selected > .tasks-acts > .tasks-acts-inner {
+  background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
+}
+
+/* -- Two seams keep the old room (Akshil, 2026-09-16) -----------------------
+   The row gap went 10px → 4px for id → folder → title. Two seams read too tight
+   at 4px and get 6px back on top of the gap: the ring → id seam, and the seams
+   before the message count and the time at the row's right end. The margins
+   ride the elements' own edges, so the hit zones (`padding-inline: 5px` above)
+   and the thread indent derived from the rail are untouched. */
+.tasks-row > .tasks-rowmark {
+  margin-right: 6px;
+}
+.tasks-row > .tasks-row-msgs,
+.tasks-row > .tasks-row-time {
+  margin-left: 1px; /* -5px hit-zone margin + 6px */
+}
+
+/* …AND AN ACT IN PLAIN FLOW DOES NOT GET TO GROW THE ROW EITHER (Akshil,
+   2026-09-17: the Recent chats rows "are not vertically aligned properly").
+
+   Nearly every row action lives in the hover strip, which is a zero-width seat
+   whose contents are absolutely positioned — it cannot cost the row a pixel.
+   Two do not: the missing-folder trash, because it prefixes the sentence it is
+   about, and the draft Discard beside it. Those two are ordinary flex children,
+   and a `.tasks-act` is 22px tall against a line the ring sizes to 16px — so
+   every row that grew one went 36px → 42px, and the list lost its rhythm
+   exactly where the drafts are, which in a chat's Recent list is the top of it.
+
+   The negative margin is the trick the id pill already uses (see
+   `.schedule-tv-id--tag`'s own `margin-block`): the button still PAINTS at
+   22px, its CONTRIBUTION to the flex line is the ring's 16px, and the 3px it
+   overhangs at each end lands well inside the row's own 10px of padding.
+   Derived from `--tasks-rail-w` rather than typed, so retuning the ring moves
+   this with it instead of leaving a stale 3px behind. */
+.tasks-row > .tasks-act {
+  margin-block: calc((var(--tasks-rail-w) - 22px) / 2);
 }

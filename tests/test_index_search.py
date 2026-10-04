@@ -188,6 +188,97 @@ def test_search_under_optional_query_filters_server_side(tmp_path):
     assert [e["rel"] for e in out["entries"]] == ["beta.md"]
 
 
+# -- whitespace as wildcard (SPEC-search-space-wildcard.md §3) -----------------
+#
+# `fused.fileIndex.search` (the public JS bridge, backed by this function)
+# gets the same space-as-wildcard semantics as `resolve_query` — a breaking
+# change to an API user pages already call, accepted and intended. Unlike
+# `resolve_query`, `search_under` never walks the filesystem for a base: `q`
+# is purely a filter over the already-fixed `root`, so a whitespace-derived
+# pattern searches any depth under it (the same "**/ " prefix an unadorned
+# `resolve_query` glob with no "/" gets).
+
+def test_search_under_multi_word_query_finds_separator_variants(tmp_path):
+    cfg = _index(tmp_path, "/r", [
+        "/r/hello-world.txt", "/r/hello world.txt", "/r/hello_world.py",
+        "/r/my_hello_big_world.py", "/r/sub/hello world.txt",
+        "/r/HELLO World.txt", "/r/hello world extra.txt",
+        "/r/world-hello.txt",
+    ])
+    rels = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello world")["entries"])
+    assert rels == sorted([
+        "hello-world.txt", "hello world.txt", "hello_world.py",
+        "my_hello_big_world.py", "sub/hello world.txt",
+        "HELLO World.txt", "hello world extra.txt",
+    ])
+    assert "world-hello.txt" not in rels
+
+
+def test_search_under_two_spaces_matches_the_same_set_as_one(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/hello-world.txt", "/r/world-hello.txt"])
+    one = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello world")["entries"])
+    two = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello  world")["entries"])
+    assert one == two == ["hello-world.txt"]
+
+
+def test_search_under_single_word_query_is_unaffected(tmp_path):
+    """A bare word with neither whitespace nor `*` is the one no-op case:
+    `expand_whitespace_query` returns it unchanged, so `search_under` stays
+    on the plain `ILIKE '%q%'` substring filter exactly as it does today."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.md"])
+    out = search_under(cfg, "/r", q="beta")
+    assert [e["rel"] for e in out["entries"]] == ["beta.md"]
+
+
+def test_search_under_a_star_query_now_globs_and_stays_precise(tmp_path):
+    """Follow-up to SPEC-search-space-wildcard.md: `expand_whitespace_query`
+    no longer leaves a whitespace-free `*`-containing query untouched (Rule 4
+    wraps the final segment regardless of whitespace), so `search_under`'s
+    mode switch — keyed on `"*" in expanded`, mirroring `resolve_query`'s own
+    `is_glob` check — flips a bare `*.md` into glob-to-regex matching instead
+    of treating the `*` as a literal character under ILIKE.
+
+    REVERSAL (DECISIONS.md, worktree-search-trailing-space): this used to
+    also swallow `beta.md.bak` — `expand_whitespace_query` appended its own
+    trailing `*` onto `*.md` (since it didn't already END in `*`), so the
+    resolved pattern was `*.md*`, not `*.md`. That was the documented
+    "accepted precision-glob consequence." The reversal suppresses the
+    trailing append whenever the final segment already carries a user-typed
+    `*` anywhere in it, so `*.md` now resolves to exactly `*.md` and means
+    precisely "ends with .md" — `beta.md.bak` no longer matches."""
+    cfg = _index(tmp_path, "/r", ["/r/beta.md", "/r/beta.md.bak", "/r/beta.txt"])
+    out = search_under(cfg, "/r", q="*.md")
+    rels = sorted(e["rel"] for e in out["entries"])
+    assert rels == ["beta.md"]
+
+
+def test_search_under_a_whitespace_only_query_has_nothing_to_search_for(tmp_path):
+    """Code review finding 3: a whitespace-only `q` fell all the way through
+    to the plain corpus, unfiltered — the opposite of what `q`'s own
+    docstring and `expand_whitespace_query`'s own contract intend.
+    `expand_whitespace_query("   ")` correctly resolves to `""` (there is no
+    literal character anywhere in an all-whitespace string to search on —
+    `test_expand_whitespace_query_whitespace_only_has_nothing_to_search_for`,
+    test_index_query.py, A2), but `search_under` conflated that RESOLVED
+    empty string with `q` never having been passed at all (its own,
+    LEGITIMATE "no filter, give me the whole corpus" contract) — the
+    `if q:`-gated code path ran expand_whitespace_query, got back `""`, and
+    then `qlit`'s own `if q_trimmed` guard (also empty, since `.strip()` of
+    whitespace is `""`) skipped the filter entirely, indistinguishable from
+    `q` never having been given. A few stray spacebar presses in the search
+    box therefore answered with the whole corpus rather than the zero hits
+    `resolve_query`/`search_ranked` already agree a whitespace-only query
+    gets (`search_ranked`'s own `if not qs: return {hits: []}` guard, keyed
+    off the identically-resolved empty pattern)."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.md"])
+    out = search_under(cfg, "/r", q="   ")
+    assert out["entries"] == []
+    assert out["total"] == 0
+    # A genuinely absent `q` is unaffected — this remains the documented
+    # "no filter" contract, not a regression of it.
+    assert search_under(cfg, "/r")["total"] == 2
+
+
 def test_search_under_caps_the_corpus_and_flags_truncation(tmp_path):
     cfg = _index(tmp_path, "/r", [f"/r/f{i}.txt" for i in range(10)])
     out = search_under(cfg, "/r", limit=3)
@@ -258,6 +349,38 @@ def test_rank_route_answers_ranked_hits(home, tmp_path):
     assert body["ok"] is True and body["covered"] is True
     assert body["hits"][0]["rel"] == "readme.md"
     assert body["total"] == len(body["hits"])
+
+
+def test_rank_route_returns_the_resolved_pattern_for_a_glob_hit(home, tmp_path):
+    """SPEC-search-space-wildcard.md §4: the client needs the RESOLVED
+    pattern (whitespace already expanded, any base peeled off) to locate a
+    glob hit's own literal pieces for highlighting — the raw `q` it typed is
+    not enough, since `resolve_query`'s base walk is filesystem-dependent
+    and not something the client can redo itself."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/hello world.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "hello world"}).json()
+    assert body["mode"] == "glob"
+    assert body["pattern"] == "**/**hello**world*"
+
+
+def test_rank_route_answers_a_timing_breakdown(home, tmp_path):
+    """The server already measures `total_ms`/`lane_wait_ms`/`worker_ms` for
+    the log line at ~750ms WARNING threshold (see `api_index_rank`) — the
+    frontend needs the same numbers on the wire to tell "slow server" from
+    "slow somewhere outside the handler" (queueing/transit) when a customer's
+    own console shows a multi-second round trip."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/readme.md"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "readme"}).json()
+    assert body["ok"] is True
+    timing = body["timing"]
+    assert set(timing) == {"total_ms", "lane_wait_ms", "worker_ms"}
+    for key in ("total_ms", "lane_wait_ms", "worker_ms"):
+        assert isinstance(timing[key], (int, float))
+        assert timing[key] >= 0
 
 
 def test_rank_route_logs_the_request_total_at_debug(home, tmp_path, caplog):
@@ -475,6 +598,59 @@ def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):
     assert "fake.txt" not in rels
 
 
+def test_search_under_scoping_ignores_proj_a_lookalike_and_a_percent_literal(
+        tmp_path):
+    """The ESCAPE-rewrite regression this repo cares about, end to end
+    through the public entry point: scoping to /r/proj_a/ must return ONLY
+    the proj_a files and never proj-a's (the gate `_prefix_predicate_sql`
+    exists for), and a `q` containing a literal `%` must match only that
+    literal, not act as `contains`'s own wildcard (`contains` has none, but
+    this pins the boundary anyway now that the filter is a plain
+    `contains()` call rather than an escaped LIKE)."""
+    cfg = _index(tmp_path, "/r",
+                 ["/r/proj_a/keep.py", "/r/proj-a/skip.py", "/r/100%done.txt"],
+                 dirs=["/r/proj_a", "/r/proj-a"])
+    rels = [e["rel"] for e in search_under(cfg, "/r/proj_a")["entries"]]
+    assert rels == ["keep.py"]
+    hits = [e["rel"] for e in search_under(cfg, "/r", q="100%done")["entries"]]
+    assert hits == ["100%done.txt"]
+
+
+def test_search_under_substring_filter_compiles_to_contains_not_like_escape(
+        tmp_path, monkeypatch):
+    """`search_under`'s server-side `q` filter (Change 1) must compile to
+    `contains(...)`, never an `ILIKE ... ESCAPE` DuckDB can only run as the
+    opaque `like_escape()` function. Captures the real SQL by wrapping
+    `duckdb.connect` — `search_under`'s local `import duckdb` resolves to the
+    same module object, so patching its `connect` attribute here is visible
+    there too."""
+    import duckdb as real_duckdb
+
+    cfg = _index(tmp_path, "/r", ["/r/proj_a/keep.py"], dirs=["/r/proj_a"])
+    seen_sql = []
+    real_connect = real_duckdb.connect
+
+    class _RecordingConnection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **kw):
+            seen_sql.append(sql)
+            return self._con.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    monkeypatch.setattr(
+        real_duckdb, "connect",
+        lambda *a, **kw: _RecordingConnection(real_connect(*a, **kw)))
+    search_under(cfg, "/r", q="proj_a")
+    joined = "\n".join(seen_sql)
+    assert "contains(" in joined
+    assert "like_escape" not in joined.lower()
+    assert " ILIKE " not in joined
+
+
 def test_dirs_are_not_silently_dropped_when_files_fill_the_cap(tmp_path):
     """Directories used to get only the budget the FILES branch left over, so
     on any truncated corpus (`room == 0`) folder search was dead, not degraded.
@@ -545,6 +721,51 @@ def test_an_index_written_without_a_depth_column_still_reads(tmp_path):
     out = search_under(cfg, "/r", limit=2)
     assert out["covered"] is True
     assert sorted(e["rel"] for e in out["entries"]) == ["a", "top.txt"]
+
+
+def test_rel_depth_sql_stored_and_fallback_paths_agree(tmp_path):
+    """Fix 2 ("use the stored depth column" perf fix): `_rel_depth_sql`
+    computes `search_ranked`'s root-RELATIVE depth two ways — from the
+    branch's stored, ABSOLUTE `depth` column when `_src_cols` reports one
+    (`stored_depth - prefix_slashes + 1`), or the pre-existing
+    `length(rel) - length(replace(rel, '/', '')) + 1` slash-count expression
+    over `rel` itself for an index predating the column. Both expressions
+    must return the IDENTICAL relative depth for every row shape
+    `search_ranked` can produce: the root itself (`rel == ""`), a top-level
+    file, a deeply nested file, and a directory row — pinning both the `+1`
+    semantics and the constant-offset arithmetic against each other directly,
+    independent of `search_ranked`'s own row-inclusion policy (which never
+    actually surfaces the root as a hit)."""
+    import duckdb
+
+    from fused_render.index.query import _rel_depth_sql
+
+    root = canonical_root("/r")
+    prefix = root + "/"
+    prefix_slashes = prefix.count("/")
+
+    cases = [
+        ("", "root itself"),
+        ("top.txt", "top-level file"),
+        ("a/b/deep.txt", "deeply nested file"),
+        ("a", "directory row"),
+    ]
+    stored_expr = _rel_depth_sql({"depth"}, "rel_col", prefix_slashes)
+    fallback_expr = _rel_depth_sql(set(), "rel_col", prefix_slashes)
+    assert stored_expr != fallback_expr, "test would be vacuous otherwise"
+
+    con = duckdb.connect()
+    for rel, label in cases:
+        abs_path = prefix + rel
+        stored_depth = abs_path.count("/")
+        expected = rel.count("/") + 1
+        rel_escaped = rel.replace("'", "''")
+        d1, d2 = con.execute(
+            f"SELECT {stored_expr} AS d1, {fallback_expr} AS d2 FROM "
+            f"(SELECT '{rel_escaped}' AS rel_col, {stored_depth} AS depth)"
+        ).fetchone()
+        assert d1 == expected, (label, "stored path", d1, expected)
+        assert d2 == expected, (label, "fallback path", d2, expected)
 
 
 # -- search_ranked: filtering AND ranking, server-side -------------------------
@@ -662,13 +883,15 @@ def test_search_ranked_describes_the_files_source_only_once(tmp_path, monkeypatc
     `_depth_col` (used elsewhere, not by `search_ranked` any more — see the
     CORRECTION on D707 in DECISIONS.md) would have populated.
 
-    **CORRECTS D707's exact count for `search_ranked`**: this used to assert
-    2 DESCRIBEs (files, dirs). Since the depth `search_ranked` scores against
-    is now root-RELATIVE (computed straight from `rel`, not the stored
-    absolute `depth` column — see `search_ranked`'s `rel_depth` comment), the
-    dirs branch has no reason left to call `_src_cols`/`_depth_col` at all: it
-    has no `name` column to reuse either, so nothing about it is ever
-    DESCRIBEd. Only the files branch (for `_name_col`) still pays for one."""
+    **CORRECTS D707's exact count for `search_ranked`, then updated again**:
+    this originally asserted 2 DESCRIBEs (files, dirs), was corrected to 1
+    when relative depth moved to being computed straight from `rel` (so the
+    dirs branch had no column to probe for at all), and is back to 2 now that
+    `search_ranked` reads the stored, absolute `depth` column on BOTH sources
+    (the "use the stored depth column" perf fix — `_rel_depth_sql`) rather
+    than recomputing it from `rel`/`dir` on every row: the dirs branch still
+    has no `name` column to reuse, but it does now have a `depth` column
+    worth asking about, so each source pays for exactly one DESCRIBE."""
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"],
                  dirs=["/r/sub"])
     describes = []
@@ -693,7 +916,7 @@ def test_search_ranked_describes_the_files_source_only_once(tmp_path, monkeypatc
     monkeypatch.setattr(real_duckdb, "connect", spying_connect)
     out = search_ranked(cfg, "/r", "alpha")
     assert out["hits"], out
-    assert len(describes) == 1, describes
+    assert len(describes) == 2, describes
 
 
 def test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction(
@@ -729,12 +952,12 @@ def test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction(
 
     out1 = search_ranked(cfg, "/r", "alpha")
     assert out1["hits"], out1
-    assert len(describes) == 1, describes
+    assert len(describes) == 2, describes
 
     # A second call, different query, SAME generation: no new DESCRIBE.
     out2 = search_ranked(cfg, "/r", "beta")
     assert out2["hits"], out2
-    assert len(describes) == 1, describes
+    assert len(describes) == 2, describes
 
     # A third call via search_under: its files branch reuses the same cache
     # entry `search_ranked` already populated (no new DESCRIBE for it), but
@@ -756,9 +979,14 @@ def test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction(
     sink2.close()
     compact(cfg, root, shards2, pa, pq)
 
+    # Both sources now get probed by `search_ranked` itself (the "use the
+    # stored depth column" perf fix — `_rel_depth_sql` — reads `dcols` too,
+    # not just `fcols`), so a new generation costs one fresh DESCRIBE per
+    # source: 2 already paid (files, dirs) + 2 more here (files-gen2,
+    # dirs-gen2) = 4.
     out3 = search_ranked(cfg, "/r", "gamma")
     assert out3["hits"], out3
-    assert len(describes) == 3, describes
+    assert len(describes) == 4, describes
 
 
 # -- cancellation: a `token` handed to search_ranked -------------------------
@@ -993,7 +1221,10 @@ def test_search_ranked_honours_the_limit_in_sql_not_just_in_python(tmp_path):
             self._real = real
 
         def execute(self, sql, *a, **kw):
-            if "ORDER BY tier ASC" in sql:
+            # "AS score" only appears in the ranked (scored) SELECT — the
+            # lexicographic ORDER BY column list replaced the old fixed
+            # "ORDER BY tier ASC" string this test used to key off of.
+            if "AS score" in sql:
                 seen_limits.append(int(sql.rsplit("LIMIT", 1)[1].strip()))
             return self._real.execute(sql, *a, **kw)
 
@@ -1010,7 +1241,20 @@ def test_search_ranked_honours_the_limit_in_sql_not_just_in_python(tmp_path):
     assert out["hits"][0]["rel"] == "alpha.txt"
     assert len(out["hits"]) <= 3
     # One row past `limit`, same trick `search_under` uses, so "there was
-    # more" is known without a separate count.
+    # more" is known without a separate count. Only "alpha.txt" itself
+    # actually contains the substring "alpha" (the noise files are
+    # "a{i}-l-p-h-a.txt", hyphen-separated, never a contiguous "alpha"), so
+    # the bounded candidate pool comes back with exactly 1 row. That single
+    # row is BELOW the starvation fallback's Tier 2 threshold (DECISIONS.md,
+    # "Rank starvation fallback: a short page is not starvation evidence"):
+    # `pool_n < pool` (1 row seen against a pool sized for `limit + 1 == 4`,
+    # `_basename_candidate_pool(4)` is 20) proves the pool's own inner
+    # `LIMIT` never bound — the bounded pass already saw every row an
+    # unbounded pass would have, so the two queries are equivalent by
+    # construction and the unbounded rerun is correctly skipped. Only one
+    # statement runs (`LIMIT 4` once), so `seen_limits` has exactly one
+    # entry, not two — `[4]`, not the old `[4, 4]` that used to pin the
+    # wasteful double scan this fix removes.
     assert seen_limits == [4]
 
 

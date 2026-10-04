@@ -52,6 +52,7 @@ from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.github import router as github_router
 from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.capture import router as capture_router
+from fused_render.server.routers.terminal import router as terminal_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -63,6 +64,7 @@ from fused_render.server.routers.git_upstream import router as git_upstream_rout
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
+from fused_render.server.routers.system import router as system_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
@@ -74,7 +76,10 @@ from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
+from fused_render.server.routers.launcher import router as launcher_router
+from fused_render.server.routers.windows import router as windows_router
 from fused_render.server.routers.drafts import router as drafts_router
+from fused_render.server.routers.queue_events import router as queue_events_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -462,6 +467,46 @@ def create_app(start_dir: str) -> FastAPI:
 
         user_plugin.start()
 
+    # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
+    #
+    # `routers/tasks._wire_manager()` registers the factory, and importing that
+    # router at the top of this file already ran it once — but the scheduler,
+    # the event transport, the doors and `/api/run`'s gate all reach the manager,
+    # and which of them happens to be first must not decide whether this process
+    # has one at all. `schedule._qm()` still self-wires as a FALLBACK (and the
+    # scheduler's tests rely on that path); this is the rule, said once, at the
+    # moment the process is brought up.
+    #
+    # Then, and ONLY with the flag on, build the manager and reconcile once so a
+    # restart resumes every folder's line immediately rather than on whatever
+    # event happens to arrive first. That is deliberate work: building reconciles
+    # and reconciling PUMPS, which SPAWNS (see `queue_manager.peek`) — which is
+    # exactly why it is a startup event and not the create_app body (tests build
+    # apps without lifespan and must never start a turn), and why it runs on a
+    # daemon thread like `_startup_tasks_warm`: resuming a line can spawn several
+    # Claude processes and must not hold up the first page paint.
+    @on_startup
+    async def _startup_queue_manager():
+        from fused_render import project_queue, queue_manager
+        from fused_render.server.routers import tasks as tasks_router_mod
+
+        tasks_router_mod._wire_manager()
+        if not project_queue.enabled():
+            return
+
+        def resume():
+            try:
+                queue_manager.get().reconcile()
+            except Exception:  # noqa: BLE001 — a queue that cannot resume must
+                # not take the server down with it; the next tick tries again.
+                logger.exception("could not resume the project queue at startup")
+
+        thread = threading.Thread(target=resume, daemon=True,
+                                  name="fused-queue-resume")
+        thread.start()
+        # For tests, the same seam `_startup_tasks_warm` leaves.
+        app.state.queue_resume = thread
+
     # Scheduled Claude messages (schedule.py). A startup event and emphatically
     # NOT the create_app body: this loop SENDS things, and its first tick fires
     # everything already overdue. Tests build the app without running lifespan,
@@ -716,6 +761,18 @@ def create_app(start_dir: str) -> FastAPI:
     # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
     # than by the routes being absent — a page must be able to ask.
     app.include_router(capture_router)
+    # Status-bar terminal (routers/terminal.py): pty session create/list/kill
+    # plus the byte-stream WebSocket (pty_session.py owns the registry).
+    # Reaped on shutdown below so a server restart never leaves an orphaned
+    # shell running.
+    app.include_router(terminal_router)
+
+    @on_shutdown
+    async def _shutdown_terminal_sessions():
+        from fused_render import pty_session as _pty_session
+
+        await asyncio.to_thread(_pty_session.REGISTRY.shutdown_all)
+
     # Self-update triggers (routers/update.py) — POSTs that kick a manifest
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.
@@ -725,6 +782,9 @@ def create_app(start_dir: str) -> FastAPI:
     # dead child under the URLs the page holds (engine_host.py). The map
     # template's tile daemon is the first user.
     app.include_router(engines_router)
+    # Live CPU/memory of fused-render's own processes (routers/system.py,
+    # fused_render/sysmon): the status bar's System chip and the /monitor page.
+    app.include_router(system_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
@@ -752,6 +812,12 @@ def create_app(start_dir: str) -> FastAPI:
     # message that entered it, typed or scheduled. Reads are unguarded; the one
     # POST marks a message read, the same weight of change as the triage POST.
     app.include_router(tasks_router)
+    # The queue's event transport (routers/queue_events.py): one POST that the
+    # session host and the permission server call when a turn ends, a session
+    # exits or a card goes up. Its own router because the callers are TEMPLATE
+    # processes on the far side of an HTTP hop, and because it is a no-op
+    # whenever `project_queue_enabled` is off.
+    app.include_router(queue_events_router)
     # Drafts (routers/drafts.py): the composer's unsent text and the New task
     # modal's half-filled form, kept server-side so the `✎ Draft` chip the
     # listing above paints can be a JOIN rather than a second store the client
@@ -760,6 +826,11 @@ def create_app(start_dir: str) -> FastAPI:
     # The Current apps desk (fused_render/current_apps.py): GET the table,
     # DELETE one app (archiving its tasks). Fed by the tasks listing above.
     app.include_router(current_apps_router)
+    # The macOS launcher panel's search (fused_render/launcher.py): the desk,
+    # the workspace, linked and exported apps, ranked by a query.
+    app.include_router(launcher_router)
+    # An app clicked inside a macOS native window opens in its own window.
+    app.include_router(windows_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)
@@ -847,6 +918,41 @@ def create_app(start_dir: str) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Share an app as a public link (share_app.py): the .fused export handed
+    # to the user's Fused account as a one-node canvas, through the same
+    # `fused login` provider canvases.py owns (credentials-file presence,
+    # duplicated there rather than imported). Imported lazily like its
+    # siblings so the feature routers stay mutually acyclic.
+    from fused_render.share_app import router as share_app_router
+
+    app.include_router(share_app_router)
+    # Share any file whose extension resolves to a Fused catalog file-preview
+    # UDF (share_file.py) — the generalised sibling of share_app_router
+    # above, reusing its record store, lock and shim plumbing.
+    from fused_render.share_file import router as share_file_router
+
+    app.include_router(share_file_router)
+
+    # The file-preview rule table (share_file_rules.py) that `share_file`'s
+    # status/publish routes resolve a viewer from: nothing else ever calls
+    # the shim's `rules` action (code review finding — the cache was never
+    # built on a fresh install, so every extension but `.fused` refused to
+    # share). A daemon thread, same reasoning as `_startup_tasks_warm` below:
+    # it is a subprocess spawn plus a network round trip to the catalog, and
+    # must not delay server readiness. Best-effort and silent on failure
+    # (no CLI, not signed in, offline) — status/publish already fall back to
+    # the built-in `.fused` rule alone when the cache stays empty.
+    @on_startup
+    async def _startup_warm_share_rules():
+        from fused_render import share_file
+
+        thread = threading.Thread(target=share_file.warm_rules_cache, daemon=True,
+                                  name="fused-share-file-rules-warm")
+        thread.start()
+        # For tests, the same seam `_startup_tasks_warm`/`_startup_queue_manager`
+        # leave: join this instead of racing the background fetch.
+        app.state.share_rules_warm = thread
+
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
@@ -906,20 +1012,58 @@ def create_app(start_dir: str) -> FastAPI:
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
 
-    # A CHECK-ONLY UPDATE MANAGER FOR A DEV RUN (update/mac.DEV_MANAGER_ENV).
-    # The packaged app starts its manager from the AppKit bootstrap (app.py,
-    # after the server is ready); an unpackaged server has no bootstrap and so
-    # never had a badge — which left the sidebar's "Check for updates" row with
-    # nowhere to be tried. `start()` still returns None without the env var,
-    # so this is a no-op for every run that did not ask. Last, and off the
-    # request path: the manager's first manifest fetch is on its own thread.
+    # ...and watch the filesystem for changes the app did not make itself
+    # (a download, `touch ~/a.txt`, a sync client) so the index stays fresh
+    # without guessing staleness from a clock — see
+    # fused_render/server/index_watch.py's module docstring and
+    # SPEC-index-live-watch.md §1 for why the previous approach (a
+    # time-based freshness check) failed three times. One background thread
+    # per configured root; `index_watch.start()` is idempotent, same
+    # singleton-start convention as `shell_mounts.start_health_monitor`.
+    @on_startup
+    async def _startup_index_watch():
+        from fused_render.server import index_watch
+
+        index_watch.start()
+
+    @on_shutdown
+    async def _shutdown_index_watch():
+        from fused_render.server import index_watch
+
+        index_watch.stop()
+
+    # THE IN-APP UPDATE MANAGER (update/mac.py, update/linux.py), for every
+    # platform whose server ever boots through this create_app() — which is
+    # every platform's: the packaged mac app embeds this same FastAPI server
+    # inside its AppKit process, and on Linux this server IS the whole
+    # process, spawned as a child of the desktop supervisor. `update.start()`
+    # (the platform dispatch, fused_render/update/__init__.py) is always
+    # safe to call unconditionally here:
+    # - Linux, running from an AppImage: starts the real manager — this is
+    #   ITS bootstrap, there being no separate native wrapper process the way
+    #   app.py is for mac.
+    # - mac, packaged: also starts the real manager, redundantly with (and
+    #   before) app.py's own explicit call after its desktop-probe wait —
+    #   start() is idempotent, so the second call just hands back the same
+    #   singleton.
+    # - an unpackaged dev run on either platform, with
+    #   update/_manager.DEV_MANAGER_ENV set: starts a check-only manager (no
+    #   bundle/AppImage to swap, so no install can be attempted) — otherwise
+    #   the sidebar's "Check for updates" row would have nowhere to try
+    #   against. Each platform's own start() already contains this fallback,
+    #   so there is nothing left for this hook to gate on.
+    # - Windows, or the env var unset and nothing packaged: a no-op (None).
+    # Last, and off the request path: the manager's first manifest fetch runs
+    # on its own thread.
+    # Kept as `_startup_update_dev_manager` (not renamed to match the comment
+    # above): tests/test_app_lifespan.py pins the exact registered handler
+    # names as a record of a past on_event -> on_startup migration, unrelated
+    # to this change, and a rename here would only cost that test for no
+    # benefit.
     @on_startup
     async def _startup_update_dev_manager():
-        import os
+        from fused_render import update
 
-        from fused_render.update import mac as mac_update
-
-        if os.environ.get(mac_update.DEV_MANAGER_ENV):
-            mac_update.start()
+        update.start()
 
     return app

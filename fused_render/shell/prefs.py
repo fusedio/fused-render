@@ -22,6 +22,12 @@ Five more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see
 ``reader_enabled``), **canvases_enabled** (whether the Canvases feature is
 offered at all — opt-in, default off; see ``canvases_enabled``),
+**app_sharing_enabled** (whether the unified Share sheet replaces the plain
+Export action — opt-in, default off; see ``app_sharing_enabled``),
+**live_previews_enabled** (whether card thumbnails may render the live app
+in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
+**monitor_enabled** (whether the process Monitor — status-bar System chip
+and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -164,69 +170,161 @@ def canvases_enabled() -> bool:
     return read_prefs().get("canvases_enabled") is True
 
 
+def native_windows_enabled() -> bool:
+    """Whether the macOS app shows the shell in its own native windows
+    (mac_window.py) instead of browser tabs (default ON — opt-out).
+
+    Same idiom as `indexing_enabled`: absence and any non-`false` stored
+    value both read as ON, so a fresh install and one that never touched the
+    checkbox get windows; only a stored `false` keeps the browser. The
+    launcher (⌥Space) is NOT behind this switch — it stays on either way and
+    simply opens its pick in a browser tab while this is off. Read by
+    `app.py` at boot and applied live through
+    `window_policy.native_hooks["apply"]` on a PUT.
+    """
+    return read_prefs().get("native_windows_enabled") is not False
+
+
+def app_sharing_enabled() -> bool:
+    """Whether the unified Share sheet is offered (default off — opt-in).
+
+    ON, every surface that lets a reader take an app out of this machine — the
+    /apps card's hover chip and right-click menu, the app page header, the
+    explorer kebab, the explorer folder row — shows ONE "Share" entry, and the
+    sheet behind it holds both routes: a public link on the reader's Fused
+    account (share_app.py) and the `.fused` file download (SPEC §43). OFF, the
+    same five surfaces show the plain Export / Download action they carried
+    before the sheet existed: the `.fused` file lands in Downloads and a toast
+    says where. The link route is not reachable at all while this is off — the
+    sheet is the only thing that opens it, and nothing opens the sheet.
+
+    A SWITCH OVER THE ENTRY POINTS, like `canvases_enabled`: the /api/share/*
+    routes keep answering, so a script or a page that already talks to them is
+    not what a reader turning this off asked to lose. Any non-`true` stored
+    value (missing/legacy) reads as off, so every install has to opt in.
+    """
+    return read_prefs().get("app_sharing_enabled") is True
+
+
+def live_previews_enabled() -> bool:
+    """Whether card thumbnails may render the LIVE app (default off — opt-in).
+
+    The /apps hub's cards (AppPreviewCard) and the explorer's bookmark, recent
+    and folder cards (BookmarkCards) can show a scaled-down iframe of the page
+    itself when there is no authored `preview.png` — and a still-thumbed app
+    card swaps that iframe in on hover. Each one is a whole sandboxed page plus
+    its JS runtime, so by default every thumbnail is a still or a plain
+    placeholder mark and nothing boots on scroll or hover; a reader who wants
+    the live grid turns it on here.
+
+    Same idiom as `canvases_enabled`: only a stored `true` turns it on, so a
+    preference file that predates this setting, or one that never touched the
+    checkbox, reads as off. Read by the client once per page load and
+    republished by the Preferences page on toggle — not consulted by any
+    server route; the /render and embed URLs the thumbnails point at keep
+    answering regardless.
+    """
+    return read_prefs().get("live_previews_enabled") is True
+
+
 NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
+
+
+def monitor_enabled() -> bool:
+    """Whether the process Monitor is offered (default off — opt-in).
+
+    ON, the status bar carries the System chip (shell/SystemDock.tsx: this
+    app's CPU and memory, a sparkline, the top processes, "Open Monitor") and
+    the shell answers `/monitor` with the process monitor page
+    (shell/monitor/MonitorPage.tsx). OFF, the chip is not rendered and
+    `/monitor` shows a one-line notice pointing at Preferences, so a bookmark
+    to it says what to do rather than opening a page the reader has not
+    turned on.
+
+    A SWITCH OVER THE ENTRY POINTS, like `app_sharing_enabled`: the
+    /api/system/activity routes keep answering regardless, and the sampler
+    costs nothing until something polls it. Any non-`true` stored value
+    (missing/legacy) reads as off, so every install has to opt in.
+    """
+    return read_prefs().get("monitor_enabled") is True
 
 
 def native_chat_enabled() -> bool:
     """Whether chat embeds render the native React chat instead of the legacy
-    `templates/claude` iframe (default off — opt-in while the port is in beta).
+    `templates/claude` iframe (default ON — Akshil, 2026-09-17: the port is what
+    the app ships, the iframe is the fallback).
 
-    Same idiom as `canvases_enabled`: only a stored `true` is on, any other
-    value (missing/legacy/junk) reads as off. `FUSED_RENDER_NATIVE_CHAT=1|0` is
-    the process-level override that BEATS the pref, so a dev server or a test
-    run can pick a side without touching prefs.json; any other env value is
-    ignored and the pref decides.
+    THE DEFAULT TURNED OVER, so the idiom did too: only a stored `false` is off,
+    and missing/legacy/junk all read as on. An install that has never opened
+    Preferences — which is most of them — gets the native chat, and the switch is
+    now an escape hatch rather than an opt-in. The legacy iframe is still built,
+    still served and still what `ChatChunkBoundary` falls back to; nothing about
+    it was deleted, it just stopped being what a fresh install runs.
 
-    DELIBERATELY STRICTER than `prefetch.py`/`rcd.py`'s any-non-"0" idiom, and
-    pinned by `test_native_chat_env_override_beats_pref`: this switch decides
-    which of two whole implementations a user's chat runs on, so a typo
-    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the stored pref
-    rather than silently move them onto the beta. An ignored value is ignored
-    all the way through: `_chat_forced_by` reports it as no override at all,
-    because the stored switch really is still what decides.
+    `FUSED_RENDER_NATIVE_CHAT=1|0` is still the process-level override that BEATS
+    the pref, so a dev server or a test run can pick a side without touching
+    prefs.json; any other env value is ignored and the stored switch decides.
+    That strictness is the one thing unchanged here and is pinned by
+    `test_native_chat_env_override_beats_pref`: a typo
+    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the pref rather than
+    quietly decide which implementation a user's chat runs on, and an ignored
+    value is ignored all the way through — `_chat_forced_by` reports it as no
+    override at all, because the stored switch really is still what decides.
     """
     raw = os.environ.get(NATIVE_CHAT_ENV)
     if raw == "1":
         return True
     if raw == "0":
         return False
-    return read_prefs().get("native_chat_enabled") is True
+    return read_prefs().get("native_chat_enabled") is not False
 
 
 def task_peek_enabled() -> bool:
     """Whether the Tasks page opens a task in a SIDE PANEL beside the list
-    instead of navigating to the Explorer (default off — opt-in while it is
-    experimental).
-
-    Same idiom as `native_chat_enabled` above, and for the same reason: this
-    switch decides which of two whole behaviours a click on a task row has, so
-    only a stored `true` is on and any other value (missing, legacy, junk) reads
-    as off. An install that has never opened Preferences keeps exactly the
-    behaviour it has always had.
-
-    NO ENV OVERRIDE, deliberately, and that is the one place it differs from
-    `native_chat_enabled`. That switch has one because a dev server or a test
-    run has to be able to pick a chat implementation without touching
-    prefs.json — the two implementations are both shipped and both supported.
-    This is one page's interaction model in beta; there is nothing to pin a
-    process to, and an env var nobody sets is a second way for the answer to
-    come out that has to be kept in step with the first.
+    instead of navigating to the Explorer — ALWAYS, since 2026-09-20 (Akshil:
+    "remove the flag of ... sidebar peek"). The switch is gone from
+    Preferences and the PUT no longer accepts `task_peek_enabled`; a stored
+    value from an older build is ignored, so nobody is stranded on the
+    navigate-away path with no way back. Kept as a function, and kept in the
+    GET payload as `task_peek.enabled`, because the client's flag module still
+    reads it — a server that sends nothing reads as ON there too.
     """
-    return read_prefs().get("task_peek_enabled") is True
+    return True
 
 
-def task_card_last_message() -> bool:
-    """Whether a card on the Tasks page's Cards wall is TITLED BY THE NEWEST
-    MESSAGE in its conversation — the reader's or Claude's — instead of by the
-    task's own title (default off, opt-in while the experiment runs).
-
-    Same idiom and the same strictness as `task_peek_enabled` above, and for the
-    same reason: it decides what a whole wall of cards reads as, so only a
-    stored `true` is on and anything else — missing, legacy, junk — leaves the
-    card the card it has always been. No env override either; there is nothing a
-    process needs to pin about one view's experiment.
+def project_peek_enabled() -> bool:
+    """Whether the APP PAGE's Tasks tab (`/apps/<folder>?_tab=tasks`) opens a
+    task in the same side panel `/tasks` does — ALWAYS, since 2026-09-21
+    (Akshil: the flag came off once the surface settled). The switch is gone
+    from Preferences and the PUT no longer accepts `project_peek_enabled`; a
+    stored value from the flagged build is ignored. Kept as a function, and
+    kept in the GET payload as `task_peek.project`, because the client's type
+    still names it — a server that sends nothing reads as ON there too.
     """
-    return read_prefs().get("task_card_last_message") is True
+    return True
+
+
+def notify_terminal_sessions_enabled() -> bool:
+    """Whether a finished-task notification fires for a session started from
+    an INTERACTIVE TERMINAL (`claude` typed by hand) rather than only one
+    started through fused-render's own Claude template (default off).
+
+    Every `~/.claude/projects` transcript's `type: "user"` records carry an
+    `entrypoint` — "cli" for an interactive terminal, "sdk-cli" for a
+    headless/programmatic spawn (what templates/claude/agent.py produces).
+    That is the whole signal there is, and it is a PROXY, not proof: an
+    unrelated SDK-driven session also reports "sdk-cli", so this preference
+    cannot be "only notify about fused-render's own sessions" — it can only
+    be "also notify about the ones we're fairly sure are someone's own
+    terminal". Default OFF because the reported bug was exactly a plain
+    terminal session raising a fused-render notification unasked; a user who
+    wants those back opts in explicitly.
+
+    Same idiom as `project_queue_enabled` below: only a stored `true` is on,
+    everything else (missing, legacy, junk) stays off. No env override — there
+    is nothing a process needs to pin about a Preferences toggle.
+    """
+    return read_prefs().get("task_notify_terminal_sessions") is True
 
 
 def _chat_forced_by() -> str | None:
@@ -240,20 +338,24 @@ def _chat_forced_by() -> str | None:
     return raw if raw in ("0", "1") else None
 
 
-def chat_recap_enabled() -> bool:
-    """Whether the native chat offers the "While you were away" session recap
-    (default ON — unlike `native_chat_enabled`, which is an opt-in beta).
+def project_queue_enabled() -> bool:
+    """Whether one folder runs one task at a time — everything else queues
+    (default off — opt-in while the queue is in beta).
 
-    THE DEFAULT IS THE OPPOSITE WAY ROUND on purpose, so the idiom is too: a
-    feature that is on unless asked otherwise cannot read "only a stored true is
-    on", or every install that has never opened Preferences would have it off.
-    Only a stored `false` turns it off; missing, legacy and junk all read as on.
+    Same idiom as `canvases_enabled` and `native_chat_enabled`: only a stored
+    `true` is on, any other value (missing/legacy/junk) reads as off. Off, every
+    path behaves exactly as it did before the queue existed — chat sends spawn,
+    run-now runs, the scheduler holds per SESSION and not per folder, and the
+    `queued` status never appears on a row.
 
-    No env override. `FUSED_RENDER_NATIVE_CHAT` exists because it decides which
-    of two whole implementations a chat runs on; this is one row at the bottom of
-    a transcript, and a second override is a switch nobody would remember.
+    NO ENV OVERRIDE, deliberately, and the difference from `native_chat_enabled`
+    is this: `FUSED_RENDER_NATIVE_CHAT` exists because it decides which of two whole implementations a chat runs on,
+    and a dev server has to be able to pick a side without touching prefs.json.
+    This is a gate in front of work that already runs; a second env var nobody
+    remembers setting is how a machine ends up serialising its tasks for a
+    reason its owner cannot find.
     """
-    return read_prefs().get("chat_recap_enabled") is not False
+    return read_prefs().get("project_queue_enabled") is True
 
 
 def lan_enabled() -> bool:
@@ -365,6 +467,27 @@ def indexing_enabled() -> bool:
     one with no server restart.
     """
     return read_prefs().get("indexing_enabled") is not False
+
+
+def git_auto_sync_enabled() -> bool:
+    """Whether the app pulls and pushes its own git commits (default ON).
+
+    Same idiom as `indexing_enabled`: absence and any non-`false` stored value
+    read as enabled. Read per call by `git_upstream`'s auto-sync, so a toggle
+    applies to the very next trigger with no restart. Off means today's
+    behaviour exactly: the "Update" card for behind repos and manual flows.
+    """
+    return read_prefs().get("git_auto_sync_enabled") is not False
+
+
+def auto_download_updates_enabled() -> bool:
+    """Whether a found app update is downloaded without a click (default OFF).
+
+    Only a stored `true` is on. Read per check by the update manager, so a
+    toggle applies to the very next check with no restart. Restart stays
+    user-initiated either way: this only moves "available" to "installed".
+    """
+    return read_prefs().get("auto_download_updates") is True
 
 
 def ranked_search_enabled() -> bool:
@@ -531,6 +654,24 @@ def _prefs_response() -> dict:
         # its Settings menu entry (opt-in, D427). Not a route guard; see
         # `canvases_enabled`.
         "canvases": {"enabled": canvases_enabled()},
+        # Whether the unified Share sheet (public link + .fused file) is offered
+        # in place of the plain Export / Download action (opt-in, default off).
+        # Not a route guard; see `app_sharing_enabled`.
+        "app_sharing": {"enabled": app_sharing_enabled()},
+        # Whether card thumbnails may render the live app in a scaled iframe
+        # (opt-in, default off). Off, every thumbnail is a still or a
+        # placeholder mark; see `live_previews_enabled`.
+        "live_previews": {"enabled": live_previews_enabled()},
+        # Whether the process Monitor (status-bar System chip + /monitor page)
+        # is offered (opt-in, default off). Not an API guard; see
+        # `monitor_enabled`.
+        "monitor": {"enabled": monitor_enabled()},
+        # Whether the macOS app opens the shell in native windows rather than
+        # browser tabs (default ON, opt-out). `available` says whether THIS
+        # process can honour it — the packaged macOS app installs the hook; a
+        # `fused-render serve` or another platform has no windows to offer, so
+        # the Preferences section stays hidden there.
+        "native_windows": _native_windows_state(),
         # Whether chat embeds render the native React chat (beta) instead of the
         # legacy template iframe. The EFFECTIVE value, plus `forced_by` — the
         # same shape `engine_state()` above uses for the same problem: with the
@@ -549,23 +690,26 @@ def _prefs_response() -> dict:
         "chat": {
             "native": native_chat_enabled(),
             "forced_by": _chat_forced_by(),
-            # The "While you were away" recap fold (native chat only). Default
-            # ON, so a payload without it must not be read as off — the client
-            # reads `p.chat?.recap !== false` for exactly that reason.
-            "recap": chat_recap_enabled(),
         },
-        # Whether a task on the Tasks page opens in a side panel beside the
-        # list instead of navigating away (experimental, opt-in). A bare
-        # boolean and not the `{value, forced_by}` shape `chat` above wears:
-        # there is no env override to report, because there is nothing a
-        # process needs to pin here (see `task_peek_enabled`).
-        "task_peek": {"enabled": task_peek_enabled()},
-        # …and what a CARD on that page is titled by: the newest message in its
-        # conversation instead of the task's own title (experimental, opt-in).
-        # A namespace rather than a bare boolean beside the one above, because
-        # the card is one surface with more than one thing an experiment can
-        # move, and `last_message` names which one this is.
-        "task_cards": {"last_message": task_card_last_message()},
+        # A task on the Tasks page opens in a side panel beside the list —
+        # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
+        # the client's flag module reads it.
+        # …and `project`: the APP PAGE's Tasks tab does the same — always,
+        # since 2026-09-21 (`project_peek_enabled`). Still sent, because the
+        # client's type names it.
+        "task_peek": {"enabled": task_peek_enabled(), "project": project_peek_enabled()},
+        # Whether a finished-task notification fires for a session that
+        # entered from an interactive terminal (default off, opt-in) — see
+        # `notify_terminal_sessions_enabled`'s own doc comment for why this
+        # can only ever be a best-effort signal, not a guarantee.
+        "task_notify": {"terminal_sessions": notify_terminal_sessions_enabled()},
+        # Whether one folder runs one task at a time (opt-in beta). Its own key
+        # rather than a third field under `chat`: the gate governs the
+        # scheduler and the Tasks board as much as it does a chat send, and
+        # filing it under the chat would say it was the composer's setting.
+        # No `forced_by` twin — there is no env override to report; see
+        # `project_queue_enabled`.
+        "queue": {"enabled": project_queue_enabled()},
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -579,6 +723,11 @@ def _prefs_response() -> dict:
         # whether index-backed search orders hits by relevance score (default
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
         "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled()},
+        # Whether app-made git commits are auto-pushed and behind repos are
+        # auto fast-forwarded on app open (default ON).
+        "git": {"auto_sync": git_auto_sync_enabled()},
+        # Whether a found app update is downloaded unattended (default OFF).
+        "update": {"auto_download": auto_download_updates_enabled()},
         # Which local-model backend serves each capability (D302). The STORED
         # choice, what is actually resolving, and — when those differ — why, in
         # the registry's own words. Same discipline as `engine` above and
@@ -604,7 +753,29 @@ def _prefs_response() -> dict:
         # `calls` above, minus a separate `_store()` helper — there is no
         # directory fact to report alongside this one.
         "ai_idle": _ai_idle_state(),
+        # The macOS launcher's shortcuts (fused_render/launcher.py): the panel
+        # hotkey and the row modifier, with display forms, plus whether the
+        # running app could bind them (`bound` / `pinned_bound`: None until
+        # something tried — a `fused-render serve` never does). `available`
+        # says whether the panel exists on this platform at all; the
+        # Preferences section renders only then.
+        "launcher": _launcher_state(),
     }
+
+
+def _native_windows_state() -> dict:
+    import sys
+
+    from fused_render import window_policy
+
+    return {"enabled": native_windows_enabled(),
+            "available": sys.platform == "darwin" and "apply" in window_policy.native_hooks}
+
+
+def _launcher_state() -> dict:
+    from fused_render import launcher
+
+    return launcher.settings()
 
 
 def _inference_engines_state() -> dict:
@@ -725,30 +896,56 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'canvases_enabled' must be a boolean"}, status_code=400)
         prefs["canvases_enabled"] = value
         changed = True
+    if "app_sharing_enabled" in body:
+        value = body.get("app_sharing_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'app_sharing_enabled' must be a boolean"}, status_code=400)
+        prefs["app_sharing_enabled"] = value
+        changed = True
+    if "live_previews_enabled" in body:
+        value = body.get("live_previews_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'live_previews_enabled' must be a boolean"}, status_code=400)
+        prefs["live_previews_enabled"] = value
+        changed = True
+    if "monitor_enabled" in body:
+        value = body.get("monitor_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'monitor_enabled' must be a boolean"}, status_code=400)
+        prefs["monitor_enabled"] = value
+        changed = True
+    if "native_windows_enabled" in body:
+        value = body.get("native_windows_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'native_windows_enabled' must be a boolean"}, status_code=400)
+        prefs["native_windows_enabled"] = value
+        changed = True
+        # Applied live: the app builds (or closes) its windows on the main
+        # thread a tick after this returns. No hook = nothing to apply.
+        from fused_render import window_policy
+
+        apply_windows = window_policy.native_hooks.get("apply")
+        if apply_windows is not None:
+            apply_windows(value)
     if "native_chat_enabled" in body:
         value = body.get("native_chat_enabled")
         if not isinstance(value, bool):
             return JSONResponse({"error": "'native_chat_enabled' must be a boolean"}, status_code=400)
         prefs["native_chat_enabled"] = value
         changed = True
-    if "task_peek_enabled" in body:
-        value = body.get("task_peek_enabled")
-        if not isinstance(value, bool):
-            return JSONResponse({"error": "'task_peek_enabled' must be a boolean"}, status_code=400)
-        prefs["task_peek_enabled"] = value
-        changed = True
-    if "task_card_last_message" in body:
-        value = body.get("task_card_last_message")
+    if "task_notify_terminal_sessions" in body:
+        value = body.get("task_notify_terminal_sessions")
         if not isinstance(value, bool):
             return JSONResponse(
-                {"error": "'task_card_last_message' must be a boolean"}, status_code=400)
-        prefs["task_card_last_message"] = value
+                {"error": "'task_notify_terminal_sessions' must be a boolean"}, status_code=400)
+        prefs["task_notify_terminal_sessions"] = value
         changed = True
-    if "chat_recap_enabled" in body:
-        value = body.get("chat_recap_enabled")
+    if "project_queue_enabled" in body:
+        value = body.get("project_queue_enabled")
         if not isinstance(value, bool):
-            return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"}, status_code=400)
-        prefs["chat_recap_enabled"] = value
+            return JSONResponse({"error": "'project_queue_enabled' must be a boolean"},
+                                status_code=400)
+        prefs["project_queue_enabled"] = value
         changed = True
     if "lan_enabled" in body:
         value = body.get("lan_enabled")
@@ -815,6 +1012,20 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                 status_code=400)
         prefs["ranked_search_enabled"] = value
         changed = True
+    if "git_auto_sync_enabled" in body:
+        value = body.get("git_auto_sync_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'git_auto_sync_enabled' must be a boolean"},
+                                status_code=400)
+        prefs["git_auto_sync_enabled"] = value
+        changed = True
+    if "auto_download_updates" in body:
+        value = body.get("auto_download_updates")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'auto_download_updates' must be a boolean"},
+                                status_code=400)
+        prefs["auto_download_updates"] = value
+        changed = True
     if "calls_enabled" in body:
         value = body.get("calls_enabled")
         if not isinstance(value, bool):
@@ -848,20 +1059,55 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             )
         prefs["ai_idle_unload_minutes"] = value
         changed = True
+    launcher_rebind: str | None = None
+    launcher_changed = False
+    if "launcher_hotkey" in body:
+        # Canonicalised before storing (`alt+space`, modifiers in display
+        # order) and refused whole when malformed — a spec with no modifier
+        # would be a key taken from every app on the system.
+        from fused_render import hotkey, launcher
+
+        try:
+            value = launcher.canonical_hotkey(body.get("launcher_hotkey"))
+        except hotkey.SpecError as exc:
+            return JSONResponse({"error": f"'launcher_hotkey': {exc}"}, status_code=400)
+        prefs["launcher_hotkey"] = value
+        launcher_rebind = value
+        changed = launcher_changed = True
+    if "launcher_row_modifier" in body:
+        from fused_render import hotkey, launcher
+
+        try:
+            value = launcher.canonical_modifiers(body.get("launcher_row_modifier"))
+        except hotkey.SpecError as exc:
+            return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
+        prefs["launcher_row_modifier"] = value
+        changed = launcher_changed = True
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', 'canvases_enabled', 'native_chat_enabled', "
-                      "'chat_recap_enabled', 'task_peek_enabled', "
-                      "'task_card_last_message', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'native_chat_enabled', "
+                      "'native_windows_enabled', "
+                      "'task_notify_terminal_sessions', "
+                      "'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
+                      "'git_auto_sync_enabled', 'auto_download_updates', "
                       "'calls_enabled', "
-                      "'calls_params', 'calls_retention_days' and/or "
-                      "'ai_idle_unload_minutes')"},
+                      "'calls_params', 'calls_retention_days', "
+                      "'ai_idle_unload_minutes', 'launcher_hotkey' and/or "
+                      "'launcher_row_modifier')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)
+    if launcher_changed:
+        # AFTER the write, like `lan_enabled`: the app rebinds from the
+        # stored preference on its main thread a tick later, so the
+        # `launcher.bound` in THIS response is the previous state; the page
+        # re-reads shortly after.
+        from fused_render import launcher
+
+        launcher.notify_settings_changed(launcher_rebind)
     if "lan_enabled" in body:
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's

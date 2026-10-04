@@ -23,8 +23,10 @@
 // shared `Modal` chassis, the target named in the title, the consequence in the
 // body, the path in mono, and a `btn-danger` whose word is the verb rather than
 // "OK".
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { shortTaskId } from "@platform/lib/task-id";
 import { eraseTask } from "@platform/lib/api";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
 import type { Task } from "@platform/lib/api";
 import { Modal } from "@platform/ui/modal/Modal";
 
@@ -64,6 +66,13 @@ export function EraseTaskModal({
   // press Cancel next. Verbatim, so the words the row's hint promises and the
   // words the refusal gives are the same words.
   const [err, setErr] = useState("");
+  // DELETE IS THE DEFAULT (Akshil, 2026-09-21). The chassis would park focus on
+  // Cancel, the footer's first button; here the reader has already chosen
+  // "Delete task" from a menu, so Enter means "yes, do it" — the dialog is the
+  // confirmation, not the choice. Focus lands on the confirm, ringed
+  // (buttons-modal.css, `.modal-footer .btn:focus`); Esc and Cancel are one
+  // key or one ← away.
+  const confirmRef = useRef<HTMLButtonElement>(null);
 
   const confirm = async () => {
     if (busy) return;
@@ -71,7 +80,18 @@ export function EraseTaskModal({
     setErr("");
     try {
       await eraseTask(task.key);
+      // EVERY LISTING ON THIS PAGE RELOADS NOW, not on its next incidental
+      // poke. The server's own `tasks_watch.notify()` wakes only a long-poll
+      // that is in flight, and a backgrounded landing parks its poll until
+      // the tab is visible again — so a row erased from the chat's menu kept
+      // standing in the Recent list, and a press on it opened a blank chat
+      // (Akshil, 2026-09-15). Same wall-throw the Home hero uses at creation.
+      // AFTER `onDone`: the event is dispatched synchronously and its
+      // listeners start their reads at once, while `onDone` is where callers
+      // clear their per-session caches — the reads must not land into caches
+      // that are about to be wiped.
       onDone();
+      announceTasksChanged();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -81,16 +101,29 @@ export function EraseTaskModal({
 
   return (
     <Modal
-      title={`Delete ${task.task_id}?`}
+      title={`Delete ${shortTaskId(task.task_id)}?`}
       busy={busy}
       onClose={onClose}
+      initialFocus={confirmRef}
       {...(dialogClassName ? { dialogClassName } : {})}
       footer={
         <>
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="btn btn-danger" disabled={busy} onClick={confirm}>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="btn btn-danger"
+            // NOT `disabled` WHILE BUSY (Akshil, 2026-09-21: "Enter shifts the
+            // outline to the modal"). A disabled button cannot hold focus, so
+            // the press that started the erase threw focus out of the button
+            // and the chassis's last-resort fallback landed it on the dialog
+            // card, ring and all. `aria-disabled` says the same to assistive
+            // tech; `confirm` already ignores a second press while busy.
+            aria-disabled={busy}
+            onClick={confirm}
+          >
             {busy ? "Deleting…" : "Delete forever"}
           </button>
         </>

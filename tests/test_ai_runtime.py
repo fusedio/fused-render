@@ -5280,7 +5280,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video"}
+        "onnx-embed-rocm", "ltx-video", "laya-mlx"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -5510,6 +5510,54 @@ def test_a_caller_supplied_page_still_wins_once_the_image_is_done(
     assert finished["page"] == "/tasks"
 
 
+def test_an_image_rows_source_defaults_to_the_caller_supplied_page(
+        client, fake_image_runner):
+    """No `X-Fused-Source` sent: `source` defaults to `page`, same as the
+    generic `/api/jobs` route — the ordinary case for a user app's own page
+    calling `fused.ai.image()`."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["source"] == "/tasks"
+    _wait_job(started["jobId"])
+
+
+def test_an_image_rows_source_diverges_from_page_when_the_playground_sends_one(
+        client, fake_image_runner):
+    """The AI Models Playground sends no `X-Fused-Page` (so `page` still
+    falls back to the output file once the render is done — see
+    `test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done`)
+    but DOES send its own `X-Fused-Source`, so a suppression check can tell
+    the render was raised from the page the user is looking at
+    (SPEC-quiet-notifications.md bug 1). `source` must stay the Playground's
+    route through every tick — the done report's output-path fallback is
+    `page`-only and must never leak onto `source`."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == started["path"]
+    assert finished["source"] == "/ai-models/playground"
+
+
+def test_an_image_rows_source_stays_empty_with_neither_header_even_once_done(
+        client, fake_image_runner):
+    """Unlike `page`, `source` never inherits the output-path fallback: with
+    no raiser known at all, it stays "" through the terminal report too —
+    "" must always read as "cannot suppress, notify", never as a match."""
+    started = client.post("/api/ai/image", json={"prompt": "a red square"},
+                          headers={"X-Fused": "1"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["source"] == ""
+    finished = _wait_job(started["jobId"])
+    assert finished["source"] == ""
+    assert finished["page"] == started["path"]
+
+
 def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
         fake_image_runner, monkeypatch, tmp_path):
     """A render that fails or is cancelled never wrote its file — pointing the
@@ -5583,9 +5631,9 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     captured = {}
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page=""):
+    def spy(model, request, job, page="", source=""):
         captured.update(request)
-        return real_start(model, request, job, page=page)
+        return real_start(model, request, job, page=page, source=source)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
     started = client.post("/api/ai/image", json={"prompt": "x"},
@@ -6262,9 +6310,9 @@ def test_the_request_the_WORKER_gets_carries_image_ONLY_when_asked(
     captured = []
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page=""):
+    def spy(model, request, job, page="", source=""):
         captured.append(dict(request))
-        return real_start(model, request, job, page=page)
+        return real_start(model, request, job, page=page, source=source)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
 
@@ -6291,8 +6339,8 @@ def test_an_edits_DEFAULTS_are_the_PROTOTYPES_not_the_generate_defaults(
     captured = []
     real_start = supervisor.start_image
     monkeypatch.setattr(supervisor, "start_image",
-                        lambda model, request, job, page="": (captured.append(dict(request)),
-                                                      real_start(model, request, job, page=page))[1])
+                        lambda model, request, job, page="", source="": (captured.append(dict(request)),
+                                                      real_start(model, request, job, page=page, source=source))[1])
 
     edit = client.post(
         "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
@@ -7426,6 +7474,21 @@ def test_a_failing_video_render_reports_the_reason_on_the_row(client, fake_video
     assert "the renderer exited" in row["message"]
 
 
+def test_a_video_rows_source_diverges_from_page_when_the_playground_sends_one(
+        client, fake_video_runner):
+    """`/api/ai/video`'s twin of the image route's own version of this test
+    — see that one for the full reasoning (SPEC-quiet-notifications.md
+    bug 1)."""
+    started = client.post(
+        "/api/ai/video", json={"prompt": "x"},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
+    finished = _wait_job(started["jobId"])
+    assert finished["source"] == "/ai-models/playground"
+
+
 def test_a_video_on_a_machine_with_no_video_runner_says_why(client, monkeypatch):
     """The ordinary case, not the edge one — video generation is the first
     capability with no "everywhere" row, so a machine that is not Apple
@@ -7702,6 +7765,23 @@ def test_a_transcript_rows_origin_names_the_calling_page(
         headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
     row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
     assert row["origin"] == "Scheduler"
+    _wait_job(started["jobId"])
+
+
+def test_a_transcript_rows_source_comes_from_the_ambient_X_Fused_Source(
+        client, fake_transcribe_runner, recording):
+    """SPEC-quiet-notifications.md bug 2: transcribe mints its row through
+    `supervisor._report`/`jobs.upsert` with no `source=` of its own — the
+    same shape text generation had, before the ambient default. Sending
+    `X-Fused-Source` with NO `X-Fused-Page` (the Playground's own shape) must
+    still land in `row["source"]`, picked up by `jobs.upsert`'s ambient
+    fallback rather than by anything `ai_runtime.py` does."""
+    started = client.post(
+        "/api/ai/transcribe", json={"path": recording},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
     _wait_job(started["jobId"])
 
 
@@ -9333,6 +9413,24 @@ def test_the_bridges_accepted_video_keys_match_the_servers_constant():
     assert "base" in ai_runtime._VIDEO_SERVER_OPTIONS
 
 
+def test_the_bridges_accepted_decide_keys_match_the_servers_constant():
+    """The same drift guard for decide (Laya typed decisions). No `base`
+    asymmetry here — nothing is bridge-injected — so the caller-facing and
+    server sets are one and the same, and both must match the bridge."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiDecide(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const decideKeys = \[(.*?)\];', body)
+    assert match, "could not find aiDecide's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._DECIDE_OPTIONS)
+    assert ai_runtime._DECIDE_SERVER_OPTIONS == ai_runtime._DECIDE_OPTIONS
+
+
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
     """Same drift guard for transcribe — compared against the CALLER-FACING
     set, which must NOT include `base`: the server's set is wider because
@@ -10177,6 +10275,112 @@ def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client,
     if body.get("ok"):
         assert [w["setting"] for w in body["result"]["warnings"]] == ["temperature"]
         assert body["result"]["warnings"][0]["type"] == "unsupported-setting"
+
+
+def test_the_bridges_accepted_text_keys_match_the_servers_constant():
+    """The drift guard `textKeys` never had (D886): `_TEXT_OPTIONS` lives in
+    `server/ai.py`, not `routers/ai_runtime.py` where the other three
+    capabilities' whitelists live, which is exactly how this one drifted —
+    the `thinking` flag this build adds is precisely the kind of change that
+    slips when the bridge and the server whitelist are two unrelated facts."""
+    from fused_render.server import ai as ai_mod
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiText(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const textKeys = \[(.*?)\];', body, re.S)
+    assert match, "could not find aiText's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_mod._TEXT_OPTIONS)
+
+
+# -- thinking: tri-state, per-request, defaults ON for both local runners -----
+
+
+def test_thinking_reaches_the_worker_as_enable_thinking(client, fake_runner, monkeypatch):
+    """The one place camelCase meets snake_case (D633, D886) — `thinking` on
+    the wire, `enable_thinking` in the worker's own request."""
+    seen = {}
+    real = supervisor.generate_text
+    monkeypatch.setattr(supervisor, "generate_text",
+                        lambda model, request: (seen.update(request), real(model, request))[1])
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "thinking": False,
+    }, headers={"X-Fused": "1"})
+
+    assert seen["enable_thinking"] is False
+
+
+def test_thinking_true_also_reaches_the_worker(client, fake_runner, monkeypatch):
+    seen = {}
+    real = supervisor.generate_text
+    monkeypatch.setattr(supervisor, "generate_text",
+                        lambda model, request: (seen.update(request), real(model, request))[1])
+    supervisor.load("org/chat2", registry.TEXT_GENERATION)
+    _wait_ready("org/chat2")
+
+    client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat2", "thinking": True,
+    }, headers={"X-Fused": "1"})
+
+    assert seen["enable_thinking"] is True
+
+
+def test_unset_thinking_is_not_sent_to_the_worker_at_all(client, fake_runner, monkeypatch):
+    """Tri-state: unset must stay distinguishable from `false` all the way
+    into the worker's request — the worker's own default (thinking ON,
+    D886) only applies when the key is absent, not when it is `False`."""
+    seen = {}
+    real = supervisor.generate_text
+    monkeypatch.setattr(supervisor, "generate_text",
+                        lambda model, request: (seen.update(request), real(model, request))[1])
+    supervisor.load("org/chat3", registry.TEXT_GENERATION)
+    _wait_ready("org/chat3")
+
+    client.post("/api/ai", json={"prompt": "hi", "model": "org/chat3"},
+               headers={"X-Fused": "1"})
+
+    assert "enable_thinking" not in seen
+
+
+def test_a_non_boolean_thinking_is_refused(client):
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "thinking": "off",
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "'thinking' must be a boolean" in response.json()["error"]["message"]
+
+
+def test_thinking_on_claude_is_a_warning_not_a_refusal(monkeypatch):
+    """The same D631 shape as `temperature` — a tunable the CLI lacks is
+    dropped and named in `warnings[]`, not refused.
+
+    Unlike the other Claude-tier warning tests in this file (which leave
+    `_claude_bin` unresolved and so can only ever reach the `ok is False`
+    branch below — an `if body.get("ok"):` on a body that is NEVER `ok`,
+    which made the `warnings[]` assertion dead code), this one drives the
+    real success path: `_claude_bin` resolves and the CLI subprocess hop is
+    stubbed to answer successfully (`test_server_ai.py`'s `_cli_ok`/
+    `_FakeProc`, the "avoid starlette TestClient" discipline that module's
+    own docstring names — `_ai_relay` is called directly rather than
+    through `client.post`, same as `test_ai_metrics.py` already does for
+    the Claude tier)."""
+    import asyncio
+
+    from fused_render.server import ai as ai_mod
+    from test_server_ai import _cli_ok
+
+    _cli_ok(monkeypatch)
+    response = asyncio.run(ai_mod._ai_relay({"prompt": "hi", "thinking": False}))
+    body = json.loads(bytes(response.body))
+    assert body["ok"] is True
+    assert [w["setting"] for w in body["result"]["warnings"]] == ["thinking"]
+    assert body["result"]["warnings"][0]["type"] == "unsupported-setting"
 
 
 # -- images: a current-turn attachment for a local VLM (D467's shape reused) --

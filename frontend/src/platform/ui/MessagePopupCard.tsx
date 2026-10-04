@@ -25,6 +25,11 @@
 // (`transient`/`silent`) loses nothing either way; an `attention`/`trail`
 // message stays in the panel for the user to act on later.
 //
+// `notification.dismissible === false` DROPS THE ✕ ENTIRELY (SPEC-update-
+// notifications.md: the restart card, once the app is actually quitting, has
+// nothing left for a "later" to mean) — see `NotificationInput.dismissible`'s
+// own doc comment on `notifications.ts`.
+//
 // `IS_TOP_EMBED` NEVER AUTO-EXPIRES AN ATTENTION CARD (SPEC §4): a tab or
 // bookmark opened standalone is its own top window, with no shell underneath
 // it to retain the message for — the Notifications panel is behind
@@ -66,10 +71,16 @@ export default function MessagePopupCard() {
       <NotificationCard
         title={notification.title}
         secondary={notification.detail}
+        // CHANGE 1 — the popup half needs the same "who raised this" caption
+        // the retained row draws (`MessageRowView`, RepoUpdatesDock.tsx):
+        // "Public link token flash finished" with nothing saying which
+        // project it came from was the exact bug report this closes.
+        caption={notification.origin || undefined}
         terminal={notification.tone === "error" ? "error" : undefined}
         role={notification.tone === "error" ? "alert" : "status"}
         navAction={notification.action}
-        onDismiss={{ onClick: () => dismissPopup() }}
+        extraAction={notification.extraAction}
+        onDismiss={notification.dismissible ? { onClick: () => dismissPopup() } : undefined}
       />
     </div>
   );

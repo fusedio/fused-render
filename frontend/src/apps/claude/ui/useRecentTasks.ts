@@ -9,9 +9,91 @@
 // (T:18411).
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Task } from "@platform/lib/api";
-import { sortForList } from "@shell/tasks-lib";
+import { useNow } from "@platform/lib/clock";
+import {
+  applyQueueOverrides,
+  expireQueueOverrides,
+  NO_QUEUE_OVERRIDES,
+  skipLine,
+  sortForList,
+} from "@shell/tasks-lib";
+import type { QueueOverride, QueueOverrides } from "@shell/tasks-lib";
+import { readListing, refreshListing } from "@shell/tasksPulse";
 import { subscribeTasks } from "../protocol/sessions";
 import { taskInPane } from "./list-rows";
+
+/**
+ * THE CLAIMS A QUEUE VERB MAKES ON A RECENT ROW, until the server speaks about
+ * the same key — the Tasks page's `queueOverrides` (shell/Scheduled.tsx:342),
+ * borrowed rather than reinvented, down to the same three helpers.
+ *
+ * A Recent row IS a Tasks row (`TaskRowItem`), so its Run next is the Tasks
+ * page's Run next: `performSkip` puts the task at the head of its folder's line
+ * and hands back the claim the row should paint until `/api/tasks` agrees. With
+ * nowhere to put that claim the press was invisible — the row could only move
+ * on the next full listing, which reads as a button that does nothing.
+ *
+ * MODULE STATE, for the reason the Tasks page keeps its copy on the PAGE and not
+ * in the view that raised it: a claim exists to OUTRUN the read that will
+ * confirm it, and the list that made it is remounted by every trip into a chat
+ * and back — a store inside the hook would be thrown away by the very answer it
+ * was written to beat. (`seeds` below is module state for the same shape of
+ * reason.) The keys are task keys, which are the whole machine's, so two mounted
+ * lists sharing one store is correct and not a compromise.
+ */
+let claims: QueueOverrides = NO_QUEUE_OVERRIDES;
+const claimWatchers = new Set<() => void>();
+
+function publishClaims(next: QueueOverrides): void {
+  if (next === claims) return;
+  claims = next;
+  // A copy, because a watcher's `setState` may unmount a sibling list and take
+  // its watcher out of the set mid-walk.
+  for (const fn of [...claimWatchers]) fn();
+}
+
+/**
+ * THE LAST WHOLE LISTING THIS HOOK WAS HANDED, beside the claims and for the
+ * claims: a skip is a claim about a LINE, and a line is every queued row in one
+ * folder — which the press itself does not carry (`onQueued` is handed one
+ * override, about one key). `readListing()` is the same answer and is the
+ * fallback for a press made before this hook has painted anything; this copy is
+ * what makes the rule testable, since a test drives the subscription directly
+ * and never fills the document's feed.
+ */
+let seen: readonly Task[] = [];
+
+/**
+ * Record what a skip on a Recent row claimed. Handed straight to
+ * `TaskRowItem`'s `onQueued`, which is `TaskNode.skip`'s own answer.
+ *
+ * …AND THE REST OF THE LINE WITH IT (Akshil, 2026-09-18). The press promoted its
+ * own row and said nothing about the row it went past, so both read "1st in
+ * line" until the server's listing landed — two rows claiming one spot, for long
+ * enough to read. `skipLine` turns the one answer into the whole folder's new
+ * order — read off the rows AS PAINTED, so a second press before the listing
+ * lands supersedes the first — and all of it is painted in ONE publish so no
+ * frame ever shows half of it. Same lifetime as before: every key in the set is a key the
+ * next listing speaks about, so they expire together.
+ */
+export function noteQueueClaim(override: QueueOverride): void {
+  const rows = seen.length > 0 ? seen : (readListing() ?? []);
+  publishClaims(skipLine(claims, rows, override));
+}
+
+/** "Re-read the listing NOW" — `TaskRowItem`'s `onReload`. The feed collapses
+ *  it to one `GET /api/tasks` for the document, so every open list gets the
+ *  answer and none of them pays twice for it. */
+export function reloadRecentTasks(): void {
+  refreshListing();
+}
+
+/** Tests only — module state outlives every renderer in a `bun test` process,
+ *  exactly as `resetSessionSeeds` below does. */
+export function resetQueueClaims(): void {
+  claims = NO_QUEUE_OVERRIDES;
+  seen = [];
+}
 
 /**
  * The subscription, injectable — and injectable rather than module-mocked for
@@ -78,6 +160,18 @@ export function useRecentTasks(
         }
         painted.current = true;
         setRows(next);
+        // …and the same answer is what the NEXT press reads its folder's line
+        // off (`seen`, above): the whole listing, before this hook narrows it to
+        // one pane, because a line is every queued row in a folder and the pane
+        // is not the folder.
+        seen = next;
+        // THE SERVER HAS SPOKEN about every key this listing holds, so every
+        // claim about one of them is over — right or wrong
+        // (tasks-lib.expireQueueOverrides, and the Tasks page's own note at
+        // Scheduled.tsx:860). `subscribeTasks` only ever hands a WHOLE listing
+        // (the feed folds its deltas into one before it paints), so the keys in
+        // hand are exactly the set the server just answered for.
+        publishClaims(expireQueueOverrides(claims, next.map((t) => t.key)));
       },
       undefined,
       coverWriteRef.current,
@@ -102,17 +196,38 @@ export function useRecentTasks(
    * which is the input that function takes, not a second opinion about it: the
    * server's order still breaks every tie the lanes leave open.
    */
-  return useMemo(
-    () =>
-      rows === null
-        ? null
-        : // `Date.now()` is read INSIDE the memo, not taken as a prop: the lanes
-          // it decides are "is this scheduled for later" (tasks-lib.groupByColumn),
-          // and the only moment that question is about is the render doing the
-          // asking. A clock in the deps would re-sort the list on every tick.
-          sortForList(rows.filter((t) => taskInPane(t, file)), Date.now()),
-    [rows, file],
-  );
+  // THE CLOCK IS A DEP NOW (`useNow`, 2026-09-15). It used to read `Date.now()`
+  // inside the memo, on the argument that the only moment the question is about
+  // is the render doing the asking — which is true, and was the bug: nothing
+  // asked again. Half of what `sortForList` decides is "is this scheduled for
+  // LATER" (tasks-lib.groupByColumn), and that answer changes with the clock and
+  // nothing else, so a list left open sat in yesterday's lanes. One shared tick a
+  // MINUTE, which is the resolution these rows print.
+  const now = useNow();
+  /** The standing claims, mirrored into this render. The store is the answer;
+   *  this state only exists to repaint when it changes. */
+  const [claimed, setClaimed] = useState<QueueOverrides>(claims);
+  useEffect(() => {
+    const onClaims = () => setClaimed(claims);
+    claimWatchers.add(onClaims);
+    // A claim raised between this render and this effect (a press on another
+    // list, a store already holding one) would otherwise be missed until the
+    // next one.
+    onClaims();
+    return () => {
+      claimWatchers.delete(onClaims);
+    };
+  }, []);
+  return useMemo(() => {
+    if (rows === null) return null;
+    // PAINTED FIRST, ahead of the pane narrowing and the sort — the Tasks page's
+    // order (Scheduled.tsx:939, "FIRST, ahead of the scope and the filters"). A
+    // skip changes the row's `status` and its queue facts, and both are inputs
+    // to `sortForList`: applying the claim after the sort would print the new
+    // caption on a row still sitting in its old place.
+    const painted = applyQueueOverrides(rows, claimed);
+    return sortForList(painted.filter((t) => taskInPane(t, file)), now);
+  }, [rows, claimed, file, now]);
 }
 
 /**
@@ -210,6 +325,22 @@ export function seedSessionTask(task: Task): void {
     seeds.delete(oldest.value);
   }
   stashSeed(id, task);
+}
+
+/** The seed for one session GOES — the erase gesture's share. `useSessionTask`
+ *  keeps a seeded row over a listing that dropped it, on purpose (a row that
+ *  blinks out mid-conversation is worse than one a poll behind), and that is
+ *  exactly wrong for a row the reader just deleted. */
+export function forgetSessionSeed(sessionId: string): void {
+  seeds.delete(sessionId);
+  try {
+    const raw = sessionStorage.getItem(SEED_STASH);
+    if (raw && (JSON.parse(raw) as { id?: string }).id === sessionId) {
+      sessionStorage.removeItem(SEED_STASH);
+    }
+  } catch {
+    // No storage — nothing stashed to forget.
+  }
 }
 
 /** The seeded row for a session, or null. */
@@ -328,16 +459,46 @@ export function useSessionTask(
    *  for the length of the `/api/tasks` round trip — a flash of the wrong
    *  identity on a task whose name we were already printing. */
   const painted = useRef(false);
+  /**
+   * …AND IT IS RESET WHEN THE SESSION CHANGES (2026-09-15).
+   *
+   * The flag says "this hook has real rows up", and rows read for the PREVIOUS
+   * session are not rows for this one. Left standing across a session swap it
+   * suppressed the new subscription's skeleton, so the header printed the OLD
+   * conversation's identity — or, once the memo below found nothing for the new
+   * id in the old rows, the `✻ Claude` fallback, which is a CLAIM that this chat
+   * has no task row and one we had not earned.
+   *
+   * ITS OWN REF and not `seedFor` above, which the seed block has already
+   * advanced by the time this line runs. On the SESSION only: `file` changing
+   * under one session re-subscribes to the same conversation, and the rows in
+   * hand are still that conversation's — the very case `painted` exists for.
+   */
+  const paintedFor = useRef(sessionId);
+  if (paintedFor.current !== sessionId) {
+    paintedFor.current = sessionId;
+    painted.current = false;
+  }
   useEffect(() => {
     if (!sessionId) return;
-    return subscribeRef.current(file, (next) => {
-      if (next === null) {
-        if (!painted.current) setRows(null);
-        return;
-      }
-      painted.current = true;
-      setRows(next);
-    });
+    return subscribeRef.current(
+      file,
+      (next) => {
+        if (next === null) {
+          if (!painted.current) setRows(null);
+          return;
+        }
+        painted.current = true;
+        setRows(next);
+      },
+      undefined,
+      false,
+      // AND THE WATCH IS ABOUT THIS SESSION, not only about `file`. A chat opened
+      // from the Tasks wall can be a task whose project is some other folder
+      // entirely, and a change scoped to `file` ancestry never concerned it — so
+      // the header's ring never heard its own session end.
+      sessionId,
+    );
   }, [sessionId, file]);
   return useMemo(() => {
     if (!sessionId) return NO_IDENTITY;

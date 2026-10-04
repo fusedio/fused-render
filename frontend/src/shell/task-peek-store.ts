@@ -23,6 +23,7 @@ import {
   setSidebarState,
   subscribeSidebarState,
 } from "@platform/lib/sidebarstate";
+import { IS_EMBED } from "@platform/lib/router";
 
 /** The query param the peek rides on `/tasks`. */
 export const PEEK_PARAM = "peek";
@@ -73,6 +74,11 @@ export function peekItemProps(key: string, openable: boolean): Record<string, st
 /** The class the open item wears. One rule for all four shapes, drawn inside
  *  the element's own box so nothing changes size (styles/task-peek.css). */
 export const PEEK_OPEN_CLASS = "is-peeked";
+
+/** Marks a surface drawn INSIDE the frame that is not page background — a
+ *  popover that renders in place rather than through a portal. A click there
+ *  keeps the peek open (`PEEK_FRAME_KEEPS_OPEN`). */
+export const PEEK_KEEP_ATTR = "data-peek-keep";
 
 /**
  * THE MARK A WALKED-TO ITEM WEARS WHILE IT HOLDS THE WALK'S OWN FOCUS, and the
@@ -146,7 +152,13 @@ export const PEEK_MIN_WIDTH = SIDE_PANE_MIN_WIDTH;
  * constant, because the column is capped at 1050 and is whatever the window
  * gives it below that — one constant could only ever be right on one window.
  */
+/** Kept for the record: the floor WAS three quarters of the baseline until
+ *  2026-09-15, when Akshil replaced it with a flat 500px (`MIDDLE_FLOOR`). */
 export const MIDDLE_FLOOR_FRACTION = 0.75;
+/** THE MIDDLE PANE'S FLOOR, in px (Akshil, 2026-09-15). Under it the list
+ *  stops shrinking and scrolls sideways, AND the sidebar gives way — one line
+ *  for both, no baseline in it. */
+export const MIDDLE_FLOOR = 500;
 
 /** Below this the middle pane is not worth keeping at all: the peek covers the
  *  content area instead of squeezing the view to a sliver (design.md, Widths
@@ -162,6 +174,26 @@ export const PEEK_COVER_FLOOR = 360;
  * cannot tick the sidebar open and shut as the pointer jitters.
  */
 export const SIDEBAR_HYSTERESIS = 16;
+
+/**
+ * THE MIDDLE PANE WIDTH THE SIDEBAR GIVES WAY AT (Akshil, 2026-09-16).
+ *
+ * Until now the sidebar collapsed at the middle pane's ¾ floor (~820px on a
+ * capped column), which on an ordinary laptop meant it went the moment a panel
+ * opened. That is the content floor's job — under it the list scrolls
+ * sideways — and it is NOT the sidebar's: the list can be scrolled a long way
+ * before 188px of chrome is worth more than it. So the sidebar has its own,
+ * much lower line: the middle pane, measured with the sidebar EXPANDED, may
+ * shrink all the way to this before the sidebar is asked for its room. The
+ * same number decides an open (`openTimeCollapse`) and a manual re-expand of
+ * the sidebar (`expandClosesPeek`).
+ *
+ * Was `MIDDLE_FLOOR` (500, sharing a line with the content floor) until
+ * 2026-09-16, when Akshil moved it to `PEEK_COVER_FLOOR` (360) instead — the
+ * sidebar now gives way at the same line the panel itself covers at, not the
+ * line the list stops shrinking at.
+ */
+export const SIDEBAR_COLLAPSE_MIDDLE = PEEK_COVER_FLOOR;
 
 /** The page column's cap (`styles/schedule.css` `.prefs-page.schedule-page > *`)
  *  and the page's own side padding, used ONLY as the baseline's fallback when
@@ -184,8 +216,8 @@ export function baselineOr(baseline: number | null, content: number): number {
 
 /** THE MIDDLE PANE'S FLOOR: three quarters of the baseline. Below it the rows,
  *  lanes, cards and calendar grid stop shrinking and the pane scrolls. */
-export function middleFloor(baseline: number): number {
-  return Math.round(Math.max(0, baseline) * MIDDLE_FLOOR_FRACTION);
+export function middleFloor(_baseline: number): number {
+  return MIDDLE_FLOOR;
 }
 
 /**
@@ -329,7 +361,13 @@ export function resolvePeekKey(
  */
 export const PEEK_FRAME_KEEPS_OPEN =
   'button, a, input, select, textarea, [role="button"], ' +
-  `[${PEEK_ITEM_ATTR}], .schedule-toolbar, .modal-dialog, .context-menu`;
+  `[${PEEK_ITEM_ATTR}], .schedule-toolbar, .modal-dialog, .context-menu, ` +
+  // The app page's frame holds more than the Tasks page did (2026-09-20): its
+  // header's icon is a span that opens a picker, the picker itself is drawn
+  // inside the frame, and the version picker is a transparent <select> under
+  // a painted label whose eyebrow and padding are not the select (Bugbot) —
+  // a click in any of them is a click ON something.
+  `.app-page-icon-toggle, .app-version-picker, [${PEEK_KEEP_ATTR}]`;
 
 /** Does a click that landed on `hit` close the peek? */
 export function frameClickCloses(hit: Element | null): boolean {
@@ -612,17 +650,49 @@ export function planRoom(input: RoomInput): RoomPlan {
 export function openTimeCollapse(input: {
   viewport: number;
   baseline: number | null;
+  /** The width the reader dragged last time, or null for the default. */
+  chosenWidth: number | null;
   /** The sidebar's width WHEN EXPANDED — what the collapse would give back. */
   sidebarExpanded: number;
   sidebarCollapsed: boolean;
 }): boolean {
   if (input.sidebarCollapsed) return false;
-  const now = Math.max(0, input.viewport - input.sidebarExpanded);
-  const base = baselineOr(input.baseline, now);
-  // Already room for a full-minimum peek beside an untouched column.
-  if (now - base >= PEEK_MIN_WIDTH) return false;
-  const railed = Math.max(0, input.viewport - SIDEBAR_RAIL_WIDTH);
-  return railed - base >= PEEK_MIN_WIDTH;
+  // THE SAME LINE THE CROSSING USES (Akshil, 2026-09-15): the panel arrives at
+  // the width it is going to have, and the sidebar goes only if the middle
+  // pane that leaves is under `SIDEBAR_COLLAPSE_MIDDLE` — not, as before, the
+  // moment the column could not keep its full baseline. Exactly what the
+  // first seam-drag would decide, decided at the open instead.
+  return middleWithSidebar(input) < SIDEBAR_COLLAPSE_MIDDLE;
+}
+
+/** The middle pane's width with the sidebar EXPANDED and the peek at the width
+ *  it takes on that content area — the one number the sidebar rules read. */
+export function middleWithSidebar(input: {
+  viewport: number;
+  baseline: number | null;
+  chosenWidth: number | null;
+  sidebarExpanded: number;
+}): number {
+  const content = Math.max(0, input.viewport - input.sidebarExpanded);
+  return content - peekWidthFor(input.chosenWidth, content, input.baseline);
+}
+
+/**
+ * THE READER RE-OPENS THE SIDEBAR BY HAND while the panel is COVERING the list
+ * (Akshil, 2026-09-15). Their sidebar wins, and the panel that was covering the
+ * middle pane gives its width back — shrinking to the default split — so the
+ * list comes back into view beside it. A panel that was not covering is left
+ * exactly as it was.
+ */
+export function expandUncovers(input: {
+  open: boolean;
+  viewport: number;
+  baseline: number | null;
+  chosenWidth: number | null;
+  sidebarExpanded: number;
+}): boolean {
+  if (!input.open) return false;
+  return middleWithSidebar(input) < PEEK_COVER_FLOOR;
 }
 
 /**
@@ -740,10 +810,11 @@ export interface CrossPlan {
  */
 export function planCrossing(input: CrossInput): CrossPlan {
   const h = input.hysteresis ?? SIDEBAR_HYSTERESIS;
-  const content = Math.max(0, input.viewport - input.sidebarExpanded);
-  const floor = middleFloor(baselineOr(input.baseline, content));
-  const peek = peekWidthFor(input.chosenWidth, content, input.baseline);
-  const middleIfExpanded = content - peek;
+  // THE SIDEBAR'S OWN LINE, not the content floor (Akshil, 2026-09-15 — see
+  // `SIDEBAR_COLLAPSE_MIDDLE`). The ¾ floor still governs when the list starts
+  // scrolling sideways (`planRoom`); the sidebar holds on well past it.
+  const floor = SIDEBAR_COLLAPSE_MIDDLE;
+  const middleIfExpanded = middleWithSidebar(input);
   const side: FloorSide =
     middleIfExpanded < floor
       ? "below"
@@ -958,7 +1029,7 @@ export function setPeekHost(on: boolean): void {
   // Note this is NOT what an ordinary close does. Closing the panel leaves the
   // sidebar exactly where the last crossing put it, because open and close are
   // not resizes and the new rules give them no say at all.
-  if (state.autoCollapsed && getSidebarState().collapsed) {
+  if (state.autoCollapsed && hostSidebar().collapsed) {
     // …written the way the collapse was: a rail we persisted has to be undone
     // in `localStorage` too, or the reload the reader does next puts it back.
     setSidebar(false, heldPersisted);
@@ -1036,7 +1107,18 @@ export function measureTasksBaseline(): number | null {
         : (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
     const content = host.clientWidth;
     if (!(content > 0)) return null;
-    const cap = Number.parseFloat(getComputedStyle(main).maxWidth);
+    // THE CAP, and where it comes from. On `/tasks` it is the column's own
+    // `max-width` (1050px, styles/schedule.css). The app page's Tasks tab lets
+    // its list FILL the page (Akshil, 2026-09-21: the page follows its parent,
+    // no centred column) and so carries no max-width — but it still wants the
+    // same arithmetic as `/tasks`, or its floors and default width would drift
+    // with the window. `--tasks-column-max` (styles/app-page.css) is that cap
+    // stated without laying anything out; the rendered max-width is the
+    // fallback for the page that never declared it.
+    const mainStyle = getComputedStyle(main);
+    const capVar = Number.parseFloat(mainStyle.getPropertyValue("--tasks-column-max"));
+    const cap =
+      Number.isFinite(capVar) && capVar > 0 ? capVar : Number.parseFloat(mainStyle.maxWidth);
     // A page with no cap at all (`max-width: none` parses to NaN) is one whose
     // column IS the room it is given, which is what `tasksBaselineFrom` falls
     // back to — but only the rendered box can confirm the element is laid out
@@ -1247,11 +1329,13 @@ export function openPeek(
 
 /** The open-time exception, spent (`openTimeCollapse` carries the rule). */
 function spendOpenTimeCollapse(): void {
-  const sidebar = getSidebarState();
+  if (IS_EMBED) return; // no sidebar here to spend (`hostSidebar`)
+  const sidebar = hostSidebar();
   const collapse = openTimeCollapse({
     viewport: viewportWidth(),
     baseline: peekBaseline(),
-    sidebarExpanded: sidebar.width,
+    chosenWidth: state.width,
+    sidebarExpanded: sidebar.expanded,
     sidebarCollapsed: sidebar.collapsed,
   });
   if (!collapse) return;
@@ -1349,11 +1433,11 @@ export function showListBesidePeek(): void {
 }
 
 function showListEnv(): ShowListInput {
-  const sidebar = getSidebarState();
+  const sidebar = hostSidebar();
   return {
     viewport: viewportWidth(),
     baseline: peekBaseline(),
-    sidebarExpanded: sidebar.width,
+    sidebarExpanded: sidebar.expanded,
     sidebarCollapsed: sidebar.collapsed,
   };
 }
@@ -1381,34 +1465,55 @@ function viewportWidth(): number {
   return typeof window === "undefined" ? 0 : window.innerWidth || 0;
 }
 
+/**
+ * THE SIDEBAR AS THIS DOCUMENT HAS IT — the one reader of `sidebarstate` in
+ * this store; every width, room and crossing input goes through here.
+ *
+ * EMBEDDED (`/tasks?embed=1`, an app page's iframe) there is no sidebar in this
+ * document: `sidebarstate` is shared localStorage, so what it holds is the HOST
+ * shell's column, not one beside this frame. Reading it would reserve space that
+ * is not there. So embedded, the sidebar is a column of width 0 that occupies
+ * nothing — EXPANDED at 0 rather than "collapsed", because a collapsed sidebar
+ * still occupies `SIDEBAR_RAIL_WIDTH` in the pure planners (`planShowList`).
+ * The planners never move it either: every writer below is gated on IS_EMBED
+ * too (`setSidebar`, `spendOpenTimeCollapse`, `applyResize`, `watchSidebar`).
+ */
+function hostSidebar(): { expanded: number; collapsed: boolean; occupied: number } {
+  if (IS_EMBED) return { expanded: 0, collapsed: false, occupied: 0 };
+  const sidebar = getSidebarState();
+  return {
+    expanded: sidebar.width,
+    collapsed: sidebar.collapsed,
+    occupied: sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width,
+  };
+}
+
 /** The area the frame and the peek share, right now. */
 function contentWidth(): number {
-  const sidebar = getSidebarState();
-  return Math.max(0, viewportWidth() - (sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width));
+  return Math.max(0, viewportWidth() - hostSidebar().occupied);
 }
 
 function roomEnv(): RoomInput {
-  const sidebar = getSidebarState();
   return {
     open: state.key !== null,
     viewport: viewportWidth(),
     chosenWidth: state.width,
     baseline: peekBaseline(),
-    sidebarWidth: sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width,
+    sidebarWidth: hostSidebar().occupied,
   };
 }
 
 function crossEnv(): CrossInput {
-  const sidebar = getSidebarState();
+  const sidebar = hostSidebar();
   return {
     viewport: viewportWidth(),
     chosenWidth: state.width,
     baseline: peekBaseline(),
-    // THE EXPANDED WIDTH, whichever state the sidebar is in: `sidebar.width` is
+    // THE EXPANDED WIDTH, whichever state the sidebar is in: `sidebar.expanded` (the stored `width`) is
     // the stored/dragged number and does not change when it collapses to its
     // rail (platform/lib/sidebarstate). Both triggers read it — see
     // `planCrossing` on why the expand cannot be measured against the rail.
-    sidebarExpanded: sidebar.width,
+    sidebarExpanded: sidebar.expanded,
     sidebarCollapsed: sidebar.collapsed,
     side: floorSide,
   };
@@ -1427,7 +1532,8 @@ function establishSide(): void {
  * pane's floor.
  */
 export function applyResize(): RoomPlan {
-  if (state.key !== null) {
+  // Embedded, the crossing plan is a no-op: there is no sidebar to move.
+  if (state.key !== null && !IS_EMBED) {
     const plan = planCrossing(crossEnv());
     floorSide = plan.side;
     if (plan.sidebar !== null) {
@@ -1473,6 +1579,10 @@ export function applyResize(): RoomPlan {
  * the sidebar without that counting as the reader changing their mind.
  */
 function setSidebar(collapsed: boolean, persist = false): void {
+  // EMBEDDED, HANDS OFF: `sidebarstate` is shared localStorage, so a write from
+  // a framed Tasks page would collapse the PARENT shell's sidebar — a column
+  // this document does not even draw.
+  if (IS_EMBED) return;
   ours = true;
   try {
     setSidebarState((s) => (s.collapsed === collapsed ? s : { ...s, collapsed }), persist);
@@ -1521,18 +1631,51 @@ let unsubscribeSidebar: (() => void) | null = null;
  * middle pane does cross downward again, the collapse fires even on a sidebar
  * they opened deliberately, which is what Akshil asked for.
  */
+/** The sidebar's collapsed state as of its last change — so the watcher can
+ *  tell an EXPAND (rail → panel) from a width drag of an open sidebar. */
+let sidebarWasCollapsed = false;
+
 function watchSidebar(): void {
-  if (unsubscribeSidebar) return;
+  // Embedded: a change to `sidebarstate` is the HOST's sidebar moving, not the
+  // reader moving one beside this frame — nothing here to track.
+  if (IS_EMBED || unsubscribeSidebar) return;
+  sidebarWasCollapsed = hostSidebar().collapsed;
   unsubscribeSidebar = subscribeSidebarState(() => {
-    if (ours) return;
+    // Track ours too, or an auto-collapse followed by their chevron reads as
+    // no transition at all.
+    if (ours) {
+      sidebarWasCollapsed = hostSidebar().collapsed;
+      return;
+    }
     // ANY move of theirs, in either direction — a manual collapse counts as
     // much as a manual expand, because the incoherence this guards against is
     // about persistence and not about direction (`userMoved`).
     userMoved = true;
-    if (getSidebarState().collapsed) return;
-    if (!state.autoCollapsed) return;
-    markAutoCollapsed(false);
-    publish({ ...state, autoCollapsed: false });
+    const sidebar = hostSidebar();
+    const wasCollapsed = sidebarWasCollapsed;
+    sidebarWasCollapsed = sidebar.collapsed;
+    if (sidebar.collapsed) return;
+    if (state.autoCollapsed) {
+      markAutoCollapsed(false);
+      publish({ ...state, autoCollapsed: false });
+    }
+    // THEIR SIDEBAR WINS, AND A COVERING PANEL SHRINKS (`expandUncovers`): a
+    // hand-opened sidebar over a panel that was covering the list hands the
+    // panel back to its default split, so the list is on screen again. Only on
+    // the EXPAND itself, not on a drag of an open sidebar's width.
+    if (
+      wasCollapsed &&
+      expandUncovers({
+        open: state.key !== null,
+        viewport: viewportWidth(),
+        baseline: peekBaseline(),
+        chosenWidth: state.width,
+        sidebarExpanded: sidebar.expanded,
+      })
+    ) {
+      resetPeekWidth();
+      establishSide();
+    }
   });
 }
 

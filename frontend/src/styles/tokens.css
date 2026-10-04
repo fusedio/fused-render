@@ -131,6 +131,10 @@
      the user having touched nothing (D574). */
   --status-item-hover: rgba(255, 255, 255, 0.12);
   --status-item-active: rgba(255, 255, 255, 0.18);
+  /* A glass surface's top-edge highlight (styles/monitor.css): the light
+     catching the rim of a translucent card. White in both palettes — a rim
+     reads as light, never as shadow — but far fainter on the dark ground. */
+  --glass-highlight: rgba(255, 255, 255, 0.06);
 
   /* -- the AI models grid's have / not-have axis (ai-models.css) -------------
      One model, at two ends of one question: this machine HAS it, or it does
@@ -283,6 +287,20 @@
        palette gains a role rather than a colour. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
+
+  /* WAITING IS THE RUNNING YELLOW, AND THE RING IS DASHED (Akshil, 2026-09-12).
+     The state spent a day in `--activity`'s blue and a day in a gold of its own;
+     both are retired. `queued` is drawn INSIDE In Progress (schedule-lib.laneOf),
+     and two hues in one lane read as two unrelated kinds of work — while a third
+     yellow, however carefully tuned, is a colour a reader has to learn before it
+     says anything. So waiting wears `--status-progress` EXACTLY, and the shape
+     carries the difference: a running mark is solid, a waiting one is DASHED —
+     the same "not settled yet" the queued bubble in the chat is dashed for, and
+     a distinction that survives a small ring, a dim screen and a colour-blind
+     reader, none of which a hue does.
+     The token stays as an ALIAS rather than being deleted, so every surface that
+     names the state keeps naming it and the decision lives in one line. */
+  --status-queued: var(--status-progress);
 
   /* The Playground sidebar's model-card fills. A step DARKER than the usual
      raised surface, which no single wash can do in both themes (--tint
@@ -447,6 +465,7 @@
      two tokens in a light theme. A white overlay on a light bar is invisible. */
   --status-item-hover: rgba(0, 0, 0, 0.1);
   --status-item-active: rgba(0, 0, 0, 0.16);
+  --glass-highlight: rgba(255, 255, 255, 0.7);
 
   /* The same axis, and the reason it is a token at all. The mix these replace
      was 14% of --fg-muted over --bg-alt, which on this palette is a warm
@@ -514,6 +533,11 @@
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
+  /* The alias again (see the dark block): waiting is the running yellow on both
+     grounds and the dash is the whole difference. Restated because the light
+     palette must redefine every token (test_theme.py); it resolves against this
+     palette's own `--status-progress`, so there is still nothing to tune here. */
+  --status-queued: var(--status-progress);
   --pg-card-bg: #eaebee;
   --pg-card-bg-hover: #e1e2e6;
   --status-done: #16a34a;

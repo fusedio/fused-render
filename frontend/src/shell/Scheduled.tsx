@@ -49,14 +49,12 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   getConfig,
   getSchedule,
   getScheduleQueue,
-  getTaskChanges,
-  getTasks,
 } from "@platform/lib/api";
 import type {
   ScheduledMessage,
@@ -64,17 +62,14 @@ import type {
   Task,
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
-// The chat's own handoff module, not a second reading of its URL shape: the
-// param is written by `schedulerUrl` and there must be exactly one parser for it
-// (owner E2E R1, F4 (2026-09-10)). A leaf module with no imports of its own, so
-// this costs the shell chunk nothing but the function.
+import { draftChatUrl } from "@apps/claude";
 import {
-  parseAttachmentsParam,
-  type SchedAttachment,
-} from "@apps/claude/ui/sched-draft";
-import { chatDraftKey, fetchChatDraft, fetchDrafts } from "@platform/lib/drafts";
-import type { DraftAttachment, TaskDraft } from "@platform/lib/drafts";
-import { chatPaneUrl } from "./schedule-lib";
+  chatKeySession,
+  fetchDrafts,
+  NEW_CHAT_PREFIX,
+  newChatFile,
+} from "@platform/lib/drafts";
+import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -96,36 +91,33 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import {
-  forgetListing,
-  publishTasks,
   readListing,
   readTasksRows,
-  rememberListing,
+  refreshListing,
+  subscribeListing,
   TASKS_POKE_EVENT,
   useTasksFeeder,
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
+  applyQueueOverrides,
+  expireQueueOverrides,
   isChatDraftTask,
-  mergeTaskChanges,
+  NO_QUEUE_OVERRIDES,
   provisionalTasks,
+  skipLine,
   viewFromSearch,
   viewUrl,
 } from "./tasks-lib";
-import type { TaskView } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
 import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
 import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
-import {
-  closePeek,
-  frameClickCloses,
-  openPeek,
-  peekGutter,
-  refreshPeekBaseline,
-} from "./task-peek-store";
+import { TaskPeekFrame, useTaskPeekSlot } from "./TaskPeekFrame";
+import { openPeek } from "./task-peek-store";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -141,11 +133,19 @@ export interface TasksScope {
    *  target and nothing else — never the filter, which stays on `project` so
    *  the tab keeps listing every task in the folder. */
   entry?: string | null;
+  /** No host frame around this page (`/tasks?project=…`, the framed Tasks view
+   *  an app page embeds): draw the peek's own frame as unscoped `/tasks` does,
+   *  instead of waiting for a slot nobody provides. AppPage leaves it unset. */
+  ownFrame?: boolean;
 }
 
-// How often the page re-reads itself. A `pending` message becomes `sent` on the
-// server's own tick (30s), so anything much slower than this shows a message as
-// still-waiting for a while after it went out.
+// How often the page re-reads the SCHEDULE and the QUEUE. A `pending` message
+// becomes `sent` on the server's own tick (30s), so anything much slower than
+// this shows a message as still-waiting for a while after it went out.
+//
+// The TASKS feed is no longer on this clock: it moved to the shared listing feed
+// (`tasksPulse.subscribeListing`), whose floor refresh is this same 20s — one
+// `/api/tasks` for the document rather than one per surface that wants the rows.
 const POLL_MS = 20000;
 
 // Which view is up, remembered across visits — a person who plans on the
@@ -186,83 +186,69 @@ const NEW_LINK_LEAD_MS = 120_000;
  * seed-on-open cannot fall out of step, because there is no second place that
  * says what a hop is made of.
  */
-interface HopSeed {
-  target: string | null;
-  message: string | null;
-  session: string | null;
-  back: string | null;
-  attachments: SchedAttachment[];
-  /** Which chat draft this form supersedes — see the effect that reads it. */
-  chatKey: string | null;
+interface ChatHop {
+  /** The chat record this card is EDITING — a session id, or `new:<file>`.
+   *  `""` for every opening that did not come out of a chat. */
+  key: string;
+  /** Where "Back to chat" lands, verbatim from the hop's `?from=`. */
+  from: string;
 }
 
 /** The opening that came from nowhere: every way into the form but the hop.
  *  A module constant so `openForm`'s default argument is one stable value. */
-const NO_HOP: HopSeed = {
-  target: null, message: null, session: null, back: null,
-  attachments: [], chatKey: null,
-};
+const NO_HOP: ChatHop = { key: "", from: "" };
 
 /**
- * THE UNSENT FORM ALREADY BOUND TO THIS CONVERSATION, as the seed that reopens
- * it — or null when there is none, and the hop mints one exactly as it always
- * did (Akshil, 2026-09-12).
+ * ONE CHAT RECORD, AS THE NEW TASK CARD OPENS ON IT (design "one record", §1).
  *
- * A task draft made out of a chat stores that chat's `session_id`
- * (platform/lib/drafts.TaskDraftForm) and is deliberately NOT a row of its own:
- * the conversation's row is the one the reader knows, and it wears the `✎
- * Draft` chip instead (routers/tasks.py `_bound_chips`). Which leaves exactly
- * one way back into the form — the composer's own Schedule button, the door the
- * form came out of — so this is what that door looks up before opening a card.
- * Without it, the second press minted a second draft over the first: two forms
- * bound to one session, one chip, and whichever saved last owning it.
+ * The hop no longer carries a sentence, a tray or a session in its URL — it
+ * carries the KEY, and this turns what is stored under that key into the seed
+ * the card already knows how to mount on (`DraftSeed`, the shape a reopened
+ * task draft uses). One seeding rule for both kinds of draft, which is what
+ * makes "the modal opens on the record" a true sentence rather than two
+ * near-identical paths.
  *
- * NEWEST WINS if a store somehow holds two — the same tie-break the server's
- * chip takes, so the card the user reopens is the draft the row is advertising.
+ * THE WORDS COME OUT OF `text`, SPLIT, and they go back into `text`, JOINED
+ * (contract §1: the words live in `text`, never in `form.description`; the
+ * modal splits and joins with `splitDraft`/`joinDraft`). So the composer's box
+ * and the card's two prose fields are two views of one string, and a hop out
+ * followed by Back to chat is lossless. Nothing here reads `form.title` — the
+ * title IS the first line, which is also what the listing row prints.
  *
- * THE COMPOSER'S WORDS OUTRANK THE STORED ONES, and only those two fields. The
- * hop carries whatever is in the composer right now; if that is something, it is
- * newer than what the form was saved with and the reader typed it a second ago,
- * so it is split across title and description exactly as a fresh hop's would be
- * (`splitDraft`). Everything else the form remembers — the folder, the time, the
- * repeat rule, the model — is untouched, and so is the id: this is the same
- * draft, being written a bit further. An empty composer overrides nothing.
+ * `session_id` is the KEY when the key is a session: a hop out of a chat that
+ * has already run is a message into that thread, and that is what the Schedule
+ * payload's `sessionId` is built from. `new:<file>` has no thread to continue,
+ * and its `<file>` is the folder the card falls back to when the record names
+ * no target of its own.
  *
- * THE TRAY IS THE ONE THING THAT MERGES RATHER THAN WINS (Bugbot, PR #1126,
- * 2026-09-12). Words are a rewrite — the newer sentence replaces the older one —
- * but a file is a thing, and a composer holding two pictures is not a statement
- * that the three already in the form are gone. Dropping the hop's files lost
- * what was just dragged in; taking only the hop's threw away what the form was
- * built with. So both, deduped on `path` (the id every other attachment list in
- * this feature keys on) with the HOP's copy last, because that is the newer
- * description of a file both sides happen to name.
+ * `at` IS WHAT A SESSION KEY CANNOT SAY (Akshil, 2026-09-16). A `new:<file>` key
+ * spells its folder; a session id spells only the thread, so this used to fall
+ * through to `""` and the card opened on the reader's HOME — and its first
+ * autosave then wrote that home path onto the conversation's own record as the
+ * target. Every door that knows the folder now states it: the hop's `?target=`
+ * (the composer's own `file`), or a draft row's `project`. The stored form still
+ * outranks it, because a form that names a target is a choice somebody made.
  */
-export function boundDraftSeed(
-  stored: Record<string, TaskDraft>,
-  session: string,
-  message: string | null,
-  hopped: readonly DraftAttachment[] = [],
+export function chatHopSeed(
+  key: string,
+  record: ChatDraft | null,
+  at = "",
 ): DraftSeed | null {
-  let id = "";
-  let found: TaskDraft | null = null;
-  for (const [ident, draft] of Object.entries(stored ?? {})) {
-    if (!draft || draft.session_id !== session) continue;
-    if (found && (found.updated_at ?? 0) >= (draft.updated_at ?? 0)) continue;
-    id = ident;
-    found = draft;
-  }
-  if (!id || !found) return null;
-  const byPath = new Map<string, DraftAttachment>();
-  for (const file of [...(found.attachments ?? []), ...hopped]) {
-    if (file?.path) byPath.set(file.path, file);
-  }
-  const form = { ...found, attachments: [...byPath.values()] };
-  const words = (message ?? "").trim();
-  if (!words) return { id, form };
-  const split = splitDraft(words);
+  if (!record) return null;
+  const split = splitDraft(record.text);
+  const form = (record.form ?? {}) as Record<string, unknown>;
+  const newChat = key.startsWith(NEW_CHAT_PREFIX);
   return {
-    id,
-    form: { ...form, title: split.title, description: split.description },
+    id: "",
+    form: {
+      ...form,
+      title: split.title,
+      description: split.description,
+      attachments: record.attachments ?? [],
+      target: (typeof form.target === "string" && form.target)
+        || (newChat ? newChatFile(key) : "") || at || "",
+      session_id: newChat ? "" : key,
+    },
   };
 }
 
@@ -334,15 +320,30 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [tasksLoaded, setTasksLoaded] = useState(
     () => readListing() !== null || tasks.length > 0,
   );
-  // The rows as the changes loop below last saw them, and the server
-  // generation they answer to. Refs, not state: the loop is one long-lived
-  // effect and must read the newest value without re-subscribing on every
-  // poll. Mirrored from `tasks` by the effect under it.
-  const tasksRef = useRef<Task[]>([]);
-  const generationRef = useRef(-1);
-  useEffect(() => {
-    tasksRef.current = tasks;
-  }, [tasks]);
+  // THE CLAIMS A QUEUE VERB MAKES, until the server speaks about the same key
+  // (tasks-lib.applyQueueOverrides). They live on the PAGE and not in the view
+  // that raised them for one reason: a claim exists to outrun the poll, and a
+  // view is remounted by every navigation — a store inside one would be undone
+  // by the answer it was written to beat. They are retired by the listing feed's
+  // subscription below, which is the one place the server's answer arrives.
+  const [queueOverrides, setQueueOverrides] = useState<QueueOverrides>(NO_QUEUE_OVERRIDES);
+  // …AND A CLAIM IS ABOUT A LINE, NOT A ROW (Akshil, 2026-09-18). A press on ⤒
+  // used to promote its own row and leave every other row in the folder saying
+  // what it said before, so for the 0.3-0.6 s before the listing landed the
+  // pressed row and the row it went past BOTH read "1st in line".
+  // `skipLine` turns the one answer into the folder's whole new order, read off
+  // the rows AS PAINTED (a second press before the listing lands supersedes the
+  // first), and it is folded in as one update, so no paint ever shows half of it.
+  //
+  // THE ROWS THROUGH A REF: the callback's identity is handed to every row as
+  // `onQueued`, and a new one on every listing would be a new prop on every row
+  // a second. What the press needs is the latest listing, and that is what a ref
+  // read at press time is.
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
+  const noteQueued = useCallback((override: QueueOverride) => {
+    setQueueOverrides((cur) => skipLine(cur, tasksRef.current, override));
+  }, []);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -391,10 +392,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // WHAT the openings differ in — it is that "this is a new opening" was never
   // stated at all, and any key built out of the form's inputs collides again the
   // moment two openings happen to share them.
-  // WHAT THE OPENING CARRIED IN FROM A DEEP LINK — see `HopSeed` above. Set by
-  // `openForm` and by nothing else, which is what keeps one chat's handoff from
-  // seeding the next card the reader opens.
-  const [hop, setHop] = useState<HopSeed>(NO_HOP);
+  // WHICH CHAT RECORD THIS OPENING IS EDITING, and where it came from — see
+  // `ChatHop` above. Set by `openForm` and by nothing else, which is what keeps
+  // one chat's handoff from seeding the next card the reader opens.
+  const [hop, setHop] = useState<ChatHop>(NO_HOP);
   const [openSeq, setOpenSeq] = useState(0);
   // The single door into the form, so "clean slate" is one rule in one place: a
   // new opening is a new mount, and opening a NEW task drops whatever was being
@@ -404,12 +405,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // …and it is where the deep link's values are SPENT: every opening states its
   // own hop, and the ones that had none say so by saying nothing (`NO_HOP`, the
   // default). That is the whole of fix for the attachments that used to follow
-  // the reader from one New task card to the next — see `HopSeed` (Akshil,
+  // the reader from one New task card to the next — see `ChatHop` (Akshil,
   // 2026-09-12).
   const openForm = (
     at: Date | "blank" | null,
     entry: ScheduledMessage | null,
-    seed: HopSeed = NO_HOP,
+    seed: ChatHop = NO_HOP,
     draft: DraftSeed | null = null,
   ) => {
     // Every opening ABANDONS any chat-draft fetch still in flight (Bugbot on
@@ -436,85 +437,64 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and the effect below looks it up by session before opening (Akshil,
   // 2026-09-12).
   const [draftSeed, setDraftSeed] = useState<DraftSeed | null>(null);
-  /**
-   * A NEVER-SENT CHAT'S ROW, OPENED AS A NEW TASK (Akshil, 2026-09-12: "a row
-   * without a session is a draft and always opens the New Task modal").
-   *
-   * It builds the very `HopSeed` the chat composer's Schedule button builds —
-   * the folder, the words, the tray's chips, the way back, and the chat draft
-   * this card supersedes — and spends it through `openForm` exactly as the
-   * `?new=1` effect below does. Same door, same seeding, same aftermath: the
-   * modal mints a task draft at once (`hopSeeded`), the first save names
-   * `from_chat_key` so the server deletes the `new:<file>` draft in the same
-   * request, and "Back to chat" (`backChatHref`) hands the words back to the
-   * composer they came from. Nothing here is a second implementation of that
-   * handoff; it is the same one, reached from a row instead of a button.
-   *
-   * IT HAS TO FETCH FIRST, and that is the one cost. The row carries only
-   * `draft.preview` — the first LINE — and the card's two prose fields are the
-   * whole message split across them (`splitDraft`), so opening on the preview
-   * would quietly drop every line after the first. The card seeds in `useState`
-   * initialisers, which run once at mount, so there is no patching it
-   * afterwards: the text has to be in hand BEFORE the modal opens. An
-   * unreadable answer falls back to the preview rather than refusing the press
-   * — a truncated draft is worth more than a dead row — and `fetchChatDraft`
-   * already answers null instead of throwing.
-   *
-   * AND BECAUSE IT FETCHES FIRST, IT IS THE ONE OPENING THAT CAN ARRIVE LATE
-   * (Bugbot on PR #1126, 2026-09-12): a second press — another draft row, "+
-   * New task", or this same row again — used to be overwritten when the first
-   * fetch resolved, so the modal showed the wrong hop or minted two task drafts
-   * from one chat row. `chatDraftGen` is the click's generation: each press
-   * takes the next number, `openForm` (every door) takes one too, and an
-   * answer whose number is no longer current is dropped on the floor. The
-   * number is captured BEFORE the fetch and compared BEFORE this arm's own
-   * `openForm` call, so the bump that call makes cannot invalidate itself.
-   */
+  /** THE GENERATION OF THE PRESS THAT OWNS THE MODAL. Two openings still fetch
+   *  before they can seed — the `?new=1&draft=` hop and the Draft chip's press —
+   *  and an answer whose number is no longer current is dropped rather than
+   *  painted over a card the reader has since opened another way (Bugbot on
+   *  PR #1126). Every door through `openForm` takes a number, so this is the
+   *  whole rule and not a per-arm one. */
   const chatDraftGen = useRef(0);
-  const openChatDraft = (task: Task) => {
-    // The chat's own `file` FIRST, for platform/lib/drafts.chatDraftKey's
-    // reason: the draft is keyed on that exact string, and the way back has to
-    // mount the pane on the same one or the composer seeds from a key nothing
-    // wrote. `target` is the fallback for a server that sends the row without
-    // it.
-    const at = task.file || task.target || "";
+  /**
+   * THE CARD, OPENED ON ONE CHAT RECORD — the only way this page ever opens one
+   * (Akshil, 2026-09-16).
+   *
+   * Three doors reach it and they hand over the same three things: the KEY, the
+   * route "Back to chat" lands on, and the FOLDER the card falls back to when
+   * the record names no target. The `?new=1&draft=` hop states all three in its
+   * URL; a draft row and a bound-form line read them off the row. One read, one
+   * seeding rule (`chatHopSeed`), no merge to get wrong — and, since every door
+   * lands here rather than one of them navigating to a composer, pressing a
+   * draft row on THIS page does not throw the page's filters and scroll away to
+   * open a card that was always going to be drawn over it.
+   *
+   * A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (`fetchDrafts` answers null for a
+   * blip). The card opens anyway, on the key it was given — it is the SAME
+   * record either way, so an uninformed card costs a moment of empty fields and
+   * never a second draft.
+   *
+   * A SECOND PRESS IS THE SAME PRESS: nothing is minted, and the generation
+   * below drops the answer to an opening the reader has since replaced.
+   */
+  const openChatRecord = (key: string, from: string, at: string) => {
+    const hopTo: ChatHop = { key, from };
+    const lead = new Date(Date.now() + NEW_LINK_LEAD_MS);
     const gen = ++chatDraftGen.current;
-    void fetchChatDraft(task.key).then((stored) => {
-      // A newer press, through this arm or any other door, owns the modal now.
+    void fetchDrafts().then((all) => {
       if (gen !== chatDraftGen.current) return;
-      const seed: HopSeed = {
-        target: at || null,
-        message: stored?.text ?? task.draft?.preview ?? null,
-        // NO SESSION, and that is what this row IS: a conversation that has
-        // never been sent has no id to continue, which is the whole meaning of
-        // a `new:<file>` key.
-        session: null,
-        back: at ? chatPaneUrl(at) : null,
-        attachments: stored?.attachments ?? [],
-        // The row's key IS the chat draft's key (`new:<file>`), which is what
-        // lets the card's first save move the draft rather than duplicate it
-        // (design.md, Round 2: "A draft moves, never duplicates").
-        chatKey: task.key,
-      };
-      openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null, seed);
+      // THE FOUND FORM'S OWN TIME, and no time at all when it had none — see
+      // `reopenTime`. The lead date belongs only to the fallthrough, where the
+      // lookup found nothing and the card is being opened fresh.
+      const found = all && chatHopSeed(key, all.chat[key] ?? null, at);
+      openForm(found ? reopenTime(found) : lead, null, hopTo, found);
+    }, () => {
+      if (gen !== chatDraftGen.current) return;
+      openForm(lead, null, hopTo);
     });
   };
+  const openChatDraft = (task: Task) => {
+    openChatRecord(task.key, draftChatUrl(task), task.project || task.file || "");
+  };
+  /**
+   * A DRAFT ROW'S PRESS, ON THIS PAGE — THE NEW TASK CARD, BOTH KINDS (Akshil,
+   * 2026-09-16).
+   *
+   * The ROW still decides which record, because the two kinds are filed
+   * differently — a chat draft under its own key, a task draft under an id —
+   * but they now open the same card, which is what makes a draft row one thing
+   * to learn instead of two. Neither mints anything; a task draft carries its
+   * stored form on the row, so that arm reads nothing at all.
+   */
   const openDraft = (task: Task) => {
-    // A NEVER-SENT CHAT OPENS THIS MODAL TOO (Akshil, 2026-09-12). The rule is
-    // the ROW's, not the draft's kind: a row with no session is a draft and
-    // always opens the New task modal; a row with a session always opens the
-    // chat. The build before this one sent the two draft kinds to two different
-    // places and tried to warn about it in the chip's wording ("Draft reply"),
-    // which is a label apologising for a press — the press was the thing to fix.
-    //
-    // What it is seeded from is where the two kinds still differ, and that is
-    // the only thing `isChatDraftTask` decides now. A task draft has a stored
-    // form to re-open (`draftRow`, below); a chat draft has none, so its words
-    // travel as a HOP — the identical object the composer's own Schedule button
-    // builds, so this press and that button land on the same card, mint the
-    // same task draft, delete the same chat draft (`from_chat_key`) and offer
-    // the same way back. Asked FIRST, because it is the row that has no
-    // `draft_id` to fall through to.
     if (isChatDraftTask(task)) {
       openChatDraft(task);
       return;
@@ -525,10 +505,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // `NO_HOP`, through the same door every other opening takes.
     //
     // …AND NO TIME, which is `reopenTime`'s rule stated the short way (Bugbot,
-    // PR #1126, 2026-09-12). This door never had the lead date to hand, so it
-    // never had the bug the bound-draft doors had; the card reads its own
-    // `when` out of the stored form and decides `timePicked` from that, and a
-    // form that stored none is an immediate task that must stay one.
+    // PR #1126, 2026-09-12): the card reads its own `when` out of the stored
+    // form, and a form that stored none is an immediate task that must stay one.
     openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });
   };
   /**
@@ -540,73 +518,23 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    * words are sometimes in a New task card instead of in the composer. Pressing
    * it went to the chat either way, and after a hop the chat holds nothing: the
    * reader pressed their own sentence and landed somewhere it was not. The
-   * server now says which (`draft.kind`), and this is the other press.
+   * server says which (`draft.kind`), and this is the other press.
    *
-   * IT IS THE HOP DOOR, not a second way in. A bound draft has no row and no
-   * `draft_id` on this row to open it by (`bound_draft` names the form but the
-   * card seeds from the stored form, which only `GET /api/drafts` carries), so
-   * this builds the same `{session, target}` hop the composer's Schedule button
-   * builds and lets `boundDraftSeed` find the form exactly as that door does —
-   * one lookup, one seeding rule, one card. No `message`: this press came off a
-   * row and not out of a composer, so there are no newer words to merge over
-   * the stored ones.
+   * IT IS THE HOP DOOR, not a second way in — and now that is literally true:
+   * a session-bound form IS the session's chat record (contract §1, "one record,
+   * two doors"), so this opens the card on `chat[<session>]` through exactly the
+   * function the Schedule hop seeds from. One lookup, one seeding rule, one
+   * card, and no second draft to reconcile with the first.
    *
    * Same generation guard as every other opening that fetches first, and the
    * same fallthrough: a lookup that fails opens the card anyway rather than
-   * dying under the cursor, and the server's merge (drafts.py `put_task`) is
-   * what makes that harmless.
+   * dying under the cursor.
    */
   const openBoundDraft = (task: Task) => {
     const session = (task.session_id ?? "").trim();
     if (!session) return;
-    const seed: HopSeed = {
-      target: task.target || null,
-      message: null,
-      session,
-      back: null,
-      attachments: [],
-      chatKey: null,
-    };
-    const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
-    const gen = ++chatDraftGen.current;
-    void fetchDrafts().then((all) => {
-      if (gen !== chatDraftGen.current) return;
-      // THE FOUND FORM'S OWN TIME, and no time at all when it had none — see
-      // `reopenTime`. This press is a REOPEN, so the lead date belongs only to
-      // the arm below, where the lookup found nothing and the card is being
-      // opened fresh.
-      const found = all && boundDraftSeed(all.task, session, null);
-      openForm(found ? reopenTime(found) : at, null, seed, found);
-    }, () => {
-      if (gen !== chatDraftGen.current) return;
-      openForm(at, null, seed);
-    });
+    openChatRecord(session, draftChatUrl(task), task.project || task.file || "");
   };
-  // `hop` (above) is what a deep link named — the folder, the composer's words,
-  // the session it was typed in, the way back, the tray's chips, and the chat
-  // draft this form supersedes. `NO_HOP` for every other way of opening the
-  // form, and it is the OPENING that says so, not a clear-up afterwards.
-  //
-  // The chips are the half worth naming twice: they were already copied into
-  // the task-shots dir by the composer's Schedule button, so what arrives here
-  // is exactly the shape a saved entry's `attachments` has, and the card seeds
-  // from them the same way an Edit does (owner E2E R1, F4 (2026-09-10)).
-  //
-  // WHICH CHAT DRAFT THIS FORM SUPERSEDES (design.md, Round 2: "A draft moves,
-  // never duplicates").
-  //
-  // The Schedule hop carries a composer's words here, and the composer's own
-  // autosave has already stored them as a chat draft. The task draft this card
-  // is about to mint is THE SAME WORDS, so the first save names the key they
-  // came from and the server deletes that one in the same request — one draft,
-  // one row, one TASK number, with no window where the List shows the sentence
-  // twice.
-  //
-  // The key is the hop's own: its `session_id` when the chat had one, else
-  // `new:<target>` — and `target` IS the chat's `file` (sched-draft.schedulerUrl
-  // writes `link.file` into it), which is the whole reason no new param was
-  // needed. platform/lib/drafts.chatDraftKey carries the rule that keeps the
-  // four spellings of that path in step.
   // Search, status and project, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
@@ -617,17 +545,22 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     getConfig().then((c) => setHome(c.home), () => {});
   }, []);
 
-  // `?new=1&target=…` — the chat composer's Schedule button
-  // (templates/claude/template.html openScheduler). The chat knows the folder
-  // and nothing else, so the params carry only that, and this turns them into
-  // an already-open form: landing on a page with a button still to press would
-  // make one control read as two.
+  // `?new=1&draft=<chat key>&target=<folder>&from=<route>` — the hop
+  // (`apps/claude/sched/scheduled.schedulerUrl`), pressed by the chat
+  // composer's Schedule button AND by every draft row anywhere. The whole
+  // handoff is those three values: WHICH record to open, WHICH folder it is
+  // about, and where to go back to. The words, the tray and the session used to
+  // ride the URL as `?message=`, `?attachments=` and `?session_id=`, which is
+  // three copies of a thing the server already holds — see design "one record",
+  // §1. `target` is not a fourth copy: it is the one fact a session KEY cannot
+  // state, and without it the card opened on the reader's home folder.
   //
   // The params are CONSUMED, not just read: cleared with replaceState so a
   // reload (or Back to here from wherever the user went next) is the plain
   // Tasks page rather than a modal that reopens forever. replaceState, not
   // push, for the same reason — the deep-linked URL is not a place worth
   // keeping in the history.
+  //
   // `?edit=<entry id>` — the chat's blocked-composer banner sends the user here
   // to reschedule or stop the message that is blocking it. It cannot be handled
   // in the effect below, because the entry it names lives in a fetch that has
@@ -636,93 +569,64 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [editId, setEditId] = useState<string | null>(null);
   useEffect(() => {
     const q = new URLSearchParams(location.search);
-    if (q.get("new") !== "1") return;
+    // `?edit=` TRAVELS ON ITS OWN TOO (Akshil, 2026-09-16): a scheduled-later row
+    // in a chat's Recent list presses it, and that press carries no `new=1`
+    // because there is no draft record behind it — only an entry to change or
+    // stop. Read before the hop's guard, and consumed below with the rest.
     setEditId(q.get("edit"));
-    // The chat's whole handoff, read in one go and handed to the opening it is
-    // about: the typed draft fills the card's two prose fields — its first line
-    // names the task and the rest is the description (NewJobModal splitDraft) —
-    // the open conversation the session a ONE-OFF will continue, and the chat's
-    // URL the way back — the form's round trip.
-    const seed: HopSeed = {
-      target: q.get("target"),
-      message: q.get("message"),
-      session: q.get("session_id"),
-      back: q.get("back"),
-      // Defensive by contract, not by suspicion: this is a URL a user can edit
-      // and a param an older build may not have written — `parseAttachmentsParam`
-      // answers [] for anything it cannot read, because a parse error here would
-      // cost the folder, the draft and the session as well as the files.
-      attachments: parseAttachmentsParam(q.get("attachments")),
-      // Only for a hop that came FROM a chat, which is what `message` says: the
-      // other `?new=1&target=…` links (the app page's "+ New task") carry no
-      // composer and have no draft of anybody's to supersede. `message` may be
-      // empty and still present — an empty composer stored no draft, so the key
-      // is simply one the server finds nothing under.
-      chatKey: q.get("message") === null
-        ? null
-        : chatDraftKey(q.get("session_id"), q.get("target")),
-    };
-    // THE HOP COMES BACK TO THE FORM IT ALREADY MADE (Akshil, 2026-09-12).
-    //
-    // A task draft made out of a conversation is bound to it (`session_id`) and
-    // has no row of its own — the conversation's row wears the `✎ Draft` chip
-    // instead — so this hop IS the way back into it. Press Schedule in a chat
-    // that already has an unsent form and the card must reopen THAT form, under
-    // its own id, or the second press mints a second draft and the chip on the
-    // row starts pointing at whichever of them saved last.
-    //
-    // Looked up by session against `GET /api/drafts`, which is the only place
-    // the binding is legible to the client (the listing deliberately does not
-    // emit a row for it). One small request, and only for a hop that names a
-    // session — every other door opens synchronously as before.
-    //
-    // AND IT CAN ARRIVE LATE, like `openChatDraft`, so it takes the same
-    // generation: a second press through any door owns the modal, and an
-    // answer that is no longer current is dropped rather than painted over it.
-    // A failed or empty lookup falls through to the ordinary opening — a hop
-    // that cannot find its draft is a hop, not a dead button.
-    //
-    // A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (Bugbot, PR #1126, 2026-09-12).
-    // `fetchDrafts` answers null for a blip, and this hop still opens on it: the
-    // words in the composer are about to be deleted in favour of this card and
-    // they must not be made to wait on a GET. What it must NOT do is act on the
-    // guess — the card that opens with no seed mints a fresh id, and the write
-    // that follows used to EVICT the bound draft it could not see, taking the
-    // time, repeat rule, model and tray with it. The server no longer allows
-    // that: a write naming a session another draft holds is folded into that
-    // draft and the canonical id comes back in the answer (drafts.py
-    // `put_task`; NewJobModal adopts it). So "unknown" costs nothing but a card
-    // that opens a moment less informed than it would like.
+    if (q.get("new") !== "1") {
+      if (!q.get("edit")) return;
+      q.delete("edit");
+      const left = q.toString();
+      history.replaceState(history.state, "", location.pathname + (left ? `?${left}` : ""));
+      return;
+    }
+    const key = q.get("draft") ?? "";
     const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
-    const session = (q.get("session_id") ?? "").trim();
-    if (session) {
-      const gen = ++chatDraftGen.current;
-      void fetchDrafts().then((all) => {
-        if (gen !== chatDraftGen.current) return;
-        // …AND A HOP THAT FINDS ITS FORM IS A REOPEN, so it opens on the time
-        // that form holds rather than on the lead date (`reopenTime`, Bugbot PR
-        // #1126, 2026-09-12). The words are newer than the stored ones and win;
-        // the TIME is not something the composer said anything about, and
-        // `now+2m` here turned every reopened immediate draft into a scheduled
-        // one. The lead survives where it means something: the arm below, and
-        // the `else` further down — a hop with no form behind it.
-        const found = all && boundDraftSeed(all.task, session, seed.message,
-                                            seed.attachments);
-        openForm(found ? reopenTime(found) : at, null, seed, found);
-      }, () => {
-        if (gen !== chatDraftGen.current) return;
-        openForm(at, null, seed);
-      });
+    // A `?new=1` WITH NO KEY is the app page's own "+ New task" link: there is
+    // no chat behind it and nothing to read, so the card opens on the lead date
+    // in this tick, exactly as it always has.
+    if (!key) {
+      // …THOUGH IT MAY STILL SAY WHERE IT CAME FROM. A Schedule pressed in an
+      // EMPTY never-sent composer has no record to hand over — a draft with no
+      // words is a row saying nothing — but it does know the folder the chat is
+      // mounted on and the route back to it, and a blank card that opened on
+      // the reader's home with no way back would be the press half working
+      // (Akshil, 2026-09-16).
+      const from = q.get("from") ?? "";
+      const at0 = q.get("target") ?? "";
+      // `id: ""` IS "NO DRAFT", NOT A DRAFT CALLED "" (Bugbot 4028344040). The
+      // seed is here to carry the FOLDER and nothing else, and the card reads an
+      // empty id as a form nobody has minted — so a settings-only change on this
+      // blank card still writes no Untitled row. See `NewJobModal`'s `draftId`.
+      openForm(
+        at,
+        null,
+        from ? { key: "", from } : NO_HOP,
+        at0 ? { id: "", form: { target: at0 } } : null,
+      );
     } else {
-      openForm(at, null, seed);
+      // ONE READ, AND THE CARD OPENS ON WHAT IT ANSWERS. The record holds the
+      // words, the tray and whatever settings a previous hop left on it, so
+      // there is one seeding rule (`chatHopSeed`) and no merge to get wrong.
+      //
+      // …AND A RECORD THAT ALREADY CARRIES A TIME IS A REOPEN, so it opens on
+      // that time rather than on the lead date (`reopenTime`, Bugbot PR #1126):
+      // `now+2m` here turned every reopened immediate draft into a scheduled
+      // one.
+      //
+      // A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (`fetchDrafts` answers null for
+      // a blip). The card opens anyway, on the key it was given — it is the
+      // SAME record either way, so an uninformed card costs a moment of empty
+      // fields and never a second draft. That is the difference one record
+      // makes: the failure mode used to be an eviction.
+      openChatRecord(key, q.get("from") ?? "", q.get("target") ?? "");
     }
     q.delete("new");
+    q.delete("draft");
     q.delete("target");
-    q.delete("message");
-    q.delete("session_id");
-    q.delete("back");
+    q.delete("from");
     q.delete("edit");
-    q.delete("attachments");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
@@ -731,16 +635,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    * `?draft=<id>` — AN UNFINISHED NEW TASK FORM, PRESSED SOMEWHERE ELSE
    * (Akshil, 2026-09-14).
    *
-   * The chat landing's Recent list draws this page's rows, draft rows included.
-   * That list no longer builds this URL — a draft row pressed there fills the
-   * landing's own composer and goes nowhere (Akshil, 2026-09-15) — but the
-   * param stays, and this arm with it: it is how THIS page's own draft rows and
-   * any link that already names one reopen the card.
+   * This is how a TASK draft opens from anywhere — its own row on this page,
+   * and the chat landing's Recent list, whose press builds exactly this URL
+   * (`apps/claude/ui/list-rows.draftHref`).
+   *
+   * `?new=1` OWNS THE `draft` PARAM WHEN IT IS THERE, and this arm stands down
+   * for it: the hop's `?new=1&draft=<chat key>` names a CHAT record, the two
+   * keys are both bare strings, and a card cannot be opened as both. One arm
+   * per shape, decided by `new`.
    *
    * IT IS `openDraft`'S OWN ARM, reached by a param rather than by a row — same
    * id, same stored form, same `NO_HOP` and the same "no time" rule
    * (`reopenTime`: a reopened draft reads its `when` out of the form it stored,
-   * and an immediate task must stay one). The form comes off `GET /api/drafts`
+   * and an immediate task must stay one) — EXCEPT when the press came out of a
+   * composer, which says so with `&hop=1` and opens on the lead date like every
+   * other hop (see below). The form comes off `GET /api/drafts`
    * rather than off a row, because the listing has not answered on first render
    * and this opening must not wait for 800 rows to decide which card to be.
    *
@@ -755,8 +664,36 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    */
   useEffect(() => {
     const q = new URLSearchParams(location.search);
+    if (q.get("new") === "1") return; // the hop's own param — see above
     const id = q.get("draft");
     if (!id) return;
+    // `&from=` — THE WAY BACK, WHEN THERE IS ONE (Akshil, 2026-09-16). A draft
+    // ROW presses this URL bare: it was opened from a list, and there is no
+    // conversation behind it to return to. The chat composer's Schedule now
+    // presses it too — a never-sent chat mints a TASK draft per press rather
+    // than one chat record per folder (`apps/claude/sched/scheduled.taskDraftUrl`)
+    // — and that press DID come out of a chat, so it names the route home and
+    // the card draws "Back to chat" for it. No `key`: this card is editing a
+    // task draft, not a chat record.
+    const from = q.get("from") ?? "";
+    const hopTo: ChatHop = from ? { key: "", from } : NO_HOP;
+    // `&hop=1` — A PRESS OUT OF A COMPOSER, NOT A ROW (Bugbot 4028344051).
+    //
+    // A draft row is a REOPEN and takes the time the draft stored, which for an
+    // immediate draft is none (`reopenTime`). A Schedule press is the same
+    // gesture the session hop's `?new=1` makes and must land the same way: on
+    // now+2m, with the card planning, so the when-row is open and the Schedule
+    // button is labelled for a scheduled run. Without it the card opened with no
+    // lead time and folded, and its confirm named a time the task would not
+    // wait for — it ran at once.
+    //
+    // A RECORD THAT ALREADY CARRIES A TIME STILL OUTRANKS THE LEAD, exactly as
+    // `openChatRecord` has it: a hop the reader made, went back from and made
+    // again opens on the time they picked.
+    const hopped = q.get("hop") === "1";
+    const lead = new Date(Date.now() + NEW_LINK_LEAD_MS);
+    const openAt = (seed: DraftSeed | null): Date | null =>
+      hopped ? reopenTime(seed) ?? lead : null;
     const gen = ++chatDraftGen.current;
     void fetchDrafts().then(
       (all) => {
@@ -765,14 +702,17 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // `DraftSeed.form` is an index-signature bag, and only a fresh object
         // literal crosses that gap.
         const stored = all?.task[id];
-        openForm(null, null, NO_HOP, { id, form: stored ? { ...stored } : null });
+        const seed: DraftSeed = { id, form: stored ? { ...stored } : null };
+        openForm(openAt(seed), null, hopTo, seed);
       },
       () => {
         if (gen !== chatDraftGen.current) return;
-        openForm(null, null, NO_HOP, { id, form: null });
+        openForm(openAt(null), null, hopTo, { id, form: null });
       },
     );
     q.delete("draft");
+    q.delete("hop");
+    q.delete("from");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
@@ -787,41 +727,20 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // so). The queue failing costs the Queued strip, and says nothing at all —
   // an empty queue and an unreadable one look the same to a user, and the
   // common case by far is that there is simply nothing waiting.
-  const reload = () => {
+  //
+  // TWO OF THEM HERE NOW, not three: the ROWS moved to the shared listing feed
+  // (`tasksPulse.subscribeListing`, subscribed below), which runs one
+  // `/api/tasks` and one change long-poll for the whole document — so this page
+  // and every chat card on it read the same listing off the same socket, and the
+  // sidebar's dot, which that feed publishes, cannot disagree with the rows under
+  // it. This pair keeps its own clock because it is its own pair of endpoints.
+  const reloadFeeds = () => {
     getSchedule().then(
       (r) => {
         setState(r);
         setLoadError(null);
       },
       (e: Error) => setLoadError(e.message),
-    );
-    getTasks().then(
-      (r) => {
-        // A full listing that left before a delta landed is OLDER than what
-        // is on screen; applying it would roll the rows back and the
-        // generation with them (bugbot #892). The next poll catches up.
-        if (typeof r.generation === "number" && r.generation < generationRef.current) return;
-        setTasks(r.tasks ?? []);
-        setTasksFailed(false);
-        setTasksLoaded(true);
-        if (typeof r.generation === "number") generationRef.current = r.generation;
-        // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
-        // dot and the counts beside the label are this answer, not a second poll
-        // of their own — two polls would show a dot the page disagrees with for
-        // twenty seconds at a time. Publishing also restarts that module's own
-        // timer, so while this page is open nothing else calls /api/tasks.
-        publishTasks(r.tasks ?? []);
-        // And keep it for the next mount: this page is remounted on every
-        // navigation, and the seed above is what saves the trip back from
-        // paying for the listing twice.
-        rememberListing(r.tasks ?? []);
-      },
-      () => {
-        setTasks([]);
-        setTasksFailed(true);
-        setTasksLoaded(true);
-        forgetListing();
-      },
     );
     getScheduleQueue().then(
       (r) => {
@@ -834,94 +753,64 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       },
     );
   };
-  useEffect(reload, []);
+  /** "Re-read everything on this page NOW" — what a created task, a returned-to
+   *  tab or a finished run asks for. The rows answer through the feed's own
+   *  refresh, which is collapsed to one read for the document. */
+  const reload = () => {
+    reloadFeeds();
+    refreshListing();
+  };
+  useEffect(reloadFeeds, []);
   useRefreshOnReturn(reload);
   useEffect(() => {
-    const id = window.setInterval(reload, POLL_MS);
+    // The ROWS are deliberately not on this timer: the feed carries the same 20s
+    // floor (LISTING_FLOOR_MS), and asking here as well would be two full listing
+    // reads every twenty seconds for one answer.
+    const id = window.setInterval(reloadFeeds, POLL_MS);
     return () => window.clearInterval(id);
   }, []);
   // The corner card knows a run ended about a second after it does; this page's
   // own clock is 20s. pokeTasks forwards that knowledge here as a window event —
-  // the feeder above means the shared store may not fetch on our behalf — and
-  // the page re-reads all three feeds, so the row flips the moment the popover
-  // does rather than up to a poll later.
+  // it has already refreshed the listing itself, so what this answers for is the
+  // schedule and the queue, and the row flips the moment the popover does rather
+  // than up to a poll later.
   useEffect(() => {
-    window.addEventListener(TASKS_POKE_EVENT, reload);
-    return () => window.removeEventListener(TASKS_POKE_EVENT, reload);
+    window.addEventListener(TASKS_POKE_EVENT, reloadFeeds);
+    return () => window.removeEventListener(TASKS_POKE_EVENT, reloadFeeds);
   }, []);
-  // The fast lane. /api/tasks/changes long-polls the server's change watcher
-  // (tasks_watch.py) and answers the moment a session starts, resumes, takes
-  // a prompt or grows — so a `claude` typed into a terminal in some folder is
-  // a row here within a second, not up to a poll later. Only the rows that
-  // moved come back and are folded into place (mergeTaskChanges); the 20s
-  // full reload above stays as the truth underneath. Hidden tabs sit the loop
-  // out — useRefreshOnReturn reloads on the way back — and a failed call
-  // backs off rather than hammering a server that is restarting.
-  useEffect(() => {
-    let stopped = false;
-    let controller: AbortController | null = null;
-    const sleep = (ms: number) =>
-      new Promise<void>((resolve) => {
-        window.setTimeout(resolve, ms);
-      });
-    const untilVisible = () =>
-      new Promise<void>((resolve) => {
-        const onChange = () => {
-          if (document.visibilityState !== "visible") return;
-          document.removeEventListener("visibilitychange", onChange);
-          resolve();
-        };
-        document.addEventListener("visibilitychange", onChange);
-      });
-    const run = async () => {
-      while (!stopped) {
-        if (document.visibilityState !== "visible") {
-          await untilVisible();
-          continue;
-        }
-        if (generationRef.current < 0) {
-          // No full listing has answered yet; nothing to merge into.
-          await sleep(500);
-          continue;
-        }
-        controller = new AbortController();
-        try {
-          const r = await getTaskChanges(generationRef.current, 25, controller.signal);
-          if (stopped) return;
-          if (r.full) {
-            // "Reload everything" includes a server that restarted and counts
-            // from zero again: forget our generation FIRST, or the stale-listing
-            // guard in reload() would refuse the very listing that catches us
-            // up, forever (bugbot #892).
-            generationRef.current = -1;
-            reload();
-            await sleep(1000);
-            continue;
-          }
-          generationRef.current = r.generation;
-          const rows = r.rows ?? [];
-          const gone = r.gone ?? [];
-          if (rows.length || gone.length) {
-            const merged = mergeTaskChanges(tasksRef.current, rows, gone);
-            tasksRef.current = merged;
-            setTasks(merged);
-            publishTasks(merged);
-            // The merge is now the freshest full listing there is, so it — not
-            // the poll's older answer — is what a remount should seed from.
-            rememberListing(merged);
-          }
-        } catch {
-          if (stopped) return;
-          await sleep(3000);
-        }
-      }
-    };
-    void run();
-    return () => {
-      stopped = true;
-      controller?.abort();
-    };
-  }, []);
+  // THE ROWS, LIVE — one feed for the document (`tasksPulse.subscribeListing`).
+  //
+  // The fast lane is still `/api/tasks/changes`, long-polling the server's change
+  // watcher (tasks_watch.py) so a `claude` typed into a terminal in some folder is
+  // a row here within a second rather than up to a poll later; only the rows that
+  // moved come back and are folded into place, and a 20s floor read stays as the
+  // truth underneath. What changed is WHOSE loop it is: this page used to run one
+  // and every ClaudeChat mount on it ran another, so the cards wall with twelve
+  // chats open held thirteen sockets on a 25-second wait against a browser cap of
+  // six, and every other request on the page queued behind them. The feed also
+  // publishes to the sidebar and remembers the listing for the next mount, which
+  // is what this effect used to do by hand.
+  useEffect(
+    () =>
+      subscribeListing((ev) => {
+        setTasks(ev.rows);
+        setTasksFailed(ev.failed);
+        setTasksLoaded(true);
+        // THE SERVER HAS SPOKEN about every key it named, so every claim about
+        // one of them is over — right or wrong (tasks-lib.expireQueueOverrides).
+        // A full listing speaks about every key it holds; a delta about exactly
+        // the rows and `gone` keys it carries — which is the fast half of the
+        // same rule, since every queue verb rings the watcher and the delta it
+        // rings usually lands within milliseconds of the press that made the
+        // claim. A FAILED read has said nothing, and retires nothing.
+        if (ev.failed) return;
+        const spoken = ev.delta
+          ? [...ev.delta.rows.map((t) => t.key), ...ev.delta.gone]
+          : ev.rows.map((t) => t.key);
+        setQueueOverrides((cur) => expireQueueOverrides(cur, spoken));
+      }),
+    [],
+  );
 
   // A folder chip pressed on a row or a card: filter the page to that
   // project, pressing the pinned one again clears it. It REPLACES the project
@@ -975,9 +864,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // The app page's scope, applied FIRST: `tasks` above stays the whole machine
   // (it is what publishTasks hands the sidebar), and everything the page shows
   // or offers to filter is derived from this narrowed set instead.
+  // The server's rows with the standing queue claims painted over them. FIRST,
+  // ahead of the scope and the filters, so a row a claim moves into Queued is
+  // filtered and counted as queued by everything downstream — the Status facet
+  // included. `publishTasks` above deliberately hands the sidebar the UNPAINTED
+  // rows: a claim is this page's optimism about a press made on this page, and
+  // the rail is not the place to carry it.
+  const painted = useMemo(
+    () => applyQueueOverrides(tasks, queueOverrides),
+    [tasks, queueOverrides],
+  );
   const inScope = useMemo(
-    () => (scope ? tasks.filter((t) => isUnderDir(t.project, scope.project)) : tasks),
-    [tasks, scope],
+    () => (scope ? painted.filter((t) => isUnderDir(t.project, scope.project)) : painted),
+    [painted, scope],
   );
   const projects = useMemo(() => projectOptions(inScope), [inScope]);
   // The Archive facet does not apply on the Calendar (see
@@ -999,43 +898,35 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // there navigates exactly as it did — the same rule that leaves the sidebar's
   // task list and the notifications alone
   // (.claude-design/task-side-peek/design.md).
-  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): experimental, default
-  // off, and off means this page is the page it has always been — no panel, no
+  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): default ON since
+  // 2026-09-17, and OFF — the switch, or the first frames before the prefs read
+  // lands — means this page is the page it has always been: no panel, no
   // `?peek=`, no measured fit, no walk attributes. Read here and handed down,
   // so there is one answer for the whole page.
   const peekOn = useTaskPeekEnabled();
   // The toolbar folds its words before it clips them (shell/row-fit.ts) — and
   // only while the feature is on, since the ladder arrived with it.
   const [toolbar, toolbarRef] = useToolbarFit(peekOn);
-  const peekable = !scope && peekOn;
+  // SCOPED OR NOT, THE SAME PEEK (2026-09-20). Until then the app page's Tasks
+  // tab stayed disarmed and every press there navigated; now that tab hosts
+  // the very same panel, portalled into the frame the app page draws around
+  // itself (TaskPeekFrame.tsx `useTaskPeekSlot`). The sidebar's task list and
+  // the notifications are still outside any frame and still navigate.
+  const peekable = peekOn;
   useTaskPeekHost(peekable);
   const peek = useTaskPeekLayout(peekable);
-  // THE MIDDLE PANE'S BASELINE (design.md, Widths v2). What is kept here is the
-  // WATCH; the measurement itself is the store's (`measureTasksBaseline`), for
-  // a reason worth stating where a reader would come looking for it: this
-  // effect is passive, and `useTaskPeekHost`'s adoption of a `?peek=` deep link
-  // is a LAYOUT effect — it runs first, so a link-opened visit would freeze a
-  // baseline this observer had never had a chance to take. The store reads the
-  // page itself when it is asked for a number it does not have, and this watch
-  // is only the cheap path for the ordinary case.
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!peekable) return;
-    const frame = frameRef.current;
-    if (!frame) return;
-    const read = () => refreshPeekBaseline();
-    read();
-    const ro = new ResizeObserver(read);
-    ro.observe(frame);
-    // The page's own sections arrive after the first fetch, so the element the
-    // measurement needs may not exist on the first tick.
-    const mo = new MutationObserver(read);
-    mo.observe(frame, { childList: true, subtree: true });
-    return () => {
-      ro.disconnect();
-      mo.disconnect();
-    };
-  }, [peekable]);
+  // Where a Scheduled mounted inside SOMEONE ELSE'S frame puts its panel: the
+  // app page draws the row (header, tab strip and all) and this page only
+  // supplies the panel. Null on `/tasks`, where the frame is this page's own.
+  const slot = useTaskPeekSlot();
+  // SCROLL, DON'T FOLD (Akshil, 2026-09-15). `data-floored` used to switch on
+  // at the middle pane's floor only, and the row ladder folded marks on the way
+  // down to it. With the floor at a flat 500 that meant hiding meta across the
+  // whole 1094→500 range — so the switch is now `tight` (frame narrower than
+  // the column): under it the list's content is held at the widest row's need
+  // and the pane scrolls sideways. Floored is a subset of tight (500 < any
+  // baseline), so nothing the floor did is lost.
+  const scrolls = peek.open && peek.tight;
   // ONE sentence for "there is nothing here", handed to all four views, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
@@ -1076,10 +967,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    */
   const sourceTask = useMemo(() => {
     if (editing) return null;
-    const session = hop.session || seededDraftForm(draftSeed).sessionId || "";
+    // The hop's key IS the session when the chat has one (`new:<file>` is the
+    // shape that has none), and the seed restates it for a card reopened from a
+    // stored record.
+    const session = chatKeySession(hop.key)
+      || seededDraftForm(draftSeed).sessionId || "";
     if (!session) return null;
     return tasks.find((t) => t.session_id === session) ?? null;
-  }, [editing, hop.session, draftSeed, tasks]);
+  }, [editing, hop.key, draftSeed, tasks]);
 
   /**
    * …and where its chip goes: THE SIDE PEEK, which is the one door this page
@@ -1299,6 +1194,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               onReload={reload}
+              onQueued={noteQueued}
               // A draft card's press re-opens the form it was saved from —
               // the same gesture, and the same callback, as the List row's.
               onOpenDraft={openDraft}
@@ -1338,12 +1234,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               missing={missing}
-              // At the floor the rows stop folding their marks and the list
-              // scrolls to them instead (design.md, Fix batch 6 §2) — the same
-              // `floored` the frame writes as `data-floored` below, so the
-              // stylesheet and the fit ladder can never disagree about which
-              // side of the floor the pane is on.
-              floored={peek.floored}
+              // The rows NEVER fold their marks while the panel is up
+              // (Akshil, 2026-09-15): the moment the frame is narrower than the
+              // column, the list scrolls sideways to whatever the widest row
+              // needs instead of hiding anything. The same switch the frame
+              // writes as `data-floored` below, so the stylesheet and the fit
+              // ladder can never disagree.
+              floored={scrolls}
               // A failed poll empties `tasks` too, and the List cannot tell that
               // apart from a filter that matched nothing — but it must, because
               // one is a reason to forget where the reader was and the other is
@@ -1377,6 +1274,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
               onReload={reload}
+              // A Skip pressed on a row paints the row before the poll agrees —
+              // the same claim the Board's drag makes, held by the page so it
+              // survives the view the press was made in (see `queueOverrides`).
+              onQueued={noteQueued}
               emptyLabel={emptyLabel}
             />
           )}
@@ -1405,7 +1306,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // read in `useState` initialisers, so re-opening one over a card that
           // was showing another must be a fresh mount.
           key={`${
-            draftSeed ? `draft:${draftSeed.id}` : editing ? `edit:${editing.id}` : "new"
+            hop.key
+              ? `chat:${hop.key}`
+              : draftSeed
+                ? `draft:${draftSeed.id}`
+                : editing
+                  ? `edit:${editing.id}`
+                  : "new"
           }#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
           // Scoped, a new task is a task FOR THIS APP: the entry page is
@@ -1415,17 +1322,17 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Prefill only — the field shows exactly what will be saved, and
           // deleting the filename back to the folder is the user's to make. A
           // deep link's own target still wins: it named a path on purpose.
-          initialTarget={hop.target ?? scope?.entry ?? scope?.project ?? null}
-          initialMessage={hop.message}
-          initialAttachments={hop.attachments}
-          // The saved form, handed back whole. Null on every other opening.
+          initialTarget={scope?.entry ?? scope?.project ?? null}
+          // The stored record, handed back whole — a task draft's own form, or
+          // a chat record turned into one by `chatHopSeed`. Null on every
+          // opening that had nothing stored behind it.
           initialDraft={draftSeed}
-          chatSessionId={hop.session}
-          chatBack={hop.back}
-          // The chat draft this card's own first save supersedes — see
-          // `HopSeed` above. Null on every opening that did not come from a
-          // composer, which is every opening but the Schedule hop.
-          fromChatKey={hop.chatKey}
+          // THE CHAT RECORD THIS CARD IS EDITING (design "one record", §1).
+          // Not a key to supersede and delete: the card autosaves back onto this
+          // very record, so the hop and the composer are two doors onto one
+          // stored thing. `""` on every opening that did not come from a chat.
+          chatKey={hop.key}
+          chatBack={hop.from}
           // SCOPED, THE PATH IS NOT A QUESTION (design.md §2): a task made from
           // inside an app runs against that app, so the field states the target
           // instead of asking for it. The unscoped `/tasks` page is untouched —
@@ -1457,6 +1364,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Newest-first fallback recents: past entries arrive newest first,
           // and the modal dedupes against what localStorage already knows.
           recentTargets={entries.map((e) => e.target)}
+          // THE SAME FOLDERS THE PROJECT FILTER OFFERS (Akshil, 2026-09-19:
+          // "when I clear the path and search, it should search from projects —
+          // the same project options I have in the filter beside the New task
+          // button"). One array, computed once above and handed to both
+          // controls, so the two lists can never drift apart: a folder the
+          // toolbar can filter by is a folder this card can be pointed at.
+          projects={projects}
           // NOTHING TO CLEAR HERE ANY MORE, and that is the fix rather than an
           // omission (Akshil, 2026-09-12). The hop used to be six values undone
           // one by one on close — with `attachments` missing from the list, so a
@@ -1477,67 +1391,52 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
 
   if (!peekable) return page;
 
-  // THE PAIR (design.md, Layout model): one flex row holding the frame and the
-  // peek as DOM siblings, the peek lifted out of flow over the row's right edge
-  // so its slide never reflows the frame under it. ONE number drives both
-  // halves of the 200ms — the frame's width is `100% − <what the peek takes>`,
-  // and the peek's own transform runs off the same value.
+  /* THE UNFILTERED SET, not `shown`: a filter is a lens on the page, not a
+     statement about which conversation may be open, and narrowing the list
+     under an open panel must not close it (or, worse, make its task look
+     deleted to `settlePeek`). `loaded` is what turns "no such task" from a
+     wait into an answer. */
+  const panel = (
+    <TaskPeek
+      tasks={inScope}
+      loaded={tasksLoaded}
+      home={home}
+      missing={missing}
+      onReload={reload}
+    />
+  );
+
+  // INSIDE ANOTHER FRAME (the app page's Tasks tab): the page is drawn bare and
+  // the panel goes to the row the app page holds, as the frame's sibling — the
+  // same DOM shape `/tasks` builds below, arrived at from the other side.
   //
-  // In COVER mode the frame takes nothing off its width (rule 4): there is no
-  // usable frame left at that size, so the panel is laid over it whole rather
-  // than squeezing the view to a sliver.
-  const taken = peek.open && !peek.cover ? peek.width : 0;
-  // THE FLOOR, handed to the stylesheet as a length (design.md, Widths v2).
-  // `peek.floor` is a FRAME width — three quarters of a baseline that counts
-  // the page's gutters — and what the views need is the width of the content
-  // inside those gutters, so the gutters come back off here rather than being
-  // guessed at in CSS.
-  const contentFloor = Math.max(0, Math.round(peek.floor - peekGutter()));
-  return (
-    <div className="tasks-peek-host">
-      <div
-        ref={frameRef}
-        className={"tasks-frame" + (peek.instant ? " is-instant" : "")}
-        // `data-floored` is the switch and `--tasks-floor` the number: below the
-        // floor the views stop reflowing and scroll sideways inside the frame
-        // instead (styles/task-peek.css). The toolbar is deliberately NOT under
-        // it — it stays one line at every width and folds its own way.
-        data-floored={peek.floored ? "1" : undefined}
-        // …and `data-tight` a little earlier: once the frame is narrower than
-        // the column plus its gutters there are no centred margins left to give
-        // and the page's side padding is just two dark bands (design.md, Polish
-        // batch 3). Written off the same baseline the floor is.
-        data-tight={peek.open && peek.tight ? "1" : undefined}
-        style={
-          {
-            width: `calc(100% - ${taken}px)`,
-            "--tasks-floor": `${contentFloor}px`,
-          } as CSSProperties
-        }
-        // CLICKING BLANK FRAME CLOSES (design.md, Close triggers — and Akshil's
-        // decision to keep Notion's behaviour). Everything that is a control or
-        // an item does its own thing: rows and cards carry the walk's own
-        // attribute, the toolbar's chips are buttons, and a menu or a dialog
-        // portalled over the page is neither. What is left is page background.
-        onClick={(e) => {
-          if (!peek.open) return;
-          if (frameClickCloses(e.target as Element | null)) closePeek();
-        }}
-      >
+  // KEYED ON THE SCOPE, NOT ON THE SLOT. The row element reaches this page
+  // through a ref-fed state one commit after the app page first draws it, so
+  // on that first render the slot is still null — and a page that drew its
+  // own frame whenever the slot was missing would mount a second
+  // `.tasks-frame` INSIDE the app page's for one commit (two baselines
+  // measured, two observers) before tearing it down. Scoped, this page never
+  // draws a frame: a missing slot is a panel that waits one paint, nothing
+  // more.
+  //
+  // ONE ROOT SHAPE, slot or no slot: a bare `page` on the first commit and a
+  // fragment around it on the next is a root-type change React answers with a
+  // remount of the whole tasks tree (Bugbot). The fragment is always there;
+  // only the portal inside it comes and goes.
+  if (scope && !scope.ownFrame) {
+    return (
+      <>
         {page}
-      </div>
-      {/* THE UNFILTERED SET, not `shown`: a filter is a lens on the page, not a
-          statement about which conversation may be open, and narrowing the list
-          under an open panel must not close it (or, worse, make its task look
-          deleted to `settlePeek`). `loaded` is what turns "no such task" from a
-          wait into an answer. */}
-      <TaskPeek
-        tasks={inScope}
-        loaded={tasksLoaded}
-        home={home}
-        missing={missing}
-        onReload={reload}
-      />
-    </div>
+        {slot ? createPortal(panel, slot) : null}
+      </>
+    );
+  }
+
+  // THE PAIR (design.md, Layout model): one flex row holding the frame and the
+  // peek as DOM siblings — TaskPeekFrame.tsx has the arithmetic.
+  return (
+    <TaskPeekFrame peekable peek={panel}>
+      {page}
+    </TaskPeekFrame>
   );
 }

@@ -241,6 +241,14 @@ rename while `bun test` stays green — this has bitten this repo before.
   `StatusBar` already takes `models`/`activity`/`repoUpdates`.
 - Nested controls inside a clickable row must not activate the row — the
   guard already in `NotificationCard`.
+- **`notify()`'s `source` field is opt-in and additive** (SPEC-quiet-notifications.md
+  §2a). A `NotificationInput` with no `source` behaves exactly as before this
+  round — every rule above (tier assignment, `effectiveTier`'s
+  error/cancelled promotion, the retained-list step-down) is evaluated
+  first, unchanged; suppression is a pre-check ahead of all of it, not a
+  replacement for any of it, and it only ever fires for a message that also
+  carries no `action` and no `page` — i.e. one with nothing left for the
+  user to do once they're already looking at the place it's about.
 
 ## Out of Scope
 
@@ -248,6 +256,13 @@ rename while `bun test` stays green — this has bitten this repo before.
   deliberate decision).
 - Any change to how server-side jobs are produced, tiered, or dismissed.
 - `sys:schedule:*` rows.
+- **`schedule-toast.ts`'s own "`done` produces no toast" rule was in scope
+  for this round and is now REVERSED by SPEC-quiet-notifications.md §5** —
+  `toastForEvent` no longer returns `null`; `done`/`started` are `tone:
+  "info"`, suppressible via `source`, never retained. See
+  DECISIONS-toasts-become-notifications.md's "Reversal: `schedule-toast.ts:30`"
+  entry. Everything else in this file (the tier/retention machinery
+  `notify()` itself runs on) is untouched by that reversal.
 - Persisting messages across reloads.
 - The commit already on this branch (`845d7ca9b`, AI models curation seal) —
   unrelated, carried over from the user's working tree at their request.

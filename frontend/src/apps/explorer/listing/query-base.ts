@@ -20,6 +20,8 @@
 // escaping is the safe side of the ambiguity: a genuine absolute path is
 // the expensive case and it does get gated, while `/foo` used as an anchor
 // only costs one extra keypress.
+import { expandWhitespaceQuery } from "@apps/explorer/lib/home-search";
+
 const DRIVE_ABS = /^[A-Za-z]:[\\/]/;
 
 export function escapesBase(query: string): boolean {
@@ -55,11 +57,71 @@ export function escapesBase(query: string): boolean {
 // A genuine escape — a base outside the folder being searched — keeps the
 // gate: changing which subtree gets walked is a real scope change, and an
 // explicit Enter is what confirms it.
+// FINDING (code review round 3, worktree-search-trailing-space): a plain
+// `.trim()` (the round-1 fix) was wrong because it treats edge whitespace as
+// meaningless — but trailing whitespace is NOT meaningless to the server.
+// `expand_whitespace_query` (fused_render/index/query.py) turns a trailing
+// space into a wildcard on the FINAL path segment, which can peel that
+// segment off the walked base entirely: `/Users/iamsdas ` (the box's own
+// pre-filled path plus one trailing space) resolves server-side to `base:
+// "/Users", pattern: "**iamsdas**"` — the walk stops at the PARENT, because
+// "iamsdas**" now carries a glob character and `_walk_from` cannot consume a
+// glob-bearing segment as a real directory. A trim-based comparison sees
+// "iamsdas" === "iamsdas" and calls that "still inside the folder" — exactly
+// the scope change this predicate exists to catch, missed. Verified live
+// against `/api/index/rank`: `q=/Users/iamsdas%20` answers `base: "/Users"`,
+// not `/Users/iamsdas`.
+//
+// Symmetrically, a trailing space defeats `escapesBase`'s "~"/"~/"
+// exact-match checks in the OTHER direction: `expand_whitespace_query` wraps
+// a lone "~" plus trailing space into a glob token (`"**~**"`) that no
+// longer starts with a literal "~" at all, so the server does not resolve it
+// as a home path — it searches the CURRENT folder recursively for the
+// literal character "~". Verified live: `q=~%20` (root `/Users/iamsdas`)
+// answers `base: "/Users/iamsdas", pattern: "**/**~**"` — the box's own
+// root, never `home`.
+//
+// This mirrors the SAME two-step process `resolve_query` itself runs
+// (fused_render/index/query.py) — strip a LEADING run of whitespace only
+// when what is left already looks like one of the escape forms (a lone
+// leading space carries no meaning for that grammar and would otherwise be
+// swallowed into a `**` token glued onto the very prefix being looked for),
+// then run the REAL whitespace-expansion transform (`expandWhitespaceQuery`,
+// lib/home-search.ts, byte-equivalent with `expand_whitespace_query`) —
+// never a bare trim. A query with no whitespace and no "*" is a no-op under
+// that transform, so every existing edge-free case is unaffected; only a
+// query whose whitespace/glob shape actually changes what the server
+// searches changes verdict here too.
+//
+// EXPORTED (round 3): `isPathShapedQuery` (path-shaped-query.ts) used to run
+// its own bare `.trim()` before `escapesBase`, which regressed to exactly
+// finding 1's bug from the OTHER caller — a trailing space on a folder path
+// still read as "Path" (suppressing search entirely) because the trim threw
+// away the same glob-injection this function now accounts for. Both callers
+// now share this ONE normalization step so they cannot diverge from each
+// other, or from the server, again.
+export function normalizeQueryForResolution(rawQuery: string): string {
+  const lstripped = rawQuery.replace(/^\s+/, "");
+  let normalized = rawQuery;
+  if (
+    lstripped !== rawQuery &&
+    (lstripped === "~" ||
+      lstripped.startsWith("~/") ||
+      lstripped.startsWith("/") ||
+      DRIVE_ABS.test(lstripped) ||
+      lstripped.split("/").includes(".."))
+  ) {
+    normalized = lstripped;
+  }
+  return expandWhitespaceQuery(normalized);
+}
+
 export function escapesFsPath(
-  query: string,
+  rawQuery: string,
   fsPath: string,
   home: string | undefined,
 ): boolean {
+  const query = normalizeQueryForResolution(rawQuery);
   if (!escapesBase(query)) return false;
   // A ".." segment always walks up and out of `fsPath` — genuinely a
   // different subtree no matter where it lands — so no further check is

@@ -469,6 +469,9 @@ export function JobRow({
   dismissFn = dismissJob,
   onDismissClick,
   now = Date.now() / 1000,
+  className,
+  age,
+  unseen,
 }: {
   job: Job;
   onChanged: () => void;
@@ -495,6 +498,18 @@ export function JobRow({
    *  falls through to `jobDetail` at all since every terminal state has its
    *  own non-empty status text — and for tests that do not care. */
   now?: number;
+  /** Extra class appended to the row's own `.dl-row` — `RepoUpdatesDock.tsx`'s
+   *  Needs-you section uses this for its left accent bar (status-popovers
+   *  R3), the same seam `GroupJobRow`/`NotificationCard` already expose.
+   *  Every caller in THIS file's own Jobs section omits it. */
+  className?: string;
+  /** Compact relative-time stamp (R5) — `RepoUpdatesDock.tsx` passes
+   *  `compactAge(job.finished_at * 1000)` for a terminal job; omitted by
+   *  every caller in THIS file's own Jobs section (a running job's age is
+   *  not what R5 is about). */
+  age?: string;
+  /** The unread dot (R4) — same scoping as `age`. */
+  unseen?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   // A REJECTED cancel/dismiss must say so, not vanish (D572, user: "the
@@ -563,7 +578,12 @@ export function JobRow({
   // cancel request, and the row is the app admitting it has stopped knowing —
   // so letting the user close it hides nothing the app could otherwise say.
   const canCancel = running && job.cancellable && !job.cancel_requested && !job.stalled;
-  const canDismiss = !running || job.stalled;
+  // A caller that OVERRIDES the ✕ (`onDismissClick`) is hiding its own card,
+  // not dismissing the server's row — that is allowed on a running job too
+  // (Bugbot, PR #1241: `UpdateProgressCard` draws a live download and its ✕
+  // must exist for "until the user closes it" to mean anything). Without the
+  // override the rule stands: a running row has Cancel, not Dismiss.
+  const canDismiss = onDismissClick !== undefined || !running || job.stalled;
 
   const cancel = async () => {
     setBusy(true);
@@ -652,7 +672,14 @@ export function JobRow({
   // `failure`.
   return (
     <NotificationCard
-      title={job.title}
+      className={className}
+      title={
+        <>
+          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
+          {job.title}
+        </>
+      }
+      age={age}
       // One line, ellipsis, never wraps (SPEC actionable-notifications item
       // 4): a long prompt used to wrap to two lines, halving how many rows
       // fit in the panel. The full text still has to be reachable somehow,
@@ -920,22 +947,21 @@ export function DownloadManagerView({
               {/* TWO POSSIBLE SECTIONS, in this order (status-bar merge):
                   Running (the old Jobs chip's own content, unchanged) and
                   Background tasks (the old Engines chip). A section renders
-                  only when it has rows, and the heading itself only when 2+
-                  sections are present at once — a single section carrying a
-                  header nobody needed to disambiguate is the redundant-label
-                  problem the brief calls out; see `.dl-section-head` in
-                  notifications.css. (A third section, Models, lived here
-                  during the status-bar merge and moved back out into its own
-                  chip — `shell/ModelsDock.tsx` — in a follow-up revision.) */}
+                  only when it has rows, and its heading always renders
+                  alongside it, carrying the section's own row count — see
+                  `.dl-section-head`/`.dl-section-count` in notifications.css.
+                  (A third section, Models, lived here during the status-bar
+                  merge and moved back out into its own chip —
+                  `shell/ModelsDock.tsx` — in a follow-up revision.) */}
               {(() => {
                 const runningVisible = jobs.length > 0;
-                const sectionCount = (runningVisible ? 1 : 0) + (engineCount > 0 ? 1 : 0);
-                const showHeadings = sectionCount > 1;
                 return (
                   <>
                     {runningVisible && (
                       <div className="dl-section">
-                        {showHeadings && <div className="dl-section-head">Running</div>}
+                        <div className="dl-section-head">
+                          Running <span className="dl-section-count">{jobs.length}</span>
+                        </div>
                         <div className="dl-rows">
                           {jobs.map((job) => (
                             <JobRow
@@ -951,7 +977,9 @@ export function DownloadManagerView({
                     )}
                     {engineCount > 0 && (
                       <div className="dl-section">
-                        {showHeadings && <div className="dl-section-head">Background tasks</div>}
+                        <div className="dl-section-head">
+                          Background tasks <span className="dl-section-count">{engineCount}</span>
+                        </div>
                         <div className="dl-rows">
                           {engines!.engines.map((e) => (
                             <EngineRow key={e.engine_id} engine={e} onStop={engines!.onStop} />

@@ -14,12 +14,19 @@
 // folder's own Listing is what actually searches, seeded already-committed
 // (`navHintQCommitted`, router.ts) so it never asks for a second Enter.
 //
-// `useListingSearch(parentPath, home, 0, false)` — the trailing `false` is
-// `urlSync`: this box's query is never mirrored onto the file's own URL (that
-// belongs to no view here), and the effect below fires before the hook's own
-// fetch ever would (a `useLayoutEffect`, ahead of the hook's passive-effect
-// request), so no rank request goes out against the parent while this file's
-// page is still the one on screen.
+// `useListingSearch(parentPath, home, 0, false, undefined, false)` — the
+// first `false` is `urlSync`: this box's query is never mirrored onto the
+// file's own URL (that belongs to no view here), and the effect below fires
+// before the hook's own fetch ever would (a `useLayoutEffect`, ahead of the
+// hook's passive-effect request), so no rank request goes out against the
+// parent while this file's page is still the one on screen. The trailing
+// `false` is `fireEmptyScan` (code review finding 1): this instance never
+// renders a result, only decides when to hand off to the parent folder's own
+// Listing, which runs its own `useListingSearch` — with the trigger fully
+// wired (`onScanRequested`, the "still building" copy) — the moment
+// navigation lands. Letting THIS instance also fire the covered-but-empty
+// scan trigger would ask the server to scan the same root a second time for
+// no UI anyone would see.
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { navigate } from "@platform/lib/router";
 import { dirname } from "@apps/explorer/lib/fs-actions";
@@ -64,7 +71,7 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
     prefetchIndex,
     searchState,
     awaitingCommit,
-  } = useListingSearch(parentPath, home, 0, false);
+  } = useListingSearch(parentPath, home, 0, false, undefined, false);
   const typedAddress = useTypedPathAddress(query, parentPath, home);
   const completion = useCompletion(query, parentPath, home);
   const committed = showingSearchHits(searchState, awaitingCommit);
@@ -97,11 +104,12 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   //
   // `!isPristineQuery(q, ...)` (SPEC-omnibox-search-affordance.md
   // correction, 2026-09-10) — a hard requirement, not an optimisation: this
-  // box always arrives pre-filled with `parentPath`'s own absolute path
-  // (SearchField.tsx's `onFocus`), and since `escapesFsPath` no longer
-  // treats a same-subtree absolute path as escaping, that untouched
-  // pre-fill alone now satisfies `searching && gateOpen` the MOMENT the
-  // field is focused — before the user has typed a single character.
+  // box always arrives pre-filled with the FILE's own absolute path
+  // (SearchField.tsx's `onFocus`, seeded from `crumbsFsPath`), and since
+  // `escapesFsPath` no longer treats a same-subtree absolute path as
+  // escaping, that untouched pre-fill alone now satisfies `searching &&
+  // gateOpen` the MOMENT the field is focused — before the user has typed a
+  // single character.
   // Without this guard, focusing a file's search box would immediately hand
   // off to the parent folder with the pre-filled path as its "committed"
   // query, which is not a search anyone asked for.
@@ -116,7 +124,12 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   useLayoutEffect(() => {
     if (!active || firedRef.current) return;
     if (!searching || !gateOpen) return;
-    if (isPristineQuery(q, parentPath, home)) return;
+    // `fsPath` (this file's own path) as the 4th argument: SearchField now
+    // seeds this box with the file's own full path (`crumbsFsPath`), not
+    // `parentPath` alone — that seed must still read as pristine here too,
+    // or a plain focus would immediately hand off to the parent with the
+    // file's own path as a "committed" search query.
+    if (isPristineQuery(q, parentPath, home, fsPath)) return;
     firedRef.current = true;
     navigate(parentPath, { isDir: true, q: query });
   });

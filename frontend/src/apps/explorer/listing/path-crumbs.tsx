@@ -8,6 +8,7 @@
 // itself, not carrying every crumb-strip behavior into the new home.
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { navigate } from "@platform/lib/router";
+import { cameFromSelParam } from "@apps/explorer/listing/selection";
 
 export function PathCrumbs({
   fsPath,
@@ -53,7 +54,10 @@ export function PathCrumbs({
       className={"path-crumb" + (parts.length === 0 ? " last" : "")}
       onClick={(e) => {
         e.preventDefault();
-        navigate(rootTarget, { isDir: true });
+        // `sel` lands the ancestor with the child we came out of highlighted —
+        // the same file-manager rule Breadcrumb.tsx's own crumbs and the
+        // keyboard's go-up chord follow (listing/selection.ts cameFromSelParam).
+        navigate(rootTarget, { isDir: true, sel: cameFromSelParam(rootTarget, fsPath) });
       }}
     >
       {underHome ? "~" : "/"}
@@ -90,7 +94,9 @@ export function PathCrumbs({
           title={part}
           onClick={(e) => {
             e.preventDefault();
-            navigate(target, { isDir: true });
+            // Same rule as the root crumb above: land on the ancestor with the
+            // child we came out of highlighted.
+            navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
           }}
         >
           {part}

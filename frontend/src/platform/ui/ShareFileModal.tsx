@@ -1,0 +1,633 @@
+// Share any file — the one dialog behind every file Share entry (the
+// explorer's kebab menu and crumb-bar right-click, task 7). Sibling of
+// ShareAppModal.tsx, not a fork: same host-mounted-once-in-the-shell shape
+// (platform/lib/share-file.ts's openShareFile/useShareFileRequest), same
+// Stop-sharing-behind-an-AlertDialog pattern as ShareAppModal's Revoke.
+//
+// EXACTLY TWO SHARE ACTIONS, DELIBERATELY, NOT A VISIBILITY PICKER
+// (share-any-file-plan.md's stated UX goal): "Share publicly" (mode
+// "public", works forever, no session token) and "Share for 30 minutes"
+// (mode "temporary", team-scoped with a session token appended to the URL).
+// Once something is shared, both buttons are replaced by the link (Copy,
+// Open) and Stop sharing — there is no "switch mode" affordance beyond
+// stopping and starting again in the other one, which keeps the sheet a
+// two-state machine (nothing shared / something shared) rather than a matrix.
+//
+// THE DETACHED UPLOAD IS THE ONE PLACE THIS DIFFERS FROM A PLAIN PUBLISH: a
+// file over share_file.py's INLINE_PUBLISH_MAX_BYTES makes /publish answer a
+// 409 (folded onto `code: "upload_required"` by share-file.ts's `withCode`)
+// instead of doing the work inline. On that code alone, `useShareFile` below
+// switches to driving /upload → poll /upload/status → /publish with the
+// finished job's id, and the sheet shows a progress row with a Cancel button
+// in the meantime — the row REPLACES the buttons, so a click never has a
+// second meaning.
+//
+// ALL OF THAT LIVES IN `useShareFile`, SEPARATE FROM THE CHROME: the sheet's
+// chrome is `@platform/shadcn/ui/dialog`'s Base UI `Dialog`/`AlertDialog`,
+// which portals through `FloatingPortal` — a real `ReactDOM.createPortal`
+// call that `react-test-renderer`'s mock tree cannot satisfy (confirmed
+// while building this file; `apps/claude/ui/receipt-door.test.tsx` records
+// the same finding and asserts its own panel does NOT use this chassis for
+// exactly that reason). Since ShareAppModal's sheet is this codebase's
+// reference for the shape and carries no test of its own either, the split
+// here keeps parity with it in production while making the actual state
+// machine — the two-action gate, the confirm-before-stop, the upload
+// fallback — testable head-on through the hook (ShareFileModal.test.tsx).
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Check,
+  ChevronRight,
+  Clock,
+  Copy,
+  ExternalLink,
+  Folder,
+  Globe,
+  Loader2,
+  XIcon,
+} from "lucide-react";
+import { copyToClipboard } from "@platform/lib/clipboard";
+import { basename, dirname } from "@platform/lib/format";
+import {
+  cancelUpload,
+  closeShareFile,
+  getShareFileStatus,
+  publishShareFile,
+  removeShareFile,
+  startUpload,
+  uploadStatus,
+  useShareFileRequest,
+  type ShareableFile,
+  type ShareFileRequest,
+  type ShareFileStatus,
+  type SharedFileRecord,
+  type ShareMode,
+  type UploadStatus,
+} from "@platform/lib/share-file";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@platform/shadcn/ui/alert-dialog";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@platform/shadcn/ui/dialog";
+import { Input } from "@platform/shadcn/ui/input";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { iconForEntry } from "@platform/ui/FileIcons";
+
+const UPLOAD_POLL_MS = 1200;
+
+type Busy = null | ShareMode | "remove";
+
+/** The two, and only two, share actions the sheet ever offers.
+ *
+ *  WORDED AS AUDIENCES, NOT VERBS ("Anyone with the link", not "Share
+ *  publicly"), and drawn as two rows of icon + label + consequence rather than
+ *  two stacked buttons — the shape every reader has already met in Drive,
+ *  Dropbox and the iOS share sheet (owner, 2026-09-22: "some UI familiar to
+ *  the users when sharing stuff"). It is a presentation change only: this is
+ *  still the two-state machine this file's header describes, NOT the
+ *  visibility picker that header rules out — picking a row publishes at once,
+ *  and the only way from one row to the other is still Stop sharing. */
+export const PRIMARY_ACTIONS: Array<{
+  mode: ShareMode;
+  label: string;
+  detail: string;
+  busyLabel: string;
+  icon: typeof Globe;
+}> = [
+  {
+    mode: "public",
+    label: "Anyone with the link",
+    detail: "Stays up until you stop sharing",
+    busyLabel: "Sharing…",
+    icon: Globe,
+  },
+  {
+    mode: "temporary",
+    label: "Anyone with the link, 30 minutes",
+    detail: "Expires on its own",
+    busyLabel: "Sharing…",
+    icon: Clock,
+  },
+];
+
+export type SharePhase = "loading" | "refused" | "no-cli" | "share" | "shared" | "uploading";
+
+export interface ShareFileHookState {
+  phase: SharePhase;
+  status: ShareFileStatus | null;
+  shared: SharedFileRecord | null;
+  busy: Busy;
+  err: string;
+  upload: UploadStatus | null;
+  confirmStop: boolean;
+  copied: boolean;
+  share: (mode: ShareMode) => void;
+  requestStop: () => void;
+  cancelStopRequest: () => void;
+  confirmStopNow: () => void;
+  cancelUploadNow: () => void;
+  copyLink: () => void;
+}
+
+/** All of the sheet's behaviour, with no chrome attached — see this file's
+ *  header for why it is split out. */
+export function useShareFile(file: ShareableFile): ShareFileHookState {
+  const [status, setStatus] = useState<ShareFileStatus | null>(null);
+  const [shared, setShared] = useState<SharedFileRecord | null>(null);
+  const [busy, setBusy] = useState<Busy>(null);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [upload, setUpload] = useState<UploadStatus | null>(null);
+  const pollRef = useRef<number | null>(null);
+  const goneRef = useRef(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const s = await getShareFileStatus(file.path);
+      if (!goneRef.current) {
+        setStatus(s);
+        setShared(s.shared);
+      }
+      return s;
+    } catch (e) {
+      if (!goneRef.current) setErr((e as Error).message);
+      return null;
+    }
+  }, [file.path]);
+
+  useEffect(() => {
+    goneRef.current = false;
+    void refresh();
+    return () => {
+      goneRef.current = true;
+      if (pollRef.current !== null) window.clearInterval(pollRef.current);
+    };
+  }, [refresh]);
+
+  const stopPolling = () => {
+    if (pollRef.current !== null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  const finishPublish = useCallback(
+    async (mode: ShareMode, uploadId?: string) => {
+      try {
+        const rec = await publishShareFile(file.path, mode, uploadId);
+        if (goneRef.current) return;
+        setShared(rec);
+        setUpload(null);
+        setBusy(null);
+      } catch (e) {
+        if (goneRef.current) return;
+        setErr((e as Error).message);
+        setBusy(null);
+        setUpload(null);
+      }
+    },
+    [file.path],
+  );
+
+  const pollUpload = useCallback(
+    (id: string, mode: ShareMode) => {
+      stopPolling();
+      pollRef.current = window.setInterval(() => {
+        void uploadStatus(id)
+          .then((s) => {
+            if (goneRef.current) return;
+            setUpload(s);
+            if (s.state === "done") {
+              stopPolling();
+              void finishPublish(mode, id);
+            } else if (s.state === "failed" || s.state === "cancelled") {
+              stopPolling();
+              setErr(s.error || `the upload was ${s.state}`);
+              setBusy(null);
+              setUpload(null);
+            }
+          })
+          .catch((e: unknown) => {
+            // Finding 10: a rejected uploadStatus() call (a transient
+            // network blip, the server briefly unreachable) previously fell
+            // through with no handler — the interval kept firing, but
+            // nothing here ever ended the "uploading" phase, so the sheet
+            // could get stuck on that spinner forever even after the
+            // underlying upload had long since finished, failed, or was
+            // cancelled. Surface it and stop polling instead of spinning
+            // silently.
+            if (goneRef.current) return;
+            stopPolling();
+            setErr((e as Error).message || "lost track of the upload");
+            setBusy(null);
+            setUpload(null);
+          });
+      }, UPLOAD_POLL_MS);
+    },
+    [finishPublish],
+  );
+
+  const share = useCallback(
+    (mode: ShareMode) => {
+      if (busy) return;
+      setErr("");
+      setBusy(mode);
+      void (async () => {
+        try {
+          const rec = await publishShareFile(file.path, mode);
+          if (goneRef.current) return;
+          setShared(rec);
+          setBusy(null);
+        } catch (e) {
+          const error = e as Error & { code?: string };
+          if (goneRef.current) return;
+          if (error.code === "upload_required") {
+            try {
+              const s = await startUpload(file.path);
+              if (goneRef.current) return;
+              setUpload(s);
+              if (s.state === "done") {
+                // Finding 9: `s.id` is the upload's OWN id — the one
+                // /publish will look up in share_uploads/ to find this
+                // upload's finished remote/s3_uri. `status?.file_id` is a
+                // stale snapshot from the LAST /status poll (it can be null
+                // on first share, or point at a previous file if `status`
+                // hasn't refreshed yet), so using it here risked handing
+                // /publish someone else's — or no — upload id.
+                void finishPublish(mode, s.id);
+              } else {
+                pollUpload(s.id, mode);
+              }
+            } catch (uploadErr) {
+              if (!goneRef.current) {
+                setErr((uploadErr as Error).message);
+                setBusy(null);
+              }
+            }
+            return;
+          }
+          setErr(error.message);
+          setBusy(null);
+        }
+      })();
+    },
+    [busy, file.path, finishPublish, pollUpload],
+  );
+
+  const cancelUploadNow = useCallback(() => {
+    if (!upload) return;
+    stopPolling();
+    const id = upload.id;
+    setUpload(null);
+    setBusy(null);
+    void cancelUpload(id).catch(() => {});
+  }, [upload]);
+
+  const requestStop = useCallback(() => setConfirmStop(true), []);
+  const cancelStopRequest = useCallback(() => setConfirmStop(false), []);
+
+  const confirmStopNow = useCallback(() => {
+    setConfirmStop(false);
+    if (busy) return;
+    setErr("");
+    setBusy("remove");
+    void (async () => {
+      try {
+        await removeShareFile(file.path);
+        if (goneRef.current) return;
+        setShared(null);
+      } catch (e) {
+        if (!goneRef.current) setErr((e as Error).message);
+      } finally {
+        if (!goneRef.current) setBusy(null);
+      }
+    })();
+  }, [busy, file.path]);
+
+  const copyLink = useCallback(() => {
+    if (!shared?.url) return;
+    void copyToClipboard(shared.url).then((ok) => {
+      if (ok && !goneRef.current) {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      }
+    });
+  }, [shared?.url]);
+
+  let phase: SharePhase;
+  if (!status && !err) phase = "loading";
+  else if (status && !status.can_share) phase = "refused";
+  else if (status && !status.cli_found) phase = "no-cli";
+  else if (upload && upload.state === "running") phase = "uploading";
+  else if (shared) phase = "shared";
+  else phase = "share";
+
+  return {
+    phase,
+    status,
+    shared,
+    busy,
+    err,
+    upload,
+    confirmStop,
+    copied,
+    share,
+    requestStop,
+    cancelStopRequest,
+    confirmStopNow,
+    cancelUploadNow,
+    copyLink,
+  };
+}
+
+function fmtBytes(n: number | null | undefined): string {
+  if (!n || n <= 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+export function ShareFileModal({
+  request,
+  onClose,
+}: {
+  request: ShareFileRequest;
+  onClose: () => void;
+}) {
+  const { file } = request;
+  const state = useShareFile(file);
+  const { phase, status, shared, busy, err, upload, confirmStop, copied } = state;
+  const working = busy !== null;
+  const dir = dirname(file.path);
+
+  let body: ReactNode;
+  if (phase === "loading") {
+    body = <Skeleton className="h-24 w-full" />;
+  } else if (phase === "refused") {
+    body = (
+      <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+        {status?.refusal}
+      </p>
+    );
+  } else if (phase === "no-cli") {
+    body = (
+      <p className="m-0 text-[13px] leading-5 text-muted-foreground">
+        The fused CLI is not available in this server&rsquo;s environment. Install it with{" "}
+        <code className="rounded bg-muted px-1 py-0.5 text-xs">
+          pip install &quot;fused-render[fused]&quot;
+        </code>
+        .
+      </p>
+    );
+  } else if (phase === "uploading") {
+    body = (
+      <div className="flex flex-col gap-2.5">
+        <div className="flex items-center gap-2 text-[13px] leading-5 text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          Uploading{upload?.bytes ? ` ${fmtBytes(upload.bytes)}` : ""}…
+        </div>
+        <Button size="sm" variant="outline" onClick={state.cancelUploadNow}>
+          Cancel
+        </Button>
+      </div>
+    );
+  } else if (phase === "shared" && shared) {
+    const url = shared.url;
+    body = (
+      <div className="flex min-w-0 flex-col gap-2.5">
+        {/* THE LINK IN A FIELD-WITH-A-BUTTON, the one shape every share dialog
+            the reader has used already puts here: the url sits in a bordered
+            well and a LABELLED "Copy link" ends it, rather than the row of
+            three same-weight icon buttons this was. Copying is what a reader
+            came to do, so it is the only filled control in the sheet; Open and
+            Stop sharing drop to quiet ghosts on the line below. */}
+        <div className="flex min-w-0 items-center gap-1.5 rounded-xl border border-input bg-muted/40 py-1 pr-1 pl-2.5">
+          <Input
+            type="text"
+            readOnly
+            value={url ?? ""}
+            onFocus={(e) => e.currentTarget.select()}
+            aria-label="Shared link"
+            className="h-7 min-w-0 flex-1 truncate border-0 bg-transparent px-0 font-mono text-[12.5px] text-foreground focus-visible:ring-0 dark:bg-transparent"
+          />
+          <Button size="sm" onClick={state.copyLink} disabled={!url}>
+            {copied ? (
+              <Check data-icon="inline-start" />
+            ) : (
+              <Copy data-icon="inline-start" />
+            )}
+            {copied ? "Copied" : "Copy link"}
+          </Button>
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <Badge variant="secondary" className="gap-1">
+            {shared.mode === "temporary" ? (
+              <>
+                <Clock /> {shared.expired ? "Expired — share again" : "Expires in 30 minutes"}
+              </>
+            ) : (
+              <>
+                <Globe /> Anyone with the link
+              </>
+            )}
+          </Badge>
+          <div className="flex items-center gap-0.5">
+            {url && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-foreground"
+                render={<a href={url} target="_blank" rel="noopener noreferrer" />}
+              >
+                <ExternalLink data-icon="inline-start" />
+                Open
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={working}
+              onClick={state.requestStop}
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            >
+              {busy === "remove" && <Loader2 data-icon="inline-start" className="animate-spin" />}
+              {busy === "remove" ? "Stopping…" : "Stop sharing"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  } else {
+    body = (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        {PRIMARY_ACTIONS.map((a) => {
+          const Icon = a.icon;
+          const running = busy === a.mode;
+          return (
+            <Button
+              key={a.mode}
+              variant="outline"
+              disabled={working}
+              onClick={() => state.share(a.mode)}
+              className="h-auto w-full justify-start gap-3 rounded-xl px-3 py-2.5 text-left"
+            >
+              <span
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                aria-hidden
+              >
+                {running ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Icon className="size-4" />
+                )}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[13px] leading-5 font-medium text-foreground">
+                  {running ? a.busyLabel : a.label}
+                </span>
+                <span className="truncate text-[11.5px] leading-4 font-normal text-muted-foreground">
+                  {a.detail}
+                </span>
+              </span>
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground/60" aria-hidden />
+            </Button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <Dialog
+        open
+        onOpenChange={(open) => {
+          if (!open && !working) onClose();
+        }}
+      >
+        <DialogContent
+          className="max-w-[min(420px,calc(100%-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(420px,calc(100%-2rem))]"
+          showCloseButton={false}
+        >
+          {/* `min-w-0` ON EVERY BOX A TRUNCATING CHILD SITS IN, and it is not
+              decoration: a flex/grid item's automatic minimum size is its
+              MIN-CONTENT, and the path below is `white-space: nowrap`, so the
+              header demanded the path's full unwrapped width — measured at
+              395px against the sheet's then-360px cap — and `overflow-hidden`
+              on the sheet then sliced the excess off. The visible fault was a
+              title reading "hare index.html" and a path missing its "/U"
+              (owner, 2026-09-22). `truncate` alone cannot fix it: it clips
+              what has already overflowed rather than letting the box shrink. */}
+          {/* THE FILE ITSELF AS THE HEADING — its own listing glyph in a
+              tile, then the name, then the folder it sits in. A share dialog
+              that opens with the thing being shared is the arrangement every
+              file app uses, and it beats the sentence this was ("Share
+              index.html" in one line) at the one job the header has: telling
+              the reader WHICH file this is about before they publish it. The
+              word "Share" survives for screen readers alone, so the dialog's
+              accessible name still says what the dialog does. */}
+          <DialogHeader className="min-w-0 gap-0 px-4 pt-4 pb-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="mt-px flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+                {iconForEntry(file.name, false)}
+              </span>
+              <div className="flex min-w-0 flex-1 flex-col">
+                {/* `m-0` ON BOTH: this app runs without Tailwind's preflight,
+                    so an `h2` and a `p` still carry the browser's own 0.83em /
+                    1em block margins — measured 12.4px and 12px here, which is
+                    what held the name and its folder ~90px apart instead of
+                    stacked. Every other `p` in this file already spells `m-0`
+                    out for the same reason. */}
+                <DialogTitle className="m-0 min-w-0 truncate text-[15px] leading-6 font-semibold">
+                  <span className="sr-only">Share </span>
+                  {file.name}
+                </DialogTitle>
+                {/* THE FOLDER'S NAME, NOT THE WHOLE PATH: at this sheet's
+                    width an absolute path only ever arrives mid-word
+                    ("msdas/Fused/sandbox/…", measured), which reads as damage
+                    rather than as location. One folder name with a folder
+                    glyph is how a share dialog says where something lives, and
+                    nothing is lost — the full path is the `title` here, and
+                    the crumb bar behind the sheet is already showing it. */}
+                <DialogDescription
+                  className="m-0 mt-0.5 flex min-w-0 items-center gap-1 text-left text-[12px] leading-4 text-muted-foreground"
+                  title={dir}
+                >
+                  <Folder className="size-3 shrink-0" aria-hidden />
+                  <span className="min-w-0 truncate">{basename(dir) || dir}</span>
+                </DialogDescription>
+              </div>
+              <DialogClose
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="-mt-1 -mr-1.5 bg-transparent text-muted-foreground hover:text-foreground"
+                  />
+                }
+                disabled={working}
+              >
+                <XIcon />
+                <span className="sr-only">Close</span>
+              </DialogClose>
+            </div>
+          </DialogHeader>
+          <div className="flex min-w-0 flex-col gap-3 px-4 pb-4">
+            {body}
+            {err && (
+              <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+                {err}
+              </p>
+            )}
+          </div>
+          <AlertDialog open={confirmStop} onOpenChange={(open) => !open && state.cancelStopRequest()}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Stop sharing?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  The public page is deleted. Every link already sent stops working. You can
+                  share it again later.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep sharing</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={state.confirmStopNow}>
+                  Stop sharing
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+/** Mounted once in the shell; renders the dialog for the current request. */
+export function ShareFileHost() {
+  const req = useShareFileRequest();
+  if (!req) return null;
+  return <ShareFileModal key={req.seq} request={req} onClose={closeShareFile} />;
+}
+
+export default ShareFileModal;

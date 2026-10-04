@@ -181,6 +181,37 @@ def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_monitor_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: the System chip and /monitor page are opt-in.
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    body = client.put("/api/prefs", json={"monitor_enabled": True}, headers=FUSED).json()
+    assert body["monitor"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["monitor_enabled"] is True
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is True
+    assert client.put("/api/prefs", json={"monitor_enabled": False}, headers=FUSED).json()[
+        "monitor"
+    ]["enabled"] is False
+
+
+def test_monitor_enabled_reads_a_hand_edited_junk_value_as_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"monitor_enabled": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    assert prefs_mod.monitor_enabled() is False
+
+
+def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"monitor_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.
@@ -220,6 +251,27 @@ def test_indexing_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeyp
     body = client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()
     assert body["reader"]["enabled"] is True
     assert body["indexing"]["enabled"] is False
+
+
+def test_git_auto_sync_defaults_on_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["git"]["auto_sync"] is True
+    body = client.put("/api/prefs", json={"git_auto_sync_enabled": False}, headers=FUSED).json()
+    assert body["git"]["auto_sync"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "git_auto_sync_enabled"
+    ] is False
+    assert client.put("/api/prefs", json={"git_auto_sync_enabled": True}, headers=FUSED).json()[
+        "git"
+    ]["auto_sync"] is True
+
+
+def test_put_rejects_bad_git_auto_sync(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"git_auto_sync_enabled": "yes"}, headers=FUSED
+    ).status_code == 400
+    assert not (home / "prefs.json").exists()
 
 
 def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
@@ -1256,125 +1308,111 @@ def test_a_resident_model_the_switch_does_not_affect_is_LEFT_ALONE(
         supervisor.reset()
 
 
-# -- native chat (beta) flag ---------------------------------------------------
+# -- native chat flag (default ON since 2026-09-17) ----------------------------
 
 
-def test_native_chat_defaults_off_and_toggles(tmp_path, monkeypatch):
+def test_native_chat_defaults_on_and_toggles(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    # Default off: the legacy template iframe stays until someone opts in.
-    assert client.get("/api/prefs").json()["chat"]["native"] is False
-    body = client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()
-    assert body["chat"]["native"] is True
+    # Default ON: an install that has never opened Preferences gets the native
+    # chat, and the switch is the way back to the legacy template iframe.
+    assert client.get("/api/prefs").json()["chat"]["native"] is True
+    body = client.put("/api/prefs", json={"native_chat_enabled": False}, headers=FUSED).json()
+    assert body["chat"]["native"] is False
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["native_chat_enabled"] is True
-    assert client.put("/api/prefs", json={"native_chat_enabled": False}, headers=FUSED).json()[
+    assert stored["native_chat_enabled"] is False
+    assert client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()[
         "chat"
-    ]["native"] is False
+    ]["native"] is True
 
 
-# -- task side peek (experimental) flag ----------------------------------------
+# -- task side peek: always on since 2026-09-20 ------------------------------
 
 
-def test_task_peek_defaults_off_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # Default off: a click on a task row goes to the Explorer exactly as it
-    # always has until someone opts in.
-    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is False
-    body = client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED).json()
-    assert body["task_peek"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_peek_enabled"] is True
-    assert client.put("/api/prefs", json={"task_peek_enabled": False}, headers=FUSED).json()[
-        "task_peek"
-    ]["enabled"] is False
-
-
-def test_task_peek_junk_value_reads_as_off(tmp_path, monkeypatch):
-    # Only a stored `true` is on — missing, legacy and junk all read as off, so
-    # an install that has never opened Preferences keeps today's behaviour.
+def test_task_peek_is_always_on_and_ignores_a_stored_false(tmp_path, monkeypatch):
+    # The switch is gone from Preferences. A prefs.json an older build wrote
+    # with the peek OFF must not strand the reader on the navigate-away path.
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
-    (home / "prefs.json").write_text(json.dumps({"task_peek_enabled": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is False
-    assert prefs_mod.task_peek_enabled() is False
+    (home / "prefs.json").write_text(json.dumps({"task_peek_enabled": False}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is True
+    assert prefs_mod.task_peek_enabled() is True
 
 
-def test_put_rejects_bad_task_peek_enabled(tmp_path, monkeypatch):
+def test_put_no_longer_accepts_the_removed_task_switches(tmp_path, monkeypatch):
+    # `task_peek_enabled` and `task_card_last_message` were both Preferences
+    # switches until 2026-09-20; a PUT naming only one of them is a PUT naming
+    # no known preference, and the payload never grows a `task_cards` key.
     client, home = _client(tmp_path, monkeypatch)
-    assert (
-        client.put("/api/prefs", json={"task_peek_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
-    assert not (home / "prefs.json").exists()
-
-
-def test_task_peek_survives_a_write_of_another_pref(tmp_path, monkeypatch):
-    # One prefs.json, many switches: turning the peek on and then touching an
-    # unrelated pref must not drop it (the merge, not a whole-file replace).
-    client, home = _client(tmp_path, monkeypatch)
-    client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED)
-    body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
-    assert body["task_peek"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_peek_enabled"] is True
-
-
-# -- task card title (experimental) flag ---------------------------------------
-
-
-def test_task_card_last_message_defaults_off_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # Default off: a card is titled by its task, exactly as the Cards wall has
-    # always drawn it, until someone opts in.
-    assert client.get("/api/prefs").json()["task_cards"]["last_message"] is False
-    body = client.put(
-        "/api/prefs", json={"task_card_last_message": True}, headers=FUSED).json()
-    assert body["task_cards"]["last_message"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_card_last_message"] is True
     assert client.put(
-        "/api/prefs", json={"task_card_last_message": False}, headers=FUSED,
-    ).json()["task_cards"]["last_message"] is False
+        "/api/prefs", json={"task_peek_enabled": False}, headers=FUSED).status_code == 400
+    assert client.put(
+        "/api/prefs", json={"task_card_last_message": True}, headers=FUSED).status_code == 400
+    assert not (home / "prefs.json").exists()
+    assert "task_cards" not in client.get("/api/prefs").json()
 
 
-def test_task_card_last_message_junk_value_reads_as_off(tmp_path, monkeypatch):
+# -- project (app page) task peek: always on -------------------------------------
+
+
+def test_project_peek_is_always_on_and_the_put_no_longer_takes_it(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["task_peek"] == {"enabled": True, "project": True}
+    # A stored value from the flagged build is ignored…
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"project_peek_enabled": False}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["task_peek"]["project"] is True
+    assert prefs_mod.project_peek_enabled() is True
+    # …and the key is no longer a preference the PUT knows.
+    assert client.put(
+        "/api/prefs", json={"project_peek_enabled": False}, headers=FUSED,
+    ).status_code == 400
+
+
+# -- task notify terminal sessions flag ----------------------------------------
+
+
+def test_task_notify_terminal_sessions_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: a plain interactive-terminal session raises no finished-task
+    # notice until someone opts in — the reported bug was exactly the opposite
+    # of this default.
+    assert client.get("/api/prefs").json()["task_notify"]["terminal_sessions"] is False
+    body = client.put(
+        "/api/prefs", json={"task_notify_terminal_sessions": True}, headers=FUSED).json()
+    assert body["task_notify"]["terminal_sessions"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["task_notify_terminal_sessions"] is True
+    assert client.put(
+        "/api/prefs", json={"task_notify_terminal_sessions": False}, headers=FUSED,
+    ).json()["task_notify"]["terminal_sessions"] is False
+
+
+def test_task_notify_terminal_sessions_junk_value_reads_as_off(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(
-        json.dumps({"task_card_last_message": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["task_cards"]["last_message"] is False
-    assert prefs_mod.task_card_last_message() is False
+        json.dumps({"task_notify_terminal_sessions": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["task_notify"]["terminal_sessions"] is False
+    assert prefs_mod.notify_terminal_sessions_enabled() is False
 
 
-def test_put_rejects_bad_task_card_last_message(tmp_path, monkeypatch):
+def test_put_rejects_bad_task_notify_terminal_sessions(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert client.put(
-        "/api/prefs", json={"task_card_last_message": "yes"}, headers=FUSED,
+        "/api/prefs", json={"task_notify_terminal_sessions": "yes"}, headers=FUSED,
     ).status_code == 400
     assert not (home / "prefs.json").exists()
 
 
-def test_the_two_task_page_switches_are_independent(tmp_path, monkeypatch):
-    # One prefs.json, two experiments on one page, and neither turns the other
-    # on: the peek is about where a task opens, this is about what a card says.
-    client, home = _client(tmp_path, monkeypatch)
-    client.put("/api/prefs", json={"task_card_last_message": True}, headers=FUSED)
-    body = client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED).json()
-    assert body["task_cards"]["last_message"] is True
-    assert body["task_peek"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_card_last_message"] is True
-    assert stored["task_peek_enabled"] is True
-
-
-def test_native_chat_junk_value_reads_as_off(tmp_path, monkeypatch):
+def test_native_chat_junk_value_reads_as_on(tmp_path, monkeypatch):
+    # Junk is not `false`, so it reads as ON — the default, not the opt-out.
     client, home = _client(tmp_path, monkeypatch)
     monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(json.dumps({"native_chat_enabled": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["chat"]["native"] is False
-    assert prefs_mod.native_chat_enabled() is False
+    assert client.get("/api/prefs").json()["chat"]["native"] is True
+    assert prefs_mod.native_chat_enabled() is True
 
 
 def test_native_chat_env_override_beats_pref(tmp_path, monkeypatch):
@@ -1410,38 +1448,71 @@ def test_native_chat_reports_which_env_value_is_deciding(tmp_path, monkeypatch):
     assert client.get("/api/prefs").json()["chat"]["forced_by"] is None
 
 
-def test_chat_recap_defaults_on_and_toggles(tmp_path, monkeypatch):
-    """THE ONE SWITCH HERE THAT DEFAULTS ON, so it needs the opposite idiom to
-    every flag above: only a stored `false` turns the session-recap fold off.
-    Read `is not False` rather than `is True`, or every install that has never
-    opened Preferences loses a feature it was never asked about."""
-    client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["chat"]["recap"] is True
-    body = client.put("/api/prefs", json={"chat_recap_enabled": False}, headers=FUSED).json()
-    assert body["chat"]["recap"] is False
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["chat_recap_enabled"] is False
-    assert client.put("/api/prefs", json={"chat_recap_enabled": True}, headers=FUSED).json()[
-        "chat"
-    ]["recap"] is True
-    # Junk is not "off" either — only the boolean the PUT validates can be.
-    (home / "prefs.json").write_text(json.dumps({"chat_recap_enabled": "no"}), encoding="utf-8")
-    assert prefs_mod.chat_recap_enabled() is True
-
-
-def test_put_rejects_bad_chat_recap_enabled(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    assert (
-        client.put("/api/prefs", json={"chat_recap_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
-    assert not (home / "prefs.json").exists()
-
-
 def test_put_rejects_bad_native_chat_enabled(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert (
         client.put("/api/prefs", json={"native_chat_enabled": "yes"}, headers=FUSED).status_code
         == 400
     )
+    assert not (home / "prefs.json").exists()
+
+
+# -- project queue (beta) flag -------------------------------------------------
+
+
+def test_project_queue_defaults_off_and_toggles(tmp_path, monkeypatch):
+    """Off is what makes the whole feature a no-op: with this unset a chat send
+    spawns, run-now runs, and the scheduler holds per session exactly as it did
+    before the queue existed."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["queue"]["enabled"] is False
+    body = client.put("/api/prefs", json={"project_queue_enabled": True},
+                      headers=FUSED).json()
+    assert body["queue"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["project_queue_enabled"] is True
+    assert client.put("/api/prefs", json={"project_queue_enabled": False},
+                      headers=FUSED).json()["queue"]["enabled"] is False
+
+
+def test_project_queue_junk_value_reads_as_off(tmp_path, monkeypatch):
+    """Same opt-in idiom as `canvases_enabled`: only a stored `true` is on, so a
+    hand-edited or legacy prefs.json cannot quietly start serialising tasks.
+    There is no env override to beat it either — see `project_queue_enabled`."""
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"project_queue_enabled": "yes"}),
+                                     encoding="utf-8")
+    assert client.get("/api/prefs").json()["queue"]["enabled"] is False
+    assert prefs_mod.project_queue_enabled() is False
+
+
+def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"project_queue_enabled": "yes"},
+                   headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
+def test_auto_download_updates_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["update"]["auto_download"] is False
+    body = client.put("/api/prefs", json={"auto_download_updates": True}, headers=FUSED).json()
+    assert body["update"]["auto_download"] is True
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "auto_download_updates"
+    ] is True
+    assert client.put("/api/prefs", json={"auto_download_updates": False}, headers=FUSED).json()[
+        "update"
+    ]["auto_download"] is False
+
+
+def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
+    ).status_code == 400
     assert not (home / "prefs.json").exists()

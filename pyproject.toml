@@ -22,10 +22,25 @@ classifiers = [
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # The live filesystem watcher that keeps the file index honest between
+    # scans (server/index_watch.py). Core, not an extra: the index is core,
+    # and the watcher is what keeps it from lying about files that landed
+    # from outside the app. uvicorn only pulls this in transitively under its
+    # own `standard` extra, which we do not install, so it has to be declared
+    # here rather than borrowed.
+    "watchfiles>=1.0",
     # mDNS advertising of render.fused.local for local-network app sharing
     # (fused_render/lan.py). Pure Python (+ ifaddr); optional at runtime — the
     # listener still binds without it, the friendly name just does not resolve.
-    "zeroconf>=0.130",
+    #
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1): zeroconf
+    # dropped x86_64 macOS wheels after 0.148.0 (verified against
+    # https://pypi.org/pypi/zeroconf/json on 2026-09-23 — 0.149.0+ ship only
+    # macosx_11_0_arm64). Without a ceiling, `pip install fused-render` on an
+    # Intel Mac falls back to a source build. Every other platform stays
+    # unpinned.
+    "zeroconf>=0.130,<=0.148.0 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "zeroconf>=0.130 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     # /api/fs/events is a WebSocket (D74); plain uvicorn has no WS protocol
     # implementation, so the ws library is a hard dependency, not an extra.
     "websockets>=12",
@@ -138,7 +153,15 @@ dev = [
     # The Windows updater's tests (tests/test_win_supervisor_update.py) are
     # mock-based and cross-platform, but importorskip("cryptography") skips them
     # in CI unless it's installed here — it's win32-only in windows-desktop.
-    "cryptography",
+    #
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1): cryptography
+    # dropped x86_64 macOS wheels (even the universal2 fat binary) after
+    # 48.0.1 — verified against https://pypi.org/pypi/cryptography/json on
+    # 2026-09-23: 48.0.2/48.0.3 shipped no macOS wheel at all, and 49.0.0+
+    # ship only macosx_11_0_arm64. Without a ceiling, a contributor/CI
+    # install of `[dev]` on an Intel Mac falls back to a source build.
+    "cryptography<=48.0.1 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     # A TEST dependency since D276, not a shipped one. The notebook kernel turns
     # a cell's open figures into inline PNGs (`kernel_body.py`), which is real
     # behaviour with two tests on it — and matplotlib left `[bundled]`, so
@@ -200,8 +223,8 @@ bundled = [
     # shipped once and downloaded again, and the shipped copy was never imported.
     #
     # REMOVED (D276): matplotlib (25 MB with contourpy/cycler/kiwisolver). Two
-    # consumers, neither of which needed it HERE: `map/geo_classify.py` (now
-    # declared in fused_render/templates/map/pyproject.toml) and
+    # consumers, neither of which needed it HERE: `map/geo_classify.py` (gone
+    # since the map template draws in the browser) and
     # `notebook/kernel_body.py`, which only harvests figures the user's own cell
     # created and does nothing at all when matplotlib is absent.
 
@@ -266,19 +289,44 @@ bundled = [
     # The requirement string must stay byte-identical to `[fused]`'s — see the
     # comment there and
     # tests/test_bundle_contents.py::test_the_bundled_and_fused_extras_pin_the_same_wheel.
-    'fused==2.9.3b8 ; python_version >= "3.11"',
-    # The engine's own `mcp[cli]>=1.0.0` floor admits mcp 2.x, where
-    # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
-    # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
-    # `app serve` / `project serve --mcp` die at import with
-    # ModuleNotFoundError. That matters here because the MCP panel registers
-    # `<this venv's fused> app serve <folder>` as a GLOBAL Claude MCP server
-    # (SPEC MC-5), so the server a user registers is only as good as this
-    # environment's resolve. Upstream is the real fix (fusedio/fused: constrain
-    # the floor); until a release carries it, this keeps the registered command
-    # startable. Marked like the pin above: on 3.10 there is no engine, so there
-    # is nothing pulling mcp in either.
-    'mcp<2 ; python_version >= "3.11"',
+    #
+    # `[aws,mcp]`: as of 2.9.3b10 (https://github.com/fusedio/fused/releases/tag/fused-py-v2.9.3b10,
+    # extras verified against https://pypi.org/pypi/fused/2.9.3b10/json)
+    # `fused`'s core carries none of boto3, pyarrow, pandas, numpy, duckdb,
+    # cryptography or mcp. The two extras put back what this app needs:
+    #   * `aws` = boto3 + `pyjwt[crypto]` + the `data` group (pyarrow, pandas,
+    #     numpy). A venv without boto3 is what killed py2app at
+    #     `ImportError: No module named 'boto3'` (release v0.5.85, run
+    #     35988089828): setup_py2app.py force-lists "boto3", "botocore",
+    #     "s3transfer", "jmespath", and a force-listed name must be installed.
+    #   * `mcp` = `mcp>=1.8.0,<2`. The MCP panel registers `<this venv's fused>
+    #     app serve <folder>` as a GLOBAL Claude MCP server (SPEC MC-5), and
+    #     `app serve` imports mcp, so without this extra the registered server
+    #     dies at startup. The `<2` ceiling lives upstream now (mcp 2.x removed
+    #     `mcp.server.fastmcp`), which is why the direct `mcp<2` pin this list
+    #     used to carry is gone.
+    # Not `verify`: that extra is `anthropic` + `ty`, and `ty` stays
+    # deliberately unshipped (a Rust binary console script py2app cannot
+    # carry). `anthropic` is declared directly below instead. b9's `ai` extra no
+    # longer exists; pip only WARNS on an unknown extra, so
+    # tests/test_bundle_contents.py checks that every extra named here is one
+    # the installed `fused` provides.
+    'fused[aws,mcp]==2.9.3b10 ; python_version >= "3.11"',
+    # What b9's `ai` extra carried and b10 folded into `verify` (see above). The
+    # floor is the one `fused[verify]` itself declares. Marked like the engine
+    # pin: its consumer is the engine, and on 3.10 there is no engine.
+    'anthropic>=0.40.0 ; python_version >= "3.11"',
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1). fused-render
+    # does not declare cryptography here, but it reaches every real install of
+    # this extra anyway, through `pyjwt[crypto]` from both `fused[aws]` and mcp.
+    # A bare `pip install "fused-render[bundled]"` on an Intel Mac would
+    # otherwise resolve an unpinned cryptography and fall back to a source build
+    # (cryptography dropped x86_64 macOS wheels after 48.0.1; the `[dev]`
+    # cryptography entry above has the verification). This direct, constrained
+    # entry is the mechanism: pip's resolver intersects it with the transitive
+    # `pyjwt[crypto]` requirement, so it constrains the resolve without
+    # overriding the version those packages need.
+    'cryptography<=48.0.1 ; python_version >= "3.11" and sys_platform == "darwin" and platform_machine == "x86_64"',
 ]
 # Private-cloud credential chains (optional). botocore buys the AWS provider
 # chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
@@ -313,19 +361,19 @@ app = [
 # (README, docs/usage.md) and CI's `fused-engine` job (`.[dev,fused]`), both of
 # which want the engine WITHOUT the ~650 MB scientific stack.
 fused = [
-    'fused==2.9.3b8 ; python_version >= "3.11"',
-    # The engine's own `mcp[cli]>=1.0.0` floor admits mcp 2.x, where
-    # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
-    # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
-    # `app serve` / `project serve --mcp` die at import with
-    # ModuleNotFoundError. That matters here because the MCP panel registers
-    # `<this venv's fused> app serve <folder>` as a GLOBAL Claude MCP server
-    # (SPEC MC-5), so the server a user registers is only as good as this
-    # environment's resolve. Upstream is the real fix (fusedio/fused: constrain
-    # the floor); until a release carries it, this keeps the registered command
-    # startable. Marked like the pin above: on 3.10 there is no engine, so there
-    # is nothing pulling mcp in either.
-    'mcp<2 ; python_version >= "3.11"',
+    # Same `[aws,mcp]` engine pin and direct `anthropic` as `[bundled]`'s
+    # copy above; that comment explains both. Without `aws` this light-engine
+    # install path would hit the same missing-`boto3` breakage the DMG build
+    # did, and without `mcp` the `fused app serve` the MCP panel registers
+    # would not start.
+    'fused[aws,mcp]==2.9.3b10 ; python_version >= "3.11"',
+    'anthropic>=0.40.0 ; python_version >= "3.11"',
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1). Same reasoning
+    # as the identical entry in `[bundled]` above: `fused[aws]` and mcp both
+    # pull in an unmarked `pyjwt[crypto]`, which reaches this extra too. The
+    # byte-identical test covers the `fused` and `anthropic` lines only, so this
+    # entry is added here on its own rather than assumed to follow.
+    'cryptography<=48.0.1 ; python_version >= "3.11" and sys_platform == "darwin" and platform_machine == "x86_64"',
 ]
 # Windows desktop supervisor backend (fused_render/supervisor/_win32,
 # docs/DESKTOP_SUPERVISOR.md). Windows-only; not a core dependency so
@@ -376,9 +424,10 @@ fused-render-open = "fused_render.winopen:main"
 # `pytest -m integration`.
 # To debug a single test serially, override: `pytest -n0 -x path::test`.
 [tool.pytest.ini_options]
-addopts = "-n auto -m \"not integration\""
+addopts = "-n auto -m \"not integration and not perf_large\""
 markers = [
     "integration: hits a real external tool/service rather than a fake (opt-in only: `pytest -m integration`).",
+    "perf_large: runs the indexing perf harness over a large (multi-minute) synthetic corpus rather than the default fast-CI size (opt-in only: `pytest -m perf_large`).",
 ]
 
 [tool.coverage.run]

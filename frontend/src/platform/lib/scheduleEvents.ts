@@ -5,34 +5,48 @@
 // from everything else the app runs: **nobody is looking when they happen.** A
 // message that fired at 6am, or was missed because the app was closed, leaves a
 // row on /tasks that is only ever seen by someone who goes to look. These
-// toasts are what make "it ran" and "it didn't" arrive on their own.
+// toasts are what make "it ran"/"it's running"/"it didn't" arrive on their own.
 //
-// Rules (per event kind):
+// Rules (per event kind, SPEC-quiet-notifications.md §5):
 //  - failed  → persistent, with an "Open" action onto /tasks. Covers both
 //              halves of failing: the send never happened, or the turn it
 //              started died. Either way a person has to decide something.
+//              Never suppressed by presence.
 //  - missed  → persistent, same action. Nothing went wrong — the app simply
 //              wasn't running inside the catch-up window — but the user asked
 //              for something that did not happen, so it still has to be said.
-//  - done    → no toast at all. A run that just worked is not news; the Tasks
-//              page is where its result lives. `toastForEvent` returns `null`
-//              for it, and this loop skips a `null` rather than rendering an
-//              empty strip.
+//              Never suppressed by presence.
+//  - started → a suppressible info toast: skipped outright if the run's own
+//              target is already open+focused in THIS window (`notify`'s own
+//              `source` check), never retained. §5 reverses the old belief
+//              that a run beginning is never worth saying — see
+//              schedule-toast.ts's header for the writeup.
+//  - done    → same shape as `started`. Also reverses this module's own old
+//              "no toast at all" rule for `done` (D661,
+//              DECISIONS-actionable-notifications.md).
+//
+// NARRATOR-ONLY (§1/§5): only the elected top-level window polls at all —
+// every embed iframe, and every non-narrator top-level tab, would otherwise
+// poll independently and double/triple-toast the same events. Checked once
+// per poll tick (not just once at mount) so narration hands off cleanly the
+// moment the current narrator's tab closes and a heartbeat elects another.
 import { useEffect, useRef } from "react";
 import { ackScheduleEvents, getScheduleEvents } from "@platform/lib/api";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
 import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
+import { isNarrator } from "@platform/lib/presence";
 import { toastForEvent } from "@platform/lib/schedule-toast";
 import type { ScheduleToast } from "@platform/lib/schedule-toast";
 
 const POLL_MS = 15_000;
 
 /**
- * @param onOutcome Called once per poll that narrated a done/failed event — a
- *   scheduled run just ENDED, which is exactly the fact the Tasks page and the
- *   sidebar are otherwise waiting out their own timers to learn. The shell
- *   passes tasksPulse.pokeTasks here (App); it is a parameter rather than an
- *   import because that store lives in shell and platform may not reach up
+ * @param onOutcome Called once per poll that narrated a started/done/failed
+ *   event — a scheduled run's row just CHANGED (began running, or ended),
+ *   which is exactly the fact the Tasks page and the sidebar are otherwise
+ *   waiting out their own timers to learn. The shell passes
+ *   tasksPulse.pokeTasks here (App); it is a parameter rather than an import
+ *   because that store lives in shell and platform may not reach up
  *   (frontend/scripts/check-boundaries.mjs). `missed` deliberately does not
  *   fire it: nothing ran, so no row is mid-flip anywhere.
  */
@@ -61,6 +75,8 @@ export function useScheduleEvents(onOutcome?: () => void): void {
     let alive = true;
 
     const poll = async () => {
+      // Re-checked every tick, not just once at mount — see header comment.
+      if (!isNarrator()) return;
       let body;
       try {
         body = await getScheduleEvents();
@@ -74,19 +90,22 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       const highest = Math.max(...fresh.map((e) => e.id));
       lastEventId.current = Math.max(lastEventId.current, highest);
 
-      for (const e of fresh) {
-        const t = toastForEvent(e);
-        if (t) push(t);
-      }
+      for (const e of fresh) push(toastForEvent(e));
       // The events just narrated are also the earliest word this poll has that
-      // a run ENDED — see the onOutcome contract above. Once per batch, not per
-      // event: the outcome callback refetches, and one refetch reads them all.
-      if (fresh.some((e) => e.kind === "done" || e.kind === "failed")) {
+      // a run's STATE changed (started running, or ended) — see the onOutcome
+      // contract above. Once per batch, not per event: the outcome callback
+      // refetches, and one refetch reads them all.
+      if (fresh.some((e) => e.kind === "started" || e.kind === "done" || e.kind === "failed")) {
         outcome.current?.();
       }
       // Confirm only AFTER narrating: a page that dies in between sees these
       // once more, which is a duplicate toast rather than a silent miss — the
-      // right way round for the one thing here that must not go unsaid.
+      // right way round for the one thing here that must not go unsaid. This
+      // is also what makes an unattended run's notification unlosable: nobody
+      // narrating (no narrator tab open at all) means nothing acks, so the
+      // event is still sitting here, undelivered, the next time any window
+      // polls — suppression only ever means "already seen", never "nobody
+      // was there" (SPEC-quiet-notifications.md §5's own named trap).
       try {
         await ackScheduleEvents(highest);
       } catch {
@@ -95,12 +114,18 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       }
     };
 
-    // The rules live in `toastForEvent`; this only turns a non-null one into a
-    // real toast. `done` never reaches here (filtered above), so every toast
-    // this function renders is the failed/missed case — an error that
-    // persists until acted on, with an "Open" action onto the page whose row
-    // carries the reason, the target, and the transcript's run id.
+    // The rules live in `toastForEvent`. `started`/`done` (`tone: "info"`)
+    // carry no action — `notify`'s own presence check (`source`) is what
+    // suppresses them when the run's own target is already open+focused
+    // here, and they are never retained (no action/page). `failed`/`missed`
+    // (`tone: "error"`) keep the old persistent shape: never suppressed
+    // (no `source`), always retained, with an "Open" action onto the page
+    // whose row carries the reason, the target, and the transcript's run id.
     const push = (t: ScheduleToast) => {
+      if (t.tone === "info") {
+        notify({ title: t.msg, tone: "info", source: t.source });
+        return;
+      }
       const id = notify({
         title: t.msg,
         tone: "error",

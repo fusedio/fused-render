@@ -86,6 +86,28 @@ export function isSendableNow(
   return isSendable(note);
 }
 
+/**
+ * IS THERE A ROUND TO SEND — the whole question, in ONE place.
+ *
+ * Three readers used to spell it three ways: `mode.done()` asked
+ * `isSendable(a) && !a.sent`, the composer's send gate asked the CHIP row
+ * (`chipsOf` drops the sent ones) with `isSendableNow`, and the strip asked a
+ * third. They agreed in the ordinary case and disagreed in exactly the one that
+ * matters: ✓ Done read "there is something to send" off the STORE it had just
+ * written to, while the gate that refuses the send read a React snapshot taken
+ * before that write. The round was then disarmed with nothing sent (Akshil,
+ * 2026-09-17).
+ *
+ * So both of them ask THIS, and a caller that can only see a list still gets the
+ * same answer as one holding the store.
+ */
+export function hasSendable(
+  list: readonly Pick<Annotation, "content" | "t" | "sent">[],
+  walkthroughLive: boolean,
+): boolean {
+  return list.some((n) => !n.sent && isSendableNow(n, walkthroughLive));
+}
+
 export interface AnnStoreOptions {
   params: ParamsStore;
   /**

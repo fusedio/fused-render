@@ -5,8 +5,6 @@ export {
   ComposerCard,
   CHAT_PLACEHOLDER,
   HOME_PLACEHOLDER,
-  FOOTNOTE_LEAD,
-  FOOTNOTE_TAIL,
 } from "./Composer";
 export type {
   ComposerProps,
@@ -25,16 +23,11 @@ export { useDismissOnWindow } from "./useDismissOnWindow";
 export type { DismissOnWindowOptions } from "./useDismissOnWindow";
 export { SchedButton } from "./SchedButton";
 export { SchedConfirm, SchedConfirmBody } from "./SchedConfirm";
-export {
-  draftKey,
-  stashDraft,
-  takeDraft,
-  schedulerUrl,
-  SCHEDULE_URL,
-} from "./sched-draft";
+export { schedulerUrl } from "./SchedButton";
 export { Topbar } from "./Topbar";
 export type { TopbarProps } from "./Topbar";
 export { Kebab, forgetTaskCaches, knownTaskId, useTaskId } from "./Kebab";
+export { useLimitWord, LIMIT_REFRESH_MS } from "./useLimitWord";
 export { ClaudeMark, CLAUDE_MARK_PATH } from "./ClaudeMark";
 export type { ClaudeMarkProps } from "./ClaudeMark";
 export { SentPop } from "./SentPop";
@@ -88,7 +81,7 @@ export {
 export type { ComposerDefaults } from "./composer-defaults";
 export {
   ago,
-  draftTextOf,
+  draftHref,
   paneChatUrl,
   paneSlashes,
   sessionTitle,
@@ -99,7 +92,6 @@ export {
   rowNeed,
   pickRowFit,
   fitFlags,
-  footnoteTight,
   pickHomeTitleStep,
   HOME_TITLE_STEPS,
   fitSelect,

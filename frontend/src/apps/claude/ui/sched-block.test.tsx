@@ -4,7 +4,7 @@
 // refusal that survives the poll the same click asks for.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 
@@ -86,6 +86,7 @@ const fire = (type: string, ev: Record<string, unknown>) => {
 
 const { SchedBlock } = await import("./SchedBlock");
 const { useSchedule } = await import("../sched/useSchedule");
+const { listenerCountsForTests } = await import("../feature-flag");
 type ScheduleState = import("../sched/useSchedule").ScheduleState;
 type ChatController = import("../protocol/controller-api").ChatController;
 
@@ -99,7 +100,23 @@ function stubController(over: Partial<ChatController> = {}): ChatController {
   } as unknown as ChatController;
 }
 
-function mount(over: { navLocked?: boolean; onNavigate?(url: string): void } = {}) {
+/** `bun test` runs every suite in ONE process with no per-file isolation, so a
+ *  tree left mounted here keeps its `useSchedule`/`useProjectQueueEnabled`
+ *  subscriptions alive — and re-rendering on — for the rest of the run. Every
+ *  `mount()` below is tracked here and torn down in the shared `afterEach`,
+ *  which also asserts the count came back down: this file's `useSchedule`
+ *  calls are the only `queueListeners` subscribers it ever adds, so a mismatch
+ *  here means a `mount()` this file forgot to tear down (the exact bug that
+ *  once inflated a full `bun test src` run from ~300MB to 9GB+ — see
+ *  DECISIONS.md's "bun test heap leak" entry). */
+const mounted: ReactTestRenderer[] = [];
+const baselineQueueListeners = listenerCountsForTests().queueListeners;
+afterEach(() => {
+  for (const tree of mounted.splice(0)) act(() => tree.unmount());
+  expect(listenerCountsForTests().queueListeners).toBe(baselineQueueListeners);
+});
+
+function mount(over: { navLocked?: boolean } = {}) {
   let api: ScheduleState | null = null;
   /** The 15 s poll, captured instead of waited out: `poll()` below is one tick
    *  of the real watcher, which is what re-reads the store. */
@@ -130,7 +147,6 @@ function mount(over: { navLocked?: boolean; onNavigate?(url: string): void } = {
       stopping: sched.stopping,
       tick: sched.tick,
       onStop: sched.onStop,
-      onRow: sched.onRow,
       cardRef: sched.cardRef,
     });
   };
@@ -138,6 +154,7 @@ function mount(over: { navLocked?: boolean; onNavigate?(url: string): void } = {
   act(() => {
     tree = create(createElement(Harness));
   });
+  mounted.push(tree!);
   return {
     tree: tree!,
     poll: () => {
@@ -186,7 +203,7 @@ test("a one-off draws the reason, the row and one press's worth of button", asyn
     "Blocked — a scheduled message runs in this chat.",
   ]);
   // The listing's own name and number, and the ring's default state.
-  expect(texts(m.tree, "sb-id")).toEqual(["TASK-007"]);
+  expect(texts(m.tree, "sb-id")).toEqual(["T007"]);
   expect(texts(m.tree, "sb-name")).toEqual(["Nightly tidy"]);
   expect(texts(m.tree, "sb-meta")[0].startsWith("Upcoming · ")).toBe(true);
   const stop = acts(m.tree);
@@ -320,20 +337,62 @@ test("A REFUSED CANCEL keeps the box shut and says why, keyed to the entry", asy
   expect(texts(m.tree, "sb-note")).toEqual(["Still scheduled — it may already be running."]);
 });
 
-test("the row's hop remembers the calendar and lands on /tasks", async () => {
+test("the row is a reading, not a door: no press, no hop", async () => {
+  // It used to hop to the Tasks page — the calendar, then this task's side
+  // peek, which is the chat the reader is already in. "What's the point of
+  // linking it if it opens the same task?" (Akshil, 2026-09-21). Cancel is the
+  // card's one control.
   entries = [{ id: "e1", state: "pending", session_id: "s1" }];
-  tasks = [];
-  const hops: string[] = [];
-  const m = mount({ onNavigate: (u) => hops.push(u) });
+  tasks = [{ key: "s1", task_id: "TASK-007", title: "Nightly tidy", status: "upcoming" }];
+  const m = mount();
   await flush();
   const row = m.tree.root.find(
     (n) => typeof n.type === "string" && n.props.className === "sb-row",
   );
-  await act(async () => {
-    (row.props.onClick as () => void)();
-  });
-  expect(hops).toEqual(["/tasks"]);
-  expect(localStorage.getItem("fused-render:scheduled-view")).toBe("calendar");
+  expect(row.type).toBe("div");
+  expect(row.props.onClick).toBeUndefined();
+  const buttons = m.tree.root.findAll((n) => n.type === "button");
+  expect(buttons).toHaveLength(1);
+  expect(buttons[0]!.props.children).toBe("Cancel this message");
+});
+
+test("THE COMEBACK IS NOT BLOCKED: the card says the chat resumes itself, and when", async () => {
+  // A turn died on the plan limit and `scheduleComeback` put this chat back on
+  // the calendar under `CONTINUE_TITLE`. Nobody queued it, so "Blocked — a
+  // scheduled message runs in this chat" was a riddle (Akshil, 2026-09-21).
+  entries = [
+    {
+      id: "e1",
+      state: "pending",
+      session_id: "s1",
+      due: "2099-01-01T09:00:00",
+      title: "Continue after usage limit",
+      message: "Your usage limit has reset. Continue the task you were working on.",
+    },
+  ];
+  tasks = [{ key: "s1", task_id: "TASK-007", title: "Continue after usage limit", status: "upcoming" }];
+  const m = mount();
+  await flush();
+  expect(texts(m.tree, "sb-when")).toEqual([
+    "Paused on your usage limit — this chat picks up again by itself 09:00 1/1/2099.",
+  ]);
+  expect(m.api.placeholder).toBe("Paused until your usage limit resets…");
+  expect(m.api.reason.startsWith("Paused on your usage limit")).toBe(true);
+  const stop = acts(m.tree);
+  expect(stop.props.children).toBe("Don't resume automatically");
+  expect(stop.props.title).toBe("Cancels the automatic resume, and this chat reopens now");
+});
+
+test("…but a LATER message in a rescued chat is an ordinary block", async () => {
+  // The task row keeps "Continue after usage limit" as the conversation's name;
+  // only the entry's own marks decide (Bugbot, #1292).
+  entries = [{ id: "e2", state: "pending", session_id: "s1", due: "2099-01-01T09:00:00", message: "Nightly tidy" }];
+  tasks = [{ key: "s1", task_id: "TASK-007", title: "Continue after usage limit", status: "upcoming" }];
+  const m = mount();
+  await flush();
+  expect(texts(m.tree, "sb-when")).toEqual(["Blocked — a scheduled message runs in this chat."]);
+  expect(acts(m.tree).props.children).toBe("Cancel this message");
+  expect(m.api.placeholder).toBe("Waiting on a scheduled message…");
 });
 
 test("N MORE AFTER IT: the soonest is named, the rest counted", async () => {
@@ -391,7 +450,7 @@ test("THE DUE BOUNDARY IS CROSSED IN PLACE: same entry, new when-text", async ()
   expect(texts(m.tree, "sb-meta")[0]).toBe("Upcoming · any moment now");
   // ...and the listing row it was labelled from is NOT refetched: the pendency
   // is the same one, which is what the id dedupe is actually for.
-  expect(texts(m.tree, "sb-id")).toEqual(["TASK-050"]);
+  expect(texts(m.tree, "sb-id")).toEqual(["T050"]);
 });
 
 test("THE CLOCK ALONE CROSSES IT: nothing about the entry changes", async () => {
@@ -434,7 +493,7 @@ test("THE CLOCK ALONE CROSSES IT: nothing about the entry changes", async () => 
     // listing row was not refetched for a pendency that never changed.
     expect(m.api.blockers).toBe(before);
     expect(m.api.blockers[0]).toBe(entry);
-    expect(texts(m.tree, "sb-id")).toEqual(["TASK-051"]);
+    expect(texts(m.tree, "sb-id")).toEqual(["T051"]);
   } finally {
     Date.now = realNow;
   }
@@ -556,7 +615,7 @@ test("THE BANNER DESCRIBES THE ENTRY, NOT THE TASK — a pending blocker inside 
   expect(texts(m.tree, "sb-name")).toEqual(["QA test scheduled message A1"]);
   // The number still comes from the listing — it is the one thing only
   // `/api/tasks` hands out.
-  expect(texts(m.tree, "sb-id")).toEqual(["TASK-104"]);
+  expect(texts(m.tree, "sb-id")).toEqual(["T104"]);
   // ...and the ring wears the ENTRY's state, so the hue and the word agree.
   const ring = m.tree.root.find(
     (n) => typeof n.type === "string" && String(n.props.className || "").startsWith("sb-ring"),

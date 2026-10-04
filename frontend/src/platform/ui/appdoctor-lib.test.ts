@@ -2,6 +2,7 @@
 // mounts through the modal chassis' portal, which react-test-renderer cannot
 // render — same split, and same reason, as modal/dirty-guard.test.ts.
 import { expect, test } from "bun:test";
+import { installDomShim } from "@platform/lib/testDomShim";
 import type { AppCheck, AppCheckFinding } from "@platform/lib/api";
 
 // `tasksTabUrl` encodes through lib/router, which reads `location` and
@@ -14,31 +15,29 @@ import type { AppCheck, AppCheckFinding } from "@platform/lib/api";
 // reason: `bun test` runs every file in one process, and a leaked `location`
 // breaks whoever else reads it (appEntry.test.ts does). Router has already
 // read them by then and never looks again.
-const before = {
-  location: Reflect.getOwnPropertyDescriptor(globalThis, "location"),
-  history: Reflect.getOwnPropertyDescriptor(globalThis, "history"),
-};
-Object.assign(globalThis, {
-  location: { pathname: "/", search: "", href: "http://localhost/" },
-  history: { state: null, replaceState() {} },
-});
+// The shared DOM stub, installed and LEFT STANDING (see testDomShim.ts).
+// This file used to stash the `location`/`history` descriptors, assign its
+// own, and put the originals back — deleting them when there were none. Every
+// suite runs in ONE bun process, so that delete pulled `location` out from
+// under whichever file ran next and had already installed the shim: 160
+// `ReferenceError: location is not defined` on CI, none locally, purely by
+// file order (2026-09-24).
+installDomShim();
 const lib = await import("./appdoctor-lib");
-for (const key of ["location", "history"] as const) {
-  const desc = before[key];
-  if (desc) Reflect.defineProperty(globalThis, key, desc);
-  else Reflect.deleteProperty(globalThis, key);
-}
 
 const {
   effectiveSeverity,
   failingCount,
   findingWhere,
+  gitRowFetchPending,
   groupBySection,
   MAX_FINDINGS_SHOWN,
   readinessCount,
   readinessSentence,
   reviewNote,
   rowActionLabel,
+  showsOpenInGitAction,
+  showsPullAction,
   rowStateAccessibleLabel,
   rowStateDetailText,
   rowVisibleDetailText,
@@ -65,6 +64,9 @@ const check = (
   detail: "",
   findings: [],
   task: null,
+  ondemand: false,
+  check_task: null,
+  verdict_task: null,
   ...extra,
 });
 
@@ -85,7 +87,7 @@ test("the strip's reading counts what wants an answer, and says so only when not
   const skipped = [check("a", "pass"), check("b", "pass"), check("c", "skip")];
   expect(readinessCount(skipped)).toBe("2 of 3");
   expect(readinessSentence(skipped)).toBe(
-    "checks passed and the rest could not be answered here — nothing to fix.",
+    "checks passed and 1 could not be answered here — nothing to fix.",
   );
 
   const failing = [
@@ -96,7 +98,7 @@ test("the strip's reading counts what wants an answer, and says so only when not
   ];
   expect(readinessCount(failing)).toBe("2 of 4");
   expect(readinessSentence(failing)).toBe(
-    "checks need attention before this app is worth sharing, and 1 could not be answered here.",
+    "checks need attention before this app is worth sharing, and 1 waits for Check.",
   );
   expect(failingCount(failing)).toBe(2);
 });
@@ -382,4 +384,54 @@ test("the visible detail text never contains a severity word, only the accessibl
       expect(accessible).toContain(SEVERITY_LABEL[severity]);
     }
   }
+});
+
+// --------------------------------------------------------------- git row
+
+test("showsPullAction is true only for the git row with a confirmed nonzero behind count, on the default branch, with a clean tree", () => {
+  expect(
+    showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(true);
+  // Confirmed up to date — 0 is a real answer, not "unknown".
+  expect(
+    showsPullAction(check("git", "pass", { behind: 0, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(false);
+  // Unresolved fetch — undefined/null must not read as "ahead".
+  expect(showsPullAction(check("git", "skip", { gitRoot: "/r" }))).toBe(false);
+  expect(showsPullAction(check("git", "skip", { behind: null, gitRoot: "/r" }))).toBe(false);
+  // Never for another row, even one that happens to carry the same fields.
+  expect(
+    showsPullAction(check("pushed", "fail", { behind: 2, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(false);
+  // B1 (FIXES-round-1.md): a confirmed behind count off the default branch,
+  // or over a dirty tree, is a guaranteed `update_repo` refusal
+  // (`not-default` / `dirty`) — Pull must not be offered either way, even
+  // though the OLD behind-only gate would have shown it.
+  expect(
+    showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: false, clean: true })),
+  ).toBe(false);
+  expect(
+    showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: false })),
+  ).toBe(false);
+  // Unresolved `onDefault`/`clean` (undefined) must not read as "confirmed".
+  expect(showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r" }))).toBe(false);
+});
+
+test("showsOpenInGitAction is true for any git row that resolved a real repo root, pass or fail", () => {
+  expect(showsOpenInGitAction(check("git", "pass", { gitRoot: "/r" }))).toBe(true);
+  expect(showsOpenInGitAction(check("git", "fail", { gitRoot: "/r" }))).toBe(true);
+  expect(showsOpenInGitAction(check("git", "skip", { gitRoot: null }))).toBe(false);
+  expect(showsOpenInGitAction(check("git", "skip"))).toBe(false);
+  expect(showsOpenInGitAction(check("readme", "pass", { gitRoot: "/r" }))).toBe(false);
+});
+
+test("gitRowFetchPending is true only when a real repo's remote count has not landed yet", () => {
+  expect(gitRowFetchPending([check("git", "skip", { gitRoot: "/r" })])).toBe(true);
+  expect(gitRowFetchPending([check("git", "pass", { gitRoot: "/r", behind: 0, ahead: 0 })])).toBe(false);
+  expect(gitRowFetchPending([check("git", "fail", { gitRoot: "/r", behind: 3, ahead: 0 })])).toBe(false);
+  // No repo at all — nothing will ever resolve, but this function does not
+  // need to predict that; the caller only ever fires the retry once.
+  expect(gitRowFetchPending([check("git", "skip", { gitRoot: null })])).toBe(false);
+  // No git row in the report at all (should never happen, but must not throw).
+  expect(gitRowFetchPending([check("readme", "pass")])).toBe(false);
 });

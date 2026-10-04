@@ -142,8 +142,9 @@ export function FdaStep({
                 <div className="text-xs text-muted-foreground">{FDA_COPY.pending}</div>
               </div>
             </div>
-            {/* A plain link, like the update-restart banner: the OS hands the
-                deep link to the running app, which quits and respawns. This
+            {/* A plain link — `?reason=fda`, which is NOT the update restart
+                (that one goes through platform/lib/restart-store): the OS hands
+                the deep link to the running app, which quits and respawns. This
                 tab keeps polling and flips to "Already granted" on its own. */}
             <Button variant="accent" render={<a href={RELAUNCH_HREF} />}>
               <RotateCw data-icon="inline-start" />

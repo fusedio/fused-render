@@ -36,6 +36,8 @@ const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { ANN_TAG, PANE_SHOT_TAG } = await import("./protocol/wire");
+const { publishProjectQueueEnabled } = await import("./feature-flag");
+const { isMac } = await import("@platform/lib/platform");
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
 
@@ -56,6 +58,25 @@ let appEntry: string | null = "/w/p/index.html";
 let audioSource: Record<string, unknown> = { audio: { available: true, reason: null } };
 /** Set by `heldStart()` — the `start` request, parked until the test says go. */
 let holdStart: Promise<void> | null = null;
+let holdSend: Promise<void> | null = null;
+let pollLive = false;
+/** A `cancel` was posted: a `pollLive` run answers its next poll `done` —
+ *  unless `stickyLive`, a stop that takes a while to land. */
+let cancelled = false;
+let stickyLive = false;
+/** `send` answers nothing (the host is gone): the follow-up FAILS on its own. */
+let failSend = false;
+/** Hold only the Nth `send` (1-based); null holds every send while `holdSend` is set. */
+let holdSendNth: number | null = null;
+let sendCount = 0;
+
+/** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
+let prefsBody: Record<string, unknown> = {};
+/** Every body `/api/tasks/queue/admit` was asked with, and what it answers. The
+ *  queue is the one road on which a send does not reach `/api/run` at all, so
+ *  the ENTRY is where a queued round of notes has to be looked for. */
+const admits: Array<Record<string, unknown>> = [];
+let admitAnswer: Record<string, unknown> = { run: true };
 
 const realFetch = globalThis.fetch;
 
@@ -76,7 +97,11 @@ function stubFetch(): void {
         templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
       });
     }
-    if (url === "/api/prefs") return jsonRes({});
+    if (url === "/api/prefs") return jsonRes(prefsBody);
+    if (url === "/api/tasks/queue/admit") {
+      admits.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return jsonRes(admitAnswer);
+    }
     // A34's boot probe (`captureSources`) — what this machine can record, asked
     // without prompting for permission.
     if (url === "/api/capture") return jsonRes({ sources: audioSource });
@@ -119,7 +144,27 @@ function stubFetch(): void {
         return jsonRes({ ok: true, result: startError ? { error: startError } : { run_id: "r1" } });
       }
       if (action === "poll") {
+        // `pollLive` keeps the run OPEN (a long reply streaming), so a line can
+        // drain into it as a follow-up and a stop can land before the host
+        // confirms it.
+        if (pollLive && (!cancelled || stickyLive)) {
+          return jsonRes({ ok: true, result: { done: false, session_id: "s1", text: "" } });
+        }
         return jsonRes({ ok: true, result: { done: true, session_id: "s1", text: "ok" } });
+      }
+      if (pollLive && action === "live_host") return jsonRes({ ok: true, result: { run_id: "r1" } });
+      if (pollLive && action === "send") {
+        if (failSend) return jsonRes({ ok: true, result: {} });
+        // HOLDABLE like `start`: the window between the inbox taking the bytes
+        // and `{sent: true}` coming back is where an unconfirmed follow-up lives.
+        sendCount += 1;
+        const hold = holdSend && (holdSendNth === null || holdSendNth === sendCount);
+        if (hold) return holdSend!.then(() => jsonRes({ ok: true, result: { sent: true } }));
+        return jsonRes({ ok: true, result: { sent: true } });
+      }
+      if (action === "cancel") {
+        cancelled = true;
+        return jsonRes({ ok: true, result: { cancelled: "r1", still_queued: [] } });
       }
       return jsonRes({ ok: true, result: {} });
     }
@@ -178,6 +223,29 @@ function pressEscape(): { defaultPrevented: boolean } {
   return ev;
 }
 
+/** ⌘↩ / Ctrl+↩ on the chat's own document, spelled for whichever platform the
+ *  suite runs on: `isMod` is EXCLUSIVE, so a hard-coded `metaKey` would pass on
+ *  a Mac and assert nothing in CI. */
+function pressDoneChord(over: Record<string, unknown> = {}): {
+  defaultPrevented: boolean;
+} {
+  const ev = {
+    key: "Enter",
+    metaKey: isMac,
+    ctrlKey: !isMac,
+    shiftKey: false,
+    altKey: false,
+    target: null,
+    defaultPrevented: false,
+    preventDefault() {
+      (this as { defaultPrevented: boolean }).defaultPrevented = true;
+    },
+    ...over,
+  };
+  for (const fn of [...keydowns]) fn(ev as unknown as KeyboardEvent);
+  return ev;
+}
+
 beforeEach(() => {
   runs.length = 0;
   startError = "";
@@ -186,6 +254,19 @@ beforeEach(() => {
   overviews = 0;
   revoked = [];
   holdStart = null;
+  holdSend = null;
+  pollLive = false;
+  failSend = false;
+  holdSendNth = null;
+  sendCount = 0;
+  cancelled = false;
+  stickyLive = false;
+  prefsBody = {};
+  admits.length = 0;
+  admitAnswer = { run: true };
+  // PROCESS-GLOBAL, like the native flag beside it: left on, it would admit
+  // every send in every suite that mounts a chat after this one.
+  publishProjectQueueEnabled(false);
   keydowns.length = 0;
   asFound = { ...API };
   resetAgentDirCacheForTests();
@@ -378,6 +459,7 @@ let swallowed = { prevented: 0, stopped: 0 };
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  publishProjectQueueEnabled(false);
   (globalThis as { fetch: unknown }).fetch = realFetch;
   const doc = globalThis.document as unknown as Record<string, unknown>;
   doc.addEventListener = realAdd;
@@ -884,6 +966,119 @@ test("Escape with nothing armed is the HOST's press, not this chat's", async () 
   expect(commentSeat(r).props["aria-pressed"]).toBe("false");
 });
 
+// ---- ⌘↩ -------------------------------------------------------------------
+
+test("⌘↩ in comment mode is ✓ Done — the round goes, and the press is claimed", async () => {
+  // Akshil, 2026-09-17: ✓ Done was a click and only a click, while the note the
+  // reader has just typed leaves them at the keyboard.
+  const { r } = await mountChat();
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  await act(async () => makeNote("this button is too small"));
+  await settle();
+  expect(annChips(r)).toHaveLength(1);
+
+  let ev: { defaultPrevented: boolean } = { defaultPrevented: false };
+  await act(async () => {
+    ev = pressDoneChord();
+  });
+  await settle(30);
+
+  // The same three things the button does: send, disarm, hand the nav lock back.
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params.message).toContain("this button is too small");
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+  expect(rootClass(r)).not.toContain("annlock");
+  expect(ev.defaultPrevented).toBe(true);
+});
+
+test("⌘↩ STRAIGHT FROM THE OPEN CARD sends the note the reader never saved", async () => {
+  // THE GESTURE THE BUG WAS FOUND IN (Akshil, 2026-09-17): "i had comment open
+  // and i typed comment and i directly pressed [cmd+]enter". No Enter first, so
+  // the note exists only in the card until `done()` commits it — and the send
+  // it then asks for happens in the SAME microtask, before any paint.
+  const { r } = await mountChat();
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  const ann = annotationsForTests()!;
+  ann.bindPop(POP.pop);
+  clickInApp(BODY as unknown as Element);
+  await settle();
+  POP.ta.value = "this button is too small";
+
+  await act(async () => {
+    pressDoneChord();
+  });
+  await settle(30);
+
+  // It went, words and all — and the round is finished, not stranded.
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params.message).toContain("this button is too small");
+  expect(annChips(r)).toHaveLength(0);
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+});
+
+test("a ⌘↩ the chat CANNOT take keeps the round armed, with the chips standing", async () => {
+  // `set(false)` used to run whether or not anything was sent, so every road on
+  // which the composer refuses — a send already out, a pending scheduled
+  // message, an upload in flight — ended with the mode gone and the notes
+  // sitting as chips nobody had been handed (Akshil, 2026-09-17).
+  const open = heldStart();
+  const { r } = await mountChat();
+  // A first message, parked mid-`start`: the send window's latch is closed, so
+  // the composer refuses everything until it opens.
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  expect(started()).toHaveLength(1);
+
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  await act(async () => makeNote("and this label is wrong"));
+  await settle();
+
+  await act(async () => {
+    pressDoneChord();
+  });
+  await settle();
+
+  // NOTHING WAS SENT — and nothing was lost either: the mode, the lock and the
+  // chip are all still here, so the next ⌘↩ is the retry.
+  expect(started()).toHaveLength(1);
+  expect(annChips(r)).toHaveLength(1);
+  expect(commentSeat(r).props["aria-pressed"]).toBe("true");
+  expect(rootClass(r)).toContain("annlock");
+  // …and the reader is told, rather than left to notice.
+  expect(JSON.stringify(r.toJSON())).toContain("Your notes were not sent");
+
+  // The door opens, the same press finishes the round.
+  await act(async () => open());
+  await settle(30);
+  await act(async () => {
+    pressDoneChord();
+  });
+  await settle(30);
+  expect(started()).toHaveLength(2);
+  expect(started()[1]!.params.message).toContain("and this label is wrong");
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+  expect(annChips(r)).toHaveLength(0);
+});
+
+test("⌘↩ with nothing armed is nobody's press", async () => {
+  const { r } = await mountChat();
+  let ev: { defaultPrevented: boolean } = { defaultPrevented: false };
+  await act(async () => {
+    ev = pressDoneChord();
+  });
+  await settle();
+  // Unclaimed, so whatever owns the chord outside annotate mode still gets it.
+  expect(ev.defaultPrevented).toBe(false);
+  expect(started()).toHaveLength(0);
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+});
+
 // ---- enterNoPane ---------------------------------------------------------
 
 test("enterNoPane drops the notes a bookmark's param brought in", async () => {
@@ -1124,14 +1319,14 @@ function heldStart(): () => void {
   return open;
 }
 
-test("a line typed while the run is only STARTING stays in the box, and sends after", async () => {
+test("a line typed while the run is only STARTING is parked as a queued bubble, and sends after", async () => {
   // `sendMessage` sets its own `sending` gate before its first await and holds
   // it for the whole turn, but the STATUS the composer routes on stays `idle`
-  // until `pollLoop` reports — one `start` round-trip away. The door used to
-  // open the moment the controller took the message, so a line typed inside
-  // that window read as "no run yet": the composer sent it as a FRESH message,
-  // the controller refused it out loud, and the refusal took the optimistic
-  // bubble down with it. The words were nowhere (Bugbot, PR #1074).
+  // until `pollLoop` reports — one `start` round-trip away. A line typed inside
+  // that window used to be REFUSED by the composer's latch and left in the box
+  // with no sign (PR #1074's fix for the words being nowhere) — and a fast
+  // second Enter then glued it onto the third line (multi-send QA 2026-09-19).
+  // Claude Code queues such a line; so does this page now (`ui/outbox.ts`).
   const open = heldStart();
   const { r } = await mountChat();
   await typeInBox(r, "first message");
@@ -1144,34 +1339,284 @@ test("a line typed while the run is only STARTING stays in the box, and sends af
   expect(started()).toHaveLength(1);
   expect(boxValue(r)).toBe("");
 
-  // A follow-up typed inside it. THE DOOR IS SHUT — in the submit handler,
-  // which is where T shuts every one of them (T:4187 sets no `disabled` on this
-  // button, ever): the run is not live, so this is not yet a follow-up the
-  // controller could take.
   await typeInBox(r, "second message");
   const sendBtn = () =>
     r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Send")[0]!;
   expect(sendBtn().props.disabled).toBeUndefined();
 
   await pressEnterInBox(r);
+  await settle();
 
-  // Refused by the latch — so it costs the user nothing: the words are still in
-  // the box, and no second `start` was spawned for the controller to refuse.
-  expect(boxValue(r)).toBe("second message");
+  // PARKED, not refused: the box is empty, the line is a bubble wearing the
+  // "queued" tag, and no second `start` was spawned for the controller to
+  // refuse.
+  expect(boxValue(r)).toBe("");
   expect(started()).toHaveLength(1);
-  // ONE bubble, the first message's; the second is still a draft.
-  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual(["first message"]);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
+    "first message",
+    "second message",
+  ]);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  expect(JSON.stringify(r.toJSON())).toContain("1 message waiting to send");
 
   await act(async () => open());
-  await settle(30);
+  // The follow-up road waits FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS (3 s, real
+  // clock in this harness) for a live run before it falls through.
+  await settle(3400);
 
-  // The turn is over, the door is open, and the words that were held are still
-  // there to send — never lost.
-  expect(boxValue(r)).toBe("second message");
-  await pressEnterInBox(r);
-  await settle(30);
+  // The door is open, and the parked line went out on its own. The run it was
+  // parked behind had already ENDED by the time the drain reached the host
+  // (this harness answers the first poll `done`), so the follow-up road found
+  // no run — and fell through to a fresh turn (`SendOptions.orStart`) rather
+  // than giving up: one bubble, tag gone, never lost and never typed twice.
   expect(started()).toHaveLength(2);
   expect(started()[1]!.params.message).toContain("second message");
+  expect(byClass(r, "turn-pending")).toHaveLength(0);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
+    "first message",
+    "second message",
+  ]);
+  expect(boxValue(r)).toBe("");
+});
+
+test("a parked line stopped before the inbox confirmed it comes back as ONE not-sent bubble", async () => {
+  // Bugbot round 2 (PR #1323): a stop hands an unconfirmed follow-up back twice
+  // in one tick — `returnSend` for its pictures, `onStranded` for its words —
+  // and each posted a "not sent" row, so one line came back as two bubbles.
+  pollLive = true;
+  let releaseSend!: () => void;
+  holdSend = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  // Parked behind the start window…
+  await typeInBox(r, "second message");
+  await pressEnterInBox(r);
+  await settle();
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  // …the run goes live and stays live (`pollLive`), so the drain sends it as a
+  // follow-up whose `send` is now HELD: taken by the host, not yet confirmed.
+  await act(async () => open());
+  await settle(60);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(1);
+  // Stop, with the send still out.
+  await act(async () => {
+    sendBtn(r).props.onClick?.({ preventDefault() {} });
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  releaseSend();
+  await settle(60);
+  // EXACTLY ONE "not sent" row for the one line, its words once in the log.
+  const tags = byClass(r, "turn-pending").map((n) => String(n.props.children));
+  expect(tags).toEqual(["not sent · click to edit"]);
+  const bubbles = byClass(r, "bubble").map((n) => String(n.props.children));
+  expect(bubbles.filter((b) => b === "second message")).toHaveLength(1);
+  expect(boxValue(r)).toBe("");
+});
+
+test("a parked line whose `send` FAILS on its own comes back as ONE not-sent bubble", async () => {
+  // Bugbot round 3 (PR #1323): with no stop in play, the failed follow-up's
+  // `returnSend` is the only hand-back — and the row it posts must not be
+  // followed by a second one from any later strand.
+  pollLive = true;
+  failSend = true;
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  await typeInBox(r, "second message");
+  await pressEnterInBox(r);
+  await settle();
+  await act(async () => open());
+  await settle(60);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(1);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  // A stop afterwards strands nothing for it (the entry is gone) — still one.
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children)).filter((b) => b === "second message"))
+    .toHaveLength(1);
+});
+
+test("a stop hands lines back in the order they were typed, whichever road each took", async () => {
+  // Bugbot round 4 (PR #1323): A landed, B parked-and-unconfirmed, C landed.
+  // B's `returnSend` used to post its row first and A/C landed behind it.
+  pollLive = true;
+  holdSendNth = 2;
+  let releaseB!: () => void;
+  holdSend = new Promise<void>((resolve) => {
+    releaseB = resolve;
+  });
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  for (const line of ["A", "B", "C"]) {
+    await typeInBox(r, line);
+    await pressEnterInBox(r);
+  }
+  await settle();
+  await act(async () => open());
+  await settle(60);
+  // Three sends out: A confirmed, B held, C confirmed.
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(3);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  releaseB();
+  await settle(60);
+  const rows = byClass(r, "is-pending");
+  expect(rows.map((n) => String(n.findAllByProps({ className: "bubble" })[0]!.props.children)))
+    .toEqual(["A", "B", "C"]);
+  expect(byClass(r, "turn-pending")).toHaveLength(3);
+  // ↑ pulls the newest — C — first.
+  await act(async () => {
+    r.root
+      .findByType("textarea")
+      .props.onKeyDown({ key: "ArrowUp", shiftKey: false, preventDefault() {} });
+  });
+  expect(boxValue(r)).toBe("C");
+});
+
+test("two identical parked lines, one out and one waiting, each keep their own row on Stop", async () => {
+  // Bugbot round 3: rows are owned by send id, never matched by text — two
+  // "again"s are two sends, and a stop must leave exactly two "not sent" rows.
+  pollLive = true;
+  let releaseSend!: () => void;
+  holdSend = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  await typeInBox(r, "again");
+  await pressEnterInBox(r);
+  await typeInBox(r, "again");
+  await pressEnterInBox(r);
+  await settle();
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "queued",
+    "queued",
+  ]);
+  // The run goes live: BOTH "again"s drain into it — a follow-up opens the
+  // latch as soon as it is handed to the controller, so the second follows the
+  // first out — and both `send`s are held: two sends out, two ids, neither
+  // confirmed.
+  await act(async () => open());
+  await settle(60);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(2);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  releaseSend();
+  await settle(60);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+    "not sent · click to edit",
+  ]);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children)).filter((b) => b === "again"))
+    .toHaveLength(2);
+});
+
+test("Back with a line still PARKED empties the outbox: no bubble, no hint carried into the landing", async () => {
+  // Bugbot 4121249270: the parked line's pictures go back to the tray as the
+  // outbox empties (`emptyOutbox`), the words follow Back's rule for the box.
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  await typeInBox(r, "parked");
+  await pressEnterInBox(r);
+  await settle();
+  expect(byClass(r, "turn-pending")).toHaveLength(1);
+  await act(async () => byClass(r, "c-back")[0]!.props.onClick({ preventDefault() {} }));
+  await settle(60);
+  expect(byClass(r, "bubble")).toHaveLength(0);
+  expect(byClass(r, "turn-pending")).toHaveLength(0);
+  expect(JSON.stringify(r.toJSON())).not.toContain("waiting to send");
+  await act(async () => open());
+  await settle(60);
+  // Nothing of the parked line reached the run behind the reader's back.
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+});
+
+/** The messages that went out, in order, whichever road each took. */
+function sentOut(): string[] {
+  return runs
+    .filter((c) => c.action === "start" || c.action === "send")
+    .map((c) => String(c.params.message ?? ""));
+}
+
+function pressCtrlEnterInBox(r: Chat): Promise<void> {
+  return act(async () => {
+    r.root
+      .findByType("textarea")
+      .props.onKeyDown({ key: "Enter", ctrlKey: true, shiftKey: false, preventDefault() {} });
+  });
+}
+
+test("Stop during a send-now's wait wins: the line stays not-sent and nothing is sent", async () => {
+  // Bugbot 4122407431: the Ctrl+Enter line sits in the outbox so a Stop can
+  // retag it, but `onSendNow` used to lift it out and dispatch it once the run
+  // settled anyway — a "not sent" bubble that sent. Now a stop wins.
+  pollLive = true;
+  stickyLive = true;
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  await typeInBox(r, "Z");
+  await pressCtrlEnterInBox(r);
+  await settle(150);
+  // The chord's interrupt went out; the run is slow to settle.
+  expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  // Stop while the chord waits.
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  // Now the run settles: the chord finds its line retagged and steps back.
+  stickyLive = false;
+  await settle(1200);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  expect(sentOut()).toEqual(["first message"]);
 });
 
 test("the run going live opens the door without waiting for the turn to end", async () => {
@@ -1292,4 +1737,117 @@ test("the transcript's words make the mark sendable, walkthrough or no", async (
   expect(message).toContain("<" + ANN_TAG + ">");
   expect(message).toContain("this header is wrong");
   expect(annChips(r)).toHaveLength(0);
+});
+
+// ---- the project queue: a send the folder was too busy to take -------------
+//
+// A queued send never reaches `/api/run`. It becomes a scheduler entry that
+// fires minutes later with WHATEVER IS WRITTEN ON IT — so everything the live
+// wire composes has to be composed before the admission, or it is simply not in
+// the message that eventually runs. The pictures already travelled
+// (`carryForQueue`); the NOTES did not, and they stayed unmarked, which is the
+// worse half: the next send into a free folder took somebody else's round
+// (Bugbot, PR #1124).
+
+/** The chat with the queue on, ready to admit. Published rather than left to
+ *  the prefs read, so the switch cannot land a tick after the send. */
+async function queuedChat(answer: Record<string, unknown>, content?: string) {
+  prefsBody = { queue: { enabled: true } };
+  admitAnswer = answer;
+  const rig = content === undefined ? await armedWithANote() : await armedWithANote(content);
+  // Inside `act`: the switch has subscribers on screen (`useProjectQueueEnabled`
+  // through the schedule hook), so publishing it is a state update like any
+  // other.
+  await act(async () => publishProjectQueueEnabled(true));
+  return rig;
+}
+
+test("a QUEUED send writes its notes ONTO the entry, and spends the round", async () => {
+  const { r } = await queuedChat(
+    {
+      run: false,
+      entry: { id: "q1" },
+      key: "pending:q1",
+      position: 2,
+      ahead: "TASK-041",
+      ahead_title: "Pull today's news",
+    },
+    "the header is wrong",
+  );
+  await typeInBox(r, "please fix this");
+  await pressEnterInBox(r);
+  await settle(30);
+
+  // Nothing spawned — which is the whole point of the admission.
+  expect(started()).toHaveLength(0);
+  // …and the entry carries the message the live send would have carried: the
+  // typed line and the annotations block, composed the one way
+  // (`composeOutgoing`).
+  expect(admits).toHaveLength(1);
+  const message = String(admits[0]!.message);
+  expect(message).toContain("please fix this");
+  expect(message).toContain("<" + ANN_TAG + ">");
+  expect(message).toContain("the header is wrong");
+  // THE ROUND IS SPENT. Unmarked notes are notes the NEXT send takes — a queued
+  // message's words arriving a second time, under somebody else's prompt.
+  expect(annChips(r)).toHaveLength(0);
+  expect(annotationsForTests()!.annotations.every((n) => !!n.sent)).toBe(true);
+  // ONE picture, taken once: its copy is what the entry carries
+  // (`carryForQueue` led with it), and the original's blob is put down rather
+  // than pinned for the life of the document — nothing on screen draws it.
+  expect(overviews).toBe(1);
+  expect(revoked).toHaveLength(1);
+  // The WAITING ROW is up, and it is the one thing on screen still saying the
+  // words — the reader's own bubble, dashed, at its place in the transcript
+  // (ui/Waiting), drawn from the admission until the next poll carries the
+  // entry the server just created.
+  expect(byClass(r, "c-waiting")).toHaveLength(1);
+  expect(byClass(r, "c-waiting-bubble").map((n) => String(n.props.children))).toEqual([
+    "please fix this",
+  ]);
+  // …and exactly ONE copy of it: the optimistic transcript row is dropped on the
+  // same paint the waiting row goes up, so the words are never in two places.
+  expect(byClass(r, "bubble")).toHaveLength(1);
+});
+
+test("an ADMITTED send takes its notes the ordinary way — once, and only in beginSend", async () => {
+  // `run: true` is today's road byte for byte: the notes are still pending when
+  // the verdict lands, `beginSend` takes them, and the capture the admission
+  // paid for is put down (revoked) rather than double-stamping the round — the
+  // same price `carryForQueue` pays for asking before spending.
+  const { r } = await queuedChat({ run: true }, "this button is too small");
+  await typeInBox(r, "have a look at this");
+  await pressEnterInBox(r);
+  await settle(30);
+
+  expect(admits).toHaveLength(1);
+  expect(started()).toHaveLength(1);
+  const message = started()[0]!.params.message;
+  expect(message).toContain("have a look at this");
+  expect(message).toContain("<" + ANN_TAG + ">");
+  expect(message).toContain("this button is too small");
+  // ONE round of notes on the wire, never two.
+  expect(message.split("<" + ANN_TAG + ">")).toHaveLength(2);
+  // The admission's own capture is the only thing spent for nothing.
+  expect(overviews).toBe(2);
+  expect(revoked).toHaveLength(1);
+  expect(annChips(r)).toHaveLength(0);
+});
+
+test("a REFUSED admission leaves the round exactly where the reader left it", async () => {
+  // The queue would not take the message, so nothing was sent — and nothing may
+  // be spent either: the chips stay, the notes stay pending, and the words go
+  // back in the box. Only the capture is put down, because a picture of a pane
+  // that has moved on is no use to the retry.
+  const { r } = await queuedChat({ nope: true }, "this row is wrong");
+  await typeInBox(r, "words that did not go");
+  await pressEnterInBox(r);
+  await settle(30);
+
+  expect(started()).toHaveLength(0);
+  expect(byClass(r, "c-waiting")).toHaveLength(0);
+  expect(boxValue(r)).toBe("words that did not go");
+  expect(annChips(r)).toHaveLength(1);
+  expect(annotationsForTests()!.annotations[0]!.sent).toBeFalsy();
+  expect(revoked).toHaveLength(1);
 });

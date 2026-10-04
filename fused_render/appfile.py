@@ -56,6 +56,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 
+from fused_render import app_id as app_identity
 from fused_render import app_listing
 from fused_render import appfile_container as container
 from fused_render.zip_import import (
@@ -320,6 +321,19 @@ def export_app_file(app_dir: str, out_path: str,
         raise AppFileError(f"refusing to overwrite existing file: {out_path}")
 
     entry_rel = os.path.relpath(entry, app_dir).replace(os.sep, "/")
+    # The app's stable identity (app_id.py) is minted at creation (routers/
+    # apps, inside the boilerplate commit); an app from before that — or one
+    # whose creation could not stamp it — gets it minted on its FIRST export
+    # and written into the entry page itself — before the members are walked and
+    # sized, since stamping changes the entry's bytes. The manifest copies
+    # whatever the page carries, so `app_id` in a `.fused` means the tag is
+    # in its entry too; when the page cannot take the tag (a read-only extract
+    # of an older `.fused`, no <head> anchor, a tree with a git remote that a
+    # write would leave dirty) the export goes out with no `app_id` rather
+    # than an id the next export would mint afresh.
+    app_id = app_identity.app_id(entry)
+    if app_id is None and not _has_remote(app_dir):
+        app_id = app_identity.ensure(entry, os.path.basename(app_dir))
     members = list(_iter_app_files(app_dir))
     if not any(rel == entry_rel for _, rel in members):
         raise AppFileError(
@@ -364,11 +378,11 @@ def export_app_file(app_dir: str, out_path: str,
     os.close(fd)
     try:
         try:
-            manifest = container.write(
-                tmp,
-                {"name": os.path.basename(app_dir), "entry": entry_rel,
-                 "exported_at": _utc_now()},
-                payload)
+            index: dict = {"name": os.path.basename(app_dir), "entry": entry_rel,
+                           "exported_at": _utc_now()}
+            if app_id is not None:
+                index["app_id"] = app_id
+            manifest = container.write(tmp, index, payload)
         except container.ContainerError as exc:
             raise AppFileError(str(exc))
         os.replace(tmp, out_path)
@@ -376,6 +390,29 @@ def export_app_file(app_dir: str, out_path: str,
         if os.path.exists(tmp):
             os.unlink(tmp)
     return manifest
+
+
+def _has_remote(app_dir: str) -> bool:
+    """Whether ``app_dir``'s owning repo has a remote — the discriminator
+    `meta_migration._has_remote` uses for "externally synced, hands off":
+    stamping a tracked file there leaves the checkout dirty and breaks its
+    ``--ff-only`` pull. Managed app repos and the shared `local` repo never
+    have one. A failing `git` reads as "has one" — when git cannot answer,
+    the safe direction is not writing."""
+    from fused_render import app_git
+
+    scope = app_git._repo_scope(app_dir)
+    if scope is None:
+        return False
+    repo_dir, _spec = scope
+    try:
+        r = app_git._git(repo_dir, "remote")
+    except Exception:
+        # `_git` may raise TimeoutExpired / OSError (missing or hung git);
+        # a git that cannot answer must not fail the export — same "hands
+        # off" reading as a non-zero exit.
+        return True
+    return r.returncode != 0 or bool((r.stdout or "").strip())
 
 
 def _utc_now() -> str:
@@ -392,6 +429,14 @@ def exported_at(manifest: dict) -> str | None:
     forwarded only as a short string — never parsed here, never raised on."""
     v = manifest.get("exported_at")
     return v if isinstance(v, str) and 0 < len(v) <= 64 else None
+
+
+def app_id_of(manifest: dict) -> str | None:
+    """The manifest's ``app_id`` when it is a well-formed id, else None —
+    files exported before the id existed have none, and the value comes out
+    of an untrusted file, so it is validated and never used as a path."""
+    v = manifest.get("app_id")
+    return v if app_identity.is_valid(v) else None
 
 
 def _entry_problem(entry: object) -> bool:
@@ -532,12 +577,111 @@ def _make_read_only(root: str) -> None:
                 continue
 
 
+def shared_dot_fused_dir(app_id: str) -> str:
+    """Where an app id's shared ``.fused`` state lives (whether or not it
+    exists yet): ``<home>/fused_data/<app_id>``. ``app_id`` must have passed
+    ``app_identity.is_valid`` — the regex admits nothing but ``[a-z0-9-]``,
+    so it is safe as a path segment."""
+    from fused_render.shell import storage
+
+    return os.path.join(storage.home_dir(), "fused_data", app_id)
+
+
+def _is_dot_fused_scaffold(dot: str) -> bool:
+    """Whether a ``.fused`` dir holds nothing an app saved: empty, or only
+    what ``app_fused_dir.ensure`` creates on open (``meta.json``, empty
+    ``data`` and ``cache``)."""
+    for name in os.listdir(dot):
+        p = os.path.join(dot, name)
+        if os.path.islink(p):
+            return False
+        if name == "meta.json" and os.path.isfile(p):
+            continue
+        if name in ("data", "cache") and os.path.isdir(p) and not os.listdir(p):
+            continue
+        return False
+    return True
+
+
+def _link_dot_fused(app_dir: str, app_id: str) -> str:
+    """Point ``<extract>/.fused`` at the shared per-app-id dir and answer
+    that dir. Raises OSError.
+
+    Every extract of one app (a re-export changes the file's bytes, so it
+    lands in a fresh content-addressed dir) shares ``fused_data/<app_id>``:
+    the state an app saved next to itself (``.fused/data``, D548) follows the
+    app across updates. This is what lets a re-downloaded ``.fused`` (DL-8)
+    replace the app's FILES while keeping everything inside ``.fused``. Port
+    of Render App's ``_link_dot_fused`` (fused-render-lite PR #32).
+
+    An extract that already holds a REAL ``.fused`` dir (made before this
+    linking existed) is migrated: its contents move into the shared dir when
+    that holds no saved state yet (empty, or only the scaffold a first open
+    of another extract made), else the local dir is deleted (the shared state
+    wins), and the link goes in its place either way.
+
+    ``app_fused_dir.ensure`` then runs through the link on render exactly as
+    before and scaffolds ``data``/``cache``/``meta.json`` in the shared dir.
+    Its move-witness sees a second extract as a COPY of the first (the first
+    extract dir still exists), so the record is left alone.
+    """
+    target = shared_dot_fused_dir(app_id)
+    os.makedirs(target, exist_ok=True)
+    dot = os.path.join(app_dir, ".fused")
+    if os.path.islink(dot):
+        if os.readlink(dot) == target:
+            return target
+        os.unlink(dot)
+    elif os.path.isdir(dot):
+        if _is_dot_fused_scaffold(target):
+            # Nothing saved in the shared dir yet (it may hold only what a
+            # first open of ANOTHER extract scaffolded): the local state is
+            # the real one, move it in.
+            shutil.rmtree(target)
+            os.makedirs(target)
+            for name in os.listdir(dot):
+                shutil.move(os.path.join(dot, name), os.path.join(target, name))
+            os.rmdir(dot)
+        else:
+            shutil.rmtree(dot)  # the shared state wins; the local copy goes
+    elif os.path.lexists(dot):
+        os.unlink(dot)  # a stray file or dangling link
+    try:
+        os.symlink(target, dot, target_is_directory=True)
+    except FileExistsError:
+        # a concurrent open of the same extract won the race
+        if not (os.path.islink(dot) and os.readlink(dot) == target):
+            raise
+    except OSError:
+        if os.name != "nt":
+            raise
+        # Windows: a symlink needs Developer Mode or admin; a directory
+        # junction needs neither and reads the same for every caller here.
+        import _winapi
+
+        _winapi.CreateJunction(target, dot)
+    return target
+
+
+def _share_dot_fused(app_dir: str, manifest: dict) -> None:
+    """Best-effort: link the extract's ``.fused`` to the shared per-app-id
+    dir when the file declares an id. A failure leaves the state local to
+    the extract, as before — it must never stop the app from opening."""
+    app_id = app_id_of(manifest)
+    if app_id is None:
+        return
+    try:
+        _link_dot_fused(app_dir, app_id)
+    except OSError:
+        pass
+
+
 def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     """Extract the ``.fused`` file into the content-addressed cache (re-using
     a prior extract of the same bytes) and return
-    ``{"dir", "entry", "name", "reused", "exported_at"}`` with absolute paths
-    (``exported_at`` is the file's UTC export stamp, None for files that
-    predate it).
+    ``{"dir", "entry", "name", "reused", "exported_at", "app_id"}`` with
+    absolute paths (``exported_at`` is the file's UTC export stamp and
+    ``app_id`` its stable identity, each None for files that predate it).
 
     The extracted entry page must still carry the fused-app marker — the
     manifest names the entry, but the marker is what the /apps hub and the
@@ -570,8 +714,14 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     entry_abs = os.path.join(dest, *entry_rel.split("/"))
     if os.path.isdir(dest):
         if os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs):
+            # An extract made before the shared-state link existed still holds
+            # a real .fused dir: link it now (its contents move into the shared
+            # dir when that is still empty). Previews skip it — they must not
+            # touch the cache (D396).
+            if not reuse_only:
+                _share_dot_fused(dest, manifest)
             return {"dir": dest, "entry": entry_abs, "name": name, "reused": True,
-                    "exported_at": exported_at(manifest)}
+                    "exported_at": exported_at(manifest), "app_id": app_id_of(manifest)}
         if reuse_only:
             raise AppFileError("this app file has not been opened yet")
         # A half-extracted or manually-damaged cache dir: rebuild it. Files
@@ -624,10 +774,14 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
             # same content key, so the winner's extract is ours too.
             if not (os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs)):
                 raise AppFileError(f"could not place the extracted app at {dest}")
+        # Files are read-only now, the dirs are not: the .fused link goes in
+        # beside them. Every extract of this app id shares one state dir, so
+        # a re-export (new bytes, new extract) keeps what the app saved.
+        _share_dot_fused(dest, manifest)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {"dir": dest, "entry": entry_abs, "name": name, "reused": False,
-            "exported_at": exported_at(manifest)}
+            "exported_at": exported_at(manifest), "app_id": app_id_of(manifest)}
 
 
 def _lift_read_only(root: str) -> None:
@@ -650,7 +804,8 @@ def clone_dir() -> str:
 
 def clone_target(fused_path: str) -> dict:
     """Where the ``.fused`` at ``fused_path`` would clone to, and whether that
-    is already there: ``{"name", "slug", "path", "cloned", "exported_at"}``.
+    is already there: ``{"name", "slug", "path", "cloned", "exported_at",
+    "app_id"}``.
 
     A read-only probe — one bounded manifest read plus one ``isdir`` — so the
     header button can pick its label without extracting anything.
@@ -676,13 +831,48 @@ def clone_target(fused_path: str) -> dict:
     stem = os.path.splitext(os.path.basename(fused_path))[0]
     slug = _slug(name, fallback=_slug(stem))
     dest = os.path.join(clone_dir(), slug)
+    app_id = app_id_of(manifest)
+    # Identity beats the slug: a clone the user RENAMED (or an app whose name
+    # changed between exports) is still this app if its entry page carries
+    # the file's id, so the button offers to open it instead of cloning a
+    # second copy beside it. Slug presence stays the answer for files with
+    # no id (exports before the tag existed).
+    by_id = _local_app_with_id(app_id) if app_id else None
+    if by_id is not None:
+        dest = by_id
     return {
         "name": name or stem,
         "slug": slug,
         "path": dest.replace(os.sep, "/"),
         "cloned": os.path.isdir(dest),
         "exported_at": exported_at(manifest),
+        "app_id": app_id,
     }
+
+
+def _local_app_with_id(app_id: str) -> str | None:
+    """The folder directly under ``clone_dir()`` whose entry page declares
+    ``app_id``, or None. One 4 KiB head read per local app — bounded by the
+    number of apps the user keeps in ``local/``, so it stays fit for the
+    unguarded GET probe (D397). Never joins the id into a path."""
+    local = clone_dir()
+    try:
+        names = sorted(os.listdir(local))
+    except OSError:
+        return None
+    for n in names:
+        if n.startswith("."):
+            continue
+        d = os.path.join(local, n)
+        if not os.path.isdir(d):
+            continue
+        try:
+            entry = app_listing.app_entry(d)
+        except OSError:
+            continue
+        if entry and app_identity.app_id(entry) == app_id:
+            return d
+    return None
 
 
 def clone_app_file(fused_path: str) -> dict:
@@ -690,7 +880,8 @@ def clone_app_file(fused_path: str) -> dict:
     as an ordinary, editable app folder. Answers ``clone_target``'s shape, with
     ``cloned`` True when the destination was ALREADY there and nothing was
     copied — a re-clone is a no-op that reports where the copy lives, never a
-    second folder and never an overwrite of the user's edits.
+    second folder and never an overwrite of the user's edits. Overwriting is
+    a separate, explicitly-confirmed verb: ``overwrite_app_file``.
 
     The payload comes from ``open_app_file``'s extract, not from a second unzip
     of our own: one hardened extractor for every archive this app accepts
@@ -733,3 +924,93 @@ def clone_app_file(fused_path: str) -> dict:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {**target, "cloned": False}
+
+
+#: Top-level names an overwrite never touches in the local copy. `.venv` is
+#: the user's environment (minutes to rebuild, never in a payload), `.fused`
+#: is the app's own data/state dir (D548) — losing it is losing the user's
+#: data — and `.git` is a legacy per-app repo (D626's unmigrated case). The
+#: export already drops every dotted name, so a payload cannot carry these;
+#: the set is the guarantee spelled out, not a filter that ever fires today.
+_OVERWRITE_KEEP = frozenset({".venv", ".fused", ".git"})
+
+
+def overwrite_app_file(fused_path: str) -> dict:
+    """Re-copy the ``.fused`` at ``fused_path`` OVER its existing local copy
+    (``clone_target``'s ``path``): every payload file lands at its relative
+    path, replacing what is there. Answers ``clone_target``'s shape with
+    ``cloned: True`` and ``overwritten: True``. A file with no local copy yet
+    is simply cloned — same destination, same result.
+
+    MERGE semantics, not a tree replace: files in the local copy that the
+    payload does not carry are left alone. The export already leaves home
+    everything gitignored (a build ``dist/``, data, ``node_modules``) and
+    every dotted name, so "wipe then copy" would delete exactly the content
+    the export was built to exclude. The named cost is that a file the author
+    DELETED between exports lingers in the copy. ``_OVERWRITE_KEEP`` names the
+    top-level dirs that are never touched even if a payload somehow carried
+    them.
+
+    Not atomic — a merge over a live folder has no staging trick that does not
+    involve copying the ``.venv`` — so a failure mid-way leaves a partly
+    updated copy; a retry finishes the job. The copy rides ``open_app_file``
+    like the clone (one hardened extractor, D386).
+
+    Mode handling is scoped to the payload paths being WRITTEN, never a walk
+    of the copy: ``_lift_read_only(dest)`` would chmod the ``.venv`` (killing
+    its exec bits) and, since ``os.chmod`` follows symlinks, the interpreter
+    ``.venv/bin/python`` points at. ``_copy_over`` copies BYTES only
+    (``copyfile``, so the extract's 0o444 is not carried across): an existing
+    file keeps its mode, a new one gets the umask default, and a read-only
+    counterpart is made writable before the write instead of raising.
+    """
+    target = clone_target(fused_path)
+    if not target["cloned"]:
+        return {**clone_app_file(fused_path), "overwritten": False}
+    src = open_app_file(fused_path)["dir"]
+    dest = target["path"]
+    _merge_tree(src, dest, skip=_OVERWRITE_KEEP)
+    return {**target, "cloned": True, "overwritten": True}
+
+
+def _merge_tree(src: str, dst: str, skip: frozenset[str] = frozenset()) -> None:
+    """Lay ``src``'s files over ``dst`` at every depth, the payload's SHAPE
+    winning wherever the two disagree: a file, symlink or anything else in the
+    copy where the payload has a folder is removed and a real folder made; a
+    real folder in the copy where the payload has a file is removed. Entries
+    of ``dst`` the payload does not name are left alone. Our own walk rather
+    than ``copytree(dirs_exist_ok=True)``: that one raises on a nested
+    file-vs-folder clash (a partial merge no retry can finish) and ENTERS a
+    directory symlink in the copy, writing the payload — and a trailing
+    ``copystat`` — onto whatever it points at. ``skip`` names top-level
+    entries of ``src`` never copied."""
+    for name in sorted(os.listdir(src)):
+        if name in skip:
+            continue
+        s_path = os.path.join(src, name)
+        d_path = os.path.join(dst, name)
+        if os.path.isdir(s_path) and not os.path.islink(s_path):
+            # A symlink at d_path is unlinked, never entered — even one that
+            # resolves to a directory — so nothing lands on its target.
+            if os.path.islink(d_path) or (os.path.lexists(d_path) and not os.path.isdir(d_path)):
+                os.unlink(d_path)
+            os.makedirs(d_path, exist_ok=True)
+            _merge_tree(s_path, d_path)
+        elif os.path.isfile(s_path) and not os.path.islink(s_path):
+            if os.path.isdir(d_path) and not os.path.islink(d_path):
+                shutil.rmtree(d_path)
+            _copy_over(s_path, d_path)
+        # A symlink or special file in the extract is not something the
+        # export produces (symlinks are skipped on the way out); ignored.
+
+
+def _copy_over(src: str, dst: str) -> None:
+    """Replace ``dst``'s bytes with ``src``'s, touching no mode but ``dst``'s
+    own when it is read-only. A symlink at ``dst`` is unlinked rather than
+    written THROUGH — the payload's file replaces the link, and whatever it
+    pointed at is left alone."""
+    if os.path.islink(dst):
+        os.unlink(dst)
+    elif os.path.isfile(dst) and not os.access(dst, os.W_OK):
+        os.chmod(dst, 0o644)
+    shutil.copyfile(src, dst)

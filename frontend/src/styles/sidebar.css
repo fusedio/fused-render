@@ -339,6 +339,12 @@ a.sidebar-rail-btn {
   padding-top: 0;
 }
 
+/* The nav group's bottom seam is the Projects section's margin (see
+   .sidebar-current-apps); padding here would double it. */
+.sidebar-group {
+  padding-bottom: 0;
+}
+
 .sidebar-item {
   display: flex;
   align-items: center;
@@ -621,18 +627,6 @@ a.sidebar-rail-btn {
   background: var(--success-bright);
 }
 
-/* AND THE PREFERENCES ROW'S: a self-update waiting/installing/ready-to-restart
-   (platform/lib/update-status, shared with UpdateBadge above the Settings row
-   and the popover's own row). It is the collapsed rail's only signal that one
-   of those states is true — there is no Settings row for the badge to sit
-   above while collapsed. `--accent` rather than one of the status hues above:
-   this isn't a completion or a running-work fact, it's the app's own "there is
-   a new version of me" affordance, the same colour the sidebar already uses
-   for its own chrome (active row highlight). */
-.sidebar-rail-dot.is-update {
-  background: var(--accent);
-}
-
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
    .sidebar-item look — resets the UA button chrome so it sits in the list
    like the <a> rows above it. */
@@ -688,32 +682,83 @@ button.sidebar-prefs-trigger {
   color: var(--fg-muted);
 }
 
+/* Projects and Bookmarks share the sidebar's free height. Both are `1 1 0`
+   flex items, so with rows to spare on both sides they take equal halves, each
+   its own scroll container. The half is a ceiling, not a floor: the section's
+   inline max-height is its content height, written by useSectionContentCap
+   (platform/ui/sidebar) from the always-mounted .sidebar-section-body wrapper
+   — a section with fewer rows than its half freezes at its content and flexbox
+   hands the remainder to the other; a collapsed section is just its heading.
+   (`max-height: fit-content` would say the same in CSS but is not Baseline in
+   the block axis.) min-height is the heading's height, from the same hook, so a
+   very short window never squeezes the toggle away. `flex-basis: 0`, not auto:
+   an auto basis would shrink the two in proportion to their content, and the
+   one with more rows would lose more. The section's own padding moves onto the
+   wrapper so the sticky heading pins to the section's content-box top with no
+   uncovered strip above it.
+
+   The seam ABOVE each section is a margin on the section, not padding inside
+   it (owner, 2026-09-21: the three gaps — nav→Projects, Projects→Bookmarks —
+   must read the same whether a section is expanded, collapsed, or overflowing).
+   Padding inside a scroll container is not a seam: when the rows overflow it
+   scrolls away with them and the gap shrinks to the next heading's own top
+   padding; and a collapsed section ends in its heading's bottom padding, not a
+   row's, so the gap grew by the difference. Margin sits outside the scroll box
+   and survives both. The wrapper keeps NO bottom padding for the same reason;
+   the last box inside each section ends 3px short of the section's edge (a
+   .bookmark-row's bottom padding, or the collapsed heading's — see
+   .recents-heading.collapsed), the nav group above ends 7px short (its last
+   .sidebar-item's), so the margins differ by those 4px to land on one seam:
+   7 + 20 + 6 = 3 + 24 + 6 = 33px from the last box's text to the heading text,
+   the distance the nav→Projects seam always had. */
+.sidebar-current-apps,
 .sidebar-bookmarks {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+  padding: 0;
+}
+.sidebar-current-apps {
+  margin-top: 20px;
+}
+.sidebar-bookmarks {
+  margin-top: 24px;
+}
+.sidebar-current-apps > .sidebar-section-body,
+.sidebar-bookmarks > .sidebar-section-body {
+  padding: 0 8px;
+}
+.sidebar-bookmarks > .sidebar-section-body {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
 
-/* The section is its own scroll container, so the heading must pin itself or
-   it rides out of view with the rows. The section's 8px top padding moves INTO
-   the heading: sticky pins to the content box, so padding on the container is
-   an uncovered strip the rows would scroll through above the heading. The
-   box-shadow paints over the flex gap below the heading for the same reason. */
-.sidebar-bookmarks {
-  padding-top: 0;
-}
-.sidebar-bookmarks > .sidebar-heading {
+/* Each section is its own scroll container, so the heading must pin itself or
+   it rides out of view with the rows. Sticky pins to the content box, so any
+   padding on the container would be an uncovered strip the rows scroll through
+   above the heading — the seam is the section's margin instead (above), and
+   the heading keeps only its own 6px top padding, symmetric with its bottom.
+   The box-shadow paints over the flex gap below the heading for the same
+   reason. */
+.sidebar-current-apps .sidebar-section-body > .sidebar-heading,
+.sidebar-bookmarks .sidebar-section-body > .sidebar-heading {
   position: sticky;
   top: 0;
   background: var(--bg-alt);
   /* Above the rows' own stacking contexts (.bookmark-glyph/.bookmark-badge
      are position:relative + z-index:1, and later in the DOM). */
   z-index: 2;
-  padding-top: 18px;
+  padding-top: 6px;
   box-shadow: 0 1px 0 var(--bg-alt);
+}
+
+/* A collapsed section is just its heading, so the heading's bottom padding is
+   what the section ends in. 3px, a .bookmark-row's, so the seam below reads the
+   same as when rows are showing (see .sidebar-current-apps' margin note). */
+.sidebar-current-apps .sidebar-section-body > .sidebar-heading.collapsed,
+.sidebar-bookmarks .sidebar-section-body > .sidebar-heading.collapsed {
+  padding-bottom: 3px;
 }
 
 .sidebar-empty {
@@ -792,10 +837,8 @@ button.sidebar-prefs-trigger {
 
 .recent-row .recent-glyph {
   /* The glyph slot is inert here (bookmarks use it as the icon-picker
-     button); keep the width so names align with bookmark rows. */
+     button); it keeps .bookmark-glyph's 24px box so names align. */
   cursor: inherit;
-  display: inline-flex;
-  justify-content: center;
 }
 
 .bookmark-row {
@@ -803,7 +846,10 @@ button.sidebar-prefs-trigger {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 10px;
+  /* 3px/4px, not 6px/10px (owner, 2026-09-20): the 24px glyph slot below
+     sets the row's height (3 + 24 + 3 = 30, what 6 + 17.5 + 6 gave before),
+     and the icon is what grew — the row did not. */
+  padding: 3px 10px 3px 4px;
   border-radius: 8px;
   cursor: pointer;
   /* Opaque equivalent of this row's background, for the hover actions' fade
@@ -825,20 +871,28 @@ button.sidebar-prefs-trigger {
   color: var(--accent);
 }
 
+/* 24px square slot, shared by Bookmarks, folders, Recents and the Projects
+   rows so the four name columns start at one x (4 + 24 + 7 = 35). */
 .bookmark-glyph {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 15px;
+  line-height: 1;
   cursor: pointer;
-  width: 14px;
+  width: 24px;
+  height: 24px;
   text-align: center;
   position: relative;
   z-index: 1;
 }
 
-/* Custom emoji icons render at natural color, slightly larger than the star. */
+/* Custom emoji icons render at natural color, filling the slot the way an
+   app's icon.svg does next door. */
 .bookmark-glyph.custom-icon {
-  font-size: 12px;
+  font-size: 19px;
 }
 
 .bookmark-row.active .bookmark-glyph {
@@ -1072,8 +1126,8 @@ a.bookmark-name::after {
   background: var(--bg);
 }
 
-/* Save-to-disk button with no savable target (SB-8): greyed, inert, but still
-   hoverable so its explanatory title shows. */
+/* A disabled action (e.g. the Projects archive button while its request is in
+   flight): greyed, inert, but still hoverable so its title shows. */
 .icon-btn:disabled {
   opacity: 0.4;
   cursor: default;
@@ -1096,163 +1150,10 @@ a.bookmark-name::after {
   padding: 2px 6px;
 }
 
-/* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
-
-/* An accordion: the toggle row and the panel it opens share ONE border and
-   one radius, so an open badge reads as a single group rather than a button
-   with a loose slab under it. `overflow: hidden` is what lets the row's own
-   tinted fill stop at the rounded corners — the row has no radius of its own
-   any more, this container owns it. */
-.update-badge {
-  margin: 2px 8px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.update-badge-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  background: rgba(var(--tint), 0.07);
-  color: var(--fg);
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.update-badge-row:hover {
-  background: rgba(var(--tint), 0.12);
-}
-
-/* `.update-badge` clips to its radius (`overflow: hidden` above), so an
-   outside focus ring on the row would be cut away — inset it instead. */
-.update-badge-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* Installed state: the row is a status line, not a toggle — nothing to click. */
-.update-badge-row-static,
-.update-badge-row-static:hover {
-  background: rgba(var(--tint), 0.07);
-  cursor: default;
-}
-
-/* THE IDLE FACE — "Check for updates" (2026-09-10). Same frame, same place, but
-   quiet: no tinted fill at rest (the fill says "there is news" on the accordion
-   row, and this row is the absence of news), muted text, and the hover is the
-   one the nav rows above use. It is the same slot the accordion takes over.
-   Same padding and type as the accordion row, so the two are one line tall
-   alike — but the accordion's label ("Update available — v0.5.23") wraps to two
-   lines in a 232px sidebar and that row is 15px taller (cmux-ux-tester,
-   2026-09-10). What holds is what matters: the Settings section is anchored to
-   the sidebar's bottom, so Settings and the version chip do not move when the
-   face flips; the growth is taken from the scrolling tree above. */
-.update-badge-row-check {
-  background: transparent;
-  color: var(--fg-muted);
-}
-
-.update-badge-row-check:hover {
-  background: rgba(var(--tint), 0.07);
-  color: var(--fg);
-}
-
-/* In flight: the button is disabled so a second press cannot queue a second
-   POST, but it must not read as greyed-out chrome — "Checking…" is progress,
-   not unavailability. */
-.update-badge-row-check:disabled {
-  cursor: progress;
-  color: var(--fg-muted);
-}
-
-/* Trailing, where the accordion keeps its chevron, at the chevron's colour. */
-.update-badge-refresh {
-  display: flex;
-  margin-left: auto;
-  flex: none;
-  color: var(--fg-muted);
-}
-
-/* The one motion in the sidebar, and it is this row's own progress: the glyph
-   turns while the manifest fetch is out. styles/reduced-motion.css blankets
-   `animation` along with every transition, so it holds still there. */
-.update-badge-row-check.is-checking .update-badge-refresh {
-  animation: update-badge-refresh-turn 0.9s linear infinite;
-}
-
-@keyframes update-badge-refresh-turn {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.update-badge-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
-
-/* Trailing, and it points down when shut and up when open. Driven off the
-   row's own `aria-expanded` rather than a second class, so the accessible
-   state and the drawn one cannot disagree. */
-.update-badge-chev {
-  display: flex;
-  margin-left: auto;
-  flex: none;
-  color: var(--fg-muted);
-  transition: transform 140ms ease;
-}
-
-.update-badge-row[aria-expanded="true"] .update-badge-chev {
-  transform: rotate(180deg);
-}
-
-/* The chevron's rotation holds still under prefers-reduced-motion — styles/reduced-motion.css blankets every transition. */
-
-/* The seam between the row and the panel — the container's border draws the
-   outside, this draws the fold. */
-.update-badge-panel {
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.update-badge-text {
-  color: var(--fg-muted);
-  line-height: 1.4;
-}
-
-.update-badge-error {
-  color: var(--fg);
-}
-
-.update-badge-action {
-  /* A <button> or an <a> (the installed state's Restart is a link to
-     fused-render://relaunch) — same box either way. */
-  display: inline-block;
-  text-decoration: none;
-  align-self: flex-start;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--bg);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-/* Still in use, but no longer by the badge: TroubleCard and ClaudeHealthStrip
-   render a copyable command plate off these two classes. */
+/* -- Copyable command plate --------------------------------------------------
+   Formerly shared with the sidebar's self-update badge (deleted,
+   SPEC-update-notifications.md); still rendered by TroubleCard and
+   ClaudeHealthStrip for their own copyable command plates. */
 .update-badge-command {
   display: flex;
   align-items: center;
@@ -1285,31 +1186,58 @@ a.bookmark-name::after {
   cursor: pointer;
 }
 
+/* Run, beside Copy — CommandLine.tsx renders this only where the status-bar
+   terminal drawer exists to send the command to (`canRunInTerminal()`), so
+   it never turns up as a lone Copy button's mismatched sibling. Accent-toned
+   rather than the muted Copy border: for a command the user is about to hand
+   to a real shell, Run is the affirmative action, the same tone
+   `.claude-health-action` uses for the button beside it. */
+.update-badge-run {
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-badge-run:hover {
+  filter: brightness(1.06);
+}
+
 /* Projects (D487, "Current apps" until 2026-08-26): the apps on the desk, above
    Bookmarks. Rows reuse .bookmark-row/.bookmark-name/.bookmark-actions for
-   identical metrics; the hover cross archives every task under the app. Fixed
-   height like .sidebar-recents — the bookmark tree below is the one that
-   scrolls. Keeps the section's own 8px bottom padding: with the bookmarks
-   heading's 18px sticky top padding that makes the gap to Bookmarks 26px — the
-   same 26px (8 + 8 + heading's 10) that separates the nav group from this
-   section, so the two seams read as one rhythm. */
-.sidebar-current-apps {
-  flex: 0 0 auto;
-}
+   identical metrics; the hover cross archives every task under the app. Sizing
+   (equal share with Bookmarks, own scroll, content-capped) is the shared rule
+   beside .sidebar-bookmarks above. */
 
-.current-app-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* The app's own icon.svg, filling the 14px glyph slot as is — the author's
-   shape AND colours, untouched (owner, 2026-08-27). */
+/* The Projects row shares .bookmark-row's 24px slot and 3px/4px padding;
+   nothing to add here. */
+/* The app's own icon.svg or icon.png, filling the 24px slot edge to edge —
+   the author's shape AND colours, untouched (owner, 2026-08-27), but cover
+   not contain (owner, 2026-09-20): the file bleeds to the slot and the slot
+   rounds the corners, so a square-plated picker icon and a photo-like png
+   get one silhouette. A wide or tall svg loses its edges rather than
+   letterboxing. */
 .current-app-icon {
   display: block;
-  width: 14px;
-  height: 14px;
-  object-fit: contain;
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+/* A png (is-raster, CurrentAppsSection) sits 2px smaller inside the same
+   24px slot (owner tuned live, 2026-09-20): 1px of air each side so a
+   photo-like file edge-to-edge does not read heavier than the svg glyphs
+   around it. Margin, not a smaller slot, so the row's geometry does not
+   move. */
+.current-app-icon.is-raster {
+  width: 22px;
+  height: 22px;
+  margin: 1px;
 }
 
 /* The running dot sits after the name, in flow: the name gives up its
@@ -1327,6 +1255,26 @@ a.bookmark-name::after {
   margin-left: 6px;
 }
 
+/* "· 2 queued" — tasks under this folder waiting on the run in it (the project
+   queue). WORDS, not a third dot: the row already spends its one dot slot on
+   running-or-unread, and what a reader wants from a queue is the number, which a
+   dot cannot say. It SHRINKS before the name does not — the name is the row's
+   identity and this is its state — so the count ellipsises in a narrow sidebar
+   rather than pushing the name out. No width and no breakpoint: the rail has one
+   width and the expanded sidebar is resizable, and the only honest rule is
+   "give way when there is no room". */
+.current-app-queued {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .current-app-archive:disabled {
   opacity: 0.5;
   cursor: default;
@@ -1339,7 +1287,7 @@ a.bookmark-name::after {
   text-decoration: line-through;
 }
 
-/* The "+ New app" row (D489) closes the list: a row in the desk's own metrics,
+/* The "+ New app" row (D489) opens the list: a row in the desk's own metrics,
    muted so it reads as a door rather than another app, full colour on hover. */
 .current-app-new {
   color: var(--fg-muted);
@@ -1409,21 +1357,3 @@ a.bookmark-name::after {
   }
 }
 
-/* The popover's update row while an install runs: a turning ring in the icon
-   slot, sized to the icon box so the row does not move. Colour split matches
-   the LAN spinner (preferences.css) so every ring in the app is one ring. */
-.update-spinner {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 1.5px solid var(--border);
-  border-top-color: var(--fg-muted);
-  border-radius: 50%;
-  animation: update-spin 0.7s linear infinite;
-}
-
-@keyframes update-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}

@@ -15,9 +15,11 @@ export interface ModelSelectProps {
   value: string;
   onChange(value: string): void;
   disabled?: boolean;
+  /** The composer has not resolved this chat's value yet — see `PillSelect`. */
+  loading?: boolean;
 }
 
-export function ModelSelect({ value, onChange, disabled }: ModelSelectProps) {
+export function ModelSelect({ value, onChange, disabled, loading }: ModelSelectProps) {
   return (
     <PillSelect
       kind="c-model-sel"
@@ -27,6 +29,7 @@ export function ModelSelect({ value, onChange, disabled }: ModelSelectProps) {
       options={OPTIONS}
       onChange={onChange}
       disabled={disabled}
+      loading={loading}
     />
   );
 }

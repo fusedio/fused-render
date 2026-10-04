@@ -12,7 +12,13 @@ const { createMemoryParamsStore } = await import("../params/store");
 const { MARKER_VIEW } = await import("./wire");
 
 import type { runAgent } from "./agent";
-import type { AssistantTurn, ChatController, NoteTurn, UserTurn } from "./controller-api";
+import type {
+  AssistantTurn,
+  ChatController,
+  NoteTurn,
+  StrandedLine,
+  UserTurn,
+} from "./controller-api";
 import type { HistoryResponse, PermissionRow, PollResponse, Segment } from "./types";
 
 // ---- fake agent.py ---------------------------------------------------------
@@ -101,7 +107,10 @@ function makeController(
 ) {
   const agent = fakeAgent(handlers);
   const activity: number[] = [];
+  /** The stranded TEXTS per stop (what the older assertions read)… */
   const stranded: string[][] = [];
+  /** …and the full lines, ids included (Bugbot round 3). */
+  const strandedLines: StrandedLine[][] = [];
   /** Every send that reported itself NOT SENT — the road the composer takes its
    *  words and its pictures back on. */
   const returned: { text: string; attachments?: unknown[]; refused?: boolean }[] = [];
@@ -120,10 +129,13 @@ function makeController(
     effort: () => "high",
     hasPane: () => true,
     onActivity: () => activity.push(1),
-    onStranded: (t) => stranded.push(t),
+    onStranded: (lines) => {
+      stranded.push(lines.map((l) => l.text));
+      strandedLines.push(lines);
+    },
     onSendReturned: (info) => returned.push(info),
   });
-  return { controller, agent, params, activity, stranded, returned };
+  return { controller, agent, params, activity, stranded, strandedLines, returned };
 }
 
 const assistants = (c: ChatController) =>
@@ -174,6 +186,67 @@ describe("stopAllowed (T:15870)", () => {
 // ---- start → poll → done ---------------------------------------------------
 
 describe("start → poll → done", () => {
+  test("the run id OUTLIVES the turn, and dies with the CONVERSATION", async () => {
+    // THE ADMISSION MUST NEVER BE ANONYMOUS. "hello" → reply → "second" typed
+    // straight away came back `Queued · #1 in line · behind a run in this
+    // folder`: `runId` is cleared the instant the turn ends, while the host is
+    // still tearing the run down and the registry still reads busy, so the
+    // queue's admission named neither a run nor (in that window) a session and
+    // the server queued the reader behind their own finished turn (Akshil,
+    // browser QA 2026-09-12).
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, segments: [text("hello there")], text: "hello there" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("hello");
+    // The live id is gone — everything that DRAWS it wants that — and the
+    // queue's own name for this chat's run is not.
+    expect(controller.getState().runId).toBe(null);
+    expect(controller.getState().lastRunId).toBe("r1");
+
+    // …but a run belongs to the chat it ran in, so both roads that replace the
+    // visible conversation take it with them.
+    await controller.openSession("s-other");
+    expect(controller.getState().lastRunId).toBe(null);
+
+    const back = makeController({
+      start: () => ({ run_id: "r2" }),
+      poll: () => poll({ done: true, segments: [text("hi")], text: "hi" }),
+    });
+    await back.controller.sendMessage("hello");
+    expect(back.controller.getState().lastRunId).toBe("r2");
+    back.controller.newChat();
+    expect(back.controller.getState().lastRunId).toBe(null);
+  });
+
+  test("the run is NAMED THE MOMENT `start` answers, not when the poll goes up", async () => {
+    // The window that needs it most is the SHORTEST turn: send, Stop, type
+    // again. A stop landing between `start` answering and the first poll frame
+    // left `lastRunId` unwritten, so the next admit was anonymous and the
+    // server queued the reader's second message behind their own finished run
+    // (Akshil, 2026-09-12). The send path writes the id itself now; the poll
+    // loop's own write stays, for every run this page ADOPTS rather than starts.
+    let atFirstPoll: string | null | undefined;
+    let rig!: ReturnType<typeof makeController>;
+    rig = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => {
+        atFirstPoll = rig.controller.getState().lastRunId;
+        return poll({ done: true, segments: [text("hi")], text: "hi" });
+      },
+      cancel: () => ({ still_queued: [] }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await rig.controller.sendMessage("hello");
+    expect(atFirstPoll).toBe("r1");
+    // …and it is still the answer after a stop, which is the press this exists
+    // for: the run is over, the id the admission names is not.
+    await rig.controller.stopRun();
+    expect(rig.controller.getState().runId).toBe(null);
+    expect(rig.controller.getState().lastRunId).toBe("r1");
+  });
+
   test("a fresh chat skips the live-host probe and streams to a finished turn", async () => {
     const { controller, agent, params, activity } = makeController({
       start: () => ({ run_id: "r1" }),
@@ -201,7 +274,14 @@ describe("start → poll → done", () => {
     });
     // The poll rides `file` so the agent can refuse another target's run.
     // `native: "1"`: app-state reads come back as in-stream notices (agent.py `app_reads`).
-    expect(agent.of("poll")[0].fields).toEqual({ run_id: "r1", file: "/proj/app.py", native: "1" });
+    // `queue: "0"`: the page says whether the agent should answer `inbox` rows
+    // (the project queue's picture of a mid-turn follow-up); off, main's payload.
+    expect(agent.of("poll")[0].fields).toEqual({
+      run_id: "r1",
+      file: "/proj/app.py",
+      native: "1",
+      queue: "0",
+    });
 
     const s = controller.getState();
     expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
@@ -308,6 +388,96 @@ describe("start → poll → done", () => {
     expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "live-1" });
   });
 
+  test("an optimistic bubble, adopted by the send, still gets its reply drawn on the poll", async () => {
+    // Browser QA 2026-09-24 saw a plain "say PONG" reply arrive on disk and not
+    // on screen. The controller road for it is exactly this — post the row,
+    // adopt it in `sendMessage`, poll text + done — and it has to end with ONE
+    // user bubble and the assistant's text in the log.
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1", session_id: "s-pong" }),
+      poll: () => poll({ done: true, text: "PONG", segments: [text("PONG")] }),
+    });
+    const key = controller.postOptimisticUser("say PONG only, nothing else");
+    await controller.sendMessage("say PONG only, nothing else", { optimisticKey: key });
+    expect(users(controller).map((t) => t.text)).toEqual(["say PONG only, nothing else"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+    expect(assistants(controller).map((t) => t.text)).toEqual(["PONG"]);
+    expect(controller.getState().status).toBe("idle");
+  });
+
+  test("a queued tag comes off when the real send adopts the row", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("later", "queued");
+    expect(users(controller)[0]!.pending).toBe("queued");
+    controller.setOptimisticPending(key, "notSent");
+    expect(users(controller)[0]!.pending).toBe("notSent");
+    await controller.sendMessage("later", { optimisticKey: key });
+    expect(users(controller).length).toBe(1);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+  });
+
+  test("a follow-up with `orStart` opens a fresh turn when no run is live, same bubble", async () => {
+    // A line the page parked behind a send drains after that run has already
+    // ended. Without the flag this road hands the words back ("no run to attach");
+    // with it, the same bubble becomes the opening message of a new turn.
+    const { controller, agent, stranded, returned } = makeController({
+      start: () => ({ run_id: "r2", session_id: "s2" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("parked line", "queued");
+    await controller.sendFollowUp("parked line", { optimisticKey: key, orStart: true });
+    expect(agent.of("start")).toHaveLength(1);
+    expect(agent.of("start")[0]!.fields).toMatchObject({ message: "parked line" });
+    expect(users(controller).map((t) => t.text)).toEqual(["parked line"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+    expect(controller.getState().queued).toEqual([]);
+    expect(stranded).toEqual([]);
+    expect(returned).toEqual([]);
+    // …and without the flag, the old road: handed back, no start.
+    const plain = makeController({
+      start: () => ({ run_id: "r3" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    await plain.controller.sendFollowUp("alone", {});
+    expect(plain.agent.of("start")).toHaveLength(0);
+    expect(plain.returned.map((r) => r.text)).toEqual(["alone"]);
+  });
+
+  test("two `orStart` follow-ups with no run: the first opens the turn, the second follows it in", async () => {
+    // Bugbot 4122227219: both used to take `sendMessage`; the second hit the
+    // `sending` gate, was refused, and never went out — the "third message
+    // swallowed" this queue exists to end. Now the second waits for the run the
+    // first is opening and goes in as a follow-up, in order, one bubble each.
+    let openStart!: () => void;
+    const held = new Promise<void>((resolve) => {
+      openStart = resolve;
+    });
+    const { controller, agent, returned, stranded } = makeController({
+      start: async () => {
+        await held;
+        return { run_id: "r2", session_id: "s2" };
+      },
+      send: () => ({ sent: true as const }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const kA = controller.postOptimisticUser("A", "queued");
+    const kB = controller.postOptimisticUser("B", "queued");
+    const a = controller.sendFollowUp("A", { optimisticKey: kA, orStart: true });
+    const b = controller.sendFollowUp("B", { optimisticKey: kB, orStart: true });
+    // Let A reach the held `start` and B reach its wait.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    openStart();
+    await Promise.all([a, b]);
+    expect(agent.of("start").map((c) => c.fields.message)).toEqual(["A"]);
+    expect(agent.of("send").map((c) => c.fields.message)).toEqual(["B"]);
+    expect(users(controller).map((t) => t.text)).toEqual(["A", "B"]);
+    expect(returned).toEqual([]);
+    expect(stranded).toEqual([]);
+  });
+
   test("a dead host, a refusal or a respawn all fall through to `start`", async () => {
     for (const answer of [{ error: "no host" }, { respawn: true as const }, null]) {
       const params = createMemoryParamsStore({ session_id: "s1" });
@@ -362,6 +532,32 @@ describe("start → poll → done", () => {
     const started = agent.of("start")[0].fields;
     expect(started.session_id).toBe("s1");
     expect("draft_key" in started).toBe(false);
+  });
+
+  // ---- the admitted claim (`queue_claim`, Bugbot PR #1194) ------------------
+  //
+  // `/api/tasks/queue/admit`'s `run: true` answer carries a fresh per-send
+  // claim token when the project queue admitted this send (`QueueAdmission.
+  // claim`). ClaudeChat reads it off the verdict and hands it down as
+  // `SendOptions.queueClaim`; the run loop's job is only to forward it
+  // verbatim onto the request the server gate reads it back off.
+
+  test("a send carrying an admitted claim forwards it as `queue_claim`", async () => {
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true }),
+    });
+    await controller.sendMessage("hi", { queueClaim: "tok-1" });
+    expect(agent.of("start")[0].fields.queue_claim).toBe("tok-1");
+  });
+
+  test("a send with no admitted claim sends no `queue_claim` at all", async () => {
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true }),
+    });
+    await controller.sendMessage("hi");
+    expect("queue_claim" in agent.of("start")[0].fields).toBe(false);
   });
 
   test("`start` refusing rolls the bubble back and reports the failure", async () => {
@@ -1790,6 +1986,52 @@ describe("stop (T:15901)", () => {
     expect(users(controller).map((t) => t.text)).toEqual(["go"]);
   });
 
+  test("a stranded line names its send id and says whether its pictures already went back", async () => {
+    // Bugbot round 3 (PR #1323): the page posts one "not sent" row per send id,
+    // so the stop's hand-back has to carry the id — and say when `returnSend`
+    // fired for the same entry in this tick — rather than leave the page to
+    // match words. Two identical texts are two ids.
+    let releaseSend!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      live_host: () => ({ run_id: "r1" }),
+      send: async (_f, n) => {
+        if (n === 0) return { sent: true as const };
+        await held;
+        return { sent: true as const };
+      },
+      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("working")] });
+        if (n === 1) {
+          // One landed ("again", id sA), one unconfirmed ("again", id sB).
+          await controller.sendFollowUp("again", { sendId: "sA" });
+          void controller.sendFollowUp("again", { sendId: "sB" });
+          await Promise.resolve();
+          await Promise.resolve();
+          await controller.stopRun();
+          releaseSend();
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, error: "claude exited", segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.strandedLines).toEqual([
+      [
+        { text: "again", sendId: "sA" },
+        { text: "again", sendId: "sB", returned: true },
+      ],
+    ]);
+    // …and only the unconfirmed one came back through `returnSend`.
+    expect(made.returned.map((r) => r.text)).toEqual(["again"]);
+  });
+
   // ── feedback #12: the run ENDS across the follow-up boundary ───────────────
   test("a stop with a queued message still flips the status to idle", async () => {
     // `_send` writes `pending_echo`, and `_poll` clears it only by SEEING the
@@ -2305,6 +2547,9 @@ describe("permission cards: pinned open, parked once answered (T:14665-14775)", 
     });
     controller = made.controller;
     await controller.sendMessage("go");
+    // The decide first AWAITS the queue flag's read (`queueFlagReady`), which is
+    // a rejected fetch and its retry in this harness — a tick, not a poll lap.
+    await new Promise((r) => setTimeout(r, 0));
     // T:14118's `dismiss` is a real `deny` POST that RESOLVES the card
     // (T:14126-14140): the tool call was blocked, so "✗ Not answered" is the
     // record of how it was unblocked. Filtering the row out instead lost that,
@@ -3362,5 +3607,370 @@ describe("cards ride on the history answer (Akshil 2026-09-11, Tasks cards wall)
     const cached = [...store.values()][0]!;
     expect((cached.permissions || []).map((p) => p.id)).toEqual(["q2"]);
     expect(cached.live_run).toBe("r9");
+  });
+});
+
+describe("a row pressed after its task was erased (Akshil 2026-09-15)", () => {
+  const gone = () => ({ turns: [], transcript: null, deleted: true });
+
+  test("says the task was deleted instead of opening a blank chat, and caches nothing", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    const st = made.controller.getState();
+    const errors = st.turns.filter((t) => t.role === "error");
+    expect(errors.length).toBe(1);
+    expect((errors[0] as { text: string }).text).toContain("deleted");
+    expect(st.trouble?.message).toContain("deleted");
+    expect(st.historyLoading).toBe(false);
+    // An answer about a task that no longer exists is not worth remembering.
+    expect(store.size).toBe(0);
+  });
+
+  test("a conversation cached BEFORE the erase is evicted, not painted warm again", async () => {
+    // The cache answers for whatever key the controller asks by, and records
+    // what it is asked to forget: the eviction must name the same entry.
+    const asked: string[] = [];
+    const deleted: string[] = [];
+    let stale: HistoryResponse | undefined = {
+      turns: [{ role: "user", text: "old words", uuid: "u1" }],
+      transcript: null,
+    } as unknown as HistoryResponse;
+    const historyCache = {
+      get: (f: string, s: string) => {
+        asked.push(f + "|" + s);
+        return stale;
+      },
+      set: () => {},
+      delete: (f: string, s: string) => {
+        deleted.push(f + "|" + s);
+        stale = undefined;
+      },
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    expect(deleted).toEqual([asked[0]]);
+    const st = made.controller.getState();
+    // The warm paint of the destroyed transcript is gone with the fetch.
+    expect(st.turns.some((t) => t.role === "user")).toBe(false);
+    expect(st.turns.filter((t) => t.role === "error").length).toBe(1);
+  });
+
+  test("an EMPTY answer without the mark is a chat not written yet — no error", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await made.controller.openSession("s-new");
+    expect(made.controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+    expect(made.controller.getState().trouble).toBeNull();
+  });
+});
+
+describe("the server hears that a turn started (Akshil, 2026-09-15)", () => {
+  /** Every POST this turn made, by URL, with the body it carried. */
+  function captureFetch() {
+    const posts: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async (
+      input: unknown,
+      init?: { body?: string },
+    ): Promise<Response> => {
+      posts.push({
+        url: String(typeof input === "string" ? input : (input as { url: string }).url),
+        body: init?.body ? JSON.parse(init.body) : null,
+      });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+    };
+    return { posts, restore: () => { globalThis.fetch = real; } };
+  }
+
+  const marks = (posts: { url: string; body: unknown }[]) =>
+    posts.filter((p) => p.url === "/api/tasks/running").map((p) => p.body);
+
+  test("a fresh chat is marked as soon as the poll names its session", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => poll({ done: n > 0, text: "ok", segments: [text("ok")] }),
+      });
+      await controller.sendMessage("hi");
+      // ONCE, and only for the turn's START. `noteChatActivity` fires at both
+      // boundaries; this must not, or a finished row would spin out the mark's
+      // whole TTL. `turn` is the fixture's fixed `wallClock`.
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a chat that already has a session is marked at the send itself", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      params.set({ session_id: "s1" });
+      const { controller } = makeController(
+        {
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1" }),
+          poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      // The first poll has not answered yet when this goes out — that is the
+      // whole point: it is the earliest anything can say the turn is open.
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("the words are the user's own — the `<live-app-state>` block never rides along", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      params.set({ session_id: "s1" });
+      const { controller } = makeController(
+        {
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1" }),
+          poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        },
+        params,
+        { appStateBlock: () => Promise.resolve("<live-app-state>a=1</live-app-state>") },
+      );
+      await controller.sendMessage("what is a?");
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "what is a?", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a mark with no send behind it carries the file and no words", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const { controller } = makeController({
+        live_run: () => ({ run_id: "" }),
+        poll: (_f, n) => poll({ done: n > 0, text: "ok", segments: [text("ok")] }),
+      });
+      // A re-attach: nothing was typed here, so there are no words to report —
+      // and the server keeps whatever prompt it already knew for the row.
+      await controller.resumeRun("r-old");
+      for (const body of marks(posts)) {
+        expect(body).toEqual({ session_id: "s1", turn: 1_000, file: "/proj/app.py" });
+      }
+      expect(marks(posts).length).toBeGreaterThan(0);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("the start response names the session (task status in under a second)", () => {
+  function captureFetch() {
+    const posts: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async (
+      input: unknown,
+      init?: { body?: string },
+    ): Promise<Response> => {
+      posts.push({
+        url: String(typeof input === "string" ? input : (input as { url: string }).url),
+        body: init?.body ? JSON.parse(init.body) : null,
+      });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+    };
+    return {
+      posts,
+      restore: () => {
+        globalThis.fetch = real;
+      },
+    };
+  }
+  const marks = (posts: { url: string; body: unknown }[]) =>
+    posts.filter((p) => p.url === "/api/tasks/running").map((p) => p.body);
+
+  test("a session named after the reader left is not adopted", async () => {
+    // The reader pressed Back while `start` was in flight (`newChat` bumps
+    // the generation). The minted id must not land in the url or the state of
+    // the landing they are now on, and nothing marks a turn they left.
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      let controller!: ChatController;
+      const made = makeController(
+        {
+          start: async () => {
+            controller.newChat();
+            return { run_id: "r1", session_id: "s-minted" };
+          },
+          poll: () => poll({ done: true, session_id: "s-minted", text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      controller = made.controller;
+      await controller.sendMessage("hi");
+      expect(params.get("session_id") || "").toBe("");
+      expect(controller.getState().sessionId ?? null).toBe(null);
+      expect(marks(posts).some((m) => (m as { session_id: string }).session_id === "s-minted")).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  test("`start` answering a session_id sets the param BEFORE the first poll", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      /** What the url said each time the fake agent was polled. */
+      const atPoll: string[] = [];
+      const seen: string[] = [];
+      const { controller } = makeController(
+        {
+          // Brand-new chat: the server mints the id and answers it at spawn.
+          start: () => ({ run_id: "r1", session_id: "s-minted" }),
+          poll: (_f, n) => {
+            atPoll.push(params.get("session_id") || "");
+            return poll({
+              done: n > 0,
+              session_id: "s-minted",
+              text: "ok",
+              segments: [text("ok")],
+            });
+          },
+        },
+        params,
+      );
+      controller.subscribe(() => seen.push(controller.getState().sessionId || ""));
+      await controller.sendMessage("hi");
+      // The very FIRST poll already found it — that is the second this change
+      // buys back.
+      expect(atPoll[0]).toBe("s-minted");
+      expect(params.get("session_id")).toBe("s-minted");
+      expect(seen).toContain("s-minted");
+      // And the poll's own `noteSessionId` for the SAME id is a no-op, so the
+      // turn is still marked exactly once.
+      expect(marks(posts)).toEqual([
+        { session_id: "s-minted", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("an older server that omits it still gets there on the first poll", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      const atPoll: string[] = [];
+      const { controller } = makeController(
+        {
+          start: () => ({ run_id: "r1" }),
+          poll: (_f, n) => {
+            atPoll.push(params.get("session_id") || "");
+            return poll({ done: n > 0, text: "ok", segments: [text("ok")] });
+          },
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      // Nothing named it before the poll did — the old road, intact.
+      expect(atPoll[0]).toBe("");
+      expect(params.get("session_id")).toBe("s1");
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("running and idle marks can race (Bugbot #1163)", () => {
+  /** Like `captureFetch` above, but the response to a `/api/tasks/running`
+   *  POST hangs until `release()` is called — so a test can prove `noteTurnIdle`
+   *  never even FIRES its own POST while that one is still in flight. */
+  function captureFetchWithGate() {
+    const posts: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    (globalThis as { fetch: unknown }).fetch = async (
+      input: unknown,
+      init?: { body?: string },
+    ): Promise<Response> => {
+      const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+      posts.push({ url, body: init?.body ? JSON.parse(init.body) : null });
+      if (url === "/api/tasks/running") await gate;
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+    };
+    return {
+      posts,
+      release,
+      restore: () => {
+        globalThis.fetch = real;
+      },
+    };
+  }
+
+  test("idle's own POST is never fired until running's has landed", async () => {
+    const { posts, release, restore } = captureFetchWithGate();
+    try {
+      const params = createMemoryParamsStore();
+      params.set({ session_id: "s1" });
+      const { controller } = makeController(
+        {
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1" }),
+          // Done on the very first poll — the shortest possible turn, and the
+          // shape that used to race: `noteTurnRunning` and `noteTurnIdle` fire
+          // back to back with nothing between them.
+          poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      // `noteTurnIdle` is fire-and-forget from `pollLoop`'s own `finally`, so
+      // this resolves without waiting for either POST to land.
+      await controller.sendMessage("hi");
+      const urls = () => posts.map((p) => p.url);
+      expect(urls()).toEqual(["/api/tasks/running"]);
+      // The running POST is still in flight (gated) — the fix is exactly this:
+      // idle's fetch is not even ISSUED yet, so the server can never see it
+      // before the running POST it belongs after.
+      expect(urls()).not.toContain("/api/tasks/idle");
+
+      release(); // the running POST's response lands…
+      // …flush the microtask chain `noteTurnIdle` was waiting on: `res.json()`,
+      // `markTaskRunning`'s own `.then`, and `markTaskIdle`'s `fetch` each add a
+      // hop, so a macrotask tick (rather than a fixed count of microtasks) is
+      // what reliably drains all of them.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(urls()).toEqual(["/api/tasks/running", "/api/tasks/idle"]);
+    } finally {
+      restore();
+    }
   });
 });

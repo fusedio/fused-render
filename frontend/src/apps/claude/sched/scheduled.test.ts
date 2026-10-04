@@ -89,6 +89,29 @@ describe("what blocks this chat", () => {
       "Blocked — a repeating message runs in this chat.",
     );
     expect(schedWhyLine([])).toBe("");
+    // The chat's own comeback says the rescue and when. It is known by the
+    // ENTRY's fixed title, or its fixed prompt when the listing spelled no
+    // title — never by the conversation's task row, which keeps the comeback's
+    // name for every later message a person schedules into it (Bugbot, #1292).
+    const at = new Date(2099, 0, 1, 9, 0);
+    const now = new Date(2098, 11, 31, 9, 0);
+    const line = "Paused on your usage limit — this chat picks up again by itself 09:00 tomorrow.";
+    expect(schedWhyLine([entry({ title: "Continue after usage limit", due: at.toISOString() })], now)).toBe(line);
+    expect(
+      schedWhyLine(
+        [
+          entry({
+            due: at.toISOString(),
+            message:
+              "Your usage limit has reset. Continue the task you were working on where it stopped. Do not repeat steps that were already completed.",
+          }),
+        ],
+        now,
+      ),
+    ).toBe(line);
+    expect(schedWhyLine([entry({ due: at.toISOString(), message: "Nightly tidy" })], now)).toBe(
+      "Blocked — a scheduled message runs in this chat.",
+    );
   });
 });
 
@@ -164,12 +187,13 @@ describe("the row's name and state", () => {
       { key: "pending:e1" },
       { key: "s1" },
     ];
-    // The two KEY hits are equals and the listing's own order decides between
-    // them (T:16985 returns on the first of either) — what the ordering rule
-    // buys is that neither is ever beaten by the scan.
+    // The pending key has priority over the session key (Bugbot, 2026-09-17):
+    // when a message is sent to a different folder's task, the entry gets a
+    // pending:<entry_id> key, not the session key. Without this, schedFindTask
+    // returns an old done task with the same sessionId.
     expect(schedFindTask(tasks, entry(), "s1")?.key).toBe("pending:e1");
     expect(schedFindTask([{ key: "s1" }, { key: "pending:e1" }], entry(), "s1")?.key).toBe(
-      "s1",
+      "pending:e1",
     );
     // Keyed by the entry when it has no session yet.
     expect(schedFindTask(tasks, entry(), "")?.key).toBe("pending:e1");
@@ -308,6 +332,18 @@ describe("pollScheduledRuns", () => {
     expect(h.watcher.baselined()).toBe(true);
     await h.watcher.tick();
     expect(h.resumed).toEqual([]);
+  });
+
+  test("a CHAT-ORIGIN run (queued or Force-started send) attaches with no note", async () => {
+    const h = harness({
+      entries: [[], [fired({ id: "new", session_id: "s1", origin: "chat" })]],
+    });
+    await h.watcher.tick();
+    await h.watcher.tick();
+    // The reader's own bubble is finally going; there is nothing to announce.
+    expect(h.notes).toEqual([]);
+    expect(h.runParams).toEqual(["r-new"]);
+    expect(h.resumed).toEqual(["r-new"]);
   });
 
   test("a run that fires AFTER the baseline is announced, put on the URL and streamed", async () => {
@@ -542,6 +578,22 @@ describe("the poll's two rates (FIX-D)", () => {
     expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
     stop();
     await t.watcher.tick();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+  });
+
+  test("A CLAIMED ENTRY DOES NOT BUY THE FAST RATE — flag off is main, byte for byte", async () => {
+    // The blocker list was widened for the queue's ROWS (`schedIsWaiting` takes a
+    // `sending` entry too), and the RATE reads that same list. Main never drew a
+    // claimed entry and never polled three times a second for one, so the rate
+    // reads the pending half only (🔴 review 2026-09-12).
+    const claimed = { ...soon("e1"), state: "sending" as const };
+    const t = timed([[claimed], [soon("e2")]]);
+    t.watcher.start();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS]);
+    // …and a genuinely pending one still does.
+    t.fire();
     await settle();
     expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
   });

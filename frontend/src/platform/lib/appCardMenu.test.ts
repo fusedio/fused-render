@@ -63,6 +63,8 @@ test("the card menu offers Finder-order entries, Open in Explorer second", () =>
     "Open in Explorer",
     "separator",
     "Reveal in Finder",
+    // `app_sharing_enabled` defaults off (share-app-flag.ts), and nothing in
+    // this test turns it on, so the entry is the plain export.
     "Export App File",
     "Copy Path",
   ]);

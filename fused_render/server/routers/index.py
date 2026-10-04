@@ -292,9 +292,10 @@ async def _bounded_index_read(op: str, cancel_token: CancelToken, log_q: str,
 # How recently a root must have been scanned for the startup scheduler to skip
 # it. Short enough that a machine left on for a day rescans when the app is
 # reopened, long enough that a dev-server reload loop (or three windows opening
-# at once) cannot queue scan after scan. An on-demand scan is always available
-# regardless.
-SCAN_DEBOUNCE_S = 15 * 60
+# at once) cannot queue scan after scan — five minutes does that job as well
+# as fifteen, at a quarter the cost to the machine-left-on case. An on-demand
+# scan is always available regardless.
+SCAN_DEBOUNCE_S = 5 * 60
 # Run directories kept around for post-mortems; the rest are reclaimed at
 # startup (index/specs/scan.md §2).
 KEEP_RUNS = 20
@@ -414,15 +415,15 @@ def warm_root() -> str:
 # nothing against the ~2.2 s the warm is saving.
 WARM_WAIT_POLL_S = 0.5
 # ...and the hard ceiling on that wait. The first-ever whole-home scan that
-# motivated this took 9.2 s (570k files, 74k dirs); six minutes is ~40x that,
+# motivated this took 9.2 s (570k files, 74k dirs); two minutes is ~13x that,
 # so even a much larger home on a much slower disk still gets warmed. This is
 # the LAST resort, not the usual exit: a worker killed mid-walk never writes
-# `run_end`, and the wait spots that within ABANDONED_RUN_S (5 min) through the
+# `run_end`, and the wait spots that within ABANDONED_RUN_S (90 s) through the
 # same mtime check `runner.status` uses. The ceiling sits just past that so the
 # common death takes the specific path, and covers only the pathological rest —
 # a worker alive but wedged — so the thread can never poll for the process
 # lifetime.
-WARM_WAIT_DEADLINE_S = 6 * 60.0
+WARM_WAIT_DEADLINE_S = 2 * 60.0
 
 
 def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
@@ -491,14 +492,30 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     is the raw typed string, exactly as the client sent it, not yet split
     into a base and a pattern.
 
-    The resolved `base`/`mode` travel through to the caller on the returned
-    dict (`out["base"]`/`out["mode"]`) — the client captions the search and
-    decides whether hits carry highlight positions off `mode`, and coverage
-    checks downstream (`_rank_reason`) run against `base`, not the box's own
-    `root`, since a `~`/`/`-escaping query can leave the box's root far
-    behind.
+    The resolved `base`/`mode`/`pattern` travel through to the caller on the
+    returned dict (`out["base"]`/`out["mode"]`/`out["pattern"]`) — the client
+    captions the search and decides whether hits carry highlight positions
+    off `mode`, and coverage checks downstream (`_rank_reason`) run against
+    `base`, not the box's own `root`, since a `~`/`/`-escaping query can leave
+    the box's root far behind.
 
-    `token`, when given, is forwarded unchanged. `ranked`, likewise (D720) —
+    `pattern` (SPEC-search-space-wildcard.md §4) is what a glob hit's `rel`
+    was actually full-matched against — NOT the raw `q` the client typed.
+    `resolve_query` may have peeled a base off `q` (so `pattern` is only the
+    tail) and/or expanded whitespace into wildcards; the client cannot
+    recompute either without redoing a filesystem walk it has no access to,
+    so this is the one extra string (not a per-hit position, and not scoring)
+    that lets the client locate a glob hit's own literal pieces for
+    highlighting client-side, the same way `base`/`mode` already let it
+    caption and branch on the answer without a second copy of
+    `resolve_query`'s rules.
+
+    `token`, when given, is forwarded unchanged — to BOTH `resolve_query`'s
+    filesystem walk and `index_rank`'s SQL query, so a client that
+    disconnects mid-request stops the walk before its next segment's
+    `os.path.isdir` (bounding one slow segment, never making that segment's
+    syscall itself interruptible — see `_walk_from`'s docstring) in addition
+    to the query cancellation this already had. `ranked`, likewise (D720) —
     default True, so the startup warm call and every caller that doesn't
     pass it keeps the scored behavior. `ranked` has no effect once `mode` is
     "glob": glob hits are never scored (see `search_ranked`'s own
@@ -532,12 +549,14 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     reached it."""
     guard = MountGuard(mounts_dir=runner._mounts_dir())
     blocked_out: list = []
-    resolved = resolve_query(root, q, guard=guard, blocked_out=blocked_out)
+    resolved = resolve_query(root, q, guard=guard, blocked_out=blocked_out,
+                             token=token)
     base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
     out = index_rank(cfg, base, q=pattern, limit=limit, token=token,
                      ranked=ranked, glob=(mode == "glob"))
     out["base"] = base
     out["mode"] = mode
+    out["pattern"] = pattern
     if blocked_out:
         out["blocked_query_path"] = blocked_out[-1]
     return out
@@ -565,7 +584,7 @@ def _rank_worker(cfg: IndexConfig, root: str, q: str, limit: int,
     `_rank_reason` has had a chance to read it — it exists only to let this
     function answer "mount" correctly and must never reach the wire."""
     out = _rank_body(cfg, root, q, limit, token, ranked)
-    out["reason"] = _rank_reason(cfg, out["base"], out)
+    out["reason"] = _rank_reason(cfg, out["base"], out, token=token)
     out.pop("blocked_query_path", None)
     return out
 
@@ -637,7 +656,8 @@ def _scan_in_flight(cfg: IndexConfig, root: str) -> bool:
     return False
 
 
-def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
+def _rank_reason(cfg: IndexConfig, root: str, out: dict,
+                  token: CancelToken | None = None) -> str:
     """Why the ranked answer is what it is, in the client's vocabulary.
 
     The client switches the SOURCE on this — `mount` (and `package`) send it to
@@ -673,10 +693,20 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
     ancestor and would not, by itself, look mount-backed. Only when that
     isn't set does this fall back to `MountGuard.blocks_root(root)`, which
     covers `root` (here, `base`) actually landing ON or under a mount — the
-    case a resolved, already-covered-looking base can still be in."""
+    case a resolved, already-covered-looking base can still be in.
+
+    `token`, when given, is checked immediately before the `blocks_root`
+    call, for the same reason `_walk_from` checks one before each segment's
+    `isdir`: a client that has already disconnected should not pay that
+    realpath at all if the request is about to be thrown away. It cannot
+    interrupt the realpath once started — same limit, same honest
+    non-fix — it only skips paying for it when cancellation is already
+    known before the call begins."""
     if not out.get("covered"):
         if out.get("blocked_query_path"):
             return "mount"
+        if token is not None:
+            token.check()
         # BEFORE any kernel syscall of ours on the caller's path: blocks_root
         # is string work against the mount records plus one realpath, where a
         # stat under a wedged rclone mount blocks this thread indefinitely.
@@ -785,11 +815,16 @@ def startup_warm() -> None:
 # idiom `envinstall.py` and `ai/supervisor.py` already use, so it shows up in
 # the Activity card the same way a download or a background AI task does —
 # without teaching the card to speak /api/index/* or adding a third polling
-# loop to the frontend. One job per RUN (keyed by run_id, not by root): the
-# existing status poll can only ever answer for the most recent run, and this
-# is what makes two concurrent per-root scans each get their own row instead
-# of one clobbering the other.
-INDEX_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "index:"
+# loop to the frontend.
+#
+# ONE job for ALL runs (D-index-one-row). The live watcher (index_touch.py's
+# RescanQueue) starts many short per-folder runs back to back, and each used to
+# get its own `sys:index:<run_id>` row that then lingered FINISHED_TTL_S: the
+# Activity tab showed 5+ "Indexing files" rows at once. Now every run folds
+# into this single stable row: running while any run is live, one terminal
+# write when the last live run ends.
+INDEX_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "index"
+INDEX_JOB_ID = INDEX_JOB_PREFIX
 
 # Same order of magnitude as the Indexing panel's own poll (index-status.ts
 # INDEX_POLL_MS, 1500ms): an Activity row for a scan updates no more (and no
@@ -808,10 +843,6 @@ INDEX_JOB_ACTIVE_S = 1.5
 # starting while idle does not wait out this interval — see
 # `_index_job_wake` below.
 INDEX_JOB_IDLE_S = 10.0
-
-
-def _index_job_id(run_id: str) -> str:
-    return INDEX_JOB_PREFIX + run_id
 
 
 def _display_root(root: str) -> str:
@@ -887,190 +918,154 @@ _seen_running: set = set()
 _UNCOUNTABLE_PHASES = frozenset({"starting", "checking for changes"})
 
 
-def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -> bool:
-    """Mirror one run into its job. Returns whether the run was live
-    (`running`) on this tick, so `mirror_index_jobs_once` can answer the
-    loop's cadence question without a second read of the run directories.
-
-    `prev_total` — the rescan denominator ESTIMATE — is read by the CALLER,
-    once per tick, not here: this function runs once per run
-    `mirror_index_jobs_once` is mirroring (its own `for run in runs:` loop),
-    so a `read_manifest(cfg)` call inside this function would run once PER
-    RUNNING RUN per tick, not once per tick — the two disagree on multi-root
-    setups, where every configured root scanning at once used to mean one
-    JSON read of the same `partitions.json` per root, every tick. Hoisted out
-    (D733) because every run under one `cfg` shares that one file, so reading
-    it once and handing the same value to every run this tick is both cheaper
-    and, unlike N separate reads, immune to the file changing mid-tick and
-    making sibling runs disagree about the denominator."""
+def _classify_run(run: dict) -> str | None:
+    """`"live"` for a run this process may mirror and that is running,
+    `"terminal"` for one it watched run that has now ended, else `None` (no
+    run id/root, already folded into a batch, or never seen live here)."""
     run_id = run.get("run_id")
-    root = run.get("root")
-    if not run_id or not root:
-        return False
-    job_id = _index_job_id(str(run_id))
-    if job_id in _mirrored_terminal:
-        return False
-    running = bool(run.get("running"))
-    if running:
-        _seen_running.add(job_id)
-    elif job_id not in _seen_running:
-        # Never seen live in THIS process — see `_seen_running`'s own
-        # comment. Skip the mirror outright rather than upserting a
-        # notification for a run nobody here watched happen.
-        _mirrored_terminal.add(job_id)
-        return False
-    if not running:
-        prev_total = None
-    phase = str(run.get("phase") or "")
-    if phase in _UNCOUNTABLE_PHASES:
-        # `done` (files+reused) is still 0 here — derive_state's seeded
-        # "starting" default, or scan.py's own "checking for changes" phase
-        # that names it (the fsevents.hint/load_dir_cache race, before either
-        # has anything countable to report) — so a `total` alongside it would
-        # render "0 / 673,655", which reads as broken rather than as "not
-        # started counting yet". jobFraction (jobs.ts) already turns a `None`
-        # total into an indeterminate sweep, so withholding it here is enough;
-        # no frontend special-casing of the phase string is needed. Every
-        # phase reached AFTER this one keeps its estimate: the plain
-        # full/incremental pool path increments steadily throughout its own
-        # "scanning (...)" phase already, the fsevents path's bulk-reuse tail
-        # now emits mid-loop too (index/scan.py's beat-gated credit, this same
-        # branch), and "writing index"/"writing signatures" (store.py) show a
-        # stable, accurate `done` frozen at the walk's final count — none of
-        # those are "meaningless", just possibly an estimate, which
-        # `total_estimated` below already communicates honestly.
-        prev_total = None
-    root_display = _display_root(str(root))
-    fields = {
+    if not run_id or not run.get("root"):
+        return None
+    run_id = str(run_id)
+    if run_id in _mirrored_terminal:
+        return None
+    if run.get("running"):
+        _seen_running.add(run_id)
+        return "live"
+    if run_id not in _seen_running:
+        # Never seen live in THIS process -- see `_seen_running`'s own
+        # comment. Skip outright rather than upserting a notification for a
+        # run nobody here watched happen.
+        _mirrored_terminal.add(run_id)
+        return None
+    return "terminal"
+
+
+# The current batch: everything from the tick a run first goes live until the
+# tick no run is live any more. `open` once a running row was (attempted to
+# be) written; the terminal outcomes of runs that end meanwhile accumulate
+# here and are written exactly once, when the last live run ends.
+_batch: dict = {"open": False, "errors": [], "cancelled": False, "files": 0}
+
+
+def _reset_batch() -> None:
+    _batch.update(open=False, errors=[], cancelled=False, files=0)
+
+
+def _fold_terminal_run(run: dict) -> None:
+    if run.get("cancelled"):
+        _batch["cancelled"] = True
+    elif run.get("error"):
+        _batch["errors"].append(str(run.get("error")))
+    files_done = run.get("files")
+    summary = run.get("summary")
+    if isinstance(summary, dict) and summary.get("files") is not None:
+        files_done = summary.get("files")
+    _batch["files"] += int(files_done or 0)
+    _mirrored_terminal.add(str(run.get("run_id")))
+
+
+def _job_fields_common() -> dict:
+    return {
         "title": "Indexing files",
-        "detail": root_display,
-        # True only when `total` is actually set below — a tree that grew
-        # since the last scan means `done` can pass `total` before the walk
-        # finishes (jobs.ts `jobFraction` clamps the bar at 1.0 rather than
-        # render past full or backwards), so the row has to say the
-        # denominator is a guess, not a promise. This used to be an
-        # "(estimated)" suffix appended to `detail` above — but `detail` here
-        # is the ROOT PATH, so the qualifier ended up modifying the wrong
-        # noun (`~/proj (estimated)` reads as "the path is a guess"). A
-        # dedicated field lets the client (`jobAmount`'s call site) attach it
-        # to the COUNT instead, where it actually belongs (D733). `total_scope`
-        # is a different approximation for model downloads
-        # (`shared/modelSize.ts`) and is untouched by this.
-        "total_estimated": prev_total is not None,
         "kind": "task",
-        # `files` ALONE undercounts against `prev_total`: `Sink.add` (D724's
-        # own `read_manifest` fold, `index/store.py:215-229`) only adds to
-        # `files` for a dir it actually re-walks (`kind != "u"`) — an
-        # unchanged dir's cached file count goes to `reused` instead
-        # (`index/scan.py:78`'s own docstring: "'u' (unchanged; payload =
-        # cached file count)"). `prev_total`, by contrast, is the LAST
-        # compaction's `total_rows` — every row in the merged index, reused
-        # dirs included (`_compact_locked`'s `merged` table unions the old
-        # kept/unchanged rows with the new shard rows before counting,
-        # `index/store.py`'s `compact`). Comparing `files` alone to that would
-        # divide a NEW-ONLY numerator by an EVERYTHING denominator: a rescan
-        # that reuses 95% of a tree (the common case) would crawl to ~5% and
-        # then jump straight to done the instant compaction lands — a bar
-        # that lies with an official look, not an honest one. `files +
-        # reused` is the like-for-like pair: both counters are in the SAME
-        # file-count units (`scan.py:78`, `store.py:219,229`), so their sum is
-        # "every file this run has accounted for so far" — the same
-        # population `prev_total` counts.
-        "done": float((run.get("files") or 0) + (run.get("reused") or 0)),
-        "total": prev_total,
         "unit": "files",
-        # The run's phase, verbatim — this covers compaction too, which has
-        # no structured flag of its own and appears only as this same text
-        # ("writing index" / "writing signatures", index/store.py). The
-        # bridge does not special-case it into a separate concept.
-        "message": str(run.get("phase") or ""),
         "cancellable": True,
         # SILENT, not TRANSIENT (user: "similarly remove notification for
-        # file indexing completion" — same reasoning as the delete-toast
-        # reversal, see DECISIONS-toasts-become-notifications.md: a scan
-        # finishing carries nothing the user needs to be told). TRANSIENT
-        # still pops a card for ~2.5s before leaving nowhere; SILENT is the
-        # one tier that skips the pop entirely (jobs.py's own tier table).
-        # A finished scan's success has no destination worth keeping either
-        # way — the index itself isn't a file a click could open — so
-        # nobody asked for this row to stick around (SPEC
-        # actionable-notifications), and `_sweep` ages a `done` silent row
-        # like this one out on the read-gated clock rather than waiting on
-        # a dismiss. A failed or cancelled run is unaffected by this change
-        # on either axis: `effective_tier`'s error/cancelled override to
-        # `attention` reads `job.state`, not the stored tier, so it promotes
-        # a SILENT row exactly as it always promoted a TRANSIENT one — a
-        # failed scan still pops and is kept until dismissed, same as any
-        # other row a surface can show and let the user clear. The
-        # still-RUNNING row is unaffected too: `jobRows`/`jobs.py`'s own
-        # activity-list filter only ever drops a row by tier once it is
-        # terminal, so a live scan keeps showing progress in the Activity
-        # dock regardless of which of these two tiers it declares.
+        # file indexing completion" -- see DECISIONS-toasts-become-notifications.md):
+        # a scan finishing carries nothing the user needs to be told, and
+        # SILENT is the one tier that skips the pop entirely. `effective_tier`
+        # promotes an error/cancelled row to `attention` from `job.state`, so a
+        # failed scan still pops and is kept until dismissed.
         "tier": jobs.SILENT,
         # This row is the Explorer's own indexing scan, never anything a
         # different feature raises against the same id.
         "origin": "Explorer",
     }
-    if running:
-        fields["state"] = jobs.RUNNING
-    elif run.get("cancelled"):
-        fields["state"] = "cancelled"
-    elif run.get("error"):
+
+
+def _upsert_index_job(fields: dict) -> dict | None:
+    try:
+        # The Indexing tab of Preferences -- where the root list and toggle
+        # live, and the only place a scan can be cancelled or retried from
+        # outside this row.
+        return jobs.upsert({"id": INDEX_JOB_ID, **fields},
+                           page="/preferences?tab=indexing", server=True)
+    except jobs.JobError:
+        # A reporting failure says nothing about whether any RUN is live.
+        logger.exception("could not report index job %s", INDEX_JOB_ID)
+        return None
+
+
+def _write_running(cfg: IndexConfig, live: list, prev_total: float | None) -> None:
+    """Upsert the one row as running for the aggregate of `live` runs.
+
+    One root -> its display form, several -> "N folders". The estimated
+    denominator (`prev_total`, the whole index's last row count) only makes
+    sense for a lone run, so with several live runs the bar is indeterminate
+    (`total` None) and `done` is the sum of their counts."""
+    _batch["open"] = True
+    roots = sorted({str(r.get("root")) for r in live})
+    single = len(live) == 1
+    phase = str(live[0].get("phase") or "")
+    if not single or phase in _UNCOUNTABLE_PHASES:
+        # `done` (files+reused) is still 0 for the seeded "starting" /
+        # "checking for changes" phases -- a `total` next to it would render
+        # "0 / 673,655", which reads as broken. jobFraction (jobs.ts) turns a
+        # `None` total into an indeterminate sweep.
+        prev_total = None
+    # `files` alone undercounts against `prev_total` (reused dirs land in
+    # `reused`, index/scan.py:78); `files + reused` is the like-for-like pair.
+    done = float(sum((r.get("files") or 0) + (r.get("reused") or 0) for r in live))
+    fields = {
+        **_job_fields_common(),
+        "detail": _display_root(roots[0]) if len(roots) == 1 else f"{len(roots)} folders",
+        # True only when `total` is actually set: a grown tree can pass it.
+        "total_estimated": prev_total is not None,
+        "done": done,
+        "total": prev_total,
+        "message": phase,
+        "state": jobs.RUNNING,
+    }
+    result = _upsert_index_job(fields)
+    # A cancel is a REQUEST the reporter honours on its next tick (jobs.py
+    # `request_cancel`) -- this IS that next tick. The row is aggregate, so a
+    # cancel on it cancels EVERY live run (and any run that starts while the
+    # request is still pending, until the row goes terminal).
+    if result and result.get("cancel_requested"):
+        for r in live:
+            try:
+                runner.cancel(cfg, str(r.get("run_id")))
+            except ValueError:
+                pass
+
+
+def _write_terminal() -> None:
+    """The batch's single terminal write: error beats cancelled beats done."""
+    fields = {**_job_fields_common(), "total": None, "total_estimated": False}
+    if _batch["errors"]:
         fields["state"] = "error"
-        fields["message"] = str(run.get("error"))
+        fields["message"] = _batch["errors"][0]
+    elif _batch["cancelled"]:
+        fields["state"] = "cancelled"
+        fields["message"] = ""
     else:
         fields["state"] = "done"
-        summary = run.get("summary")
-        files_done = run.get("files")
-        if isinstance(summary, dict) and summary.get("files") is not None:
-            files_done = summary.get("files")
-        fields["message"] = f"{int(files_done or 0)} files indexed"
-    try:
-        # The Indexing tab of Preferences — where this run's own root list
-        # and toggle live, and the only place a scan can be cancelled or
-        # retried from outside this row.
-        result = jobs.upsert({"id": job_id, **fields},
-                             page="/preferences?tab=indexing", server=True)
-    except jobs.JobError:
-        # A reporting failure says nothing about whether the RUN is live —
-        # `running` above already answered that from `run` itself, before
-        # `jobs.upsert` was ever called. Returning bare `None` here used to
-        # read as "not live" to `mirror_index_jobs_once`'s `if
-        # _mirror_one_run_job(...): live = True`, which backed the tick off
-        # to the idle cadence (INDEX_JOB_IDLE_S, 10s) while a scan was
-        # genuinely running and simply failing to report — the two facts are
-        # independent and only one of them broke.
-        logger.exception("could not report index job %s", job_id)
-        return running
-    if not running:
-        _mirrored_terminal.add(job_id)
-        return False
-    # A cancel is a REQUEST the reporter honours on its next tick (jobs.py
-    # `request_cancel`'s own docstring) — this IS that next tick, and
-    # `runner.cancel` is the exact function `/api/index/cancel` calls, so
-    # driving it from here is the same action through the same path, just
-    # without an HTTP hop the server does not need to make to itself.
-    if result.get("cancel_requested"):
-        try:
-            runner.cancel(cfg, str(run_id))
-        except ValueError:
-            pass
-    return True
+        fields["message"] = f"{int(_batch['files'])} files indexed"
+    if _upsert_index_job(fields) is not None:
+        _reset_batch()
 
 
 def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> bool:
     """One tick of the Activity bridge: every run `list_runs` currently
-    knows about gets (or updates) a `sys:index:<run_id>` job.
+    knows about is folded into the single `sys:index` job.
 
-    Deliberately reads through `runner.list_runs` — the same fold
-    `/api/index/status` and the Indexing panel already use — rather than
+    Deliberately reads through `runner.list_runs` -- the same fold
+    `/api/index/status` and the Indexing panel already use -- rather than
     opening `events.jsonl` a second way, so this shares that function's
-    liveness check and its 1s fold cache instead of adding a competing read
-    of the same run directories.
+    liveness check and its 1s fold cache.
 
-    Returns whether any run this tick was still `running` — the signal
-    `_index_job_loop` uses to pick its next sleep, again without a second
-    read of the run directories.
+    Returns whether any run this tick was still `running` -- the signal
+    `_index_job_loop` uses to pick its next sleep.
     """
     cfg = cfg or load_config()
     try:
@@ -1078,36 +1073,35 @@ def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> bool:
     except Exception:  # noqa: BLE001 - a bridge tick must never take the server down
         logger.exception("could not list index runs for job mirroring")
         return False
-    # An ESTIMATE for a rescan's denominator: the file count `partitions.json`
-    # recorded as of the LAST completed scan — the same fold `/api/index/status`
-    # already reads (`read_manifest(cfg)["rows"]`). Read ONCE HERE, per tick,
-    # not inside `_mirror_one_run_job`'s own per-run loop below — every run
-    # under this one `cfg` shares the same `partitions.json`, so N running
-    # runs sharing one config used to mean N identical JSON reads every tick
-    # (D733). A first-ever scan has no such file (`read_manifest` returns
-    # None) and every run's `total` stays the indeterminate `None` (jobs.ts
-    # `jobFraction`/`StatusChip`) rather than a fake number invented to fill
-    # a bar. `cfg` is best-effort here (a caller can hand this a stub, as
-    # every non-estimate test in test_index_jobs.py does): a bad or absent
-    # manifest just means no estimate, not a broken tick. Read unconditionally
-    # (not gated on any run being `running`) — cheap (one small JSON file),
-    # and `_mirror_one_run_job` already drops it back to `None` for a run
-    # that isn't running, so a wasted read here costs nothing observable.
+    # An ESTIMATE for a lone rescan's denominator: the file count
+    # `partitions.json` recorded as of the LAST completed scan. Read ONCE per
+    # tick (every run under this `cfg` shares the one file, D733). Best-effort:
+    # a bad or absent manifest just means no estimate.
     try:
         manifest = read_manifest(cfg)
     except Exception:
         manifest = None
     prev_rows = int((manifest or {}).get("rows") or 0)
     prev_total = float(prev_rows) if prev_rows > 0 else None
-    live = False
+    live: list = []
     for run in runs:
         try:
-            if _mirror_one_run_job(cfg, run, prev_total):
-                live = True
+            kind = _classify_run(run)
+            if kind == "live":
+                live.append(run)
+            elif kind == "terminal":
+                _fold_terminal_run(run)
         except Exception:  # noqa: BLE001 - one bad run must not stop the rest
             logger.exception("could not mirror index run %s into jobs",
                              run.get("run_id"))
-    return live
+    try:
+        if live:
+            _write_running(cfg, live, prev_total)
+        elif _batch["open"]:
+            _write_terminal()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not write the index job")
+    return bool(live)
 
 
 # Set by every path that starts a scan (`run_startup_scan`, `api_index_scan`,
@@ -1190,25 +1184,17 @@ _freshness_slot = threading.Lock()
 # start; this one is about the checks, and only about the ones this process
 # makes.
 #
-# KNOWN, PRE-EXISTING, AND DELIBERATELY NOT FIXED HERE: this being 55, i.e.
-# SHORTER than freshness.MIN_INTERVAL_S (60), does NOT produce a ~60s folder-open
-# scan cadence. It produces ~110s. Trace the two clocks: `_freshness_due` stamps
-# this one the moment a check becomes due, WHETHER OR NOT the check then goes on
-# to scan. So the check at t=55 stamps 55 and calls
-# freshness.note_folder_opened, which sees the last scan ~55s ago, refuses on its
-# own 60s floor, and starts nothing; the next check is therefore t=110, and that
-# is the first one that can scan. Every other check is structurally wasted. An
-# equal 60 gives ~120 by the same argument, so "equal is the bad case, shorter is
-# the safe one" — which is what the note here used to say — is backwards.
-#
-# The fix, if the documented cadence is ever actually wanted, is to raise this
-# ABOVE MIN_INTERVAL_S plus the spawn offset (61 would do): the check then
-# arrives with the scan floor already clear and the real cadence is the number
-# written here. It is left alone on purpose. How often every developer machine
-# rescans its home is a behaviour change and the user's call, not a side effect
-# of a comment correction — and certainly not of a commit whose subject is "wait
-# three seconds".
-FRESHNESS_CHECK_S = 55.0
+# `_freshness_due` stamps this clock the moment a check becomes due, WHETHER OR
+# NOT the check then goes on to scan — so this value must sit ABOVE
+# freshness.MIN_INTERVAL_S (60), with margin for the ~1s a scan takes to record
+# itself, or a check can land before the previous scan has cleared its own
+# floor, stamp anyway, and get refused: the effective folder-open rescan
+# cadence would then be a multiple of this number rather than the number
+# itself (see
+# tests/test_index_freshness.py::test_the_effective_folder_open_scan_cadence_tracks_freshness_check_s).
+# With the margin kept, every check that comes due finds the scan floor
+# already clear, so the real cadence IS the value written here.
+FRESHNESS_CHECK_S = 62.0
 
 # ...and a check that is going to act does not act where it was asked. It runs
 # the ordinary incremental scan of the whole enclosing root: min(10, cpu_count)
@@ -1240,12 +1226,12 @@ FRESHNESS_CHECK_S = 55.0
 # It must stay far below FRESHNESS_CHECK_S, which is the only relationship
 # between the two that matters. The wait is absorbed inside the existing check
 # interval — a root's checks land every FRESHNESS_CHECK_S + FRESHNESS_DELAY_S
-# instead of every FRESHNESS_CHECK_S — so at three against fifty-five it shifts
-# the schedule by a rounding error and introduces no refusal that was not
-# already happening (see the note above: the refusals are pre-existing and come
-# from the check interval, not from this). A delay of the same order as the check
-# interval WOULD change the cadence materially, which is what the test on this
-# pair guards.
+# instead of every FRESHNESS_CHECK_S — so at three against sixty-two it shifts
+# the schedule by a rounding error and introduces no refusal of its own (the
+# refusals, if any, come from the check interval interacting with the scan
+# floor above, not from this). A delay of the same order as the check interval
+# WOULD change the cadence materially, which is what the test on this pair
+# guards.
 #
 # _freshness_slot is held across the wait, so listings that arrive during it are
 # dropped rather than queued — the same thing the slot already did for the
@@ -1321,11 +1307,19 @@ def _run_freshness_check(path: str, now: float | None = None) -> None:
         if not _freshness_due(root, time.time(), stamp=False):
             return
         _freshness_wait(FRESHNESS_DELAY_S)
-        # ...and the stamp is taken on the far side, against the clock as it is
-        # now, so the recorded check time is when the check actually ran.
-        if not _freshness_due(root, time.time()):
+        # Still just a peek: note_folder_opened below does a duckdb lookup and
+        # can spawn a scan subprocess before it returns, and that latency must
+        # not be spent out of the FRESHNESS_CHECK_S margin. Stamping here,
+        # before paying that cost, would record a check time earlier than when
+        # the check actually finished, letting the next one land sooner than
+        # the margin intends.
+        if not _freshness_due(root, time.time(), stamp=False):
             return
         result = freshness.note_folder_opened(cfg, path, roots, now=now)
+        # The stamp is taken on the far side of the lookup, against the clock
+        # as it is now — so the recorded check time is when the check actually
+        # finished, not when it started.
+        _freshness_due(root, time.time())
         if result.started:
             _wake_index_job_bridge()
             logger.info("index: %s changed since the last scan; rescanning %s",
@@ -1783,12 +1777,16 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     `root` is the box's own root; `q` is the raw string exactly as typed,
     unsplit. `_rank_body` resolves the two into a `(base, pattern, mode)`
     triple (`resolve_query`, index/query.py) before ever touching the index —
-    `~` and a leading `/` can walk `base` away from `root` entirely, and
-    `mode` ("substring" or "glob") picks which SQL runs. Both `base` and
-    `mode` come back on the response: `base` is what the client captions the
-    search with, and `mode` says whether a hit carries a highlight-worthy
-    substring position (`positions`, dropped below either way — see the
-    `positions` paragraph) or is an unhighlighted glob match.
+    `~` and a leading `/` can walk `base` away from `root` entirely, `mode`
+    ("substring" or "glob") picks which SQL runs, and whitespace in `q` may
+    have been expanded into wildcards (`expand_whitespace_query`,
+    SPEC-search-space-wildcard.md). All three come back on the response:
+    `base` is what the client captions the search with, `mode` says whether
+    a hit carries a highlight-worthy substring position or is a glob match,
+    and `pattern` is what a glob hit's `rel` was actually matched against —
+    the client needs it (not the raw `q`) to locate a glob hit's own literal
+    pieces for highlighting, since it cannot redo `resolve_query`'s
+    filesystem-dependent base walk itself.
 
     A miss is `{covered: false, hits: []}` with a 200, exactly as for the
     corpus: "no index yet", "not covered" and "a scan is running" are one
@@ -1900,7 +1898,13 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     log("index rank: %r under %s answered in %.1fms (lane_wait=%.1fms "
         "worker=%.1fms reason=%r)", q, root, total_ms, lane_wait_ms, worker_ms,
         out["reason"])
-    return {"ok": True, **out}
+    # Surfaced on the wire so a customer's browser console (verbose enabled)
+    # can show the same breakdown the DEBUG/WARNING log line above computes,
+    # without asking them to find `$TMPDIR/fused-render-<pid>.log`. Same three
+    # locals as the log line — not re-measured.
+    timing = {"total_ms": round(total_ms, 1), "lane_wait_ms": round(lane_wait_ms, 1),
+              "worker_ms": round(worker_ms, 1)}
+    return {"ok": True, **out, "timing": timing}
 
 
 def _columnar(out: dict) -> dict:

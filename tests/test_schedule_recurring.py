@@ -170,10 +170,12 @@ def test_a_single_missed_occurrence_still_runs_with_nothing_reported_skipped(
     ran = _entries()[first["id"]]
     assert schedule.parse_due(ran["due"]) == first_due  # not moved
     assert "skipped" not in ran
-    # ...and nothing was narrated about it. (The event ring is process-global,
-    # so this asks about THIS entry rather than about the ring being empty.)
-    assert [e for e in schedule.event_log()
-            if e["entry_id"] == first["id"]] == []
+    # ...and nothing was narrated about SKIPPING it — the only event on this
+    # entry is the ordinary `started` every successful send gets, not a
+    # "missed"/"skipped" report. (The event ring is process-global, so this
+    # asks about THIS entry rather than about the ring being empty.)
+    assert [e["kind"] for e in schedule.event_log()
+            if e["entry_id"] == first["id"]] == [schedule.EVENT_STARTED]
 
 
 def test_one_shot_catches_up_however_late(target, spawned):
@@ -210,9 +212,9 @@ def test_an_occurrence_inherits_the_templates_model_and_effort(target, spawned):
     that kept them to itself would run every repeat on the default model —
     exactly the run the user configured them for (bugbot, PR #968)."""
     template = schedule.create(str(target), "run", repeats="*/5 * * * *",
-                               model="claude-fable-5-1", effort="high")
+                               model="opus", effort="high")
     occurrence = _occurrences(template["id"])[0]
-    assert occurrence["model"] == "claude-fable-5-1"
+    assert occurrence["model"] == "opus"
     assert occurrence["effort"] == "high"
 
     # ...and a template without either hands down the empty strings the rest of

@@ -28,8 +28,9 @@ import { Search, Shuffle } from "lucide-react";
 
 import {
   ICON_COLORS,
-  ICON_COLOR_HEX,
   ICON_COLOR_LABEL,
+  iconPlateRect,
+  iconStyleBlock,
   isIconColor,
   type IconColor,
 } from "@platform/lib/icon-color";
@@ -74,17 +75,17 @@ function escapeAttr(v: string | number): string {
   return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-/** A lucide icon as a standalone icon.svg document: no plate, no margin — the
- *  bare glyph filling lucide's own 24-unit viewBox edge to edge, in the
- *  named colour.
+/** A lucide icon as a standalone icon.svg document: lucide's 24-unit
+ *  viewBox with a square plate behind the glyph (the sidebar's `--bg-alt`
+ *  pair — icon-color.ts ICON_BG_HEX) and the glyph inset so its strokes stay
+ *  off the plate's edge, in the named colour.
  *
- *  The colour is written TWICE, for two readers. The root's `data-fused-color`
- *  plus `stroke="currentColor"` is the shell's contract (icon-color.ts): it
- *  swaps the hex for the live theme before the `<img>` sees the file, so the
- *  icon follows a pinned Light/Dark exactly as the AppStar fallback does. The
- *  `<style>` block is for everyone else — Finder, GitHub, a bare tab — where
- *  only the OS theme is knowable: it sets `color` (which currentColor reads)
- *  for light and flips it under prefers-color-scheme: dark. */
+ *  The colours are written TWICE, for two readers. The root's
+ *  `data-fused-color` plus `stroke="currentColor"` / `var(--fused-bg)` is the
+ *  shell's contract (icon-color.ts): it swaps the hex for the live theme
+ *  before the `<img>` sees the file, so the icon follows a pinned Light/Dark
+ *  exactly as the AppStar fallback does. The `<style>` block is for everyone
+ *  else — Finder, GitHub, a bare tab — where only the OS theme is knowable. */
 export function glyphIconSvg(node: IconNode, color: IconColor = "default"): string {
   const inner = node
     .map(([tag, attrs]) => {
@@ -95,16 +96,18 @@ export function glyphIconSvg(node: IconNode, color: IconColor = "default"): stri
       return `<${tag}${a}/>`;
     })
     .join("");
-  const hex = ICON_COLOR_HEX[color];
   return (
-    // Lucide's own viewBox, untransformed: the glyph fills the tile with no
-    // margin, so it draws as large as the host's box allows.
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" data-fused-color="${color}">` +
-    `<style>svg{color:${hex.light}}@media(prefers-color-scheme:dark){svg{color:${hex.dark}}}</style>` +
-    '<g fill="none" ' +
-    // 2.5 not lucide's 2: the row draws the file at 14px, where a 2-unit
-    // stroke lands under a pixel and reads faint beside the emoji rows.
-    'stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+    iconStyleBlock(color) +
+    iconPlateRect(24) +
+    // Inset 2.4 units a side (glyph drawn at 80%; owner, 2026-09-20, was
+    // 75%) so the 24-unit lucide art sits inside the plate rather than
+    // touching its edge.
+    '<g transform="translate(2.4 2.4) scale(0.8)" fill="none" ' +
+    // Lucide's own 2 (owner, 2026-09-20, was 3): the row now draws the file
+    // at 24px and the glyph at 80%, so the stroke lands at ~1.6px and no
+    // longer needs thickening to survive.
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
     inner +
     "</g></svg>"
   );
@@ -527,6 +530,10 @@ export default function IconPicker({
       // elements only (tokens.css stores bare colours in --shadow-*).
       data-slot="icon-picker"
       className="fixed z-[1001] flex w-[292px] flex-col gap-2 rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-md"
+      // Drawn in place, not portalled: inside the Tasks side peek's frame a
+      // click on this popover must not read as a click on blank page
+      // (shell/task-peek-store.ts `PEEK_FRAME_KEEPS_OPEN`).
+      data-peek-keep="1"
     >
       <div className="flex items-center justify-between gap-2 border-b border-border pb-1">
         {tabs.length > 1 ? (

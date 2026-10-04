@@ -44,6 +44,25 @@ describe("currentApps", () => {
     expect(out.map((a) => a.running)).toEqual([false, true, false]);
     expect(out[2].kind).toBe("linked");
   });
+
+  it("counts the tasks WAITING on each folder, and defaults to none", () => {
+    // "· 2 queued" on the sidebar row (the project queue). A COUNT and not a
+    // flag, because the row prints the number — two tasks waiting on one folder
+    // is the ordinary case the moment the queue is on.
+    const out = currentApps(
+      [entry(A), entry(B)],
+      [A],
+      new Set(),
+      [B + "/sub", B + "/other", A + "/x"],
+    );
+    expect(out.map((a) => a.queued)).toEqual([1, 2]);
+    // Containment is the same test the running dot uses: a task on a subfolder
+    // belongs to the app.
+    expect(out[1].running).toBe(false);
+    // A caller that predates the queue — and every suite — still answers 0
+    // rather than being rewritten to say so.
+    expect(currentApps([entry(A)], []).map((a) => a.queued)).toEqual([0]);
+  });
 });
 
 describe("the displayed order", () => {

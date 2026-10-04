@@ -141,6 +141,54 @@
   -webkit-text-fill-color: transparent;
   animation: c-running-shimmer 2.2s linear infinite;
 }
+/* "paused · resumes 4:00 AM" — the seat "running" rides, for a session the
+   plan's usage limit stopped (ui/Topbar, platform/lib/usage-limit). The same
+   size and seat, and NO shimmer: the word's whole content is that nothing is
+   moving, and an animation on it would say the opposite. Blocked's red, which is
+   the ring this task wears everywhere else on the page. */
+.c-tb-paused {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 1px;
+  white-space: nowrap;
+  color: var(--status-failed);
+}
+
+/* ---- the header of a chat that is WAITING IN ITS FOLDER'S LINE -------------
+   One row, read left to right, and it is the Tasks row's order: ring, TASK-nnn,
+   title, "1st in line · behind TASK-046", then the project at the far end
+   (Akshil, 2026-09-18). The markup is the peek's block plus the row's caption
+   (ui/Topbar, shell/TaskPeekWho, styles/tasks.css) — nothing is drawn here; what
+   is stated here is only where the caption sits, which is the one thing the two
+   borrowed blocks cannot know about each other.
+
+   WHY THE OVERRIDES ARE GATED ON `.is-queued`: the peek's identity block takes
+   all the free width (`flex: 1 1 auto`, task-peek.css) so that its title may run
+   long and the project lands on the right. That is exactly right with nothing
+   after the title — and it is why a caption placed after the block got shoved
+   against the right-hand edge, half a header away from the title it is a caption
+   for. On a queued header the block shrinks to its content, the sentence follows
+   the title, and the auto margin moves to the project so the right end of the
+   row looks identical to every other chat's. A header with no queue is byte for
+   byte the rule it always was. */
+.c-topbar.is-queued .task-side-peek-who {
+  flex: 0 1 auto;
+}
+.c-topbar.is-queued .task-side-peek-project {
+  margin-left: auto;
+}
+/* The Tasks row's caption in a header rather than in a row: it keeps the row's
+   size, ink and ellipsis and loses only the negative margin, which exists over
+   there to pull the sentence back under a title that sits in a wider gap
+   (`--tasks-row-gap`, tasks.css) — a gap this line does not have. `align-self`
+   is stated rather than inherited: the caption is the shortest box on the line,
+   and the one thing the reader must not see is it riding low against the title's
+   baseline. */
+.c-topbar .tasks-row-queue {
+  margin-left: 0;
+  align-self: center;
+}
 @keyframes c-running-shimmer {
   from {
     background-position: 100% 0;
@@ -289,12 +337,119 @@
 
 /* ---- composer (T:2701-2790, 3000-3010) --------------------------------- */
 .c-composer {
+  position: relative;
   background: var(--c-surface);
   border: 1px solid var(--c-border);
   border-radius: 20px;
   padding: 12px 14px 10px;
   box-shadow: 0 6px 24px var(--c-shadow);
-  transition: border-color 0.15s;
+  transition:
+    border-color 0.15s,
+    padding 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ---- IDLE: ONE LINE (Akshil, 2026-09-16) ----------------------------------
+   The chat composer is one line — the box and Send — whenever focus is not in
+   it and the pointer is not over it, and the full card while the reader is in
+   it or hovering it (`ui/Composer.tsx`, `is-idle`).
+   Same surface, same border, same 20px radius on both sides: what moves is the
+   padding and the tools' shelf, together over 240ms on one ease, and the caret
+   never leaves the box.
+
+   THE SHELF (`.c-composer-tools`) is a one-track grid around the tool row, and
+   its track is what folds: `1fr → 0fr`. A track animates from exactly the
+   row's height to nothing — a `max-height` guess either snaps (too low) or
+   spends most of the ride shrinking empty air (too high), which is what read as
+   abrupt. NO `overflow: hidden` anywhere on the way down, and no `opacity` on
+   the row: both took Send with them (cmux pass, 2026-09-16). The row's other
+   children fade and go `visibility: hidden` instead, and Send is lifted OUT of
+   the shelf while idle — absolutely placed at the SAME 14px from the card's
+   right edge that the open row's padding gives it, so it does not slide
+   sideways when the card opens.
+
+   THE BOX IS BLOCK AND 32px WHILE IDLE — the button's height — with its 21px
+   line centred by padding: the inline-block line box the open card keeps for
+   its 6px of descender room (see the note above `.c-composer textarea`) is
+   exactly the "extra padding at the bottom" under an idle placeholder. */
+.c-composer.is-idle {
+  padding: 6px 14px;
+}
+.c-composer textarea {
+  transition:
+    padding 0.24s cubic-bezier(0.2, 0, 0, 1),
+    min-height 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+.c-composer.is-idle textarea {
+  display: block;
+  padding: 5.5px 40px 5.5px 2px;
+  /* The auto-grow hook writes `height` inline; min/max are what override it.
+     One line of whatever is in the box, whatever the window did to it while it
+     was open. */
+  min-height: 32px;
+  max-height: 32px;
+  overflow: hidden;
+}
+.c-composer-tools {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+.c-composer-tools > .c-composer-row {
+  min-height: 0;
+}
+/* THE TOOLS ARE NEVER SEEN MOVING (Akshil, 2026-09-16: "I can see the icon
+   shifting at weird places"). The shelf's track slides them while it folds, so
+   the fade is not the slide's: on the way OUT they are gone in 80ms, before the
+   track has moved far; on the way IN they hold back 100ms and arrive over the
+   last 140ms, once the shelf is most of the way open. */
+.c-composer-row > * {
+  transition:
+    opacity 0.14s ease-out 0.1s,
+    visibility 0s;
+}
+.c-composer.is-idle .c-composer-tools {
+  grid-template-rows: 0fr;
+}
+.c-composer.is-idle .c-composer-row > :not(.c-send) {
+  opacity: 0;
+  visibility: hidden;
+  /* Hidden or not, a folded row must not be able to catch a press. */
+  pointer-events: none;
+  transition:
+    opacity 0.08s ease-out,
+    visibility 0s 0.08s;
+}
+/* SEND DOES NOT MOVE (Akshil, 2026-09-16: "the button location doesn't
+   change, don't move it"). In the chat it is pinned to the card's bottom-right
+   corner in BOTH states — out of the row's flow for good, so opening and
+   folding never re-seat it; the only thing that changes is the card's bottom
+   padding under it, 10px open and 6px idle, and `bottom` glides between the
+   two with the rest. The row keeps its right end clear for it. The landing
+   card is untouched: its Send is still the last item in its row. */
+.c-composer-chat .c-composer-row {
+  padding-right: 38px;
+}
+.c-composer-chat .c-composer .c-send {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  margin-left: 0;
+  transition:
+    bottom 0.24s cubic-bezier(0.2, 0, 0, 1),
+    filter 0.12s,
+    transform 0.12s,
+    opacity 0.12s;
+}
+.c-composer-chat .c-composer.is-idle .c-send {
+  bottom: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-composer,
+  .c-composer textarea,
+  .c-composer-tools,
+  .c-composer-row > * {
+    transition: none;
+  }
 }
 .c-composer:focus-within {
   border-color: var(--c-border-strong);
@@ -330,7 +485,13 @@
    composer looking fully live — measured against :1777, which draws `.6` and
    `not-allowed`. Ships with `.c-schedbtn:disabled` below, or T's documented
    pairing of the two refusals stays half-drawn. */
-.c-composer textarea:disabled {
+/* …AND THE SAME DIM FOR THE SAME REASON WHILE A SCHEDULE HOP IS OUT
+   (Bugbot 4034977395). The box is `readonly` rather than `disabled` there — the
+   words are still the reader's to read and copy, and the caret must not be
+   yanked out mid-gesture — but a box that will not take a keystroke has to look
+   like one either way. */
+.c-composer textarea:disabled,
+.c-composer textarea[readonly] {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -356,6 +517,19 @@
 .c-composer-row.is-tight select.c-pill {
   padding-right: 17px;
   background-position: right 5px center;
+}
+/* ONE LINE BEFORE TWO: below `tight` the ladder drops seats instead of
+   wrapping. `slim` hides the context ring and the screenshot group — the two
+   whose facts live elsewhere too (the ring's number in its popover, the
+   camera in the strip above an app) — and `bare` also hides the calendar.
+   Send never goes. `display: none` and not `visibility`, so `readRow` prices
+   the seat at nothing, gap included. */
+.c-composer-row.is-slim .c-ctxwrap,
+.c-composer-row.is-slim .c-anncta {
+  display: none;
+}
+.c-composer-row.is-bare > .c-schedbtn {
+  display: none;
 }
 /* The spacer becomes the LINE BREAK — `width: 100%` and not `flex-basis`,
    which WKWebView ignored outright (T:2755-2769). */
@@ -452,6 +626,216 @@ select.c-pill {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* ---- the context meter (the composer's "how full is the window") --------
+   A RING AND NOTHING INSIDE IT. The BUTTON is 24px — the pills' height, so
+   the row's line stays one line of controls — but the ring drawn in it is
+   16px, the size of the calendar glyph beside it: a circle the full height of
+   a text pill reads as a coin, not an icon (Akshil, 2026-09-21: "the ring
+   still looks big"). The digits used to sit in the middle; the arc's fill is
+   the glance and the tooltip carries the number.
+
+   THREE COLOUR STEPS, not a gradient: dim below 75%, yellow (`is-warn`) to 90%,
+   red (`is-high`) past it. The arc takes `currentColor`, so hover and focus
+   still move the ring with the button, and the step colours are set on the
+   button so the same rule reaches both. */
+.c-ctxwrap {
+  display: inline-flex;
+}
+.c-ctxmeter {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* The pills beside it measure 24px; the ring stands the same, so the row
+     reads as one line of controls rather than a row with a bigger coin in it. */
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  line-height: 1;
+  color: var(--c-dim);
+  cursor: pointer;
+  outline: none;
+  /* A press opens the breakdown; a drag across it must not select the digits
+     instead of pressing. */
+  user-select: none;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
+}
+.c-ctxmeter:hover,
+.c-ctxmeter:focus-visible,
+.c-ctxmeter[aria-expanded="true"] {
+  background-color: var(--c-surface-2);
+  color: var(--c-fg);
+}
+.c-ctxmeter:focus-visible {
+  border-color: var(--c-border-strong);
+}
+/* The step colours win over hover's `--c-fg`: a red ring going grey under the
+   pointer would be the warning switching off exactly when the reader looks. */
+.c-ctxmeter.is-warn,
+.c-ctxmeter.is-warn:hover,
+.c-ctxmeter.is-warn:focus-visible,
+.c-ctxmeter.is-warn[aria-expanded="true"] {
+  color: var(--c-status-progress);
+}
+.c-ctxmeter.is-high,
+.c-ctxmeter.is-high:hover,
+.c-ctxmeter.is-high:focus-visible,
+.c-ctxmeter.is-high[aria-expanded="true"] {
+  color: var(--c-error);
+}
+.c-ctxmeter-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.c-ctxmeter-track {
+  fill: none;
+  stroke: var(--c-border-strong);
+  stroke-width: 2;
+}
+.c-ctxmeter-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  /* The fill steps once per API response, not continuously — a short ease
+     reads as the ring moving rather than as a new ring appearing. */
+  transition:
+    stroke-dasharray 0.25s ease,
+    stroke 0.12s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-ctxmeter-arc {
+    transition: none;
+  }
+}
+
+/* THE ONE DIM LINE ABOVE THE BOX (spec §4), and it is one line: no icon, no
+   colour, no box. It appears 20k tokens before auto-compact fires and says the
+   same words the CLI says. */
+.c-ctxwarn {
+  margin: 0 2px 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--c-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- `/context`, in a popover -------------------------------------------
+   The block chart the CLI prints, at this app's type. The three legend colours
+   are the CLI's own dark values, with light-theme equivalents beside them —
+   published as tokens so the grid and its legend cannot drift apart. */
+.c-tokens,
+.c-overlay,
+.chat-root {
+  --c-ctx-messages: rgb(130, 125, 189);
+  --c-ctx-buffer: rgb(153, 153, 153);
+  --c-ctx-free: rgb(136, 136, 136);
+}
+:root[data-theme="light"] .c-tokens,
+:root[data-theme="light"] .c-overlay,
+:root[data-theme="light"] .chat-root {
+  --c-ctx-messages: rgb(85, 80, 150);
+  --c-ctx-buffer: rgb(110, 110, 110);
+  --c-ctx-free: rgb(150, 150, 150);
+}
+.c-ctxpop {
+  padding: 10px 12px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+  /* Floored to the chat pane it hangs in rather than to the window: at 20
+     columns the grid needs about 220px and the longest legend row about 260,
+     so a 300px card fits inside the narrowest pane this chat ships in and the
+     popover does not have to spill over the preview beside it. */
+  width: max-content;
+  max-width: min(92vw, 300px);
+}
+.c-ctxpop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.c-ctxpop-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--c-fg);
+}
+.c-ctxpop-dim {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--c-faint);
+}
+.c-ctxpop-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--c-ctx-cols, 10), 1fr);
+  /* The glyphs carry the picture; the grid only has to keep the rows square
+     and the columns even. */
+  margin: 8px 0;
+  line-height: 1;
+  letter-spacing: 0;
+}
+.c-ctxpop-sq,
+.c-ctxpop-key {
+  /* The CLI's glyphs (⛀ ⛁ ⛝ ⛶, U+26C0–U+26F6) live in the symbol faces, not the
+     UI text face — without these fallbacks every square is tofu and the three
+     categories are told apart only by three greys. */
+  font-family: "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols 2",
+    "Noto Sans Symbols2", "DejaVu Sans", "Symbola", sans-serif;
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: center;
+}
+.c-ctxpop-key.is-messages { color: var(--c-ctx-messages); }
+.c-ctxpop-key.is-buffer { color: var(--c-ctx-buffer); }
+.c-ctxpop-key.is-free { color: var(--c-ctx-free); opacity: 0.7; }
+.c-ctxpop-sq.is-messages {
+  color: var(--c-ctx-messages);
+}
+.c-ctxpop-sq.is-buffer {
+  color: var(--c-ctx-buffer);
+}
+.c-ctxpop-sq.is-free {
+  color: var(--c-ctx-free);
+  opacity: 0.7;
+}
+.c-ctxpop-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+.c-ctxpop-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.c-ctxpop-label {
+  color: var(--c-fg);
+}
+.c-ctxpop-num {
+  color: var(--c-faint);
+}
+.c-ctxpop-note {
+  color: var(--c-faint);
+  font-size: 11px;
+}
+
 /* The platform popup a keyboard user still gets should not arrive white. */
 .c-pill option {
   background: var(--c-bg);
@@ -461,6 +845,62 @@ select.c-pill {
   position: relative;
   display: inline-flex;
 }
+/* ---- a pill whose value is still being read (Akshil, 2026-09-19) --------
+   "It takes some time to load in these model and effort … when I come to the
+   page after 2-3 seconds it flips, same when I reload." The pills used to paint
+   the constant default (or the URL seed) and swap it once the chat's record
+   arrived. The record is fast now (`GET /api/tasks/settings`), but fast is not
+   instant and one field can still be waiting on the slow `defaults` read — so
+   the answer is not a quicker flip, it is NO FIRST VALUE AT ALL: until
+   `useComposerDefaults`'s `pillsReady` the pill shows a wash, and a pill that
+   has shown nothing cannot flip to something else.
+
+   THE BOX DOES NOT MOVE. The <select> keeps its provisionally selected option,
+   so `fitSelect` measures the same text it will measure when the wash lifts —
+   the word is hidden with `color: transparent`, not removed. The caret goes,
+   because there is nothing to open: the select is `disabled` for the same
+   reason.
+
+   Its own keyframes rather than explorer.css's `skel-shimmer`: keyframe names
+   are global per document, and this stylesheet must not depend on another one
+   being in the bundle. */
+.c-pillwrap.is-loading select.c-pill {
+  color: transparent;
+  background-image: none;
+  opacity: 1; /* the wash IS the dimming; `.c-pill:disabled`'s .55 would fade it */
+  cursor: default;
+}
+.c-pillwrap.is-loading::after {
+  content: "";
+  position: absolute;
+  /* Inset to the pill's own text box, so the wash reads as the missing WORD
+     rather than as a second pill. */
+  inset: 5px 9px 5px 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--c-surface-2) 25%,
+    var(--c-border) 50%,
+    var(--c-surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: c-pill-wash 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes c-pill-wash {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-pillwrap.is-loading::after {
+    animation: none;
+  }
+}
+
 /* The popover's anchor: the pill's own box, never a target of its own — the
    pointer path is the select's cancelled pointerdown and the keyboard path is
    the select itself (T:12571-12586). */
@@ -609,23 +1049,10 @@ select.c-pill {
   max-width: 720px;
   width: 100%;
   margin: 0 auto;
-  padding: 8px 20px 6px;
-}
-.c-footnote {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 0 24px 10px;
-  text-align: center;
-  color: var(--c-faint);
-  font-size: 11px;
-  /* An explicit value, because fitFootnote measures this box in LINES and has
-     to divide by something it knows (T:3060-3064). */
-  line-height: 1.5;
-}
-/* The SECOND sentence goes rather than the first being ellipsised: half a
-   sentence with a "…" says the app ran out of room (T:3066-3076). */
-.c-footnote.is-tight .c-fn-more {
-  display: none;
+  /* No air above the card (Akshil, 2026-09-16): the transcript's own bottom
+     padding is the gap, and a folded one-line card sat visibly low with 8px
+     more on top of it. */
+  padding: 0 20px 6px;
 }
 
 /* ---- "what was sent" (T:1145-1185) -------------------------------------
@@ -1126,4 +1553,48 @@ select.c-pill {
 .c-sent-body .c-sent-caveat {
   color: var(--c-dim);
   font-size: 12px;
+}
+
+/* ---- The folded card's one line: model · effort ------------------------
+   Hung off the card's own top-right edge (the form is `position: relative`
+   for Send), in the gap the transcript's bottom padding leaves above it, so
+   nothing in the column moves for it. Hidden — not removed — as the card
+   opens, on the same 80ms the shelf's pills use to leave, so the two never
+   say the same thing twice. */
+.c-composer-meta {
+  position: absolute;
+  right: 2px;
+  bottom: 100%;
+  margin-bottom: 1px;
+  display: flex;
+  align-items: center;
+  /* THE PILLS' OWN TYPE AND SPACING (Akshil, 2026-10-01: "keep the font-size
+     and style same"): 12px in the pills' dim colour, the words 6px apart
+     exactly as the row seats them. */
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--c-dim);
+  gap: 5px;
+  padding: 0 2px 1px 0;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.14s ease-out 0.1s;
+}
+/* A 2px dot between the two words (Akshil, 2026-10-01: "a very small dot"). */
+.c-composer-meta-dot {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+.c-composer-meta.is-hidden {
+  opacity: 0;
+  transition: opacity 0.08s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-composer-meta {
+    transition: none;
+  }
 }

@@ -559,48 +559,44 @@ def test_a_delta_less_turn_shows_its_text_before_the_process_exits(agent, run_di
 
 # ------------------------------------------------ which models the picker offers
 
-def test_the_picker_offers_a_pinned_fable_51_beside_the_floating_alias(html):
-    """`claude --model` takes two shapes — a moving alias ("fable", whatever
-    Fable is today) and a pinned full id ("claude-fable-5-1", that exact model)
-    — and the picker has to offer both.
+def test_the_picker_offers_one_row_per_model(html):
+    """ONE ROW PER MODEL — the four family aliases, each of which follows the CLI
+    forward on its own.
 
-    The alias alone is what a long chat cannot be held still on: it advances
-    under the user the day the CLI's default does, mid-project, with nothing on
-    screen saying so. The pinned entry is the fix, and it leads the list because
-    someone opening this menu is usually after a specific model. Pinned first,
-    then the alias, is the ORDER asserted here — the value list is what
-    `curModel()` validates against, so a value dropped from it is a URL param
-    that silently falls back to the default and a pill that blanks."""
+    A pinned full id ("claude-fable-5-1") led this list until 2026-09-18, above
+    the alias that names the same model. It was the same thing twice: the menu
+    asked a question with one answer and the pill had two spellings for one
+    state (Akshil: "fable and fable 5-1 are the same. so let's only label it as
+    fable").
+
+    The value list is what `curModel()` validates against, so what is in it is
+    what a `?model=` can be — a value dropped from it silently falls back to the
+    default and blanks the pill, which is exactly why the id that was dropped is
+    folded onto its alias rather than simply forgotten (see `shortModel`)."""
     line = next(ln for ln in html.splitlines() if ln.startswith("const MODELS ="))
-    assert line == ('const MODELS = ["claude-fable-5-1", "fable", "opus", '
-                    '"sonnet", "haiku"];')
-    # …and the raw id is never what the user reads. The pill and the menu take
-    # their words from MODEL_LABELS, which is only needed for the pinned entry
-    # but is written out in full so no value can ever print itself for want of
-    # a line there.
-    assert '"claude-fable-5-1": "Fable 5.1",' in html
+    assert line == 'const MODELS = ["fable", "opus", "sonnet", "haiku"];'
+    # The pill and the menu take their words from MODEL_LABELS. No value strictly
+    # needs a line there now that every one of them is already a word, but the
+    # list is written out in full so none can ever print itself raw.
+    assert '  fable: "Fable",' in html
     assert 'fillSelect(el, MODELS, "Model", MODEL_LABELS)' in html
 
 
-def test_a_pinned_model_round_trips_from_a_transcript_to_the_picker(agent):
+def test_every_fable_spelling_round_trips_from_a_transcript_to_the_picker(agent):
     """Detection reads the model off the project's newest transcripts so the
     pill can preselect what the user is actually working in. The page then
     VALIDATES that answer against its own MODELS list and drops anything else —
     so a spelling `_short_model` cannot produce is a preselect that never
     happens, silently.
 
-    The old loop collapsed every id onto a family name, and every pinned id
-    contains its own family name: "claude-fable-5-1-20260401" came back as
-    "fable", so a chat running the pinned model preselected the floating alias
-    and the user's next turn moved off it."""
-    assert agent._short_model("claude-fable-5-1-20260401") == "claude-fable-5-1"
-    assert agent._short_model("claude-fable-5.1") == "claude-fable-5-1"
-    # Unpinned Fable is still the alias — that IS the value the picker offers
-    # for it, and the one the user would have chosen.
+    Which makes the RETIRED PINNED ID this function's load-bearing case: chats
+    that ran on "claude-fable-5-1" have it written through their transcripts and
+    their records, and the picker has no such row any more. Every spelling of
+    Fable has to come back as the one row that does."""
+    assert agent._short_model("claude-fable-5-1") == "fable"
+    assert agent._short_model("claude-fable-5-1-20260401") == "fable"
+    assert agent._short_model("claude-fable-5.1") == "fable"
     assert agent._short_model("claude-fable-5-20260101") == "fable"
-    # A longer version number is a DIFFERENT model, not this one. A prefix match
-    # would quietly stop being true the day 5.10 ships, which is the exact thing
-    # a pinned entry exists to prevent.
     assert agent._short_model("claude-fable-5-10") == "fable"
     # Everything else is untouched: aliases, full ids, already-short names.
     assert agent._short_model("opusplan") == "opus"

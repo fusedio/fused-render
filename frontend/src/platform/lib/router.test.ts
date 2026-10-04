@@ -11,8 +11,16 @@ import { installDomShim } from "./testDomShim";
 // installs, rather than a stub hand-rolled per file.
 installDomShim();
 
-const { navigate, navigateToJobPage, isJobPageRoute, rewriteLegacyUrl, withPreviewFlag } =
-  await import("./router");
+const {
+  navigate,
+  navigateToJobPage,
+  isJobPageRoute,
+  rewriteLegacyUrl,
+  withPreviewFlag,
+  spaLinkProps,
+  confirmLeave,
+  registerLeaveGuard,
+} = await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
   setResolvedSnapshot(appDir ? { sha: "abc1234", dir: "/cache/k/abc1234", app_dir: appDir } : null);
@@ -142,6 +150,37 @@ describe("navigate carries the frozen-tree framing", () => {
     expect(pushedFrom("?snapshot=0", () => navigate("/w/docs", { isDir: true }))).toBe(
       "/explorer/view/w/docs",
     );
+  });
+});
+
+// `opts.sel` is how a caller seeds the DESTINATION's `?sel=` — the breadcrumb
+// and Mod+Up "go to parent" hops both use it (cameFromSelParam) to land the
+// parent folder highlighting the child just left. It is never carried FORWARD
+// from the current page's own querystring (a name from the folder you left
+// names nothing in the folder you arrive in) — only ever set explicitly by a
+// caller for the destination.
+describe("navigate seeds `?sel=` for the destination", () => {
+  test("opts.sel is written onto the destination url", () => {
+    const url = pushedFrom("", () => navigate("/w/docs", { isDir: true, sel: "sub" }));
+    expect(url).toBe("/explorer/view/w/docs?sel=sub");
+  });
+
+  test("a name with special characters round-trips through encodeURIComponent", () => {
+    const url = pushedFrom("", () =>
+      navigate("/w/docs", { isDir: true, sel: "my notes #1 & 2.md" }),
+    );
+    const qs = new URLSearchParams(url.split("?")[1]);
+    expect(qs.get("sel")).toBe("my notes #1 & 2.md");
+  });
+
+  test("no opts.sel means no `sel` param at all", () => {
+    const url = pushedFrom("", () => navigate("/w/docs", { isDir: true }));
+    expect(url).not.toContain("sel=");
+  });
+
+  test("the current page's own `?sel=` is never carried forward to the destination", () => {
+    const url = pushedFrom("?sel=old-child", () => navigate("/w/docs", { isDir: true }));
+    expect(url).not.toContain("sel=");
   });
 });
 
@@ -325,6 +364,97 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
   });
 });
 
+// spaLinkProps is the one place the "real anchor, intercepted on a plain
+// left-click" pattern lives — every in-app folder link (BookmarkCards,
+// FilesHome, the app page's several "Open the folder" links, AiModelsPage,
+// ModelRow) spreads its return value onto an <a> instead of repeating the
+// modifier-key guard inline. A fake MouseEvent stands in for React's: only
+// defaultPrevented/button/metaKey/ctrlKey/shiftKey/altKey and preventDefault
+// are ever read.
+function fakeClick(overrides?: Partial<{
+  defaultPrevented: boolean;
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}>) {
+  let prevented = false;
+  const event = {
+    defaultPrevented: false,
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...overrides,
+    preventDefault: () => {
+      prevented = true;
+    },
+  };
+  return { event, wasPrevented: () => prevented };
+}
+
+describe("spaLinkProps", () => {
+  test("href is the real destination url, so middle-click / new-tab keeps working", () => {
+    const props = spaLinkProps("/Users/me/Work/widget", { isDir: true });
+    expect(props.href).toBe("/explorer/view/Users/me/Work/widget");
+  });
+
+  test("a search string rides onto the href untouched", () => {
+    const props = spaLinkProps("/Users/me/model.gguf", { search: "?_mode=model_card" });
+    expect(props.href).toBe("/explorer/view/Users/me/model.gguf?_mode=model_card");
+  });
+
+  test("a plain left-click is intercepted and handed to navigate", () => {
+    const pushed = pushedFrom("", () => {
+      const props = spaLinkProps("/Users/me/Work/widget", { isDir: true });
+      const { event, wasPrevented } = fakeClick();
+      // biome-ignore lint: test double, not a real MouseEvent
+      props.onClick(event as any);
+      expect(wasPrevented()).toBe(true);
+    });
+    expect(pushed).toBe("/explorer/view/Users/me/Work/widget");
+  });
+
+  test("middle-click, a modifier, or an already-handled event is left alone", () => {
+    const cases: Partial<Parameters<typeof fakeClick>[0]>[] = [
+      { button: 1 },
+      { metaKey: true },
+      { ctrlKey: true },
+      { shiftKey: true },
+      { altKey: true },
+      { defaultPrevented: true },
+    ];
+    for (const overrides of cases) {
+      const pushed = pushedFrom("", () => {
+        const props = spaLinkProps("/Users/me/Work/widget", { isDir: true });
+        const { event, wasPrevented } = fakeClick(overrides);
+        // biome-ignore lint: test double, not a real MouseEvent
+        props.onClick(event as any);
+        expect(wasPrevented()).toBe(false);
+      });
+      expect(pushed).toBe("");
+    }
+  });
+
+  test("opts (mode, sel, q) are serialized onto href AND passed through to navigate, so a left-click lands where the href already pointed", () => {
+    const props = spaLinkProps("/Users/me/model.gguf", {
+      isDir: true,
+      mode: "model_card",
+      sel: "child.txt",
+      q: "term",
+    });
+    const pushed = pushedFrom("", () => {
+      props.onClick(fakeClick().event as any);
+    });
+    expect(props.href).toBe(
+      "/explorer/view/Users/me/model.gguf?_mode=model_card&sel=child.txt&q=term"
+    );
+    expect(pushed).toBe(props.href);
+  });
+});
+
 describe("isJobPageRoute", () => {
   test("is true for every known shell route", () => {
     expect(isJobPageRoute("/ai-models/local")).toBe(true);
@@ -338,5 +468,45 @@ describe("isJobPageRoute", () => {
   test("is false for an fs path, even one that looks route-like", () => {
     expect(isJobPageRoute("/Users/me/Work/widget")).toBe(false);
     expect(isJobPageRoute("/Users/me/Work/widget/index.html")).toBe(false);
+  });
+});
+
+// ---- the leave guard ------------------------------------------------------
+
+describe("confirmLeave", () => {
+  test("nobody registered is a yes, in the same tick's promise", async () => {
+    expect(await confirmLeave()).toBe(true);
+  });
+
+  test("ONLY THE NEWEST GUARD IS ASKED", async () => {
+    // Bugbot review of caef75eb1, LOW. Asking every registered guard put two
+    // "unsent message" dialogs on screen for one click, one behind the other,
+    // and a reader cannot answer a question they cannot see. The newest
+    // registration is the composer they most recently had something in.
+    const asked: string[] = [];
+    const offOld = registerLeaveGuard(() => {
+      asked.push("old");
+      return true;
+    });
+    const offNew = registerLeaveGuard(() => {
+      asked.push("new");
+      return false;
+    });
+    expect(await confirmLeave()).toBe(false);
+    expect(asked).toEqual(["new"]);
+    // …and detaching the newest restores the one under it.
+    offNew();
+    asked.length = 0;
+    expect(await confirmLeave()).toBe(true);
+    expect(asked).toEqual(["old"]);
+    offOld();
+  });
+
+  test("a guard that THROWS is a yes — a broken question is not a locked door", async () => {
+    const off = registerLeaveGuard(() => {
+      throw new Error("the dialog blew up");
+    });
+    expect(await confirmLeave()).toBe(true);
+    off();
   });
 });

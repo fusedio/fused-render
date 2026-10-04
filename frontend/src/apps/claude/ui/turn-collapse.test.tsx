@@ -10,6 +10,9 @@ installDomShim();
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { ChatState, Turn as TurnRow } from "../protocol/controller-api";
 import type { Segment, ToolSegment } from "../protocol/types";
 import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
@@ -18,7 +21,7 @@ import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
 // `location` at module init — static imports are hoisted above the
 // `installDomShim()` call above.
 const { Transcript } = await import("./Transcript");
-const { collapsedLine, INTERRUPT_MARK, Turn } = await import("./Turn");
+const { collapsedLine, firstLine, INTERRUPT_MARK, isOneLiner, Turn } = await import("./Turn");
 const { historyToTurns } = await import("../protocol/history");
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -58,6 +61,12 @@ function words(node: Json | null): string {
       out.push(n);
       return;
     }
+    // The folded line is RENDERED MARKDOWN now (Akshil, 2026-09-15): the text
+    // sits in `dangerouslySetInnerHTML`, so read it back with the tags
+    // stripped — the assertions below are about the words, not the markup.
+    const h = (n.props as { dangerouslySetInnerHTML?: { __html: string } } | undefined)
+      ?.dangerouslySetInnerHTML;
+    if (h) out.push(h.__html.replace(/<[^>]+>/g, "").trim());
     for (const k of n.children ?? []) go(k as Json | string);
   };
   go(node);
@@ -79,8 +88,11 @@ const tool = (id: string, name: string): ToolSegment => ({
 });
 const text = (t: string): Segment => ({ kind: "text", text: t });
 
+// TWO LINES, because a ONE-line reply is never foldable (`Turn`'s
+// `isOneLiner`) and every test below is about the fold. The folded row shows
+// the FIRST line, so every `folded(...)` expectation is still `reply <key>`.
 const assistant = (key: string, over: Partial<TurnRow> = {}): TurnRow =>
-  ({ role: "assistant", key, text: "reply " + key, ...over }) as TurnRow;
+  ({ role: "assistant", key, text: "reply " + key + "\nand the rest of it", ...over }) as TurnRow;
 
 function state(over: Partial<ChatState> = {}): ChatState {
   return {
@@ -149,10 +161,11 @@ describe("which replies land folded", () => {
     expect((marks(r)[1]!.props as { disabled?: boolean }).disabled).toBe(true);
   });
 
-  test("A NEW RESPONSE FOLDS THE ONE THE RULE LEFT OPEN (Akshil 2026-09-15)", () => {
-    // The landing's last reply is open because the RULE opened it. A new
-    // response starting is the rule closing its own door: one reply on screen,
-    // the one being written.
+  test("A NEW RESPONSE FOLDS NOTHING (Akshil 2026-09-17)", () => {
+    // THE RULE SPEAKS ONCE, ON OPEN. A reader who is here, asking and reading,
+    // is having a conversation — and the page used to close the answer from a
+    // minute ago underneath them as soon as the next one started. Everything
+    // that arrives after the seed arrives open and stays open.
     const r = log([assistant("a:1")]);
     expect(folded(r)).toEqual([]);
     act(() => {
@@ -163,20 +176,26 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1"]);
-    // …and the new one is open, with a mark that cannot be pressed while it
+    expect(folded(r)).toEqual([]);
+    // …and the new one is open too, with a mark that cannot be pressed while it
     // streams.
     expect((marks(r)[1]!.props as { disabled?: boolean }).disabled).toBe(true);
+    // Ten replies later, still nothing folded by anything but a click.
+    const turns = [assistant("a:1"), assistant("a:2")];
+    for (const next of ["a:3", "a:4", "a:5"]) {
+      turns.push(assistant(next));
+      act(() => {
+        r.update(<Transcript state={state({ turns: [...turns] })} actions={actions} />);
+      });
+    }
+    expect(folded(r)).toEqual([]);
   });
 
-  test("A REPLY THAT GOES AWAY HANDS THE FOLD BACK (bugbot)", () => {
-    // The new response folded the one before it — then the new row itself
-    // disappeared: a failed poll dropped its chunk, or `runEnding` discarded
-    // it. The previous reply is the newest again, so it is open again. A
-    // one-way sweep left it folded and made the reader click to get back the
-    // answer they were part-way through.
+  test("A REPLY THAT GOES AWAY CHANGES NOTHING EITHER", () => {
+    // A failed poll drops a chunk and `runEnding` discards a turn, so rows DO
+    // go away. Under the old derived rule that had to hand a fold back; under
+    // the seed there is nothing to hand back, because nothing was taken.
     const r = log([assistant("a:1")]);
-    expect(folded(r)).toEqual([]);
     act(() => {
       r.update(
         <Transcript
@@ -185,11 +204,42 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1"]);
+    expect(folded(r)).toEqual([]);
     act(() => {
       r.update(<Transcript state={state({ turns: [assistant("a:1")] })} actions={actions} />);
     });
     expect(folded(r)).toEqual([]);
+  });
+
+  test("THE SEED WAITS FOR THE TRANSCRIPT, then never fires again", () => {
+    // Folding against whatever is on screen mid-restore would freeze the wrong
+    // answer open — `historyLoading` is up through a `fromCache` paint for
+    // exactly this reason (run-controller `restore`).
+    const r = log([assistant("h:0"), assistant("h:1")], { historyLoading: true });
+    // Nothing is drawn while history loads (the skeleton stands), and nothing
+    // is decided either.
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns: [assistant("h:0"), assistant("h:1"), assistant("h:2")] })}
+          actions={actions}
+        />,
+      );
+    });
+    // The whole restored wall folds behind its newest reply — once.
+    expect(folded(r)).toEqual(["reply h:0", "reply h:1"]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [assistant("h:0"), assistant("h:1"), assistant("h:2"), assistant("h:3")],
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply h:0", "reply h:1"]);
   });
 
   test("A REPLY THE READER OPENED SURVIVES EVERY LATER RESPONSE", () => {
@@ -205,11 +255,12 @@ describe("which replies land folded", () => {
       act(() => {
         r.update(<Transcript state={state({ turns: [...turns] })} actions={actions} />);
       });
-      // The rule's own open reply folded; the reader's did not.
       expect(folded(r)).not.toContain("reply a:1");
       turns[turns.length - 1] = assistant(next);
     }
-    expect(folded(r)).toEqual(["reply a:2", "reply a:3"]);
+    // Nothing folded: the one turn the seed shut was opened by hand, and the
+    // replies that arrived since arrived open.
+    expect(folded(r)).toEqual([]);
   });
 
   test("A REPLY THE READER SHUT STAYS SHUT", () => {
@@ -247,7 +298,9 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+    // Still just the one they shut — `a:2` was open when the reply arrived and
+    // the reply is not allowed to close it.
+    expect(folded(r)).toEqual(["reply a:1"]);
   });
 
   test("a turn holding an unanswered card stays open, and its mark is dead", () => {
@@ -303,13 +356,10 @@ describe("which replies land folded", () => {
     expect(folded(r)).toHaveLength(2);
   });
 
-  test("AN UNANSWERED CARD HOLDS ITS TURN OPEN PAST THE NEXT REPLY (Akshil 2026-09-15)", () => {
-    // The card is the one thing on screen to do, and it is answered against a
-    // chip in `a:1`. A new reply starting made `a:1` "not the newest", so the
-    // rule derived it CLOSED underneath — invisible only because `pendingCard`
-    // kept it drawn open. The reply therefore snapped shut in the same gesture
-    // that pressed Allow, which is the reader's own click taking the thing they
-    // were reading away from them.
+  test("AN UNANSWERED CARD IS OPEN AT THE SEED, whichever turn it is in", () => {
+    // The card is the one thing on screen to do. A conversation restored while a
+    // run is blocked five turns back must show that turn, not fold it with the
+    // rest of the wall — and once the seed has run nothing closes it either.
     const turns = [assistant("a:1", { segments: [tool("t9", "Bash") ] }), assistant("a:2")];
     const blocked = card({ toolUseId: "t9" });
     const r = log(turns, { permissions: blocked });
@@ -325,10 +375,9 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    // `a:2` folds as any settled reply does; the blocked one is untouched.
-    expect(folded(r)).toEqual(["reply a:2"]);
-    // …and it is only exempt while the card stands: answered, it is an ordinary
-    // reply again and the newest one is the only one open.
+    expect(folded(r)).toEqual([]);
+    // …and answering it takes nothing away: the reply the reader pressed Allow
+    // from is still the reply they were reading.
     act(() => {
       r.update(
         <Transcript
@@ -340,7 +389,7 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+    expect(folded(r)).toEqual([]);
   });
 
   test("THE FOLDS SURVIVE A HISTORY RE-READ (Akshil 2026-09-15)", () => {
@@ -351,9 +400,12 @@ describe("which replies land folded", () => {
     // opened folded itself and its neighbour opened instead. agent.py now sends
     // the reply's own record id and `historyToTurns` keys by it.
     const stat = { path: "/t.jsonl", mtime: 1, size: 2 };
+    // Two lines apiece, for the reason the `assistant` helper has two: a
+    // one-line reply is never foldable, and this test is about folds.
+    const body = (uuid: string) => "reply " + uuid + "\nand the rest of it";
     const rows = ["r1", "r2", "r3", "r4"].map((uuid) => ({
       role: "assistant" as const,
-      text: "reply " + uuid,
+      text: body(uuid),
       uuid,
     }));
     const read = (extra: typeof rows) =>
@@ -370,13 +422,66 @@ describe("which replies land folded", () => {
       r.update(
         <Transcript
           state={state({
-            turns: read([{ role: "assistant" as const, text: "reply r0", uuid: "r0" }]),
+            turns: read([{ role: "assistant" as const, text: body("r0"), uuid: "r0" }]),
           })}
           actions={actions}
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply r0", "reply r1", "reply r2", "reply r4"]);
+    // Every fold the reader had is exactly where they left it. The row that
+    // arrived with the re-read lands OPEN, because the seed is long spent —
+    // a turn this page has never folded is not one it gets to fold now.
+    expect(folded(r)).toEqual(["reply r1", "reply r2", "reply r4"]);
+  });
+
+  test("AN EMPTY FIRST FRAME DOES NOT SPEND THE SEED (review)", () => {
+    // Every mount paints the controller's initial state first — no turns, and
+    // `historyLoading` down (`emptyState`) — and one boot road reaches a
+    // conversation without `openSession`'s generation bump (a bare `?run=`,
+    // re-attaching with no session id). Spent there, the seed had nothing left
+    // for the transcript that followed and the whole wall arrived open.
+    const r = log([]);
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns: [assistant("a:1"), assistant("a:2"), assistant("a:3")] })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+  });
+
+  test("A CARD THAT ARRIVES AFTER THE SEED OPENS THE TURN IT BLOCKS (review)", () => {
+    // The permission rows do not always come with the history: with no
+    // `live_run` in the payload they land on a later poll, by which time the
+    // seed has folded the turn the run is blocked in. Drawn open by
+    // `pendingCard` and folded underneath, that reply snapped shut in the same
+    // gesture that pressed Allow — the 2026-09-15 bug, on the one path that
+    // still reaches it.
+    const turns = [assistant("a:1", { segments: [tool("t9", "Bash")] }), assistant("a:2")];
+    const r = log(turns);
+    expect(folded(r)).toEqual(["reply a:1"]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns, permissions: card({ toolUseId: "t9" }) })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual([]);
+    // …and answering it leaves the reply where it is, rather than shutting it.
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns, permissions: card({ toolUseId: "t9", decision: "allow" }) })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual([]);
   });
 
   test("ANOTHER CONVERSATION IS ANOTHER MAP (review #1)", () => {
@@ -434,7 +539,7 @@ describe("the toggle", () => {
   });
 
   test("the mark says what it controls, and says nothing when it controls nothing (#7)", () => {
-    const turn = assistant("a:1", { segments: [text("The answer.")] });
+    const turn = assistant("a:1", { segments: [text("The answer.\nAnd the rest.")] });
     const live = mount(<Turn turn={assistant("a:2", { streaming: true })} />);
     const dead = marks(live)[0]!.props as Record<string, unknown>;
     expect(dead.disabled).toBe(true);
@@ -468,7 +573,7 @@ describe("the toggle", () => {
   });
 
   test("the folded mark greys and says what a click will do (Akshil 2026-09-15)", () => {
-    const turn = assistant("a:1", { segments: [text("The answer.")] });
+    const turn = assistant("a:1", { segments: [text("The answer.\nAnd the rest.")] });
     const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={() => {}} />);
     // GREY IS CSS, off `.turn.is-folded` — what the row owes the stylesheet is
     // the class.
@@ -491,10 +596,118 @@ describe("the toggle", () => {
     expect("data-hint" in (marks(live)[0]!.props as Record<string, unknown>)).toBe(false);
   });
 
+  test("THE FOLDED LINE ITSELF OPENS THE REPLY (Akshil 2026-09-15)", () => {
+    // The mark is a 12px glyph in the gutter; the row a reader aims at is the
+    // words. Same handler, same state — a bigger target for the one control.
+    const turn = assistant("a:1", { segments: [text("The answer."), tool("t1", "Read")] });
+    const hit: string[] = [];
+    const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={(k) => hit.push(k)} />);
+    const line = byClass(shut, "turn-collapsed")[0]!.props as Record<string, unknown>;
+    act(() => (line["onClick"] as () => void)());
+    expect(hit).toEqual(["a:1"]);
+    // A POINTER TARGET AND NOTHING MORE (PR5 review #7). The mark beside it is
+    // a real `<button>` carrying the state; announcing the words as a SECOND
+    // button gave a keyboard reader two stops for one action and read the
+    // reply's own first sentence out as a control's label.
+    expect("role" in line).toBe(false);
+    expect("tabIndex" in line).toBe(false);
+    expect("aria-expanded" in line).toBe(false);
+    expect("onKeyDown" in line).toBe(false);
+    // ONE WAY ONLY: the open body is not a control — only the mark folds.
+    const open = mount(<Turn turn={turn} onToggleCollapse={(k) => hit.push(k)} />);
+    expect((byClass(open, "body")[0]!.props as Record<string, unknown>)["onClick"]).toBe(undefined);
+    expect(byClass(open, "turn-collapsed")).toHaveLength(0);
+  });
+
+  test("the muted line still answers the pointer (review #4)", () => {
+    // `.is-muted` outranked `.turn-collapsed:hover`, so the one row whose words
+    // are its only affordance was the one row that looked dead under the
+    // cursor — an all-tool-calls reply.
+    const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
+    const at = sheet.indexOf(".chat-root .turn.assistant .turn-collapsed.is-muted:hover {");
+    expect(at).toBeGreaterThan(-1);
+    expect(sheet.slice(at, sheet.indexOf("}", at))).toContain("color: var(--c-dim)");
+    // …and it comes AFTER the rule it has to beat.
+    expect(at).toBeGreaterThan(
+      sheet.indexOf(".chat-root .turn.assistant .turn-collapsed.is-muted {"),
+    );
+  });
+
   test("with no handler at all the mark is inert — the fold is the log's to offer", () => {
     const r = mount(<Turn turn={assistant("a:1")} collapsed />);
     expect((marks(r)[0]!.props as { disabled?: boolean }).disabled).toBe(true);
     expect(folded(r)).toEqual([]);
+  });
+});
+
+describe("A ONE-LINE REPLY NEVER FOLDS (Akshil 2026-09-15)", () => {
+  /** The shape a one-line answer actually arrives in: history gives a text-only
+   *  turn no `segments` key at all (`protocol/history.ts`). */
+  const oneLiner = (key: string, body = "Done.") =>
+    ({ role: "assistant", key, text: body }) as TurnRow;
+
+  test("what counts as one line", () => {
+    expect(isOneLiner(oneLiner("a:1"))).toBe(true);
+    // A single `text` SEGMENT is the same reply, differently delivered.
+    expect(isOneLiner(assistant("a:1", { segments: [text("Yes — it passes.")] }))).toBe(true);
+    // A trailing newline off markdown is not a second line.
+    expect(isOneLiner(oneLiner("a:1", "Done.\n"))).toBe(true);
+    // Two lines, too many characters, or anything else in the turn — all of
+    // which have something under the fold.
+    expect(isOneLiner(oneLiner("a:1", "Done.\nAnd here is why."))).toBe(false);
+    expect(isOneLiner(oneLiner("a:1", "x".repeat(81)))).toBe(false);
+    expect(isOneLiner(assistant("a:1", { segments: [text("Done."), tool("t1", "Read")] }))).toBe(
+      false,
+    );
+    expect(
+      isOneLiner(assistant("a:1", { text: "", segments: [{ kind: "thinking", text: "hm" } as Segment] })),
+    ).toBe(false);
+    // A turn with no words at all is not a one-line reply — its fold shows
+    // machinery, and that is still worth folding away.
+    expect(isOneLiner(oneLiner("a:1", ""))).toBe(false);
+    // Nothing else in the log is one.
+    expect(isOneLiner({ role: "user", key: "u:1", text: "hi" } as TurnRow)).toBe(false);
+  });
+
+  test("the mark is a plain seat, not a disclosure", () => {
+    const r = mount(<Turn turn={oneLiner("a:1")} onToggleCollapse={() => {}} />);
+    const mark = marks(r)[0]!.props as Record<string, unknown>;
+    expect(mark.disabled).toBe(true);
+    expect("aria-expanded" in mark).toBe(false);
+    expect("aria-controls" in mark).toBe(false);
+    expect("data-hint" in mark).toBe(false);
+    // Never greyed, because it is never folded — `collapsed` is ignored.
+    const shut = mount(<Turn turn={oneLiner("a:1")} collapsed onToggleCollapse={() => {}} />);
+    expect((byClass(shut, "turn")[0]!.props as { className: string }).className).not.toContain(
+      "is-folded",
+    );
+    expect(folded(shut)).toEqual([]);
+  });
+
+  test("IT IS STILL OPEN WHEN THE CONVERSATION IS RE-OPENED AROUND IT", () => {
+    // The seed folds the wall behind its newest reply — and passes over the
+    // one-liner, which can never be folded (`isOneLiner`). Nothing is written
+    // for it, and `isFolded(undefined)` is open.
+    const r = log([oneLiner("a:1"), assistant("a:2"), assistant("a:3")]);
+    expect(folded(r)).toEqual(["reply a:2"]);
+    // And a reply that streams in afterwards folds nothing at all, one-liner or
+    // not (2026-09-17: the rule speaks once, on open).
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [
+              oneLiner("a:1"),
+              assistant("a:2"),
+              assistant("a:3"),
+              assistant("a:4", { streaming: true }),
+            ],
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply a:2"]);
   });
 });
 
@@ -556,4 +769,43 @@ describe("the line a folded reply shows", () => {
     const r = mount(<Turn turn={assistant("a:1", { text: "" })} collapsed onToggleCollapse={() => {}} />);
     expect(folded(r)).toEqual([empty.text]);
   });
+});
+
+test("the folded line is the first line RENDERED, not its markdown source", () => {
+  // "**Done.** two files" folds to bold "Done." — never a row of asterisks.
+  const r = log([
+    assistant("a:1", { text: "**Done.** two files\nmore below" }),
+    assistant("a:2"),
+  ]);
+  const md = byClass(r, "turn-collapsed-md")[0]!;
+  const html = (md.props as { dangerouslySetInnerHTML: { __html: string } })
+    .dangerouslySetInnerHTML.__html;
+  // The test shim's `renderMd` wraps its input in <pre> rather than parsing
+  // it, so the check here is the wiring — the first line, and only the first
+  // line, goes through the renderer the open body uses. Bold-not-asterisks is
+  // that renderer's job, exercised by MarkdownView's own tests.
+  expect(html).toContain("**Done.** two files");
+  expect(html).not.toContain("more below");
+  expect(byClass(r, "turn-collapsed")[0]!.children).toHaveLength(1);
+});
+
+test("the folded line skips scaffolding and drops link targets (bugbot on 69cdcb9)", () => {
+  // A reply that opens on a fence folds to the first WORDS, not to an empty
+  // <pre>; a thematic break likewise.
+  expect(firstLine("```python\nprint(1)\n```\nDone.")).toBe("print(1)");
+  expect(firstLine("---\n\nSummary here")).toBe("Summary here");
+  // Links keep their words and lose the <a>: the row is one pointer target.
+  expect(firstLine("See [the docs](https://x.y/z) now")).toBe("See the docs now");
+  expect(firstLine("```c++\nint x;")).toBe("int x;");
+  expect(firstLine("![alt text](img.png) after")).toBe("alt text after");
+  // Bold survives — it is words, not scaffolding.
+  expect(firstLine("**Done.** two files")).toBe("**Done.** two files");
+});
+
+test("the folded line carries no <a> even for GFM autolinks (bugbot on d4233e8)", async () => {
+  const { renderMdInert } = await import("../protocol/markdown");
+  const html = renderMdInert("see https://x.com and www.example.com or bob@example.com **now**");
+  expect(html).not.toContain("<a");
+  expect(html).not.toContain("<img");
+  expect(html).toContain("https://x.com");
 });

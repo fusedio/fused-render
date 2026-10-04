@@ -87,6 +87,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 
 # Under the fused local execution backend a script is exec'd with its own
 # directory first on sys.path but no __file__; rebuild it from there so the
@@ -227,9 +228,23 @@ MAX_CONTENT_BYTES = 2_000_000
 class _Refused(Exception):
     """A situation the view renders in place. Carries its own payload."""
 
-    def __init__(self, reason, message):
+    def __init__(self, reason, message, with_output=False):
         super().__init__(message)
         self.payload = {"ok": False, "reason": reason, "message": message}
+        last = getattr(_LAST_RUN, "value", None)
+        if with_output and last:
+            # The failed git command and git's COMPLETE output (hints
+            # included), for the "Fix with AI" prompt. `message` stays the
+            # short sentence the toast shows; this is what the model reads.
+            self.payload["command"] = last["command"]
+            self.payload["output"] = last["output"]
+
+
+# The most recent `_run` ON THIS THREAD: its command line and everything git
+# printed. Read only by `_Refused(with_output=True)`, immediately after the call
+# that failed. Thread-local so two ops running at once in one process (a shared
+# engine worker) cannot quote each other's git output.
+_LAST_RUN = threading.local()
 
 
 # ------------------------------------------------------------------ invocation
@@ -354,6 +369,11 @@ def _run(root, *args):
             "repository has slow hooks, run the command in a terminal.") from exc
     except OSError as exc:
         raise _Refused("no-git", f"git could not be started: {exc}") from exc
+    _LAST_RUN.value = {
+        "command": "git " + " ".join(str(a) for a in args),
+        "output": (proc.stderr.decode("utf-8", "replace")
+                   + proc.stdout.decode("utf-8", "replace")).strip(),
+    }
     return proc.returncode, proc.stdout, _clean(proc.stderr)
 
 
@@ -380,7 +400,8 @@ def _git_ok(root, *args, allow=(0,)):
     """
     code, out, err = _run(root, *args)
     if code not in allow:
-        raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
+        raise _Refused("git-failed", _brief(err) or f"git exited {code}.",
+                       with_output=True)
     return out
 
 
@@ -1588,8 +1609,9 @@ def _pull(root):
             "not-fast-forward",
             "Your branch and its upstream have diverged, so this cannot "
             "fast-forward. Merging or rebasing is a decision this view will not "
-            "make for you — do it in a terminal.")
-    raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
+            "make for you — do it in a terminal.", with_output=True)
+    raise _Refused("git-failed", _brief(err) or f"git exited {code}.",
+                   with_output=True)
 
 
 def _push(root):

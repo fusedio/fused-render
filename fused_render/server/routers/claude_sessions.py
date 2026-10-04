@@ -40,11 +40,12 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from fused_render import session_liveness, tasks_store
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.server.common import _require_fused
 
 try:
     import fcntl  # POSIX only — Windows falls back to no inter-process lock,
@@ -243,7 +244,7 @@ _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
 
 # path -> (size_at_parse, cwd, first_ts, first_prompt)
-_HEAD_CACHE: dict[str, tuple[int, str | None, str | None, str]] = {}
+_HEAD_CACHE: dict[str, tuple[int, str | None, str | None, str, bool]] = {}
 
 
 def _load_state(filename: str) -> dict:
@@ -314,7 +315,7 @@ def ai_title(record) -> str:
 _parse_ts = session_liveness.parse_ts
 
 
-def _parse_head(path: str) -> tuple[str | None, str | None, str]:
+def _parse_head(path: str) -> tuple[str | None, str | None, str, bool]:
     """(cwd, first timestamp, first user prompt), streaming from the top and
     stopping as soon as all three are known — normally within a few lines.
 
@@ -328,6 +329,9 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
     cwd: str | None = None
     first_ts: str | None = None
     prompt = ""
+    # The first wordless send's marker, held back as a last resort — the same
+    # deferral `tasks_store._parse_head` makes, for its reason.
+    carried = ""
     chars = 0
     count = 0
     try:
@@ -359,7 +363,8 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
                 # tasks_store skipped one of them — the divergence this file's
                 # half of the fix exists to end.
                 if (not prompt and obj.get("type") == "user"
-                        and not obj.get("isMeta") and not obj.get("isSidechain")):
+                        and not obj.get("isMeta") and not obj.get("isSidechain")
+                        and not obj.get("isCompactSummary")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         # Stripped, and an empty remainder keeps the scan going
@@ -372,33 +377,49 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
                         raw = _first_text(msg.get("content"))
                         prompt = (tasks_store.strip_machinery(raw)
                                   or tasks_store.ann_notes(raw))
+                        # A send that said nothing ANYWHERE — a screenshot on
+                        # its own, pins nobody wrote on — is named by what it
+                        # carried ("pane screenshot"). Kept aside, not taken:
+                        # words on a later record still win, which is why the
+                        # scan carries on.
+                        if not prompt and not carried:
+                            carried = tasks_store.carried_words(raw)
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, ""
-    return cwd, first_ts, prompt
+        return None, None, "", False
+    # THE FOURTH VALUE IS "IS THIS PROMPT SETTLED" — the same distinction
+    # `tasks_store._parse_head` draws, for the same cache (Bugbot, PR #1213). A
+    # marker is what a chat shows while none of its sends has carried words YET,
+    # and a transcript is append-only: the words can still arrive.
+    return cwd, first_ts, prompt or carried, bool(prompt)
 
 
 def _head(path: str, size: int) -> tuple[str | None, str | None, str]:
     """_parse_head, cached per path. Transcripts are append-only, so a head
     that was fully resolved stays valid however much the file grows; an
     incomplete one is retried once the file has more to offer, and a file
-    that shrank was replaced and is re-read from scratch."""
+    that shrank was replaced and is re-read from scratch.
+
+    A MARKER-ONLY HEAD IS NOT RESOLVED (Bugbot, PR #1213), and the whole of the
+    bug is in the word: banking "pane screenshot" as this chat's name meant the
+    row kept it over every word the reader typed afterwards. It is shown, it is
+    just not banked — the next append re-reads and the first real words win."""
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt = cached
-        complete = bool(prompt) and first_ts is not None and cwd is not None
+        cached_size, cwd, first_ts, prompt, settled = cached
+        complete = settled and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
                 # Record the size we just saw, not the one we last parsed at,
                 # so the entry always describes the file's current extent and
                 # a later shrink is still recognized as a different file.
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, settled)
             return cwd, first_ts, prompt
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
+    cwd, first_ts, prompt, settled = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, settled)
     return cwd, first_ts, prompt
 
 
@@ -487,6 +508,122 @@ def api_claude_session_summaries():
     return {"sessions": sessions}
 
 
+@router.get("/api/claude-sessions/defaults")
+def claude_defaults():
+    """The model and effort a NEW task opens on — the GLOBAL Claude preference
+    and nothing about any folder.
+
+    The pair is `model` / `effortLevel` in `~/.claude/settings.json`, which is
+    what the app's Claude settings page writes (claude_config/preferences.py).
+    The New task card used to offer "Default" — an empty value the CLI resolved
+    at spawn — and the card now shows the pair the run will actually get
+    instead (Akshil, 2026-09-21: "remove the default field … show the model and
+    effort"). "" for a field the file does not set: the card keeps its own
+    first option then, which is the same thing the CLI would have picked.
+
+    THE READ ITSELF IS `agent._global_defaults`, which is also what a brand-new
+    chat's `defaults` action answers with. One file, one reader: a card that
+    promised a model the chat it books then opened on something else is the
+    exact bug two readers of one file drift into.
+    """
+    from fused_render.server.routers import tasks as _tasks
+    agent = _tasks._agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503,
+                            detail="the claude agent module did not load")
+    model, effort = agent._global_defaults()
+    return {"model": model, "effort": effort}
+
+
+class DefaultsPatch(BaseModel):
+    """One or both halves of the global pair. A field left out is left alone —
+    moving the Thinking dropdown must not restate the model."""
+    model: str | None = None
+    effort: str | None = None
+
+
+@router.put("/api/claude-sessions/defaults")
+def set_claude_defaults(patch: DefaultsPatch, x_fused: str | None = Header(default=None)):
+    """Write the GLOBAL model/effort — the pair every NEW chat and every new
+    task opens on.
+
+    ONE VALUE, TWO SURFACES THAT BOTH READ AND WRITE IT (Akshil, 2026-09-21,
+    after testing #1281: "I don't see this being followed"). The Explorer
+    composer's pills for a chat that has no session yet, and the New task
+    card's Model / Thinking dropdowns, are two views of the same setting. A
+    pick on either is a statement about what this machine runs next, so it goes
+    where the reader's deliberate choice already lives — `model` and
+    `effortLevel` in ~/.claude/settings.json, the pair the app's own Claude
+    settings page edits. Before this the composer's pick for a new chat went
+    into the ADDRESS BAR (`?model=`/`?effort=`) and nowhere else, which is why
+    one surface could show Opus / high while the other showed Fable / low.
+
+    THE WRITER IS `claude_config.preferences.main("patch", …)` — the settings
+    page's own, not a second copy of it. That is what keeps the read-modify-
+    write atomic, serialized by the config lock, and committed to the config
+    repo, and it is what preserves every other key in the file. Hand-rolling a
+    second writer over the same file is how two writers lose each other's edits.
+
+    A chat that HAS a session id is untouched by this route: its pill keeps
+    writing that conversation's own record (`/api/tasks/settings`), because a
+    running conversation's model is a fact about that conversation.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.claude_config import preferences
+    from fused_render.server.routers import tasks as _tasks
+    agent = _tasks._agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503,
+                            detail="the claude agent module did not load")
+    body: dict = {}
+    if patch.model is not None:
+        # The SETTINGS PAGE'S OWN vocabulary, not the composer's four names:
+        # this writes the field that page writes, and it offers the `[1m]`
+        # spellings too. `_global_defaults` collapses whatever lands here back
+        # to a short family name on the way out, so a pill that cannot say
+        # "opus[1m]" still reads a file that does.
+        model = patch.model.strip()
+        if model and model not in _settings_model_options():
+            raise HTTPException(status_code=400, detail=f"unknown model {model!r}")
+        body["model"] = model or None  # "" resets the key, as the page's own does
+    if patch.effort is not None:
+        effort = patch.effort.strip().lower()
+        if effort and effort not in agent._EFFORT_LEVELS:
+            raise HTTPException(status_code=400, detail=f"unknown effort {effort!r}")
+        body["effortLevel"] = effort or None
+    if body:
+        out = preferences.main("patch", json.dumps(body))
+        if not (isinstance(out, dict) and out.get("ok")):
+            detail = (out or {}).get("error") if isinstance(out, dict) else None
+            raise HTTPException(status_code=500,
+                                detail=detail or "could not write the Claude settings")
+    # READ BACK, never echo: what the caller asked for and what the file now
+    # says can differ (an `opus[1m]` written, an `opus` read back), and the two
+    # surfaces have to agree with the file rather than with each other.
+    model, effort = agent._global_defaults()
+    return {"model": model, "effort": effort}
+
+
+def _settings_model_options() -> set:
+    """The `model` row's own options in the Claude settings catalog — the list
+    the settings page renders. Read per call for `preferences._catalog`'s
+    reason: a catalog refresh rewrites the override mid-process. A catalog that
+    cannot be read at all accepts nothing but the four short names, which is
+    the vocabulary of the pills doing the writing."""
+    from fused_render.claude_config import lib as _cfg_lib
+    try:
+        for row in _cfg_lib.load_catalog():
+            if isinstance(row, dict) and row.get("key") == "model":
+                opts = row.get("options")
+                if isinstance(opts, list) and opts:
+                    return {str(o) for o in opts}
+    except Exception:  # noqa: BLE001 — a missing catalog is not a failed write
+        logger.debug("could not read the settings catalog", exc_info=True)
+    return {"fable", "opus", "sonnet", "haiku"}
+
+
 @router.get("/api/claude-sessions/history")
 def api_claude_session_history(file: str, session_id: str, native: str = ""):
     """The chat's transcript restore, IN PROCESS (owner E2E R1, F5).
@@ -511,7 +648,21 @@ def api_claude_session_history(file: str, session_id: str, native: str = ""):
         raise HTTPException(status_code=400, detail="file and session_id are required")
     # `native=1`: the React page wants the app-state reads on record as
     # in-stream notices (agent.py `_segments_from_rows`, `app_reads`).
-    return agent._history(file, session_id, app_reads=native == "1")
+    out = agent._history(file, session_id, app_reads=native == "1")
+    # A MISSING TRANSCRIPT HAS TWO MEANINGS and the page needs to tell them
+    # apart: a chat seconds old that has not written its first row, and a task
+    # the reader ERASED whose stale row was pressed. `_history` answers both
+    # with an empty payload (agent.py must not read the tombstone store — a
+    # template imports nothing of fused_render), so the distinction is drawn
+    # here, from the one store that knows: `tasks_store.erased`, stamped ONLY
+    # by the erase endpoint's `forget_session`. Not the `deleted.json`
+    # tombstone — the soft `/api/tasks/delete` writes that too, with the
+    # transcript intact and the row revivable, and it must not be told gone.
+    if (isinstance(out, dict) and not out.get("turns")
+            and not (out.get("transcript") or {}).get("size")
+            and tasks_store.erased(str(session_id))):
+        out["deleted"] = True
+    return out
 
 
 # ------------------------------------------------------- session recap (D-recap)
@@ -586,6 +737,8 @@ _RECAP_TIMEOUT = 25.0
 # when it picks `for_uuid` (`recapAnchor`), spends that position on whatever
 # comes back, and never asks again, so an empty answer here is permanent.
 _INTERRUPT_MARK = "[Request interrupted by user]"
+_INTERRUPT_MARKS = frozenset((_INTERRUPT_MARK,
+                              "[Request interrupted by user for tool use]"))
 
 # Cache: (file, session_id, for_uuid) -> (text, expires_at).
 #
@@ -674,7 +827,7 @@ def _recap_tail(turns: list) -> str:
         # The interrupt marker is not something the reader said (_INTERRUPT_MARK
         # above): it is skipped rather than labelled, and above all it does not
         # count as the user having spoken last.
-        if text == _INTERRUPT_MARK:
+        if text in _INTERRUPT_MARKS:
             continue
         parts.append("%s: %s" % (label, text[:_RECAP_TURN_CHARS]))
         last_role = turn["role"]
@@ -980,6 +1133,19 @@ def api_claude_session_triage(patch: TriagePatch):
     if patch.status not in ("in_progress", "done", "archived"):
         raise HTTPException(status_code=400, detail=f"unknown status {patch.status!r}")
     write_triage(session_id, patch.status)
+    # THE TASKS LISTING READS THIS FILE. `triage.json` is what `_archive_record`
+    # asks whether a task is filed, so a status written here moves the row's
+    # lane — in this window and in every other one — and the long-poll had no
+    # way to know. Ring the session's own key: it is the task key for every
+    # transcript-backed row (`_collect`), which is the only kind a session id
+    # can name. Best-effort, like every other ring in this app: a watcher that
+    # cannot be reached costs one poll interval, never the write.
+    try:
+        from fused_render import tasks_watch
+
+        tasks_watch.notify({session_id})
+    except Exception:  # noqa: BLE001 — a missed ring is latency, not an error
+        logger.debug("could not notify the tasks watcher", exc_info=True)
     return {"ok": True, "session_id": session_id, "status": patch.status}
 
 

@@ -2,6 +2,7 @@
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
+import { currentPresencePage } from "@platform/lib/presence";
 
 export interface FdaState {
   // What THIS server process can read. Final for the process's lifetime.
@@ -156,6 +157,36 @@ function httpError(data: { error?: string } | null, status: number): HttpError {
   return err;
 }
 
+// `X-Fused-Source` (Job.source, SPEC-quiet-notifications.md bug 2): who
+// RAISED a job row, for presence suppression. Attached here — automatically,
+// on every request this module's own two transports send — rather than left
+// for each producer to opt into, because opting in is exactly what has been
+// forgotten twice in live testing (image/video initially, then text
+// generation): a producer that mints a job row without remembering to send
+// this header just notifies forever, silently, and no test catches a missing
+// opt-in. A caller's own explicit header (an `opts.headers` entry, spread
+// AFTER this one below) still wins — this is only the ambient default, the
+// same "explicit beats ambient" rule the server half of this fix applies in
+// `fused_render/jobs.py`'s `upsert`. An empty presence page (no window has
+// stamped one yet, e.g. a very first paint) sends no header at all rather
+// than an empty one, so the server's own "empty source never suppresses"
+// rule never has to special-case an empty-but-present header.
+function ambientSourceHeaders(): Record<string, string> {
+  const page = currentPresencePage();
+  return page ? { "X-Fused-Source": encodeURIComponent(page) } : {};
+}
+
+// Exported for the rare caller that cannot route a request through
+// `getJson`/`postJson` at all — today only the Playground's streamed
+// `/api/ai` and `/api/ai/embed` calls (`apps/ai_models/playground/client.ts`),
+// which need a raw `fetch` for the response body (`postJson` cannot stream,
+// per that module's own header comment). Anything that CAN go through
+// `getJson`/`postJson` gets this automatically and should not call it
+// directly — see `ambientSourceHeaders`'s own comment above.
+export function sourceHeader(): Record<string, string> {
+  return ambientSourceHeaders();
+}
+
 // `signal` is what a folder change uses to abandon an in-flight index fetch,
 // the same way it abandons a walk stream.
 // getJson/postJson are exported so a feature that keeps its own typed wrappers
@@ -167,32 +198,42 @@ export async function getJson<T>(
   url: string,
   opts?: { headers?: Record<string, string>; signal?: AbortSignal },
 ): Promise<T> {
-  const res = await fetch(url, opts);
+  const res = await fetch(url, {
+    ...opts,
+    headers: { ...ambientSourceHeaders(), ...(opts?.headers ?? {}) },
+  });
   const data = await res.json();
   if (!res.ok) throw httpError(data, res.status);
   return data as T;
 }
 
-// One mutating-request helper for both PUT and POST — they differ only in the
-// method. X-Fused forces a CORS preflight so a foreign page can't write blind
-// (the D3 guard the reveal/write/clone endpoints require).
-async function mutateJson<T>(
-  method: "PUT" | "POST",
+// One mutating-request helper for PUT, POST and DELETE — they differ only in
+// the method and (DELETE) in having no request body. X-Fused forces a CORS
+// preflight so a foreign page can't write blind (the D3 guard the
+// reveal/write/clone endpoints require). `body` is optional so a bodyless
+// DELETE shares this instead of duplicating the fetch/header/HttpError
+// plumbing in its own function — `Content-Type` is only sent when there
+// actually is a JSON body.
+export async function mutateJson<T>(
+  method: "PUT" | "POST" | "DELETE",
   url: string,
-  body: unknown,
+  body?: unknown,
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ): Promise<T> {
   const res = await fetch(url, {
     method,
-    // Extra headers go AFTER the two fixed ones but cannot replace them: the
-    // caller's are attribution, and `X-Fused` is the CSRF-ish marker every
-    // mutation carries.
+    // Extra headers go AFTER the ambient default and the two fixed ones but
+    // cannot replace the fixed two: the caller's are attribution (which may
+    // deliberately override the ambient `X-Fused-Source`, e.g. a render's own
+    // `sourceHeaders()`), and `X-Fused` is the CSRF-ish marker every mutation
+    // carries.
     headers: {
+      ...ambientSourceHeaders(),
       ...(opts?.headers ?? {}),
-      "Content-Type": "application/json",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       "X-Fused": "1",
     },
-    body: JSON.stringify(body),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: opts?.signal,
   });
   const data = await res.json();
@@ -673,6 +714,18 @@ export interface IndexRankResult {
   // literal `"*.csv"` anywhere in the path), so re-running a substring test
   // over it and dropping what fails would silently discard real hits.
   mode: "substring" | "glob";
+  // What `resolve_query` (fused_render/index/query.py) actually matched
+  // against, after peeling off any leading base and expanding whitespace
+  // into wildcards (SPEC-search-space-wildcard.md §1) — always populated,
+  // in BOTH modes, but only meaningful for highlighting when `mode ===
+  // "glob"`: that is the one case a hit's `rel` is not promised to be a
+  // literal substring of `pattern`, so recomputing highlight positions needs
+  // the exact pattern text, not the raw query. The browser cannot recompute
+  // this itself: the base walk is filesystem-dependent (`os.path.isdir`
+  // against the server's own disk), so the server that just walked it is the
+  // only place that can produce it. `globMatch` (platform/lib/fuzzy.ts)
+  // matches `pattern` against `h.rel`, never the raw typed query.
+  pattern: string;
   // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
   // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
   // in-folder corpus box's "indexing…" caveat. `search_ranked` used to
@@ -680,6 +733,17 @@ export interface IndexRankResult {
   // directly above it, but nothing here ever read them — no caller
   // destructured `fresh`/`age_s`/`updated`/`root` off an `indexRank()`
   // response. See DECISIONS.md.
+  //
+  // Server-side breakdown of `api_index_rank`'s own handler time — the same
+  // three numbers its DEBUG/WARNING log line computes. Optional: an older
+  // server (or any response predating this field) simply omits it, and
+  // callers must not assume its presence (FilesHome's slow-search warning is
+  // the only reader today).
+  timing?: {
+    total_ms: number;
+    lane_wait_ms: number;
+    worker_ms: number;
+  };
 }
 
 export function indexRank(
@@ -1080,31 +1144,6 @@ export function putBookmarks(bookmarks: unknown[]): Promise<void> {
   return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
 }
 
-// Write a portable `<name>.bookmark` file next to the bookmark's target(s)
-// (SB-8). The frontend computes dir/filename/content (lib/bookmark-file.ts);
-// the server validates and writes, overwriting any previous save.
-export interface BookmarkExport {
-  dir: string;
-  filename: string;
-  content: string;
-}
-
-export function exportBookmarkFile(payload: BookmarkExport): Promise<{ path: string }> {
-  return postJson<{ path: string }>("/api/bookmarks/export", payload);
-}
-
-// Read a `.bookmark` file from disk (SB-9): the `_bookmark` sentinel resolves
-// the record's relative paths against `dir` (the file's own directory) and
-// redirects. The server validates (absolute path, exists, version 1) and reads.
-export interface BookmarkFileResult {
-  dir: string;
-  bookmark: Record<string, unknown>;
-}
-
-export function getBookmarkFile(path: string): Promise<BookmarkFileResult> {
-  return getJson<BookmarkFileResult>("/api/bookmark-file?path=" + encodeURIComponent(path));
-}
-
 // Recently opened files (fused_render/shell/recents.py). `url` is the shell
 // /view/ url verbatim including its query string (D20 posture); entries whose
 // file has since been deleted are already filtered out server-side.
@@ -1158,7 +1197,24 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
-  // Whether chat embeds render the native React chat (beta) instead of the
+  // Whether the unified Share sheet (public link + .fused file) is OFFERED in
+  // place of the plain Export / Download action (opt-in, default off). Gates
+  // the five share surfaces, not the /api/share routes.
+  app_sharing: { enabled: boolean };
+  // Whether card thumbnails may render the LIVE app in a scaled iframe
+  // (opt-in, default off — shell/prefs.py `live_previews_enabled`). Off, the
+  // /apps cards and the explorer's bookmark/recent/folder cards show a still
+  // or a placeholder mark and nothing boots on scroll or hover. OPTIONAL: an
+  // older server answers without it, and the reader (live-previews-flag.ts)
+  // treats absence as off.
+  live_previews?: { enabled: boolean };
+  // Whether the process Monitor is OFFERED (opt-in, default off —
+  // shell/prefs.py `monitor_enabled`): the status bar's System chip and the
+  // /monitor page. Gates the entry points, not /api/system/activity. OPTIONAL:
+  // an older server answers without it, and the reader (monitor-flag.ts)
+  // treats absence as off.
+  monitor?: { enabled: boolean };
+  // Whether chat embeds render the native React chat (default ON) instead of the
   // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
   // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
   // switch cannot win then, so the UI disables itself and says so
@@ -1169,23 +1225,39 @@ export interface Prefs {
   // field existed) answers without it. A required field here would only make
   // every `Prefs` literal in the suites over-constrained while the runtime read
   // stayed defensive anyway.
+  chat?: { native: boolean; forced_by?: string | null };
+  // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
+  // Everything that wants to run in a folder somebody else's task is already
+  // running in waits its turn in the scheduler's pending list instead — chat
+  // sends, Run now and scheduled entries alike — and the row that is waiting
+  // reads `queued`.
   //
-  // `recap` is the native chat's "While you were away" fold — the ONE pref
-  // here that defaults ON (shell/prefs.py `chat_recap_enabled`), so every
-  // reader asks `chat?.recap !== false` rather than `=== true`: an older
-  // server answers without the field and that server's chat still shows it.
-  chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
+  // OPTIONAL for the reason `chat` is: the readers ask `p.queue?.enabled ===
+  // true`, and a server that predates the field answers without it. Off is
+  // both the pref's own default and what every server did before this existed,
+  // so "not sent" and "off" are honestly the same answer here.
+  queue?: { enabled: boolean };
   /** Whether a task on the Tasks page opens in a side panel beside the list
-   *  instead of navigating away (shell/prefs.py `task_peek_enabled`,
-   *  experimental, default off). Optional because a server that predates the
-   *  switch sends nothing — which reads as off, the same as the default. */
-  task_peek?: { enabled: boolean };
-  /** Whether a card on the Tasks page's Cards wall is titled by the newest
-   *  message in its conversation instead of by the task's own title
-   *  (shell/prefs.py `task_card_last_message`, experimental, default off).
-   *  Optional for the same reason `task_peek` is: a server that predates the
-   *  switch sends nothing, and nothing reads as off. */
-  task_cards?: { last_message: boolean };
+   *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
+   *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
+   *  a server that predates the field sends nothing — which reads as ON too. */
+  task_peek?: {
+    enabled: boolean;
+    /** …and the APP PAGE's Tasks tab does the same — always `true` since
+     *  2026-09-21 (shell/prefs.py `project_peek_enabled`); the flag and its
+     *  Preferences switch are gone. Optional: a server that predates the
+     *  field sends nothing, and nothing reads as on too. */
+    project?: boolean;
+  };
+  /** Whether a finished-task notification fires for a session that entered
+   *  from an interactive terminal, rather than only one started through
+   *  fused-render's own Claude template (shell/prefs.py
+   *  `task_notify_terminal_sessions`, default off). Optional for the same
+   *  reason `task_peek` is: a server that predates the switch sends nothing,
+   *  and nothing reads as off — the default this branch fixed a bug by
+   *  choosing. See `Task.entrypoint`'s own doc comment for why this can only
+   *  ever be a best-effort filter, never an exact one. */
+  task_notify?: { terminal_sessions: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1232,6 +1304,34 @@ export interface Prefs {
   // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
   // order instead (`ranked_search_enabled` server-side).
   indexing: { enabled: boolean; ranked: boolean };
+  // App git auto-sync (default ON; fused_render/shell/prefs.py's
+  // `git_auto_sync_enabled`). OPTIONAL: an older server answers without it.
+  git?: { auto_sync: boolean };
+  // Download a found app update without a click (default OFF; shell/prefs.py's
+  // `auto_download_updates`). Restart stays manual. OPTIONAL: older servers omit it.
+  update?: { auto_download: boolean };
+  // The macOS launcher's shortcuts (fused_render/launcher.py): the ⌥Space
+  // panel hotkey and the row modifier (`<modifier>+1…9` opens the Nth desk
+  // app, `+0` the shell). `available` is false off macOS, where the section
+  // is not rendered; `bound` / `pinned_bound` say whether the running app
+  // could register them (null until something tried). OPTIONAL like `chat`:
+  // an older server answers without it.
+  launcher?: LauncherPrefs;
+  // macOS native windows (fused_render/mac_window.py): the shell in the
+  // app's own windows instead of browser tabs. On by default, opt-out.
+  // `available` is false off macOS and under `fused-render serve`, where the
+  // section is not rendered. OPTIONAL like `launcher`.
+  native_windows?: { enabled: boolean; available: boolean };
+}
+
+export interface LauncherPrefs {
+  available: boolean;
+  hotkey: string;
+  display: string;
+  row_modifier: string;
+  row_modifier_display: string;
+  bound: boolean | null;
+  pinned_bound: boolean | null;
 }
 
 export interface AiIdlePrefs {
@@ -1403,23 +1503,54 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
+/** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
+ *  `"cmd+shift+KeyK"` — modifiers then a `KeyboardEvent.code`). The server
+ *  canonicalises it and rebinds; a spec with no modifier is a 400. */
+export function putLauncherHotkey(spec: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { launcher_hotkey: spec });
+}
+
+/** While Preferences records a new shortcut the app unbinds the live launcher
+ *  and row shortcuts (`on`), so the keys pressed reach the recorder instead of
+ *  opening the panel; `off` binds them back. A no-op where no panel exists. */
+export function postLauncherSuspend(on: boolean): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/launcher/suspend", { on });
+}
+
+/** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */
+export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { launcher_row_modifier: modifier });
+}
+
+export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
+}
+
+export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { app_sharing_enabled: enabled });
+}
+
+export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { live_previews_enabled: enabled });
+}
+
+export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
+}
+
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
 }
 
-/** The task side peek's switch (shell/prefs.py `task_peek_enabled`). */
-export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_peek_enabled: enabled });
+/** Whether a finished-task notification fires for an interactive-terminal
+ *  session too (shell/prefs.py `task_notify_terminal_sessions`, default
+ *  off). See `Prefs.task_notify`'s own doc comment. */
+export function putTaskNotifyTerminalSessionsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_notify_terminal_sessions: enabled });
 }
 
-/** What a task CARD is titled by (shell/prefs.py `task_card_last_message`):
- *  the conversation's newest message, or the task's own title. */
-export function putTaskCardTitleMode(lastMessage: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_card_last_message: lastMessage });
-}
-
-export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
+export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { project_queue_enabled: enabled });
 }
 
 export interface LanDevice {
@@ -1472,6 +1603,14 @@ export function putLanEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
+export function putAutoDownloadUpdates(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { auto_download_updates: enabled });
+}
+
+export function putGitAutoSyncEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { git_auto_sync_enabled: enabled });
 }
 
 export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
@@ -2170,10 +2309,6 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
   }
 }
 
-// Download an app folder as a single `.fused` app file (SPEC §43, D385).
-// fetch + blob rather than a bare <a download>, same reason as the templates
-// export above: a non-2xx JSON error (not an app, over
-// budget) surfaces to the caller instead of saving as a corrupt file.
 // The exported card's thumbnail: the preview.png INSIDE the .fused at `path`,
 // served as bytes by a single-member zip read (never an extraction). 404s when
 // the file ships without one — the card's onError fallback owns that case.
@@ -2181,26 +2316,33 @@ export function appfilePreviewUrl(path: string): string {
   return "/api/appfile/preview?path=" + encodeURIComponent(path);
 }
 
-export async function downloadAppFile(
+// The `.fused` app file export (SPEC §43, D385). Once a browser blob download
+// (`downloadAppFile`, GET /api/appfile/export); every caller now goes through
+// the share sheet, and the sheet needs the real path back, so the server-side
+// save below is the one client of the export route left.
+//
+// Writes the `.fused` straight to the platform Downloads folder — server
+// side, not a browser blob download — and answers the real absolute path it
+// landed at. This is what makes the export immediately searchable: the
+// server queues its own destination folder for reindexing on the same
+// request, which a browser-owned save can never do because the server never
+// learns where the browser put the file.
+export async function saveAppFileToDisk(
   path: string,
-  name: string,
-  // Optional capture of the app to bake into the .fused as its preview.png
-  // (D396). The server only uses it when the folder has no authored one.
-  preview?: Blob,
-): Promise<void> {
-  let res: Response;
-  if (preview) {
-    const form = new FormData();
-    form.set("path", path);
-    form.set("preview", preview, "preview.png");
-    res = await fetch("/api/appfile/export", {
-      method: "POST",
-      headers: { "X-Fused": "1" },
-      body: form,
-    });
-  } else {
-    res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
-  }
+  // The caller's own display name for the file (no extension) — a version
+  // export computes one carrying its version label so a v7 export sitting
+  // beside a live export in Downloads is never ambiguous. Falls back to the
+  // app folder's own name server-side when omitted or blank.
+  name?: string,
+): Promise<string> {
+  const form = new FormData();
+  form.set("path", path);
+  if (name) form.set("name", name);
+  const res = await fetch("/api/appfile/export/save", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
   if (!res.ok) {
     let message = `export failed (${res.status})`;
     try {
@@ -2211,18 +2353,8 @@ export async function downloadAppFile(
     }
     throw new Error(message);
   }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name + ".fused";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  }
+  const data = await res.json();
+  return data.path as string;
 }
 
 // Where a `.fused` would clone to in the workspace, and whether it already has
@@ -2236,9 +2368,15 @@ export interface AppFileCloneTarget {
   name: string;
   /** That name reduced to one path-safe segment — the folder under local/. */
   slug: string;
-  /** Absolute destination, forward-slashed. */
+  /** Absolute destination, forward-slashed. When the file carries an
+   *  `app_id` and a folder under local/ already declares it (a renamed
+   *  clone), this is THAT folder rather than local/<slug>. */
   path: string;
   cloned: boolean;
+  /** The app's stable identity (`<meta name="fused-app-id">`, minted at
+   *  creation, or on first export for older apps); null for files exported
+   *  before it existed. */
+  app_id?: string | null;
 }
 
 export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
@@ -2249,6 +2387,20 @@ export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget>
 
 export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
   return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
+}
+
+// Download the `.fused` at an http(s) `url` into ~/.fused-render/downloads
+// (keyed on the app id, so a re-click updates one file) and answer the saved
+// absolute path (DL-8). Caller opens it like any other .fused. No confirm.
+export function fetchAppFile(url: string): Promise<{ file: string }> {
+  return postJson<{ file: string }>("/api/appfile/fetch", { url });
+}
+
+// Re-copy the `.fused` OVER its existing local copy: payload files replace
+// their counterparts; `.venv`, `.fused`, `.git` and anything the export left
+// home stay. Destroys the user's edits to those files — callers confirm first.
+export function overwriteAppFile(file: string): Promise<AppFileCloneTarget & { overwritten: boolean }> {
+  return postJson<AppFileCloneTarget & { overwritten: boolean }>("/api/appfile/overwrite", { file });
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
@@ -2394,7 +2546,8 @@ export interface AppInfo {
   // repo's per-app metadata shape), or null when absent/invalid. Undefined on
   // older backends. Apps without one only appear under the "All" filter.
   category?: string | null;
-  // The app's optional `icon.svg` at the folder's root (absolute path) and its
+  // The app's optional icon at the folder's root (absolute path) — `icon.svg`,
+  // else `icon.png`, the shell's precedence (app_listing.ICON_NAMES) — and its
   // mtime — the mark a card draws to the left of its name, the same file the
   // sidebar's Projects row and the app's tab favicon draw. Null for an app
   // without one (and for an exported `.fused`, which has no folder root),
@@ -2580,8 +2733,12 @@ export interface AppCheckFinding {
   path: string;
   /** 0 for a finding about the folder rather than a line. */
   line: number;
-  /** Already masked server-side when it came off a secret — safe to render. */
+  /** Already masked server-side when it came off a secret — safe to render.
+   *  For a model-backed row (`cross-browser`) this is a plain-language
+   *  sentence saying what a visitor will see go wrong, not a source line. */
   excerpt: string;
+  /** Model-backed rows only: one plain sentence saying what to change. */
+  fix?: string;
 }
 
 export interface AppDoctorTask {
@@ -2604,6 +2761,50 @@ export interface AppCheck {
    *  row (or, for "Fix all", one covering every failing row at once, still
    *  attached the same way a stored prompt is: by which check id it names). */
   task: AppDoctorTask | null;
+  /** A row a person runs by pressing its own Check button (`runAppDoctorOnDemand`)
+   *  rather than one the doctor answers on every GET — today `cross-browser`,
+   *  a Sonnet read of the view files cached on their checksum
+   *  (fused_render/app_doctor_ai.py). `state: "unrun"` only ever appears on
+   *  one of these: never run, the app changed since, or a check task is on it. */
+  ondemand: boolean;
+  /** The on-demand row's own CHECK task (the Sonnet read, run as a task on the
+   *  app's entry page) while it is still live, or null. Kept apart from `task`
+   *  — a fix session — because the row draws one as "Checking…" and the other
+   *  as "Fix in progress". Read off the server's task store on every GET, so
+   *  a reload or a tab switch shows the same in-flight state. */
+  check_task: AppDoctorTask | null;
+  /** On a SETTLED on-demand row: the check task whose session wrote the cached
+   *  verdict, so the row can open that conversation (its plain per-finding
+   *  lines). `session_id` is the conversation the turn ran in — what `chatUrl`
+   *  opens; `target` its entry page. Null when the task is gone from the store. */
+  verdict_task: { id: string; session_id: string; target: string } | null;
+  /** `git` row only: commits HEAD is behind/ahead of
+   *  `origin/<default_branch>` (`git_upstream.check_repo`'s
+   *  `HEAD...origin/<default_branch>` count), or `null` when the remote
+   *  hasn't been checked yet (never fetched, still fetching, or every
+   *  attempt failed) or there's no remote to compare against. This is a
+   *  DIFFERENT quantity from the row's own `state`/`detail`, which fold in
+   *  `_pushed_pending`'s path-scoped `@{upstream}..HEAD -- .` unpushed
+   *  count against the branch's OWN upstream — on a feature branch the two
+   *  numbers routinely disagree (F1, FIXES-round-1.md). `behind`/`ahead`
+   *  exist so the UI can decide whether to show Pull without re-deriving it
+   *  from prose. */
+  behind?: number | null;
+  ahead?: number | null;
+  /** `git` row only: whether HEAD is on the repo's resolved default branch,
+   *  and whether the working tree is clean enough to fast-forward — the
+   *  same two preconditions `git_upstream.update_repo`'s preflight enforces
+   *  (refusing with `not-default` / `dirty` otherwise). `null` alongside
+   *  `behind`/`ahead` whenever those are unknown. Used to gate Pull (B1,
+   *  FIXES-round-1.md): a feature branch or a dirty tree would make
+   *  `update_repo` refuse every time, so the row should not dangle a button
+   *  that always dead-ends. */
+  onDefault?: boolean | null;
+  clean?: boolean | null;
+  /** The repo root this row checked, or `null` when the folder isn't in a
+   *  git repository this server can read. Used for "Open in git" — the
+   *  in-app git mode opens scoped to this root, not the app subfolder. */
+  gitRoot?: string | null;
 }
 
 export interface AppDoctorReport {
@@ -2620,14 +2821,55 @@ export interface AppDoctorReport {
   severities: Severity[];
 }
 
-export function getAppDoctor(path: string): Promise<AppDoctorReport> {
+/** `fetch: false` is the POLL variant (the panel and the header dot re-asking
+ *  every few seconds while a check task is live): the server skips the
+ *  modal-open git force-fetch and answers the `git` row from its throttled
+ *  cache, so polling never turns into a git fetch every four seconds. */
+export function getAppDoctor(
+  path: string,
+  opts: { fetch?: boolean } = {},
+): Promise<AppDoctorReport> {
+  const fetchFlag = opts.fetch === false ? "&fetch=0" : "";
   return getJson<AppDoctorReport>(
-    `/api/apps/doctor?path=${encodeURIComponent(path)}`,
+    `/api/apps/doctor?path=${encodeURIComponent(path)}${fetchFlag}`,
   );
 }
 
 export interface AppDoctorFixResult extends NewAppResult {
   check: string;
+}
+
+export interface AppDoctorRunResult {
+  path: string;
+  entry_html: string;
+  /** The row as the next GET would draw it: `check_task` set while the new
+   *  task (or one already on it) is live, else the cached verdict. */
+  check: AppCheck;
+  /** The stored task entry when one was created this call, else null (the
+   *  cache already answered, or a task was already on it). */
+  task: NewAppResult["task"];
+  task_error: string | null;
+}
+
+/** RUN one on-demand row (`check.ondemand`): creates its CHECK task — a
+ *  session on the app's entry page that reads the view files against the
+ *  cross-browser skill and writes the verdict into the app's `.fused/cache/`
+ *  — and returns at once with the row in its "checking" state. The verdict
+ *  is cached on the app's content, so until the view files change the next
+ *  GET draws it for free, and a press while a task is already on it is a
+ *  no-op that returns that task. 409 while a fix task is live on the app;
+ *  502 when the task could not be created. */
+export function runAppDoctorOnDemand(
+  path: string,
+  check: string,
+  /** Re-check: ask again although the cached verdict still matches the files. */
+  force = false,
+): Promise<AppDoctorRunResult> {
+  return postJson<AppDoctorRunResult>("/api/apps/doctor/run", {
+    path,
+    check,
+    force,
+  });
 }
 
 // Create the App Doctor FIX task for ONE row — its prompt invokes the
@@ -2716,8 +2958,9 @@ export function getAppIcon(fsPath: string): Promise<AppIconResult> {
   return getJson<AppIconResult>("/api/apps/icon?path=" + encodeURIComponent(fsPath));
 }
 
-/** The URL to draw an app icon from: the raw file, with its mtime as a cache
- *  key so an edited icon.svg shows up without a hard reload. */
+/** The URL to draw an app icon from: the raw file (`icon.svg` or `icon.png`),
+ *  with its mtime as a cache key so an edited icon shows up without a hard
+ *  reload. */
 export function appIconUrl(icon: string, mtime?: number | null): string {
   // Full float mtime, not the floored second — a same-second replacement of
   // icon.svg must still change the URL (current-apps-lib.iconUrlFor agrees).
@@ -3011,6 +3254,20 @@ export interface Task {
   project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
   target: string; // what the task actually points at (may be that file)
   session_id: string; // "" until the first run
+  // How the transcript's own session ENTERED — "cli" for an interactive
+  // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
+  // spawn (what templates/claude/agent.py produces). Read off the
+  // transcript's first `type: "user"` record (tasks_store.head); `null` for
+  // a task with no transcript yet or one predating the field (the server
+  // always sends the key, via `task.get("entrypoint")`, but that read is
+  // `None`), and `undefined` for a server that predates the field entirely.
+  // NEVER defaulted to a value — task-status-notify.ts's terminal-session
+  // gate has to be able to tell "no signal" from an explicit "cli" and fails
+  // open on either falsy case. This is a PROXY for "started outside our own
+  // template", not proof: an unrelated SDK-driven session also reports
+  // "sdk-cli", which is exactly why the notify-terminal-sessions preference
+  // exists rather than trying to make this exact.
+  entrypoint?: "cli" | "sdk-cli" | null;
   title: string;
   // Which source won: the user's own title, Claude Code's own `ai-title`
   // record, the first line of the session's own first prompt (`message`), or —
@@ -3023,6 +3280,27 @@ export interface Task {
   // session or entry behind it to take one from.
   title_source: "user" | "ai" | "message" | "entry" | "draft";
   description: string;
+  /**
+   * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
+   * the overwhelming majority, which chose neither (`tasks.py::_row_settings`).
+   *
+   * THE CONVERSATION'S OWN RECORD where it has one — what the app wrote down at
+   * the last spawn, the last send or the reader's last pill pick — and the task
+   * entry's stored setting behind it, for the window before the first run.
+   *
+   * NOTHING DRAWS THEM, and that is still the design ("the card asks, the list
+   * stays quiet" — shell/NewJobModal). They are here for the side peek, whose
+   * composer is a REAL chat: handed no opinion, it detects the model last used
+   * in that folder (`agent._defaults`) and showed the reader settings they had
+   * never chosen. The peek seeds these instead, and the composer's own ranking
+   * (`record > param > detected > pref > constant`) retires the seed as soon as
+   * the chat has a record of its own.
+   *
+   * `""` is a real answer — "this task has no opinion" — and is what leaves
+   * detection speaking for every conversation that is not a task.
+   */
+  model: string;
+  effort: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
@@ -3041,8 +3319,14 @@ export interface Task {
   // never attempted (the coalescer dropped it, or the user cancelled it), which
   // is a different thing from a run that tried and broke; only something that
   // actually ran can fail.
-  status: "upcoming" | "in_progress" | "needs_attention" | "blocked" | "done"
-    | "archived";
+  //
+  // `queued` is the project queue's word (prefs `queue.enabled`): this task has
+  // work due and the FOLDER it edits is busy with somebody else's run, so the
+  // scheduler is holding it. It sits between `upcoming` and `in_progress`
+  // because that is where it sits in time — the work is asked for and not yet
+  // started — and it is never sent at all while the flag is off.
+  status: "upcoming" | "queued" | "in_progress" | "needs_attention" | "blocked"
+    | "done" | "archived";
   /**
    * WHICH KIND OF ROW THIS IS — and the one field that says a row is not a task
    * at all.
@@ -3116,19 +3400,22 @@ export interface Task {
   // joined onto a session row was before a form could be bound to one.
   draft?: { preview: string; updated_at: number; kind?: "chat" | "form" } | null;
   /**
-   * THE LAST TURN OF THIS CONVERSATION, whoever took it — one line of it, with
-   * `role` saying which — or null for a task nothing has been said in yet.
+   * THE NEWEST MESSAGE THE USER SENT in this conversation — one line of it —
+   * or null for a task the user has not said anything in yet.
    *
-   * `messages` below carries PROMPTS only, so this is the one field on the row
-   * that can carry Claude's own words. It is what the Cards wall titles a card
-   * by while the `task_card_last_message` pref is on (shell/task-card-title-
-   * flag.ts); nothing reads it while the pref is off.
+   * The newest PROMPT the user sent — Claude's replies are never candidates,
+   * so `role` is always "user" on a current server; the union stays for a
+   * server that predates that rule. The peek header's hint reads it; until
+   * 2026-09-20 an experiment could title a card by it.
    *
    * Optional: a server that predates the field sends nothing, which reads the
    * same as "nothing said yet" — the card falls back to the task's title, the
    * behaviour it has always had.
    */
   last_message?: { role: "user" | "assistant"; text: string; at: number } | null;
+  /** First line of Claude's newest reply in this conversation, "" when none.
+   *  The List row prints it after the title; nothing else reads it. */
+  last_reply?: string;
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.
@@ -3150,11 +3437,22 @@ export interface Task {
   // Anything asking "which column" should read `status`.
   failed: boolean;
   // WHY it is not moving, for the two statuses that need a reason. "permission"
-  // and "question" belong to `needs_attention` (a card is waiting), "failed" to
-  // `blocked`, and "" to every other task — which is most of them. It is what
-  // decides the row's button: Retry on a run that broke, Open on one somebody is
-  // being waited on. Absent on an older server; read as "".
-  blocked_reason?: "permission" | "question" | "failed" | "";
+  // and "question" belong to `needs_attention` (a card is waiting), "failed" and
+  // "usage_limit" to `blocked`, and "" to every other task — which is most of
+  // them. It is what decides the row's button: Retry on a run that broke, Open on
+  // one somebody is being waited on. Absent on an older server; read as "".
+  //
+  // "usage_limit" is the plan's window, not a failure: the session stopped
+  // because the usage limit was reached and it starts again by itself at
+  // `resumes_at`. It draws in the Blocked lane with the same red ring — nothing
+  // is moving, and nothing will move by itself — and says which kind it is in its
+  // caption (platform/lib/usage-limit).
+  blocked_reason?: "permission" | "question" | "failed" | "usage_limit" | "";
+  // WHEN A USAGE-LIMITED SESSION COMES BACK, epoch seconds — the CLI's own
+  // `rate_limit_event.resetsAt`, as the scheduler recorded it. 0 or absent
+  // whenever the server could not say (and on every row that is not limited),
+  // and then the caption stops after "Usage limit".
+  resumes_at?: number;
   // The one line under a needs-attention row's title: which tool, and what it
   // wants to do ("Bash · rm -rf build"). Null — or absent, on an older server —
   // whenever nothing is waiting.
@@ -3204,6 +3502,66 @@ export interface Task {
   // `_next_run`, 2026-09-11) — the next-run chip's repeat glyph. Absent on an
   // older server; tasks-lib.nextRunRepeats then reads the window.
   next_run_repeats?: boolean;
+  // ---- the project queue (prefs `queue.enabled`) ----------------------------
+  // ALL FOUR OPTIONAL, and every reader treats a missing one as "not queued":
+  // an older server sends none of them, and the flag being off means a server
+  // that HAS them still never sets them. So there is no "unknown" state to
+  // render — `queued` is the status, and these only say where in the line.
+  //
+  // The FOLDER this task's work happens in — `current_apps.app_dir_for`, else
+  // the nearest ancestor holding a `.git`, else the canonical cwd
+  // (project_queue.queue_key). Two tasks on two files in one repo share it; a
+  // worktree does not share its main repo's. Never `$HOME`, never `/`.
+  queue_key?: string;
+  // 1-based place in that folder's line, held answers and priority first. 0 (or
+  // absent) when the task is not queued at all — so a reader may print it only
+  // after `status === "queued"`.
+  queue_position?: number;
+  // WHO IS IN FRONT: the holder's `task_id` ("TASK-041"), or "" when the folder
+  // is held by something this row cannot name (a scheduler entry already
+  // claimed, a run whose task row is gone). The empty case is a real answer and
+  // the views say "behind a run in this folder" for it rather than a blank.
+  queue_ahead?: string;
+  // …and that holder's title, for the POINTER only. Never the ink since
+  // 2026-09-12: an id is what a reader can go and find, and a quoted title
+  // inside the caption was a second sentence nested in the first one.
+  queue_ahead_title?: string;
+  // WHERE THAT ID GOES. "behind TASK-038" is only worth printing if TASK-038 is
+  // somewhere the reader can open, so the server names the holder's Claude
+  // session and its folder beside its id and every surface draws the id as a
+  // link (platform/lib/queue.queueAheadHref). Absent on an older server, and the
+  // id is then plain text rather than a link to nothing.
+  queue_ahead_session?: string;
+  queue_ahead_target?: string;
+  // …and the holder's own task KEY, which is a door of its own when the session
+  // is not one yet: a holder still starting is keyed `pending:<entry id>`, and
+  // that entry opens as a chat (platform/lib/queue.QUEUED_PARAM). Absent on an
+  // older server, and the id is then plain text for that window.
+  queue_ahead_key?: string;
+  // ── what this task's SCHEDULER ENTRY is, when it has one ──────────────────
+  //
+  // A task with no transcript is nothing but a line in a folder's queue, keyed
+  // `pending:<entry id>`. These two name that entry outright rather than leaving
+  // every reader to take the key apart, and — more importantly — say WHERE IT
+  // CAME FROM.
+  //
+  // The origin is the half that matters: `"chat"` is stamped by
+  // `POST /api/tasks/queue/admit` and by nothing else, so it means "somebody
+  // typed this into a chat composer". Its ABSENCE is a calendar message, a New
+  // task form, a repeat's occurrence — work that is not a conversation, and must
+  // not be listed as one (`sched/waiting-chats`: every future scheduled job
+  // would otherwise appear in Recent chats).
+  //
+  // `entry_origin` is "" on a task that has run. `entry_id` survives the run
+  // when a scheduled or page-created message opened the session (it is the
+  // same id the task's `pending:<entry>` key carried, so `fused.tasks`'s
+  // handle can follow the rekey); "" for chat-born sessions and older servers.
+  entry_id?: string;
+  entry_origin?: string;
+  // Skipped: this task's pending work jumped to the head of its folder's line
+  // (`POST /api/tasks/queue/skip`, or a held answer, which is always priority).
+  // It still never interrupts the run in flight.
+  queue_priority?: boolean;
   // The three most recent, newest first. The rest need the endpoint below —
   // this list is built by a tail parse because it runs for every row, and a
   // full transcript parse per task would not survive a few hundred of them.
@@ -3228,6 +3586,9 @@ export interface Task {
 // its conversation (tasks-lib `attentionRows`/`taskHref`) — see
 // routers/tasks.py `_PULSE_FIELDS` for why four short strings beat the second
 // /api/tasks poll the alternative would have cost.
+// `entrypoint` (2026-09-18) is here for useTaskStatusNotify.ts's
+// finished-task notice, which has to gate on "cli" vs everything else
+// without a second poll — see `Task.entrypoint`'s own doc comment.
 export type TaskPulseTask = Pick<
   Task,
   | "key"
@@ -3243,7 +3604,32 @@ export type TaskPulseTask = Pick<
   | "next_run"
   | "next_run_entry"
   | "next_run_repeats"
+  | "entrypoint"
 >;
+
+/** The model / thinking a NEW task opens on: the global Claude preference
+ *  (`~/.claude/settings.json` `model` / `effortLevel`, the pair the Claude
+ *  settings page writes). "" for a field the file leaves unset. */
+export function getTaskDefaults(): Promise<{ model: string; effort: string }> {
+  return getJson<{ model: string; effort: string }>("/api/claude-sessions/defaults");
+}
+
+/** WRITE that same global pair — the New task card's dropdowns and the
+ *  composer's pills for a chat with no session yet are both EDITORS of it, not
+ *  just readers (Akshil, 2026-09-21). A field left out is left alone, so moving
+ *  one of the two cannot restate the other. Answers with what the file says
+ *  AFTER the write, which is not always what was asked for: the settings page's
+ *  vocabulary has spellings (`opus[1m]`) the pills read back as the family name.
+ *
+ *  Callers should go through `platform/lib/claude-defaults`, which is what tells
+ *  the other open surfaces about the change; this is the bare wire call. */
+export function putTaskDefaults(
+  patch: { model?: string; effort?: string },
+): Promise<{ model: string; effort: string }> {
+  return putJson<{ model: string; effort: string }>(
+    "/api/claude-sessions/defaults", patch,
+  );
+}
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
@@ -3275,6 +3661,307 @@ export function getTaskChanges(
 
 export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
   return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
+}
+
+// ---- the project queue (prefs `queue.enabled`) --------------------------------
+// Three verbs, and they exist because the client cannot derive any of them: who
+// holds a folder is a fact about live processes (project_queue.holders()), and
+// asking the client to guess it would be the merge the Tasks page already gave
+// up (see the head of ScheduleTaskViews).
+//
+// ADMISSION IS ASKED BEFORE THE SEND, NOT AFTER. A chat send that spawned first
+// and queued second would be two runs in one folder for as long as the round
+// trip takes, which is the one thing this feature exists to prevent. The server
+// holds a short reservation on `run: true` to close the same gap on its side.
+
+/** What `/api/tasks/queue/admit` answers. `run: true` means "go, exactly as
+ *  before" — the flag being OFF answers this too, which is why a caller that
+ *  asks unconditionally still behaves like today. `run: false` means the server
+ *  has already created the pending entry: the words are safe, nothing spawned,
+ *  and the composer shows where in the line they landed. */
+export type QueueAdmission =
+  | {
+      run: true;
+      /**
+       * THE PER-SEND CLAIM TOKEN this admission minted on the folder's owner
+       * (Bugbot, PR #1194) — a one-time proof that THIS send is the one
+       * `queue_manager.claim_took` already counted. Forwarded on the run
+       * request as `queue_claim` so `routers/run.py::_folder_busy` can tell an
+       * admitted send (look only) from one that skipped admission (claim the
+       * folder itself). Absent with the flag off, and on an older server with
+       * nothing to mint one — the gate then falls back to claiming, exactly
+       * as a tokenless send always could.
+       */
+      claim?: string;
+    }
+  | {
+      run: false;
+      entry: ScheduledMessage;
+      /** The folder that is busy — `Task.queue_key`. */
+      key: string;
+      position: number;
+      ahead: string;
+      ahead_title: string;
+      /** WHERE THAT ID GOES — the holder's Claude session and folder, so the
+       *  waiting row's "behind TASK-038" is a link into the conversation that is
+       *  in the way (queue.queueAheadHref). Both "" when the folder is free,
+       *  which is the ordinary answer for a second send into a chat whose first
+       *  one is still waiting: nothing is in front but the reader's own line. */
+      ahead_session?: string;
+      ahead_target?: string;
+      /** …and the holder's task key, which opens the holder's chat even while it
+       *  is still starting (`pending:<entry id>`, queue.queueAheadHref). */
+      ahead_key?: string;
+      /**
+       * THE NUMBER THIS CONVERSATION IS NOW CALLED — "TASK-057".
+       *
+       * A queued send CREATES the task (the entry is the task, keyed
+       * `pending:<leader id>`), so the server can name it in the very answer
+       * that queued it. The chat's header used to wait for a `/api/tasks` listing
+       * to say the same thing, which is up to a poll interval of a conversation
+       * with no number at the top — and the number is how a reader finds it again
+       * on the Tasks page. Absent on an older server, and the header then waits
+       * for the listing exactly as it did.
+       */
+      task_id?: string;
+    };
+
+export function admitQueueSend(body: {
+  project: string;
+  session_id: string;
+  message: string;
+  model?: string;
+  effort?: string;
+  permission_mode?: string;
+  images?: string[];
+  attachments?: TaskAttachment[];
+  /**
+   * THE QUEUED ENTRY THIS MESSAGE IS A FOLLOW-UP TO — the one-off twin of
+   * `template_id`, and only ever sent by a chat that has NO session id yet.
+   *
+   * A chat whose first message was queued is a task named `pending:<entry id>`;
+   * it has no Claude session, because nothing has run. A second message typed
+   * into that same composer has nothing to address — sent bare it would create
+   * a SECOND brand-new task in the same folder, and the reader would watch
+   * their conversation fork in two. Naming the leader joins it instead: the
+   * server groups both entries under the leader's key, orders them, and
+   * resolves the follower's session from the leader's `claude_session_id` at
+   * claim time.
+   */
+  follow_of?: string;
+  /**
+   * THE RUN THIS CHAT ALREADY HAS IN FLIGHT, when it has one.
+   *
+   * A folder's holder is a RUN, and "is that holder this chat?" used to be
+   * asked by session id alone — which a chat does not have until its first turn
+   * has opened one. So a second message typed into a brand-new chat whose own
+   * first turn was still going queued behind ITSELF: the holder was this page's
+   * own run and nothing in the body said so. The run id is minted by `POST
+   * /api/run` before any session exists (`ChatState.runId`), so it is the one
+   * name the two halves can be compared by from the first keystroke — the
+   * server reads a holder carrying this same `run_id` as "this chat" and
+   * answers `run: true`, which is the inbox-absorb case the chat has always had.
+   *
+   * Absent while nothing is running, which is the ordinary case and the one a
+   * session id answers on its own.
+   */
+  run_id?: string;
+  /**
+   * THE CHAT DRAFT THIS SEND SPENDS — `new:<file>`, and only ever sent by a chat
+   * that has no session yet.
+   *
+   * A session-less composer autosaves under that key and the listing gives it a
+   * TASK number, so the row the reader is watching is named before anything has
+   * run. A send into a FREE folder spends it through the run it starts (the
+   * start request's own `draft_key`, which `agent._start` writes into
+   * `meta.json`); a send that QUEUES starts no run, so it says it here instead
+   * and the entry inherits both the number and the delete
+   * (`routers/schedule.py::spend_chat_draft`). Without it the queued task minted
+   * a second number and the spent key was never cleaned up (review, PR #1124).
+   */
+  draft_key?: string;
+}): Promise<QueueAdmission> {
+  return postJson<QueueAdmission>("/api/tasks/queue/admit", body);
+}
+
+/**
+ * Jump queued work to the head of its folder's line. NEVER interrupts the run in
+ * flight — the answer is always a position, never "running now". Idempotent;
+ * rejects (400) when there is nothing queued to move, which is a real answer and
+ * worth showing.
+ *
+ * TWO WAYS TO NAME THE WORK, AND THEY ARE NOT INTERCHANGEABLE.
+ *
+ *   * `{ key }` — the TASK key, which is what a Tasks row or a Board card holds.
+ *     The press there means "everything this task has waiting", and the server
+ *     flags every pending due entry of it.
+ *   * `{ entry_id }` — ONE ENTRY, and the only name a CHAT can safely hold. A
+ *     queued send's task key is `pending:<leader entry id>` until the leader's
+ *     run opens a Claude session, and the store then REKEYS that task onto the
+ *     session id — so a key frozen at admission time is stale from the first run
+ *     onwards, and `{ key }` 404s on the very chip a reader is most likely to
+ *     press (round-2 review). An entry id is minted once and never rekeyed.
+ *
+ * Same answer either way: `{ ok, position }`.
+ */
+/** What Skip answers with: the promise (`position: 1`) and the LINE IT JUST
+ *  CHANGED — who is in front now, the same five `ahead_*` fields admit, decide
+ *  and run-now answer with (`_queue_place`). Optional, because a server from
+ *  before PR #1124 sends the first two alone. */
+export interface SkipResult {
+  ok: boolean;
+  position: number;
+  ahead_key?: string;
+  ahead?: string;
+  ahead_title?: string;
+  ahead_session?: string;
+  ahead_target?: string;
+}
+
+export function skipQueue(
+  what: { key: string } | { entry_id: string },
+): Promise<SkipResult> {
+  return postJson<SkipResult>("/api/tasks/queue/skip", what);
+}
+
+/** What Force start answers with.
+ *
+ *  `started: true` is the ordinary outcome and carries the run the dispatch
+ *  created (`session_id` is "" for a brand-new chat until Claude Code mints
+ *  one), or, for a task whose only waiting thing was a HELD CARD ANSWER, the
+ *  number of decisions that were delivered instead.
+ *
+ *  `started: false` is the honest 200 for a press that arrived too late: the
+ *  message was cancelled, or the folder's own pump dispatched it in the window
+ *  (`reason: "already started"`). Nothing failed and nothing is queued any
+ *  more, so the caller refetches rather than showing an error.
+ *
+ *  A conversation that cannot take the message YET — a send already in flight,
+ *  a live turn — is the same honest 200, with the scheduler's own sentence as
+ *  `reason` (2026-09-21). The message is NOT put back in the line: forcing a
+ *  task takes it out of the queue for good, its entry is still pending in the
+ *  store and the scheduler's next tick sends it. So the caller refetches here
+ *  too rather than showing a refusal about work that is on its way. */
+export interface ForceResult {
+  ok: boolean;
+  started: boolean;
+  run_id?: string;
+  session_id?: string;
+  delivered?: number;
+  reason?: string;
+}
+
+/**
+ * RUN THIS WAITING MESSAGE NOW, beside whatever owns its folder.
+ *
+ * The flag-off behaviour for ONE message: the queue stops deciding when this
+ * turn goes and the message is dispatched immediately, into a tree another task
+ * may still be running in. IT INTERRUPTS NOTHING — the owner keeps the folder
+ * and keeps running — and unlike `skipQueue` it is offered at every waiting
+ * position, including the first: "next" and "now" are different promises.
+ *
+ * `{ entry_id }` is the name a chip can safely hold; see `skipQueue` for why a
+ * task key is not one.
+ */
+export function forceStart(
+  what: { entry_id?: string; key?: string },
+): Promise<ForceResult> {
+  return postJson<ForceResult>("/api/tasks/queue/force", what);
+}
+
+/** A card decision routed through the queue: the same body the agent's own
+ *  `decide` action takes, plus the session and folder the server needs to find
+ *  the line. `held: false` carries the ordinary decide result straight through;
+ *  `held: true` means the answer is stored and will be delivered when the folder
+ *  frees, and the card latches on "runs next" instead of a verdict. */
+export type QueueDecision =
+  | ({ held: false } & Record<string, unknown>)
+  | { held: true; position: number; ahead: string; ahead_title: string };
+
+export function decideThroughQueue(body: {
+  run_id: string;
+  request_id: string;
+  session_id: string;
+  project: string;
+  decision: string;
+  scope: string;
+  mode?: string;
+  answers?: string;
+  note?: string;
+  custom?: string;
+}): Promise<QueueDecision> {
+  return postJson<QueueDecision>("/api/tasks/queue/decide", body);
+}
+
+/**
+ * "A TURN JUST STARTED ON THIS SESSION" — told to the server at the moment of
+ * the send, because nothing on disk says it in time.
+ *
+ * A chat here runs `claude -p` out of process, and the CLI writes its registry
+ * row two to four seconds later; until then the listing read every one of this
+ * app's own turns as done (fused_render/tasks_watch.py `mark_running`). The
+ * sender is the only party that knows sooner, so it says so — once, from
+ * `run-controller.ts`, beside the `announceTasksChanged` that already marks
+ * both turn boundaries.
+ *
+ * BEST-EFFORT BY CONTRACT: the mark is a short-lived floor the registry
+ * overrides, so a failed call costs the first seconds of one ring and nothing
+ * else. Callers swallow the rejection rather than surfacing it.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided a turn had started —
+ * belt-and-suspenders against this call's own POST arriving at the server
+ * AFTER a later `markTaskIdle` for the same session (a race the client also
+ * guards against by awaiting this call before firing that one; see
+ * `run-controller.ts` `noteTurnIdle`). `tasks_watch.mark_running` ignores a
+ * mark whose `turn` is not newer than the last `mark_idle` it saw.
+ *
+ * `extra.text` is the words just sent (the user's prompt, with the
+ * `<live-app-state>` block already stripped) and `extra.file` is the chat's
+ * target path. Sent only when the caller has them — a mark with no send behind
+ * it (a re-attach ping) omits both, and the server keeps what it already knew
+ * rather than blanking the row. They are a HINT told sooner, never client
+ * state: the listing the page renders still comes back from the server.
+ */
+export function markTaskRunning(
+  sessionId: string,
+  turn: number,
+  extra: { text?: string; file?: string } = {},
+): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/running", {
+    session_id: sessionId,
+    turn,
+    ...(extra.text ? { text: extra.text } : {}),
+    ...(extra.file ? { file: extra.file } : {}),
+  });
+}
+
+/**
+ * "A TURN JUST ENDED ON THIS SESSION" — the other half of `markTaskRunning`,
+ * told to the server the moment the poll loop sees the turn close (a final
+ * result, a stop, an error), because a registry row disappearing is a tick
+ * behind and the mark's own TTL is fifteen seconds behind that.
+ *
+ * A SEPARATE endpoint from `markTaskRunning`, deliberately: the send's mark
+ * must post exactly once, at the START, or a finished row would spin out the
+ * mark's whole window (see `run-controller.test.ts`, "the server hears that a
+ * turn started") — folding "ended" into the same call as a `running: false`
+ * flag would have made that one call do both jobs.
+ *
+ * BEST-EFFORT BY CONTRACT, same as `markTaskRunning`: retiring the mark early
+ * is a nicety, not a guarantee — the registry-corroborated stand-down and the
+ * TTL both still apply if this never lands.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided the turn had ended —
+ * the other half of `markTaskRunning`'s `turn`. `tasks_watch.mark_idle` keeps
+ * the newest one it has seen, so a `mark_running` that later arrives claiming
+ * an earlier or equal `turn` is recognized as the SAME turn's late running
+ * POST, not a fresh send, and is ignored.
+ */
+export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/idle", {
+    session_id: sessionId,
+    turn,
+  });
 }
 
 // "Show more": the whole thread, newest first. Deliberately a separate call —
@@ -3313,6 +4000,58 @@ export function markWholeTaskRead(
     key,
     all: true,
   });
+}
+
+// WHAT THIS CHAT RUNS WITH, written on every pill pick.
+//
+// The composer's model/effort used to be remembered by the URL and nothing
+// else: leave the page and the pick was gone, and coming back through any
+// other door (the Tasks peek, its Open button, a row, the chat list, a bare
+// URL) fell back to DETECTION — the model last used by any chat in that folder.
+// A task created with haiku/low opened on fable/max. So a pick is a write now,
+// into the same per-session record the spawn path writes (`agent._start`), and
+// every door reads that one record first.
+//
+// Keyed by SESSION, not by task key: this is a fact about a conversation, and
+// most conversations are not tasks. A chat with no session yet sends nothing —
+// there is nothing to key on, and its first send records the pair server-side.
+//
+// Per field: send the one that changed. An omitted field is "not saying", never
+// "nothing" — the server keeps what the other pick (or the spawn) recorded.
+// THE SAME RECORD, READ BACK — and read FIRST, before anything slower.
+//
+// The composer learned its record off the agent's `defaults` action, which is a
+// POST /api/run that spawns agent.py as a subprocess and scans a transcript
+// tail. That took two to three seconds, and the pills were already showing
+// something — the constant default, or the `?model=` a deep link seeded — so
+// every open of a chat FLIPPED once the answer landed (Akshil, 2026-09-19).
+//
+// The record is one small JSON file the server already reads on every listing,
+// so it never needed the subprocess. This is that read, straight over HTTP: it
+// answers in milliseconds, it outranks every other source the composer has, and
+// the pills wait for it rather than guessing ahead of it. The `defaults` call
+// stays for the one thing only it knows — the transcript/folder ladder, which
+// speaks for a field this record left "".
+//
+// `{model: "", effort: ""}` for a session with nothing recorded, and for one
+// that does not exist: "no record" is the answer that leaves detection and the
+// composer's constants speaking, and the two cases are the same fact here.
+export function readChatSettings(
+  sessionId: string,
+): Promise<{ model: string; effort: string }> {
+  return getJson<{ model: string; effort: string }>(
+    `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
+  );
+}
+
+export function recordChatSettings(
+  sessionId: string,
+  settings: { model?: string; effort?: string },
+): Promise<{ ok: boolean; model: string; effort: string }> {
+  return postJson<{ ok: boolean; model: string; effort: string }>(
+    "/api/tasks/settings",
+    { session_id: sessionId, ...settings },
+  );
 }
 
 // Filing a task away. ONE call, because it is one gesture with two halves that
@@ -5037,6 +5776,28 @@ export interface ScheduledMessage {
   made?: number;
   // On an occurrence: the template it was materialized from.
   template_id?: string;
+  // WHO PUT THIS ENTRY IN THE LINE — "chat" for a message the project queue
+  // admitted out of a composer, ABSENT for everything a person scheduled (the
+  // calendar, the New task form, a repeat's occurrence).
+  //
+  // The chat reads exactly one thing off it, and it is the difference between
+  // two states that look identical in the store: a chat-origin entry is a
+  // message the reader typed into THIS box ten seconds ago and the box stays
+  // open behind it, while a calendar entry aimed at this session is a run the
+  // scheduler is about to start here — and a line typed over THAT is two
+  // messages racing into one turn, which is what the closed composer has always
+  // been there to prevent. Absent on every entry stored before the field
+  // existed, which reads as "scheduled", i.e. the cautious half.
+  origin?: string;
+  // Skipped to the head of its folder's line (`POST /api/tasks/queue/skip`, or a
+  // held answer, which is always priority). Never interrupts the run in flight.
+  priority?: boolean;
+  // On a follow-up into a chat that has not run yet: the QUEUED ENTRY this
+  // message was typed behind (`admitQueueSend`'s `follow_of`). The entry groups
+  // under that leader's task instead of minting one of its own, and takes its
+  // session from whatever the leader's run opens. Absent on everything else —
+  // one-offs, occurrences, and every entry stored before the field existed.
+  follow_of?: string;
   // On an occurrence: this is the ONE catch-up run of a rule whose anchor was
   // already in the past when it was created. Its `due` is the LATEST slot at or
   // before the moment it was made (the anchor sets the pattern; the run that
@@ -5107,8 +5868,10 @@ export function scheduleMessage(body: {
   // resume the conversation it was scheduled from.
   session_learned?: boolean;
   permission_mode?: string;
-  // The run's model (`--model`: an alias like "fable", or a pinned full id like
-  // "claude-fable-5-1") and its thinking budget (`--effort`: low…max). Omitted
+  // The run's model (`--model`: one of the CLI's family aliases, "fable" /
+  // "opus" / "sonnet" / "haiku" — an older entry may still carry a full id like
+  // "claude-fable-5-1", which the pickers read as its alias) and its thinking
+  // budget (`--effort`: low…max). Omitted
   // rather than sent empty, like everything else optional here — the server
   // stores "" for "pass no flag", so an absent key and a blank one already mean
   // the same thing and the shorter body is the honest one.
@@ -5157,17 +5920,14 @@ export function scheduleMessage(body: {
   // delete the client made separately could be the half that failed, leaving a
   // draft row beside the task it had already become.
   draft_id?: string;
-  // THE CHAT DRAFT THIS TASK WAS TYPED IN, when the card was opened from the
-  // composer's Schedule button (`new:<file>` for a chat with no session yet, a
-  // session id otherwise). The server deletes it as part of creating the task.
+  // THE CHAT RECORD THIS TASK IS, when the card was editing one (`new:<file>`
+  // for a chat with no session yet, a session id otherwise). The server deletes
+  // it as part of creating the task and moves its TASK number onto the entry —
+  // `draft_id`'s twin for the other kind of record (contract §5).
   //
-  // NOT THE SAME THING AS `draft_id`, and not covered by `session_id` either:
-  // the hop's first autosave normally moves the chat draft onto the task draft,
-  // but Schedule pressed inside that 600 ms debounce mints no task draft at all
-  // — and a brand-new chat has no session id to travel in the other field. So
-  // the origin key rides here, and the composer's copy goes wherever this task
-  // came from (Bugbot, PR #1118).
-  from_chat_key?: string;
+  // NOT covered by `session_id`: a brand-new chat has no session id at all, and
+  // its record is keyed `new:<file>` precisely because of it.
+  draft_key?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }
@@ -5192,11 +5952,30 @@ export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledM
 // sending, cancelled, or its conversation has a turn open right now (two
 // `claude --resume` processes on one transcript is the one thing this must
 // never do). The reason is written to be shown.
-export function runScheduledNow(entryId: string): Promise<{ ok: boolean; entry: ScheduledMessage }> {
-  return postJson<{ ok: boolean; entry: ScheduledMessage }>(
-    "/api/schedule/run-now",
-    { entry_id: entryId },
-  );
+//
+// `ok: false` WITH A REASON IS NOT A REFUSAL. Under the project queue a folder
+// that is busy with another task holds this message instead of sending it — the
+// entry stays pending, gains `priority` (running something now IS a skip) and
+// the row reads `queued` at position 1. The caller paints that rather than
+// raising it: nothing went wrong and nothing was lost.
+export function runScheduledNow(entryId: string): Promise<RunNowResult> {
+  return postJson<RunNowResult>("/api/schedule/run-now", { entry_id: entryId });
+}
+
+export interface RunNowResult {
+  ok: boolean;
+  entry: ScheduledMessage;
+  /** `"queued"` — the only value today, and the only one that means "held, not
+   *  refused". Absent on `ok: true` and on an older server. */
+  reason?: string;
+  position?: number;
+  ahead?: string;
+  ahead_title?: string;
+  /** The number the task is called, on a `queued` answer — the same field the
+   *  admission carries, for the same reason: running something now can CREATE
+   *  the task (the entry is the task), and a row that has just appeared has no
+   *  listing to be read out of yet. Absent on an older server. */
+  task_id?: string;
 }
 
 // Ask again — the other half of Re-run, for the case run-now cannot serve.
@@ -5243,7 +6022,7 @@ export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMe
 // 2026-09-03): the Tasks page says it on its own — the row wears the Needs
 // attention ring and sorts to the top — and a toast for it would interrupt the
 // reader for a run that has not finished doing anything yet.
-export type ScheduleEventKind = "done" | "failed" | "missed";
+export type ScheduleEventKind = "started" | "done" | "failed" | "missed";
 
 export interface ScheduleEvent {
   id: number;

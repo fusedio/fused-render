@@ -22,6 +22,7 @@ copy. The pair backs one button in the preview header, which flips between
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import tempfile
 from urllib.parse import quote
@@ -30,8 +31,9 @@ from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
-from fused_render import appfile
-from fused_render._view_url_codec import embed_url_path
+from fused_render import appfetch, appfile, jobs
+from fused_render._view_url_codec import canonical_fs_path, embed_url_path
+from fused_render.server.index_touch import note_index_mutation
 
 router = APIRouter()
 
@@ -53,8 +55,11 @@ def api_appfile_export(path: str = ""):
     """Build and download ``<app name>.fused`` for the app folder at ``path``.
 
     A GET, deliberately: the trigger is browser navigation from the card menu,
-    which cannot set headers, and the operation is read-only against the
-    folder (the zip lands in a temp dir removed once the response is sent).
+    which cannot set headers. The file lands in a temp dir removed once the
+    response is sent. The one write to the folder itself is the app's FIRST
+    export stamping ``<meta name="fused-app-id">`` into its entry page
+    (`app_id.py`) — an identity the app then keeps for life, so the same
+    folder exported again produces a file with the same ``app_id``.
     """
     if not path or not os.path.isabs(path):
         return _error("path must be an absolute app folder path")
@@ -127,6 +132,120 @@ async def api_appfile_export_with_preview(
     )
 
 
+def _export_destination_dir() -> str:
+    """The platform Downloads folder, created if this is its first use.
+
+    No existing helper in the codebase resolves a per-platform user
+    directory outside the app's own home (`storage.home_dir()` is a
+    different, sandboxed thing) — `~/Downloads` and
+    `%USERPROFILE%\\Downloads` both come out of `os.path.expanduser("~")`,
+    which resolves correctly on both POSIX and Windows.
+    """
+    d = os.path.join(os.path.expanduser("~"), "Downloads")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _export_file_name(path: str, name: str) -> str:
+    """The ``.fused`` file's own name: the caller's display name when one is
+    given, the app folder's own basename otherwise.
+
+    A caller building a versioned export (`AppPage.tsx`/`EntryActionsMenu.tsx`
+    compute `${name}-${versionLabel}`) does so specifically so a v7 snapshot
+    export never lands beside a live export under the same ambiguous name —
+    `os.path.basename` strips any directory component a request body could
+    otherwise smuggle in, so this can only ever choose a bare filename inside
+    `dest_dir`, never escape it.
+    """
+    base = os.path.basename((name or "").strip())
+    if not base:
+        return appfile.default_file_name(path)
+    return base if base.lower().endswith(".fused") else base + ".fused"
+
+
+def _unique_export_path(dest_dir: str, file_name: str) -> str:
+    """The first name in `dest_dir` that does not already exist — `App.fused`,
+    then `App (2).fused`, `App (3).fused`, ... `export_app_file` itself
+    refuses to overwrite, so a repeat export must be handed a free name
+    rather than relying on that refusal, which would just fail the second
+    export outright instead of producing a sibling copy."""
+    stem, ext = os.path.splitext(file_name)
+    candidate = os.path.join(dest_dir, file_name)
+    n = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(dest_dir, f"{stem} ({n}){ext}")
+        n += 1
+    return candidate
+
+
+@router.post("/api/appfile/export/save")
+async def api_appfile_export_to_disk(
+    path: str = Form(default=""),
+    name: str = Form(default=""),
+    preview: UploadFile | None = File(default=None),
+    x_fused: str | None = Header(default=None),
+):
+    """Write ``<name>.fused`` straight to the platform Downloads folder and
+    report its real path, instead of handing the browser a blob it saves
+    wherever the user's download settings land it. ``name`` is the caller's
+    own display name for the file (a version export's own
+    ``${name}-${versionLabel}``, see `_export_file_name`); it falls back to
+    the app folder's own basename when blank.
+
+    This is what makes the export immediately searchable: writing through
+    the browser leaves the real destination unknown to the server, so the
+    exported file sits outside the index until the next scan happens to
+    cover it (SPEC's ~110s-unsearchable bug). Writing here means the path is
+    known the instant the file exists, so `note_index_mutation` can queue the
+    exported file itself for a rescan synchronously, on the same request — no
+    freshness gate involved at all. It is handed the FILE, not `dest_dir`:
+    `note_index_mutation` scans the PARENT of whatever path it is given
+    (`index_touch._folder_of`), so passing the folder itself would queue a
+    scan of the folder's own parent instead of Downloads.
+
+    Same optional-preview shape as `api_appfile_export_with_preview`: an
+    over-cap or non-PNG capture is dropped rather than raised, since it comes
+    off a best-effort screen grab and a failed grab must cost the thumbnail,
+    not the export.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute app folder path")
+    preview_bytes: bytes | None = None
+    if preview is not None:
+        preview_bytes = await preview.read(appfile.MAX_PREVIEW_BYTES + 1)
+        if not preview_bytes or len(preview_bytes) > appfile.MAX_PREVIEW_BYTES:
+            preview_bytes = None
+    dest_dir = _export_destination_dir()
+    file_name = _export_file_name(path, name)
+    out_path = _unique_export_path(dest_dir, file_name)
+    try:
+        appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+    real_path = canonical_fs_path(out_path)
+    note_index_mutation(real_path)
+    jobs.upsert(
+        {
+            "id": f"{jobs.SERVER_ID_PREFIX}appfile-export:{secrets.token_hex(4)}",
+            "title": f"Exported {os.path.basename(out_path)}",
+            "state": "done",
+            "kind": "task",
+            # The client raises its own two-action notification ("Reveal
+            # folder" / "Open file") on this same export, so this row must
+            # not ALSO pop a card — `popupJobs` already drops a `done` job
+            # whose stored tier is `silent`.
+            "tier": "silent",
+        },
+        page=real_path,
+        origin="Export",
+        server=True,
+    )
+    return JSONResponse({"path": real_path})
+
+
 @router.get("/api/appfile/preview")
 def api_appfile_preview(path: str = ""):
     """The ``preview.png`` inside the ``.fused`` at ``path``, as bytes — the
@@ -181,6 +300,51 @@ def api_appfile_clone(body: dict = Body(...), x_fused: str | None = Header(defau
         return appfile.clone_app_file(file)
     except appfile.AppFileError as exc:
         return _error(str(exc))
+
+
+@router.post("/api/appfile/overwrite")
+def api_appfile_overwrite(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Re-copy the ``.fused`` at ``file`` OVER its existing local copy — the
+    preview header's "Clone & overwrite", shown only once a copy exists and
+    only after the user confirmed. Merge semantics: payload files replace
+    their counterparts, everything else in the copy (``.venv``, ``.fused``,
+    ``.git``, anything the export left home) stays. Answers the clone shape
+    plus ``overwritten``. X-Fused-guarded: it writes over the user's edits."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    file = str(body.get("file") or "")
+    if not file or not os.path.isabs(file):
+        return _error("file must be an absolute .fused file path")
+    try:
+        return appfile.overwrite_app_file(file)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+
+
+@router.post("/api/appfile/fetch")
+def api_appfile_fetch(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Download the ``.fused`` at the http(s) ``url`` into the managed
+    downloads dir and answer ``{file}`` — the saved absolute path, which the
+    caller then opens like any other ``.fused`` (DL-8). The one caller is the
+    shell's ``FetchAppFileBoot``, fed by a ``fused-render://open?url=`` link.
+
+    X-Fused-guarded: it writes. There is deliberately NO confirm step before
+    it (owner call, same as Render App's lite PR #30): the deep-link click is
+    the gesture. The recorded cost is that a web page which can navigate the
+    browser to this origin with ``?_fetch_appfile=`` gets a remote ``.fused``
+    downloaded and opened without a prompt."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    url = str(body.get("url") or "").strip()
+    if not appfetch.is_url(url):
+        return _error("url must be an http:// or https:// link to a .fused file")
+    try:
+        file = appfetch.download_app_file(url)
+    except appfetch.FetchError as exc:
+        return _error(str(exc))
+    return JSONResponse({"file": file.replace(os.sep, "/")})
 
 
 @router.post("/api/appfile/open")

@@ -117,6 +117,17 @@
   --tasks-page-gutter: 44px;
 }
 
+/* FRAMED (`/tasks?embed=1`, an app page's iframe; main.tsx stamps body.embed):
+   the host page owns the outer gutter, so this page's own 22px each side would
+   be a second one inside the frame — same move as `.app-page-tasks
+   .schedule-page` (styles/app-page.css). The var is what the peek's arithmetic
+   (`measureTasksBaseline`) reads as the untight gutter; 16px keeps the column
+   estimate a touch conservative so the peek still fits at phone width. */
+body.embed .schedule-page {
+  padding-inline: 0;
+  --tasks-page-gutter: 16px;
+}
+
 .schedule-page > .schedule-header h1 {
   margin: 0;
 }
@@ -1421,12 +1432,154 @@
   box-shadow: 0 8px 24px var(--shadow-sm);
   transform-origin: top;
   animation: schedule-pop-in 0.1s ease-out;
+  /* THE PANEL IS A FRAME; THE ROWS INSIDE IT SCROLL (Akshil, 2026-09-18, twice:
+     typing `/Users/akshilthumar/` "lists ~8 dirs and cuts off", and then
+     "Browse… and + New folder are scrolling WITH the results").
+
+     The cap is the INLINE `max-height` `popStyle` measures off the room under
+     the field, exactly as the Tasks page's filter popovers are capped (tasks.css
+     `.schedule-tv-pop.tasks-pop`, which fixed the first of those on the project
+     menu) — so no height is set here and a two-row list is still two rows tall.
+
+     `overflow: hidden` rather than `auto`: the SCROLLER is one box down now, and
+     this one only has to stop a child spilling past the rounded corner it
+     draws. `min-height: 0` because a flex column only shrinks below its content
+     when it is allowed to; without it the cap is ignored and the panel runs off
+     the card, which is the ~89px overhang this also closed. */
+  overflow: hidden;
+  min-height: 0;
 }
 
+/* THE ROWS, AND ONLY THE ROWS. Takes whatever height is left under the cap once
+   the footer has had its own, which is what makes "the total never exceeds the
+   cap" a fact about the layout rather than a number to keep in step: `1 1 auto`
+   against the footer's `0 0 auto`, and `min-height: 0` so it is allowed to be
+   shorter than fifty folders. */
+.schedule-recents-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* THE TWO WAYS OUT, pinned. They are not results — they are what you reach for
+   when the list did not have the answer — and a way out that scrolls off the
+   bottom of fifty folders is a way out you have to go looking for. Its own
+   height, never squeezed, never scrolled. */
+.schedule-recents-foot {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+
+/* Rows keep their own height inside that scroller — a constrained flex column
+   otherwise squeezes them all to fit, which turns fifty folders into fifty
+   slivers. The same rule, for the same reason, as tasks.css gives
+   `.schedule-tv-pop-item`; the separator, the verbs and the empty line are named
+   too, because a scroller squeezes everything it holds. */
+.schedule-recents-scroll > .schedule-picker-row,
+.schedule-form .schedule-recents-scroll > .schedule-picker-row,
+.schedule-recents-foot > .schedule-picker-row,
+.schedule-form .schedule-recents-foot > .schedule-picker-row,
+.schedule-recents-foot > .schedule-recents-sep,
+.schedule-recents-scroll > .schedule-recents-empty {
+  flex: 0 0 auto;
+}
+
+/* THE NAME NEVER STARVES THE PATH (Akshil, 2026-09-19). Both halves used to be
+   `flex: 0 1 auto`, so a long folder name took the row and left the address
+   beside it a stub. The name keeps its own width up to a little over half the
+   row and ellipsises there; everything left over is the path's, which is what
+   `FitPath` measures itself against. */
 .schedule-recents-path {
+  flex: 0 0 auto;
+  max-width: 55%;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* WHERE A ROW'S FOLDER LIVES, when the row did not come from the line the
+   reader is typing — a remembered folder, or a project this page knows. The
+   Explorer's completion rows print the NAME alone, because the address is
+   already in the field one line above; these two kinds did not come from the
+   field, so they say where they are, quietly, at the end of the row.
+
+   MIDDLE-TRUNCATED, NOT ELLIPSISED (Akshil, 2026-09-19: "let's have start and
+   end of path, rest middle-truncate"). `text-overflow` only ever cuts the tail,
+   and the tail of a path is the half that says which folder this is — so the
+   cutting is done in JS instead (`FitPath` / `fitPathMiddle` in PathTip.tsx,
+   measured with `measureText` against this box's own width) and the rule here
+   only has to hand it a stable width and get out of the way. Hence no
+   `text-overflow`: the string arrives already the right length, and an ellipsis
+   rule on top of it would cut a second time.
+
+   `flex: 1 1 auto` with nothing else flexible in the row means this span is
+   handed ALL the leftover width whether its text is long or short — which is
+   what makes the measurement stable, since shortening the text cannot shrink
+   the box it was measured against. `text-align: right` is what an auto left
+   margin used to do; the margin cannot stay, because auto margins eat the free
+   space before `flex-grow` can. */
+.schedule-recents-where {
+  padding-left: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.schedule-form .schedule-picker-row.is-active .schedule-recents-where {
+  color: var(--fg-muted);
+}
+
+/* THE ROW THE ARROW KEYS ARE ON. Focus stays in the input while the list is
+   walked (`aria-activedescendant` names the row), so hover is the only thing
+   this list had that could say "here" — and a keyboard has no hover. Same wash
+   as the hover rule below, so arrowing to a row and pointing at it look
+   identical, which is the whole claim: one highlight, two ways to move it. */
+.schedule-form .schedule-picker-row.is-active {
+  background: rgba(var(--tint), 0.08);
+}
+
+/* A SEARCH THAT FOUND NOTHING STILL ANSWERS — the same sentence, in the same
+   words and the same shape, as the Tasks page's project menu
+   (`.schedule-tv-pop-empty`). Not a row: there is nothing to press. */
+.schedule-recents-empty {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+/* THE HOVERED ROW'S WHOLE PATH (Akshil, 2026-09-19: "on hover an instant
+   tooltip / aria-label with the full path (avoid z-index issues)").
+
+   A `title` would have been one attribute, and it is the wrong one twice: the
+   browser holds it back a second or so — the reader has moved on — and it is
+   drawn by the OS, so it cannot be styled to match the panel it belongs to.
+   This is one element, portalled to `<body>` and `position: fixed`, so the
+   modal's stacking context and the dropdown's own layer have nothing to say
+   about where it lands. `pointer-events: none` so it can never eat the click
+   meant for the row it is describing. */
+.schedule-path-tip {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg);
+  box-shadow: 0 4px 12px var(--shadow-md);
+  max-width: 60vw;
+  word-break: break-all;
 }
 
 /* The line between the found paths and the verbs. Its OWN element, not a
@@ -1439,6 +1592,8 @@
   height: 1px;
   flex: none;
   background: var(--border);
+  /* Full-bleed: the negative inline margins cancel the PANEL's 4px padding,
+     which the footer sits inside. */
   margin: 4px -4px;
 }
 
@@ -2469,36 +2624,6 @@ input.schedule-when-field {
   padding: 0 22px;
 }
 
-/* The ⌘↩ pill inside Save. Drawn in the button's own ink at a lower alpha so
-   it reads as a caption on the verb, not a second control; the right padding
-   is pulled in because the pill already ends the pill. */
-.schedule-save {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 14px;
-}
-.schedule-save-key {
-  display: inline-flex;
-  align-items: center;
-  /* Glyph, plus, glyph — with air between them (Akshil, screenshot,
-     2026-08-27: "a little bit of space between these two icons and a plus
-     icon"). Set glyph-to-glyph the two read as one unfamiliar ligature. */
-  gap: 3px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: 5px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-  color: inherit;
-  opacity: 0.85;
-}
-.schedule-save-key-plus {
-  font-size: 9px;
-  opacity: 0.7;
-}
-
 /* The description hangs from a top-aligned icon (multi-line row), and grows
    only by the user's hand. */
 .schedule-form-line--top {
@@ -2600,6 +2725,21 @@ input.schedule-when-field {
    mark and the column disagree. The `✎ Draft` chip beside the title is what
    tells the two apart — one mark for one fact (design.md, Akshil 2026-09-11). */
 .schedule-ring--draft { color: var(--status-upcoming); }
+
+/* QUEUED IS IN PROGRESS'S OWN YELLOW, DASHED (Akshil, 2026-09-12). It was
+   `--activity`'s blue for a day and a gold of its own for a day; both are gone.
+   `queued` is DRAWN INSIDE the In Progress lane (schedule-lib.laneOf), so a ring
+   of any other hue sits directly under the running one in the same column and
+   reads as a different kind of work — and a third yellow is a colour the reader
+   has to be taught. The colour is therefore IDENTICAL (`--status-queued` is an
+   alias of `--status-progress`, tokens.css) and the SHAPE is the difference: the
+   running ring is solid, the waiting one is dashed, the same "not settled yet"
+   the queued bubble in the chat wears. A dash survives a 16px mark, a dim screen
+   and a colour-blind reader; a hue does none of the three. */
+.schedule-ring--queued {
+  color: var(--status-queued);
+  border-style: dashed;
+}
 .schedule-ring--in_progress { color: var(--status-progress); }
 .schedule-ring--done { color: var(--status-done); }
 .schedule-ring--archived { color: var(--status-archived); }
@@ -2831,6 +2971,12 @@ input.schedule-when-field {
     opacity 0.1s ease,
     visibility 0.1s ease,
     top 0s 0.1s,
+    /* `bottom` is in the list for the List's LAST row, which opens its panel
+       upward instead (styles/tasks.css — the scroller is the bordered box now
+       and its floor is that row's). Without it that panel alone snapped home
+       the instant the pointer left, mid-fade, while every other one held its
+       seat. Costs the rules that never set `bottom` nothing. */
+    bottom 0s 0.1s,
     left 0s 0.1s,
     transform 0s 0.1s;
   pointer-events: none;
@@ -3397,58 +3543,68 @@ input.schedule-when-field {
    the lane's fill in both themes. The track itself paints nothing: a groove
    would be a second column drawn beside the cards.
 
-   ONE rule for all four of the page's content scrollers, though `.tasks-list`'s
-   box belongs to tasks.css and the Cards wall's to task-cards.css. Scrollbar
-   chrome is one decision about one kind of furniture, and two copies of it is
-   how the List and the Board end up wearing different bars — which is exactly
-   what happened when the Cards wall shipped without this rule: an overlay bar
-   on one view and a 10px column on the next (Akshil, 2026-09-05).
-
-   The four are the Board's lane, the List, the Cards wall, and the CALENDAR's
-   popover thread — the one calendar scroller that has a bar at all, since the
-   week grid hides its own (`.schedule-cal-scroll`, above: the hour lines say
-   where you are).
+   ONE rule for the two scrollers that keep the classic bar: the Board's lane and
+   the CALENDAR's popover thread — the one calendar scroller that has a bar at
+   all, since the week grid hides its own (`.schedule-cal-scroll`, above: the
+   hour lines say where you are). The List and the Cards wall used to be in this
+   list and now wear an overlay bar (below): their content is the thing the
+   reader is here for, and a 10px column reserved for a bar that is invisible
+   at rest was 10px off every row and every card (Akshil, 2026-09-16).
    The page's remaining scrollers are dropdown menus and pickers, which are
    floating surfaces a few rows tall rather than columns of content, and are
    deliberately left alone. */
 .schedule-tv-lane-body,
-.schedule-cal-thread,
-.tasks-list,
-.task-cards-scroll {
+.schedule-cal-thread {
   scrollbar-gutter: stable;
 }
 
+/* THE LIST AND THE CARDS WALL WEAR AN OVERLAY BAR INSTEAD (Akshil, 2026-09-16:
+   "let content take full width and we show scroll bar on top of content,
+   because scrollbar hides away when not in hover as well"). Their bar was the
+   10px column above, which is a column the rows and cards could not use; with
+   the ink already painted out at rest (styles/scrollbars.css), a reserved
+   column for an invisible bar is only a gutter. `scrollbar-color` is what opts
+   an element BACK INTO overlay bars in Chromium — a standard scrollbar property
+   makes it drop the `::-webkit-scrollbar` rules for that element, and on macOS
+   an unstyled bar floats over the content — and it is fed the same `--sb-thumb`
+   the fade flips, so the thumb still appears only under the pointer. No gutter:
+   an overlay bar has none by definition. */
+.tasks-list,
+.task-cards-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb) transparent;
+}
+
 .schedule-tv-lane-body::-webkit-scrollbar,
-.schedule-cal-thread::-webkit-scrollbar,
-.tasks-list::-webkit-scrollbar,
-.task-cards-scroll::-webkit-scrollbar {
+.schedule-cal-thread::-webkit-scrollbar {
   width: 10px;
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar-track,
-.schedule-cal-thread::-webkit-scrollbar-track,
-.tasks-list::-webkit-scrollbar-track,
-.task-cards-scroll::-webkit-scrollbar-track {
+.schedule-cal-thread::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar-thumb,
-.schedule-cal-thread::-webkit-scrollbar-thumb,
-.tasks-list::-webkit-scrollbar-thumb,
-.task-cards-scroll::-webkit-scrollbar-thumb {
+.schedule-cal-thread::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
   background-clip: padding-box;
   border: 3px solid transparent;
   border-radius: 999px;
 }
 
-.schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
-.schedule-cal-thread::-webkit-scrollbar-thumb:hover,
-.tasks-list::-webkit-scrollbar-thumb:hover,
-.task-cards-scroll::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
-  background-clip: padding-box;
-}
+/* HOVER-ONLY INK for these bars lives in styles/scrollbars.css (Akshil,
+   2026-09-15) — one list for every scroller on Tasks, the side peek, Home and
+   AI Models, so the pages cannot drift into three different fades. The rules
+   above are unchanged and still own the bar's shape, width and colour; that
+   file only paints the thumb out while the scroller is unhovered, which is why
+   it must stay on `::-webkit-scrollbar-thumb` — anything set through
+   `scrollbar-color` would make Chromium drop the width rule above, and with it
+   the overlay opt-out this whole block exists for.
+
+   The thumb's own `:hover` brightening (48%) went with it: hover state on the
+   thumb is the one Chromium leaves stuck after the pointer leaves, and a bar
+   that only appears on hover has nothing to brighten from. */
 
 /* The card is the LIT element of the board: the lane under it is a fill that
    deliberately loses to it, so this is the one surface on the page that steps
@@ -4010,6 +4166,35 @@ input.schedule-when-field {
   }
 }
 
+/* THE SEAM INSIDE THE IN PROGRESS LANE — a thin dashed rule with the reader's
+   own word on it, between the cards that are running and the ones waiting on a
+   busy folder (ScheduleTaskViews, tasks-lib.laneSplitAt).
+
+   DASHED, NOT SOLID: the cards under it are in the SAME lane and one press away
+   from crossing it, so the line is a grouping rather than a boundary — the same
+   argument the waiting bubble in the chat is dashed for.
+
+   NO WIDTH ANYWHERE ON IT. The rule is a border on a flex row that grows to
+   whatever the lane is, and the word is a label sitting in the middle of it, so
+   a 260px lane and a 400px one draw the same thing at their own size. */
+.schedule-tv-lane-split {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--status-queued);
+}
+.schedule-tv-lane-split::before,
+.schedule-tv-lane-split::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 1px dashed color-mix(in srgb, var(--status-queued) 55%, transparent);
+}
+.schedule-tv-lane-split > span {
+  flex: 0 0 auto;
+}
 /* -- The toolbar folds its words before it clips them ------------------------
    EVERY SELECTOR HERE IS SCOPED TO `[data-fit]`, the attribute shell/row-fit.ts
    writes and which exists only while `task_peek_enabled` is on
@@ -4198,9 +4383,17 @@ input.schedule-when-field {
     [data-fit="8"],
     [data-fit="9"]
   )
-  .schedule-tv-search {
+  .schedule-tv-search:not(.schedule-tv-pop-search) {
   display: none;
 }
+
+/* …BUT NOT THE ONE INSIDE THE PROJECT MENU. The facet's "Find a folder…" box
+   wears `.schedule-tv-search` for the magnifier's positioning and is drawn
+   inside the toolbar's DOM, so this ladder rung was folding it away with the
+   toolbar's own field: a project menu with 87 folders and no box to find one
+   in, on any pane narrower than rung 3 (seen 2026-09-19 at 734px). The panel
+   is fixed-positioned and outside the row's width problem entirely, so it
+   keeps its box at every rung. */
 
 /* -- and then CONTROLS GO, lowest priority first ------------------------------
    The ladder's second half (design.md, Widths v2, reordered by Polish batch 4).
@@ -4322,6 +4515,82 @@ input.schedule-when-field {
   margin-top: 0;
 }
 
+/* THE PROJECT MENU'S OWN SEARCH BOX (ScheduleTaskViews `ProjectFacet`), on a
+   machine with enough folders that the list stopped being readable at a glance.
+
+   It IS the toolbar's search field — `.schedule-tv-search` carries the
+   magnifier's positioning and `.schedule-tv-search-input` the inset and the
+   type size, so the two boxes are one control in two places rather than a
+   second thing that looks nearly the same.
+
+   `flex: 0 0 auto` IS THE WHOLE OF THIS RULE, and it is not tidiness (browser
+   QA, 2026-09-18 — measured: the box stood 248px tall with the magnifier
+   floating in the middle of it and the two matching folders shoved to the
+   bottom of the panel).
+
+   THE TOOLBAR'S 260px IS A FLEX BASIS, NOT A WIDTH.
+   `.schedule-toolbar[data-fit] .schedule-tv-search { flex: 0 1 260px }` is the
+   field's designed slack in a ROW, where the basis is a width — and the popover
+   is a DOM descendant of that toolbar (fixed position is paint, not ancestry),
+   so the rule reaches this box too. Here the panel is a flex COLUMN, and in a
+   column the basis is a HEIGHT: the same declaration asked for a 260px-tall
+   search field. `width: auto` could never have undone it, because the number
+   was never in `width`.
+
+   So the basis is restated as `auto` and the box is frozen at its content
+   height. That also makes it the same answer tasks.css gives every row in this
+   panel (`flex: 0 0 auto` on `.schedule-tv-pop-item`, and for the same reason:
+   a constrained flex column squeezes and stretches its children unless each one
+   says not to). This box is not an item, so that rule never named it.
+
+   AND THE SELECTOR HAS TO OUT-SPECIFY THE TOOLBAR'S, which is the half a single
+   class could not do: `.schedule-toolbar[data-fit] .schedule-tv-search` is
+   (0,2,1) and `.schedule-tv-pop-search` alone is (0,1,0), so the fix loaded and
+   lost — measured in the browser, which listed all three matching rules and the
+   winner. Naming the panel AND both classes is (0,3,0), which wins wherever
+   this popover is drawn; scoping it to `.schedule-toolbar` instead would have
+   tied on specificity and left it depending on paint order, and would say
+   nothing about the merged menu or a popover drawn inside `.prefs-section`. */
+/* …AND IT STAYS PUT WHILE THE FOLDERS SCROLL (Akshil, 2026-09-19: "search
+   should be fixed in place, it shouldn't scroll with the projects list").
+
+   STICKY, NOT A SECOND SCROLLER. The panel goes on being the scroller it has
+   always been (tasks.css `.schedule-tv-pop.tasks-pop`, `overflow-y: auto`) and
+   this box rides its top edge — which is the one shape that leaves the
+   radiogroup's `display: contents` alone. Making the GROUP the scroller instead
+   would have given it a real box, and a real box between the panel and its rows
+   is the 28-slivers bug that `display: contents` exists to prevent.
+
+   Its own background, because a sticky element is painted OVER the rows sliding
+   under it and a transparent one would show them through; `z-index` for the
+   same reason, against the rows' own hover wash. The 2px that used to be a top
+   MARGIN is padding now: a margin above a sticky box is a 2px window at
+   `top: 0` for a hairline of the row underneath to show through. */
+.schedule-tv-pop .schedule-tv-search.schedule-tv-pop-search {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0 2px 4px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-popover);
+  padding-top: 2px;
+}
+
+/* A search that found nothing still answers. Not a row: there is nothing to
+   press, and a pressable-looking line in a list of pressable rows is the worst
+   of both.
+
+   `flex: 0 0 auto` for the reason above — it is not a `.schedule-tv-pop-item`
+   either, so nothing else in this panel tells it to keep its own height. */
+.schedule-tv-pop-empty {
+  flex: 0 0 auto;
+  margin: 2px 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
 /* The project rows' radiogroup (ScheduleTaskViews `projectRows`): a box in the
    accessibility tree and no box in the layout, so the rows stay the panel's own
    flex children and 28 folders are 28 rows rather than 28 slivers.
@@ -4332,4 +4601,23 @@ input.schedule-when-field {
    does; the two move together. */
 .schedule-tv-pop-radiogroup {
   display: contents;
+}
+
+
+/* The chosen folder's name stands in for the word "Project" on the filter
+   trigger; a long one is ellipsised rather than pushing Status and + New task
+   off the bar. Wide enough for most repo names, narrow enough that the ladder
+   still has a bar to fold.
+
+   SCOPED TO THE LADDER'S OWN TOOLBAR (`[data-fit]`), not to every
+   `.schedule-fit-lbl` on the page: the label this shapes is the one the fit
+   ladder measures, and a rule that reaches a toolbar with no ladder on it would
+   clip a name for a width problem that toolbar does not have. */
+.schedule-toolbar[data-fit]
+  .schedule-tv-pop-wrap[data-filter="project"]
+  .schedule-fit-lbl {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

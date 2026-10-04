@@ -178,3 +178,56 @@ describe("FileSearchField's resting crumbs", () => {
     ]);
   });
 });
+
+/** The merged field's own `<input>` (`listing-search-input`), off the tree —
+ * there is exactly one in a mounted FileSearchField. */
+function searchInput(renderer: ReactTestRenderer): { props: Record<string, unknown> } {
+  const json = renderer.toJSON();
+  const nodes = Array.isArray(json) ? json : json ? [json] : [];
+  let found: { props: Record<string, unknown> } | undefined;
+  const walk = (n: unknown): void => {
+    if (n === null || typeof n !== "object" || found) return;
+    const el = n as { type?: string; props?: Record<string, unknown>; children?: unknown[] };
+    if (
+      el.type === "input" &&
+      typeof el.props?.className === "string" &&
+      el.props.className.includes("listing-search-input")
+    ) {
+      found = el as { props: Record<string, unknown> };
+      return;
+    }
+    for (const child of el.children ?? []) walk(child);
+  };
+  for (const n of nodes) walk(n);
+  if (!found) throw new Error("no listing-search-input found");
+  return found;
+}
+
+// Bug: clicking the path bar over a file used to seed the editable input
+// with the file's PARENT folder (the search scope, `fsPath`) rather than the
+// full file path the crumbs just displayed (`crumbsFsPath`) — the filename
+// silently dropped off the moment you tried to edit it. SearchField's
+// plain-focus branch now seeds from `crumbsPath` instead.
+describe("focusing the box over a file", () => {
+  test("seeds the full file path, not just its parent folder", async () => {
+    const renderer = mount("/home/iamsdas/Downloads/report.parquet");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    act(() => {
+      (searchInput(renderer).props.onFocus as () => void)();
+    });
+    expect(searchInput(renderer).props.value).toBe("~/Downloads/report.parquet");
+  });
+
+  test("re-focusing after a blur that left the seeded file path in place is still recognized as pristine (selects, does not re-seed differently)", async () => {
+    const renderer = mount("/home/iamsdas/Downloads/report.parquet");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    act(() => {
+      (searchInput(renderer).props.onFocus as () => void)();
+    });
+    const seeded = searchInput(renderer).props.value;
+    act(() => {
+      (searchInput(renderer).props.onFocus as () => void)();
+    });
+    expect(searchInput(renderer).props.value).toBe(seeded);
+  });
+});

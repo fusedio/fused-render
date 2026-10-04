@@ -10,7 +10,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Task } from "@platform/lib/api";
+import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
@@ -18,7 +18,10 @@ import {
   isUnseenCompletion,
   parseTasksSeen,
   attentionLabel,
+  inFlight,
   pulseTitle,
+  queuedLabel,
+  statusColumn,
   runningLabel,
   sameSeen,
   samePulse,
@@ -74,7 +77,7 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "e", status: "archived", unread: 3 }),
     ];
     expect(tasksPulse(tasks, {}))
-      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
+      .toEqual({ running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 });
     expect(tasksPulse([], {})).toEqual(EMPTY_TASKS_PULSE);
   });
 
@@ -85,7 +88,7 @@ describe("the sidebar's tasks pulse", () => {
     // the ring the row itself draws (design-principles §1).
     const broke = [task({ key: "f", status: "blocked", unread: 1 })];
     expect(tasksPulse(broke, {}))
-      .toEqual({ running: 0, attention: 0, doneUnread: 0, unseen: 0 });
+      .toEqual({ running: 0, attention: 0, queued: 0, doneUnread: 0, unseen: 0 });
   });
 
   it("counts a WAITING task as running, and again as waiting", () => {
@@ -98,7 +101,7 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "a", status: "in_progress" }),
     ];
     expect(tasksPulse(parked, {}))
-      .toEqual({ running: 2, attention: 1, doneUnread: 0, unseen: 0 });
+      .toEqual({ running: 2, attention: 1, queued: 0, doneUnread: 0, unseen: 0 });
     // And it is what the tooltip leads with: the one line in it that asks the
     // reader for something goes first. Singular at one, because one is the
     // common case and "1 tasks" reads as a broken string.
@@ -142,7 +145,7 @@ describe("the sidebar's tasks pulse", () => {
     const finished = task({ key: "b", status: "done", unread: 1, last_active: 500 });
     const before = [task({ key: "a", status: "in_progress" }), finished];
     expect(tasksPulse(before, {}))
-      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
+      .toEqual({ running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 });
 
     const seen = seenAfterVisit(before);
     const after = tasksPulse(before, seen);
@@ -225,15 +228,15 @@ describe("the sidebar's tasks pulse", () => {
     // mark-seen effect runs on every published pulse — value equality is what
     // keeps that from looping. `unseen` is in the comparison: it is the field the
     // dismissal moves, and a publish that skipped it would leave the dot up.
-    const p = { running: 1, attention: 0, doneUnread: 1, unseen: 1 };
-    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 1 })).toBe(true);
-    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 0 })).toBe(false);
-    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 2, unseen: 1 })).toBe(false);
-    expect(samePulse(p, { running: 0, attention: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    const p = { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 };
+    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(true);
+    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 0 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 2, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 0, attention: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
     // ...and `attention` is in the comparison too: it is the field that decides
     // which dot the rail draws, so a publish that skipped it would leave a
     // waiting task wearing the plain running mark until something else moved.
-    expect(samePulse(p, { running: 1, attention: 1, doneUnread: 1, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 1, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
     const a: TasksSeen = { x: 1, y: 2 };
     expect(sameSeen(a, { y: 2, x: 1 })).toBe(true);
     expect(sameSeen(a, { x: 1 })).toBe(false);
@@ -244,9 +247,9 @@ describe("the sidebar's tasks pulse", () => {
     // The tooltip names the STATE, not the dismissal, so a dot and a chip on the
     // same entry cannot quote different numbers.
     expect(runningLabel(1)).toBe("1 running");
-    expect(pulseTitle({ running: 2, attention: 0, doneUnread: 1, unseen: 0 }))
+    expect(pulseTitle({ running: 2, attention: 0, queued: 0, doneUnread: 1, unseen: 0 }))
       .toBe("2 running \u00b7 1 finished, not read");
-    expect(pulseTitle({ running: 0, attention: 0, doneUnread: 3, unseen: 1 }))
+    expect(pulseTitle({ running: 0, attention: 0, queued: 0, doneUnread: 3, unseen: 1 }))
       .toBe("3 finished, not read");
     expect(pulseTitle(EMPTY_TASKS_PULSE)).toBe("");
   });
@@ -256,18 +259,28 @@ describe("one poll behind both readers", () => {
   it("has the page publish its own rows instead of a second poll", () => {
     // Two polls of /api/tasks would be two answers, and the sidebar would show a
     // dot the page disagreed with for up to twenty seconds at a time.
-    expect(SCHEDULED).toContain("publishTasks(r.tasks ?? [])");
+    // THE LISTING FEED IS THE PAGE'S POLLER NOW (2026-09-15): the page
+    // subscribes and the STORE does the reading and the publishing, so there is
+    // still exactly one `/api/tasks` behind both readers — one fewer, in fact,
+    // because every chat card on the page shares it too.
+    expect(SCHEDULED).toContain("subscribeListing((ev) => {");
+    expect(SCHEDULED).not.toContain("getTasks(");
     expect(SIDEBAR).toContain("useTasksPulse()");
     expect(SIDEBAR).not.toContain("getTasks(");
     expect(STORE).toContain("getTasksPulse()");
-    expect(STORE).not.toContain("getTasks()");
+    expect(STORE).toContain("publishTasks(rows)");
     // Polling belongs to the subscribers: it starts with the first reader and
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");
     expect(STORE).toContain("listeners.delete(setCurrent)");
     // Both reader sets count — the summary readers and the Current apps section's
     // row readers (D487) share the one poll, so either alone keeps it alive.
-    expect(STORE).toMatch(/if \(listeners\.size \+ rowListeners\.size === 0 \|\| feeders > 0\) return;/);
+    // …and a listing feed counts as a feeder for the same reason: it publishes
+    // every row of every answer through publishTasks. ONE predicate for both
+    // owners (`fedElsewhere`) — see the case below.
+    expect(STORE).toMatch(
+      /if \(listeners\.size \+ rowListeners\.size === 0 \|\| fedElsewhere\(\)\) return;/,
+    );
     // Cadence follows the state, and idle is slower than the page's own 20s.
     expect(STORE).toContain("pulse.running > 0 ? ACTIVE_MS : IDLE_MS");
     expect(STORE).toContain("const IDLE_MS = 30_000");
@@ -284,7 +297,7 @@ describe("one poll behind both readers", () => {
     // Including the sidebar's own mount read: it remounts on every navigation
     // (App keys it on the nav epoch), so an unconditional fetch there would
     // spend the same double-poll per trip to /tasks instead of per tick.
-    expect(STORE).toContain("if (feeders === 0) void poll();");
+    expect(STORE).toContain("if (!fedElsewhere()) void poll();");
     expect(STORE).toContain("feeders++");
     expect(STORE).toContain("feeders--");
     expect(SCHEDULED).toContain("useTasksFeeder();");
@@ -296,6 +309,32 @@ describe("one poll behind both readers", () => {
     );
   });
 
+  it("EVERY guard asks about BOTH owners, not just the feeder (bugbot #1162)", () => {
+    // `schedule` and `pokeTasks` learned about the listing feed when it landed,
+    // but `poll` and the two subscribe hooks still keyed off `feeders` alone —
+    // so a sidebar remounting while a CHAT held the listing (no Tasks page
+    // anywhere) fired /api/tasks/pulse and published its thinner answer over the
+    // full rows the feed had just handed over. Two reads, two sources, and a dot
+    // that disagreed with the rows under it until the next tick.
+    //
+    // One predicate, so the next owner cannot be added to three places out of
+    // four.
+    expect(STORE).toContain("function fedElsewhere(): boolean {");
+    expect(STORE).toMatch(/return feeders > 0 \|\| listingSubs\.size > 0;/);
+    // Four guards, and none of them may still be asking the old question. The
+    // `feeders` reads that legitimately REMAIN are the counter's own
+    // (`feeders++`/`feeders--`) and pokeTasks' window event, which is about the
+    // Tasks page's OTHER two feeds and not about who polls.
+    const guarded = ["schedule", "poll", "useTasksPulse", "useTasksPulseRows"];
+    for (const name of guarded) {
+      const start = STORE.indexOf(`function ${name}(`);
+      expect(start).toBeGreaterThan(-1);
+      const body = STORE.slice(start, STORE.indexOf("\n}", start));
+      expect(body).toContain("fedElsewhere()");
+      expect(body).not.toContain("feeders === 0");
+    }
+  });
+
   it("drops a stale self-poll that resolves after a fresher publish", () => {
     // BUGBOT, 2026-08-18: a self-poll already in the air when the page starts
     // feeding (or when a fresher publish lands) must LOSE, not overwrite. The
@@ -303,7 +342,7 @@ describe("one poll behind both readers", () => {
     // moved it while the request was in flight.
     expect(STORE).toContain("const departed = generation;");
     expect(STORE).toMatch(
-      /if \(feeders === 0 && generation === departed\) publishTasks\(answer\);/,
+      /if \(!fedElsewhere\(\) && generation === departed\) publishTasks\(answer\);/,
     );
     // Every publish — the page's or a poll's own — is a new generation, so two
     // racing polls can't both win either.
@@ -591,9 +630,13 @@ describe("pokeTasks", () => {
     // While the Tasks page holds the feeder, this store must not call the
     // server — that is the double-poll the feeder exists to prevent. The poke
     // becomes a window event, and the PAGE's own reload publishes back.
-    expect(STORE).toMatch(
-      /export function pokeTasks\(\) \{\s*\n\s*if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
+    const poke = STORE.slice(STORE.indexOf("export function pokeTasks()"));
+    expect(poke).toMatch(
+      /if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
     );
+    // And the ROWS are answered by the shared listing feed, which is the only
+    // thing allowed to re-read /api/tasks while it is live.
+    expect(poke).toMatch(/if \(listingSubs\.size > 0\) refreshListing\(\);/);
   });
 
   it("polls itself immediately when unfed — through the guarded poll()", () => {
@@ -603,9 +646,14 @@ describe("pokeTasks", () => {
   });
 
   it("the Tasks page listens for the poke with its own reload", () => {
+    // `reloadFeeds`, not `reload`: the ROWS were answered by `pokeTasks` itself
+    // (it refreshes the shared listing feed), and this event is what still
+    // answers for the page's own two other endpoints — the schedule and the
+    // queue. Asking for the listing here as well would be a second full read for
+    // one poke.
     expect(SCHEDULED).toContain("TASKS_POKE_EVENT");
-    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reload\)/);
-    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
+    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reloadFeeds\)/);
+    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reloadFeeds\)/);
   });
 
   it("the queue card no longer pokes on a job edge — that producer is gone (D661)", () => {
@@ -618,11 +666,13 @@ describe("pokeTasks", () => {
     expect(QUEUE_DOCK).not.toContain("pokeTasks");
   });
 
-  it("a done/failed schedule event pokes too — handed down from the shell", () => {
+  it("a started/done/failed schedule event pokes too — handed down from the shell", () => {
     // platform may not import shell (check-boundaries), so scheduleEvents takes
-    // the callback and App supplies the store's pokeTasks.
+    // the callback and App supplies the store's pokeTasks. `started` joined
+    // this list in §5: a scheduled run's row also changes (queued → running)
+    // the moment it begins, not only when it ends.
     expect(EVENTS).toMatch(
-      /fresh\.some\(\(e\) => e\.kind === "done" \|\| e\.kind === "failed"\)/,
+      /fresh\.some\(\(e\) => e\.kind === "started" \|\| e\.kind === "done" \|\| e\.kind === "failed"\)/,
     );
     // NOTHING IS NARRATED FOR A PARKED RUN (Akshil, 2026-09-03): the Tasks page
     // says it on its own, with the ring and the row's place at the top.
@@ -664,5 +714,48 @@ describe("pokeTasks", () => {
     // A changed value every time, or the second of two same-millisecond turn
     // ends fires no event at all.
     expect(CHAT_TEMPLATE).toMatch(/Date\.now\(\) \+ ":" \+ Math\.random\(\)/);
+  });
+});
+
+describe("the sidebar's queued count", () => {
+  const pulseRow = (over: Partial<TaskPulseTask>): TaskPulseTask => ({
+    key: "k", status: "queued", unread: 0, last_active: 0, project: "/p",
+    task_id: "TASK-1", title: "t", target: "/p", session_id: "s", ...over,
+  });
+
+  it("is NOT running, and is counted apart", () => {
+    // A queued task has no turn in flight, no process and nothing to watch —
+    // the rail's yellow would be a lie about it (tasksPulse / inFlight).
+    const p = tasksPulse(
+      [
+        pulseRow({ key: "a", status: "queued" }),
+        pulseRow({ key: "b", status: "queued" }),
+        pulseRow({ key: "c", status: "in_progress" }),
+      ],
+      {},
+    );
+    expect(p).toMatchObject({ running: 1, queued: 2, attention: 0 });
+    expect(inFlight(statusColumn("queued"))).toBe(false);
+  });
+
+  it("says so in the tooltip, after the running count — and says WAITING", () => {
+    // The order is the order the two happen in: the waiting work is what runs
+    // when the running work stops.
+    //
+    // THE WORD IS "queued" (Akshil, 2026-09-21) — the status word, the ring, the
+    // filter and now the count too, so one state has one name on every surface.
+    // One builder for the word (platform/lib/queue.waitingLabel) so the rail,
+    // the lane header and the chat's own card cannot spell it three ways.
+    expect(queuedLabel(2)).toBe("2 queued");
+    expect(pulseTitle({ running: 2, attention: 0, queued: 1, doneUnread: 0, unseen: 0 }))
+      .toBe("2 running · 1 queued");
+    expect(pulseTitle({ running: 0, attention: 0, queued: 0, doneUnread: 1, unseen: 0 }))
+      .not.toContain("queued");
+  });
+
+  it("is part of what makes two pulses the same", () => {
+    const p = { running: 1, attention: 0, queued: 1, doneUnread: 0, unseen: 0 };
+    expect(samePulse(p, { ...p })).toBe(true);
+    expect(samePulse(p, { ...p, queued: 2 })).toBe(false);
   });
 });

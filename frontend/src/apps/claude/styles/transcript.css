@@ -117,6 +117,11 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  /* Never wider than the log: a flex item's minimum is its content unless
+     told otherwise, and one long comment receipt (`.annsum-row`, nowrap) was
+     enough to push the whole turn past the column (Akshil, 2026-09-23). */
+  min-width: 0;
+  max-width: 100%;
 }
 /* THE BUBBLE'S LINE, and the stamp's containing block: the clock is drawn in
    the LEFT icon lane — the column an assistant turn's ✻ mark occupies — which
@@ -177,10 +182,39 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* THE OUTBOX TAG (ui/outbox.ts, Turn.tsx `pending`). A line this page still
+   holds is greyed the way Claude Code's terminal greys a queued line, and the
+   small tag under it is the door back into the box. Same faint ink as the
+   composer's own `.c-queued` line so the two read as one fact. */
+.chat-root .turn.user.is-pending .bubble {
+  opacity: 0.62;
+}
+.chat-root .turn.user .turn-pending {
+  align-self: flex-end;
+  margin: 2px 4px 0 0;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--c-faint);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.chat-root .turn.user .turn-pending:hover:not(:disabled) {
+  color: var(--c-dim);
+  text-decoration: underline;
+}
+.chat-root .turn.user .turn-pending:disabled {
+  cursor: default;
+}
+.chat-root .turn.user .turn-pending.is-not-sent {
+  color: var(--c-error);
+}
 /* NO "what was sent" HOVER CONTROL (P3R1-7). There was a `.sentbtn` here — an
    11px faint line under the bubble that faded in on hover — and it is gone with
    the button: T has no such control, and the receipt lines under a turn
-   (`button.attach` below, `.annsum-row`, `.annsum-pane`) are the one door into
+   (`.annsum-row`, `.annsum-pane`, the attachment rows) are the one door into
    the panel, each carrying T's own title (T:11059, T:11072). */
 .chat-root .turn.assistant {
   display: flex;
@@ -237,6 +271,47 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--c-dim);
+  /* THE WHOLE LINE OPENS IT (Akshil, 2026-09-15). A folded reply is a one-line
+     row whose only visible control is a 12px glyph in the gutter: the reader
+     aims at the words. Expanding only — the open body is never a control, so
+     nothing a reader selects or clicks inside a reply can shut it. */
+  cursor: pointer;
+}
+/* ONE INLINE RUN out of whatever marked parsed the first line as — a
+   paragraph, a heading, a list item, a blockquote. Every block becomes inline
+   at the row's own size so the ellipsis still lands on THIS line, and inline
+   marks (bold, italic, code, links) keep their look. */
+.chat-root .turn.assistant .turn-collapsed-md,
+.chat-root .turn.assistant .turn-collapsed-md * {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: nowrap;
+  /* GREY WINS OVER THE MARKDOWN'S OWN COLOURS (Akshil, 2026-09-15): bold and
+     italic keep their weight and slant, but a folded row is one muted line —
+     a link's blue, a heading's foreground or inline code's tint would make
+     the summary louder than the open body. `inherit` from `.turn-collapsed`,
+     which also carries the hover lift and `.is-muted`. */
+  color: inherit;
+  background: none;
+}
+.chat-root .turn.assistant .turn-collapsed-md ul,
+.chat-root .turn.assistant .turn-collapsed-md ol {
+  list-style: none;
+}
+/* Scaffolding lines never reach this row (Turn.firstLine skips them), so a
+   <pre> here is renderMd's own fallback for prose it could not parse — keep it
+   VISIBLE as the plain line it is rather than hiding the whole row. */
+.chat-root .turn.assistant .turn-collapsed-md pre {
+  font: inherit;
+}
+.chat-root .turn.assistant .turn-collapsed-md hr {
+  display: none;
+}
+.chat-root .turn.assistant .turn-collapsed:hover {
+  color: var(--c-fg);
 }
 /* The reply was nothing but tool calls and this is the first call standing in
    for a sentence — machinery, so it is drawn as machinery. */
@@ -244,55 +319,47 @@
   color: var(--c-faint);
   font-size: 12px;
 }
+/* …and it still answers the pointer. `.is-muted` is a longer selector than
+   `:hover` above and was winning it outright, so the one row in the log whose
+   words are the ONLY affordance it has was the one row that looked dead under
+   the cursor. One step up, not to `--c-fg`: the line is machinery either way. */
+.chat-root .turn.assistant .turn-collapsed.is-muted:hover {
+  color: var(--c-dim);
+}
 
 /* ── the run trigger (design.md §A) ──────────────────────────────────────────
-   `more ▸` in the bottom-right corner of the paragraph the run follows. The
-   transcript's left rail stays prose from top to bottom: a settled turn shows
-   NO machinery row at all until the reader asks for one.
+   `show more` at the end of the sentence the run follows. The transcript's
+   left rail stays prose from top to bottom: a settled turn shows NO machinery
+   row at all until the reader asks for one.
 
-   Room is reserved for the word on the LAST LINE ONLY (PR4 review #5). The
-   padding used to sit on the whole `.seg-text`, which narrowed every paragraph
-   of the block by 46px — a measure change for the entire reply, to make room in
-   one corner of it — and now that every prose segment is wrapped in a block
-   (`SegmentView`, review #4) that would have been every paragraph in the log.
-   One variable, used by all of these rules, because it is the same number. */
-/* FULL COLUMN WIDTH, ALWAYS (Akshil, 2026-09-15). `right: 0` below is only
-   "the right edge of the transcript" if the box it is positioned in reaches
-   that edge — and it did not. `.turn.assistant` is a flex row and `.body` was
-   a flex item with no `flex` of its own, so it SHRINK-WRAPPED to its content:
-   a turn ending in a short line put its `more ▸` a few hundred px in from the
-   column, level with nothing, while the next turn's sat at the margin. One x
-   for every trigger in the log is the whole point of a corner affordance, so
-   the body takes the column (`flex: 1` on `.body` below) and every block in it
-   takes the body. `display: block` is stated rather than assumed because a
-   `<span>` ancestor is one rule away from making these inline. */
+   FULL COLUMN WIDTH, ALWAYS (Akshil, 2026-09-15). `.turn.assistant` is a flex
+   row and `.body` was a flex item with no `flex` of its own, so it
+   SHRINK-WRAPPED to its content; the body takes the column (`flex: 1` on
+   `.body` below) and every block in it takes the body. `display: block` is
+   stated rather than assumed because a `<span>` ancestor is one rule away from
+   making these inline. */
 .chat-root .seg-block {
   position: relative;
   display: block;
   width: 100%;
-  --c-run-trigger-w: 46px;
 }
-.chat-root .seg-block.has-trigger > .seg-text > :last-child {
-  padding-right: var(--c-run-trigger-w);
-}
-/* …EXCEPT where the last block is not prose. A code block or a table narrowed
-   by 46px re-wraps (or scrolls) its own content to make room for a word that is
-   not in it, so those keep their full width and the block reserves a ROW under
-   them instead — the trigger, still bottom-right, drops into it. */
-.chat-root .seg-block.has-trigger > .seg-text > pre:last-child,
-.chat-root .seg-block.has-trigger > .seg-text > table:last-child,
-.chat-root .seg-block.has-trigger > .seg-text > blockquote:last-child {
-  padding-right: 0;
-}
-.chat-root .seg-block.has-trigger:has(> .seg-text > pre:last-child),
-.chat-root .seg-block.has-trigger:has(> .seg-text > table:last-child),
-.chat-root .seg-block.has-trigger:has(> .seg-text > blockquote:last-child) {
-  padding-bottom: 18px;
-}
-.chat-root .seg-block > .run-trigger {
-  position: absolute;
-  right: 0;
-  bottom: 0;
+/* INLINE, AT THE END OF THE LAST SENTENCE (Akshil, 2026-09-16). The word used
+   to sit in the block's bottom-right corner, on a reserved gap in the last
+   line — a corner affordance, level across the log. Now it reads as part of
+   the response: SegmentView portals the button INTO the last paragraph or list
+   item (`SegBlock`, `triggerSeat`), so it follows the final character on the
+   same line with no layout rule at all. A last child that is not prose (code,
+   a table, a quote) keeps the word as a sibling on the line below, at the
+   left, where the next sentence would have started. */
+/* THE LEAD SENTENCE (Akshil, 2026-09-15). A run the turn OPENS on seats its
+   word on the FIRST SENTENCE of the prose that follows, not the paragraph's
+   last line: `SegmentView` draws that prose as two blocks (`leadSplit`), the
+   sentence with the trigger in its corner and the rest under it. The pair is
+   spaced as two paragraphs — the lead is a line the eye lands on, then the
+   reply. Nothing else in these blocks changes: the same `.seg-text`, the same
+   corner seat, the same reservation on the last line. */
+.chat-root .seg-block.is-lead + .seg-block.is-rest {
+  margin-top: 12px;
 }
 /* NO PROSE BEFORE THE RUN (design.md §A, Q1) — a turn that opens on a tool
    call, or a run that follows a card. The trigger takes its own line, still
@@ -301,20 +368,39 @@
   text-align: right;
 }
 .chat-root .seg-block.is-bare > .run-trigger {
-  position: static;
+  justify-self: end;
 }
+/* THE PROSE'S OWN TYPE (Akshil, 2026-09-15). `font: inherit` takes the block's
+   family, size AND weight — and `line-height: inherit` is restated because the
+   shorthand is one browser bug away from resetting it to `normal`. The two
+   numbers are the whole alignment: the trigger's line box is the prose's line
+   box, so `bottom: 0` puts its baseline on the last line's baseline rather than
+   a few px under it. It stays OUT of the reading by COLOUR, not by size. */
 .chat-root .run-trigger {
   appearance: none;
   background: none;
   border: 0;
   padding: 0 0 0 8px;
-  font-family: inherit;
-  font-size: 11px;
-  line-height: 18px;
+  font: inherit;
+  font-style: italic;
+  line-height: inherit;
   color: var(--c-faint);
   cursor: pointer;
   white-space: nowrap;
+  /* Seated INSIDE the last paragraph (SegBlock), so without this a drag
+     across the sentence — or a copy of it — took "show more" along as if it
+     were the reply's own words (Bugbot, 2026-09-16). */
+  user-select: none;
   transition: color 90ms ease-out;
+}
+/* OPEN, the word wears a pill (Akshil, 2026-09-16): `show less` closes what is
+   now a run of machinery below it, and an outline is what separates it from the
+   prose it no longer trails. `show more` keeps the bare word. */
+.chat-root .run-trigger[aria-expanded="true"] {
+  padding: 0 8px;
+  margin-left: 8px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
 }
 .chat-root .run-trigger:hover {
   color: var(--c-fg);
@@ -323,9 +409,6 @@
   outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
   outline-offset: 2px;
   border-radius: 3px;
-}
-.chat-root .run-trigger .run-chev {
-  margin-left: 3px;
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-root .turn.assistant .dot,
@@ -881,6 +964,16 @@
 }
 .chat-root .perm .perm-status.expired {
   color: var(--c-dim);
+}
+/* HELD BY THE PROJECT QUEUE — decided, not yet delivered. The shell's
+   `--activity` blue, the very token the Tasks board's Queued ring and the List
+   chip wear: one state, one colour, on every surface that names it. NOT the
+   chat's own accent (salmon) — browser QA read that as a third colour for
+   "queued" — and deliberately NOT the green an Allow wears: nothing has been
+   allowed yet, and a reader scanning back through a thread must not read a
+   queued answer as a landed one. */
+.chat-root .perm .perm-status.queued {
+  color: var(--activity);
 }
 /* An answer is not an approval: the label recedes and the choice carries the
    contrast, because the choice is the fact worth re-reading later. */
@@ -1710,7 +1803,8 @@
    block's own first token. Hidden until the `pre` is hovered (or the button
    itself focused — a keyboard-only user gets no hover): a permanently visible
    button on every code block is noise the eye filters on every message. */
-.chat-root .copybtn {
+.chat-root .copybtn,
+.chat-root .runbtn {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -1731,11 +1825,23 @@
   opacity: 0;
   transition: opacity 0.12s ease-out;
 }
+/* Left of copy, its own fixed offset rather than a shared flex row: the
+   sticky (chip-body) and no-padding (pre.diff) `.copywrap` rules above are
+   about the ANCHOR span, not about how many pills sit inside it, so a second
+   absolute-positioned pill leaves them untouched. Only where a shell fence or
+   the Bash tool chip's command puts one there — canRunInTerminal() gates it
+   in the DOM walker and in ToolChip, so most `pre`s never grow this class. */
+.chat-root .runbtn {
+  right: 60px;
+}
 .chat-root pre:hover .copybtn,
-.chat-root .copybtn:focus-visible {
+.chat-root .copybtn:focus-visible,
+.chat-root pre:hover .runbtn,
+.chat-root .runbtn:focus-visible {
   opacity: 1;
 }
-.chat-root .copybtn:hover {
+.chat-root .copybtn:hover,
+.chat-root .runbtn:hover {
   color: var(--c-fg);
   border-color: var(--c-faint);
 }
@@ -2121,26 +2227,6 @@
   justify-content: flex-end;
 }
 
-/* Push-channel receipt under a user bubble (T:1802). */
-.chat-root .turn.user .attach { margin-top: 4px; font-size: 11px; color: var(--c-faint); text-align: right; }
-/* THE RECEIPT AS THE DOOR (R4-1): the same 11px faint line, now a button that
-   opens "what was sent" (ui/Turn). Every one of these declarations is a button
-   reset — the typography above is what the reader must still see. Underline on
-   hover/focus rather than a permanent link colour: the row is a caption in the
-   quietest text the chat has, and colouring it would make a footnote shout. */
-.chat-root .turn.user button.attach {
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  background: none;
-  border: 0;
-  cursor: pointer;
-}
-.chat-root .turn.user button.attach:hover,
-.chat-root .turn.user button.attach:focus-visible {
-  color: var(--c-fg);
-  text-decoration: underline;
-}
 /* ---- the receipt under a sent user turn (T:1716-1801) ------------------
    What this message carried, in the log where it was sent. Right-aligned with
    the bubble it belongs to, and small on purpose: it is a receipt, not a
@@ -2154,6 +2240,13 @@
      because it is the last thing in a user turn, that 4px was the whole gap
      between a receipt and the reply beneath it. */
   margin: 4px 0 0;
+  /* CAPPED AT THE TURN'S WIDTH. The user turn is a flex column that ends its
+     children at the right, so with no cap this block sized to its longest
+     comment, hung off the right edge and ran out past the LEFT one — first
+     letter clipped, `<div>` flush against the border (Akshil, 2026-09-23,
+     screenshot). The cap is what lets `.annsum-txt`'s ellipsis do its job. */
+  max-width: 100%;
+  min-width: 0;
 }
 .chat-root .annsum .annsum-row {
   display: flex;
@@ -2162,6 +2255,8 @@
   font-size: 11.5px;
   color: var(--c-dim);
   justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 .chat-root .annsum .annsum-lbl {
   color: var(--c-accent);
@@ -2225,13 +2320,17 @@
   white-space: nowrap;
   min-width: 0;
 }
-/* A comment row IS the door into the "what was sent" popup — no separate
-   button, the row itself is the affordance. */
+/* A comment row is the door into the "what was sent" popup ONLY when one is
+   wired (`role="button"` — Receipts wires it behind the debug flag, see
+   ui/debug-sent). A row with nothing behind it is plain text: no hand, no
+   underline promising a press that does nothing (Akshil, 2026-09-20). */
 .chat-root .annsum .annsum-note {
-  cursor: pointer;
   border-radius: 4px;
 }
-.chat-root .annsum .annsum-note:hover .annsum-txt {
+.chat-root .annsum .annsum-note[role="button"] {
+  cursor: pointer;
+}
+.chat-root .annsum .annsum-note[role="button"]:hover .annsum-txt {
   text-decoration: underline;
   text-underline-offset: 2px;
 }

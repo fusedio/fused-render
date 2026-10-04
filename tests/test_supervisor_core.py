@@ -246,3 +246,269 @@ def test_uninstall_and_exit_both_confirmed_still_deintegrates(monkeypatch):
 
     assert reason is core._ExitReason.TRAY_EXIT
     assert deintegrated == [paths]  # cleanup ran despite exit also being confirmed
+
+
+# ---- fused-render://relaunch (Task 5, Linux) ----------------------------------
+
+
+class _FakeStartupWithAppImage:
+    """Stand-in for the Linux `startup` module: has `appimage_path()`, the
+    capability probe both `_open_command` and `_respawn_after_relaunch` use to
+    tell the Linux backend (has the hook) from win32 (doesn't)."""
+
+    def __init__(self, path="/opt/FusedRender/FusedRender.AppImage"):
+        self._path = path
+
+    def appimage_path(self):
+        return self._path
+
+
+class _FakeStartupNoAppImage:
+    """Stand-in for the win32 `startup` module: `enabled()`/`set_enabled()`
+    only, no `appimage_path` attribute at all — matching the real win32
+    backend, which never had a reason to grow one."""
+
+    def enabled(self):
+        return False
+
+
+def test_open_command_signals_relaunch_on_linux_backend(monkeypatch):
+    # The Linux capability probe (appimage_path present) + a relaunch queue:
+    # a bare fused-render://relaunch link puts on the queue and opens no tab,
+    # instead of tearing the process down from this call's own thread.
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    relaunch = queue.Queue()
+
+    core._open_command(9000, protocol.Open("fused-render://relaunch"), relaunch)
+
+    assert relaunch.get_nowait() is None
+    assert opened == []
+
+
+def test_open_command_relaunch_is_noop_without_appimage_path_hook(monkeypatch):
+    # No appimage_path hook (e.g. the win32 backend): a relaunch link
+    # degrades to exactly the same no-tab no-op as fused-render://launch —
+    # the queue is never signalled, so run() never attempts a respawn.
+    monkeypatch.setattr(core, "startup", _FakeStartupNoAppImage())
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    relaunch = queue.Queue()
+
+    core._open_command(9000, protocol.Open("fused-render://relaunch"), relaunch)
+
+    assert relaunch.empty()
+    assert opened == []
+
+
+def test_open_command_leaves_fda_relaunch_untouched(monkeypatch):
+    # ?reason=fda (is_fda_relaunch_url) is a DIFFERENT, disjoint URL form from
+    # the bare relaunch link (is_relaunch_url) — it must never signal the
+    # queue, matching "leave ?reason=fda alone" (it falls through to the
+    # is_launch_url branch below it, same as before Task 5).
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    relaunch = queue.Queue()
+
+    core._open_command(
+        9000, protocol.Open("fused-render://relaunch?reason=fda"), relaunch
+    )
+
+    assert relaunch.empty()
+
+
+def test_event_loop_returns_relaunch_reason_for_forwarded_relaunch_link(monkeypatch):
+    # A relaunch link forwarded over the pipe (the realistic path: a
+    # secondary instance relays the OS-delivered deep link to the primary) —
+    # the loop must return _ExitReason.RELAUNCH once _open_command's worker
+    # thread signals the queue it owns, without teardown running from that
+    # worker thread.
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
+    monkeypatch.setattr(core, "_open_browser", lambda url: None)
+
+    paths = _Paths()
+    tray_actions = queue.Queue()
+    pipe_requests = queue.Queue()
+    response = queue.Queue()
+    pipe_requests.put(
+        core.instance.Request(protocol.Open("fused-render://relaunch"), response)
+    )
+
+    reason, upgrade = core._event_loop(
+        9000, _FakeProcess(), paths, tray_actions, pipe_requests
+    )
+
+    assert reason is core._ExitReason.RELAUNCH
+    assert upgrade is None
+
+
+def test_respawn_after_relaunch_spawns_the_appimage(monkeypatch):
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage("/x/FusedRender.AppImage"))
+    spawned = []
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **kw: spawned.append((a, kw)))
+
+    core._respawn_after_relaunch(_Paths())
+
+    assert len(spawned) == 1
+    args, kwargs = spawned[0]
+    assert args == (["/x/FusedRender.AppImage"],)
+    assert kwargs == {"start_new_session": True, "close_fds": True}
+
+
+def test_respawn_after_relaunch_exits_quietly_without_an_appimage(monkeypatch):
+    # Not running from an AppImage at all (an unpackaged dev supervisor) —
+    # appimage_path() itself returns None: nothing to Popen, no error either.
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage(path=None))
+    spawned = []
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **kw: spawned.append((a, kw)))
+
+    core._respawn_after_relaunch(_Paths())  # must not raise
+
+    assert spawned == []
+
+
+def test_respawn_after_relaunch_exits_quietly_without_the_hook(monkeypatch):
+    # No appimage_path hook at all (e.g. the win32 backend) — same "nothing to
+    # respawn, just exit" outcome as the no-AppImage case above.
+    monkeypatch.setattr(core, "startup", _FakeStartupNoAppImage())
+    spawned = []
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **kw: spawned.append((a, kw)))
+
+    core._respawn_after_relaunch(_Paths())  # must not raise
+
+    assert spawned == []
+
+
+# ---- run(): the relaunch respawn must not race the election flock -----------
+
+
+class _FakePrimaryInstance:
+    """Stand-in for `instance.PrimaryInstance`: never a SecondaryInstance (so
+    `run()` takes the primary branch), records `release()` calls so tests can
+    assert it happens BEFORE the respawn's Popen."""
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def serve(self, requests, log=None):
+        return threading.Thread(target=lambda: None)
+
+    def release(self):
+        self._calls.append("release")
+
+
+class _FakeRunPaths:
+    @classmethod
+    def discover(cls) -> "_FakeRunPaths":
+        return cls()
+
+    def create(self) -> None:
+        pass
+
+    def log(self, message) -> None:
+        pass
+
+
+class _FakeTrayHandle:
+    """Stand-in for `tray.TrayHandle`. Carries `set_update_available` because
+    `run()` calls it unconditionally whenever a backend `update` module is
+    present (Windows today) — a fake missing it blows up with AttributeError
+    the moment that branch runs, which is exactly what happened when this
+    fake was tray-only and the tests only ever ran where `update` is None."""
+
+    actions = queue.Queue()
+
+    def __init__(self):
+        self.update_calls = []
+
+    def stop(self) -> None:
+        pass
+
+    def set_update_available(self, version: str) -> None:
+        self.update_calls.append(version)
+
+
+class _FakeUpdateModule:
+    """Stand-in for the backend's `update` module (see
+    `fused_render.supervisor._win32.update.start_auto_checks`): calls
+    `notify` synchronously so the test can see the real callable —
+    `tray_handle.set_update_available` — actually get invoked, instead of
+    merely skipping past the `update is not None` branch."""
+
+    def start_auto_checks(self, paths, notify) -> None:
+        notify("9.9.9")
+
+
+def _patch_run_up_to_the_event_loop(monkeypatch, calls, *, teardown):
+    """Stub out every collaborator `run()` touches before and after
+    `_event_loop` so the primary-instance branch runs for real, down to the
+    finally block under test, without spawning a real server, tray or pipe.
+
+    Also installs a fake `update` module so `run()` takes the `update is not
+    None` branch here on Linux too, even though the real backend only
+    supplies one on Windows — that is the branch whose contract regressed."""
+    inst = _FakePrimaryInstance(calls)
+    monkeypatch.setattr(core.instance, "acquire", lambda names: inst)
+    monkeypatch.setattr(core, "DesktopPaths", _FakeRunPaths)
+    monkeypatch.setattr(core, "_spawn_desktop_integration", lambda paths: None)
+    monkeypatch.setattr(core, "_start_ready_server",
+                        lambda paths, token: (object(), object(), 9000))
+    monkeypatch.setattr(core, "_spawn_open", lambda *a, **kw: None)
+    monkeypatch.setattr(core.startup, "enabled", lambda: False)
+
+    tray_handles = []
+
+    def _start_tray(*a, **kw):
+        handle = _FakeTrayHandle()
+        tray_handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(core.tray, "start", _start_tray)
+    monkeypatch.setattr(core, "update", _FakeUpdateModule())
+    monkeypatch.setattr(core, "_event_loop",
+                        lambda *a, **kw: (core._ExitReason.RELAUNCH, None))
+    monkeypatch.setattr(core, "_teardown", teardown)
+    monkeypatch.setattr(core, "_respawn_after_relaunch",
+                        lambda paths: calls.append("respawn"))
+    return inst, tray_handles
+
+
+def test_relaunch_releases_the_lock_before_respawning(monkeypatch):
+    # `PrimaryInstance.release()` is otherwise only called from the early
+    # ShutdownForUpgrade branch — without releasing it here too, the flock
+    # stays held for as long as this interpreter takes to unwind, and the
+    # freshly-spawned AppImage can lose the race for it (see the module's
+    # `_respawn_after_relaunch`/`run()` for the full story). The lock must
+    # come off BEFORE the respawn is attempted, not after.
+    calls = []
+    _inst, tray_handles = _patch_run_up_to_the_event_loop(
+        monkeypatch, calls, teardown=lambda *a, **kw: None)
+
+    core.run(protocol.Open("fused-render://relaunch"))
+
+    assert calls == ["release", "respawn"]
+    assert tray_handles[0].update_calls == ["9.9.9"]
+
+
+def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(monkeypatch):
+    # By the time `_teardown` can raise SupervisorStoppedError (the process
+    # tree would not stop), the tray, pipe and graceful-shutdown request have
+    # already run — only the child failing to actually exit is left. A
+    # relaunch must still bring the new AppImage up rather than quitting with
+    # nothing to show for it; the error still propagates afterwards, exactly
+    # as it would for any other exit reason.
+    calls = []
+
+    def teardown(*a, **kw):
+        raise core.SupervisorStoppedError("Python process tree did not stop")
+
+    _inst, tray_handles = _patch_run_up_to_the_event_loop(
+        monkeypatch, calls, teardown=teardown)
+
+    with pytest.raises(core.SupervisorStoppedError):
+        core.run(protocol.Open("fused-render://relaunch"))
+
+    assert calls == ["release", "respawn"]
+    assert tray_handles[0].update_calls == ["9.9.9"]

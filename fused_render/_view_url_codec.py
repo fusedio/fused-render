@@ -3,9 +3,7 @@
 Mirrors the frontend codec (frontend/src/platform/lib/router.ts urlForFsPath): only a
 drive-letter path gets its backslashes normalized to '/' before segmenting —
 a UNC path stays one percent-encoded segment, and on POSIX a backslash is a
-legal filename character that must round-trip untouched. A `.bookmark` file
-is not previewed directly (SB-9, D99): it routes through the `_bookmark`
-sentinel, which reads it server-side and redirects to the view it describes.
+legal filename character that must round-trip untouched.
 
 Pure path classification only (no filesystem/OS calls), so this module and
 its tests run identically on Windows, macOS, and Linux.
@@ -44,8 +42,6 @@ def canonical_fs_path(fs_path: str) -> str:
 def view_url_path(fs_path: str) -> str:
     """Explorer URL path (no host/port) for an absolute fs path."""
     norm = canonical_fs_path(fs_path)
-    if fs_path.lower().endswith(".bookmark"):
-        return "/explorer/view/_bookmark?file=" + quote(norm, safe="")
     if fs_path.lower().endswith(".fused"):
         # An OS-delivered .fused open (Finder double-click, Explorer "Open
         # with") lands on the file's own EMBED URL: the fusedapp preview
@@ -64,6 +60,25 @@ def embed_url_path(fs_path: str) -> str:
     norm = canonical_fs_path(fs_path)
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
     return "/explorer/embed/" + "/".join(segments)
+
+
+def explorer_view_path(fs_path: str) -> str:
+    """Explorer view URL path for ANY fs path, a `.fused` included — the
+    shell chrome kept. `view_url_path` sends a `.fused` to its embed (an OS
+    open is a run, not an edit); a native app window's Edit button asks for
+    the explorer on purpose, whatever the file is."""
+    norm = canonical_fs_path(fs_path)
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/explorer/view/" + "/".join(segments)
+
+
+def app_page_path(folder: str) -> str:
+    """The shell's app page for an app folder — `/apps/<segments>`, encoded
+    exactly as the frontend's `appPageUrl` (shell/current-apps-lib.ts) does,
+    so a window opened here and a sidebar row point at one address."""
+    norm = canonical_fs_path(folder)
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/apps/" + "/".join(segments)
 
 
 def view_url(port: int, fs_path: str | None) -> str:

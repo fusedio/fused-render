@@ -234,7 +234,8 @@ def default_home_dirs() -> list[str]:
 
 
 def default_ignore() -> list[str]:
-    """The starting ignore list, INCLUDING the mounts dir for this machine.
+    """The starting ignore list, INCLUDING the mounts dir for this machine and
+    `~/Library/Caches`.
 
     The mounts entries are resolved at call time rather than hardcoded as
     `~/.fused-render/**/mounts`: FUSED_RENDER_HOME moves the whole shell home
@@ -244,13 +245,29 @@ def default_ignore() -> list[str]:
     a redirected home does not stop the DEFAULT home's mounts from sitting in
     the middle of the tree being scanned. `**/` spans zero or more levels, so
     one pattern per home also covers every branch-nested checkout's own mounts
-    folder."""
+    folder.
+
+    `~/Library/Caches` is a PATH pattern (it contains a slash), so it matches
+    that one path only — not the whole `~/Library` tree, which was tried on
+    the parked focus-trigger branch and reverted for hiding legitimately
+    indexed content (Library/Documents, Application Support files a user
+    actually searches for). It is the macOS analogue of `.cache` in
+    DEFAULT_IGNORE_NAMES: machine-generated churn, unbounded in size, that a
+    background crawl gets nothing out of walking.
+
+    A caveat worth stating rather than fixing here: `default_ignore()` is a
+    `default_factory`, consulted only when the saved config has no `ignore`
+    key. A user who ever pressed Save in the Indexing panel carries a frozen
+    list from whenever they saved it and does not receive this pattern
+    retroactively. Changing how saved configs merge in new defaults is a
+    separate change."""
     seen, out = set(), []
     for base in default_home_dirs():
         pattern = norm(os.path.join(base, "**", "mounts"))
         if pattern not in seen:
             seen.add(pattern)
             out.append(pattern)
+    out.append(norm(os.path.expanduser("~/Library/Caches")))
     return DEFAULT_IGNORE_NAMES + out
 
 

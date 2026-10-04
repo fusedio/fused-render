@@ -153,7 +153,7 @@ def config_lock() -> Generator[None, None, None]:
 # file is a full snapshot, frozen at whatever the packaged curated fields
 # looked like the day it was written. Read that snapshot wholesale afterwards
 # and every later upgrade to the packaged copy — a new option added to a
-# `select` (`claude-fable-5-1` landing in `model`'s options, 2026-09), a
+# `select` (a model landing in or leaving `model`'s options, 2026-09), a
 # relabelled entry, a whole new catalog row — is invisible to anyone who ever
 # pressed "Refresh catalog", forever: the override shadows the packaged file
 # on every read and nothing ever regenerates it (bugbot: reported live on

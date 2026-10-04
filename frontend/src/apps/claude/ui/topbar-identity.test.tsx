@@ -65,7 +65,7 @@ test("a session with a task row wears the peek's identity block", () => {
   expect(v.has("task-side-peek-id").length).toBe(1);
   expect(v.has("task-side-peek-title").length).toBe(1);
   expect(v.has("task-side-peek-project").length).toBe(1);
-  expect(v.text()).toContain("TASK-042");
+  expect(v.text()).toContain("T042");
   expect(v.text()).toContain("Rename the pane noun");
   // The project is the folder's NAME, not its path — the chip's tooltip carries
   // the whole of it.
@@ -96,7 +96,7 @@ test("no row yet — the line the chat has always printed", () => {
   expect(v.has("task-side-peek-who").length).toBe(0);
   expect(v.has("c-tb-title").length).toBe(1);
   expect(v.has("c-session").length).toBe(1);
-  expect(v.text()).toContain("TASK-042");
+  expect(v.text()).toContain("T042");
 });
 
 // ---- AND THE THIRD STATE: NOBODY HAS ANSWERED YET (Akshil, 2026-09-14) ------
@@ -155,7 +155,7 @@ test("a row pressed in the Recent list names the header AT ONCE — no listing r
   const feed = stubSubscribe();
   const v = mountHeader("sess-9", feed.subscribe);
   expect(v.has("task-side-peek-who").length).toBe(1);
-  expect(v.text()).toContain("TASK-009");
+  expect(v.text()).toContain("T009");
   // …and never the skeleton or the wordmark on the way there.
   expect(v.has("c-tb-skel").length).toBe(0);
   expect(v.has("c-tb-title").length).toBe(0);
@@ -254,4 +254,28 @@ test("a task always outranks `pending` — the placeholder never covers its own 
   const v = render({ sessionId: "sess-1", task: task(), pending: true, running: false });
   expect(v.has("c-tb-skel").length).toBe(0);
   expect(v.has("task-side-peek-who").length).toBe(1);
+});
+
+// ── the ring and the title follow the page, not only the row (Akshil, 2026-09-15)
+
+test("a live turn draws an in-progress ring over a row that still reads done", () => {
+  // A chat sent from this app runs `claude -p`; the server learns of the turn
+  // from the transcript a poll or two later, so the row said "done" for the
+  // first seconds — or for a short turn, all of it. The controller knows now.
+  const v = render({ sessionId: "sess-1", task: task({ status: "done" }), running: true });
+  expect(v.has("schedule-ring--in_progress").length).toBe(1);
+  expect(v.has("schedule-ring--done").length).toBe(0);
+  // ...and once the turn is over, the row's own word stands again.
+  const idle = render({ sessionId: "sess-1", task: task({ status: "done" }), running: false });
+  expect(idle.has("schedule-ring--done").length).toBe(1);
+});
+
+test("a blocked row is not painted broken while a new turn is running", () => {
+  const v = render({
+    sessionId: "sess-1",
+    task: task({ status: "blocked", blocked_reason: "failed" }),
+    running: true,
+  });
+  expect(v.has("schedule-ring--failed").length).toBe(0);
+  expect(v.has("schedule-ring--in_progress").length).toBe(1);
 });

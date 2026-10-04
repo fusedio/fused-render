@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.index import runner
+from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.server import create_app
 from fused_render.server.routers import index as index_router
@@ -336,10 +337,14 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
 
     query_started = threading.Event()
     query_release = threading.Event()
+    query_returned = threading.Event()
 
     def fake_guarded(cfg, sql, limit, token=None):
         query_started.set()
-        query_release.wait(timeout=5)
+        # Parked until the test has its stats answer. The timeout only bounds
+        # how long a BROKEN (serialised) lane hangs the test before failing.
+        query_release.wait(timeout=30)
+        query_returned.set()
         return {"columns": [], "rows": []}
 
     def fake_stats(cfg, root="", breakdown=False, token=None):
@@ -356,26 +361,27 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
             query_task = asyncio.create_task(
                 client.post("/api/index/query", json={"sql": "select 1"},
                            headers={"X-Fused": "1"}))
-            for _ in range(50):
-                if query_started.is_set():
-                    break
-                await asyncio.sleep(0.02)
-            assert query_started.is_set()
-            t0 = time.monotonic()
+            started = await asyncio.to_thread(query_started.wait, 30)
+            assert started, "the /api/index/query worker never started"
             stats_resp = await client.get("/api/index/stats")
-            elapsed = time.monotonic() - t0
+            # The property under test, as ORDERING rather than a wall-clock
+            # budget: stats answered while the query was still parked inside
+            # its worker. A lane that serialised stats behind the query could
+            # only answer after `query_release` (set below) or its timeout.
+            query_was_parked = not query_returned.is_set() and not query_task.done()
             query_release.set()
             query_resp = await query_task
-            return stats_resp, elapsed, query_resp
+            return stats_resp, query_was_parked, query_resp
 
-    stats_resp, elapsed, query_resp = asyncio.run(run())
+    stats_resp, query_was_parked, query_resp = asyncio.run(run())
     assert stats_resp.status_code == 200
-    # `fake_stats` is a pure Python stub with no real I/O, so a serialised
-    # lane would show up as (near-)instant, not merely "under 2s" — tightened
-    # from 2.0 (SPEC-index-search-wedge.md's "Also:" note: that bound was
-    # part of the blind spot that let a serialised interactive lane ship
-    # unnoticed).
-    assert elapsed < 0.5, elapsed
+    # Previously `elapsed < 0.5`: flaked on a loaded CI runner (0.90s, py3.12)
+    # while the lane was fine — event-loop/threadpool scheduling, not lane
+    # wait. Ordering catches a serialised lane at ANY speed, which is what
+    # SPEC-index-search-wedge.md's tightened bound was reaching for.
+    assert query_was_parked, (
+        "/api/index/stats only answered after the slow /api/index/query "
+        "finished: the interactive lane is serialised behind the query lane")
     assert query_resp.status_code == 200
 
 
@@ -456,12 +462,24 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     never set (exactly that: an un-killable, permanently parked thread);
     every later call answers immediately. `ABANDON_S` (item 2) is
     monkeypatched small so the test does not have to wait out the real
-    5-second default to see the permit actually get released."""
+    15-second default to see the permit actually get released — but not
+    razor-thin: a loaded CI runner (this whole file's requests share the
+    process with every other xdist worker) has been observed adding ~500ms
+    of scheduling jitter to a nominal 50ms `wait_for`, which was enough to
+    make even the NON-wedged 'z' request time out and get abandoned too —
+    a false failure of the "does not permanently hold its lane slot" claim,
+    not a real one (`_bounded_index_read` returns, rather than raises, on
+    its own timeout path, so the `async with lane:` around it always
+    releases the permit either way — read `_bounded_index_read` and its
+    caller in index.py before doubting that). 1.5s leaves several times
+    that observed jitter as headroom, while the elapsed bounds below (well
+    under 1.5s) still catch a real regression, which would take until
+    `ABANDON_S` elapses, not a few hundred ms."""
     import threading
 
     import httpx
 
-    monkeypatch.setattr(index_router, "ABANDON_S", 0.05)
+    monkeypatch.setattr(index_router, "ABANDON_S", 1.5)
     lock = threading.Lock()
     calls = {"n": 0}
     first_entered = threading.Event()
@@ -530,7 +548,7 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
             # "pending" forever, exactly what happened before this loop was
             # moved in here.
             never.set()
-            deadline = time.monotonic() + 2.0
+            deadline = time.monotonic() + 5.0
             while index_router._abandoned_reads and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             return second_resp, second_elapsed, more, more_elapsed, first_resp
@@ -538,9 +556,16 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     (second_resp, second_elapsed, more, more_elapsed,
      first_resp) = asyncio.run(run())
     assert second_resp.status_code == 200, second_resp.text
-    assert second_elapsed < 0.3, second_elapsed
+    # Well under `ABANDON_S` (1.5s, above): neither 'y' nor 'z' ever needs to
+    # wait for the wedged request's abandon-timeout to free a permit, since
+    # the lane (width 2) has a free slot the whole time. A regression that
+    # reintroduces the "held for the life of the process" bug would instead
+    # make these wait the full `ABANDON_S`, so 1.0s still catches that while
+    # comfortably clearing the ~500ms of CI scheduling jitter that made the
+    # old 0.3s bound flaky.
+    assert second_elapsed < 1.0, second_elapsed
     assert all(r.status_code == 200 for r in more)
-    assert more_elapsed < 0.3, more_elapsed
+    assert more_elapsed < 1.0, more_elapsed
     # The wedged first request itself eventually gets the abandon-timeout
     # 503, once ABANDON_S elapses — it just never blocks anything ELSE.
     assert first_resp.status_code == 503
@@ -548,6 +573,224 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     assert not index_router._abandoned_reads, (
         "the wedged worker's thread never drained; a later test in this "
         "process would inherit a poisoned _abandoned_reads")
+
+
+def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
+        home, tmp_path, monkeypatch):
+    """The path a fast typist actually takes, and which nothing above tests
+    under real concurrency: a stream of overlapping `/api/index/rank`
+    requests, roughly half abandoned by the client shortly after being
+    fired (exactly what a fast typist's per-keystroke search does — each
+    request superseded by the next before it finishes), plus a periodic
+    truly-wedged worker (one un-killable thread every 4th call, reachable
+    only via `ABANDON_S`). None of that may leave the interactive lane
+    (width 2) short a permit, or `_abandoned_reads` non-empty, once the
+    dust settles — and a final, ordinary request fired afterwards must come
+    back fast, not queued behind any of it.
+
+    Cancelling a client is driven by monkeypatching
+    `starlette.requests.Request.is_disconnected` (keyed on the request's own
+    `q` value) rather than `task.cancel()` on the httpx call: a throwaway
+    experiment (this session, not checked in) proved that cancelling the
+    asyncio task wrapping an in-process `ASGITransport` call propagates
+    `asyncio.CancelledError` straight through the whole call chain instead
+    of ever making `request.is_disconnected()` observe anything — so
+    `task.cancel()` cannot exercise the real `cancellable()`/
+    `_watch_disconnect()` code path this route depends on in production.
+    Monkeypatching `is_disconnected` does exercise that real path."""
+    import threading
+
+    import httpx
+    import starlette.requests as starlette_requests
+
+    monkeypatch.setattr(index_router, "ABANDON_S", 0.15)
+
+    lock = threading.Lock()
+    never = threading.Event()
+    # Finding 4: record every `q` for which the worker THREAD itself observed
+    # `token.cancelled` and raised `Cancelled` — not merely "got a 499",
+    # which a request can also get pre-submission (the route's own
+    # `if token.cancelled: return Response(status_code=499)`, before
+    # `_rank_worker` is ever called). Asserting on this set instead of on
+    # `499 in statuses` is what actually proves cancellation reached the
+    # worker thread. `cancel_proof_entered` is the synchronisation for the
+    # dedicated, non-racy proof request below (`q == "cancel-proof"`).
+    worker_cancelled: set = set()
+    cancel_proof_entered = threading.Event()
+
+    def fake_rank_worker(cfg, root, q, limit, token, ranked):
+        empty = {"covered": True, "reason": "", "scanned_partitions": 0,
+                 "of_partitions": 0, "base": root, "mode": "substring",
+                 "hits": [], "truncated": False, "total": 0}
+
+        if q == "cancel-proof":
+            # Finding 4's fix: proving `Cancelled` propagates out of a
+            # worker thread ALREADY IN FLIGHT (not merely a pre-submission
+            # queue check) needs to not depend on winning a wall-clock race
+            # against 19 other overlapping requests and the lane's own
+            # contention — that dependency is exactly what made the old
+            # `499 in statuses` assertion unable to prove what its comment
+            # claimed (see the docstring for `test`, review finding 4). This
+            # branch is reached by ONE dedicated, otherwise-ordinary
+            # request, fired only after the racy burst below has fully
+            # settled: `cancel_proof_entered` tells `run()` this thread is
+            # now inside the worker (so the client-cancel signal that
+            # follows can only be observed here, from inside, never
+            # pre-submission), and the generous poll window (up to 0.8s,
+            # against the 1.0s `ABANDON_S` `run()` raises just for this
+            # request) leaves comfortable headroom over `DISCONNECT_POLL_S`
+            # (0.1s) even on a loaded machine.
+            cancel_proof_entered.set()
+            for _ in range(80):
+                if token is not None and token.cancelled:
+                    with lock:
+                        worker_cancelled.add(q)
+                    raise Cancelled()
+                time.sleep(0.01)
+            return empty
+
+        # Finding 2: which calls are "truly wedged" is keyed on the `q`
+        # value itself (`q0`, `q4`, `q8`, ... every 4th burst request), not
+        # on a shared call counter incremented in whatever order requests
+        # happen to reach this function. A counter's order depends on how
+        # many client-cancelled requests got cancelled before vs. after the
+        # route's pre-submission check — which moves with machine load — so
+        # it could silently shift which call (including the unrelated final
+        # "clean" request below, which never reaches this function under
+        # its own `q`) landed on the wedge branch. Keying on `q` makes the
+        # wedge assignment fixed regardless of arrival order or load.
+        n = int(q[1:]) if q.startswith("q") and q[1:].isdigit() else -1
+        if n >= 0 and n % 4 == 0:
+            never.wait()  # the un-killable, permanently-parked worker thread
+            return empty
+        # Finding 3: this poll loop must stay MATERIALLY shorter than
+        # `ABANDON_S` (0.15s above) — 5 * 0.01s = 0.05s, not the old
+        # 15 * 0.01s = 0.15s, which tied it and made every non-cancelled
+        # call lose the abandon race, so no burst request could ever answer
+        # 200. It still gives the disconnect watcher (polling every
+        # `DISCONNECT_POLL_S`) a real chance to have already cancelled this
+        # token by the time the worker would otherwise finish, but (per
+        # finding 4 above) landing inside this window is now a bonus, not
+        # the thing being asserted on.
+        for _ in range(5):
+            if token is not None and token.cancelled:
+                with lock:
+                    worker_cancelled.add(q)
+                raise Cancelled()
+            time.sleep(0.01)
+        return empty
+
+    monkeypatch.setattr(index_router, "_rank_worker", fake_rank_worker)
+
+    to_cancel: set = set()
+
+    async def fake_is_disconnected(self):
+        return self.query_params.get("q") in to_cancel
+
+    monkeypatch.setattr(starlette_requests.Request, "is_disconnected",
+                        fake_is_disconnected)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = []
+            for i in range(20):
+                qval = f"q{i}"
+                if i % 2 == 0:
+                    to_cancel.add(qval)
+                tasks.append(asyncio.create_task(
+                    client.get("/api/index/rank",
+                              params={"root": str(tmp_path), "q": qval})))
+                # Staggered starts, not one big gather: this is what a burst
+                # of real keystrokes looks like, and it is what lets the
+                # is_disconnected patch (checked every DISCONNECT_POLL_S)
+                # actually catch some of these mid-flight.
+                await asyncio.sleep(0.007)
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Let every wedged (n % 4 == 0) worker thread finally return, and
+            # drain `_abandoned_reads` HERE, inside `run()` — see the wedge
+            # test above for why this must happen before `asyncio.run`
+            # returns and tears the loop down.
+            never.set()
+            deadline = time.monotonic() + 2.0
+            while index_router._abandoned_reads and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+
+            # Finding 4's dedicated, deterministic proof: fire ONE more
+            # request, wait (via a real thread Event, not a wall-clock
+            # guess) until its worker thread has actually entered
+            # `_rank_worker`, and only THEN flip `is_disconnected` for it.
+            # The watcher can only observe that after this point, so any
+            # `Cancelled` it raises can only have come from inside the
+            # worker — never the pre-submission `if token.cancelled` check,
+            # which already ran (and passed) before this request's worker
+            # thread could possibly have started.
+            monkeypatch.setattr(index_router, "ABANDON_S", 1.0)
+            cancel_proof_task = asyncio.create_task(client.get(
+                "/api/index/rank",
+                params={"root": str(tmp_path), "q": "cancel-proof"}))
+            for _ in range(200):
+                if cancel_proof_entered.is_set():
+                    break
+                await asyncio.sleep(0.005)
+            assert cancel_proof_entered.is_set()
+            to_cancel.add("cancel-proof")
+            cancel_proof_resp = await cancel_proof_task
+
+            t0 = time.monotonic()
+            final_resp = await client.get(
+                "/api/index/rank",
+                params={"root": str(tmp_path), "q": "final-clean-request"})
+            final_elapsed = time.monotonic() - t0
+
+            loop = asyncio.get_running_loop()
+            sem = index_router._interactive_lane_loops.get(loop)
+            sem_value = sem._value if sem is not None else None
+
+            return (responses, final_resp, final_elapsed, sem_value,
+                    cancel_proof_resp)
+
+    (responses, final_resp, final_elapsed, sem_value,
+     cancel_proof_resp) = asyncio.run(run())
+
+    # Finding 2's fix made this deterministic: "final-clean-request" never
+    # matches the `q{N}` shape `fake_rank_worker` keys its wedge decision on,
+    # so it always takes the short (0.05s) poll branch and always answers
+    # 200 — regardless of how many burst calls actually reached the worker
+    # or in what order, which is what made this flake under load before.
+    assert final_resp.status_code == 200, final_resp.text
+    assert final_elapsed < 0.5, final_elapsed
+    assert not index_router._abandoned_reads
+    # Direct, non-timing proof the lane gave every permit back: not merely
+    # "requests eventually returned" but the semaphore itself is at full
+    # width again.
+    assert sem_value == 2
+
+    # Finding 4: the dedicated, event-synchronised proof — not a race
+    # against the burst — that cancellation reaches a worker thread already
+    # in flight.
+    assert cancel_proof_resp.status_code == 499, cancel_proof_resp.text
+    assert "cancel-proof" in worker_cancelled, worker_cancelled
+
+    statuses = [r.status_code for r in responses if not isinstance(r, Exception)]
+    # Every response is one of: answered normally, abandoned by the client
+    # (499), or hit the abandon-timeout backstop (503) for one of the truly
+    # wedged (n % 4 == 0) calls — nothing else is a legitimate outcome here.
+    assert all(s in (200, 499, 503) for s in statuses), statuses
+    # Finding 3: with the poll loop now materially shorter than ABANDON_S, a
+    # non-cancelled, non-wedged burst request must actually be able to
+    # answer normally — this was structurally impossible before (every
+    # burst response was 499 or 503, never 200).
+    assert 200 in statuses, statuses
+    # The client-cancel path is also exercised within the racy burst itself
+    # (a bonus, not the proof — see the dedicated `cancel-proof` assertions
+    # above for that): most of these 499s come from the route's
+    # pre-submission `if token.cancelled` check, before `_rank_worker` is
+    # ever called, which is exactly why this alone cannot prove the
+    # worker-thread path (finding 4).
+    assert 499 in statuses, statuses
 
 
 def test_reap_abandoned_retrieves_the_exception():
@@ -1337,6 +1580,14 @@ def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
     assert started == []
 
 
+def test_the_startup_debounce_is_a_few_minutes_not_fifteen(home):
+    """Its stated job is stopping a dev-server reload loop (or three windows
+    opening at once) from queueing scan after scan — a job five minutes does
+    exactly as well as fifteen, at a quarter the cost to a machine that really
+    was left on and reopened."""
+    assert 4 * 60 <= index_router.SCAN_DEBOUNCE_S <= 6 * 60
+
+
 def test_startup_scan_rescans_once_the_debounce_has_elapsed(home, tmp_path, monkeypatch):
     src = _tree(tmp_path)
     started = []
@@ -1564,6 +1815,17 @@ def test_startup_warm_refuses_a_mount_backed_home(home, tmp_path, monkeypatch):
                         lambda cfg, root, **kw: called.append(root) or {})
     index_router.run_startup_warm()
     assert called == []
+
+
+def test_the_warm_wait_ceiling_still_sits_just_past_the_abandoned_threshold():
+    """The ceiling exists so a worker killed mid-walk (never writes `run_end`)
+    is spotted by the ABANDONED_RUN_S mtime check before the warm gives up for
+    the pathological reason (a worker alive but wedged) instead. That ordering
+    breaks if the two ever drift apart — a ceiling shorter than the threshold
+    would give up before a merely-slow-but-live worker's death could even be
+    detected."""
+    assert index_router.WARM_WAIT_DEADLINE_S > runner.ABANDONED_RUN_S
+    assert index_router.WARM_WAIT_DEADLINE_S - runner.ABANDONED_RUN_S <= 60
 
 
 def test_startup_scan_records_the_run_the_warm_waits_on(home, tmp_path, monkeypatch):
@@ -1883,6 +2145,33 @@ def test_the_freshness_check_defers_before_it_stamps_the_check_clock(
     assert runner.canonical_root(str(src)) in index_router._freshness_checked
 
 
+def test_the_stamp_is_taken_after_the_scan_lookup_not_before_it(
+        home, tmp_path, monkeypatch, instant_freshness_delay):
+    """FRESHNESS_CHECK_S's 2s margin over MIN_INTERVAL_S only holds if the
+    stamp reflects when the check actually finished, not when it started.
+    `note_folder_opened` does a duckdb lookup and can spawn a scan subprocess
+    before it returns — if that latency ate into the margin instead of being
+    excluded from it, the effective cadence could stretch past double the
+    interval, which is the very drift FRESHNESS_CHECK_S exists to prevent."""
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+
+    def slow_note_folder_opened(cfg, path, roots, now=None):
+        time.sleep(0.05)
+        return index_router.freshness.FreshnessCheck()
+
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        slow_note_folder_opened)
+    src = _freshness_root(tmp_path)
+    before = time.time()
+    index_router._run_freshness_check(str(src))
+    after = time.time()
+    stamped = index_router._freshness_checked[runner.canonical_root(str(src))]
+    # A stamp taken before the lookup would land near `before`; only a stamp
+    # taken after the lookup returns can be this late.
+    assert stamped >= before + 0.05
+    assert stamped <= after
+
+
 def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
                                                      monkeypatch):
     """The wait holds the one-at-a-time slot, so only a check that is going to do
@@ -2073,9 +2362,9 @@ def test_a_folder_that_goes_quiet_after_the_check_refused_it_still_gets_scanned(
     sub = src / "sub"
     _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
     disk_mtime = os.stat(str(sub)).st_mtime
-    # The watcher's own debounce: the check runs ~3s after the change, well
-    # inside the quiet window (freshness.QUIET_S is 30s).
-    check_now = disk_mtime + 3.0
+    # The watcher's own debounce: the check runs ~1s after the change, still
+    # inside the quiet window (freshness.QUIET_S).
+    check_now = disk_mtime + 1.0
     index_router._run_freshness_check(str(sub), now=check_now)
     assert started == []  # refused, exactly as reported
     assert len(scheduled) == 1

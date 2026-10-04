@@ -30,16 +30,20 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Task } from "@platform/lib/api";
+import { shortTaskId } from "@platform/lib/task-id";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
+import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
+import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
+import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount, useNativeChatFlag } from "@apps/claude";
-import { runAgent } from "@apps/claude/protocol/agent";
+import { fetchTerminalCommand as fetchAgentTerminalCommand } from "@apps/claude/protocol/agent";
 
 // THE HEADER IS THE PEEK'S OWN NOW, not the chat's (design.md, Header + list
 // state v2). It wore `@apps/claude/ui/Topbar` between 2026-09-13 and -09-14,
@@ -59,7 +63,7 @@ import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
 // task behind the conversation it is showing (see that file's note).
-import { TaskPeekProject, TaskPeekWho, peekTitle } from "./TaskPeekWho";
+import { TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
@@ -81,6 +85,7 @@ import {
   emptyPaneText,
   eraseBlocked,
   filingIntent,
+  SHOW_PAGE_DOOR,
   taskHref,
 } from "./tasks-lib";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
@@ -91,7 +96,6 @@ import {
   PEEK_WALK_ATTR,
   peekScrollTarget,
   peekVisibleOrder,
-  canShowList,
   nextAfterRemoval,
   refreshPeekBaseline,
   PEEK_MIN_WIDTH,
@@ -107,7 +111,6 @@ import {
   setPeekHost,
   setPeekWidth,
   settlePeek,
-  showListBesidePeek,
   stepPeekKey,
   subscribePeek,
   syncPeekFromUrl,
@@ -348,12 +351,6 @@ const ICON = {
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
-/* THE WAY BACK TO THE SPLIT IS A WORD NOW, not a glyph (Akshil, 2026-09-14 —
-   design.md, Polish batch 5): "Resize panel", in the same outline skin the Open
-   door wears. The four inward corner marks it replaces were the "fit" glyph,
-   which is a picture a reader has to be told the meaning of for an act that
-   happens once in a visit — and a header with two labelled buttons and a ×
-   needs no legend at all. The glyph is gone, not folded away. */
 /** OPEN IN EXPLORER — the PREFIX on a word (Akshil, 2026-09-14 — design.md,
  *  Polish batch 5). An arrow out of a box, pointing to the upper right: the
  *  mark the whole web uses for "this leaves the page you are on", which is
@@ -420,13 +417,9 @@ export function TaskPeek({
   onReload?: () => void;
 }) {
   const layout = useTaskPeekLayout();
-  // IS THERE A SPLIT TO GO BACK TO — asked of the store, on every render that
-  // `layout` changes on (the window, the sidebar, the seam), which is every
-  // render that could change the answer. Only in cover, because that is the one
-  // state the control is drawn in (design.md, Fix batch 6 §1).
-  const canList = layout.cover && canShowList();
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
+  const canRun = useCanRunInTerminal();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -528,7 +521,13 @@ export function TaskPeek({
       // where every other framing site applies it (legacy-src.ts's header).
       // `noFocus` below is the same fact for the native branch.
       ? withNoFocus(
-          peekFrameSrc(template, task.target || task.project, task.session_id, anchor ?? undefined),
+          peekFrameSrc(template, task.target || task.project, task.session_id,
+                       anchor ?? undefined,
+                       // The task's own model/effort, so the FLAG-OFF frame
+                       // opens on them too — the native branch seeds the same
+                       // two through `ChatMount`. Both "" for a task that chose
+                       // neither, which appends nothing.
+                       { model: task.model, effort: task.effort }),
         )
       : null;
   const resolving = !src && !gone && !!task?.session_id && template === undefined;
@@ -670,6 +669,14 @@ export function TaskPeek({
     (e: KeyboardEvent, doc: Document): boolean => {
       if (e.defaultPrevented) return false;
       if (e.key === "Escape") {
+        // A DIALOG OVER THE PANEL OWNS THE PRESS. The modal chassis peels one
+        // layer per Esc through its own stack (platform/ui/modal/esc-stack),
+        // but this panel is not a modal and holds no token in it — so with the
+        // New task card up over an open peek, one press closed the card AND
+        // the peek (the chassis never marks the event spent). Standing down
+        // while any dialog is registered is the one rule that makes the peek
+        // the layer UNDER every dialog, which is what it is on screen.
+        if (anyModalOpen()) return false;
         e.preventDefault();
         escapeOrBlur(doc);
         return true;
@@ -976,27 +983,35 @@ export function TaskPeek({
   /**
    * CONTINUE THIS TASK IN A REAL TERMINAL — the chat's own door, not a new one
    * (`@apps/claude/ui/Kebab`'s `onTerminal`): ask the folder's `agent.py` for
-   * the exact `claude --resume …` line and put it on the clipboard. There is no
-   * API here for launching a terminal — the app cannot open one — so what the
-   * act actually does is hand the reader the command, which is what it does
+   * the exact `claude --resume …` line. Where the status-bar drawer exists
+   * (`canRunInTerminal()`) this runs it there directly; otherwise — an embed,
+   * or Windows, where the app has no terminal of its own to open — it falls
+   * back to putting the command on the clipboard, which is what it does
    * everywhere else it is offered.
    *
    * Needs the template's folder, which this panel has already resolved for the
    * chat it is framing (`template`), so no second stat.
    */
   const agentDir = template ? template.slice(0, template.lastIndexOf("/")) : null;
+  const fetchTerminalCommand = (): Promise<string> =>
+    fetchAgentTerminalCommand(agentDir!, task!.target || task!.project, task!.session_id ?? "");
   const toTerminal = async () => {
     if (!task || !agentDir) return;
     try {
-      const out = await runAgent(
-        agentDir,
-        "terminal_command",
-        { file: task.target || task.project, session_id: task.session_id ?? "" },
-        { key: null },
-      );
-      if ("error" in out && out.error) throw new Error(out.error);
-      if (!("command" in out)) throw new Error("agent.py returned no command");
-      const ok = await copyToClipboard(out.command);
+      const command = await fetchTerminalCommand();
+      await runOrCopyInTerminal(command, { ranMessage: "Opened in terminal" });
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+    }
+  };
+  /** THE SECONDARY DOOR, only where the primary one no longer copies: a reader
+   *  with their own terminal should not have to fight the drawer for the
+   *  string. */
+  const copyTerminalCommand = async () => {
+    if (!task || !agentDir) return;
+    try {
+      const command = await fetchTerminalCommand();
+      const ok = await copyToClipboard(command);
       notify({
         title: ok ? "Command copied — paste it in your terminal" : "Could not copy the command",
         tone: ok ? "info" : "error",
@@ -1025,11 +1040,11 @@ export function TaskPeek({
   const menuItems = (): MenuEntry[] => {
     if (!task) return [];
     const items: MenuEntry[] = [];
-    if (page && headFit >= PEEK_HEAD_DROPS.length) {
+    if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
       items.push({ label: "Open in Explorer", icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
     }
-    if (gone) {
+    if (SHOW_PAGE_DOOR && gone) {
       items.push({
         label: "Open in Explorer",
         icon: ICON_OPEN_DOOR,
@@ -1046,6 +1061,17 @@ export function TaskPeek({
       disabled: !agentDir || !task.session_id,
       onClick: () => void toTerminal(),
     });
+    // The row above now RUNS the command where it can — this is the clipboard
+    // fallback for a reader who would rather paste it into a terminal of
+    // their own.
+    if (canRun) {
+      items.push({
+        label: "Copy terminal command",
+        icon: ICON_TERMINAL,
+        disabled: !agentDir || !task.session_id,
+        onClick: () => void copyTerminalCommand(),
+      });
+    }
     if (filing) {
       items.push({
         label: filing.kind === "archive" ? "Archive task" : "Unarchive task",
@@ -1073,7 +1099,8 @@ export function TaskPeek({
     return items;
   };
 
-  const title = task ? peekTitle(task) : "";
+  // The same line the row and the chat header print (TaskPeekWho).
+  const title = useTaskHeadline(task);
 
   return (
     <>
@@ -1089,7 +1116,7 @@ export function TaskPeek({
         style={{ width: layout.open ? layout.width : heldWidth.current }}
         aria-hidden={layout.open ? undefined : true}
         role="complementary"
-        aria-label={task ? `${task.task_id} ${title}` : "Task"}
+        aria-label={task ? `${shortTaskId(task.task_id)} ${title}` : "Task"}
       >
         {/* The seam: a 1px line in a 12px hit area, straddling the panel's
             leading edge exactly as the sidebar's handle straddles its border
@@ -1155,38 +1182,11 @@ export function TaskPeek({
             >
               {ICON_CLOSE}
             </button>
-            {/* AND IN COVER, THE WAY BACK TO THE SPLIT — a second control, next
-                to the first, because the two are different acts and a control
-                that changes what it does under you is worse than two controls
-                (the reason the × above stopped being clever).
-
-                Cover is easy to fall into and hard to climb out of: the seam is
-                a 12px edge at the far left of the page, which is a thing you
-                have to know is there. This spends exactly the split a fresh
-                open would give — the remainder past the middle pane's baseline,
-                held back far enough that the answer is not cover again — and
-                leaves the task open. */}
-            {layout.cover && (
-              <button
-                type="button"
-                className="task-side-peek-resize"
-                /* …AND ON A WINDOW THAT CANNOT HOLD BOTH, it says so rather than
-                   pressing and moving nothing (Akshil, 2026-09-14 — design.md,
-                   Fix batch 6 §1). `canShowList` asks the store whether ANY
-                   width clears the middle pane's cover floor, the sidebar's own
-                   188px included; below that the control is a label for a state
-                   of the window, which is worth more than a dead press. */
-                disabled={!canList}
-                data-hint={
-                  canList
-                    ? "Restore the list beside the panel"
-                    : "Window too narrow to show the list"
-                }
-                onClick={() => showListBesidePeek()}
-              >
-                Resize panel
-              </button>
-            )}
+            {/* NO "RESIZE PANEL" ANY MORE (Akshil, 2026-09-15). The way out of
+                cover is the sidebar: expanding it by hand hands the panel back
+                to its default split (task-peek-store `expandUncovers`), and the
+                × closes. A third control for a state two others already leave
+                was one more thing to read. */}
             {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
                 reader can see, one step at a time — the gesture a chevron means
                 everywhere else in this app. A full arrow is for travel. */}
@@ -1242,7 +1242,7 @@ export function TaskPeek({
 
                   A real link with a real href, so ⌘-click opens a tab, exactly
                   like the row's own door. */}
-              {page && (
+              {SHOW_PAGE_DOOR && page && (
                 <a
                   className="task-side-peek-open"
                   href={page}
@@ -1278,27 +1278,41 @@ export function TaskPeek({
           {showPreview && previewSrc && (
             <>
               {/* THE APP, LIVE (design.md, App preview in the peek). The frame
-                  lays out at a virtual 1280×720 and is scaled to the panel's
-                  width, so the app sees a desktop window however narrow the
-                  peek is — and widening the peek makes the preview taller as
-                  well as wider. The box crops rather than squashes: the wrapper
-                  under it is the scaled frame's real size, and the box scrolls
-                  when the cap or the reader's own drag is shorter than that. */}
+                  lays out at a virtual 1280×720 and is scaled to CONTAIN in the
+                  card — the smaller of the width fit and the height fit — so
+                  the app sees a desktop window however narrow the peek is, the
+                  aspect never bends, and whichever axis has room to spare shows
+                  padding around the frame (shell/peek-preview.ts `previewBox`). */}
               <div className="task-side-peek-preview" style={{ height: box.height }}>
                 {previewFailed ? (
                   <p className="task-side-peek-preview-off" role="status">
                     Preview unavailable
                   </p>
                 ) : (
-                  <>
+                  // THE CARD (Akshil, 2026-09-15): the same bordered, rounded
+                  // well the Home grid's app cards use for their thumbs, minus
+                  // the card's head row — the app is framed as something the
+                  // panel is showing, and the frame answers a hover the way
+                  // those cards do (styles/task-peek.css). The scroller is the
+                  // card's child so the border never scrolls with the crop.
+                  <div
+                    className="task-side-peek-preview-card"
+                    // THE CARD IS THE FRAME'S SIZE, not the box's (Akshil,
+                    // 2026-09-16): the border hugs the scaled 16:9 frame, and
+                    // whatever the box has to spare on either axis is MARGIN
+                    // around the card (styles/task-peek.css centres it), not
+                    // padding inside it — a card with a band of its own
+                    // background beside the app is not a card of the app.
+                    style={{
+                      width: PREVIEW_VW * box.scale,
+                      height: box.frameHeight * box.scale,
+                    }}
+                  >
+                    <div className="task-side-peek-preview-scroll">
                     <div
                       className="task-side-peek-preview-scale"
-                      // The scaled frame's real footprint, and it tracks the
-                      // FRAME's height rather than a constant 720 now: past its
-                      // natural size the box gives the app a taller viewport
-                      // instead of cropping it (shell/peek-preview.ts
-                      // `previewBox`), and the wrapper is what tells the
-                      // scroller how much there is.
+                      // The scaled frame's real footprint; `transform` does
+                      // not affect layout, so the wrapper states the size.
                       style={{
                         width: PREVIEW_VW * box.scale,
                         height: box.frameHeight * box.scale,
@@ -1323,7 +1337,8 @@ export function TaskPeek({
                         <SkeletonLines rows={2} label="Loading the app" />
                       </div>
                     )}
-                  </>
+                    </div>
+                  </div>
                 )}
               </div>
               <div
@@ -1362,9 +1377,26 @@ export function TaskPeek({
                 legacySrc={src}
                 legacyFrameRef={frameRef}
                 className="task-peek-frame"
-                title={`${task.task_id} ${title}`}
+                title={`${shortTaskId(task.task_id)} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
+                // WHAT THIS TASK IS SET TO (Akshil, 2026-09-18: "I saw the
+                // sidebar peek — the values there were different", then "what I
+                // select as a user stays").
+                //
+                // A SEED, AND IT STANDS DOWN BY ITSELF. `/api/tasks` answers
+                // this pair from the conversation's own record where it has one
+                // and from the task's entry where it does not (`_row_settings`),
+                // and the composer ranks that record above the params these two
+                // become — so seeding is the right answer for the window before
+                // the first run, and is outranked the moment the chat has one of
+                // its own. Gating it on `!task.session_id` was the earlier
+                // attempt at that and was too coarse: a task whose session
+                // existed but whose transcript had not been written yet got no
+                // seed and no record, and detection answered with a neighbour
+                // chat's model.
+                model={task.model}
+                effort={task.effort}
                 // ONE TURN TO LAND ON, when the press that opened this was a
                 // message row rather than a task row (task-peek-store
                 // `PeekState.anchor`). Absent, the conversation opens where a
@@ -1412,7 +1444,7 @@ export function TaskPeek({
           onDone={() => {
             const erased = erasing;
             setErasing(null);
-            notify({ title: `Deleted ${erased.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(erased.task_id)}`, tone: "info" });
             onReload?.();
             // SAME ADVANCE AS AN ARCHIVE (design.md, Header + list state v2):
             // the task is gone, the panel is not — it moves on to the next one

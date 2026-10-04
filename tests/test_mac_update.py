@@ -8,6 +8,7 @@ command at all), and the /api/update endpoints' guards.
 """
 import os
 import subprocess
+import threading
 import time
 import types
 
@@ -169,15 +170,16 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
-def test_install_defers_when_a_newer_version_appears_during_the_recheck(monkeypatch):
+def test_install_takes_a_newer_version_found_by_the_recheck(monkeypatch):
     """`_latest` is set by whichever periodic check last ran and can be up to
     CHECK_INTERVAL_S (5 min) stale. If a newer release was published in that
-    window, silently installing it instead of the version that was on
-    screen when Install was clicked would retarget the button out from
-    under the user — its own kind of dishonest wire status. install() must
-    instead surface the refreshed version and wait for a fresh click before
-    starting anything. `expected_version` is what the caller (the client)
-    had on screen — here, "9.9.9", the version found by the check() below."""
+    window, install() must fetch THAT one rather than the version that was
+    on screen when Install was clicked (Akshil, 2026-09-19: "before
+    downloading the version we show, check if there is new version available
+    and then download the newer version instead"). `expected_version` is what
+    the caller (the client) had on screen — here, "9.9.9", the version found
+    by the check() below — and the reply names the version that actually
+    went, so the client's next paint says v9.9.10."""
     manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
     monkeypatch.setattr(mac, "__version__", "0.4.10")
     versions = iter(["9.9.9", "9.9.10", "9.9.10"])
@@ -193,14 +195,10 @@ def test_install_defers_when_a_newer_version_appears_during_the_recheck(monkeypa
     done = []
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
     status = manager.install(expected_version="9.9.9")
-    assert manager._install_thread is None
-    assert done == []
-    assert status["state"] == "available"
+    # The stubbed swap can finish before install() returns, so either half
+    # of "it went" is fine — what matters is that it is not "available".
+    assert status["state"] in ("installing", "installed")
     assert status["latest_version"] == "9.9.10"
-
-    # The refreshed version is what a second click (now expecting "9.9.10")
-    # commits to — it matches what the recheck now finds, so this proceeds.
-    manager.install(expected_version="9.9.10")
     manager._install_thread.join(timeout=5)
     assert done and done[0]["version"] == "9.9.10"
 
@@ -228,25 +226,25 @@ def test_install_rechecks_even_when_the_next_auto_tick_is_long_overdue(monkeypat
     # well past both gaps so a non-forced check would have refused to fetch.
     manager._last_check_at = time.monotonic() - 10 * common.CHECK_INTERVAL_S
 
-    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
     status = manager.install(expected_version="9.9.9")
-    # The overdue recheck still ran and found a newer version — surfaced,
-    # not installed outright, same as the deferred case above.
-    assert manager._install_thread is None
+    # The overdue recheck still ran, found a newer version, and that is what
+    # goes — same rule as the test above.
     assert status["latest_version"] == "9.9.10"
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.10"
 
 
-def test_install_defers_when_the_background_loop_already_moved_past_what_the_client_saw(
-        monkeypatch):
+def test_install_takes_the_newer_version_the_background_loop_already_found(monkeypatch):
     """The background loop force-checks on its own five-minute cadence,
     independent of any click. If it already advanced `_latest` to a newer
     version before the client's last poll caught up, the screen the user
     clicked on still names the OLD version — and install()'s own recheck
     finds nothing new, because the server had already moved before this
-    call even started. A snapshot of `_latest` taken at call-start would
-    equal the post-recheck value in this case (both already "9.9.10") and
-    miss the mismatch entirely; only comparing against what the CLIENT says
-    it saw (`expected_version`) catches it."""
+    call even started. The newer version is still what gets installed: the
+    comparison is against what the CLIENT says it saw (`expected_version`),
+    and `_latest` is newer than that."""
     manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
     monkeypatch.setattr(mac, "__version__", "0.4.10")
     manifest_version = {"v": "9.9.9"}
@@ -268,9 +266,61 @@ def test_install_defers_when_the_background_loop_already_moved_past_what_the_cli
     done = []
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
     status = manager.install(expected_version="9.9.9")  # what the client's screen said
+    # The stubbed swap can finish before install() returns, so either half
+    # of "it went" is fine — what matters is that it is not "available".
+    assert status["state"] in ("installing", "installed")
+    assert status["latest_version"] == "9.9.10"
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.10"
+
+
+def test_install_defers_when_the_manifest_moved_to_something_not_newer(monkeypatch):
+    """The one case that still waits for a second click: the recheck finds a
+    version that is NOT newer than the one on screen (a manifest rolled back,
+    or pointing somewhere unrelated). Installing that under a button that
+    said "Update to v9.9.10" would be a downgrade nobody asked for, so the
+    state is left "available" with the refreshed version and nothing runs."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    versions = iter(["9.9.10", "9.9.9", "9.9.9"])
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": next(versions), "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    assert manager.status()["latest_version"] == "9.9.10"
+
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    status = manager.install(expected_version="9.9.10")
     assert manager._install_thread is None
     assert done == []
-    assert status["latest_version"] == "9.9.10"
+    assert status["state"] == "available"
+    assert status["latest_version"] == "9.9.9"
+
+
+def test_install_defers_on_a_malformed_expected_version(monkeypatch):
+    """`expected_version` is client input. A string `is_newer` cannot parse
+    must not blow up the endpoint — it is treated as "not newer": nothing is
+    installed and the reply names the version that is really current."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": "9.9.9", "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    status = manager.install(expected_version="9.9.9-beta")
+    assert manager._install_thread is None
+    assert done == []
+    assert status["state"] == "available"
+    assert status["latest_version"] == "9.9.9"
 
 
 def test_install_does_not_hit_the_network_when_there_is_nothing_to_install(monkeypatch):
@@ -501,17 +551,44 @@ def test_the_auto_loop_forces_its_tick(monkeypatch):
 
     def check(force=False):
         forced.append(force)
-        # The loop sleeps out common.CHECK_INTERVAL_S after this; the thread is
-        # a daemon, so one tick is all this test ever sees.
         return manager.status()
 
     monkeypatch.setattr(manager, "check", check)
+    # Review finding: the loop's own `time.sleep(common.CHECK_INTERVAL_S)`
+    # (300s, real) after this one tick was left UNPATCHED — daemon or not,
+    # that is 300 real seconds of a background thread alive in the pytest
+    # WORKER PROCESS, easily outliving the rest of a slower (Windows) CI
+    # run, and an interpreter shutdown with a thread still parked mid-sleep
+    # is exactly the kind of leak `conftest.py`'s `_no_schedule_loop_thread`/
+    # `_no_tasks_watch_thread`/`_no_ai_idle_reaper_thread`/etc. exist to
+    # prevent for every OTHER background loop this app starts — this one
+    # just wasn't one of them, since nothing but this test ever calls
+    # `start_auto_checks()` on Windows (`update.start()` is a no-op there,
+    # see `update/__init__.py`). Same fix as the sibling test just above
+    # (`test_the_check_only_manager_never_sweeps_the_shared_updates_dir`):
+    # patch `time.sleep` itself so the SAME call that reports the tick also
+    # ends the loop, and drain the thread before returning rather than
+    # trusting "it's a daemon" to make it harmless.
+    done = threading.Event()
+    real_sleep = time.sleep  # `mac.time` IS the `time` module: patching mac.time.sleep
+    # patches time.sleep globally, so this test's own polling below must use a
+    # captured reference rather than calling time.sleep() directly, or it would
+    # hit `one_tick` too and raise SystemExit in the main thread.
+
+    def one_tick(seconds):
+        if not forced:
+            return  # the startup-delay sleep, before the first tick: let it pass
+        done.set()
+        raise SystemExit  # ends the daemon loop after this one check
+
+    monkeypatch.setattr(mac.time, "sleep", one_tick)
     manager.start_auto_checks()
     for _ in range(200):
         if forced:
             break
-        time.sleep(0.01)
+        real_sleep(0.01)
     assert forced == [True]
+    assert done.wait(2.0), "the auto-check loop's thread never reached its sleep"
 
 
 # ---- dmg helpers ---------------------------------------------------------------
@@ -606,6 +683,22 @@ def test_start_noop_when_unbundled(monkeypatch):
     assert mac.manager() is None
 
 
+def test_start_noop_when_cryptography_is_unavailable(monkeypatch, caplog):
+    # A lean/wheel-only install (no [bundled]/[fused]) has no `cryptography`
+    # (verified 2026-09-23: a bare `pip install fused-render` crashed at
+    # startup on `ModuleNotFoundError: No module named 'cryptography'`,
+    # imported unconditionally by update/common.py). The fix: start() no-ops
+    # the same way it does for "nothing to swap", rather than crashing.
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", False)
+    monkeypatch.setattr(mac, "bundle_path", lambda: "/Applications/FusedRender.app")
+    monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
+    with caplog.at_level("WARNING", logger="fused_render.update"):
+        assert mac.start() is None
+    assert mac.manager() is None
+    assert "cryptography" in caplog.text
+
+
 # ---- the check-only manager of a dev run (DEV_MANAGER_ENV) ---------------------
 
 
@@ -638,21 +731,28 @@ def test_the_check_only_manager_never_sweeps_the_shared_updates_dir(monkeypatch)
     swept = []
     monkeypatch.setattr(manager, "_sweep_stale_downloads", lambda: swept.append(1))
     monkeypatch.setattr(manager, "check", lambda force=False: None)
+    # The loop's pref read (lazy `shell.prefs` import) is slow on some lanes and
+    # irrelevant here; stub it so the daemon reaches its sleeps promptly.
+    monkeypatch.setattr(manager, "maybe_auto_install", lambda: None)
     monkeypatch.setattr(mac, "MAC_STARTUP_DELAY_S", 0.0)
     ticks = []
+    done = threading.Event()
+    # `mac.time` IS the `time` module: patching mac.time.sleep patches it
+    # globally, so the main thread must wait on an Event, never time.sleep(),
+    # or its own polling would consume the loop's tick budget.
+    main_thread = threading.current_thread()
 
     def one_tick(seconds):
+        if threading.current_thread() is main_thread:
+            return  # never raise into the test's own thread
         ticks.append(seconds)
         if len(ticks) >= 2:
+            done.set()
             raise SystemExit  # ends the daemon loop after one check
     monkeypatch.setattr(mac.time, "sleep", one_tick)
     monkeypatch.delenv("FUSED_RENDER_NO_AUTO_UPDATE", raising=False)
     manager.start_auto_checks()
-    import time as _t
-    for _ in range(50):
-        if len(ticks) >= 2:
-            break
-        _t.sleep(0.02)
+    assert done.wait(5.0), "the auto-check loop never reached its second sleep"
     assert swept == []
 
 
@@ -880,20 +980,23 @@ def test_install_opens_a_cancellable_download_row_for_the_version(monkeypatch, t
     manager._install_thread.join(timeout=5)
 
 
-def test_a_successful_install_finishes_the_row_with_the_restart_line(monkeypatch,
-                                                                    tmp_path):
+def test_a_successful_install_leaves_no_row_behind(monkeypatch, tmp_path):
+    """NO TERMINAL ROW ON SUCCESS (Akshil, 2026-09-19). The row used to end on
+    "Installed — restart to finish" — the same sentence the blocking restart
+    dialog already carries, on a card whose only click navigated to
+    `/preferences`, a lazy chunk the swap had just deleted from disk. The
+    registry is empty instead: not a `done` row on a quiet tier (any stored
+    row is a row some surface can decide to draw), the record itself gone."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
     manager.install()
     manager._install_thread.join(timeout=5)
     assert manager.status()["state"] == "installed"
-    row = _row()
-    assert row["state"] == "done"
-    # `detail` as well as `message`: jobStatusLine reads `detail` for a done
-    # row, and this line is also the completion NOTICE (terminalNotifications).
-    assert row["detail"] == "Installed — restart to finish"
-    assert row["message"] == "Installed — restart to finish"
-    assert row["cancellable"] is False
+    assert jobs.list_jobs() == []
+    # And it is REMOVED, not merely hidden: nothing is left in the registry
+    # under the update's id for a later reader to find.
+    with jobs._lock:
+        assert "sys:update:9.9.9" not in jobs._jobs
 
 
 def test_a_failed_install_fails_the_row_with_the_error_text(monkeypatch, tmp_path):
@@ -1240,3 +1343,126 @@ def test_status_says_which_half_of_the_install_is_running(monkeypatch, tmp_path)
     manager._install_thread.join(timeout=5)
     assert seen == ["downloading", "installing"]
     assert manager.status()["phase"] is None
+
+
+def _record(job_id):
+    """The stored `jobs.Job`, not the wire dict: `effective_tier` is DERIVED and
+    never serialised, so the only way to ask it is to hold the record."""
+    with jobs._lock:
+        return jobs._jobs[job_id]
+
+
+def test_a_removed_row_cannot_be_resurrected_by_a_late_tick(monkeypatch, tmp_path):
+    """Removal goes through the same `_forget` a dismiss does, so the id is
+    remembered: a straggling report from a beat that woke at the wrong moment
+    is answered without re-creating the record. A genuinely FRESH attempt on
+    the same per-version id still gets its row — an opening report states
+    `state: "running"` outright, which is the one thing that clears a
+    dismissal (`jobs.upsert`)."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert jobs.list_jobs() == []
+
+    # A late tick — no `state`, exactly what `_beat_installing` sends.
+    jobs.upsert({"id": "sys:update:9.9.9", "detail": mac.PHASE_INSTALLING},
+                page="/preferences", server=True)
+    assert jobs.list_jobs() == []
+
+    # A new attempt on the same id opens the row again.
+    jobs.upsert({"id": "sys:update:9.9.9", "title": "Update to v9.9.9",
+                 "state": "running"}, page="/preferences", server=True)
+    assert [row["id"] for row in jobs.list_jobs()] == ["sys:update:9.9.9"]
+
+
+def test_a_failed_install_is_as_loud_as_it_ever_was(monkeypatch, tmp_path):
+    """Silence is a property of SUCCESS only. The failure path never restates
+    the tier, so the row keeps the default `trail` it was created with — and
+    `effective_tier` promotes an errored row to `attention` regardless — so a
+    failed update still pops and still keeps its row."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+
+    def boom(manifest):
+        raise RuntimeError("no disk")
+
+    monkeypatch.setattr(manager, "_install_dmg", boom)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+
+    row = _row()
+    assert row["state"] == "error"
+    assert row["tier"] == jobs.TRAIL
+    assert jobs.effective_tier(_record(row["id"])) == jobs.ATTENTION
+
+
+def test_the_running_download_row_is_untouched_by_the_removal(monkeypatch, tmp_path):
+    """What disappears is only the line AFTER the last one. While the update
+    runs, the row that shows the bytes, the phase and the ✕ is exactly the
+    `trail` row it has always been — the removal happens once the swap is
+    done."""
+    import threading
+
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    gate = threading.Event()
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: gate.wait(5))
+    manager.install()
+    running = _row()
+    assert running["state"] == "running"
+    assert running["tier"] == jobs.TRAIL
+    assert running["cancellable"] is True
+    gate.set()
+    manager._install_thread.join(timeout=5)
+    assert jobs.list_jobs() == []
+
+
+# ---- auto-download setting ------------------------------------------------------
+
+
+def _auto_download(monkeypatch, enabled: bool):
+    import fused_render.shell.prefs as prefs_mod
+
+    monkeypatch.setattr(prefs_mod, "auto_download_updates_enabled", lambda: enabled)
+
+
+def test_auto_install_downloads_a_found_update_when_the_setting_is_on(monkeypatch):
+    _auto_download(monkeypatch, True)
+    manager = _manager(monkeypatch, available="9.9.9")
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.check()
+    manager.maybe_auto_install()
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.9"
+    assert manager.status()["state"] == "installed"
+
+
+def test_auto_install_does_nothing_when_the_setting_is_off(monkeypatch):
+    _auto_download(monkeypatch, False)
+    manager = _manager(monkeypatch, available="9.9.9")
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.check()
+    manager.maybe_auto_install()
+    assert not done
+    assert manager.status()["state"] == "available"
+
+
+def test_auto_install_never_retries_a_failed_install(monkeypatch):
+    # "error" is user-retry territory: an unattended loop re-downloading
+    # hundreds of MB every five minutes against a broken artifact would run away.
+    _auto_download(monkeypatch, True)
+    manager = _manager(monkeypatch, available="9.9.9")
+    calls = []
+
+    def boom(manifest):
+        calls.append(1)
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(manager, "_install_dmg", boom)
+    manager.check()
+    manager.maybe_auto_install()
+    manager._install_thread.join(timeout=5)
+    assert manager.status()["state"] == "error"
+    manager.maybe_auto_install()
+    assert calls == [1]

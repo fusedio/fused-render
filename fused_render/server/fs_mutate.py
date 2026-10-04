@@ -23,6 +23,7 @@ from fastapi.responses import (
 )
 
 from fused_render import calls as shell_calls
+from fused_render import tasks_watch
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.gitignore import _is_repo_root
 from fused_render.server.index_touch import note_index_mutation
@@ -994,7 +995,7 @@ def _record_app_removal(path: str) -> None:
         ap = os.path.abspath(path)
         if app_git.app_dir_for(ap) == ap:
             app_git.commit(ap, f"Delete app {os.path.basename(ap)}",
-                           only_shared=True)
+                           only_shared=True, action="Auto-push after app delete")
     except Exception:
         pass
 
@@ -1375,6 +1376,15 @@ def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
             else:
                 app_state_move.rewrite_stores(s0, d0)
                 claude_session_move.relocate(s0, d0)
+            # AND SAY SO (Akshil, 2026-09-21: "cut and paste a folder — do I
+            # get the chats instantly, or do I need to reload?"). The relocate
+            # rewrote transcripts on disk, but nothing the tasks watcher ticks
+            # on changed — no registry row, no live transcript — so the Tasks
+            # listing and every chat landing kept the old folder's rows until
+            # a reload. `notify_all`, not `notify()`: the `ensure` branch names
+            # no session ids, and a bump with no keys is one the client skips
+            # (it waited for the 20 s floor — "took 10–15 seconds").
+            tasks_watch.notify_all()
         except Exception:
             # The rename itself is done and must answer OK; the chats not
             # following is worth a line in the log, not a failed move.
@@ -1393,14 +1403,16 @@ def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
         dst_is_app = app_git.app_dir_for(d) == d
         if src_is_app and dst_is_app:
             msg = f"Rename app {os.path.basename(s)} to {os.path.basename(d)}"
-            app_git.commit(s, msg, only_shared=True)
-            app_git.commit(d, msg, only_shared=True)
+            app_git.commit(s, msg, only_shared=True,
+                           action="Auto-push after app rename")
+            app_git.commit(d, msg, only_shared=True,
+                           action="Auto-push after app rename")
         elif src_is_app:
             app_git.commit(s, f"Move app {os.path.basename(s)} away",
-                           only_shared=True)
+                           only_shared=True, action="Auto-push after app move")
         elif dst_is_app:
             app_git.commit(d, f"Restore app {os.path.basename(d)}",
-                           only_shared=True)
+                           only_shared=True, action="Auto-push after app restore")
     except Exception:
         pass
     return _stat_payload(dst, os.path.isdir(dst))
@@ -1517,10 +1529,13 @@ def _fs_copy(body: dict, x_fused: str | None):
 def _note_index_mutation(result, *paths: str | None) -> None:
     """Tell the file index which folders this app just changed.
 
-    The index has no filesystem watcher, so without this a rename made in the
-    explorer leaves search offering the old name until the next scheduled scan
-    — which the in-folder search used to route around by walking the folder
-    live instead (server/index_touch.py carries the reasoning).
+    The filesystem watcher (server/index_watch.py) is what catches a change
+    made outside this app; it cannot help here because a rename made THROUGH
+    this endpoint needs to stop lying about the old name before the request
+    returns, not whenever a watch event round-trips. Without this call the
+    explorer would offer the old name until the next scan — which the
+    in-folder search used to route around by walking the folder live instead
+    (server/index_touch.py carries the reasoning).
 
     ON SUCCESS ONLY, unlike the stat-cache invalidation above. That one is a
     no-op when nothing changed; this one schedules a real (small) rescan, and

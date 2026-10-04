@@ -1,0 +1,427 @@
+"""Publish a `.fused` app file to the user's Fused account as one public page.
+
+Run as ``[sys.executable, _fused_share_app.py]`` by share_app.py (same
+in-interpreter spawn pattern as _fused_canvases_list.py: the real fused SDK
+is importable here and never in the server process). One JSON request on
+stdin, one JSON answer on stdout; anything on stderr is the failure reason.
+
+What "share" means, mechanically (mirrors the fused-share sandbox app's
+file-UDF route, which this was lifted from):
+
+  1. the `.fused` file is uploaded to the user's own `fd://` folder, under a
+     prefix keyed on the app id and on the file's content hash — a new
+     export lands on a NEW path, so the viewer UDF's 30-minute per-path cache
+     never serves last week's README for this week's app;
+  2. that path is resolved to its real `s3://` URI by ASKING Fused (`files
+     list` prints absolute URIs) — never assembled here, because bucket,
+     team folder and handle all vary by account;
+  3. a one-node canvas named after the app id is created or adopted, and a
+     generated wrapper UDF is pushed into it:
+         @fused.udf(cache_max_age="0s")
+         def udf(): return fused.load("UDF_Fused_App_File")(path=<s3 uri>)
+     `Fused_App_File` is the community viewer the hosted workbench already
+     opens `.fused` files with — icon, README, file list, download link — so
+     the shared page is byte-for-byte what the workbench shows for the file;
+  4. the canvas is made public and shared; the link is
+     `<shared_udf_base_url>/<share_token>/<slug>.html` — the `.html` suffix is
+     what makes udf.ai serve the returned string as a page.
+
+Public only, by decision: there is no team/private mode here, so the share
+token is never rotated by a scope flip after the first publish and every
+link handed out keeps working across updates. The ONE case a token is
+re-issued: adopting a canvas that some other tool left non-public (a token
+keeps the scope it was issued under, so a public flip needs `new_token`).
+
+Canvas names allow `[A-Za-z0-9_]` only (the control plane rejects a hyphen),
+and an app id is `<kebab>-<8 hex>`, so the name is the id with `-` → `_`.
+"""
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import os
+import re
+import sys
+import zipfile
+
+import fused
+
+_env_name = os.environ.get("FUSED_ENV")
+if _env_name:
+    fused._env(_env_name)
+
+from fused._global_api import get_api
+from fused._options import options as OPTIONS
+
+REMOTE_SUBDIR = "fused-render/shared"
+# A file `list` right after an `upload` can lag behind the bytes; a few short
+# retries cover it without turning a real miss into a minute-long hang.
+LIST_RETRIES = 6
+LIST_RETRY_S = 1.5
+
+
+class ShareError(Exception):
+    pass
+
+
+def canvas_name(share_id: str) -> str:
+    return share_id.replace("-", "_")
+
+
+def udf_slug(share_id: str) -> str:
+    """The UDF name, and so the last path segment of the link.
+
+    Derived from the SHARE ID, never from the folder or file name: the link
+    is `…/<share_token>/<slug>.html`, and a slug that followed the source
+    name would change when it is renamed — and `import_collection_toml_zip`
+    replaces the canvas's UDF set, so every link already handed out would die
+    while the token stayed the same. An app's id is `<kebab name>-<8 hex>`,
+    so the slug still reads as the app's name; a file's is `<slug>_<h6>`, so
+    it still reads as the file's name.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", share_id).strip("_")[:60] or "app"
+    if slug[0].isdigit():
+        slug = "app_" + slug
+    return slug
+
+
+def _handle() -> str:
+    info = fused.api.whoami()
+    handle = info.get("handle") if isinstance(info, dict) else None
+    if not handle:
+        raise ShareError("Fused did not report your account handle, so there is no "
+                         "folder to upload into. Sign in again and retry.")
+    return handle
+
+
+def _sha10(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:10]
+
+
+def _remote_prefix(handle: str, share_id: str) -> str:
+    return f"fd://{handle}/{REMOTE_SUBDIR}/{share_id}/"
+
+
+def _resolve_remote(remote: str) -> str:
+    """`fd://…/x.fused` → the `s3://` URI Fused lists for it. The viewer hands
+    its `path` straight to fsspec, which does not know the `fd://` scheme."""
+    import time
+
+    prefix, _, base = remote.rpartition("/")
+    for attempt in range(LIST_RETRIES):
+        hits = [str(x) for x in (fused.api.list(prefix + "/") or [])
+                if str(x).rstrip("/").rpartition("/")[2] == base]
+        if hits:
+            return hits[0]
+        time.sleep(LIST_RETRY_S)
+    raise ShareError(f"Uploaded {base}, but Fused does not list it under {prefix}/ yet. "
+                     "Try sharing again.")
+
+
+def _wrapper_source(slug: str, s3_uri: str, name: str, viewer_token: str) -> str:
+    return (
+        f'"""Shared page for {name!r} — generated by fused-render, do not '
+        'hand-edit.\n\n'
+        f"Rendering is delegated to the Fused file UDF {viewer_token}, the same\n"
+        "viewer the workbench opens this file with. Regenerate by sharing again.\"\"\"\n\n"
+        f"_UDF = {json.dumps(viewer_token)}\n"
+        f"_PATH = {json.dumps(s3_uri)}\n\n\n"
+        '@fused.udf(cache_max_age="0s")\n'
+        "def udf():\n"
+        "    return fused.load(_UDF)(path=_PATH)\n"
+    )
+
+
+def _canvas_toml(name: str, slug: str, title: str) -> str:
+    return "\n".join([
+        'type = "canvas"',
+        "version = 2",
+        f"name = {json.dumps(name)}",
+        "",
+        "[canvas]",
+        "comments = []",
+        "edges = []",
+        "",
+        "[[canvas.nodes]]",
+        f"udfName = {json.dumps(slug)}",
+        "x = 0",
+        "y = 0",
+        "zIndex = 1",
+        "width = 900",
+        "height = 620",
+        f"title = {json.dumps(title)}",
+        'description = "Shared fused-render app"',
+        "visible = true",
+        "",
+        "[canvas.viewport]",
+        "x = 400",
+        "y = 300",
+        "zoom = 0.5",
+        "",
+    ])
+
+
+def _canvas_zip(name: str, slug: str, title: str, s3_uri: str, viewer_token: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("canvas.toml", _canvas_toml(name, slug, title))
+        zf.writestr(slug + ".py", _wrapper_source(slug, s3_uri, title, viewer_token))
+    return buf.getvalue()
+
+
+def _find_collection(api, name: str) -> dict | None:
+    try:
+        info = api.get_collection_by_name(name)
+    except Exception as exc:  # "not found" is data, not failure
+        if "not found" in str(exc).lower():
+            return None
+        raise
+    return info if isinstance(info, dict) and info.get("id") else None
+
+
+def _scope(value) -> str | None:
+    return getattr(value, "value", value)
+
+
+def _share_url(share_token: str, slug: str) -> str:
+    return f"{OPTIONS.shared_udf_base_url}/{share_token}/{slug}.html"
+
+
+def _workbench_url(handle: str, name: str) -> str:
+    return f"{OPTIONS.base_web_url}/workbench/{handle}/{name}"
+
+
+SESSION_MAX_AGE_S = 30 * 60  # 30 minutes — the plan's only non-public option
+
+
+def _mint_session(api, token: str) -> tuple[str, object]:
+    """`_session_token`, mirroring artifact-sharing.md §3/§4. A mint can fail
+    with "Session tokens are only supported for team-scoped tokens" when the
+    token predates a scope flip; `publish` below retries this once after a
+    fresh `new_token=True` re-share, the documented self-heal."""
+    session = api._session_token(token, session_max_age=SESSION_MAX_AGE_S)
+    return session.session_token, session.expires_at
+
+
+def publish(req: dict) -> dict:
+    """Upload (unless a caller already did — `s3_uri` handed in means the
+    canvas work only, bounded and safe under PUBLISH_TIMEOUT even for a file
+    whose transfer alone would have blown it) then push the wrapper canvas.
+
+    `mode` is `public` (the default) or `temporary`: `public` keeps the scope
+    `public` and never touches a session token; `temporary` sets the canvas
+    team-scoped and mints a 30-minute session token appended to the link
+    (artifact-sharing.md §1-§2). A scope change always re-issues the share
+    token — a token keeps the scope it was issued under, so a flip leaves
+    the old one unable to serve *or* to mint.
+    """
+    share_id, name = req["share_id"], req["name"]
+    viewer_token = req["viewer_token"]
+    mode = req.get("mode") or "public"
+    if mode not in ("public", "temporary"):
+        raise ShareError(f"unknown share mode {mode!r}")
+    target_scope = "team" if mode == "temporary" else "public"
+
+    api = get_api()
+    handle = _handle()
+    cname = canvas_name(share_id)
+    slug = udf_slug(share_id)
+
+    s3_uri = req.get("s3_uri")
+    remote = req.get("remote")
+    if not s3_uri:
+        local = req["file"]
+        if not os.path.isfile(local):
+            raise ShareError(f"no such file: {local}")
+        remote = f"{_remote_prefix(handle, share_id)}{_sha10(local)}/{os.path.basename(local)}"
+        fused.api.upload(local, remote)
+        s3_uri = _resolve_remote(remote)
+
+    existing = _find_collection(api, cname)
+    if existing:
+        collection_id = existing["id"]
+        current_scope = _scope(existing.get("access_scope"))
+    else:
+        created = api.create_collection(name=cname, access_scope=target_scope)
+        collection_id = created.id
+        current_scope = _scope(created.access_scope)
+
+    api.import_collection_toml_zip(collection_id, _canvas_zip(cname, slug, name, s3_uri, viewer_token))
+
+    if current_scope != target_scope:
+        # The real name is required by update_collection; passing anything
+        # else would rename the canvas. A token keeps the scope it was
+        # issued under, so the flip needs a fresh one.
+        api.update_collection(collection_id, name=cname, access_scope=target_scope)
+        shared = api.share_collection(collection_id, new_token=True)
+    else:
+        shared = api.share_collection(collection_id)
+    token = shared.share_token
+    if not token:
+        raise ShareError("Fused shared the canvas but returned no share token.")
+
+    url = _share_url(token, slug)
+    session_token = session_expires = None
+    if mode == "temporary":
+        try:
+            session_token, session_expires = _mint_session(api, token)
+        except Exception as exc:
+            if "team-scoped" in str(exc).lower():
+                # Self-heal once (artifact-sharing.md §3): re-share for a
+                # fresh token and mint again.
+                shared = api.share_collection(collection_id, new_token=True)
+                token = shared.share_token
+                if not token:
+                    raise ShareError("Fused shared the canvas but returned no share token.")
+                url = _share_url(token, slug)
+                session_token, session_expires = _mint_session(api, token)
+            else:
+                raise
+        url = f"{url}?fused_session_token={session_token}"
+
+    previous = req.get("previous_remote")
+    if previous and previous != remote:
+        try:
+            fused.api.delete(previous)
+        except Exception as exc:  # noqa: BLE001 — a leftover copy is not a failed share
+            print(f"could not delete the previous upload {previous}: {exc}", file=sys.stderr)
+
+    return {
+        "url": url,
+        "canvas_id": collection_id,
+        "canvas_name": cname,
+        "share_token": token,
+        "slug": slug,
+        "remote": remote,
+        "handle": handle,
+        "workbench_url": _workbench_url(handle, cname),
+        "mode": mode,
+        "session_token": session_token,
+        "session_expires": session_expires,
+    }
+
+
+def lookup(req: dict) -> dict:
+    """Whether a canvas for this app id already exists on the account (shared
+    from another machine, or before the local record was lost)."""
+    api = get_api()
+    cname = canvas_name(req["share_id"])
+    info = _find_collection(api, cname)
+    if not info:
+        return {"found": False}
+    token = info.get("share_token")
+    slug = udf_slug(req["share_id"])
+    out = {
+        "found": True,
+        "canvas_id": info["id"],
+        "canvas_name": cname,
+        "share_token": token,
+        "access_scope": _scope(info.get("access_scope")),
+        "slug": slug,
+    }
+    if token and _scope(info.get("access_scope")) == "public":
+        out["url"] = _share_url(token, slug)
+    try:
+        out["workbench_url"] = _workbench_url(_handle(), cname)
+    except ShareError:
+        pass
+    return out
+
+
+def remove(req: dict) -> dict:
+    """Delete the canvas (every link dies) and the uploaded copies."""
+    api = get_api()
+    cname = canvas_name(req["share_id"])
+    canvas_id = req.get("canvas_id")
+    if not canvas_id:
+        info = _find_collection(api, cname)
+        canvas_id = info["id"] if info else None
+    deleted_canvas = False
+    if canvas_id:
+        try:
+            api.delete_collection(canvas_id)
+            deleted_canvas = True
+        except Exception as exc:
+            if "not found" not in str(exc).lower():
+                raise
+    try:
+        fused.api.delete(_remote_prefix(_handle(), req["share_id"]), max_deletion_depth="unlimited")
+    except Exception as exc:  # noqa: BLE001 — a leftover copy must not block cleanup
+        print(f"could not delete the uploaded copies: {exc}", file=sys.stderr)
+    return {"ok": True, "deleted_canvas": deleted_canvas}
+
+
+def upload(req: dict) -> dict:
+    """Just the transfer + resolve half of `publish` (§4.1's detached
+    upload): `share_file.py` spawns this action so a large file's transfer
+    runs unbounded, outside any request timeout, and `publish` above can stay
+    bounded by handing it the `remote`/`s3_uri` this returns."""
+    share_id, local = req["share_id"], req["file"]
+    if not os.path.isfile(local):
+        raise ShareError(f"no such file: {local}")
+    handle = _handle()
+    remote = f"{_remote_prefix(handle, share_id)}{_sha10(local)}/{os.path.basename(local)}"
+    fused.api.upload(local, remote)
+    s3_uri = _resolve_remote(remote)
+    return {"remote": remote, "s3_uri": s3_uri}
+
+
+def rules(req: dict) -> dict:
+    """The file-preview rule table (share_file_rules.py), rebuilt from the
+    catalog when the cache is missing or older than `ttl`. Runs here, not in
+    the server process, because building it needs the SDK."""
+    from fused_render import share_file_rules
+
+    ttl = req.get("ttl")
+    if ttl is None:
+        ttl = share_file_rules.RULES_TTL_INTERACTIVE
+    return {"rules": share_file_rules.load_rules(ttl=float(ttl))}
+
+
+ACTIONS = {"publish": publish, "lookup": lookup, "remove": remove, "rules": rules,
+           "upload": upload}
+
+
+def main() -> int:
+    try:
+        # A detached upload (share_file.py's start_upload) has no live stdin
+        # to write to once it is spawned under `sh -c … &`; the request is a
+        # file on disk instead, named as the one CLI argument.
+        if len(sys.argv) > 1:
+            with open(sys.argv[1], encoding="utf-8") as f:
+                req = json.load(f)
+        else:
+            req = json.load(sys.stdin)
+        action = ACTIONS.get(req.get("action") or "")
+        if action is None:
+            raise ShareError(f"unknown action {req.get('action')!r}")
+        out = action(req)
+    except ShareError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — the parent reads stderr as the reason
+        msg = str(exc)
+        low = msg.lower()
+        if "401" in low or "unauthorized" in low or "not authenticated" in low:
+            msg = "Fused refused the request as not signed in. Sign in to Fused and retry."
+        print(f"{type(exc).__name__}: {msg}"[-2000:], file=sys.stderr)
+        return 1
+    # `default=str`: the SDK's own `.expires_at` type is not pinned (see
+    # `_mint_session` above and share_file.py's `_parse_expiry`), so a
+    # `datetime` here must not raise AFTER import_collection_toml_zip, the
+    # scope flip and share_collection have already run against the real
+    # account — that would exit 1 with no stdout, no stored record, and an
+    # orphaned canvas/token the caller can never find again (code review
+    # finding 2). Any other odd-but-real type (Decimal, UUID, …) degrades to
+    # its str() the same way rather than losing the whole successful result.
+    json.dump(out, sys.stdout, default=str)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

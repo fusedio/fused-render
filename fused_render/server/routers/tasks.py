@@ -110,7 +110,6 @@ wider object) — the same weight of change as `POST /api/claude-sessions/triage
 next door, which carries no guard either: it moves a badge, it does not run
 code.
 """
-import glob
 import json
 import logging
 import os
@@ -118,14 +117,28 @@ import re
 import shutil
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
+from urllib.parse import unquote, urlencode
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, Header, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import (current_apps, drafts, schedule, tasks_store,
-                          tasks_watch)
+from fused_render import (
+    app_listing,
+    current_apps,
+    drafts,
+    project_queue,
+    queue_manager,
+    schedule,
+    session_liveness,
+    tasks_store,
+    tasks_watch,
+)
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers import claude_sessions as sessions
+from fused_render.server.routers import schedule as schedule_api
 from fused_render.shell import prefs as shell_prefs
 
 router = APIRouter()
@@ -157,8 +170,22 @@ logger = logging.getLogger(__name__)
 # status rather than a flag for the same reason `blocked` is — a view that has
 # to remember to read a flag is a view that will one day not, and this is the
 # fact the whole feature exists to carry.
-STATUSES = ("upcoming", "in_progress", "needs_attention", "blocked", "done",
-            "archived")
+#
+# `queued` is a STATUS and not a flag beside `upcoming`, for the reason `blocked`
+# gives and one more of its own. The reason it shares: a lane the reader has to
+# assemble from a boolean is a lane some view will one day forget to assemble,
+# and this one has three surfaces (List chip, Board lane, chat bubble) that must
+# agree about one task. The reason that is its own: a queued task is NOT upcoming
+# — its message is due, it would be running this second, and the only thing
+# between it and a process is another task holding the same folder
+# (`project_queue`). "Upcoming" is a promise about the clock; this is a fact
+# about the machine, and merging them would put work that is late into a lane
+# the reader scans for work that is early. It sits between `upcoming` and
+# `in_progress` because that is where it sits in time: asked for, not yet
+# running. It only ever appears with the project queue flag on
+# (`project_queue.enabled`); with the flag off nothing derives it.
+STATUSES = ("upcoming", "queued", "in_progress", "needs_attention", "blocked",
+            "done", "archived")
 
 # There was a `LIVE_STATUSES` here, read by a swap that hid a session's row
 # behind the task draft bound to it and narrowed to the settled statuses so a
@@ -168,7 +195,7 @@ STATUSES = ("upcoming", "in_progress", "needs_attention", "blocked", "done",
 
 # What `blocked_reason` may say. "" is the answer for every task that is neither
 # blocked nor waiting on anybody — most of them.
-BLOCKED_REASONS = ("permission", "question", "failed", "")
+BLOCKED_REASONS = ("permission", "question", "failed", "usage_limit", "")
 
 # The ONE triage word this router still reads. `archived` is a FILING state —
 # the user put the task away — and filing is the only decision about a task that
@@ -253,7 +280,14 @@ def _prompt(obj) -> dict | None:
     they are different questions: is the record machinery WHOLE, and if not, what
     is left once the prefixes come off.
     """
-    if obj.get("type") != "user" or obj.get("isMeta"):
+    # `isSidechain` is a subagent's brief, which the user never typed — skipped
+    # by every other reader of a transcript's prompts (tasks_store.head,
+    # claude_sessions, agent.py) and, until 2026-09-15, not by this one.
+    if (obj.get("type") != "user" or obj.get("isMeta")
+            or obj.get("isSidechain") or obj.get("isCompactSummary")):
+        # `isCompactSummary` is /compact's own recap ("This session is being
+        # continued from a previous conversation…"), written as a user row
+        # the user never typed; it titled the row (Akshil, 2026-09-23).
         return None
     message = obj.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -261,11 +295,27 @@ def _prompt(obj) -> dict | None:
     text = tasks_store.first_text(message.get("content")).strip()
     if not text or tasks_store.is_machinery(text):
         return None
+    # The CLI's stop marker is a user row too, and not one the reader typed.
+    # Refused here so it is neither a message, a count, nor — with
+    # the row's hover caption (Akshil, 2026-09-19).
+    if tasks_store.is_interrupt_mark(text):
+        return None
     # The remainder can still be empty — annotations or a screenshot sent with no
-    # typed words. That IS something the user did, and the chat page labels it
-    # with a marker, but a listing row has no body to show for it and an empty
-    # bubble in a thread is worse than none.
-    body = tasks_store.strip_machinery(text)
+    # typed words. That IS something the user did, and until 2026-09-18 this
+    # dropped it, which is worse than an empty bubble by a long way: `_status`
+    # derives the status FROM the messages, so a chat whose every send was
+    # wordless (annotate the app, hit send, type nothing — both real sends in
+    # one reported session) had no messages to derive from, vanished from this
+    # page entirely, and read `done` in the chat list while its turn ran. The
+    # chat list disagreed because it is a different reader that already took the
+    # second step below; nothing took the third.
+    #
+    # `user_words` is the whole answer and it is spelled once, in `tasks_store`:
+    # the typed words, else the notes the user wrote on their pins, else the
+    # chat's own name for what the send carried ("pane screenshot"). "" now
+    # means a record that carried nothing a reader could name at all, which is
+    # still not a message.
+    body = tasks_store.user_words(text)
     if not body:
         return None
     anchor = obj.get("uuid")
@@ -306,9 +356,23 @@ def _command(obj) -> str:
 # hint because Claude Code writes compact JSON while a hand-written fixture
 # writes `json.dumps` defaults; the alternative is de-spacing every line.
 _API_ERROR_HINTS = ('"isApiErrorMessage":true', '"isApiErrorMessage": true')
+# …and the one API failure that is not a failure. Claude Code writes the plan's
+# usage limit into the transcript as an ordinary `isApiErrorMessage` row whose
+# text is the CLI's own sentence ("Claude usage limit reached", "You've hit your
+# session limit · resets 7:20pm"), so it arrives here indistinguishable from a
+# 500 — and the chat, meanwhile, has SCHEDULED a continuation for the moment the
+# window reopens (PR #1107). Nothing is broken and there is nothing to retry:
+# the run is waiting on a clock. Matched by substring on the same screened line,
+# lowercased, for the same reason every other hint here is — see `_reply_fate`.
+_LIMIT_HINTS = ("usage limit", "session limit")
 _ASSISTANT_HINTS = ('"type":"assistant"', '"type": "assistant"')
 _TEXT_HINTS = ('"type":"text"', '"type": "text"')
 _USER_HINTS = ('"type":"user"', '"type": "user"')
+# A subagent's rows — its brief AND its replies — ride the same transcript
+# with `isSidechain: true`. `_prompt` refuses the brief; this screen refuses
+# the reply, so a subagent's API error is never pinned on the user's own
+# prompt.
+_SIDECHAIN_HINTS = ('"isSidechain":true', '"isSidechain": true')
 
 
 def _reply_fate(line: str) -> bool | None:
@@ -335,6 +399,8 @@ def _reply_fate(line: str) -> bool | None:
     """
     if any(hint in line for hint in _USER_HINTS):
         return None
+    if any(hint in line for hint in _SIDECHAIN_HINTS):
+        return None  # a subagent's reply: not this conversation's turn
     if any(hint in line for hint in _API_ERROR_HINTS):
         return True  # checked first: an error row is a text row as well
     if (any(hint in line for hint in _ASSISTANT_HINTS)
@@ -343,14 +409,29 @@ def _reply_fate(line: str) -> bool | None:
     return None
 
 
-def _mark_fate(prompts: list[dict], fate: bool) -> None:
+def _limit_hit(line: str) -> bool:
+    """Is this API-error line the plan's usage limit rather than a break?
+
+    Asked only of a line `_reply_fate` has already called an error, so the test
+    is just which KIND. See `_LIMIT_HINTS` for why it is a substring."""
+    text = line.lower()
+    return any(hint in text for hint in _LIMIT_HINTS)
+
+
+def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
     """Record an assistant reply's fate on the newest prompt seen SO FAR — the
     prompt it is a reply to. The mark lives on the prompt dict, which is where
     both read paths keep their state (`_SCAN`'s `tail`, `_FULL`'s list), so a
     scan that resumes from its saved offset carries the mark across polls
-    instead of re-deriving it from bytes it will never read again."""
+    instead of re-deriving it from bytes it will never read again.
+
+    `limit` rides beside `failed` and is cleared by the same ordinary reply
+    that clears it: a turn the usage limit ended and a turn the network ended
+    are both failures, and only the first is one the user can do nothing about
+    but wait. See `_LIMIT_HINTS` and the row's `blocked_reason`."""
     if prompts:
         prompts[-1]["failed"] = fate
+        prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
 
 
 def _absorb(rec: dict, line: str) -> None:
@@ -362,22 +443,12 @@ def _absorb(rec: dict, line: str) -> None:
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
     fate = _reply_fate(line)
     if fate is not None:
-        _mark_fate(rec["tail"], fate)
-        # ...and an ORDINARY reply is also the newest thing Claude has said, so
-        # the line is KEPT — as the raw string, still unparsed. That is the
-        # whole of how `last_message` stays on the cheap side of the screen
-        # above: the candidate is overwritten by every later reply and only the
-        # survivor is ever handed to `json.loads` (`_condense_reply`), so a
-        # transcript of a thousand assistant turns costs one parse, not a
-        # thousand. An API-error row (`fate is True`) is not kept: its text is
-        # the failure report, which the row already says in `blocked_reason`.
-        #
-        # The raw line lives no longer than the scan that read it — `_scan`
-        # condenses it to the one-line row before returning, and nothing that
-        # wide is ever parked in `_SCAN` between polls. See `_condense_reply`.
+        _mark_fate(rec["tail"], fate, line)
+        # An ordinary reply is also the newest thing Claude has said: keep the
+        # RAW line (one parse per scan, in `_condense_reply`), never an
+        # API-error row. The List row prints its first line after the title.
         if fate is False:
             rec["reply_line"] = line
-            rec["reply_last"] = True
         return
     if '"user"' not in line and sessions.AI_TITLE_HINT not in line:
         return
@@ -393,6 +464,26 @@ def _absorb(rec: dict, line: str) -> None:
         # tracks the conversation. See claude_sessions.ai_title.
         rec["title"] = title
         return
+    stopped_at = _interrupt_at(obj)
+    if stopped_at is not None:
+        # The reader hit stop: the row says so where the reply would go, and
+        # says ONLY so — whatever Claude got out before the stop is not the
+        # answer (Akshil, 2026-09-23: "always Interrupted by you, even though
+        # we have first line of the response"). Clears the raw line still
+        # waiting on `_condense_reply`, or that reply would win the scan.
+        # Same age rule as that condense (Bugbot, PR #1317): a marker a
+        # compaction replays after a LATER turn's reply is older than what
+        # the record holds and leaves it alone. The reply it must not beat
+        # may still be the raw line waiting for the end-of-scan condense, so
+        # it is condensed here first — one extra parse on a stop, no more.
+        _condense_reply(rec)
+        held_at = float(rec.get("reply_at") or 0.0)
+        if stopped_at and held_at and stopped_at < held_at:
+            return
+        rec["reply_line"] = ""
+        rec["reply"] = _INTERRUPTED_REPLY
+        rec["reply_at"] = stopped_at
+        return
     prompt = _prompt(obj)
     if prompt is None:
         # Not a message — but a slash-command envelope is still worth ONE fact,
@@ -402,26 +493,76 @@ def _absorb(rec: dict, line: str) -> None:
             rec["command"] = _command(obj)
         return
     prompt["body"] = prompt["body"][:_BODY_MAX]
-    # A prompt read AFTER the kept reply is the later turn, whatever the two
-    # timestamps say — the file is append-only. `_last_message` leans on this
-    # for the tie it cannot break from timestamps alone.
-    rec["reply_last"] = False
     rec["count"] += 1
     rec["tail"].append(prompt)
     if len(rec["tail"]) > _LISTING_MESSAGES:
         rec["tail"].pop(0)
 
 
+#: What a stopped turn prints where a reply would go. Same words as the chat's
+#: own status line for the marker (Turn.tsx `is-interrupt`).
+_INTERRUPTED_REPLY = "Interrupted by you"
+
+
+def _interrupt_at(obj: dict) -> float | None:
+    """When the reader hit stop, if this user record is the CLI's marker for
+    it (`tasks_store.is_interrupt_mark`), else None. A sidechain's marker is a
+    subagent's, not this conversation's."""
+    if obj.get("type") != "user" or obj.get("isSidechain"):
+        return None
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return None
+    if not tasks_store.is_interrupt_mark(tasks_store.first_text(message.get("content"))):
+        return None
+    return tasks_store.epoch(obj.get("timestamp")) or 0.0
+
+
 def _new_scan() -> dict:
     # Every reader of `command` uses `.get`, so a record built before this key
     # existed — one already in `_SCAN` when the module is hot-reloaded under the
-    # dev server — degrades to "no command" instead of raising.
-    # `reply_line`/`reply`/`reply_last` are read with `.get` for the same
-    # reason — a record built before they existed degrades to "nothing said
-    # yet" (and, for `reply_last`, to the stricter timestamp rule) rather than
-    # raising under the dev server's hot reload.
+    # dev server — degrades to "no command" instead of raising. A record from
+    # before the assistant reply was dropped from this scan may still carry its
+    # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": "", "reply_line": "", "reply": None, "reply_last": False}
+            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0}
+
+
+def _condense_reply(rec: dict) -> None:
+    """Boil the kept assistant line down to its first non-empty text line and
+    drop the raw bytes. One `json.loads` per scan that read new bytes."""
+    line = rec.get("reply_line") or ""
+    if not line:
+        return
+    rec["reply_line"] = ""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+        return
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return
+    # Own cap, wider than `_LAST_MESSAGE_MAX`: this line fills the row's whole
+    # free width on a wide screen, so 200 characters would ellipsise early.
+    # WHEN it was said, so the row can tell a reply to THIS turn from one left
+    # over from the last (`_last_reply`). 0.0 for a record without a stamp,
+    # which the row reads as "cannot tell — show it".
+    said_at = tasks_store.epoch(obj.get("timestamp")) or 0.0
+    # An OLDER row never beats the reply already held: a compaction replays
+    # earlier rows after later ones (`_ORDER_SLACK`), and the one this guards
+    # is the stop marker — a replayed pre-stop reply must not put Claude's
+    # words back where "Interrupted by you" stands.
+    held_at = float(rec.get("reply_at") or 0.0)
+    if said_at and held_at and said_at < held_at:
+        return
+    for raw in str(tasks_store.first_text(message.get("content")) or "").splitlines():
+        text = raw.strip()
+        if text:
+            rec["reply"] = text[:600]
+            rec["reply_at"] = said_at
+            return
 
 
 def _scan(path: str) -> dict | None:
@@ -478,112 +619,124 @@ def _one_line(text: str) -> str:
     return ""
 
 
-def _reply_said(line: str) -> dict | None:
-    """One kept assistant line as `{role, text, at}`, or None when there is
-    nothing a row could show for it.
+# The message states that mean the words actually REACHED a session — a chat
+# prompt read off the transcript, a send still on its way there, a scheduled
+# occurrence that fired (`error` is one that fired and whose turn then died).
+# Everything else — pending, missed, cancelled, skipped — is a message the user
+# has not sent yet or never did, and `_last_message` refuses it.
+_SAID_STATES = (schedule.SENT, schedule.SENDING, "error")
 
-    The ONLY `json.loads` this feature adds, and it runs at most once per scan
-    (see `_condense_reply`). A row with no text block — a turn that was pure
-    tool_use — is None: the substring screen lets one through whenever the LINE
-    holds a text hint anywhere, and "Claude ran a tool" is not something Claude
-    said.
+
+# A slash command as the reader TYPES it — "/compact", "/clear", "/model haiku",
+# "/making-a-release" — before the CLI has turned it into its envelope. One
+# leading slash, a word, optional arguments; a path ("/Users/…") has a second
+# slash and is not one. Kept in step with what `tasks_store.slash_command`
+# reads back out of the envelope.
+_TYPED_SLASH = re.compile(r"^/[A-Za-z][\w-]*(?::[\w-]+)?(?:\s|$)")
+
+
+def _typed_slash_command(text) -> bool:
+    return bool(_TYPED_SLASH.match(str(text or "").strip()))
+
+
+def _last_message(messages: list[dict], queued: bool = False,
+                  now: float = 0.0) -> dict | None:
+    """THE NEWEST MESSAGE THE USER SENT IN THIS TASK — `{role, text, at}` with
+    `role` always `"user"` — or None for a task nobody has said anything in yet.
+
+    A QUEUED MESSAGE COUNTS AS SENT (Akshil, 2026-09-21: "give the name to be
+    the name of the queued task"). While a folder's run keeps a message in the
+    line, that message is still `pending` on disk, so the row kept the PREVIOUS
+    send as its title and read as the old task with a dashed ring. The reader's
+    model is the other way round — a queued task is simply an in-progress one
+    that will take longer — so with `queued` set, a pending entry whose time
+    has come (`queue_at` <= `now`) is a candidate too. One that has NOT come is not:
+    a message scheduled for tomorrow into the same conversation is newer than
+    the queued one and is not what is waiting to run.
+
+    Read off the MERGED thread (`_merge` + `_fold_sent_mark`), the same list
+    the row's `messages` are cut from, so the two can never disagree: the send
+    that has not reached disk yet titles the row in the same poll it appears as
+    `messages[0]`, and a scheduled occurrence that fired titles it too. One
+    that has NOT fired does not (`_SAID_STATES`): it is the newest message in
+    the thread, but it is not one the user has sent.
+
+    Claude's replies are deliberately not candidates: a card titled by the
+    reader's own words says what the task IS ("run the migration"), where a
+    card titled by the answer said what Claude had just done about it — a title
+    that changed under the reader with every turn and read as a wall of status
+    lines rather than a wall of tasks (Akshil, 2026-09-19). The row's
+    `blocked_reason` already carries the one reply a listing cares about.
+
+    `role` stays on the shape so a client that predates this rule keeps
+    reading the field the same way; it is simply never `"assistant"` now.
     """
-    try:
-        obj = json.loads(line)
-    except ValueError:
-        return None  # truncated line: the next scan re-reads it whole
-    if not isinstance(obj, dict) or obj.get("type") != "assistant":
-        return None
-    message = obj.get("message")
-    if not isinstance(message, dict):
-        return None
-    text = _one_line(tasks_store.first_text(message.get("content")))
-    if not text:
-        return None
-    return {"role": "assistant", "text": text,
-            "at": tasks_store.epoch(obj.get("timestamp")) or 0.0}
-
-
-def _condense_reply(rec: dict) -> None:
-    """Boil the kept assistant line down to the one-line `{role, text, at}` the
-    row is emitted as, and drop the raw bytes. Called once per scan that read
-    new bytes, from `_scan`.
-
-    ONE `json.loads` PER SCAN, not one per assistant turn — the promise
-    `_absorb` makes — and now also one per scan rather than one per emitted
-    row, which is what keeps `_SCAN` small: the raw line is a whole transcript
-    record wide (a turn with a big tool payload is kilobytes), and parked on
-    the record it stayed that wide for the life of the process for every
-    transcript whose `last_message` nobody ever asked for — a listing narrowed
-    past the task, or the `task_card_last_message` pref simply off. Condensed
-    here it is a few hundred bytes per transcript, bounded by
-    `_LAST_MESSAGE_MAX`, whoever reads it. Parsing back in `_absorb` would
-    bound it too and cost a parse per assistant turn instead of per scan, which
-    is the cost this screen exists to avoid.
-
-    A line that would not parse leaves the previous answer standing rather than
-    blanking the row: the scan's offset only ever advances to a newline, so the
-    line comes back whole on the next call.
-
-    So does a turn that said NOTHING — a pure tool_use row that passed the
-    substring screen — and deliberately: "Claude ran a tool" does not un-say
-    the words before it, so the newest thing said is still the reply it stands
-    on, and blanking that would hand the row back to a prompt Claude has
-    already answered. What keeps THAT honest is `reply_last`: a line with no
-    words in it is not the newest thing said, so the standing reply stops
-    winning ties it can no longer claim (`_last_message`), and a prompt read
-    after it wins outright. (One reply per scan is all the candidate slot
-    holds, so a wordless turn that arrives in the SAME scan as the reply before
-    it does take that reply's place — the row falls back to the prompt for a
-    poll. That is the screen's standing trade: one parse, the survivor's.)
-    """
-    line = rec.get("reply_line") or ""
-    if not line:
-        return
-    rec["reply_line"] = ""
-    said = _reply_said(line)
-    if said is not None:
-        rec["reply"] = said
-    else:
-        rec["reply_last"] = False
-
-
-def _last_message(rec: dict | None) -> dict | None:
-    """THE NEWEST THING SAID IN THIS CONVERSATION — `{role, text, at}` — or
-    None for a task nobody has said anything in yet.
-
-    Both halves come from the incremental scan and neither is a second read:
-    the newest prompt is the last of the three the row already carries, and the
-    reply is the line `_absorb` kept. Whichever is newer wins, which is the
-    whole claim the field makes — a card titled by it is showing the last turn
-    of the conversation, whoever took it.
-
-    `>=` and not `>`, so a reply with no usable timestamp (0.0, beside a prompt
-    with the same) still beats the prompt it answers: a transcript is
-    append-only, so the later line is the later turn. But that is a claim about
-    the LINE, so it holds only while the reply is still the newest one that
-    said anything — `reply_last`, set by the scan that kept it and cleared by
-    the next prompt or by a turn with no words in it. Once it is gone the tie
-    goes the other way, which is the correct reading: the prompt is the newer
-    turn and the reply is the answer to an older one. A record from before the
-    key existed reads as False and takes the stricter test, which loses nothing
-    a timestamp can settle.
-    """
-    if rec is None:
-        return None
-    said = None
-    tail = rec.get("tail") or []
-    if tail:
-        text = _one_line(tail[-1].get("body"))
+    for message in reversed(messages):
+        state = str(message.get("state") or "")
+        if state not in _SAID_STATES and not (
+                queued and state == schedule.PENDING
+                and float(message.get("queue_at") or message.get("at") or 0.0)
+                <= now):
+            continue
+        text = _one_line(message.get("body"))
+        # A typed "/compact" is not what the task is about. On disk the CLI
+        # files it as an envelope and `_prompt` drops it; the LIVE send mark
+        # carries the raw words, and for the seconds the command ran the row
+        # was titled "/compact" (Akshil, 2026-09-24, screenshot).
+        if text and _typed_slash_command(text):
+            continue
         if text:
-            said = {"role": "user", "text": text, "at": tail[-1].get("at") or 0.0}
-    reply = rec.get("reply")
-    if reply is not None and (
-            said is None
-            or (reply["at"] >= said["at"] if rec.get("reply_last")
-                else reply["at"] > said["at"])):
-        said = reply
-    return said
+            # WHEN IT WAS SAID, not when it was asked for: a scheduled message's
+            # `at` is its calendar due time and never moves, so a Run-now on a
+            # later-dated message would carry a stamp still in the future and
+            # `_last_reply` would hide Claude's answer until that day came
+            # (Bugbot, PR #1295). `ran_at` is when it actually reached the
+            # session; a queued one has not yet, and `queue_at` is when it
+            # joined the line. A chat prompt has neither and keeps `at`.
+            at = (float(message.get("ran_at") or 0.0)
+                  or float(message.get("queue_at") or 0.0)
+                  or float(message.get("at") or 0.0))
+            return {"role": "user", "text": text, "at": at}
+    return None
+
+
+#: What a queued row prints where a reply would go. The status word, said once
+#: more in the reply's slot (Akshil, 2026-09-21: "Queued") — the reader asked
+#: for the row to stop quoting the previous turn's answer under a new task.
+_QUEUED_REPLY = "Queued"
+
+
+def _last_reply(rec: dict | None, status: str, said: dict | None) -> str:
+    """The first line of Claude's newest reply, or what stands in for it.
+
+    THE REPLY BELONGS TO A TURN (Akshil, 2026-09-21: "when the task starts, it
+    is a new task but the response is from the older task"). A row titled by
+    the reader's newest message used to print, after it, the answer to the
+    message BEFORE — the transcript's last assistant line, which a new send
+    does not erase. So:
+
+    * a `queued` row says `Queued` — its message has not been answered and
+      the old answer is not about it;
+    * any other row prints the reply only if it is NEWER than the message the
+      row is titled by. Blank until Claude answers this turn, on every status,
+      not only the one after a queue promotion: a running chat's second send
+      has exactly the same stale answer under it.
+
+    A reply with no stamp (a scan record from before `reply_at`, hot-reloaded)
+    is shown: "cannot tell" must not read as "hidden".
+    """
+    if status == "queued":
+        return _QUEUED_REPLY
+    if rec is None:
+        return ""
+    reply = str(rec.get("reply") or "")
+    if not reply or said is None:
+        return reply
+    reply_at = float(rec.get("reply_at") or 0.0)
+    said_at = float(said.get("at") or 0.0)
+    if reply_at and said_at and reply_at < said_at:
+        return ""
+    return reply
 
 
 def _full_prompts(path: str) -> list[dict]:
@@ -606,7 +759,7 @@ def _full_prompts(path: str) -> list[dict]:
                 # it opens contradict each other.
                 fate = _reply_fate(line)
                 if fate is not None:
-                    _mark_fate(prompts, fate)
+                    _mark_fate(prompts, fate, line)
                     continue
                 if '"user"' not in line:
                     continue
@@ -654,6 +807,31 @@ def _entry_at(entry: dict) -> float:
     """
     return (tasks_store.epoch(entry.get("due"))
             or tasks_store.epoch(entry.get("fired")) or 0.0)
+
+
+def _queue_at(entry: dict) -> float:
+    """**When the message joined the LINE** — its due time, or the moment Run
+    now was pressed on it if that came first.
+
+    The counterpart of `_entry_at`, and split from it for the reason that
+    function exists at all: the two questions are different facts about one
+    entry. `_entry_at` is what was ASKED FOR — it places the chip on the
+    calendar and must never move, which is why `run_now` does not rewrite `due`.
+    This is what is WAITING TO GO, and Run now on a message due next Tuesday, in
+    a folder somebody else is holding, really is waiting to go (browser QA,
+    2026-09-12: the row fell back to `upcoming` the moment the optimistic paint
+    cleared, and the scheduler would not have sent it until Tuesday).
+
+    Everything that reads "due ≤ now" for a QUEUE purpose reads this;
+    everything that draws a time reads `_entry_at`. `schedule._queue_due` is the
+    same rule on the scheduler's side, and a line listed here in one order and
+    sent there in another is worse than no line at all.
+    """
+    due = _entry_at(entry)
+    asked = tasks_store.epoch(entry.get("run_now_at"))
+    if not asked:
+        return due
+    return min(due, asked) if due else asked
 
 
 def _entry_ran_at(entry: dict) -> float:
@@ -732,7 +910,16 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         # was asked for; `ran_at` is what happened. See `_entry_at`.
         "at": at,
         "ran_at": ran_at,
+        # When it joined the folder's LINE — `at`, or the Run-now press if that
+        # came first (`_queue_at`). `_last_message` reads this, not `at`, to
+        # tell a queued message from one scheduled for later: a Run-now on
+        # tomorrow's message is in the line today.
+        "queue_at": _queue_at(entry),
         "state": _entry_state(entry),
+        # One shape for both kinds. A scheduled run's verdict comes from the
+        # watcher and not from the transcript, so nothing sets this on that
+        # road; the field is here so no reader has to branch on `kind` to ask.
+        "limited": False,
         # When the turn's verdict LANDED — 0.0 until it has (and for entries a
         # pre-stamp version of the store wrote). `ran_at` is when the run
         # started; this is when it was pronounced over, which is the moment
@@ -779,8 +966,105 @@ def _chat_message(prompt: dict) -> dict:
         # Wi-Fi sat in the Done lane looking answered. `state` stays `sent` —
         # the message really was delivered, and the verdict is what changes.
         "turn": "error" if prompt.get("failed") else "done",
+        # …AND WHETHER THAT FAILURE WAS THE PLAN'S USAGE LIMIT, which is a
+        # different thing to a reader and to the row: nothing is broken, there
+        # is nothing to retry, and the chat has already scheduled the
+        # continuation for the moment the window reopens (PR #1107). The row
+        # turns it into `blocked_reason: "usage_limit"` and `resumes_at`; the
+        # verdict itself stays `error`, because the turn really did not finish.
+        "limited": bool(prompt.get("limit")),
         "anchor": prompt["anchor"],
     }
+
+
+# How far back of the merged thread a live send looks for ITSELF before deciding
+# it is not there yet. The transcript's own clock and this process's clock are
+# the same machine's, but a prompt is stamped by Claude Code when it WRITES the
+# record and the mark is stamped when the page pressed send — and the CLI takes
+# a moment to get going. Wide enough to cover that gap, and no wider: beyond it
+# the same words are a person saying the same thing twice, which is two
+# messages and must read as two.
+_SENT_MARK_WINDOW_SEC = 15.0
+
+
+def _sent_message(mark: dict) -> dict:
+    """The live send, shaped as a message — the newest one in the thread.
+
+    A SCHEDULE-ENTRY message, deliberately, and not a chat one: `state: "sent"`
+    with `turn: ""` is the one shape `_message_running` reads as a turn in
+    flight, so the row derives `in_progress` from the thread itself rather than
+    from a second rule about marks that `_status` would have to know. The row
+    shows the words and turns its ring on in the same poll, off one fact.
+
+    Every id field is empty because there is nothing on disk to point at yet:
+    no entry made this message, no template, and there is no transcript record
+    to anchor a scroll on. `at` and `ran_at` are both the moment the send
+    happened — the two can only disagree for a message that WAITED for a time,
+    and this one was typed and sent in the same breath (`_chat_message` says
+    the same thing for the same reason). `immediate` is True for that same
+    reason, so no calendar draws a chip for it.
+    """
+    at = float(mark.get("at") or 0.0)
+    return {
+        "message_id": "",
+        "kind": "scheduled",
+        "body": str(mark.get("text") or ""),
+        "at": at,
+        "ran_at": at,
+        "state": schedule.SENT,
+        "turn_at": 0.0,
+        "unread": False,
+        "entry_id": "",
+        "template_id": "",
+        "immediate": True,
+        "turn": "",
+        "anchor": "",
+    }
+
+
+def _fold_sent_mark(messages: list[dict], mark: dict) -> bool:
+    """Add the live send to `messages` as its newest — unless it is ALREADY
+    there. True when one was added (the caller owes the count a message).
+
+    THE DEDUPE IS THE WHOLE FUNCTION. A mark is a claim about a message that is
+    on its way to disk, and the moment it arrives the thread holds it for real:
+    keeping both would show the user their own sentence twice for whatever was
+    left of the fifteen seconds, in a list whose entire promise is that a
+    scheduled message and the prompt it became are ONE message (`_merge`).
+
+    Two ways the same send can already be in the thread, and both are checked
+    on the body, stripped and compared whole — the same join `_merge` makes,
+    for the same reason: the text is handed to the session verbatim.
+
+    * **A TRANSCRIPT PROMPT.** Time-qualified, at or after the mark's own moment
+      less `_SENT_MARK_WINDOW_SEC`: an OLD prompt with the same words is a
+      different message (the user asking the same thing again is the ordinary
+      way a chat works), and only one written around the moment of this send can
+      be this send.
+    * **A SCHEDULED ENTRY.** NOT time-qualified, and deliberately: an entry
+      already in the store IS this message — it has its own row in the thread,
+      its own state, its own verdict — and its `at` is the time it was DUE,
+      which for a caught-up run is days away from when it actually went. Time
+      cannot be the test there, and the body is enough: the entry says what was
+      sent.
+
+    A mark with no words at all (a caller that only wanted the liveness floor)
+    adds nothing: there is no message to show, and an empty bubble in the thread
+    would be worse than the ring on its own.
+    """
+    body = _body_key(mark.get("text"))
+    if not body:
+        return False
+    floor = float(mark.get("at") or 0.0) - _SENT_MARK_WINDOW_SEC
+    for message in messages:
+        if _body_key(message["body"]) != body:
+            continue
+        if message["kind"] != "chat":
+            return False  # the entry this send came from is already the message
+        if max(message["at"] or 0.0, message["ran_at"] or 0.0) >= floor:
+            return False  # the prompt landed; the mark has nothing left to say
+    messages.append(_sent_message(mark))
+    return True
 
 
 def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
@@ -1060,17 +1344,51 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
     messages say?
 
     Two independent halves, either of which is enough and neither of which is
-    sufficient alone: `live` is the transcript mid-turn, `busy` is the scheduler
-    waiting on a send it has not heard back from. A turn thinking through a long
-    tool call appends nothing and reads as not-live; a session a human is typing
-    into has no scheduler entry at all.
+    sufficient alone: `live` is the transcript mid-turn — or the sender's own
+    word that a turn just started (`tasks_watch.mark_running`, folded into
+    `live` by `_live`) — and `busy` is the scheduler waiting on a send it has
+    not heard back from. A turn thinking through a long tool call appends
+    nothing and reads as not-live; a session a human is typing into has no
+    scheduler entry at all.
+
+    The first seconds of a send used to have a third half here — the queue's
+    admission reservation read as running (2026-09-12) — because nothing on
+    disk said a turn had started until `claude` registered. #1163 answers that
+    for every send, flag or no flag: the page marks the session the moment it
+    sends and `_live` believes the mark. One mechanism for one fact; closing the
+    double-spawn gap is the queue's own job and is now the manager's owner
+    (`queue_manager.started`, filed by the admission).
 
     Its own function so `_status`'s first rule and anything else that has to ask
     cannot drift apart about what "running" means. The third way — a message of
     this task's own that is in flight — is `_message_running`, and `_status`
     asks both.
+
+    A FOURTH half, checked first and only to say no: the queue manager's own
+    word that this session's turn already ended (`tasks_watch.mark_turn_ended`,
+    off the session host's `turn_ended`/`exited` event), for the one gap
+    neither `live` nor `busy` can see through. On a folder handoff the manager
+    knows the turn is over before anything on disk agrees — the registry row
+    can still read `busy` until Claude Code next rewrites it, and the
+    transcript's own tail is inside `session_liveness`'s window for the CLI's
+    closing records, which land a beat later still. Both of those feed `live`
+    (`_live`, `tasks_watch.live_from_registry`), so without this a finished
+    task and the one the manager just handed the folder to could both read
+    `in_progress` for as long as that gap lasts — never two OWNERS, but two
+    rows saying so. `tasks_watch.is_turn_ended` is itself "ended, and nothing
+    NEWER disagrees" (a fresher mark, or a registry row truly rewritten busy
+    since), so this does not discount a genuinely new turn on the same
+    session — only the stale echo of the one that just closed. `busy` is left
+    alone: the scheduler holding a send in flight is an independent claim this
+    function has never adjudicated, on this session or any other.
     """
-    return live or (bool(session_id) and session_id in busy)
+    if not session_id:
+        return live
+    if session_id in busy:
+        return True
+    if live and tasks_watch.is_turn_ended(session_id):
+        return False
+    return live
 
 
 # How much newer than its verdict the transcript's tail must be before the tail
@@ -1080,19 +1398,20 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
 # record) — this window absorbs that ordering jitter and clock skew, while a
 # session genuinely still working appends records well past it.
 #
-# WIDENED FROM 5s (2026-08-21). Five seconds only covered the watcher's own
-# ordering jitter, and the CLI's teardown is slower than that on a busy
-# machine: one late record dated 6-20s after `turn_at` put the board back on In
-# Progress for the rest of the 45-second liveness window while the dock, which
-# reads the store, had said finished — the same two-surface disagreement from
-# the other side. 15s is the largest value that still lets a session which is
-# GENUINELY still working keep its vote: sustained work appends records
-# continuously, so its tail runs past any fixed window (TASK-001's pin is 27s
-# past the verdict and must stay In Progress), while an echo is a handful of
-# rows and stops. The cost of a fixed window is bounded and one-directional —
-# real follow-up work that goes quiet for a moment is announced up to 15s
-# late, never announced wrongly.
-_VERDICT_ECHO_SEC = 15.0
+# WIDENED FROM 5s (2026-08-21), then MOVED to `session_liveness` (2026-09-12).
+# Five seconds only covered the watcher's own ordering jitter, and the CLI's
+# teardown is slower than that on a busy machine: one late record dated 6-20s
+# after `turn_at` put the board back on In Progress for the rest of the
+# 45-second liveness window while the dock, which reads the store, had said
+# finished — the same two-surface disagreement from the other side. 15s is the
+# largest value that still lets a session which is GENUINELY still working keep
+# its vote (TASK-001's pin is 27s past the verdict and must stay In Progress).
+#
+# The move is what the scheduler needed: `schedule._verdict_echo` weighs the
+# same tail against the same stamp to stop the per-session hold holding a
+# message against a turn that has already ended, and it may not import this
+# router. One constant, two readers — see `session_liveness.VERDICT_ECHO_SEC`.
+_VERDICT_ECHO_SEC = session_liveness.VERDICT_ECHO_SEC
 
 
 def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
@@ -1156,6 +1475,35 @@ def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
     return True
 
 
+def _limit_outvotes_live(messages: list[dict]) -> bool:
+    """Is the transcript's liveness the echo of a turn the PLAN'S USAGE LIMIT
+    ended?
+
+    The same shape as `_verdict_outvotes_live` and for the same reason, from
+    the other road. A chat turn that hits the limit is over — the CLI writes
+    the failure row and the `-p` run is reaped — but the failure row is itself a
+    write, so the 45-second window read the corpse as a pulse and the board put
+    the task in In Progress with the red failed ring on it, which is two
+    answers about one run (Akshil's screenshot, 2026-09-12). Worse than
+    untidy: the chat has already scheduled the continuation for the reset (PR
+    #1107), so In Progress is the one lane that hides the fact that nothing
+    will happen until then.
+
+    No clock in it, because there is nothing to be an echo OF: a usage-limit
+    row is not a verdict the watcher stamped, it is the end of the turn stated
+    in the transcript itself. The guard is the ordinary one — a message that
+    claims to be running by its own state is believed, so a later turn (the
+    comeback firing, a line typed after the reset) takes the vote straight
+    back."""
+    if any(_message_running(m) for m in messages):
+        return False
+    for message in reversed(messages):
+        if _message_verdict(message) is None:
+            continue
+        return bool(message.get("limited"))
+    return False
+
+
 # --------------------------------------------------- what a run is waiting on
 # A run parked on a card nobody has answered is invisible from every fact this
 # module already reads. The transcript stops growing, the process stays alive,
@@ -1177,68 +1525,44 @@ def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
 # the chat's job, and a listing that could deny one would be a poll with a
 # verdict in it.
 
-# How many run dirs (newest first) one scan reads. Nothing prunes RUNS, so on a
-# machine that has been chatting for weeks the tail is months of dead runs; the
-# thing being looked for is by definition ALIVE, and a live run buried under 200
-# newer ones does not exist. Deliberately the same order of magnitude as
-# agent.py's own `_LIVE_SCAN_LIMIT`.
-_PARKED_SCAN_LIMIT = 120
-
-_AGENT_MOD = None
-_AGENT_MOD_TRIED = False
-_AGENT_MOD_LOCK = threading.Lock()
-
+# How many run dirs one scan reads, and the walk itself, are both
+# `project_queue.scan_runs` — ONE bounded pass over the tree, shared with the
+# holder derivation. There used to be two of them, and a listing paid for both:
+# the same 120 directories opened twice for one /api/tasks, which is exactly the
+# cost the bound was there to avoid. See `project_queue.RUN_SCAN_LIMIT` (why the
+# tail is cut at all) and `project_queue.SCAN_TTL` (why one walk answers both).
 
 def _agent_module():
     """The claude template's agent.py, loaded once, or None if it will not load.
 
-    Cached — and the FAILURE is cached too — because `load_agent` execs the whole
-    module on every call and this is on the listing's path: a module that cannot
-    load now will not load on the next poll either, and retrying it three times a
-    minute would turn one broken import into a busy loop. The listing degrades to
-    "nothing is parked", which is the same answer it gave before this existed.
-    """
-    global _AGENT_MOD, _AGENT_MOD_TRIED
-    with _AGENT_MOD_LOCK:
-        if not _AGENT_MOD_TRIED:
-            _AGENT_MOD_TRIED = True
-            try:
-                from fused_render import claude_spawn
+    `project_queue.agent_module()` does the loading and the caching — of the
+    FAILURE as well as the success, because `load_agent` execs the whole module
+    on every call and this is on the listing's path. Kept as a name HERE rather
+    than called through at each use because two things depend on it being one:
+    the listing degrades to "nothing is parked" when it answers None, and the
+    router's own suite replaces exactly this name with a stand-in (agent.py is a
+    TEMPLATE outside the import graph, SPEC PY-15).
 
-                _AGENT_MOD = claude_spawn.load_agent()
-            except Exception:  # noqa: BLE001 — no agent module is an answer
-                logger.warning("could not load the claude agent module; the "
-                               "task listing cannot tell whether a run is "
-                               "parked on a card", exc_info=True)
-                _AGENT_MOD = None
-        return _AGENT_MOD
+    ONE COPY, not two. This function and the queue's were the same twenty lines
+    with different log lines, and two caches over one exec meant a machine whose
+    agent.py will not load paid for the discovery twice and could answer
+    differently on the two paths — the listing saying nothing is parked while the
+    queue said every folder is free.
+    """
+    return project_queue.agent_module()
 
 
 def _run_sessions(agent, run_dir: str, meta: dict) -> set:
-    """Every session id this run answers to.
+    """Every session id this run answers to — `project_queue.run_sessions`.
 
-    BOTH SPELLINGS, for the reason `agent._live_run` spells out: a run knows the
-    session it RESUMED (`resumed_from` in meta.json) and the one the CLI minted
-    for it (the `session` file, or the head of out.jsonl before the first poll
-    has written one), and either can be the id a task row carries. Matching on
-    one of them is how a parked run goes unnoticed for exactly the sessions that
-    were forked or freshly started — which is most scheduled runs.
+    BOTH SPELLINGS, for the reason `agent._live_run` spells out and that module
+    documents at length: a run knows the session it RESUMED and the one the CLI
+    minted for it, and either can be the id a task row carries. The parked scan
+    below and the holder derivation next door have to agree about which sessions
+    a run answers to, or a run could be parked for one of them and holding a
+    folder for the other.
     """
-    out = {str(meta.get("resumed_from") or "")}
-    own = ""
-    try:
-        with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-            own = fh.read().strip()
-    except OSError:
-        pass
-    if not own:
-        try:
-            own = agent._session_from_out(run_dir)
-        except Exception:  # noqa: BLE001 — a head we cannot read is not an id
-            own = ""
-    out.add(own)
-    out.discard("")
-    return out
+    return project_queue.run_sessions(agent, run_dir, meta)
 
 
 def _attention_of(agent, perm: dict) -> dict:
@@ -1290,36 +1614,48 @@ def _parked_runs() -> dict:
       actually blocked on. A later card can exist (a sub-agent's), and reporting
       it would describe a question the user is not being asked yet.
 
+    AND A FOURTH, ONLY WITH THE PROJECT QUEUE ON: **nobody is being waited on if
+    the user has already answered.** A card answered while the folder was busy
+    leaves no `.res.json` in the run dir — the decision is held
+    (`queue_manager.held_answer`) and written when the folder frees — so the
+    request still reads as unanswered here. Reporting it would make the row
+    `needs_attention`, which sits above `queued` in `_status` and would put
+    "Answer queued — runs next" permanently out of reach: the one row the whole
+    held-answer path exists to paint could never be painted. The user has
+    answered; what the task is waiting on is the folder, which is what `queued`
+    says.
+
+    One walk of the runs tree, shared with the manager's `blocked` check
+    (`project_queue.scan_runs`) — the `meta.json` and the session ids come back
+    already read, and only the pid is touched here.
+
+    AND ONE `_permissions` PER RUN, shared with it too. Both readers ask the
+    same run the same question on the same listing — this one what it is parked
+    ON, the manager's `blocked` check whether it is parked at all — and the
+    answer is a directory listing plus a file per card.
+    `project_queue.run_permissions` reads it once
+    onto the scanned record, which lives exactly as long as the walk does
+    (round-2 review, 2026-09-12).
+
     Best-effort throughout: a run dir that will not read costs that run's news,
     never the listing.
     """
     agent = _agent_module()
     if agent is None:
         return {}
-    try:
-        names = sorted(os.listdir(agent.RUNS), reverse=True)[:_PARKED_SCAN_LIMIT]
-    except OSError:
-        return {}  # no runs tree yet: nothing has ever chatted on this machine
     out: dict = {}
-    for name in names:
-        run_dir = os.path.join(agent.RUNS, name)
-        try:
-            perms = agent._permissions(run_dir)
-        except Exception:  # noqa: BLE001 — one unreadable run, not a dead listing
-            continue
-        waiting = [p for p in perms if not p.get("decision")]
+    for run in project_queue.scan_runs(agent):
+        run_dir = run["run_dir"]
+        held = _held_requests(run)
+        perms = project_queue.run_permissions(agent, run)
+        waiting = [p for p in perms
+                   if not p.get("decision")
+                   and str(p.get("id") or "") not in held]
         if not waiting:
             continue
         # Liveness LAST: it is the only check that touches a pid, and the one
         # above has already thrown out every run that is not waiting on anybody.
-        try:
-            if not agent._alive(run_dir):
-                continue
-            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
-                meta = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(meta, dict):
+        if not project_queue.run_alive(agent, run_dir):
             continue
         perm = waiting[0]
         news = _attention_of(agent, perm)
@@ -1327,30 +1663,342 @@ def _parked_runs() -> dict:
                   if perm.get("tool") == getattr(agent, "ANSWERABLE_TOOL",
                                                  "AskUserQuestion")
                   else "permission")
-        for session_id in _run_sessions(agent, run_dir, meta):
-            # NEWEST RUN WINS: `names` is reverse-sorted and run ids lead with a
-            # timestamp, so the first answer for a session is its most recent
-            # run. A resumed conversation can have several runs in the tree and
-            # only the newest is the one on screen.
+        for session_id in run["sessions"]:
+            # NEWEST RUN WINS: `scan_runs` answers newest-first and run ids lead
+            # with a timestamp, so the first answer for a session is its most
+            # recent run. A resumed conversation can have several runs in the
+            # tree and only the newest is the one on screen.
             out.setdefault(session_id, dict(news, reason=reason))
     return out
 
 
+def _held_requests(run: dict) -> set:
+    """`{request id}` on THIS run the user has already answered — decisions the
+    queue manager is holding until the folder frees
+    (`queue_manager.held_answer`).
+
+    Empty with the flag off, and empty on the ordinary machine where nothing has
+    been held. See `_parked_runs`'s fourth condition for why an
+    answered-but-undelivered card must not read as waiting on anybody.
+
+    ASKED PER RUN, not once for the whole tree (PR 2, 2026-09-17). The manager
+    files an answer under the TASK KEY it belongs to — the same key the listing
+    keys a row by — rather than in a flat list of decisions, so the question
+    this asks is "has any session of this run got one held, and is it against
+    this very run". The run id has to match: a held answer names the run it was
+    raised against, and replaying it into a later run of the same conversation
+    would be a verdict about a question nobody asked.
+
+    Best-effort like everything else on this walk: a manager that cannot answer
+    costs the held-answer refinement, never the listing."""
+    if not project_queue.enabled():
+        return set()
+    try:
+        manager = queue_manager.peek()
+        if manager is None:
+            return set()
+        run_id = str(run.get("run_id") or "")
+        out = set()
+        for session_id in run.get("sessions") or ():
+            answer = manager.held_answer(session_id) or {}
+            if str(answer.get("run_id") or "") != run_id:
+                continue
+            request_id = str(answer.get("request_id") or "")
+            if request_id:
+                out.add(request_id)
+        return out
+    except Exception:  # noqa: BLE001 — an unreadable index holds nothing
+        return set()
+
+
+# ------------------------------------------------------------------ the queue
+# ONE TASK IN PROGRESS PER FOLDER (`project_queue`, flag `project_queue_enabled`).
+# A task whose work is due into a working tree another task is holding does not
+# run and does not fail — it WAITS, and `queued` is the word for that. Everything
+# under this heading is the listing's half of that rule: reading who is waiting,
+# where they stand in the line, and who is in front of them. NOTHING HERE
+# DECIDES ANY OF IT any more (PR 2, 2026-09-17) — the order and the owner are
+# `fused_render/queue_manager.py`, one event-driven index, and this end reads it
+# the way `busy` and `parked` beside it read theirs.
+#
+# Read once per listing and handed to `_row`, for the reason every other join on
+# this page is: it is a fact about every OTHER task on the machine, and asking
+# it per row would pay for it once per task.
+
+
+def _queue_lines(tasks: dict[str, dict], now: float,
+                 by_id: dict | None = None) -> dict[str, dict]:
+    """`task key -> {"key", "position", "ahead_key", "ahead", "priority"}` for
+    every task WAITING on a folder somebody else is holding. Empty with the flag
+    off, which is the ordinary case and the cheap one.
+
+    THE LINE IS NOT DERIVED HERE ANY MORE (PR 2, 2026-09-17). Where a task
+    stands is the queue manager's index — an event-driven pointer table, one
+    line per folder, position = array index — and this READS it
+    (`queue_manager.positions()`). The stamp-ranked pass that used to live here
+    rebuilt the order out of the scheduler's store and the held-answer store on
+    every listing, which is exactly the derivation the manager replaces: two
+    readers of one order is how a line gets printed one way and run another.
+
+    THE SHAPE IS UNCHANGED, deliberately: `_row` reads these five fields and
+    `_name_ahead` fills the other four, so the listing and the client below it
+    never learn where the order came from.
+
+    `ahead_key` IS THE TASK DIRECTLY IN FRONT OF THIS ONE, not always the holder
+    (Akshil, 2026-09-12) — the manager answers it per item: position 1 behind
+    the folder's owner, position n behind position n - 1, with held answers
+    stepped over rather than named. "Behind TASK-041" on every card in a line of
+    four said the same thing four times.
+
+    `ahead` is the number a reader sees, `ahead_title` the name, and
+    `ahead_session` / `ahead_target` the pair a reader CLICKS (tasks-lib
+    `taskHref`) — all four filled in by `_name_ahead`, which needs the listing's
+    own allocation pass and therefore cannot happen here.
+
+    `tasks`, `now` and `by_id` are the caller's collection, clock and entry map.
+    Nothing here needs them now that the order is read rather than computed;
+    they stay in the signature because every caller already holds them and the
+    flag-off road (which answers `{}` above) is untouched until PR 3.
+    """
+    if not project_queue.enabled():
+        return {}
+    # `peek`, NEVER `get`: a listing must not be the thing that builds the
+    # manager. The build reconciles, and reconciling pumps — so the first GET in
+    # a fresh process would claim the head of every line and rekey the very rows
+    # it was asked to draw. Nothing has queued anything yet in that process, and
+    # `{}` is the true answer (see `queue_manager.peek`).
+    manager = queue_manager.peek()
+    if manager is None:
+        return {}
+    return {task_key: _queue_row(place)
+            for task_key, place in manager.positions().items()}
+
+
+def _queue_row(place: dict) -> dict:
+    """One slot in the shape `_row` reads: the manager's answer, plus the four
+    naming fields `_name_ahead` fills in afterwards.
+
+    ONE CONSTRUCTOR FOR BOTH READERS — the listing (`_queue_lines`) and the
+    endpoints that have just moved a line and have to redraw it
+    (`_queue_place`) — so a row and the reply about that row cannot carry
+    different fields. Every value is coerced here rather than trusted, because
+    the manager's index is a file on disk and a half-written slot must cost a
+    "not queued", never a broken listing.
+
+    `priority` IS A FACT ABOUT THE HEAD OF THE LINE, NOT ABOUT THE GESTURE
+    (Akshil, 2026-09-16): the manager sets it only for the item standing first
+    that got there by a skip or an answer, so a promoted task outranked by a
+    newer press reads "2nd in line" and keeps the button that would make it
+    first.
+    """
+    raw_names = place.get("ahead_names")
+    names = ([str(name) for name in raw_names if str(name)]
+             if isinstance(raw_names, list) else [])
+    return {
+        "key": str(place.get("key") or ""),
+        "position": int(place.get("position") or 0),
+        "ahead_key": str(place.get("ahead_key") or ""),
+        # EVERY NAME THE THING IN FRONT MIGHT BE FILED UNDER, best first
+        # (`queue_manager._page_names`). `ahead_key` is the one to print and is
+        # unchanged; this is the list `_name_ahead` LOOKS UP with, because the
+        # index and the listing key one chat off different facts — an owner
+        # still filed under its run id, a dispatched message whose row has
+        # already rekeyed onto its session — and the row read "1st in line" with
+        # nothing behind it for exactly as long as the two disagreed. Coerced
+        # element by element for the same reason every field here is: the index
+        # is a file on disk.
+        "ahead_names": names,
+        "ahead": "",
+        "ahead_title": "",
+        # "Behind TASK-041" is a sentence the reader wants to FOLLOW, and the
+        # chat in front is one link away: the same two fields every other thread
+        # link in this app is built from. "" for a holder nothing can name — a
+        # run that has not published its session yet — and the client then
+        # prints the words without the link rather than offering a click that
+        # goes nowhere.
+        "ahead_session": "",
+        "ahead_target": "",
+        "priority": bool(place.get("priority")),
+    }
+
+
+def _name_ahead(queue: dict[str, dict], numbers: dict[str, str],
+                tasks: dict[str, dict]) -> None:
+    """Fill each queued task's `ahead`, `ahead_title`, `ahead_session` and
+    `ahead_target` — the number and the name of the task in front, which is the
+    only way a reader ever refers to one ("behind TASK-041 · Nightly deploy"),
+    and the pair that opens its conversation.
+
+    `numbers` is the listing's own allocation pass where there is one, because
+    that is the map that has just MINTED a number for a task seeing its first
+    listing. The stored table answers for everybody else — the holder of a folder
+    is very often outside a narrowed `/api/tasks/changes` answer, and a chip that
+    said "behind " with nothing after it would be worse than saying nothing.
+    Read once, and only when something is actually missing.
+
+    A holder the collection does not contain (a terminal `claude` the app never
+    started, a session erased between the scan and here) leaves both fields "",
+    and the client says "behind a run in this folder". Naming half of it would be
+    worse than naming none: a number with no title reads as a row the user can
+    click through to, and there would be nothing there.
+
+    The LINK is the same answer read one field further on. `ahead_session` and
+    `ahead_target` are `tasks-lib.taskHref`'s two arguments, taken off the same
+    collected task as the title so the three cannot describe different rows, and
+    both "" for a holder that has not got a session yet (a `starting` run, a
+    claimed message the scheduler has not spawned) — there is no conversation to
+    open until one exists, and `taskHref` itself answers null for exactly that.
+    """
+    aliases: dict[str, str] | None = None
+    picks: list[tuple[dict, str]] = []
+    for q in queue.values():
+        names = [name for name in (q["ahead_key"], *(q.get("ahead_names") or []))
+                 if name]
+        if not names:
+            continue
+        # THE FIRST NAME THAT HITS A ROW, and the printed key only as the
+        # fallback. A direct hit first, because a name that IS a listing key
+        # needs no index built for it.
+        chosen = next((name for name in names if name in tasks), "")
+        if not chosen:
+            if aliases is None:
+                aliases = _ahead_aliases(tasks)
+            chosen = next((aliases[name] for name in names if name in aliases), "")
+        picks.append((q, chosen or q["ahead_key"]))
+    wanted = {key for _q, key in picks if key}
+    if not wanted:
+        return
+    stored = tasks_store.task_ids() if wanted - set(numbers) else {}
+    facts = {key: _ahead_facts(tasks, key) for key in wanted}
+    for q, key in picks:
+        if not key:
+            continue
+        number = numbers.get(key) or ""
+        if not number:
+            record = stored.get(key) or {}
+            if record.get("n"):
+                number = tasks_store.format_task_id(record["n"])
+        fact = facts.get(key) or _NO_AHEAD
+        q["ahead"] = number
+        q["ahead_title"] = fact["title"]
+        q["ahead_session"] = fact["session"]
+        q["ahead_target"] = fact["target"]
+
+
+_NO_AHEAD = {"title": "", "session": "", "target": ""}
+
+
+def _ahead_aliases(tasks: dict[str, dict]) -> dict[str, str]:
+    """`other name -> the key the listing filed that chat under`, for the names
+    a row is NOT keyed by: its session id and its `pending:<entry>` keys.
+
+    THE INDEX AND THE LISTING NAME ONE CHAT DIFFERENTLY, and this is the join
+    between them. The queue manager holds whatever it knew when the turn started
+    — a run id for a chat that had no session yet, `pending:<entry>` for a
+    message the pump dispatched — while the listing rekeys onto the session the
+    moment one exists (`_entry_key` → `_entry_session`). So "behind TASK-x" was
+    simply missing whenever the holder's stored name was not the name its row
+    now has, which is every brand-new chat's first queued follower and every
+    queue-dispatched leader in the seconds before its session is stamped.
+
+    Built only when a direct lookup misses (`_name_ahead`), because the ordinary
+    listing is one where every holder is filed under the name it is drawn
+    under and there is nothing to translate. `setdefault`, so a row that IS
+    keyed by a name keeps it: the direct hit is always the better answer."""
+    out: dict[str, str] = {}
+    for key, task in tasks.items():
+        session = str(task.get("session_id") or "")
+        if session and session != key:
+            out.setdefault(session, key)
+        # A pending message's entry is the one name of it that never moves, and
+        # it reads off the collection (`entries`) or off a built row
+        # (`messages`) — this is called with both.
+        ids = [str(entry.get("id") or "") for entry in (task.get("entries") or ())]
+        ids += [str(msg.get("entry_id") or "")
+                for msg in (task.get("messages") or ())]
+        for entry_id in ids:
+            if entry_id:
+                out.setdefault(tasks_store.pending_key(entry_id), key)
+    return out
+
+
+def _ahead_facts(tasks: dict[str, dict], key: str) -> dict:
+    """One task's `{"title", "session", "target"}` — everything the queue's
+    surfaces say about the row in FRONT, for a caller that has the collection
+    but not the rows.
+
+    The surfaces print who is ahead ("behind TASK-041 · Nightly deploy") and
+    open it, and the task ahead is by definition another row — often one a
+    narrowed answer was never asked about. The title is built from the same
+    three-source precedence the listing uses (`_title`), off the same cached
+    transcript head, so the two cannot name one task differently; the session
+    and the target are `_place`'s own answers, which is what the row itself
+    carries. `_NO_AHEAD` for a task that is not collected, which is the honest
+    answer and what every caller prints as nothing at all."""
+    task = tasks.get(key)
+    if task is None:
+        return _NO_AHEAD
+    try:
+        _place(task)
+        record = _scan(task["path"]) if task["path"] else None
+        title, _source = _title(task, record, task["first_prompt"])
+        return {"title": title,
+                # A `pending:<entry>` row has no session and therefore no chat
+                # to open: "" here is the same absence `taskHref` refuses on.
+                "session": str(task["session_id"] or ""),
+                "target": canonical_fs_path(task["target"] or task["project"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return _NO_AHEAD
+
+
+def _ahead_name(tasks: dict[str, dict], key: str) -> dict:
+    """`{"ahead", "ahead_title", "ahead_session", "ahead_target"}` for the task
+    holding a folder — the four fields every queue answer carries, resolved in
+    one place so the three endpoints and the row cannot disagree about who is in
+    front or where the click goes."""
+    if not key:
+        return {"ahead": "", "ahead_title": "",
+                "ahead_session": "", "ahead_target": ""}
+    queue = {"": {"ahead_key": key, "ahead": "", "ahead_title": "",
+                  "ahead_session": "", "ahead_target": ""}}
+    _name_ahead(queue, {}, tasks)
+    answer = queue[""]
+    return {field: answer[field] for field in
+            ("ahead", "ahead_title", "ahead_session", "ahead_target")}
+
+
+def queue_ahead_of(key: str, tasks: dict[str, dict] | None = None) -> dict:
+    """`{"ahead", "ahead_title", "ahead_session", "ahead_target"}` for one task
+    key, collecting for itself.
+
+    The seam the schedule router reads: `POST /api/schedule/run-now` can be
+    answered "queued", and the sentence it owes the user names the task in front
+    — which is a Tasks-page fact (the numbering, the title precedence) and lives
+    here, not beside the scheduler's store.
+
+    `tasks` is that collection where the caller already holds one. Run-now needs
+    both halves of the queue answer — who is ahead and where this row stands —
+    and collecting once for each meant two globs over every transcript on the
+    machine for one reply (round-2 review, 2026-09-12)."""
+    return _ahead_name(_collect() if tasks is None else tasks, key)
+
+
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
-            busy: set[str], parked: bool = False) -> str:
+            busy: set[str], parked: bool = False, queued: bool = False) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
 
     Derived from the MESSAGES, in this order, and the order is the whole model:
 
-    0. **Running AND parked ⇒ Needs attention.** Above rule 1 rather than beside
-       it, because it is the same fact told at a finer grain: the run IS in
-       flight, and it is in flight in the one way that never ends on its own —
-       a permission card or a question card nobody has answered (`parked`, from
-       `_parked_runs`). "In Progress" is a true sentence about it and a useless
-       one: it is the sentence a reader waits out, and this run will still be
-       there tomorrow. The moment the card is answered the run is ordinary
-       again and rule 1 has it back, with nothing to undo — this reads the
-       decision files on every poll rather than remembering a verdict.
+    0. **Running AND parked ⇒ Needs attention.** Above every other rule,
+       including the queued one just below, because it is the same fact told
+       at a finer grain: the run IS in flight, and it is in flight in the one
+       way that never ends on its own — a permission card or a question card
+       nobody has answered (`parked`, from `_parked_runs`). "In Progress" is a
+       true sentence about it and a useless one: it is the sentence a reader
+       waits out, and this run will still be there tomorrow. The moment the
+       card is answered the run is ordinary again and rule 2 (running) has it
+       back, with nothing to undo — this reads the decision files on every
+       poll rather than remembering a verdict.
 
        PARKED WITHOUT RUNNING IS NOT THIS. `parked` is only ever true for a
        process that is alive (see `_parked_runs`), and the `and` below is
@@ -1358,33 +2006,68 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        needs-attention row nobody can answer any more would be a lane that only
        fills up.
 
-       PARKED IS CHECKED ON ITS OWN, not only as a multiplier on rule 1: a
-       hand-typed chat parked on a card fails both of rule 1's tests (the live
+       PARKED IS CHECKED ON ITS OWN, not only as a multiplier on rule 2: a
+       hand-typed chat parked on a card fails both of rule 2's tests (the live
        registry reports `waiting`, not running, and the transcript has gone
        quiet), so gating on `_running_now`/`_message_running` first would file
        it `done` before parked ever got a look. `_parked_runs` already proves
        the process is alive — that is enough on its own.
 
-    1. **Anything else running ⇒ In Progress.** Activity beats recency: a task whose
+    1. **Standing in the manager's line ⇒ Queued, ABOVE running.** One task in
+       progress per folder (`project_queue`): this task has work that is DUE
+       and cannot start because another task is holding the working tree it
+       edits, or it has a card decision held for delivery when that tree
+       frees. The caller decides it (`_queue_lines` → `queue_manager.positions`,
+       one derivation per listing, the way `busy` and `parked` are) and hands
+       the answer in, because it is a fact about every OTHER task on the
+       machine and a function that sees one task's messages cannot reach it.
+
+       ABOVE RULE 2 (running), moved there in the review round of 2026-09-18:
+       an answered-blocked task the manager has just promoted to line[0] can
+       still have a session that READS live — the registry row has not caught
+       up, or the sender's mark has not expired — which is precisely what rule
+       2 below is built to trust. The manager, not a stale transcript or
+       registry read, is the source of truth for who is running a folder, and
+       standing in its line is proof this task is NOT that folder's owner: the
+       owner is never a member of `positions()` (`queue_manager.positions`
+       walks each folder's `line`, never its `owner`), so `queued` can never
+       be true for the task actually holding the folder — nothing further
+       needs to check that here.
+
+       ABOVE ARCHIVED too (an unlabelled corollary of the same move): the one
+       shape that could read both filed and queued is a filing the thread has
+       already overtaken, and by the time this is asked `filed` is already
+       False for exactly that case (see `_revived`) — so the two checks do
+       not actually compete and the order between them is inert. Above the
+       speaker, because the speaker is the last thing that HAPPENED and this
+       is the thing that is about to: a task that ran yesterday and has a
+       message due into a busy folder today is waiting, not done.
+
+       ONLY WITH THE FLAG ON. `_queue_lines` answers empty when
+       `project_queue.enabled()` is false, so nothing here derives `queued` and
+       the status is the one main computes.
+    2. **Anything else running ⇒ In Progress.** Activity beats recency: a task whose
        newest message is next Tuesday's occurrence, with a run still going in
        it, is a task that is working. Three things say a run is happening and a
        task needs only one — a message of its own that is in flight
-       (`_message_running`), a transcript that is live, and `schedule.busy_sessions`,
-       the scheduler's record of a send it has not heard back from. They are
-       independent because each is wrong on its own in a different direction: a
-       turn thinking through a long tool call appends nothing for minutes and
-       reads as not-live, and a session a human is typing into has no busy entry
-       at all. The transcript's vote is withdrawn by the caller for exactly one
+       (`_message_running`), a transcript that is live (or a sender's own mark
+       that a turn just started, `tasks_watch.mark_running`, which `_live`
+       folds in), and `schedule.busy_sessions`, the scheduler's record of a
+       send it has not heard back from (see `_running_now`). They are
+       independent because each is wrong on its own in a different direction:
+       a turn thinking through a long tool call appends nothing for minutes and
+       reads as not-live, and a session a human is typing into has no busy
+       entry at all. The transcript's vote is withdrawn by the caller for exactly one
        case — the tail's freshness is the finished run's own closing records —
        see `_verdict_outvotes_live`.
-    2. **Archived is a filing state.** The task the user put away is archived,
+    3. **Archived is a filing state.** The task the user put away is archived,
        and so is a task whose every message ended up filed (cancelling the last
        live message in a thread archives the task, without anybody having to say
-       so twice). Step 1 is above this on purpose: a run in flight when the task
+       so twice). Rule 2 is above this on purpose: a run in flight when the task
        was filed keeps running and the card reads In Progress until it stops.
-    3. **Otherwise the newest message that has something to say speaks** —
+    4. **Otherwise the newest message that has something to say speaks** —
        `blocked` for a run that broke, `done` for one that ended. See `_speaker`.
-    4. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
+    5. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
        half is the whole of it: the lane is what has not happened *yet*, so it
        needs a message still waiting to happen. A task with nothing coming and
        nothing to report is over, and `done` is where a spent session goes — see
@@ -1396,8 +2079,8 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
     reader) — so the stale-pin machinery that used to decide when an automatic
     `in_progress` had outlived its run is gone with the pin it guarded.
 
-    FILING SOMETHING DOES NOT STOP IT (Akshil, 2026-08-18), which is rule 1
-    standing above rule 2 and nothing more: Archive is a timeless decision and
+    FILING SOMETHING DOES NOT STOP IT (Akshil, 2026-08-18), which is rule 2
+    standing above rule 3 and nothing more: Archive is a timeless decision and
     the record is never touched here, but while a turn is genuinely in flight a
     row that says `archived` is a lie the reader can watch. The moment the run
     ends the task drops back into Archive on the next poll.
@@ -1409,6 +2092,8 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
     """
     if parked:
         return "needs_attention"
+    if queued:
+        return "queued"
     if messages and (_running_now(session_id, live, busy)
                      or any(_message_running(m) for m in messages)):
         return "in_progress"
@@ -1519,7 +2204,7 @@ def _new_task(key: str, session_id: str, path: str | None) -> dict:
     return {"key": key, "session_id": session_id, "path": path, "entries": []}
 
 
-def _entry_session(entry: dict) -> str:
+def _entry_session(entry: dict, by_id: dict | None = None) -> str:
     """Which session a scheduled entry belongs to: **the answer where the run
     has given one, else the input it named**, and "" for neither.
 
@@ -1545,9 +2230,103 @@ def _entry_session(entry: dict) -> str:
     session, so it must keep falling through to its own `pending:` key —
     grouping on "" would collapse every unrelated fresh-session message in the
     store into a single row.
+
+    **A FOLLOWER READS ITS LEADER'S ANSWER.** `follow_of` names the message
+    this one was typed behind, and it exists for the one shape that has no id of
+    its own to give: a second message typed into a brand-new chat whose first
+    message is still queued. Grouping it anywhere but with the leader forks a
+    second `pending:<id>` row beside the very chat it was typed into, which is
+    the bug this field was added for (browser QA, 2026-09-12). So the leader's
+    own answer is this entry's answer — and "" here is not a failure, it means
+    "the leader has not run either", which `_entry_key` finishes by filing both
+    under the LEADER's pending key.
+
+    `by_id` is the store keyed by entry id; a caller mid-pass over the entries
+    passes its own map, and one holding a single entry passes nothing and has
+    the store read for it — but only for an entry that actually follows one.
     """
-    return (str(entry.get("claude_session_id") or "")
-            or str(entry.get("session_id") or ""))
+    session = (str(entry.get("claude_session_id") or "")
+               or str(entry.get("session_id") or "")
+               or _run_session(entry))
+    if session or not str(entry.get("follow_of") or ""):
+        return session
+    leader = schedule.leader_of(
+        entry, _by_entry_id() if by_id is None else by_id)
+    if leader is None:
+        return ""
+    # The leader's run names the session before the scheduler stamps it, for
+    # the follower exactly as for the leader (Bugbot): otherwise the leader
+    # joined the live session while its follow-ups stayed on `pending:` — one
+    # chat split in two rows, and a number burnt.
+    return (str(leader.get("claude_session_id") or "")
+            or str(leader.get("session_id") or "")
+            or _run_session(leader))
+
+
+def _run_session(entry: dict) -> str:
+    """The session a SENT entry's run has opened, read off the run itself, for
+    the seconds before the scheduler writes it onto the entry.
+
+    THE NUMBER MUST NOT CHANGE WHEN A QUEUED CHAT STARTS (browser QA,
+    2026-09-16: TASK-056 waiting became TASK-057 running). A brand-new chat's
+    transcript is on disk within a second of the spawn; the scheduler learns
+    the session from its own poll of the run two seconds later
+    (`claude_spawn.record_session_when_ready`) and only then stamps
+    `claude_session_id`. A listing in that window saw a session with no entry
+    and a pending row with no session, numbered the session afresh, and the
+    rekey that keeps the pending row's number found the session already
+    numbered. The run dir knows sooner — its `session` file, or the live
+    registry by pid (`project_queue.run_sessions`) — so the entry is grouped
+    onto its session from the first listing after the CLI comes up.
+
+    Only an entry with a run and no session is asked, so the cost is a run-dir
+    read per in-flight spawn, never per entry. Best-effort: nothing readable is
+    "", which is the answer the entry gave before."""
+    run_id = str(entry.get("run_id") or "")
+    if not run_id or entry.get("state") not in (schedule.SENDING, schedule.SENT):
+        return ""
+    # Under the flag only: with the queue off the listing groups exactly as
+    # main does — the scheduler's stamp, else `pending:<id>` — and the ring
+    # keys `schedule._entry_keys` computes stay the row's own.
+    if not project_queue.enabled():
+        return ""
+    try:
+        agent = _agent_module()
+        if agent is None:
+            return ""
+        run_dir = os.path.join(str(agent.RUNS), run_id)
+        if not os.path.isdir(run_dir):
+            return ""
+        found = project_queue.run_sessions(agent, run_dir, {})
+    except Exception:  # noqa: BLE001 — a run dir we cannot read names nobody
+        return ""
+    return next(iter(sorted(found)), "") if found else ""
+
+
+def _by_entry_id(entries: list[dict] | None = None) -> dict:
+    """The scheduler's store keyed by entry id — what `leader_of` walks. An
+    INDEX and never the list itself: a caller with entries to visit visits its
+    own list, so an entry with no id at all costs a lookup and not a row."""
+    if entries is None:
+        entries = schedule.list_entries()
+    return {str(entry.get("id") or ""): entry for entry in entries}
+
+
+def _entry_key(entry: dict, by_id: dict | None = None) -> str:
+    """The TASK key one scheduled entry is filed under: the session
+    `_entry_session` resolved, else `pending:<entry-id>` — the LEADER's id for a
+    message typed behind another, its own for everything else.
+
+    `_collect`'s filing rule in one place, because four callers need it and a
+    fifth spelling of it would be a row nobody could ring."""
+    if by_id is None and str(entry.get("follow_of") or ""):
+        by_id = _by_entry_id()
+    session = _entry_session(entry, by_id)
+    if session:
+        return session
+    leader = schedule.leader_of(entry, by_id)
+    owner = entry if leader is None else leader
+    return tasks_store.pending_key(str(owner.get("id") or ""))
 
 
 # States that mean a scheduled message will never run and never did. In
@@ -1613,23 +2392,60 @@ def _collect() -> dict[str, dict]:
     for path in tasks_store.transcripts():
         session_id = os.path.splitext(os.path.basename(path))[0]
         tasks[session_id] = _new_task(session_id, session_id, path)
-    for entry in schedule.list_entries():
+    # A SEND IS A TASK BEFORE ANY FILE SAYS SO. `tasks_watch.sent_marks()` is
+    # the page that made the send telling this process it made it (see
+    # `/api/tasks/running`), which is earlier than the transcript, earlier than
+    # the CLI's registry row, and — for a brand-new chat — earlier than there
+    # being anything on disk at all. A mark on a session nothing else lists
+    # becomes a PLACEHOLDER row here, keyed by THE SESSION ID, so the row the
+    # transcript makes a moment later is literally this row: same key, same
+    # number, no swap for the reader to watch.
+    #
+    # ITS LIFETIME IS THE MARK'S, and that is the whole of the rule. While the
+    # mark stands the row stands; when the mark runs out
+    # (`tasks_watch.MARK_TTL_SEC`, or the sender saying the turn ended) the row
+    # is whatever the disk says. With a transcript that is a real row and this
+    # was only its first fifteen seconds. WITHOUT one — a send whose run died on
+    # the spot, a bad model id, a refused spawn — the row DISAPPEARS, because
+    # nothing happened: there is no session, no transcript, no entry, nothing to
+    # open and nothing to report. Everything a reload can reproduce comes off
+    # disk; this is the one thing that cannot, and it is why it has a fuse.
+    marks = tasks_watch.sent_marks()
+    for session_id, mark in marks.items():
+        # Only a send WITH WORDS is a row on its own: a wordless mark (an
+        # attachment-only send, a bare liveness ping) has nothing to show and
+        # would be a blank card for fifteen seconds (regression review). A
+        # session that already has a row keeps its liveness floor either way.
+        if session_id not in tasks and str(mark.get("text") or "").strip():
+            tasks[session_id] = _new_task(session_id, session_id, None)
+    # Indexed once for the whole pass: a follower is filed under the entry it
+    # was typed behind, and `leader_of` walks this map rather than the store.
+    entries = schedule.list_entries()
+    by_id = _by_entry_id(entries)
+    for entry in entries:
         if entry.get("state") == schedule.RECURRING:
             # A template never fires and is not a message; its materialised
             # occurrences are, and they are ordinary entries in this list.
             continue
-        session_id = _entry_session(entry)
+        session_id = _entry_session(entry, by_id)
         if session_id:
             task = tasks.get(session_id)
             if task is None:
                 task = tasks[session_id] = _new_task(session_id, session_id, None)
             task["entries"].append(entry)
         else:
-            key = tasks_store.pending_key(str(entry.get("id") or ""))
+            key = _entry_key(entry, by_id)
             task = tasks.setdefault(key, _new_task(key, "", None))
             task["entries"].append(entry)
     for task in tasks.values():
         task["entries"].sort(key=_entry_at)
+        # The live send this task is carrying, or None — read once, here, and
+        # spent by `_place` (which folder the placeholder belongs to) and `_row`
+        # (the words, and the message that shows them). On the task rather than
+        # threaded through as a parameter because a task's own send is a fact
+        # about the task, and the two readers must not be able to disagree about
+        # whether one is standing.
+        task["sent"] = marks.get(task["session_id"]) if task["session_id"] else None
     # The drop happens HERE, once, rather than in each endpoint: the listing,
     # the full thread, the calendar window and the read endpoint all collect
     # through this function, so a task that is no longer a task — or one the
@@ -1638,6 +2454,77 @@ def _collect() -> dict[str, dict]:
     deleted = tasks_store.deleted_state()
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)}
+
+
+def _entries_for(keys) -> dict[str, list[dict]]:
+    """`task key -> its scheduled entries`, for the named keys only.
+
+    `_collect`'s entry pass and nothing else: the same filing rule (`_entry_key`
+    — the session an entry resolves to, else the leader's pending key, else its
+    own) and the same
+    exclusion of recurring TEMPLATES, which never fire and are not messages. What
+    it does NOT do is the expensive half — the glob over every transcript on the
+    machine, the deleted store, the `_is_task` decision — because a caller that
+    already holds a set of keys it has just listed has had all three answered.
+
+    For a caller that has not (a key the listing dropped), this answers with an
+    empty list rather than a verdict; it is a narrowing of a collection, never a
+    second way to decide what a task is."""
+    out: dict[str, list[dict]] = {key: [] for key in keys}
+    if not out:
+        return out
+    entries = schedule.list_entries()
+    by_id = _by_entry_id(entries)
+    for entry in entries:
+        if entry.get("state") == schedule.RECURRING:
+            continue
+        key = _entry_key(entry, by_id)
+        if key in out:
+            out[key].append(entry)
+    return out
+
+
+def _rekeyed_pendings(keys) -> dict[str, str]:
+    """Rung `pending:<entry-id>` key -> the key the LISTING files that entry
+    under, for the keys where the two have drifted apart.
+
+    THE RING AND THE LISTING KEY THE SAME ENTRY OFF DIFFERENT FACTS (Akshil, QA
+    2026-09-16: "Recent chats loses tasks when the queue moves forward"). The
+    watcher names an entry with `schedule._task_key` — the scheduler's stamp,
+    else `pending:<id>` — while the listing has a third source, the run dir the
+    entry already spawned (`_entry_session` -> `_run_session`). In the seconds
+    between a promoted leader's CLI opening its session and
+    `record_session_when_ready` stamping `claude_session_id`, the ring says
+    `pending:<id>` and the listing says `<session>`: no row is built for the
+    rung key, so it was answered `gone` WITH NOTHING BEHIND IT and the client
+    deleted a live row whose replacement had never been rung — it arrived only
+    on the 20 s floor read, and a batch promotion rings several keys at once
+    ("blank, then only a few tasks").
+
+    So the rung key is translated through the listing's own rule and the row it
+    now names is added to the answer. The pending key still leaves in `gone`:
+    the client merges the two halves of one payload atomically
+    (`mergeTaskChanges`), so gone-plus-row is a clean SWAP — one task, one row,
+    under the name the listing gives it — where gone-alone was the data loss.
+
+    Flag-off parity is free: with the queue off `_run_session` answers "" and
+    `_entry_key` is `schedule._task_key` spelled again, so nothing here
+    translates and the pending key stays the pending key.
+    """
+    pendings = {key: tasks_store.pending_entry(key) for key in keys}
+    pendings = {key: eid for key, eid in pendings.items() if eid}
+    if not pendings:
+        return {}
+    by_id = _by_entry_id()
+    out: dict[str, str] = {}
+    for key, entry_id in pendings.items():
+        entry = by_id.get(entry_id)
+        if entry is None:
+            continue
+        listing_key = _entry_key(entry, by_id)
+        if listing_key and listing_key != key:
+            out[key] = listing_key
+    return out
 
 
 def _deleted(task: dict, deleted: dict) -> bool:
@@ -1654,13 +2541,28 @@ def _deleted(task: dict, deleted: dict) -> bool:
       `due` is deliberately not read, because delete cancels pending entries
       and a cancelled entry's future due time is not news, it is a corpse with
       a date on it;
-    * **the transcript grew** — the user (or a run that was already in flight
-      when the delete landed, which the endpoint refuses but a race can slip)
-      said something in the session. Append-only files move their mtime for
-      exactly one reason. An unreadable mtime counts as no evidence, not as
-      revival: degrading widens nothing here because the tombstone still
-      answers, and a task wrongly hidden is recoverable while a delete that
-      silently failed is not — the endpoint's answer is the receipt.
+    * **a user message newer than the tombstone** — somebody said something in
+      the session after it was hidden: the reader typing into the conversation
+      again, or a scheduled message delivered into it, which writes its own
+      `type: "user"` row with the moment it landed. That row, found by reading
+      backwards from the end of the transcript (`tasks_store.user_row_after`),
+      is the evidence. An unreadable file counts as no evidence, not as
+      revival: degrading widens nothing here because the
+      tombstone still answers, and a task wrongly hidden is recoverable while a
+      delete that silently failed is not — the endpoint's answer is the
+      receipt.
+
+    A MOVED MTIME IS NOT A MESSAGE (Akshil, 2026-09-20: "hi r1" deleted, back
+    half a minute later as a blank done row). The file being newer than the
+    tombstone used to BE the second bullet, and it is not evidence: Claude Code
+    writes bookkeeping rows on its way out — `last-prompt`, `ai-title`, `mode`,
+    `permission-mode`, `atis-latch`, `cost-state` — which re-create a
+    transcript an erase has just removed, seconds or minutes later, whenever
+    the process behind the session finally goes. None of them carries a
+    timestamp and none of them is a `user` row, so none of them can pass the
+    test above. The mtime still runs FIRST, as the cheap gate: a file no newer
+    than the tombstone is not read at all, and a listing walks every
+    transcript on the machine.
 
     This is `_revived` restated for a stronger filing — same promise, same
     shape, different record.
@@ -1675,10 +2577,11 @@ def _deleted(task: dict, deleted: dict) -> bool:
     path = task["path"]
     if path:
         try:
-            if os.path.getmtime(path) > at:
-                return False
+            grew = os.path.getmtime(path) > at
         except OSError:
-            pass
+            grew = False
+        if grew and tasks_store.user_row_after(path, at):
+            return False
     return True
 
 
@@ -1712,21 +2615,69 @@ def _place(task: dict) -> None:
     first_ts = None
     prompt = ""
     pane = ""
+    entrypoint = None
     if task["path"]:
-        cwd, first_ts, prompt, pane = tasks_store.head(task["path"])
-    task["first_prompt"] = prompt
+        cwd, first_ts, prompt, pane, entrypoint = tasks_store.head(task["path"])
+    # ENTRYPOINT (2026-09-18): "cli" (interactive terminal) vs "sdk-cli"
+    # (headless/programmatic, what templates/claude/agent.py's spawn
+    # produces) off the same head-parsed record `cwd`/`prompt`/`pane` already
+    # come from — see tasks_store.head's own doc comment. Stored UNDEFINED,
+    # never a placeholder default, when the transcript has none (an older
+    # session, or the head read failed): task-status-notify.ts's gate must
+    # treat "unknown" the same as "not cli" (fail open), and a fabricated
+    # default here would make that distinction impossible to draw correctly
+    # downstream.
+    task["entrypoint"] = entrypoint
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
+    # A GUESSED project mints no number (`_numbers`). The directory-name
+    # decode below is lossy — every hyphen reads as a separator, so
+    # `-private-tmp-pqueue-qa-alpha` comes back as `/private/tmp/pqueue/qa/alpha`
+    # — and a number allocated against that string lives in a counter of its
+    # own; the folder's real counter then hands the same number out again the
+    # moment the transcript says where it is (two TASK-002s in one folder,
+    # browser QA 2026-09-16). The row is still FILED under the guess for this
+    # one listing, so it has a lane and a folder chip; only the allocation
+    # waits for the first row that carries a cwd, which is seconds away.
+    task["project_guessed"] = False
+    # A PLACEHOLDER HAS ONLY THE SEND TO GO ON — no transcript to read a `cwd`
+    # out of, no entry to take a target from — so the mark supplies both: the
+    # file the message was sent about is the target, and its folder (`_workdir`,
+    # the same rule the run itself applies) is the project. Gated on having
+    # neither of the other two sources, so a session that HAS a transcript keeps
+    # reading its own `cwd` and its own pane file; the mark is a floor under a
+    # row with nothing, never an override of something.
+    sent = task.get("sent") or {}
+    if not task["path"] and not entries and sent.get("file"):
+        target = str(sent["file"])
+    if not prompt:
+        # …and the same for the title. `_title`'s `message` source is "the line
+        # the session opened with", which for a send this app has not seen land
+        # yet is exactly the words that were sent — a placeholder row named
+        # after the message, in the same source the transcript will name it in a
+        # moment, rather than a nameless row that acquires a title on the next
+        # poll.
+        prompt = str(sent.get("text") or "")
+    task["first_prompt"] = prompt
     if not cwd:
-        cwd = _workdir(target) or (
-            sessions._decode_project_dir(os.path.basename(os.path.dirname(
-                task["path"]))) if task["path"] else "")
+        cwd = _workdir(target)
+        if not cwd and task["path"]:
+            cwd = sessions._decode_project_dir(
+                os.path.basename(os.path.dirname(task["path"])))
+            task["project_guessed"] = bool(cwd)
     task["project"] = tasks_store.project_of(cwd or "")
     task["target"] = target or (
         pane if pane and os.path.isfile(pane) else task["project"])
     if first_ts is None and entries:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))
+    if first_ts is None and sent.get("at"):
+        # A placeholder's only clock. It is fixed for the row's whole life in
+        # exactly the way this value has to be: the transcript that lands a
+        # moment later has a FIRST record older than nothing, so the minimum
+        # below still settles on the file's own answer and the number this
+        # allocates is the number that row keeps (same key — see `_collect`).
+        first_ts = float(sent["at"])
     task["order"] = first_ts
     # WHEN THE TASK BEGAN — the row's `started`, and deliberately NOT `order`
     # above, which this must not disturb: `order` decides the sequence new task
@@ -1781,41 +2732,140 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
             if old in store and task["key"] not in store:
                 rekeys.append((old, task["key"]))
                 break
+    # A task whose project is only a GUESS (`_place`) is left out of the
+    # ALLOCATION — a number it does not have yet is minted, from the right
+    # counter, by the first listing that reads its cwd. A number it already
+    # HAS is still its number (Bugbot, PR #1124): the store is read for it below
+    # rather than written, so a session numbered before this rule, or one whose
+    # transcript never records a cwd, keeps wearing what it was given.
     items = [(task["key"], task["project"], task["order"])
-             for task in tasks.values()]
+             for task in tasks.values()
+             if not task.get("project_guessed")]
     try:
-        return tasks_store.ensure_ids(items, rekeys)
+        numbers = tasks_store.ensure_ids(items, rekeys)
     except OSError:
         # A read-only state dir must not cost the user their task list; the
         # numbers simply stay blank until it is writable again.
         return {}
+    for task in tasks.values():
+        if not task.get("project_guessed") or task["key"] in numbers:
+            continue
+        stored = tasks_store.stored_number(store, task["key"])
+        if stored:
+            numbers[task["key"]] = stored
+    return numbers
+
+
+def _task_number(task_key: str, tasks: dict[str, dict]) -> str:
+    """The number for ONE task, allocated now if it has none — the listing's own
+    `_numbers`, over a collection the caller already holds.
+
+    **A QUEUED SEND'S ANSWER HAS TO BE ABLE TO NAME ITS OWN TASK** (Akshil,
+    2026-09-12). A brand-new chat whose first message queues is a
+    `pending:<entry>` task that nothing has listed yet, so `POST
+    /api/tasks/queue/admit` used to answer with a position, a holder and no
+    number at all: the bubble said "queued · behind TASK-041" about a task it
+    could not call anything, and the name only appeared when the next full
+    listing came round. Minting HERE is what makes it the same number — not a
+    second one — that the row is built with a moment later:
+    `tasks_store.ensure_ids` is allocate-once and keyed by the task key, so the
+    listing finds the record already there and writes nothing.
+
+    `_place` first, because the allocation reads two facts a freshly collected
+    task does not have yet: the project (which counter the number comes out of)
+    and the order (the sequence backfilled numbers are handed out in). The same
+    two, computed the same way, as the listing — which is the whole reason this
+    goes through `_place`/`_numbers` rather than calling `ensure_ids` with a
+    project of its own guessing.
+
+    "" for a key the collection does not hold — the entry was cancelled from
+    another window between the write and this read — which is how every other
+    absent id on this wire reads, and for a state dir that cannot be written
+    (`_numbers` swallows that: no numbers is a cost the task list survives)."""
+    task = tasks.get(task_key)
+    if task is None:
+        return ""
+    _place(task)
+    return _numbers({task_key: task}).get(task_key, "")
 
 
 # ------------------------------------------------------------------ liveness
 
 
-def _live(path: str | None, now: float) -> tuple[bool, float]:
-    """(is this session running, when was it last active).
+def _live(path: str | None, now: float,
+          session_id: str = "") -> tuple[bool, float, bool]:
+    """(is this session running, when was it last active, did the SENDER say a
+    turn had just started here).
 
     The same 45-second rule as the sessions inbox, and the same tail read — a
     transcript's mtime alone lies, because Claude Code appends housekeeping
     records after the turn is over. Skipped entirely for a file nothing has
     touched in 90 seconds: it is stale either way, so the read would only be
-    deciding what kind of stale."""
+    deciding what kind of stale.
+
+    The third value is EVIDENCE vs TESTIMONY. The first two are inferred from
+    files — timestamps a later rule is entitled to re-read and discount
+    (`_verdict_outvotes_live`). The mark is the page that made the send saying
+    it made it, which no reading of the transcript can outvote, and a caller
+    that discounts it has thrown away the one fact this whole path exists to
+    carry.
+
+    It is the state of the mark, NOT which branch below won (Bugbot, PR #1163).
+    Reporting it only where the mark decided the answer meant it went false the
+    instant the registry caught up and said `busy` — so a row could show the
+    send, drop back to done two seconds later when the echo rule got its vote
+    back, and only return when the prompt reached the transcript. Same lag,
+    with a flicker in front of it. The send either happened in the last fifteen
+    seconds or it did not, and no other fact makes it un-happen.
+
+    True implies running: `is_marked_running` is the one thing consulted for
+    it, and every way a mark is stood down — its own TTL, a registry that went
+    `busy` then wasn't, or the sender itself saying the turn ended
+    (`mark_idle`, `POST /api/tasks/idle`) — lives there, not here. That last
+    one is what keeps a FAST turn from wearing the ring for the rest of the
+    mark's fifteen seconds: the reply landing is news the same page can say
+    the instant it knows it, same as the send was.
+
+    `session_id` is for the ONE task shape that has no transcript to name
+    itself with: a placeholder built out of a live send alone (`_collect`).
+    There is no file to read, so the mark is not merely the best evidence
+    here — it is all of it. Optional, because every other caller has a path
+    and the path already carries the id (the transcript is named for its
+    session), and reading it twice could only produce two answers."""
     if not path:
-        return False, 0.0
+        if tasks_watch.is_marked_running(session_id):
+            # A send in flight into a session nothing has written yet. `now` is
+            # the honest last-active — the turn is happening as this is read —
+            # exactly as it is on the marked branch below.
+            return True, now, True
+        return False, 0.0, False
     try:
         mtime = os.path.getmtime(path)
     except OSError:
-        return False, 0.0
+        return False, 0.0, False
+    session_id = os.path.splitext(os.path.basename(path))[0]
+    marked = tasks_watch.is_marked_running(session_id)
     # The live registry (tasks_watch) knows what a running `claude` SAYS it is
     # doing, which beats inferring it from the file: `busy` is running whatever
     # the tail's timestamps add up to, and `idle` is not, even if housekeeping
     # touched the file a second ago. Its last-active stamp is used only when it
     # is newer than the transcript's — a registry row is rewritten on status
     # changes, not on every message, so the file can know the later moment.
-    from_registry = tasks_watch.live_from_registry(
-        os.path.splitext(os.path.basename(path))[0], mtime)
+    from_registry = tasks_watch.live_from_registry(session_id, mtime)
+    # …EXCEPT IN THE FIRST SECONDS OF A TURN THIS APP SENT (tasks_watch
+    # `mark_running`). A chat here runs `claude -p`, whose registry row lands two
+    # to four seconds after the process starts — so both "no row at all" and "the
+    # previous turn's idle row" read as done, and every turn sent from this app
+    # wore a done ring for its first seconds; a short turn for the whole of it
+    # (Akshil, 2026-09-15).
+    #
+    # While the send's mark is alive, ONLY `busy` outranks it: a registry saying
+    # the turn is running is the same answer from a better source, and every
+    # other answer is a file that has not caught up. `now` is the honest
+    # last-active — the turn is happening as this is read — and the mark expires
+    # on its own, so a run that died on the spot settles without a write.
+    if marked and not (from_registry and from_registry[0]):
+        return True, now, True
     if from_registry is not None:
         running, active = from_registry
         if now - mtime <= sessions._STALE_TAIL_SEC:
@@ -1823,12 +2873,12 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
             file_active = last.timestamp() if last is not None else mtime
         else:
             file_active = mtime
-        return running, max(active, file_active)
+        return running, max(active, file_active), marked
     if now - mtime > sessions._STALE_TAIL_SEC:
-        return False, mtime
+        return False, mtime, marked
     activity, last = sessions._tail(path, mtime)
     running = (now - activity) < sessions._RUNNING_WINDOW_SEC
-    return running, (last.timestamp() if last is not None else mtime)
+    return running, (last.timestamp() if last is not None else mtime), marked
 
 
 # --------------------------------------------------------------- the endpoints
@@ -1896,10 +2946,48 @@ def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
     return best_at, best_id, best_repeats
 
 
+# THE TITLE PR #1107's COMEBACK FILES ITSELF UNDER — `protocol/quota.ts`
+# CONTINUE_TITLE, restated here because it is a wire fact between the chat that
+# schedules the continuation and the row that times it. The chat is the only
+# thing that writes it, and it writes it on that entry alone.
+COMEBACK_TITLE = "Continue after usage limit"
+
+
+def _comeback_at(entries: list[dict]) -> float:
+    """WHEN THE USAGE-LIMIT CONTINUATION RUNS — the soonest pending entry of this
+    task that is the comeback the chat scheduled, and 0.0 when there is none.
+
+    NOT `_next_run` (🟡 review, 2026-09-12). `resumes_at` is read as "this
+    stopped run picks itself back up then", and the next run of ANY kind is a
+    different fact: a task that hit the limit at noon and also has a nightly
+    repeat due at 6pm would have told the reader the window reopens at 6pm — a
+    sentence about the plan's clock built out of somebody's calendar.
+
+    The title is the whole test, because it is the only mark the comeback
+    carries: `scheduleComeback` posts one entry, on this session, with that
+    title and a fixed prompt. 0.0 when the comeback was cancelled or its POST
+    failed, which is how every other absent time on the row reads.
+    """
+    best = 0.0
+    for entry in entries:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        if str(entry.get("title") or "").strip() != COMEBACK_TITLE:
+            continue
+        at = _entry_at(entry)
+        if not at:
+            continue
+        if not best or at < best:
+            best = at
+    return best
+
+
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          busy: set[str], revived: list[str], parked: dict | None = None,
+         queue: dict | None = None, queue_on: bool | None = None,
          chat_drafts: dict | None = None,
          bound_chips: dict | None = None,
+         settings: dict | None = None,
          last_message: bool = False) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
@@ -1914,6 +3002,22 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     own entries because a resume that forked is filed under the session it RAN
     in (`_entry_session` reads the answer first) while it still holds the
     session it NAMED busy, and that one is another row.
+
+    `queue` is `_queue_lines()` — every task waiting on a busy folder, with its
+    place in the line — computed once by the caller for the third time on this
+    list of parameters and for the same reason: it is one scan of the runs tree
+    and one pass over the scheduler's store, and it answers about tasks other
+    than this one. None means nobody asked (the single-row callers below) or the
+    project-queue flag is off, and the row then carries no queue fields at all.
+
+    `queue_on` is the flag, read once by the caller. FLAG OFF IS MAIN, FIELD FOR
+    FIELD: `queue_key` is a folder derivation only this feature has a use for,
+    and resolving one per row — walking a task's ancestors looking for a `.git`
+    — is work main never did. So it is `""` with the flag off, like every other
+    queue field on this row, and the folder appears the moment the feature is
+    turned on. None means "ask", for the single-row callers that have no listing
+    to have read it in.
+
 
     `chat_drafts` is `drafts.list_chat()`, read once by the caller for the same
     reason `read` and the numbers are: it is one file, and asking it per row
@@ -1932,13 +3036,20 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     draft WINS, because that one is literally sitting in this conversation's
     composer while the form is a message about to be scheduled into it.
 
-    `last_message` is `shell_prefs.task_card_last_message()`, read once per
-    request by the caller for the same reason the joins above are: it is one
+    `settings` is `tasks_store.settings_state()` — the per-session model/effort
+    record — read once by the caller for the same reason `read` is: it is one
     file, and asking it per row would open it once per task on the machine.
-    False — the default, and what the three single-row callers take, none of
-    which reads the field — leaves the key OFF the row entirely rather than
-    sending a null: the only surface for it is the Cards wall's experimental
-    title, and the client already reads an absent key as "nothing said".
+    None means nobody read it, and the row then answers off the task's own
+    entries alone (`_row_settings`), which is what the three single-row callers
+    below want: none of them draws a pill.
+
+    `last_message` — whether the row carries the newest thing the user said —
+    is True for the listing and False for the three single-row callers below,
+    none of which reads the field. False leaves the key OFF the row entirely
+    rather than sending a null, and the client reads an absent key as
+    "nothing said". (Until 2026-09-20 this followed the `task_card_last_message`
+    pref, an experiment that titled the row by that message; the pref is gone
+    and the listing always carries the field now.)
 
     `revived` is an OUT parameter and the only one: a session whose archive
     record this row has just found stale is appended to it, and the caller does
@@ -1946,7 +3057,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     inside a per-task `try` that swallows IO errors — a failed write would cost
     the row instead of costing the filing."""
     rec = _scan(task["path"]) if task["path"] else None
-    live, active = _live(task["path"], now)
+    live, active, marked = _live(task["path"], now, task["session_id"])
     prompts = list(rec["tail"]) if rec else []
     # The transcript's prompts already include every scheduled message that
     # fired, so only the ones that never reached a session are added — and with
@@ -1961,6 +3072,19 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
     merged = _merge(prompts, task["entries"])
+    # …AND THE SEND THAT HAS NOT REACHED DISK YET, as the newest message in it
+    # (`_fold_sent_mark`, which explains when it is already there and drops
+    # itself). It is added to the WHOLE merged thread, before the tail is cut,
+    # for the same reason `live` is decided there: `_status`, `_speaker` and the
+    # row's own `failed` flag all read the whole list, and a send visible to the
+    # preview but not to the status would be a row that shows the words and says
+    # the task is done.
+    #
+    # `total` counts it, so the message ids below still number from the end —
+    # and the id it takes is the id the transcript's own prompt takes when it
+    # lands, because by then it IS that message and the count has not moved.
+    if task.get("sent") and _fold_sent_mark(merged, task["sent"]):
+        total += 1
     # A run that has already reported its verdict does not keep the row In
     # Progress off its own closing transcript records: the queue card in the
     # corner says finished within seconds of the result row, and this page
@@ -1973,7 +3097,27 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # `active` rides along because it is the tie-breaker the bug demanded:
     # a transcript still being written to meaningfully after the verdict is a
     # session that kept working, and only the verdict's own echo is set aside.
-    if live and _verdict_outvotes_live(merged, active):
+    #
+    # …AND A SEND IS NOT AN ECHO (`marked`, Bugbot PR #1163). This rule discounts
+    # TIMESTAMPS: it exists because a finished run's closing records look like a
+    # pulse, and the only thing it is entitled to set aside is the transcript's
+    # own vote. The mark is not that vote — it is the page that sent the message
+    # saying it sent it, a fact no reading of the file can outrank. Both windows
+    # are 15 seconds, so without this a follow-up typed into a task whose
+    # scheduled run had just reported would have been suppressed for the mark's
+    # entire life, and the row would have sat on `done` until the registry row
+    # landed — which is the exact lag the mark exists to close.
+    #
+    # `marked` is the mark's STATE, not the branch `_live` took, so this holds
+    # across the registry catching up mid-send as well — see its docstring.
+    if live and not marked and _verdict_outvotes_live(merged, active):
+        live = False
+    # …and a turn the usage limit ended is over too, however fresh the failure
+    # row it ended on. See `_limit_outvotes_live`: without this the row read In
+    # Progress and wore the failed ring at the same time, and the board put a
+    # task that cannot move until the window resets into the lane for work that
+    # is happening.
+    if live and _limit_outvotes_live(merged):
         live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
@@ -2044,9 +3188,46 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # has no run to be parked, which is what the empty key would otherwise
     # accidentally match.
     waiting = (parked or {}).get(task["session_id"]) if task["session_id"] else None
+    # The flags this task's runs are launched with — see `_row_settings`. Both
+    # "" for a task that never chose, which is most of them.
+    model, effort = _row_settings(task, settings)
+    # WHERE IN THE LINE, asked once here for the same reason `waiting` is: the
+    # status, the position and the name of the task in front have to describe one
+    # state of one folder. `{}` for a task nobody said was queued, which is every
+    # task with the flag off.
+    queued = (queue or {}).get(task["key"]) or {}
+    if queue_on is None:
+        queue_on = project_queue.enabled()
+    # The card's two summary facts, asked once here for the same reason `queued`
+    # is: they are about this task's own entries, and the row is where those
+    # are. Flag off costs one branch and nothing else.
+    waiting_count, blocking = _queue_summary(task, now) if queue_on else (0, False)
+    # THE LEADER ENTRY OF A ROW THAT HAS NO CONVERSATION YET, and who asked for
+    # it. Both read once here, off this task's own entries, and both "" for a
+    # task with a session — that row is a chat already, and has a transcript to
+    # be found by. See the two fields below.
+    #
+    # …EXCEPT `entry_id` ON A SESSION ROW THAT A SCHEDULED MESSAGE STARTED
+    # (`_minting_entry`): the page-side `fused.tasks` API holds a task by the
+    # `pending:<entry>` key `create` answered, and when the row rekeys onto its
+    # session the entry id is the one name both keys share. `entry_origin`
+    # stays pending-only, so the shell's chat/scheduled split is unchanged.
+    pending_id = tasks_store.pending_entry(task["key"])
+    entry_id = pending_id or _minting_entry(task)
+    entry_origin = _leader_origin(task, pending_id) if pending_id else ''
     status = _status(merged, filed, task["session_id"], live, busy,
-                     parked=waiting is not None)
+                     parked=waiting is not None, queued=bool(queued))
+    # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
+    # nothing has been said in. Asked once, here, after the status, because a
+    # queued row is titled by the message in the line (`_last_message`), and
+    # read twice below: as `last_message` and as the clock `last_reply` is
+    # measured against. Off the whole merged thread, not the cut tail, so it
+    # can never name a message the tail dropped.
+    said = _last_message(merged, queued=status == "queued", now=now)
     failed = _failed(speaker)
+    # THE ONE FAILURE THAT IS NOT A FAULT. Read off the message the status is
+    # reading off, so the reason and the lane cannot describe different runs.
+    limited = speaker is not None and bool(speaker.get("limited"))
     # The New task form bound to this conversation, if there is one — same
     # keying as `waiting` above and for the same reason: a row with no session
     # has nothing a draft could be bound TO, and "" must not match.
@@ -2055,6 +3236,31 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     row = {
         "key": task["key"],
         "task_id": number,
+        # THE LEADER ENTRY BEHIND A TASK THAT HAS NO CONVERSATION YET, and ""
+        # for every task that has a session. A `pending:<entry>` row is a chat
+        # whose first message is still waiting: there is no transcript to open
+        # and no session id to open it with, so the entry id is the only handle
+        # a client has on it — it is what the chat is re-entered by, what Skip
+        # names (`api_queue_skip`'s `{entry_id}`), and what cancel writes
+        # against. Lifted out of the key rather than left for the client to
+        # slice, because the key REKEYS onto the session the moment the leader
+        # runs (§5) and a reader that parsed it would be parsing a shape that
+        # had moved.
+        #
+        # ALSO SET on a session row whose conversation a scheduled message
+        # started (`_minting_entry`) — the id its `pending:` key carried, kept
+        # across the rekey so a page holding that key can find the row again.
+        # "" for a chat-born session.
+        "entry_id": entry_id,
+        # WHO ASKED FOR THE WORK BEHIND A ROW THAT HAS NOT RUN — `"chat"` for a
+        # message a composer queued through admission (`api_queue_admit` stamps
+        # it and nothing else does), `""` for one somebody SCHEDULED from the
+        # calendar or the New task form. The two are the same row shape and a
+        # very different thing to a reader: one is a conversation waiting to
+        # start and belongs in a list of chats, the other is a job with a date
+        # on it and does not. `""` for every task that has a session, which is
+        # already a chat and already listed as one.
+        "entry_origin": entry_origin,
         # Canonicalized on the way out, like every other fs path this server
         # hands the shell: the frontend's path helpers are forward-slash-only.
         "project": canonical_fs_path(task["project"]),
@@ -2062,10 +3268,23 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "session_id": task["session_id"],
         "title": title,
         "title_source": source,
+        # First line of Claude's newest reply to THIS turn, "" while it has
+        # not come, `Queued` on a row still in the line — see `_last_reply`.
+        # The List row prints it, grey and italic, after the title; the Board
+        # card's hover says the same.
+        "last_reply": _last_reply(rec, status, said),
         # Deferred by §12 — Claude Code stores no summary, so filling this needs
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
         "description": _description(task),
+        # WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — "" for the
+        # overwhelming majority, which chose neither. Not drawn anywhere: it is
+        # what the side peek's composer opens on, so a task set up with a model
+        # shows that model instead of whatever the folder last used, and a chat
+        # whose reader has moved a pill shows what they moved it to
+        # (`_row_settings`).
+        "model": model,
+        "effort": effort,
         # Over the WHOLE merged thread, not the three-message tail: "is anything
         # running in this task?" and "is every message filed away?" are both
         # questions about all of it, and a run pushed out of the window by two
@@ -2078,8 +3297,28 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # Retry for the first, Open for the second (Akshil, 2026-09-03: "for fail
         # retry, for block a reason"). "" for every task that is neither, which
         # is most of them.
-        "blocked_reason": (waiting["reason"] if waiting is not None
-                           else ("failed" if failed or status == "blocked" else "")),
+        "blocked_reason": (
+            waiting["reason"] if waiting is not None
+            # `usage_limit` BEFORE `failed`, because it is the same run
+            # described more usefully: the button is not Retry, it is nothing —
+            # the continuation is already scheduled and `resumes_at` says when.
+            # NEVER OVER A RUNNING TURN: `limited` is read off the last
+            # completed speaker, so it stays true for the whole of the comeback
+            # turn (and any new turn) until a fresh reply lands — a running row
+            # must not read "paused" (Bugbot, de311131b). A limited session
+            # whose folder is held reads `queued`, and is still paused: the
+            # reason stays (Bugbot, 358864c30).
+            else "usage_limit" if limited and status in ("blocked", "queued")
+            else ("failed" if failed or status == "blocked" else "")),
+        # WHEN A BLOCKED RUN PICKS ITSELF BACK UP — the CONTINUATION the chat
+        # scheduled at the reset the CLI reported (PR #1107), and that entry
+        # alone (`_comeback_at`). The task's next run of any kind was the wrong
+        # clock: an unrelated message due sooner made this row promise the plan's
+        # window reopened at a time that had nothing to do with the plan. 0.0
+        # when nothing is scheduled (the comeback was cancelled, or the POST that
+        # made it failed) and 0.0 for every task that is not waiting on a clock,
+        # which is how every other absent time on this row reads.
+        "resumes_at": _comeback_at(task["entries"]) if limited else 0.0,
         # The one line under the title on a needs-attention row: which tool, and
         # what it wants to do ("Bash · rm -rf build"). None whenever nothing is
         # waiting — the row draws the sub-line off this, so an empty object would
@@ -2149,21 +3388,151 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # ...and whether that run is an occurrence of a repeating template —
         # the chip's repeat glyph. False when nothing is pending.
         "next_run_repeats": next_run_repeats,
+        # THE FOLDER THIS TASK EDITS (`project_queue.queue_key`) — what the
+        # client groups by. "" for a task whose project is nothing the queue will
+        # gate (no path at all, the user's home, the filesystem root) and ""
+        # WITH THE FLAG OFF, which is the point: resolving it walks a task's
+        # ancestors looking for a `.git`, once per row, and main never did that.
+        # Two tasks on two files in one repo share it; a worktree keys on itself
+        # and not on the repo it was cut from.
+        "queue_key": project_queue.queue_key(task["project"]) if queue_on else "",
+        # WHERE IN THE LINE, 1-based — and 0 for every task that is not queued,
+        # which is how every other absent number on this row reads. Only ever
+        # non-zero alongside `status == "queued"`; the client prints it only
+        # after reading the status, so the two cannot contradict each other.
+        "queue_position": queued.get("position", 0),
+        # WHO IS IN FRONT: the number of the task holding this folder
+        # ("TASK-041"), and its title when we can name it. Both "" when the
+        # holder is something the listing cannot name — a run started outside
+        # this app, a task whose number has not been allocated — and the client
+        # falls back to "behind a run in this folder" rather than printing a
+        # blank.
+        "queue_ahead": queued.get("ahead", ""),
+        "queue_ahead_title": queued.get("ahead_title", ""),
+        # …AND WHERE "behind TASK-041" GOES WHEN IT IS CLICKED: the holder's own
+        # session and target, which is the pair every thread link in this app is
+        # built from (tasks-lib `taskHref`). Both "" for a holder with no
+        # session yet — a run that has not published one, a claimed message that
+        # has not spawned — and the client then prints the name unlinked.
+        "queue_ahead_session": queued.get("ahead_session", ""),
+        "queue_ahead_target": queued.get("ahead_target", ""),
+        # The holder's own TASK key — a `pending:<entry>` for a run that has not
+        # named its session yet — so "behind TASK-0xx" can still be a link to
+        # that chat while the pair above is still empty.
+        "queue_ahead_key": queued.get("ahead_key", ""),
+        # Does this task's work go out the moment the folder frees? True for a
+        # skipped task (`schedule.set_priority`, which Skip and Run-now write)
+        # and for a held answer, which is always at the head.
+        "queue_priority": bool(queued.get("priority")),
+        # HOW MANY MESSAGES OF THIS TASK'S ARE WAITING — the card's own summary
+        # line ("2 messages waiting"), counted here because the row is the only
+        # place that has the entries. Every kind of waiting message counts: the
+        # ones the chat queued and the ones somebody scheduled are the same
+        # thing to a reader looking at a card. 0 for a task with nothing due,
+        # and 0 with the flag off like every other queue field on this row.
+        "queue_waiting": waiting_count,
+        # DOES THE COMPOSER HAVE TO SHUT? True only for a message somebody
+        # SCHEDULED into this conversation (no `origin`), which is the one the
+        # chat cannot order itself against — the scheduler is about to send it
+        # into this very session, and a line typed over it is two messages
+        # racing into one run. A message the chat itself queued is that
+        # conversation's own next line and never blocks it (Akshil,
+        # 2026-09-12). See `_queue_summary`.
+        "queue_blocking": blocking,
+        # "cli" / "sdk-cli" / `None` — see `_place`'s own comment and
+        # `_PULSE_FIELDS`'s. `.get`, not `[...]`: a draft row (built by the
+        # separate draft-row function, never through `_place`) never gets an
+        # `"entrypoint"` key set on `task` at all, and this must not KeyError
+        # on one.
+        "entrypoint": task.get("entrypoint"),
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
     if last_message:
-        # THE LAST TURN OF THE CONVERSATION, whoever took it — one line of it,
-        # with `role` saying which — or None for a task nothing has been said
-        # in. `messages` above carries PROMPTS only, so this is the one field on
-        # the row that can carry a reply, and it is what the Cards wall titles a
-        # card by while `task_card_last_message` is on (shell/prefs.py). Off,
-        # the key is absent — which the client reads as "nothing said" — and
-        # every row on the machine stops carrying a field no surface draws.
-        # It costs no read either way: the reply was condensed by the scan that
-        # was already reading the bytes (`_condense_reply`).
-        row["last_message"] = _last_message(rec)
+        # The peek header's hint and every view's title line read it — see
+        # `said` above for where it is decided.
+        row["last_message"] = said
     return row
+
+
+def _minting_entry(task: dict) -> str:
+    """The entry whose run STARTED this task's session, or "".
+
+    A session row's `entry_id`: the one message that was `pending:<id>` before
+    this conversation existed — it opened a fresh session (no `session_id` of
+    its own, no `follow_of` leader) and its run landed in this one
+    (`claude_session_id`). Earliest by id (ids sort by due time) if a store
+    somehow holds two. "" for a chat-born session, which never had a pending
+    key to carry over."""
+    session = str(task.get("session_id") or "")
+    if not session:
+        return ""
+    ids = sorted(
+        str(e.get("id") or "") for e in task["entries"]
+        if not str(e.get("session_id") or "")
+        and not str(e.get("follow_of") or "")
+        and str(e.get("claude_session_id") or "") == session)
+    return ids[0] if ids else ""
+
+
+def _leader_origin(task: dict, entry_id: str) -> str:
+    """`origin` off the entry a `pending:<entry>` row is keyed by — the LEADER,
+    not the newest message, because the leader is the one that decides what kind
+    of thing this row is: a chat whose first line queued (`"chat"`, stamped by
+    `api_queue_admit` and by nothing else), or a message somebody scheduled
+    (absent, which is main's field for field).
+
+    "" for a leader that is not among this task's entries, which can only happen
+    if it was cancelled out from under the row between collection and here."""
+    for entry in task["entries"]:
+        if str(entry.get("id") or "") == entry_id:
+            return str(entry.get("origin") or "")
+    return ""
+
+
+def _queue_summary(task: dict, now: float) -> tuple[int, bool]:
+    """`(how many of this task's messages are waiting, must its composer shut)`.
+
+    **Waiting** is the same three-part test the line itself applies
+    (`queue_manager.reconcile`) minus the folder: pending, and due — by
+    `_queue_at`, so a
+    message Run now was pressed on counts from that moment rather than from next
+    Tuesday. Without the folder because this is a count of MESSAGES, not a place
+    in a line: a task with two queued sends says "2 messages waiting" whether or
+    not the second one is in a folder anybody is holding, and the card would
+    otherwise have to count the entries client-side to say so.
+
+    **Blocking** is the older question, and it is `origin` that finally answers
+    it. Before the queue, a pending entry aimed at this conversation shut its
+    composer — the scheduler was about to send it into this very session, and a
+    line typed over it is two messages racing into one run. Under the queue a
+    chat's own send is ADMITTED first and takes its place in the order, so
+    nothing it queues can race anything: those entries carry `origin: "chat"`
+    and never block. What is left is the message somebody SCHEDULED into this
+    session from the calendar or the Tasks page, which the chat still has no way
+    to order itself against — so it still shuts the box, exactly as it did
+    before (Akshil, 2026-09-12).
+
+    NO DUE FILTER on that half, deliberately: a chat holding next Tuesday's
+    message is every bit as blocked as one holding the next thirty seconds' (the
+    rule the client has always applied, `sched/scheduled.schedPendingHere`), and
+    the two halves of this answer are two different questions about one set of
+    entries. Aimed at THIS session by either spelling — the id the entry names
+    and the id its run landed in — for the reason `schedPendingHere` reads both.
+    """
+    session = str(task["session_id"] or "")
+    waiting, blocking = 0, False
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if due and due <= now:
+            waiting += 1
+        if (session and not str(entry.get("origin") or "")
+                and session in (str(entry.get("session_id") or ""),
+                                str(entry.get("claude_session_id") or ""))):
+            blocking = True
+    return waiting, blocking
 
 
 def _chat_draft(session_id: str, chat_drafts: dict | None) -> dict | None:
@@ -2316,6 +3685,12 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         "title": title or _UNTITLED_DRAFT,
         "title_source": "draft",
         "description": str(record.get("description") or ""),
+        # WHAT THIS FORM IS SET TO — the same two fields `_row_settings` carries
+        # for a real task, read off the draft's own record because that is where
+        # a half-filled New task form keeps them (`drafts.TASK_FORM_FIELDS`).
+        # "" for a form that has not touched either picker, which is most.
+        "model": _display_model(str(record.get("model") or "")),
+        "effort": str(record.get("effort") or ""),
         "status": _DRAFT_STATUS,
         "failed": False,
         "blocked_reason": "",
@@ -2371,11 +3746,22 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     composer already holding the text (design.md, "Round 2").
 
     THE SAME FIELD SET as `_draft_row` and `_row`, with a draft's answers: no
-    session (there is none until the first send — and the run that send starts
-    is what carries this number forward, `_settle_new_chats`),
-    no messages, nothing that has happened. `form` is null rather than a dict:
-    a chat draft is text and attachments, which is what `draft` already
-    carries, and there is no form to reopen.
+    session (there is none until the first send — and a send does not take this
+    row's number with it either: a saved draft outlives every send made from
+    the same folder, `_settle_new_chats`), no messages, nothing that has
+    happened.
+
+    `form` IS THE HOP'S SETTINGS WHEN THERE ARE ANY, and null when there are
+    none. It used to be null always, on the reasoning that a chat draft is text
+    and attachments and there is no form to reopen — true until the Schedule hop
+    stopped minting a `draft:<id>` and started editing THIS record
+    (design-drafts-one-record.md, §1). A person who pressed Schedule on an
+    unsent chat, set it for Friday and went back is looking at this row, and
+    without the time on it the row reads as an ordinary half-written message
+    rather than as something booked for Friday. Same field as `_draft_row`
+    carries and read the same way (`row.form.when`, `row.form.repeat`); `when`
+    on the row itself stays null on both, which is how the List knows to print
+    `Draft` in its when-column.
     """
     raw = drafts.new_chat_file(key)
     folder = _workdir(raw)
@@ -2383,6 +3769,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     updated = float(record.get("updated_at") or 0.0)
     line = drafts.preview(record.get("text"))
     rows = record.get("attachments") or []
+    form = record.get("form") or {}
     return {
         "key": key,
         "task_id": number,
@@ -2404,6 +3791,11 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "title": _draft_title(record.get("text"), _UNTITLED_CHAT),
         "title_source": "draft",
         "description": "",
+        # Present for the same one-row-shape reason as the fields above, and ""
+        # for the same honest reason: a chat nobody has sent yet has no run to
+        # have been launched with a model, and no session to have recorded one.
+        "model": "",
+        "effort": "",
         "status": _DRAFT_STATUS,
         "failed": False,
         "blocked_reason": "",
@@ -2432,8 +3824,10 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "next_run_entry": "",
         "next_run_repeats": False,
         "messages": [],
-        # Nothing to reopen a modal on — see the docstring.
-        "form": None,
+        # The hop's settings, or null — see the docstring. `updated_at` rides
+        # along inside it for the same reason it does on a task draft's form:
+        # `tasks-lib.draftUpdatedAt` reads it as one of its three sources.
+        "form": dict(form, updated_at=updated) if form else None,
     }
 
 
@@ -2532,6 +3926,16 @@ def _bound_chips(task_drafts: dict) -> dict[str, dict]:
         session = str(record.get("session_id") or "")
         if not session:
             continue
+        # A WORDLESS FORM IS NOT A DRAFT (2026-09-15). Emptying the composer on a
+        # bound session now clears the words and KEEPS the form's settings
+        # (`drafts._put_bound`), so a record here can hold a time and a model and
+        # nothing anybody typed — and a `✎ Draft` chip over that would point at a
+        # composer the reader would find empty. Same answer `drafts.chat_view`
+        # gives through the other door.
+        if not (str(record.get("title") or "").strip()
+                or str(record.get("description") or "").strip()
+                or record.get("attachments")):
+            continue
         updated = float(record.get("updated_at") or 0.0)
         if session in out and out[session]["updated_at"] >= updated:
             continue
@@ -2550,15 +3954,41 @@ def _bound_chips(task_drafts: dict) -> dict[str, dict]:
 _NEW_CHAT_SCAN_LIMIT = 60
 
 
-def _settle_new_chats(chat_drafts: dict) -> bool:
-    """Walk a `new:<file>` key's TASK number onto the session the send that
-    SPENT it created, and drop the draft that send spent. True if anything
-    moved.
+def _settle_new_chats(chat_drafts: dict, task_drafts: dict) -> bool:
+    """Walk a STRANDED draft TASK number onto the session the send that SPENT
+    it created. True if anything moved.
+
+    TWO KEY SHAPES, one rule. A session-less composer used to draft only under
+    `new:<file>`; it can also send out of a TASK DRAFT now, and the key it tags
+    that run with is then the draft's own `draft:<id>` (`drafts.task_key`).
+    Both shapes are rows with a number of their own, both stop being a row when
+    the send spends them, and in both the number has to follow the session the
+    send makes — so both are read here, under the same hands-off rule: a key
+    whose RECORD still exists (a saved chat draft, a task draft still in the
+    drafts store) is not this function's to touch. The composer DELETEs the
+    task draft's record as it sends, so the number moves on the first build
+    after that delete has landed; a build that gets there first just asks
+    again.
+
+    A SEND NEVER TOUCHES A SAVED DRAFT (blocker, 2026-09-16). This used to
+    `delete_chat` the record too, and that was the truth while the composer
+    autosaved on every keystroke: the record WAS the message going out, and the
+    transcript took the words over in the same tick. The composer autosaves
+    nothing now (caef75eb1, `ui/Composer.tsx` — "a send just sends"), so a
+    `new:<file>` record exists only because the reader ASKED for one — "Save as
+    draft" in the leave guard, or Schedule → Continue — and a send is not an
+    answer to that question. Type, leave, save as draft, come back, type
+    something else, send: the saved Upcoming row and its number both stand, and
+    the session the send makes gets a number of its own. So a key that still
+    HAS a record is not settled here at all. What is left for this to settle is
+    the NUMBER ALONE — a `new:<file>` key that carries one in `task_ids` with
+    no record behind it, the row the reader was watching left on a key nothing
+    reads again.
 
     THE SEND NAMES ITS OWN DRAFT, and nothing here infers it. A chat with no
     session drafts under `new:<file>` and is numbered under that key; the first
-    send creates the session, and the number has to follow it or the row the
-    user has been watching is stranded on a key nothing reads again. So the
+    send creates the session, and a number with no record left to hold it has
+    to follow that session or it is stranded for good. So the
     composer's session-less send puts the key it is spending in the start
     request (`protocol/run-controller.ts`, `draft_key`), `agent._start` writes
     it into `meta.json` verbatim before it spawns anything, and this reads it
@@ -2571,9 +4001,9 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     two guards: a scheduled task's first fire (`schedule.py::_send` →
     `claude_spawn.spawn_helper` → `agent._start`), a `new_task_each_run` entry,
     canvases.py's own spawn. Any of them would have taken the number off a chat
-    the reader was still typing into and `delete_chat` would have destroyed the
-    unsent words with it (review, 2026-09-12). None of them sends a
-    `draft_key`, so none of them can claim a draft now.
+    the reader was still typing into — and, in the build that still deleted,
+    the unsent words with it (review, 2026-09-12). None of them sends a
+    `draft_key`, so none of them can claim a number now.
 
     (The four rounds before that asked the CLIENT which session its own send
     created, and each answer was an inference with a gap — a send that threw, a
@@ -2594,28 +4024,42 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
 
     TWO GUARDS BESIDES THE KEY:
 
+    * **A record, and this key is not ours.** A `new:<file>` key with a saved
+      draft behind it — or a `draft:<id>` key whose task draft is still in the
+      store — is a row the reader put there on purpose; its number is that
+      row's, not the send's. Excluded before the tree is read at all, so no
+      tagged run can claim it however old or new the save is.
     * **A session id, or nothing happens.** A run that never got one (`_start`
       failed, the CLI died before its first row) has nothing to carry the
-      number to, and the draft is still the only copy of what was typed. Asked
-      again on the next build.
-    * **Nothing newer than the run.** A draft whose last save is AFTER this run
-      started is not the message it sent — it is words typed into the same box
-      while the session id was still on its way — so the key is left whole,
-      number and text both. Everything else under the key predates the send and
-      IS what was sent, which is why the draft is deleted and its text is never
-      copied forward: the words are in the transcript already.
+      number to. Asked again on the next build.
     """
-    records = {key: rec for key, rec in chat_drafts.items()
-               if drafts.is_new_chat_key(key)}
-    # The ordinary case has no record at all — the composer deletes the draft
-    # on send, in the same tick as the send — so the NUMBER alone is what is
-    # usually left to move, and the numbers store is the only place it is. That
-    # is why this read is not gated on `records` being non-empty (review perf
-    # note, 2026-09-12): gating it there would skip exactly the common case and
-    # strand the number the send was supposed to carry. One small json file,
-    # read before anything decides to touch the runs tree.
-    waiting = set(records) | {key for key in tasks_store.task_ids()
-                              if drafts.is_new_chat_key(key)}
+    records = {key for key in chat_drafts if drafts.is_new_chat_key(key)}
+    # …AND THE TASK DRAFTS UNDER THE KEY THE LISTING FILES THEM BY. A record in
+    # the task store means the row is still there to wear its own number, on
+    # exactly the reasoning the chat half is read for. `list_all()` keys the
+    # task section by id, so it is spelled back into a listing key here rather
+    # than each candidate being spelled the other way round.
+    records |= {drafts.task_key(ident) for ident in task_drafts}
+    # A RECORD MEANS HANDS OFF, and the records are read here only to say which
+    # keys this must not touch. Nothing under a key the reader saved moves: not
+    # the words, not the number, not on any later build. What is left is the
+    # number with no record behind it, and the numbers store is the only place
+    # that is written down — which is why this read is not gated on `records`
+    # being non-empty (review perf note, 2026-09-12): gating it there would
+    # skip exactly the case this function exists for. One small json file, read
+    # before anything decides to touch the runs tree.
+    # A key stamped SPENT (`tasks_store._apply_rekey`) has already been settled
+    # by an earlier build — its send landed in a session that was already
+    # numbered some other way, so there is nothing left to move — and must not
+    # be asked again: `task_ids()` never drops a spent record (it is the
+    # high-water mark), so without this exclusion every later build would
+    # re-find it, re-run the loop below, and re-notify forever (bugbot / live
+    # repro, 2026-09-15 — the `gone` key that pinned a composer shut).
+    waiting = {
+        key for key, rec in tasks_store.task_ids().items()
+        if (drafts.is_new_chat_key(key) or drafts.task_draft_id(key))
+        and not rec.get("spent") and key not in records
+    }
     if not waiting:
         return False  # nothing unsent is numbered: no reason to read the tree
     agent = _agent_module()
@@ -2633,9 +4077,6 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         run_dir = os.path.join(runs, name)
         meta_path = os.path.join(run_dir, "meta.json")
         try:
-            # The mtime of the file `_start` writes once, before it spawns: when
-            # this run began, which is the floor the second guard reads.
-            started = os.path.getmtime(meta_path)
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
         except (OSError, ValueError):
@@ -2660,23 +4101,30 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         if not ids:
             continue  # no id minted yet (or ever): ask again next build
         session_id = sorted(ids)[0]
-        record = records.get(key)
-        if record and float(record.get("updated_at") or 0.0) > started:
-            continue  # typed into again since: not this send's draft
         try:
-            tasks_store.rekey(key, session_id)
-            drafts.delete_chat(key)
+            number_moved = tasks_store.rekey_moved(key, session_id)
         except OSError:
             # A read-only state dir costs the number's continuity and nothing
             # else. Same posture as `_numbers` and the schedule router's own
             # rekey: the listing still answers.
             continue
         waiting.discard(key)
-        moved = True
-        # Both rows moved: the draft row is gone and the session wears its
-        # number. The chat holding the changes long-poll hears it now rather
-        # than on its next full pass.
-        tasks_watch.notify({key, session_id})
+        # NOTIFY ONLY ON A REAL CHANGE. `rekey_moved` stamps a no-op key spent
+        # the first time it is seen (so `waiting`, above, excludes it from
+        # then on) but that stamp alone is not news to any client — the
+        # session already had its number, and nothing in the listing reads
+        # differently than it did a moment ago. Without this check every build
+        # that still found the key (before the `waiting` exclusion took effect
+        # on the NEXT build) called notify unconditionally, and the changes
+        # long-poll it wakes rebuilt the listing, re-ran this same settle, and
+        # notified again — the loop that pinned a composer shut (bugbot / live
+        # repro, 2026-09-15).
+        if number_moved:
+            moved = True
+            # The number changed hands: the old key stops answering to it and
+            # the session wears it. The chat holding the changes long-poll
+            # hears it now rather than on its next full pass.
+            tasks_watch.notify({key, session_id})
     return moved
 
 
@@ -2748,11 +4196,12 @@ def _draft_rows(only: frozenset | set | None = None,
         # number, it stamps the mapping `erased` and keeps it as a reservation,
         # and the row it belonged to is off the page for good — so a draft still
         # naming it has nothing left to wear its chip and would be invisible,
-        # with its words unreachable. The erase itself cuts the binding
-        # (`drafts.unbind_session`), and this is the same answer read off the
-        # store for the draft written between that gesture's two writes and for
-        # any older store left bound: an ordinary row again, blank-numbered
-        # until `_draft_numbers` can mint it one (review, 2026-09-12).
+        # with its words unreachable. The erase itself drops such a draft
+        # (`drafts.delete_bound`), so this is the answer for the two stores that
+        # can still hold one: a draft written between that gesture's two writes,
+        # and any older store left bound by a build that only unbound. An
+        # ordinary row again, blank-numbered until `_draft_numbers` can mint it
+        # one (review, 2026-09-12).
         bound = drafts.bound_session(record.get("session_id"))
         if bound:
             if erased is None:
@@ -2770,6 +4219,91 @@ def _draft_rows(only: frozenset | set | None = None,
             continue
         rows.append(_new_chat_draft_row(key, record, numbers.get(key, "")))
     return rows
+
+
+# ONE SPELLING OF FABLE on the way out. The chat picker and the New task card
+# used to offer a pinned full id ("claude-fable-5-1") beside the alias naming the
+# same model; the pinned row is gone (Akshil, 2026-09-18), but entries booked and
+# chats recorded under it are not. Rows carry this pair so the side peek's
+# composer can OPEN on it, and a value no picker lists any more opens a blank
+# pill — so the row says the word the menus now use. Only the display is folded:
+# what `schedule._send` hands `--model` is still the entry's own string, which
+# the CLI accepts exactly as it always did.
+_FABLE_ID = re.compile(r"^claude-fable([-.].*)?$", re.I)
+
+
+def _display_model(model: str) -> str:
+    """A stored model id said the way the pickers offer it. Anything that is not
+    a Fable spelling — including "" — comes back untouched."""
+    return "fable" if _FABLE_ID.match(model or "") else model
+
+
+def _row_settings(task: dict, settings: dict | None) -> tuple[str, str]:
+    """(model, effort) for one row — THE CONVERSATION'S OWN RECORD first, the
+    task entry's stored setting behind it.
+
+    The record (`tasks_store.session_settings`) is what the app itself wrote
+    when it launched a run or when the reader moved a pill, so it is the only
+    source that can describe a chat somebody changed mid-thread. The entry is
+    the answer for the window BEFORE that: a task created in the New task card
+    and not yet run has a model it was set up with and no conversation to have
+    recorded one (`_run_settings`).
+
+    PER FIELD, like everything else about this pair: a chat that recorded only
+    an effort keeps the model its entry named. Both "" for the overwhelming
+    majority, which chose neither — and "" is the load-bearing answer, because
+    it is what leaves the composer's own default speaking.
+    """
+    model, effort = _run_settings(task)
+    if settings is None or not task["session_id"]:
+        return _display_model(model), effort
+    rec_model, rec_effort = tasks_store.session_settings(
+        settings, task["session_id"])
+    return _display_model(rec_model or model), rec_effort or effort
+
+
+def _run_settings(task: dict) -> tuple[str, str]:
+    """(model, effort) the task's ENTRIES were set up with, or "" for a task
+    that never chose. `_row_settings`'s fallback half.
+
+    THE ENTRY IS THE TRUTH UNTIL THE FIRST RUN. `schedule._send` hands
+    `entry["model"]` / `entry["effort"]` straight to
+    `claude_spawn.spawn_helper`, which hands them to `claude --model` /
+    `--effort` (`agent._claude_argv`), so for a task that has not run yet there
+    is no gap between "what the task is set to" and "what the run will use" —
+    and nothing else to ask, since the conversation does not exist. From the
+    first run on, the conversation records what it actually launched with and
+    that record leads (`_row_settings`): a reader who moves a pill mid-chat has
+    changed the chat, not the task's booked messages.
+
+    WHY THE ROW CARRIES THEM AT ALL, when the design says the card asks and the
+    list stays quiet (NewJobModal's own note): nothing here DRAWS them. They are
+    for the side peek, whose composer is a real chat — and a chat with no
+    opinion handed to it opens on the GLOBAL Claude preference
+    (`agent._defaults` → `_global_defaults`, ~/.claude/settings.json), which is
+    the right answer for a chat somebody opened by hand and the wrong one for a
+    task that was set up with a model of its own. The peek showed a reader
+    settings they had not chosen (Akshil, 2026-09-18).
+
+    NEWEST FIRST, and PER FIELD. A task is a thread and a thread can hold
+    several scheduled messages; the newest that names a setting is the one a
+    reader is about to act on — the same rule `_description` takes over the same
+    list. Per field rather than per entry because an entry that pinned only the
+    effort must not wipe a model an earlier one pinned; that is also how
+    `agent._defaults` fills its own two fields.
+
+    "" IS A REAL ANSWER and the load-bearing one. It means "this task has no
+    opinion", which is what leaves the chat's own detection speaking for every
+    conversation that never went through the New task card. Answering "sonnet"
+    here would pin every hand-typed chat on the machine to a model nobody chose.
+    """
+    model = effort = ""
+    for entry in reversed(task["entries"]):
+        model = model or str(entry.get("model") or "").strip()
+        effort = effort or str(entry.get("effort") or "").strip()
+        if model and effort:
+            break
+    return model, effort
 
 
 def _description(task: dict) -> str:
@@ -2904,11 +4438,28 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     read = tasks_store.read_state()
     now = time.time()
     tasks = _collect()
+    # ONE READ OF THE FLAG for the whole listing, handed to every row: it is a
+    # small JSON read (`prefs.project_queue_enabled`) and asking it per row would
+    # pay for it once per task on the machine.
+    queue_on = project_queue.enabled()
+    # THE LINE IS DERIVED OVER EVERYTHING, BEFORE THE NARROWING. Where a task
+    # stands is a fact about every other task waiting on the same folder, so a
+    # changes answer that asked about one row would otherwise report it at #1
+    # with three tasks in front of it. `only` narrows what is BUILT, never what
+    # the queue is read from — the same reason collection itself still runs over
+    # the whole store.
+    # ONE READ OF THE SCHEDULER'S STORE for the whole listing: the line's index
+    # (`order_key` walks it to keep a follower behind its leader) and the busy
+    # pass below both want the same entries, and reading them twice would be two
+    # answers about one file a write could land between.
+    entries = schedule.list_entries()
+    queue = _queue_lines(tasks, now, _by_entry_id(entries))
+    listed = tasks
     if only is not None:
-        tasks = {key: task for key, task in tasks.items() if key in only}
+        listed = {key: task for key, task in tasks.items() if key in only}
     # One pass over the store for every row: which conversations the scheduler
     # is still waiting on. See `_status`.
-    busy = schedule.busy_sessions(schedule.list_entries())
+    busy = schedule.busy_sessions(entries)
     # One scan of the runs tree for every row: which conversations are parked on
     # a card nobody has answered. See `_parked_runs`.
     parked = _parked_runs()
@@ -2916,13 +4467,15 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # `read` and `busy` are read once: it is one small file, the join below
     # asks it per session, and `_draft_rows` asks it again.
     task_drafts, chat_drafts = drafts.list_all()
-    # A FIRST SEND'S SESSION IS SETTLED HERE, before a number is allocated
-    # below: `new:<file>` hands its number to the session that send created and
-    # the spent draft goes (`_settle_new_chats` — and see its docstring for why
-    # this is the server's job and not the composer's). A settle rewrites the
-    # store this build has already read, so the read is taken again; it is one
-    # small file, and it only happens on the build a send is settled in.
-    if _settle_new_chats(chat_drafts):
+    # A STRANDED DRAFT NUMBER IS SETTLED HERE (`new:<file>` or `draft:<id>`,
+    # whichever key the send tagged its run with), before a number is
+    # allocated below: a key with no record left behind it hands its number to
+    # the session the send created (`_settle_new_chats` — and see its docstring
+    # for why this is the server's job, and why a key that still HAS a record
+    # is never touched). A settle rewrites the store this build has already
+    # read, so the read is taken again; it is one small file, and it only
+    # happens on the build a number is settled in.
+    if _settle_new_chats(chat_drafts, task_drafts):
         task_drafts, chat_drafts = drafts.list_all()
     # …and the same read, asked the session's way round: which conversation has
     # a New task form being written into it. Off the STORE and not off the rows
@@ -2930,24 +4483,30 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # session alone — which builds no draft rows at all — still answers a row
     # that knows about its draft (`_bound_chips`).
     bound_chips = _bound_chips(task_drafts)
-    # ONE prefs read for the whole build, like every other join above: whether
-    # a row carries `last_message` at all (shell/prefs.py, experimental and
-    # default off). Per row it would be one file open per task on the machine,
-    # per poll.
-    last_message = shell_prefs.task_card_last_message()
-    for task in tasks.values():
+    # Every listing row carries `last_message` (see `_row`'s doc comment).
+    last_message = True
+    # ONE READ of the per-session model/effort record for the whole listing,
+    # same reason as every join above: it is one small file, and asking it per
+    # row would open it once per task on the machine.
+    settings = tasks_store.settings_state()
+    for task in listed.values():
         _place(task)
-    numbers = _numbers(tasks)
+    numbers = _numbers(listed)
+    # The number and the name of whoever is in front, once the listing's own
+    # allocation has run: a task seeing its first listing gets its number HERE,
+    # and a holder outside a narrowed answer is named from the stored table.
+    # See `_name_ahead`.
+    _name_ahead(queue, numbers, tasks)
     rows = []
     # Sessions whose archive record the thread has outlived — see `_revived`.
     # Collected across the loop and written once, after it, so the listing is
     # not doing IO in the middle of building rows.
     revived: list[str] = []
-    for task in tasks.values():
+    for task in listed.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy, revived, parked, chat_drafts, bound_chips,
-                       last_message)
+                       busy, revived, parked, queue, queue_on,
+                       chat_drafts, bound_chips, settings, last_message)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -3011,21 +4570,139 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     return rows
 
 
+def _page_scope(x_fused_page: str | None) -> tuple[str, str, str]:
+    """`(page, app_dir, entry_html)` for the page named by `X-Fused-Page`, or
+    three "" when the header is missing or not an absolute path.
+
+    The page-side `fused.tasks` API's one idea of "this app": the app folder the
+    calling page belongs to (`current_apps.app_dir_for` — the registry first,
+    then the nearest ancestor with a declared entry page), else the page's own
+    folder. `entry_html` is that folder's declared entry page, else the page
+    itself — the default target of a task a page creates, for the same reason
+    `_create_app_task` targets the file: "open this task" lands on the page."""
+    page = unquote(x_fused_page) if x_fused_page else ""
+    if not page or not os.path.isabs(page):
+        return "", "", ""
+    page = os.path.abspath(page)
+    folder = os.path.dirname(page)
+    app_dir = current_apps.app_dir_for(folder) or folder
+    entry = ""
+    try:
+        entry = app_listing.app_entry(app_dir) or ""
+    except OSError:
+        entry = ""
+    return page, app_dir, entry or page
+
+
+def _scope_dir(under: str, scope: str, x_fused_page: str | None):
+    """`(dir, None)` for a listing's `?under=` / `?scope=app`, `("", None)` for
+    no scope at all (the unfiltered listing, unchanged), or `("", error)`."""
+    if scope and scope != "app":
+        return "", _error(f"scope: expected 'app', got {scope!r}", status=400)
+    if scope == "app":
+        _page, app_dir, _entry = _page_scope(x_fused_page)
+        if not app_dir:
+            return "", _error("scope=app needs an X-Fused-Page header naming "
+                              "an absolute page path", status=400)
+        return app_dir, None
+    under = (under or "").strip()
+    if not under:
+        return "", None
+    if not os.path.isabs(os.path.expanduser(under)):
+        return "", _error("under: expected an absolute directory", status=400)
+    return os.path.abspath(os.path.expanduser(under)), None
+
+
+def _path_within(path: str, root_real: str) -> bool:
+    """Is `path` `root_real` or under it — by path components, never by string
+    prefix (`/A/app-old` is not under `/A/app`). `root_real` is realpath'd."""
+    if not path:
+        return False
+    expanded = os.path.expanduser(path)
+    # A mount-backed target is never under a local app folder, and realpath
+    # on one is a kernel stat over FUSE — the access pattern D548 keeps off
+    # every hot path. String test first (imported late, like the peer gates).
+    from fused_render.shell.mounts.access import is_mount_backed
+    if is_mount_backed(expanded):
+        return False
+    try:
+        real = os.path.realpath(expanded)
+        return os.path.commonpath([real, root_real]) == root_real
+    except ValueError:  # different drives on Windows, or a relative mix
+        return False
+
+
+def _scoped(rows: list[dict], scope_dir: str) -> list[dict]:
+    """The rows whose `target` (else `project`) is `scope_dir` or under it."""
+    if not scope_dir:
+        return rows
+    root_real = os.path.realpath(scope_dir)
+    return [row for row in rows
+            if _path_within(str(row.get("target") or ""), root_real)
+            or _path_within(str(row.get("project") or ""), root_real)]
+
+
 @router.get("/api/tasks")
-def api_tasks():
+def api_tasks(under: str = Query(""), scope: str = Query(""),
+              x_fused_page: str | None = Header(default=None)):
     """Every task, newest activity first, each with its three newest messages.
 
     Includes tasks that have never been scheduled (a chat session is a task) and
     tasks that have never run (a message scheduled for tomorrow is a task, §5).
     Excludes the ones that stopped being tasks: no session, and nothing left to
     run — see `_is_task`. That is an absence of a task, not a filter hiding one.
+
+    `?under=<abs dir>` or `?scope=app` (the app of the `X-Fused-Page` caller)
+    keeps only tasks whose target or project is that folder or inside it — the
+    page-side `fused.tasks.list`. No param is the whole listing, unchanged.
     """
-    rows = _task_rows()
+    scope_dir, refusal = _scope_dir(under, scope, x_fused_page)
+    if refusal is not None:
+        return refusal
+    rows = _scoped(_task_rows(), scope_dir)
     return {"tasks": rows, "generation": tasks_watch.generation()}
 
 
+def _draft_changes(keys) -> dict:
+    """What the DRAFTS under these keys are at now: `{changed: [{key, version}],
+    gone: [key]}`.
+
+    THE PUSH HALF OF VERSIONED WRITES (design-drafts-one-record.md, §3). A
+    composer and a New task modal open on one key in two windows have to hear
+    about each other, and the rows this endpoint already sends cannot say it: a
+    row carries a preview, not the record, and a draft edited in another tab
+    changes nothing about the row's shape. So the keys the watcher announced are
+    looked up in the drafts store and reported as a version apiece — enough for
+    a client to know whether what it holds is stale without asking for it.
+
+    ONE READ AND NO ROW BUILDING. `list_all` is a single json read, which is
+    what makes this cheap enough to ride on every long-poll answer;
+    `_task_rows` is not asked anything, and no number is allocated.
+
+    `gone` IS NOISY BY CONSTRUCTION and is documented as such for the client
+    (drafts-api-contract.md): these keys are announced for every reason a row
+    moves, so most of them never had a draft and "there is no draft under this
+    key" is simply true of them. What a client may do with it is bounded by
+    that — clear an editor it has already adopted a server version for, and
+    never discard words it has not saved yet (the same care #1171's cheap `gone`
+    for rows is read with)."""
+    task_drafts, chat_drafts = drafts.list_all()
+    changed: list[dict] = []
+    gone: list[str] = []
+    for key in sorted(keys):
+        ident = drafts.task_draft_id(key)
+        record = task_drafts.get(ident) if ident else chat_drafts.get(key)
+        if record is None:
+            gone.append(key)
+        else:
+            changed.append({"key": key, "version": int(record.get("version") or 0)})
+    return {"changed": changed, "gone": gone}
+
+
 @router.get("/api/tasks/changes")
-def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC)):
+def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC),
+                      under: str = Query(""), scope: str = Query(""),
+                      x_fused_page: str | None = Header(default=None)):
     """What moved since generation `since` — the Tasks page's fast lane.
 
     Long-poll: answers the moment the watcher (tasks_watch) sees a session
@@ -3037,27 +4714,62 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     than the watcher remembers gets `full: true` and reloads the listing.
 
     The 20-second full listing stays the truth; this only makes the page hear
-    about a change without waiting for it."""
+    about a change without waiting for it.
+
+    `?under=` / `?scope=app` scope `rows` exactly as they scope the listing.
+    `gone` is left whole: it is noisy by construction (a key the client never
+    held is dropped client-side), and a gone key has no row left to read a
+    target off, so there is nothing to filter it by."""
+    scope_dir, refusal = _scope_dir(under, scope, x_fused_page)
+    if refusal is not None:
+        return refusal
     gen, keys = tasks_watch.wait(since, wait)
     if keys is None:
         return {"generation": gen, "full": True}
     if not keys:
-        return {"generation": gen, "rows": [], "gone": []}
-    rows = _task_rows(only=keys)
+        return {"generation": gen, "rows": [], "gone": [],
+                "drafts": {"changed": [], "gone": []}}
+    # Translate before diffing: a rung `pending:<id>` whose entry the listing
+    # now files under its run's session is not a task that went away, it is a
+    # row that changed its name (`_rekeyed_pendings`, 2026-09-16).
+    rekeyed = _rekeyed_pendings(keys)
+    rows = _task_rows(only=set(keys) | set(rekeyed.values()))
     listed = {row["key"] for row in rows}
+    # A rung key whose translation IS listed still answers `gone` — and that is
+    # a SWAP, not the deletion this endpoint used to do: the row it re-keys to
+    # rides in the same payload, and the client folds the two together in one
+    # pass (`mergeTaskChanges`: drop the gone keys, upsert the rows), so the
+    # pending row leaves exactly as the session row arrives. What was broken
+    # was the naked `gone` with no row behind it.
     gone = {key for key in keys if key not in listed}
     # A pending message that has just RUN is now filed under its session id
     # (§5): the watcher names the session, the session is listed, and the
     # `pending:<entry>` row the client still shows is nobody's key. Name it
     # gone, or two rows stand for one task until the full poll (bugbot #892).
-    tasks = _collect()
+    #
+    # SCOPED, and this is the fast lane's whole cost profile. This used to be a
+    # second full `_collect()` — a glob over every project dir on the machine and
+    # a re-read of the deleted store — paid on every long-poll answer, to look up
+    # the entries of the handful of keys the answer already names. `_entries_for`
+    # is `_collect`'s entry pass alone, over the scheduler's store, for exactly
+    # those keys: the same grouping rule (`_entry_session`, else the pending
+    # key), so the `gone` set is identical, without the transcript walk. The
+    # keys it is asked about have already survived collection — they were listed
+    # a few lines above — so nothing `_collect` would have dropped can enter here.
+    entries = _entries_for(listed)
     for key in listed:
-        task = tasks.get(key)
-        for entry in (task or {}).get("entries", ()):
+        for entry in entries.get(key, ()):
             pending = tasks_store.pending_key(str(entry.get("id") or ""))
             if pending != key:
                 gone.add(pending)
-    return {"generation": gen, "rows": rows, "gone": sorted(gone)}
+    # `drafts` rides alongside the rows: the same keys the watcher announced,
+    # answered out of the drafts store with a version apiece, so a composer or a
+    # New task card open on one of them learns that another window has written
+    # it (`_draft_changes`, design-drafts-one-record.md §3). The announced keys
+    # and not `listed`: a draft that has just been discarded is exactly the news
+    # an editor needs and is by then no row at all.
+    return {"generation": gen, "rows": _scoped(rows, scope_dir),
+            "gone": sorted(gone), "drafts": _draft_changes(keys)}
 
 
 # `project` rides along for the sidebar's Current apps section (D487): the
@@ -3094,6 +4806,38 @@ _PULSE_FIELDS = (
     "next_run",
     "next_run_entry",
     "next_run_repeats",
+    # ...and where the row stands in its folder's line, for the same surface and
+    # the same reason: the sidebar's Current apps section says "n running, n
+    # queued", and a queued row that could not say whether it runs next would
+    # make the count the only thing it could print. Three short fields — a
+    # number, a task id and a flag — on rows that are already being built.
+    # `queue_key` and `queue_ahead_title` are deliberately NOT here: the folder
+    # is what the Tasks page groups by and the title is a whole string per row,
+    # and the sidebar draws neither.
+    "queue_position",
+    "queue_ahead",
+    "queue_priority",
+    # …and the session that name opens, because the sidebar's rows are links
+    # too: a Notifications row already carries `session_id` and `target` for its
+    # OWN thread (`taskHref`), and the row in front is the other thread a queued
+    # row can send a reader to. One short string. The target is not here for the
+    # same reason `queue_key` is not — the pulse carries the queued row's own
+    # `target`, and a folder-key-length path per row for a link the sidebar does
+    # not yet draw is weight this endpoint exists to avoid.
+    "queue_ahead_session",
+    # How many messages are waiting, for the sidebar's "n queued" line: the
+    # count of ROWS is what that number is today, and a row that could not say
+    # how much work it is holding made a task with three queued sends look like
+    # one. A single integer on a row that is already being built.
+    "queue_waiting",
+    # "cli" (interactive terminal) / "sdk-cli" (headless — what
+    # templates/claude/agent.py's spawn produces) / `None` (unknown, e.g. no
+    # transcript yet) — see `_place`'s own comment. task-status-notify.ts's
+    # finished-task notice gates on this: only an exact "cli" is treated as
+    # "started outside our own template", and anything else, including
+    # `None`, still notifies. A row missing this key entirely would be a
+    # `KeyError` here, so `_place`/`_row` always set it, even to `None`.
+    "entrypoint",
 )
 
 
@@ -3115,11 +4859,126 @@ def api_tasks_pulse():
     }
 
 
+class RunningPatch(BaseModel):
+    session_id: str
+    # The client's `Date.now()` at send (`run-controller.ts` `noteTurnRunning`).
+    # Optional so an older client, or a direct call, still works — see
+    # `tasks_watch.mark_running`'s stale-turn check, which only runs when this
+    # is present.
+    turn: float | None = None
+    # THE WORDS THAT WERE SENT, and the file they were sent about. Both
+    # optional and both defaulting to "" rather than None: a caller that only
+    # wants the liveness floor sends neither and gets exactly the mark this
+    # endpoint has always made. With them, the mark is enough to BE a row — the
+    # message the listing shows, and the project it belongs to — for the
+    # seconds before anything reaches disk. See `tasks_watch.mark_running`.
+    text: str = ""
+    file: str = ""
+
+
+@router.post("/api/tasks/running")
+def api_task_running(patch: RunningPatch,
+        x_fused: str | None = Header(default=None)):
+    """A turn just started on this session — said by the page that sent it.
+
+    THE ONE FACT NO FILE CARRIES IN TIME. A chat sent from this app runs
+    `claude -p` through `/api/run`, which means the turn begins in another
+    process entirely: this server has no route it could hang the news on, and
+    the CLI's own registry row lands two to four seconds later. So the sender
+    says it, once, at the moment it sends — `run-controller.ts`, beside the
+    `announceTasksChanged` it already fires on both turn boundaries.
+
+    A FLOOR WITH A FUSE, not a status (tasks_watch.mark_running): it expires by
+    itself, and a registry that says `busy` replaces it the moment it appears.
+    Nothing here can pin a row open — the worst a wrong or malicious call can do
+    is spin one ring for fifteen seconds.
+
+    A session id with no task row yet is not an error: a brand-new chat's
+    transcript may not exist when its first turn starts, and the mark is simply
+    waiting for it. Hence no 404 and no lookup — this endpoint does not read the
+    listing at all.
+
+    `turn` lets `tasks_watch.mark_running` recognize a running POST that lost
+    the race to its own turn's `/api/tasks/idle` call (two independent
+    fetches; nothing here orders their arrival) and drop it, rather than
+    reopening a row a later idle call already closed (bugbot #1163).
+
+    `text` and `file` are what the sender SAID and what it said it about, and
+    they turn this from a floor under a row into the row itself: a brand-new
+    chat has no transcript, no entry and no session on disk for its first
+    seconds, so without them the send is a task nothing can list. With them the
+    listing has a placeholder — keyed by the session the turn runs in, which is
+    what `POST /api/run` hands the page back — that the transcript then simply
+    becomes. Both are optional and neither can pin anything: they live and die
+    with the mark, and the worst a wrong call does is show one wrong line for
+    fifteen seconds in a row that then disappears.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_running(session_id, turn=patch.turn,
+                             text=patch.text.strip(), file=patch.file.strip())
+    return {"ok": True, "session_id": session_id}
+
+
+class IdlePatch(BaseModel):
+    session_id: str
+    # The other half of `RunningPatch.turn` — see `tasks_watch.mark_idle`.
+    turn: float | None = None
+
+
+@router.post("/api/tasks/idle")
+def api_task_idle(patch: IdlePatch,
+        x_fused: str | None = Header(default=None)):
+    """A turn just ENDED on this session — said by the page that sent it.
+
+    The other half of `/api/tasks/running`, and for the same reason: the CLI
+    running out of process means this server learns a turn is OVER from a
+    registry row disappearing (up to a tick late) or from the mark's own
+    fifteen-second fuse — both far slower than the page that watched the reply
+    arrive. `run-controller.ts` calls this at every turn boundary the poll
+    loop's own `finally` sees (a final result, a stop, an error), the same
+    place `noteChatActivity` already fires from.
+
+    Retires the send's mark at once (`tasks_watch.mark_idle`) — a FAST turn no
+    longer has to sit in a running ring for whatever was left of the mark's
+    window. Best-effort like its counterpart: a call that never arrives (a
+    closed tab) leaves the registry-corroborated stand-down and the TTL as the
+    fallback, so nothing here can pin a row running or wrongly mark one done —
+    the worst a wrong or malicious call does is retire a mark early, and the
+    registry/tail reading underneath is what a listing shows once it is gone.
+
+    `turn` is kept as the floor a later, out-of-order `mark_running` for this
+    same turn is measured against (`tasks_watch.mark_running`).
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_idle(session_id, turn=patch.turn)
+    return {"ok": True, "session_id": session_id}
+
+
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
-    live, _active = _live(task["path"], now)
+    live, _active, _marked = _live(task["path"], now, task["session_id"])
     prompts = _full_prompts(task["path"]) if task["path"] else []
     messages = _merge(prompts, task["entries"])
+    # The live send is part of the thread here for the same reason it is part
+    # of the listing row: "Show more" on a row that reads "running, on these
+    # words" must show those words, not an empty thread until the transcript
+    # lands (bugbot). Same fold, same dedupe.
+    if task.get("sent") and _fold_sent_mark(messages, task["sent"]):
+        # Numbered like the listing numbers it — the next id after everything
+        # on disk — so "mark this one read" and the unread recount can name it
+        # (bugbot). It is the newest by construction: `_merge` sorted the rest
+        # ascending and the mark's `at` is the moment of the send.
+        messages[-1]["message_id"] = tasks_store.format_message_id(len(messages))
     _turn_of_newest_chat(messages, live)
     _mark_unread(messages, task["key"], read)
     return messages
@@ -3251,7 +5110,8 @@ class ReadPatch(BaseModel):
 
 
 @router.post("/api/tasks/read")
-def api_task_read(patch: ReadPatch):
+def api_task_read(patch: ReadPatch,
+        x_fused: str | None = Header(default=None)):
     """Mark ONE message read — or the WHOLE task — and report what is left.
 
     One message is the default and still means only that message: the user
@@ -3271,6 +5131,9 @@ def api_task_read(patch: ReadPatch):
     (it has not happened, so there is nothing to have missed) and cannot come
     back already-read when it fires.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -3293,6 +5156,14 @@ def api_task_read(patch: ReadPatch):
             detail=f"message_id: expected MSG-nnn, got {patch.message_id!r}")
 
     tasks_store.mark_read(key, patch.message_id)
+    # THE BADGE IS A LISTED FACT, so the other windows have to be told. `unread`
+    # rides on every row (`_unread_count`) and feeds the sidebar's own dot
+    # (`/api/tasks/pulse`), and this was the one mutation in this router that
+    # changed a row without ringing: reading a message on the Tasks page left a
+    # second window, and the rail, counting it for up to a full poll. Every
+    # other verb here already announces itself — archive, unarchive, delete,
+    # erase — and this is the same kind of write.
+    tasks_watch.notify({key})
 
     # Recounted from the thread rather than decremented, so the badge the page
     # paints is the truth on disk and not an optimistic guess that drifts.
@@ -3329,7 +5200,139 @@ def _read_whole_task(key: str) -> dict:
     if unread_ids:
         tasks_store.mark_read_many(key, unread_ids)
         _mark_unread(messages, key, tasks_store.read_state())
+        # Same ring as the per-message branch above, and only when something
+        # actually moved: a whole-task mark on a task with nothing unread is a
+        # no-op on disk and must not cost every watcher a redraw.
+        tasks_watch.notify({key})
     return {"ok": True, "unread": sum(1 for m in messages if m["unread"])}
+
+
+# ------------------------------------------------------- what a chat runs with
+#
+# The pill's own write. The composer ranks its two selectors
+# `record > param > detected > pref > constant` (apps/claude/ui/composer-defaults)
+# and everything left of `detected` used to be URL params alone — which meant a
+# pick was remembered by the ADDRESS BAR and nothing else. Leave the page and it
+# was gone; come back through a different door (the Tasks peek, its Open button,
+# a row, the chat list, a bare URL) and detection answered instead, off whatever
+# transcript in that folder had run most recently. That is how a task created
+# with haiku/low opened on fable/max (Akshil, 2026-09-18).
+#
+# So a pick is a WRITE now, to the same store the spawn path writes
+# (`agent._start` / `_send` record what they actually launched with), and every
+# door reads that one record. `session_id` rather than a task key because this
+# is a fact about a CONVERSATION — most chats are not tasks, and the ones that
+# are share the id anyway.
+
+# What `effort` may be — the claude composer's EFFORTS list, and `""` for "not
+# saying", which is how a pick of the model alone reaches this. The model is
+# NOT checked against a list here: the CLI is the authority on what `--model`
+# takes, no Python vocabulary in this package tracks it, and a server list that
+# did not know an id would refuse a model the CLI runs happily.
+# The shape is checked instead — this string is stored, read back and shown, and
+# the two readers that turn it into a selected pill validate against the list
+# THEY offer (`agent._defaults`, the composer's own `pick`).
+_VALID_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
+_MODEL_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class SettingsPatch(BaseModel):
+    session_id: str
+    model: str = ""
+    effort: str = ""
+
+
+def _settings_session_id(raw: str) -> str:
+    """The one id check both settings doors make.
+
+    `agent._defaults` refuses ids with separators or a leading dot before it
+    reads anything, so a record filed under one would never be read back — and a
+    READ of one is equally a question no store can answer. Same shape the
+    running-mark endpoint demands, said once so the two doors cannot drift."""
+    session_id = (raw or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        raise HTTPException(status_code=400,
+                            detail=f"invalid session_id {session_id!r}")
+    return session_id
+
+
+@router.get("/api/tasks/settings")
+def api_task_settings_read(session_id: str = ""):
+    """WHAT THIS CONVERSATION IS RECORDED AS RUNNING WITH, in one file read.
+
+    THE FAST HALF OF THE COMPOSER'S RANKING, and it exists because the slow one
+    was the whole latency. The pills' record used to arrive only on
+    `runAgent(agentDir, "defaults")` — a POST /api/run that SPAWNS agent.py as a
+    subprocess and scans a transcript tail, seconds of work — so every open of a
+    chat painted the constant default (or the URL seed) first and flipped to the
+    recorded value two or three seconds later (Akshil, 2026-09-19: "when I come
+    to the page after 2-3 seconds it flips, same when I reload").
+
+    The record itself is one JSON file this process already reads on every
+    listing (`tasks_store.settings_state`), so it never needed the subprocess at
+    all. The `defaults` read stays for what only it can answer — the
+    transcript/folder ladder for a field this record left "" — and this door
+    answers the rank ABOVE it in milliseconds.
+
+    "" FOR A FIELD THIS STORE HAS NO ANSWER FOR, and that is the load-bearing
+    answer: it means "no record", which is precisely what leaves detection and
+    the composer's own constants speaking. An unknown session is `{"", ""}` and
+    not a 404 — a conversation with nothing recorded and a conversation that
+    never existed are the same fact to the asker.
+
+    Folded through `_display_model` like every other way out of this module, so
+    a chat recorded under the retired pinned Fable id reads as `fable` and opens
+    on the row the picker now offers instead of a blank pill.
+    """
+    session_id = _settings_session_id(session_id)
+    model, effort = tasks_store.session_settings(
+        tasks_store.settings_state(), session_id)
+    return {"model": _display_model(model), "effort": effort}
+
+
+@router.post("/api/tasks/settings")
+def api_task_settings(patch: SettingsPatch,
+        x_fused: str | None = Header(default=None)):
+    """Record which model this conversation runs with, and how hard it thinks.
+
+    ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
+    about the model", not "the model is nothing": the pills are two separate
+    picks, and one must not erase what the other — or the spawn that started
+    this chat — already knew. `tasks_store.record_settings` keeps that
+    invariant; this endpoint only checks the words.
+
+    Answers with the record as stored, so a client that wants to know what it
+    now says does not have to guess or re-read the listing.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    # The shape the readers accept: a record filed under an id no reader will
+    # ever look up is dead weight in a file that is read on every listing.
+    session_id = _settings_session_id(patch.session_id)
+    model = patch.model.strip()
+    effort = patch.effort.strip()
+    if model and not _MODEL_SHAPE.match(model):
+        raise HTTPException(status_code=400, detail=f"invalid model {model!r}")
+    if effort not in _VALID_EFFORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid effort {effort!r}: expected one of "
+                   + ", ".join(repr(v) for v in _VALID_EFFORTS))
+    if not (model or effort):
+        raise HTTPException(status_code=400,
+                            detail="nothing to record (send model or effort)")
+    record = tasks_store.record_settings(session_id, model, effort)
+    # THE ROW CARRIES THIS PAIR (`_row_settings`), so the other windows have to
+    # be told — the same ring `POST /api/tasks/read` makes for the same reason.
+    # A session that is not a task is a key nobody is watching, and the notify
+    # costs that case nothing.
+    tasks_watch.notify({session_id})
+    return {"ok": True,
+            "model": str(record.get("model") or ""),
+            "effort": str(record.get("effort") or "")}
 
 
 # ------------------------------------------------------------------ archiving
@@ -3371,7 +5374,8 @@ class ArchivePatch(BaseModel):
 
 
 @router.post("/api/tasks/archive")
-def api_task_archive(patch: ArchivePatch):
+def api_task_archive(patch: ArchivePatch,
+        x_fused: str | None = Header(default=None)):
     """File one task away: cancel its pending work, archive its session.
 
     Answers what it actually did — how many messages were called off, and
@@ -3380,6 +5384,9 @@ def api_task_archive(patch: ArchivePatch):
     first, a pure-chat task has only the second) and the client's note line is
     the place a person finds out which.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -3387,12 +5394,18 @@ def api_task_archive(patch: ArchivePatch):
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
     cancelled, filed = archive_task(task)
-    # AND THE UNSENT TEXT GOES WITH IT. A draft is a promise that the composer
-    # will still hold it when you come back; filing the task away is saying you
-    # are not coming back, and a `✎ Draft` chip on an archived row would be a
-    # badge pointing at a conversation the user just put down (design.md,
-    # "Joins": archive/delete/erase drop the chat draft).
-    drafts.delete_chat(task["session_id"])
+    # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
+    # "Archive/unarchive touch NO drafts").
+    #
+    # This route used to `delete_chat` the session's draft, on the reading that
+    # filing a task away says you are not coming back. That reading belongs to
+    # DELETE, not to archive: archive is the reversible verb — its whole
+    # affordance is the Unarchive button beside it — and a reversible gesture
+    # that destroys text is a gesture nobody can undo. An archived task's drafts
+    # (the chat's and any form bound to it) simply hide with the row and are
+    # there again the moment it comes back, which is what every OTHER fact about
+    # an archived task already does. Delete and erase, which are the verbs that
+    # mean it, drop both halves — see `api_task_delete` and `api_task_erase`.
     tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
 
@@ -3427,7 +5440,8 @@ class UnarchivePatch(BaseModel):
 
 
 @router.post("/api/tasks/unarchive")
-def api_task_unarchive(patch: UnarchivePatch):
+def api_task_unarchive(patch: UnarchivePatch,
+        x_fused: str | None = Header(default=None)):
     """Take the filing back: drop the archive record, nothing else.
 
     THE MOVE HAS ONE MEANING AND NO DESTINATION. Dragging a card out of the
@@ -3458,6 +5472,9 @@ def api_task_unarchive(patch: UnarchivePatch):
     on it. Same function the revival rule calls (`_revived`), so the gesture and
     the automatic way out of Archive drop the filing identically.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -3471,6 +5488,10 @@ def api_task_unarchive(patch: UnarchivePatch):
     # from the same helpers, AFTER the filing is gone, so the answer is the lane
     # the very next poll will draw rather than a guess about it.
     _place(task)
+    # No `settings=` here: this single-row answer carries no pills, so the
+    # per-session record is not read for it. A caller that starts drawing
+    # model/effort off this row must pass `tasks_store.settings_state()` like
+    # the listing does, or the pair comes back from the entry alone.
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
@@ -3479,12 +5500,80 @@ def api_task_unarchive(patch: UnarchivePatch):
             "status": row["status"]}
 
 
+# ------------------------------------------- the queue's half of delete/erase
+# Two verbs that end a task, and the project queue has to hear both of them
+# (`project_queue`, flag `project_queue_enabled`). The manager is the only
+# place a held card decision and a folder's line live, and neither is reachable
+# from the scheduler's store — so a delete that only cancelled entries left the
+# task standing in its folder's line with an answer waiting to be delivered,
+# and the delivery brought the row back (`_deleted` reads the transcript's
+# mtime against the tombstone). See `queue_manager.remove`, and
+# `schedule._queue_forget` for the other verb — cancelling ONE MESSAGE is
+# `forget_entry`, never this.
+
+
+def _queue_holds_live(key: str) -> bool:
+    """Would deleting this task pull the rug out from under a live run?
+
+    `queue_manager.holds_live`: the key owns a folder, is parked on a card, or
+    has a decision held for it, and the status sync says the process is still
+    there. False with the flag off, and best-effort — an index that cannot be
+    read must not make a task undeletable."""
+    if not project_queue.enabled():
+        return False
+    try:
+        return bool(queue_manager.get().holds_live(key))
+    except Exception:  # noqa: BLE001 — an unreadable index refuses nothing
+        logger.debug("queue: could not ask whether %s is live", key,
+                     exc_info=True)
+        return False
+
+
+def _queue_drop_task(key: str) -> None:
+    """Take the task out of the queue for good — every line, every blocked
+    list, the held answers, and the folder if it happened to hold one
+    (`queue_manager.remove`).
+
+    `schedule.cancel` above has already told the manager about each pending
+    ENTRY (`_queue_forget` → `forget_entry`), and that is not enough: an item
+    the queue minted itself carries no entry id (`card_answered`,
+    `card_cleared`), and a held decision is filed under the task key rather
+    than under any message. Only the keyed verb reaches those.
+
+    Best-effort, like every other queue call on a door's road: the row is being
+    taken away either way, and `reconcile` is the backstop."""
+    if not project_queue.enabled():
+        return
+    try:
+        manager = queue_manager.get()
+        manager.remove(key)
+        # Deleting the task is the ONE thing that ends a Force start — under
+        # every name the force wrote that this door can still reach: the task
+        # key (its session) and each of its messages' `pending:` keys. Run ids
+        # are not reachable here and stay; they are uuids and match nothing.
+        forget = getattr(manager, "forget_forced", None)
+        if forget is not None:
+            names = [key]
+            try:
+                names += [tasks_store.pending_key(str(e.get("id") or ""))
+                          for e in schedule.list_entries()
+                          if str(e.get("session_id") or "") == key
+                          or str(e.get("claude_session_id") or "") == key]
+            except Exception:  # noqa: BLE001 — best effort, like the rest
+                pass
+            forget(*names)
+    except Exception:  # noqa: BLE001 — a stale line is a pump, not a loss
+        logger.debug("queue: could not drop %s from its line", key,
+                     exc_info=True)
+
+
 class DeletePatch(BaseModel):
     key: str
 
 
 @router.post("/api/tasks/delete")
-def api_task_delete(patch: DeletePatch):
+def api_task_delete(patch: DeletePatch,
+        x_fused: str | None = Header(default=None)):
     """Take the row away for good: cancel its pending work, tombstone its key.
 
     Archive's first half — the rules first, then every pending entry, for the
@@ -3517,6 +5606,19 @@ def api_task_delete(patch: DeletePatch):
     asked is the same derived row every view paints (`_row`), so this endpoint
     cannot disagree with the pill the user is looking at.
 
+    AND REFUSED FOR A WORD THE ROW CANNOT SAY (`_queue_holds_live`). With the
+    project queue on, a run parked on a card the user has already answered
+    reads `queued` — the decision is held until the folder frees, so the run
+    is not "parked" any more and not yet running again — and neither status
+    word above catches it. The queue is asked directly instead: it is the only
+    thing that knows a process is standing behind that key.
+
+    AND THE QUEUE IS TOLD (`_queue_drop_task`). Cancelling the task's entries
+    takes its MESSAGES out of the line one at a time; the line item the queue
+    minted for itself and the decision it is holding answer to the key alone,
+    and a delete that left them behind let a later delivery resume the run and
+    bring the row back.
+
     WHAT IS AND IS NOT ERASED, in the answer as in fact: pending work is
     cancelled (`cancelled` counts it), the row is gone everywhere, and the
     TRANSCRIPT IS NOT TOUCHED (D306) — `erased_transcript` is always False and
@@ -3524,6 +5626,9 @@ def api_task_delete(patch: DeletePatch):
     likewise never reallocated (task_ids.json's "max seen plus one" rule), so
     a deleted TASK-007 does not quietly become somebody else's name.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -3532,6 +5637,10 @@ def api_task_delete(patch: DeletePatch):
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
 
     _place(task)
+    # No `settings=` here: this single-row answer carries no pills, so the
+    # per-session record is not read for it. A caller that starts drawing
+    # model/effort off this row must pass `tasks_store.settings_state()` like
+    # the listing does, or the pair comes back from the entry alone.
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
@@ -3543,6 +5652,17 @@ def api_task_delete(patch: DeletePatch):
     # in flight — a delete that slipped through would tombstone the row out from
     # under a live process.
     if row["status"] in ("in_progress", "needs_attention"):
+        raise HTTPException(
+            status_code=409,
+            detail="that task is running — stop the run first, then delete")
+    # AND THE THIRD RUNNING WORD, WHICH IS NOT A WORD (PR #1194). A run parked
+    # on a card the user has ALREADY answered reads `queued`: the decision is
+    # held until the folder frees, so `_parked_runs` deliberately stops calling
+    # it parked. Nothing above catches that — this row is built without the
+    # parked index or the queue's lines — so the queue is asked directly
+    # whether a process is behind this key. A task merely WAITING in a line is
+    # not refused: nothing is running, and the delete cancels its place.
+    if _queue_holds_live(key):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -3558,12 +5678,23 @@ def api_task_delete(patch: DeletePatch):
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    # OUT OF THE QUEUE BEFORE THE TOMBSTONE, so nothing can be handed a folder
+    # or a held answer for a row that is on its way out.
+    _queue_drop_task(key)
     tasks_store.mark_deleted(key)
-    # The chat draft goes with the row, for archive's reason and one more: the
-    # row is the only place the chip could have been drawn, so a draft left
-    # behind is bytes nothing can ever show or reach.
+    # BOTH HALVES OF THIS SESSION'S UNSENT TEXT GO WITH THE ROW (design.md,
+    # PR C). The row is the only place either could ever have been drawn — the
+    # composer's own draft as the `✎ Draft` chip, a bound New task form as the
+    # same chip off `_bound_chips` — so a draft left behind is bytes nothing can
+    # show and nobody can reach. Unlike archive above, this verb is the one that
+    # means it.
+    #
+    # The bound form's row key is announced with the task's: it was never a row
+    # of its own, but a page holding a stale one (from before the binding, or
+    # from an older build) has to be told to drop it.
+    dropped = drafts.delete_bound(task["session_id"])
     drafts.delete_chat(task["session_id"])
-    tasks_watch.notify({key})
+    tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
 
@@ -3573,7 +5704,8 @@ class ErasePatch(BaseModel):
 
 
 @router.post("/api/tasks/erase")
-def api_task_erase(patch: ErasePatch):
+def api_task_erase(patch: ErasePatch,
+        x_fused: str | None = Header(default=None)):
     """Delete the task AND the Claude session behind it — through and through.
 
     THIS DELIBERATELY GOES FURTHER THAN `/api/tasks/delete`, whose whole promise
@@ -3590,8 +5722,10 @@ def api_task_erase(patch: ErasePatch):
     THE SAME FIRST HALVES AS DELETE, for the reasons documented there and not
     repeated here: the 409 while a run is in flight (a live turn cannot be
     cancelled, and erasing the transcript under a writing process is worse than
-    hiding it), then `_every_rule_behind` before the task's own pending entries
-    so a rule cannot mint one back.
+    hiding it) — the queue's reading of that included — then
+    `_every_rule_behind` before the task's own pending entries so a rule cannot
+    mint one back, and the task out of the queue (`_queue_drop_task`) before
+    anything comes off the disk.
 
     WHAT COMES OFF THE DISK, and why each is plural. `<session_id>.jsonl` is
     globbed across EVERY project dir rather than read off the row's own path,
@@ -3606,11 +5740,11 @@ def api_task_erase(patch: ErasePatch):
 
     WHAT COMES OUT OF STATE: the triage record WHOLE (`forget_triage`, not
     `clear_triage` — there is no session left for a note or a tag to be about),
-    and the read marks (`tasks_store.forget_session`), and a task draft bound to
-    this session is cut loose from it (`drafts.unbind_session`) — the words
-    stay, the binding does not, and that draft's own key is announced beside
-    this task's, because the row has just changed its number, its folder and
-    the thread its Schedule would reach. The task's NUMBER is the
+    and the read marks (`tasks_store.forget_session`), and BOTH shapes of this
+    session's unsent text — its chat draft and any task draft bound to it
+    (`drafts.delete_bound`, 2026-09-15) — with the bound draft's own key
+    announced beside this task's, so a page holding a row under it drops it.
+    The task's NUMBER is the
     one thing kept: allocation is "max seen plus one" read straight off
     task_ids.json, so the mapping stays as a reservation and a reused TASK-007
     can never point at somebody else's work. See `forget_session`.
@@ -3621,6 +5755,9 @@ def api_task_erase(patch: ErasePatch):
     be able to put the row back for a poll. The tombstone costs a few bytes and
     closes that window; the same reasoning delete's docstring gives for it.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -3629,6 +5766,10 @@ def api_task_erase(patch: ErasePatch):
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
 
     _place(task)
+    # No `settings=` here: this single-row answer carries no pills, so the
+    # per-session record is not read for it. A caller that starts drawing
+    # model/effort off this row must pass `tasks_store.settings_state()` like
+    # the listing does, or the pair comes back from the entry alone.
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
@@ -3636,6 +5777,14 @@ def api_task_erase(patch: ErasePatch):
     # and one more here: what is refused is not a hidden row but a deleted
     # file, under a process still writing to it.
     if row["status"] in ("in_progress", "needs_attention"):
+        raise HTTPException(
+            status_code=409,
+            detail="that task is running — stop the run first, then delete")
+    # The queue's own reading of "running", for the reason api_task_delete's
+    # guard documents — and, again, one more here: a held decision delivered
+    # into a session whose transcript this endpoint has just removed would be
+    # a run resumed onto nothing.
+    if _queue_holds_live(key):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -3651,11 +5800,21 @@ def api_task_erase(patch: ErasePatch):
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    # BEFORE A SINGLE FILE GOES, and that order is the point: `remove` both
+    # drops the held decision and lets go of the folder, so a pump on another
+    # thread cannot deliver an answer into this session — resuming the run —
+    # in the window between the erase deciding to go ahead and the transcript
+    # leaving the disk. An erase that then fails on a file leaves the task
+    # listed with its queue place gone, which is the same shape the cancelled
+    # work above already has ("the work already cancelled stays cancelled");
+    # the other order risks a run writing a transcript back while we delete it.
+    _queue_drop_task(key)
+
     removed, erased, failed, refused = 0, False, 0, 0
-    # The draft rows this erase renumbers, announced beside the task's own key
+    # The draft rows this erase takes away, announced beside the task's own key
     # at the end. Empty for a task with no session and for the ordinary erase
     # with nothing bound to it, which is nearly all of them.
-    unbound: list[str] = []
+    dropped: list[str] = []
     session_id = task["session_id"]
     if session_id:
         removed, erased, failed, refused = _erase_session_files(session_id, task["path"])
@@ -3682,26 +5841,25 @@ def api_task_erase(patch: ErasePatch):
         # emphatically something about it — there is no conversation left for
         # it to be typed into.
         drafts.delete_chat(session_id)
-        # A TASK draft bound to it is the other shape, and it is NOT deleted
-        # (review, 2026-09-12): a task draft is a form somebody is still filling
-        # in, and the conversation is only where they had meant to send it. What
-        # goes is the binding — the number this erase has just turned into a
-        # reservation (`forget_session`), and the standing-in for a row that no
-        # longer exists. The draft is an ordinary `draft:<id>` from the next
-        # listing on, numbered in its own folder.
+        # A TASK DRAFT BOUND TO IT GOES TOO (Akshil, 2026-09-15; design.md,
+        # PR C: "Delete + erase drop BOTH"). It used to be UNBOUND instead —
+        # words kept, binding cut, the form coming back as an ordinary
+        # `draft:<id>` row in its own folder — on the reading that a form
+        # somebody is still filling in outlives the conversation it was aimed
+        # at. What that actually produced was half a message addressed to a
+        # thread this gesture had just destroyed, reappearing in a lane the
+        # reader had cleared, with a Schedule button that could no longer do
+        # what it said. Both shapes of "this session's unsent text" now answer
+        # to the same two verbs, which is the one thing delete and erase could
+        # never previously agree on.
         #
-        # AND THOSE ROWS ARE NEWS (bugbot, PR #1126). Unbinding renumbers the
-        # draft, moves it into its own folder and drops its session — and the
-        # page is still drawing it with the erased session's TASK number, still
-        # holding that `session_id` in the form it would reopen, so pressing
-        # Schedule sent the message back into the conversation this gesture just
-        # destroyed. Announcing only the session's key fixed nothing: the draft
-        # is a different row. So the keys the store hands back are announced
-        # with it, below.
-        unbound = drafts.unbind_session(session_id)
+        # AND THOSE ROWS ARE NEWS (bugbot, PR #1126): a page holding one — from
+        # before the binding, or from an older build — has to be told to drop
+        # it, so the keys the store hands back are announced with the task's.
+        dropped = drafts.delete_bound(session_id)
 
     tasks_store.mark_deleted(key)
-    tasks_watch.notify({key} | set(unbound))
+    tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": erased, "removed": removed}
 
@@ -3833,3 +5991,1584 @@ def _rules_behind(entries: list[dict]) -> list[str]:
         if template_id and template_id not in rules:
             rules.append(template_id)
     return rules
+
+
+# --------------------------------------------------------------- the queue verbs
+# ONE TASK IN PROGRESS PER FOLDER, from the client's side. Three POSTs, and they
+# exist because the client cannot derive any of them: who holds a folder is a
+# fact the queue manager keeps (`queue_manager.owner`), and a page guessing it
+# is how two views end up disagreeing about one task.
+#
+# ALL THREE CARRY THE D3 X-FUSED HEADER, unlike every other write in this file.
+# The reads here are unguarded and so is `POST /api/tasks/read` — it moves a
+# badge, it does not run code — but these START WORK: admit spawns a turn or
+# stores a message that will spawn one, skip moves a message to the head of the
+# line it is about to go out of, and decide releases a parked agent. That is the
+# exact pair (schedule / unschedule) the header guard covers next door in
+# routers/schedule.py, and a blind cross-origin POST must not reach any of them.
+#
+# THE BODIES ARE PLAIN DICTS, not pydantic models like the archiving verbs above,
+# and for the reason `api_schedule_shot` documents: a required model field is
+# validated by FastAPI BEFORE any of our code runs, so a malformed body would be
+# answered with an unguarded 422 rather than with the guard's 403. A guarded
+# endpoint reads its own body.
+#
+# AND ALL THREE NOW HAND THE DECISION TO ONE PLACE (PR 2, 2026-09-17). The
+# manager below is the single record of who owns a folder and who is behind
+# them; these endpoints state an EVENT ("this chat wants to send", "this one
+# next", "this card is answered") and read the answer back. Nothing here derives
+# a line any more.
+
+
+# ------------------------------------------------------------- wiring the manager
+# `queue_manager` owns the index and none of the machinery: spawning a turn,
+# replaying a decision and reading whether a session is running are all things
+# this process can do and that module must not import (the scheduler, this
+# router and the permission server all reach the manager, so an import edge the
+# other way is a cycle — see `queue_manager.set_factory`). The five callables
+# below are that machinery, and `_wire_manager` is the hook.
+
+
+def _queue_spawn(folder: str, task_key: str) -> dict | None:
+    """Start the turn one queued task is waiting for — the manager's `spawn`.
+
+    `{"run_id", "session_id"}` for a message that went, None when the task names
+    no work any more (the entry was cancelled, or another dispatcher got it),
+    and `schedule.SpawnBusy` for a conversation that cannot take it YET — the
+    manager leaves a busy item at the head of its line rather than dropping it.
+
+    ONE SLOT PER TASK, SO ONE MESSAGE PER SPAWN: whichever of the task's waiting
+    messages is OLDEST. Message order in a conversation is the conversation, and
+    a line that held a slot per message would run the second thing typed first
+    whenever the first one was held.
+
+    ASKED OF THE STORE AND NOT OF THE KEY, even for a `pending:<entry-id>` key
+    that names an entry outright. The named entry is usually the one that goes —
+    it is the task's own oldest by construction — but it is not always THERE: a
+    queued chat whose first message the user cancelled still has the second one
+    behind it, filed under the leader's key, and dispatching the key's own id
+    would answer None and drop a message the user is still owed
+    (test_a_cancelled_leader_does_not_orphan_its_follower).
+
+    `folder` is not read: the entry carries its own target, and a key that named
+    a different tree than the line it stands in would be the index disagreeing
+    with the store rather than something to reconcile here."""
+    entry_id = _oldest_due_entry(task_key)
+    if not entry_id:
+        return None
+    started = schedule.dispatch_entry(entry_id)
+    session_id = str((started or {}).get("session_id") or "")
+    if session_id:
+        # A TURN JUST BEGAN ON THIS SESSION, and the manager is the one caller
+        # that knows it (Akshil's list audit, 2026-09-18). The watcher may still
+        # hold this session's `turn_ended` stamp from the previous turn; only a
+        # newer mark or a strictly newer registry mtime clears it, and a
+        # hand-off inside the same second — or a registry row that never left
+        # `busy` — clears neither, so the row read "done" while the next turn
+        # ran. The page marks its own sends this way; the queue marks the ones
+        # it dispatches.
+        try:
+            tasks_watch.mark_running(session_id)
+        except Exception:  # noqa: BLE001 — a missed mark is the old behaviour
+            logger.debug("could not mark %s running", session_id, exc_info=True)
+    return started
+
+
+def _oldest_due_entry(task_key: str) -> str:
+    """The id of the earliest message this TASK has waiting to go right now, or
+    "" for a task with nothing due.
+
+    `_due_pending`'s three conditions read for one task (pending, due by
+    `_queue_at` so a Run now counts, and a folder to wait on), filed by the
+    listing's own rule so the key asked about is the key the row was built
+    under (`_entry_key`)."""
+    entries = schedule.list_entries()
+    by_id = _by_entry_id(entries)
+    now = time.time()
+    best: tuple[float, str] | None = None
+    for entry in entries:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if not due or due > now:
+            continue
+        if _entry_key(entry, by_id) != task_key:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and (best is None or due < best[0]):
+            best = (due, entry_id)
+    return best[1] if best else ""
+
+
+def _queue_deliver(answer: dict) -> None:
+    """Replay one held card decision — the manager's `deliver`.
+
+    WHAT WAS HELD IS THE ARGUMENTS, NOT A VERDICT (see `api_queue_decide`), so
+    this is one call: `agent._decide` applies every rule it has — the scope
+    downgrade, the mode switch, the answer validation, the first-writer-wins
+    latch — against the run AS IT NOW IS, which is the whole reason the raw
+    arguments were what got stored."""
+    agent = project_queue.agent_module()
+    raw = (answer or {}).get("raw")
+    if agent is None or not isinstance(raw, dict) or not raw:
+        logger.debug("queue: nothing to deliver for %r", answer)
+        return
+    agent._decide(**raw)
+
+
+def _queue_identity(task) -> tuple[str, str]:
+    """`(session, run id)` to ask the status sync about, from either a bare task
+    key or the manager's owner/item RECORD.
+
+    A RECORD AND NOT A KEY, because half the index knows a conversation by a
+    name the registry has never heard: a `pending:<entry id>` owner is filed
+    under the entry that made it, a brand-new chat under the run it started, and
+    a status read that could only ask about the label answered "dead" for a turn
+    that was very much alive (`queue_manager.reconcile`). The record carries all
+    three names; the key form is what a caller with only a label has, and the
+    label is tried as BOTH — a session id and a run id are both just directory
+    names from here, and asking the wrong one costs a miss, never a wrong yes.
+
+    An `admit:` placeholder names no process at all (it exists precisely because
+    there is none yet), so it is never asked about."""
+    if isinstance(task, dict):
+        label = str(task.get("task") or "")
+        session = str(task.get("session_id") or "")
+        run_id = str(task.get("run_id") or "")
+    else:
+        label = str(task or "")
+        session = run_id = ""
+    if label.startswith(queue_manager.PLACEHOLDER_PREFIX):
+        return session, run_id
+    if label and not tasks_store.pending_entry(label):
+        session = session or label
+        run_id = run_id or label
+    return session, run_id
+
+
+def _run_dir_alive(run_id: str) -> bool:
+    """Does this run id name a run dir whose process is still up?
+
+    THE TIE-BREAKER THE REGISTRY CANNOT GIVE. A turn that started a second ago
+    has no mark and no registry row, but it does have a run dir with a live pid
+    in it — and `reconcile` asking "is this owner still there" has to be told
+    yes, or the index hands the folder to the next task while the first one is
+    still opening its transcript."""
+    if not run_id or project_queue.bad_id(run_id):
+        return False
+    agent = project_queue.agent_module()
+    if agent is None:
+        return False
+    run_dir = os.path.join(str(getattr(agent, "RUNS", "")), run_id)
+    if not os.path.isdir(run_dir):
+        return False
+    return project_queue.run_alive(agent, run_dir)
+
+
+def _queue_running(task) -> bool:
+    """Is a turn open in this task right now — the manager's `running`.
+
+    THE SAME STATUS SYNC THE LISTING READS, and deliberately only its registry
+    half: `tasks_watch.is_marked_running` (the sender's own word that a turn
+    just started, which covers the seconds before the CLI registers) over
+    `live_from_registry` (the process's own status). The transcript-tail
+    fallback is not asked — the manager consults this as a TIE-BREAKER on load
+    and restart (design.md), where a tail that reads warm because a turn ended
+    forty seconds ago would hold a folder for nobody.
+
+    …and the run dir last (`_run_dir_alive`), which is the only channel that
+    answers during the seconds between a spawn and its registration."""
+    session, run_id = _queue_identity(task)
+    if session:
+        if tasks_watch.is_marked_running(session):
+            return True
+        verdict = tasks_watch.live_from_registry(session)
+        if verdict and verdict[0]:
+            return True
+    return _run_dir_alive(run_id)
+
+
+def own_run_alive(session_id: str = "", run_id: str = "") -> bool:
+    """Is the process THIS SEND ALREADY HAS still going — the one question both
+    of the queue's doors have to ask a FORCED chat.
+
+    `POST /api/tasks/queue/force` starts a run in a folder the index gives to
+    somebody else ON PURPOSE (it is the flag-off behaviour for one message), so
+    from the index's side that conversation is a STRANGER in the tree for the
+    rest of its life: the admission next door answered `run: false` and the run
+    gate refused "this folder has another task in progress" — for the SECOND
+    message of a chat whose own process is sitting right there waiting for it.
+    A chat can always talk to its own live run; that is the inbox-absorb case
+    the chat has had since long before this feature, and it spawns nothing.
+
+    ASKED OF THE SAME STATUS SYNC THE MANAGER IS WIRED TO (`_queue_running`), so
+    the two doors and the index cannot disagree in the same second about whether
+    a process is there: the sender's own mark, then the live registry, then the
+    run dir — which is the only channel that answers in the seconds between a
+    spawn and its registration.
+
+    THE NAMES ARE TAKEN EXACTLY AS THE CALLER GAVE THEM (`task: ""`). A door
+    asking "is MY run alive" must not have one of its ids tried as the other:
+    `_queue_identity` folds a bare label into both fields, and a session id
+    tried as a run id could name a stranger's run dir and answer yes."""
+    session_id = str(session_id or "")
+    run_id = str(run_id or "")
+    if run_id and project_queue.bad_id(run_id):
+        run_id = ""
+    if not session_id and not run_id:
+        return False
+    return _queue_running({"task": "", "session_id": session_id,
+                           "run_id": run_id})
+
+
+def _queue_blocked(task) -> bool:
+    """Is this task parked on a card nobody has answered — the manager's
+    `blocked`.
+
+    The parked scan, read for one task: the bounded walk of the runs tree
+    (`project_queue.scan_runs`) and the unanswered-request rule
+    (`run_waiting`), which is the same pair the listing's `parked` column
+    reads. A parked run holds no folder, which is why the manager wants it.
+
+    MATCHED BY RUN TOO, not only by session: the cards belong to the RUN, and an
+    owner the index knows only by its run id (a chat that has not minted a
+    session, a `pending:` message the pump started) would otherwise read as "not
+    parked" the moment it put a card up — and get its folder taken away while a
+    human was looking at the card."""
+    session, run_id = _queue_identity(task)
+    if not session and not run_id:
+        return False
+    agent = project_queue.agent_module()
+    if agent is None:
+        return False
+    for run in project_queue.scan_runs(agent):
+        if not ((session and session in (run.get("sessions") or ()))
+                or (run_id and str(run.get("run_id") or "") == run_id)):
+            continue
+        if project_queue.run_waiting(agent, run):
+            return True
+    return False
+
+
+def _queue_pending_due() -> list[tuple[str, str, str]]:
+    """`(folder, task key, entry id)` for every pending message that is waiting
+    to go right now — the manager's `pending_due`, and what `reconcile` rebuilds
+    its lines from.
+
+    `_due_pending`'s rule over the whole store instead of one task, keyed by the
+    listing's filing rule so a rebuilt line names the rows the page is drawing.
+    A message with no folder (`queue_key` answers "" for `$HOME`, the filesystem
+    root, a relative path) is in no line at all — it queues behind nothing and
+    the scheduler dispatches it straight."""
+    if not project_queue.enabled():
+        return []
+    entries = schedule.list_entries()
+    by_id = _by_entry_id(entries)
+    now = time.time()
+    out: list[tuple[str, str, str]] = []
+    for entry in entries:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if not due or due > now:
+            continue
+        folder = project_queue.queue_key(str(entry.get("target") or ""))
+        entry_id = str(entry.get("id") or "")
+        if folder and entry_id:
+            out.append((folder, _entry_key(entry, by_id), entry_id))
+    return out
+
+
+def _wire_manager() -> None:
+    """Tell `queue_manager` how to build this process's manager.
+
+    A FACTORY AND NOT AN INSTANCE, so importing this router costs nothing: the
+    manager reads its index off disk and reconciles it against the scheduler's
+    store on construction, and doing that at import time would make every
+    `import fused_render.server` — including the ones a test does for one
+    unrelated endpoint — touch the state dir. `queue_manager.get()` builds it on
+    the first ask, which is the first time anything actually queues.
+
+    Called at import, below. Idempotent: registering the same hook twice is one
+    hook, and `reset_for_tests` is the seam a test uses to install its own
+    manager in front of it."""
+    queue_manager.set_factory(lambda: queue_manager.QueueManager(
+        spawn=_queue_spawn,
+        deliver=_queue_deliver,
+        running=_queue_running,
+        blocked=_queue_blocked,
+        pending_due=_queue_pending_due,
+        notify=tasks_watch.notify,
+    ))
+
+
+_wire_manager()
+
+
+@router.post("/api/tasks/queue/admit")
+def api_queue_admit(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None)):
+    """May this chat send start a run right now — and if not, queue it.
+
+    ASKED BEFORE THE SEND, NEVER AFTER. A composer that spawned first and queued
+    second would have two runs in one folder for as long as the round trip takes,
+    which is the single thing this feature exists to prevent. So the client asks,
+    and gets one of two answers:
+
+    * `{"run": true}` — go, exactly as before. The folder is free, or the thing
+      holding it IS this session (a second message typed into a conversation
+      that is already running is the inbox-absorb case the chat has always had,
+      and gating it would be this feature refusing a send that touches nothing
+      new). A short reservation is taken on the way out: between this answer and
+      the CLI registering a session there is nothing on disk saying the folder is
+      taken, and a second send landing in that window would be admitted into it.
+      **AND THE SAME ANSWER FOR A CHAT WITH A LIVE RUN OF ITS OWN IN A FOLDER
+      THE INDEX GIVES TO SOMEBODY ELSE** — which is exactly what
+      `POST /api/tasks/queue/force` leaves behind, on purpose. That chat is a
+      stranger in the tree for the rest of its life, so the claim below can only
+      ever refuse it; the send is still an absorb into the process already
+      there, and it spawns nothing (`own_run_alive`).
+    * `{"run": false, ...}` — the words are SAFE and nothing spawned. The message
+      is stored as an ordinary pending entry due now, in the same store the
+      calendar, the queue popover and cancel already work against, so there is no
+      second kind of waiting message to keep in step with. The answer says where
+      in the line it landed and who is in front, which is what the bubble's chip
+      prints.
+
+    **The flag off answers `{"run": true}` and stores nothing**, which is what
+    lets the client ask unconditionally and still behave exactly as main does.
+
+    **AND EITHER ANSWER RINGS THE LONG-POLL.** The row changes on both roads —
+    `queued` for a stored message, `in_progress` for an admitted one, the latter
+    off the reservation this endpoint takes (`_running_now`) — and a page
+    waiting on `/api/tasks/changes` should not sit out its own timeout to hear
+    about a send it just made.
+
+    The entry is created through the schedule router's own `create_entry`, so a
+    queued send carries the model, the effort, the permission mode and the
+    attachments the user actually chose. A queued message that differed from the
+    one that would have gone had the folder been free would make this a feature
+    that changes work rather than one that delays it.
+
+    **A CHAT NEVER OVERTAKES ITSELF.** A session that already has due work
+    waiting in the scheduler — an earlier message of its own that queued — is
+    answered `run: false` and this message queues behind it, EVEN IF THE FOLDER
+    IS FREE. Two reasons, and the second is the load-bearing one: message order
+    in a conversation is the conversation, so the second thing typed must not be
+    the first thing sent; and a client that spawned a turn into a session the
+    scheduler is about to claim for the earlier message would put two `--resume`
+    processes on one transcript. So the order flows through one place, and the
+    answer carries `behind_own: true` — the folder may be perfectly free and
+    there may be nobody ahead to name, and "after your previous message" is what
+    the chip says then.
+
+    A `follow_of` body (a second message typed into a chat whose first is still
+    queued) is the same rule read through the leader, and an id that names no
+    entry is a 400 rather than a silent fresh task — the client is looking at a
+    queue that has moved on, and the honest answer is what makes it refetch.
+
+    **`run_id` IS THE NAME A CHAT HAS BEFORE IT HAS A SESSION.** A new chat's
+    first message is admitted with `session_id: ""` because Claude Code has not
+    minted one yet, and the run that message starts is anonymous for as long as
+    nothing has polled it. So the second message — which by then DOES carry a
+    session id — asked about a folder held by a process neither id could match,
+    and was told `#1 in line · behind a run in this folder`: queued behind
+    itself (Akshil, folder qa-folder-b, 2026-09-12). The client passes the run
+    it started; the folder's owner carries the run it is; equal run ids are one
+    conversation whatever the session says (`queue_manager.is_free`). The other
+    half of the same fix learns the run's session from the live registry by pid,
+    so the anonymous window is now seconds rather than minutes
+    (`project_queue.run_sessions`).
+
+    **`draft_key` IS THE DRAFT THIS SEND SPENT**, and it is how a queued chat
+    keeps the name it already had. A session-less composer autosaves under
+    `new:<file>` and the listing numbers that key, so the row the reader has been
+    watching is TASK-057 before a word of it has gone anywhere. Queueing it used
+    to mint a SECOND number for `pending:<entry-id>` and leave the spent key in
+    `task_ids.json` for ever — the reader watched TASK-057 become TASK-058 on the
+    send, and every later listing paid a scan of the runs tree for a draft
+    nothing would settle (`_settle_new_chats`). The client names the key it is
+    spending, exactly as the run it would otherwise have started names it
+    (`agent._start`'s `meta.json draft_key`), and the entry inherits both the
+    number and the delete (`schedule.spend_chat_draft`). Optional, and ignored
+    when the folder was free: a send that RUNS spends its draft the way it always
+    did, through the run it starts.
+
+    **A WORDLESS SEND IS REFUSED ONLY WHERE IT WOULD HAVE TO BE STORED.** The
+    composer lets a user send pictures with no words, and into a free folder
+    that is an ordinary send this must not stand in the way of — so the message
+    is not looked at until the answer is "queue it". At that point it has to
+    become a scheduled entry, and `schedule.create` refuses one with no message
+    whatever it is carrying ("message: cannot be empty" — pictures are not words
+    and the row would have nothing to say). Mirrored here rather than routed
+    around: answering `run: true` to dodge the store would put a second turn in
+    a folder another task is holding, which is the one thing this endpoint
+    exists to prevent. So it is a 400 with the store's own sentence, and the
+    client keeps the words in the composer.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    message = body.get("message")
+    message = message if isinstance(message, str) else ""
+    session_id = str(body.get("session_id") or "")
+    # The run this chat already has in flight, when it has one. A new chat's
+    # first message is admitted with NO session (there is none yet), so the run
+    # it starts is the only name the conversation has until Claude Code mints
+    # one — and without it the second message queued behind the chat's own
+    # process (Akshil, 2026-09-12). Validated like every other id that reaches
+    # a path: a run id is a directory name under the runs tree.
+    run_id = str(body.get("run_id") or "")
+    if run_id and project_queue.bad_id(run_id):
+        return _error("run_id: not a run id — no leading dot, no separator",
+                      status=400)
+    if not project_queue.enabled():
+        # Nothing is read, nothing is resolved and nothing is stored: with the
+        # flag off this endpoint is a constant, and the client's send path is
+        # main's byte for byte.
+        return {"run": True}
+
+    resolved, refusal = schedule_api.resolve_target(body.get("project"),
+                                                    "project")
+    if refusal is not None:
+        return refusal
+    key = project_queue.queue_key(resolved)
+    # The store, read once, and ONLY where this send has something to be behind:
+    # a brand-new chat's first message names neither a session nor a leader and
+    # pays nothing for either question.
+    follow_of = str(body.get("follow_of") or "")
+    by_id = _by_entry_id() if (session_id or follow_of) else {}
+    if follow_of and by_id.get(follow_of) is None:
+        return _error(f"follow_of: no scheduled message with id {follow_of!r}",
+                      status=400)
+    behind_own = _behind_own(session_id, follow_of, by_id)
+    # THE TASK THIS SEND BELONGS TO, which is what the manager keys on — the
+    # session, else the key its leader is filed under for a message typed behind
+    # another, else the run this chat already has in flight. That last one is
+    # `run_id`'s whole job here: a new chat's first message is admitted before
+    # Claude Code has minted a session, so the run it started is the only name
+    # the conversation has, and a second message that could not say "that owner
+    # is me" queued behind itself (Akshil, 2026-09-12).
+    manager = queue_manager.get()
+    chat_key = _admit_key(session_id, follow_of, by_id) or run_id
+    # A FORCED CHAT IS NEVER QUEUED AGAIN (`queue_manager.mark_forced`, and
+    # `api_queue_force`'s docstring for the rule). The folder belongs to
+    # somebody else and always will — that is what the force left behind — so
+    # the claim below can only ever refuse, and refusing would queue a
+    # conversation the user has explicitly taken out of the queue.
+    #
+    # AFTER `behind_own` AND NEVER BEFORE IT, exactly like the `own_run_alive`
+    # arm under it: a chat with an earlier message of its own still waiting is
+    # still not allowed to overtake itself. That message is waiting in the
+    # STORE rather than in a line, and the tick dispatches it down the
+    # flag-off road (`schedule._tick_queued`), so the order a conversation was
+    # typed in is what it is sent in.
+    forced_names = [name for name in (chat_key, session_id, run_id) if name]
+    # …AND THE DOOR TEACHES THE MARK ITS NEW NAME: a forced new chat was marked
+    # under its run id; this is the first send that also carries the session
+    # Claude Code minted (Bugbot, PR #1296).
+    learn = getattr(manager, "learn_forced", None)
+    if learn is not None and len(forced_names) > 1:
+        learn(*forced_names)
+    if not behind_own and manager.is_forced(*forced_names):
+        return {"run": True}
+    # THE NAME THIS SEND OWNS THE FOLDER UNDER, minted here when the send has
+    # none of its own (`_owner_token`).
+    owner_token = chat_key or _owner_token(body)
+    # ONE DECISION, NOT A LOOK AND THEN A WRITE. `is_free` then `started` is two
+    # acquisitions of the manager's lock with a gap in between, and two sends
+    # into one free folder arriving on two request threads both heard "free" and
+    # both spawned. `claim_for_send` is the check and the filing under one lock:
+    # `ok` True means the folder is this task's from here, False that somebody
+    # else got it and this message queues.
+    #
+    # Asked at all only once this chat has nothing of its own in the line: an
+    # owner filed here would be a folder held for a send that is about to be
+    # queued anyway.
+    #
+    # A folder ALREADY OWNED BY THIS TASK is claimed by it: a second message
+    # typed into a conversation that is running is the inbox-absorb case the
+    # chat has always had, and the answer is `run: true` so the send goes down
+    # the client's ordinary path (`agent._send`) rather than starting a second
+    # process.
+    claim_token = ""
+    if behind_own:
+        ok = False
+    else:
+        ok, _took, claim_token = manager.claim_for_send(key, owner_token, run_id,
+                                                         session_id)
+        if not ok and own_run_alive(session_id, run_id):
+            # A FORCED CHAT, TALKING TO ITS OWN RUN (PR 2, 2026-09-21). The
+            # folder is somebody else's and always will be — `queue/force`
+            # started this run beside its owner on purpose — so the claim above
+            # can only ever refuse, and refusing is the wrong answer: there is a
+            # live process of this chat's own in that tree and the send is an
+            # inbox absorb into it (`agent._send`), not a second spawn.
+            #
+            # NO CLAIM AND NO STORE. Taking the folder would evict an owner this
+            # verb promised never to interrupt, and storing the message would
+            # queue it behind the very run it is addressed to.
+            #
+            # AFTER `behind_own`, NEVER BEFORE IT: a chat with an earlier
+            # message of its own still waiting is still not allowed to overtake
+            # itself, live run or not (see the docstring — message order in a
+            # conversation is the conversation).
+            return {"run": True}
+    if ok:
+        # THE FOLDER IS THIS TASK'S FROM HERE, and that record is the gate's —
+        # nothing on the listing reads it. The row turns `in_progress` the way
+        # every send's does, flag or no flag: the page marks the session as it
+        # sends (`POST /api/tasks/running`, #1163) and that mark rings the poll.
+        # Ringing here as well was the same bell twice about a row that had not
+        # changed yet.
+        resp: dict = {"run": True}
+        # THE CLAIM TOKEN RIDES ALONG (2026-09-17, Bugbot PR #1194): the client
+        # echoes it back on the run request as `queue_claim`, and
+        # `routers/run.py::_folder_busy` consuming it there is the proof this
+        # send is the one `claim_for_send` just counted, so the gate looks
+        # rather than claiming a second time. `claim_for_send` only fails to
+        # mint one when `ok` is False, which never reaches here.
+        if claim_token:
+            resp["claim"] = claim_token
+        if not chat_key:
+            # A NAMELESS SEND GETS ITS NAME BACK. The client is untouched in
+            # this PR and ignores the field; the run it is about to start
+            # replaces the placeholder through the spawn site
+            # (`routers/run._file_owner` → `queue_manager.started`), and the
+            # token is here so the composer can eventually say "that owner is
+            # me" without waiting for a run id.
+            resp["owner_token"] = owner_token
+        return resp
+
+    if not message.strip():
+        return _error("message: cannot be empty — this folder is busy, and a "
+                      "send with no words has nothing to queue", status=400)
+
+    try:
+        # `schedule._now()` and not this module's clock: the entry's due time is
+        # compared against the scheduler's own `now` on every tick, and two
+        # clocks over one comparison is how a message due "now" lands a second in
+        # the future and waits a whole tick for nothing.
+        #
+        # `origin="chat"` AND NOT A FIELD OF THE BODY: this endpoint is the one
+        # thing a chat's own queued message comes through, so the fact is the
+        # endpoint's to state rather than the request's to claim. It is what
+        # keeps this message from shutting the composer it was typed into
+        # (`_queue_summary`), and a body that could set it would let the New
+        # task form silently opt a calendar message out of the block it is
+        # supposed to cause.
+        entry = schedule_api.create_entry(resolved, dict(body, message=message),
+                                          schedule._now(), origin="chat")
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+
+    # THE DRAFT THIS SEND SPENT, settled BEFORE anything is numbered below —
+    # `_task_number` allocates, and the whole point of the rekey inside is that
+    # it finds the number already sitting on `pending:<entry-id>` and mints
+    # nothing. The schedule router owns the move because it owns the other one
+    # exactly like it (a scheduled form's `draft_id`), and one copy is what keeps
+    # the two from drifting. Best-effort and silent: see its docstring.
+    schedule_api.spend_chat_draft(body.get("draft_key"), entry,
+                                  sent=str(body.get("message") or ""))
+
+    # The row this message landed on, read the same way the listing files it:
+    # the session it named, else the LEADER's key for a follower, else its own
+    # pending key. The entry is added to the index because it is a second old
+    # and nothing else has seen it yet.
+    task_key = _entry_key(entry, dict(by_id, **{str(entry.get("id") or ""): entry}))
+    # AND INTO THE LINE. The store is where the message lives; the manager is
+    # where its turn is decided, and a message that was only written would sit
+    # there until the next tick happened to notice it.
+    #
+    # A FOLLOW-UP IS NOT A SECOND SLOT. The entry still carries `follow_of` —
+    # the store needs it to file the message on the right row — but the manager
+    # keys by TASK, and a message typed into a chat that is already queued has
+    # its leader's key, so this `enqueue` finds it already standing there and
+    # changes nothing. Which is exactly the design: a follow-up is a message on
+    # a task, not another task in the line.
+    manager.enqueue(key, task_key, str(entry.get("id") or ""))
+    tasks_watch.notify({task_key})
+    # ONE COLLECTION FOR BOTH HALVES of the answer, the shape run-now's queued
+    # arm already uses: where this message landed in the line and what its task
+    # is CALLED are two questions about the same set of tasks, and collecting is
+    # a glob over every transcript on the machine.
+    tasks = _collect()
+    place = _queue_place(task_key, tasks)
+    # Placed after the line is derived, never before: `_task_number` fills in
+    # the task's project/target/order, and `_queue_lines` is a fact about
+    # entries and sessions that must be read the same way the listing reads it.
+    number = _task_number(task_key, tasks)
+    return {"run": False, "entry": entry, "key": task_key,
+            # WHAT THIS CHAT IS NOW CALLED — minted here rather than waited for.
+            # See `_task_number`: the chip under a queued bubble names the task,
+            # and a brand-new chat's first queued message had no number until
+            # the next listing. "" only where the task itself has gone.
+            "task_id": number,
+            "position": place["position"], "ahead": place["ahead"],
+            "ahead_title": place["ahead_title"],
+            # The task key behind the name, so the bubble's "behind TASK-041"
+            # opens a chat that has no session yet (`pending:<entry>`).
+            "ahead_key": place["ahead_key"],
+            # WHERE "behind TASK-041" GOES when the chip is clicked — the
+            # holder's session and target, `taskHref`'s own pair. Both "" for a
+            # holder with no session yet, and the chip then says the words
+            # without the link.
+            "ahead_session": place["ahead_session"],
+            "ahead_target": place["ahead_target"],
+            # WHY it queued, where the line alone cannot say: the folder can be
+            # free and the position 0 with nobody ahead, and this is still a
+            # message waiting on an earlier one of its own.
+            "behind_own": behind_own}
+
+
+def _owner_token(body: dict) -> str:
+    """A name for an admission that has none — `admit:<something>`.
+
+    A BRAND-NEW CHAT'S FIRST SEND NAMES NOBODY: there is no session (Claude Code
+    mints one inside the spawn) and no run (the spawn has not happened — this
+    endpoint is what says it may). So the admission filed no owner at all, the
+    folder went on reading free, and a second nameless send arriving in that
+    window was admitted straight into it — the exact race `claim` exists to
+    settle, walked around because there was nothing to write down.
+
+    THE IDENTITY THE CLIENT ALREADY SENDS, where it sends one. `draft_key` is a
+    session-less composer's own key (`new:<file>`) and it is stable across that
+    composer's sends, so two messages typed into one new chat claim one owner
+    rather than fighting over the folder. Otherwise a uuid, which is a name that
+    is at least unique — the placeholder's job is to be SOMEBODY, and it expires
+    on its own (`queue_manager.PLACEHOLDER_TTL`) because no process exists yet
+    to send the event that would free it."""
+    for field in ("draft_key", "pane", "turn", "client_id"):
+        value = str(body.get(field) or "").strip()
+        if value:
+            return queue_manager.PLACEHOLDER_PREFIX + value
+    return queue_manager.PLACEHOLDER_PREFIX + uuid.uuid4().hex
+
+
+def _admit_key(session_id: str, follow_of: str, by_id: dict) -> str:
+    """The TASK KEY an incoming chat send belongs to: the session it names, else
+    the key its LEADER is filed under for a message typed behind another, and ""
+    for the first message of a brand new chat.
+
+    `_entry_key`'s filing rule read from the request side, in one place because
+    two things ask it of the same body — whether this chat already has work of
+    its own waiting (`_behind_own`) and whether the folder it is sending into is
+    already its own (the manager's `is_free`). Two spellings of "which task is
+    this" would let those two disagree about one send.
+
+    A leader that names no entry is answered "" rather than guessed at; the
+    endpoint has already refused that body with a 400."""
+    if session_id:
+        return session_id
+    if not follow_of:
+        return ""
+    leader = by_id.get(follow_of)
+    return "" if leader is None else _entry_key(leader, by_id)
+
+
+def _behind_own(session_id: str, follow_of: str, by_id: dict) -> bool:
+    """Has this chat already got a message of its own waiting to be claimed?
+
+    The same task key on both sides and nothing cleverer: the incoming send's
+    key (its session, else the key its leader is filed under) against the key of
+    every PENDING entry that is already due. Due, because a message scheduled
+    for next Tuesday is not in front of anything — it is waiting on the clock,
+    and queueing behind it would park this send until Tuesday.
+
+    A send with neither a session nor a leader is the first message of a brand
+    new chat and can be behind nothing."""
+    mine = _admit_key(session_id, follow_of, by_id)
+    if not mine:
+        return False
+    now = time.time()
+    for entry in by_id.values():
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if not due or due > now:
+            continue
+        if _entry_key(entry, by_id) == mine:
+            return True
+    return False
+
+
+def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
+    """Where one task stands right now — `{"position", "ahead_key", "ahead",
+    "ahead_title", "ahead_session", "ahead_target"}`, re-derived from scratch,
+    or from a collection the caller already holds.
+
+    `ahead_key` rides along for the same reason the row carries it (`_row`'s
+    `queue_ahead_key`): a holder that has not minted a session yet can still be
+    LINKED to — it is a `pending:<entry>` row with a number — and an answer
+    that named it only in words would leave the one surface that has just
+    changed the line unable to click through to what is in front of it
+    (round-3 review, 2026-09-12).
+
+    The three endpoints below all answer with a place in a line, and all three
+    have just CHANGED that line (stored an entry, skipped to the head, held an
+    answer). Re-READING it is the only honest way to report it: the manager's
+    index is one table and another window may have moved it in the same second,
+    and a number computed before the event was handed over would be a promise
+    about a queue that no longer exists.
+
+    ONE TASK'S SLOT AND NOT THE WHOLE TABLE (PR 2, 2026-09-17):
+    `queue_manager.place()` answers exactly the question this asks, where
+    `positions()` would hand back every line on the machine for one row. The
+    naming half is unchanged — `_name_ahead` still needs the Tasks collection,
+    which is why `tasks` is still read.
+
+    Position 0 with no name is the answer for a task the manager does not place
+    — the folder freed between the write and this read, most often — and the
+    client prints "runs next" for it rather than "#0 in line".
+
+    Passing `tasks` is for the ONE caller that needs a second Tasks fact in the
+    same reply (run-now, which also names who is ahead): the collection is a
+    glob over every transcript on the machine, and it is the same collection
+    both answers are about."""
+    if tasks is None:
+        tasks = _collect()
+    queue: dict[str, dict] = {}
+    manager = queue_manager.peek() if project_queue.enabled() else None
+    if manager is not None:
+        # `peek` for the same reason `_queue_lines` reads that way: every caller
+        # of this has ALREADY fired its event through `get()`, so the manager is
+        # there — and the one road that has not (a place asked on a listing) must
+        # not build it.
+        spot = manager.place(task_key)
+        if int((spot or {}).get("position") or 0) > 0:
+            queue[task_key] = _queue_row(spot)
+    _name_ahead(queue, {}, tasks)
+    place = queue.get(task_key) or {}
+    return {"position": place.get("position", 0),
+            "ahead_key": place.get("ahead_key", ""),
+            "ahead": place.get("ahead", ""),
+            "ahead_title": place.get("ahead_title", ""),
+            # The chip under a queued bubble links to the chat in front, the
+            # same way the row does — one derivation, so the two surfaces cannot
+            # send a reader to different places.
+            "ahead_session": place.get("ahead_session", ""),
+            "ahead_target": place.get("ahead_target", "")}
+
+
+@router.post("/api/tasks/queue/skip")
+def api_queue_skip(body: dict = Body(...),
+                   x_fused: str | None = Header(default=None)):
+    """Move one queued task's due work to the head of its folder's line.
+
+    **IT NEVER INTERRUPTS THE RUN IN FLIGHT** (Akshil, 2026-09-12). Skip is a
+    statement about the ORDER of what is waiting, not about what is happening:
+    the holder keeps the folder until its turn ends, and this task goes first
+    when it frees. So the answer is always position 1 and never "running now" —
+    there is no gesture in this app that takes a folder off a live process.
+
+    **`manager.skip` IS THE WHOLE MECHANISM** (PR 2, 2026-09-17): the task moves
+    to index 0 of its folder's line — right behind the owner — and is marked
+    promoted, which is what lights the ⤒ on the row. Newest press wins, so a
+    later skip pushes this one to 2; that is the rule the old stamp ordering was
+    trying to express, stated once in the index instead of re-derived from
+    `priority_at` on every read.
+
+    `schedule.set_priority` is still written and now means only one thing: the
+    calendar page's existing queued display reads the store's flag. NOTHING
+    ORDERS BY IT any more. Only the task's DUE work is promoted — a message the
+    same task has scheduled for next Tuesday is not in this line and jumping it
+    to the head of one would be this verb silently rescheduling work nobody
+    asked about.
+
+    REFUSED (400) WHEN THE TASK IS NOT QUEUED, rather than quietly setting a flag
+    that does nothing: "skip the queue" on a task that is not in one is a client
+    that is looking at a stale row, and the honest answer is what makes it
+    refetch. A task holding a HELD ANSWER is already at the head by definition
+    (an answer outranks every message in its folder), so it is answered `ok` and
+    nothing is written.
+
+    **`{entry_id}` IS AN ALTERNATIVE TO `{key}`, and the chip in the chat sends
+    it** (round-2 review, 2026-09-12). A task key is not a constant: a queued
+    new chat is `pending:<leader entry>` until its leader's run mints a session,
+    and then the whole row REKEYS onto that session. A Skip button holding the
+    key it was painted with would, a second after the leader fired, name a row
+    that no longer exists — a 404 on the one gesture the user is watching the
+    line for. The entry id never moves, so the entry is what the chip names and
+    the key is resolved here through the listing's own filing rule
+    (`_entry_key`), which is the same answer the row was built under. The
+    response is unchanged either way.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    key = str(body.get("key") or "").strip()
+    entry_id = str(body.get("entry_id") or "").strip()
+    if not key and not entry_id:
+        return _error("key or entry_id: required", status=400)
+    if not project_queue.enabled():
+        return _error("project queue is off", status=409)
+    if not key:
+        by_id = _by_entry_id()
+        entry = by_id.get(entry_id)
+        if entry is None:
+            return _error(
+                f"entry_id: no scheduled message with id {entry_id!r}",
+                status=404)
+        key = _entry_key(entry, by_id)
+
+    tasks = _collect()
+    task = tasks.get(key)
+    if task is None:
+        return _error(f"no task with key {key!r}", status=404)
+    now = time.time()
+    manager = queue_manager.get()
+
+    # ONE CALL, AND IT IS THE PRESS. `manager.skip` is the whole mechanism for
+    # an answered task too — it moves to the head of the line like anything else
+    # and newest press wins — so there is no held-answer arm here any more: a
+    # second road to the same answer is a second set of rules to keep in step
+    # with the first.
+    #
+    # Position 0 back is "this task stands in no line", which is the 400 the
+    # docstring promises rather than a flag quietly set on nothing — UNLESS the
+    # press itself started it. The folder was free, the pump handed it straight
+    # over, and a task that is now RUNNING is the best possible outcome of "run
+    # this next": answered 200, never refused.
+    outcome = manager.skip(key) or {}
+    if int(outcome.get("position") or 0) == 0 and not outcome.get("started"):
+        return _error("not queued", status=400)
+
+    # THE STORE'S FLAG, FOR THE CALENDAR AND NOTHING ELSE (see the docstring),
+    # and only over THE FOLDER THIS TASK IS WAITING IN: a message the same task
+    # has due into a DIFFERENT tree stands in a different line, and promoting it
+    # here would be this verb silently reordering work nobody asked about. The
+    # folder is the one the task's earliest waiting message is for, which is the
+    # message the manager would spawn for it (`_queue_spawn`).
+    waiting: list[tuple[float, str, str]] = []
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if not due or due > now:
+            continue
+        folder = project_queue.queue_key(str(entry.get("target") or ""))
+        entry_id = str(entry.get("id") or "")
+        if folder and entry_id:
+            waiting.append((due, folder, entry_id))
+    folder = min(waiting)[1] if waiting else ""
+    ids = [entry_id for _due, other, entry_id in waiting if other == folder]
+    if ids:
+        schedule.set_priority(ids, True)
+    tasks_watch.notify({key})
+    # WHO IS IN FRONT NOW, the way admit, decide and run-now all answer it
+    # (`_queue_place`). The press has just changed this line and the chat has to
+    # redraw it: without these the card could only paint the claim ("runs next")
+    # and kept saying "behind TASK-041" about whatever was ahead BEFORE the press
+    # until the next listing landed (🟡 review, 2026-09-12).
+    #
+    # RE-READ AFTER THE PRESS, not from the `tasks` in hand: that collection was
+    # read before the skip moved the line, so placing against it would report
+    # the order this endpoint had just replaced. `position` stays the promise
+    # this endpoint makes (see the docstring) and is not taken from the read.
+    place = _queue_place(key)
+    return {"ok": True, "position": 1,
+            "ahead_key": place["ahead_key"], "ahead": place["ahead"],
+            "ahead_title": place["ahead_title"],
+            "ahead_session": place["ahead_session"],
+            "ahead_target": place["ahead_target"]}
+
+
+@router.post("/api/tasks/queue/force")
+def api_queue_force(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None)):
+    """Run this WAITING message RIGHT NOW, beside whatever owns the folder.
+
+    **IT IS THE FLAG-OFF BEHAVIOUR, FOR ONE MESSAGE** (Akshil, 2026-09-21).
+    Skip next door is a statement about the ORDER of the line and leaves the
+    queue deciding WHEN the turn goes; this is the user saying the line is not
+    what they want for this one message. So the manager never owns it: the item
+    leaves its line and the message is dispatched exactly as it would have been
+    with `project_queue_enabled` off — two processes in one tree, which is what
+    main has always done and what this pref exists to stop doing BY DEFAULT.
+
+    **IT NEVER INTERRUPTS THE OWNER.** Nothing in this app takes a folder off a
+    live process and this is not the exception: the holder keeps the folder and
+    keeps running. "Force" is a statement about the QUEUE, never about the other
+    run.
+
+    **EVERY WAITING ROW GETS IT, INCLUDING #1.** "Next" and "now" are different
+    promises — the task at the head of a line is still waiting on a turn that
+    may have an hour left in it — so this is offered wherever a message is
+    queued, unlike `skip`, which has nothing to say at position 1.
+
+    `{entry_id}` OR `{key}`, resolved the way skip resolves them: a queued new
+    chat is filed under `pending:<leader entry>` until its leader's run mints a
+    session and the whole row then REKEYS, so the entry id is the only name a
+    chip painted a second ago can safely hold (see `api_queue_skip`).
+
+    **AND IT IS THE TASK'S FOR EVER, NOT THE MESSAGE'S** (Akshil, 2026-09-21:
+    "once a task is force-started it never enters the queue again — no matter
+    if it is blocked or has multiple messages"). The conversation is marked
+    forced (`queue_manager.mark_forced`) under every name it answers to BEFORE
+    anything is dispatched, and from then on the admission answers `run: true`,
+    the run gate lets its sends through, its card decisions go straight to the
+    agent and `reconcile` keeps its messages out of every line. Its remaining
+    waiting messages leave the line with it and are dispatched, in order, by
+    the scheduler's own tick — the flag-off branch (`schedule._tick_queued`),
+    which is where this verb has always sent one message.
+
+    Three answers, all of them 200:
+
+    * `{"ok": true, "started": true, "run_id", "session_id"}` — it went.
+    * `{"ok": true, "started": false, "reason": "already started"}` — there was
+      nothing left to dispatch by the time this call reached the entry: it was
+      cancelled, or the pump claimed it in the window. A 200, because the thing
+      the user asked for either happened without them or is no longer theirs to
+      ask for, and the next listing says which.
+    * `{"ok": true, "started": false, "reason": <the scheduler's sentence>}` for
+      a conversation that cannot take the message YET (`schedule.SpawnBusy` — a
+      send already in flight, a live turn the user is typing into). **NOTHING
+      GOES BACK IN THE LINE** (Bugbot, 2026-09-21): the task is forced, its
+      entries are still `pending` in the store, and the next tick sends them
+      down the same flag-off road. A 409 that re-enqueued would have been this
+      verb undoing itself and handing the user back a place in a line they had
+      just left.
+
+    **A TASK WHOSE ONLY WAITING THING IS AN ANSWER** is not a message to
+    dispatch — it is a held card decision, and "run it now" means DELIVER it,
+    which is the same flag-off road (`_queue_deliver` → `agent._decide`, every
+    rule applied against the run as it now is). The task owns nothing here, so
+    `remove` only clears its line and its answers. A task that has BOTH is
+    delivered AND dispatched, the decision first: `forget_entry` drops a task's
+    held answers once it stands nowhere, so reading them after the entries had
+    gone would have lost them (Bugbot, 2026-09-21).
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    key = str(body.get("key") or "").strip()
+    named = str(body.get("entry_id") or "").strip()
+    if not key and not named:
+        return _error("key or entry_id: required", status=400)
+    if not project_queue.enabled():
+        return _error("project queue is off", status=409)
+    if not key:
+        by_id = _by_entry_id()
+        entry = by_id.get(named)
+        if entry is None:
+            return _error(
+                f"entry_id: no scheduled message with id {named!r}",
+                status=404)
+        key = _entry_key(entry, by_id)
+
+    tasks = _collect()
+    task = tasks.get(key)
+    if task is None:
+        return _error(f"no task with key {key!r}", status=404)
+
+    manager = queue_manager.get()
+    # THE MESSAGE THIS TASK IS WAITING TO SEND, asked of the store the way the
+    # pump asks it (`_queue_spawn`): whichever of the task's due messages is
+    # OLDEST, and not whichever one the body happened to name. Message order in
+    # a conversation is the conversation, and a force that sent the named one
+    # would run the second thing typed before the first.
+    entry_id = _oldest_due_entry(key)
+    # …AND THE DECISION IT MAY ALSO BE OWED — the other kind of waiting a line
+    # holds. Read BEFORE anything is forgotten, because `forget_entry` drops a
+    # task's held answers the moment it stands nowhere (`_forget_answers`), and
+    # a force that took a task's entries out of the line first would throw the
+    # user's answer away with them (review, 2026-09-21).
+    answers = manager.held_answers(key)
+    if not entry_id and not answers:
+        return _error("nothing waiting to start", status=400)
+
+    entry: dict = {}
+    folder = ""
+    if entry_id:
+        # The message's folder — read off the ENTRY and never off the key, the
+        # same rule everything else in this router files a waiting message
+        # under (`_queue_pending_due`). Read from the LIVE store first —
+        # `_oldest_due_entry` just read it, and an entry created between
+        # `_collect()` above and that read is in the store but not in the
+        # snapshot; the snapshot is the fallback. A message with no folder is
+        # not one this verb can be about, and it is refused before anything
+        # moves.
+        entry = _by_entry_id().get(entry_id) or next(
+            (row for row in task["entries"]
+             if str(row.get("id") or "") == entry_id), {})
+        folder = project_queue.queue_key(str(entry.get("target") or ""))
+        if not folder:
+            return _error("nothing waiting to start", status=400)
+
+    # EVERY MESSAGE THIS TASK HAS WAITING, not just the one about to go: the
+    # force is a statement about the CONVERSATION ("once a task is
+    # force-started it never enters the queue again — no matter if it is
+    # blocked or has multiple messages", Akshil 2026-09-21), so the whole task
+    # leaves the line and the tick dispatches what is left, in order, into the
+    # same session (`schedule._tick_queued`'s forced branch).
+    # DUE, like every other read of a line (`_queue_pending_due`): a message
+    # scheduled for next week is waiting on a CLOCK rather than on a folder, it
+    # stands in no line, and forcing the queue off a task must not quietly
+    # bring its future work forward. When its time comes the task is forced
+    # under its session anyway, so it too skips the line.
+    now = time.time()
+    pending_ids = []
+    for row in task.get("entries") or []:
+        entry_at = _queue_at(row)
+        if (str(row.get("state") or "") == schedule.PENDING
+                and str(row.get("id") or "") and entry_at and entry_at <= now):
+            pending_ids.append(str(row.get("id")))
+    if entry_id and entry_id not in pending_ids:
+        pending_ids.append(entry_id)
+
+    # MARKED BEFORE THE DISPATCH, under every name this chat answers to — the
+    # row's key and each waiting message's own `pending:` key. The dispatch
+    # below mints a session, and the two doors this send is about to walk
+    # through (`api_queue_admit`, `routers/run._folder_busy`) ask under
+    # whichever name they happen to hold; the session and the run are added the
+    # moment they exist, below.
+    pending_keys = [tasks_store.pending_key(i) for i in pending_ids]
+    # WAS THIS CHAT ALREADY FORCED before this press? Decides what a press that
+    # starts nothing does to the mark below (Bugbot ×2, 2026-09-21).
+    was_forced = bool(manager.is_forced(key, *pending_keys))
+    manager.mark_forced(key, *pending_keys)
+
+    # THE HELD DECISION GOES NOW. A forced task holds nothing, so an answer
+    # that was parked for this conversation is replayed the flag-off way
+    # (`_queue_deliver` -> `agent._decide`, every rule applied against the run
+    # as it now is) before its entries move.
+    for answer in answers:
+        _queue_deliver(answer)
+
+    if not entry_id:
+        # Nothing to dispatch: the decision WAS the waiting thing. The task
+        # owns nothing here, so this only clears its line and its answers.
+        manager.remove(key)
+        tasks_watch.notify({key})
+        return {"ok": True, "started": True, "delivered": len(answers)}
+
+    # OUT OF THE LINE, and BY ENTRY: `remove` would also release the folder
+    # when this task happens to own it — a user forcing the second thing they
+    # typed would take the turn that is running away from themselves — and this
+    # verb touches no owner at all. Everybody behind it shifts up, because the
+    # folder's line really is that many messages shorter now.
+    for pending_id in pending_ids:
+        manager.forget_entry(pending_id)
+    try:
+        started = schedule.dispatch_entry(entry_id)
+    except schedule.SpawnBusy as exc:
+        # NOT YET — and NOTHING GOES BACK IN THE LINE (Bugbot, 2026-09-21).
+        # Re-enqueueing here used to be what kept the message safe; with the
+        # task forced it would be the one thing that undoes the force, and the
+        # message needs no rescuing: its entry is still `pending` in the
+        # scheduler's store, `reconcile` leaves a forced task out of every line
+        # and the next tick dispatches it down the flag-off road. So this is a
+        # 200 that says what the scheduler said, not a refusal that moves the
+        # user's place.
+        tasks_watch.notify({key})
+        return {"ok": True, "started": False, "reason": str(exc),
+                "delivered": len(answers)}
+    if started is None:
+        # Cancelled in the window, or the pump got there first. Nothing was
+        # force-started, so the mark THIS press wrote comes off again — a
+        # permanent bypass for a press that did nothing would spawn the chat's
+        # NEXT message beside another task's live turn. But a chat that was
+        # forced BEFORE this press keeps its mark: a retry, a second surface,
+        # or a double-click must not undo the press that did start something
+        # (review + Bugbot, 2026-09-21).
+        forget = getattr(manager, "forget_forced", None)
+        if forget is not None and not was_forced:
+            forget(key, *pending_keys)
+        tasks_watch.notify({key})
+        return {"ok": True, "started": False, "reason": "already started"}
+
+    session_id = str(started.get("session_id") or "")
+    run_id = str(started.get("run_id") or "")
+    # THE NAMES THE DISPATCH JUST MINTED, added to the forced set: a queued new
+    # chat is `pending:<entry>` until this moment and its session a moment
+    # later, and the doors its next message walks through know it by the new
+    # name alone.
+    manager.mark_forced(session_id, run_id)
+    if session_id:
+        # A TURN JUST BEGAN and nothing else knows it yet — the same mark the
+        # pump's spawn site writes for the same reason (`_queue_spawn`): a stale
+        # `turn_ended` stamp would draw this row as done while it ran.
+        try:
+            tasks_watch.mark_running(session_id)
+        except Exception:  # noqa: BLE001 — a missed mark is the old behaviour
+            logger.debug("could not mark %s running", session_id, exc_info=True)
+    # THE ROW, AND THE ROW IT IS ABOUT TO BECOME: a queued new chat is filed
+    # under `pending:<entry>` until this dispatch mints a session, and a page
+    # long-polling the old key would not hear about the new one.
+    tasks_watch.notify({key, session_id} - {""})
+    return {"ok": True, "started": True, "run_id": run_id,
+            "session_id": session_id}
+
+
+def _already_decided(agent, run_dir: str, request_id: str) -> bool:
+    """Is this card's answer already on disk?
+
+    THE SECOND TAB (round-3 review, 2026-09-12). `_write_decision` is a
+    first-writer-wins latch and `queue_manager.card_answered` is another one,
+    but they latch in different places: a card answered in one window and then answered again in a
+    stale second window would have its second answer HELD — parked against a
+    question that has a verdict, to be replayed into a run that has already
+    moved on, and reported to that tab as "Answer queued" when the truth is
+    "somebody already answered this". Passing it through instead costs nothing
+    and reports the truth: `agent._decide` reads the existing decision and hands
+    back the verdict that won, which is what the card should be showing.
+
+    Best-effort by construction — a perm dir that cannot be read answers False,
+    which is the ordinary road and where every rule about the run is applied
+    anyway."""
+    try:
+        path = os.path.join(agent._perm_dir(run_dir), request_id + ".res.json")
+        return os.path.exists(path)
+    except Exception:  # noqa: BLE001 — an unreadable run is the ordinary road
+        return False
+
+
+@router.post("/api/tasks/queue/decide")
+def api_queue_decide(body: dict = Body(...),
+                     x_fused: str | None = Header(default=None)):
+    """Answer a parked run's card — through the queue.
+
+    The same body the chat's own `decide` action takes, plus the `session_id` and
+    `project` this needs to find the line. Two answers:
+
+    * `{"held": false, ...}` — the decision went STRAIGHT THROUGH to
+      `agent._decide` and the rest of the object is its ordinary result. This is
+      what happens with the flag off, when the folder is free (or held by this
+      very session), and when the run is already dead — a dead run's answer is
+      recorded as `expired` by `_decide` itself, and holding it would park a
+      decision for a process that can never read it.
+    * `{"held": true, ...}` — the folder is busy with ANOTHER task, so the answer
+      is stored in the manager's index and delivered when the folder frees.
+      Nothing is written to the run's perm directory yet, which is the point: a
+      parked run given its answer now would wake up and start editing a working
+      tree another task owns — the exact collision the feature exists to
+      prevent, arriving through the one door that is not a message.
+
+    **WHICH OF THE TWO IS THE MANAGER'S ANSWER, NOT THIS ENDPOINT'S** (PR 2,
+    2026-09-17). `card_answered` is one call under one lock: it knows who owns
+    the folder, so "free, or this very task" and "somebody else has it" are
+    decided where the owner is recorded rather than re-derived here against a
+    scan that may already have moved. Held also puts the task at index 0,
+    promoted — an answered card is the very next thing its folder does, until a
+    later Run next says otherwise.
+
+    **WHAT IS HELD IS THE ARGUMENTS, NOT A DECISION PAYLOAD** (deviation from the
+    design doc, 2026-09-12, and noted there for the deliverer). The obvious store
+    is the dict `_decide` would have written, and it is wrong: building it means
+    re-implementing every rule in `_decide` — the narrow-never-widen scope
+    downgrade, the mode switch, the keep-planning message, the answer validation
+    against the parked request's own questions — in a second place, where they
+    would drift. Worse, those rules read the LIVE run (`_alive`, the request
+    file), and the answer is being made now and applied later: a scope computed
+    against today's card and written after the run moved on would be a grant
+    nobody checked. So `payload` is `{"raw": {...the decide arguments...}}` and
+    the deliverer calls `agent._decide(**raw)` at delivery time, when every one of
+    those rules is evaluated against the run as it then is (`_queue_deliver`).
+    The first-writer-wins latch on disk (`_write_decision`) is unchanged.
+
+    Position is 1 in the ordinary case — a held answer goes to the head of its
+    folder's line — but it is READ BACK rather than promised: a Run next pressed
+    on something else in the same second outranks it (rule 5, 2026-09-16), and
+    the number the card prints has to be the one the row is about to print.
+
+    **THE TWO IDS ARE CHECKED BEFORE ANYTHING IS STORED** (round-2 review,
+    2026-09-12). Both become a path, and not here: the run id is joined onto
+    `agent.RUNS` and the request id is joined with `.res.json` under the perm
+    directory — by the pump that delivers the answer, minutes later and with
+    nothing left to say where the string came from. `agent._decide` has always
+    refused them (`_bad_id`), so the straight-through arm was covered; the HELD
+    arm writes them into the index first and lets the rule be applied by whoever
+    reads it back. So the rule is applied here, to both arms.
+
+    **A CARD THAT ALREADY HAS A VERDICT IS DELIVERED, NEVER HELD.** See
+    `_already_decided`: holding a second answer to a question that is already
+    answered parks a decision nothing will ever act on and tells the tab that
+    sent it that it is next in line.
+
+    **A RUN WITH NO SESSION IS DELIVERED, NEVER HELD.** A held record is keyed
+    by `session_id` — it is how the delivery finds the row, how the chip finds
+    the position and how Skip recognises the head of the line — so an empty one
+    parks a decision no view can reach and rings `notify(None)`, which wakes
+    every poller about nothing. A run with no session cannot be queued behind
+    anything anyway, and delivering it now is the honest fallback: the decision
+    goes where the user meant it to go.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    run_id = str(body.get("run_id") or "")
+    request_id = str(body.get("request_id") or "")
+    if project_queue.bad_id(run_id) or project_queue.bad_id(request_id):
+        return _error("run_id and request_id: required, and neither may be a "
+                      "path — no leading dot, no separator", status=400)
+    raw = {"run_id": run_id, "request_id": request_id,
+           "decision": str(body.get("decision") or ""),
+           "scope": str(body.get("scope") or ""),
+           "mode": str(body.get("mode") or ""),
+           "answers": str(body.get("answers") or ""),
+           "note": str(body.get("note") or ""),
+           "custom": str(body.get("custom") or "")}
+
+    agent = project_queue.agent_module()
+    if agent is None:
+        # No agent module, no cards and no runs: there is nothing this could
+        # decide and nothing it could hold. The chat's own error, not a 500.
+        return _error("the claude agent is not available", status=503)
+
+    session_id = str(body.get("session_id") or "")
+    run_dir = os.path.join(str(getattr(agent, "RUNS", "")), run_id)
+    # THE THREE REASONS TO DELIVER THAT ARE NOT ABOUT THE FOLDER, asked before
+    # the manager is: the flag is off, the run has no session to file an answer
+    # under, the process is dead (a dead run's answer is recorded as `expired`
+    # by `_decide` itself), or the card already has a verdict from another tab.
+    # None of them is a question about who owns a working tree.
+    if (not project_queue.enabled()
+            or not session_id
+            or not project_queue.run_alive(agent, run_dir)
+            or _already_decided(agent, run_dir, request_id)):
+        return {"held": False, **agent._decide(**raw)}
+
+    # …AND THE FOURTH: THIS CONVERSATION LEFT THE QUEUE (`mark_forced`). A
+    # forced task runs beside whatever owns the folder by the user's own
+    # instruction, so holding its card decision would park an answer for a
+    # process that is running right now and waiting for it — the queue taking
+    # back, through the one door that is not a message, the thing Force start
+    # gave.
+    if queue_manager.get().is_forced(session_id, run_id):
+        return {"held": False, **agent._decide(**raw)}
+
+    # …and the one that is. `card_answered` stores nothing when the folder is
+    # free or is this very task's — a card raised by a run that has not
+    # published its session yet is still that chat's own run, and holding its
+    # answer would park a decision behind the very process it unblocks.
+    held = queue_manager.get().card_answered(session_id, run_id, request_id, raw)
+    if not held.get("held"):
+        return {"held": False, **agent._decide(**raw)}
+
+    tasks_watch.notify({session_id})
+    place = _queue_place(session_id)
+    return {"held": True,
+            # The manager's number where the read cannot see one: the pump may
+            # have delivered this answer inside `card_answered` itself, which
+            # leaves the task owning its folder and standing in no line.
+            "position": place["position"] or int(held.get("position") or 1),
+            "ahead": place["ahead"],
+            "ahead_title": place["ahead_title"],
+            "ahead_key": place["ahead_key"]}
+
+
+
+# ---- the page-side `fused.tasks` API ------------------------------------------
+#
+# A page (not the shell) creating, following up and stopping Claude tasks. Every
+# one of these is the shell's own path reached from a new door, never a second
+# spawn path: create is the New task form's `schedule.create` + `run_now`, send
+# is the chat's inbox hand-off to a live host (`agent._send`) or, with no host, a
+# stored follow-up the scheduler sends like any other (`run_now`, which owns the
+# project queue's claim and release), and cancel is the Stop button's `_cancel`.
+# `origin="page"` on everything a page stores, stated by the endpoint rather
+# than taken from the body — the same rule `api_queue_admit` applies to "chat".
+
+# The page API's three words -> the scheduler's spelling. "default" is the
+# template's strict mode, which the scheduler calls "prompt".
+_PAGE_PERMISSION_MODES = {"default": "prompt", "auto": "auto", "plan": "plan"}
+
+
+def _page_due(value):
+    """`(when, immediate, None)` for a create body's `due`, or `(.., .., error)`.
+    Absent is now (and `immediate`, so the calendar draws no chip for it); an
+    ISO string is `schedule.parse_due`'s; a number is epoch MILLISECONDS."""
+    if value is None or value == "":
+        return schedule._now(), True, None
+    if isinstance(value, bool):
+        return None, None, _error("due: expected an ISO timestamp or epoch ms",
+                                  status=400)
+    if isinstance(value, (int, float)):
+        try:
+            return (datetime.fromtimestamp(value / 1000.0, tz=timezone.utc),
+                    None, None)
+        except (OverflowError, OSError, ValueError):
+            return None, None, _error("due: epoch ms out of range", status=400)
+    try:
+        return schedule.parse_due(value), None, None
+    except ValueError as exc:
+        return None, None, _error(str(exc), status=400)
+
+
+def _opt_str(body: dict, field: str):
+    """`(value, None)` for an optional string field, "" when absent."""
+    value = body.get(field)
+    if value is None:
+        return "", None
+    if not isinstance(value, str):
+        return "", _error(f"{field}: expected a string", status=400)
+    return value.strip(), None
+
+
+_UI_VIEWS = ("list", "board", "cards", "calendar")
+
+
+@router.get("/api/tasks/ui")
+def api_tasks_ui(view: str = Query("list"), task: str = Query(""),
+                 scope: str = Query("app"),
+                 x_fused_page: str | None = Header(default=None)):
+    """The URL of the shell's Tasks UI, shaped for an `<iframe>` in an app page:
+    `?view=list|board|cards|calendar&task=<key>&scope=app|all` ->
+    `{url: "/tasks?embed=1[&project=<dir>][&view=..][&peek=<key>]"}`.
+
+    Built HERE and not in runtime.js so the page never learns or guesses its
+    app folder: `scope=app` resolves it from `X-Fused-Page` exactly as the
+    listing does (`_page_scope`), and the shell's own param names (`embed`,
+    `project`, `view`, `peek`) stay in one place per side. `embed=1` is the
+    shell's chrome-less mode (no sidebar, docks or breadcrumb); `peek` opens
+    one task's detail with its chat beside the list, and takes the same key
+    the listing hands out (`pending:<entry>` before the session exists). GET
+    with no side effect, so no `X-Fused` guard — the answer is a relative URL."""
+    view = (view or "list").strip()
+    if view not in _UI_VIEWS:
+        return _error(f"view: expected one of {', '.join(_UI_VIEWS)}, got {view!r}",
+                      status=400)
+    if scope not in ("app", "all"):
+        return _error(f"scope: expected 'app' or 'all', got {scope!r}", status=400)
+    params: list[tuple[str, str]] = [("embed", "1")]
+    if scope == "app":
+        _page, app_dir, _entry = _page_scope(x_fused_page)
+        if not app_dir:
+            return _error("scope=app needs an X-Fused-Page header naming "
+                          "an absolute page path", status=400)
+        params.append(("project", app_dir))
+    # ALWAYS written, "list" included: a bare `/tasks` falls back to the
+    # shell's remembered view (`fused-render:scheduled-view`), so leaving the
+    # default out would open whatever board or calendar was used last. The
+    # URL outranks that memory; the page asked for a view, so name it.
+    params.append(("view", view))
+    task = (task or "").strip()
+    if task:
+        params.append(("peek", task))
+    return {"url": "/tasks?" + urlencode(params)}
+
+
+@router.post("/api/tasks/create")
+def api_task_create(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None),
+                    x_fused_page: str | None = Header(default=None)):
+    """Start a task from a page: `{prompt, target?, title?, model?, effort?,
+    permission_mode?, due?}` -> `{entry_id, key}`.
+
+    `target` defaults to the calling page's app entry html (`_page_scope`).
+    Stored with `origin: "page"` and, with no `due`, sent at once
+    (`schedule.run_now`, the Board's drag path). `key` is the listing's key for
+    the entry until its run mints a session — `pending:<entry_id>` — after which
+    the row rekeys onto the session and `/api/tasks/changes` carries the swap.
+    Does NOT wait for the spawn: the page follows the row, not the process."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("prompt: required", status=400)
+    mode_in = body.get("permission_mode") or "default"
+    mode = _PAGE_PERMISSION_MODES.get(mode_in) if isinstance(mode_in, str) else None
+    if mode is None:
+        return _error("permission_mode: expected one of "
+                      + ", ".join(repr(m) for m in _PAGE_PERMISSION_MODES),
+                      status=400)
+    fields = {}
+    for field in ("target", "title", "model", "effort"):
+        fields[field], refusal = _opt_str(body, field)
+        if refusal is not None:
+            return refusal
+    target = fields["target"] or _page_scope(x_fused_page)[2]
+    if not target:
+        return _error("target: required — no target given and no X-Fused-Page "
+                      "to default it from", status=400)
+    resolved, refusal = schedule_api.resolve_target(target, "target")
+    if refusal is not None:
+        return refusal
+    when, immediate, refusal = _page_due(body.get("due"))
+    if refusal is not None:
+        return refusal
+    try:
+        entry = schedule.create(
+            resolved, prompt, when, immediate=immediate,
+            title=fields["title"] or None, model=fields["model"],
+            effort=fields["effort"], permission_mode=mode, origin="page")
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    entry_id = str(entry.get("id") or "")
+    if immediate:
+        try:
+            schedule.run_now(entry_id)
+        except Exception:  # noqa: BLE001 — the loop still has the entry
+            logger.debug("page task %s: run_now failed; the tick sends it",
+                         entry_id, exc_info=True)
+    key = tasks_store.pending_key(entry_id)
+    tasks_watch.notify({key})
+    # `target` is the path the entry was STORED with (`resolve_target` took
+    # `~` and a relative path and made them absolute), and `under` the folder
+    # the listing's `?under=` accepts for it — so a handle watching a targeted
+    # task scopes its feed to what the server stored, never to the raw string
+    # the page typed (a relative one would 400 the scoped listing).
+    under = resolved if os.path.isdir(resolved) else os.path.dirname(resolved)
+    return {"entry_id": entry_id, "key": key, "target": resolved, "under": under}
+
+
+@router.post("/api/tasks/{key}/send")
+def api_task_send(key: str, body: dict = Body(...),
+                  x_fused: str | None = Header(default=None)):
+    """A follow-up into a task's conversation: `{text, model?, effort?}` ->
+    `{queued, key}`.
+
+    A LIVE HOST TAKES IT, with nothing of the request's own settings — the
+    chat composer's inbox path (`agent._send`), with the four empty strings
+    `schedule._host_send` passes for the reasons its docstring gives (no
+    respawn, no mid-session model switch). `model`/`effort` only apply when no
+    host is up. With no host the message is stored (`origin: "page"`, resuming
+    this session) and sent now through `schedule.run_now` — the scheduler's
+    ordinary send, which owns the project queue: a busy folder, or a turn still
+    open in this conversation, leaves it pending and `queued: true`.
+
+    `pending:<entry>` is 409: there is no conversation to follow up yet."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return _error("text: required", status=400)
+    model, refusal = _opt_str(body, "model")
+    if refusal is not None:
+        return refusal
+    effort, refusal = _opt_str(body, "effort")
+    if refusal is not None:
+        return refusal
+    if tasks_store.pending_entry(key):
+        return _error("not started yet — this task has no conversation to "
+                      "send into until its first message runs", status=409)
+    task = _collect().get(key)
+    if task is None:
+        return _error(f"no task with key {key!r}", status=404)
+    session = str(task.get("session_id") or key)
+    target = str(task.get("target") or task.get("project") or "")
+    if not target:
+        return _error("this task has no target to resume in", status=409)
+
+    agent = project_queue.agent_module()
+    if agent is not None:
+        try:
+            run_id = str((agent._live_host(target, session) or {}).get("run_id") or "")
+            if run_id:
+                res = agent._send(run_id, text, "", "", "", "")
+                if isinstance(res, dict) and res.get("sent"):
+                    tasks_watch.notify({key})
+                    return {"queued": False, "key": key}
+        except Exception:  # noqa: BLE001 — a host we cannot reach is a send
+            logger.debug("page send %s: live host unreachable", key,
+                         exc_info=True)
+
+    # THE MODE THIS CONVERSATION WAS STARTED IN, where a stored entry started
+    # it (`_minting_entry`): a page task created under "prompt" must not come
+    # back under schedule's "auto" on its first follow-up. With no stored
+    # entry (a chat-born session whose host has reaped) the fallback is
+    # "prompt", NOT schedule's "auto" default: a page must never lift a
+    # conversation the user ran under the strict mode to auto by writing to it.
+    minted = _minting_entry(task)
+    mode = next((str(e.get("permission_mode") or "") for e in task["entries"]
+                 if str(e.get("id") or "") == minted), "") if minted else ""
+    mode = mode or "prompt"
+    try:
+        entry = schedule.create(target, text, schedule._now(),
+                                session_id=session, immediate=True,
+                                model=model, effort=effort,
+                                permission_mode=mode, origin="page")
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    entry_id = str(entry.get("id") or "")
+    try:
+        schedule.run_now(entry_id)
+    except Exception:  # noqa: BLE001 — the loop still has the entry
+        logger.debug("page send %s: run_now failed", entry_id, exc_info=True)
+    # Queued is a fact about the store after the attempt, not about run_now's
+    # `ok`: "already claimed" (the loop got there first) is `ok: false` and sent.
+    state = next((str(e.get("state") or "") for e in schedule.list_entries()
+                  if str(e.get("id") or "") == entry_id), "")
+    tasks_watch.notify({key})
+    return {"queued": state == schedule.PENDING, "key": key}
+
+
+@router.post("/api/tasks/{key}/cancel")
+def api_task_cancel(key: str, x_fused: str | None = Header(default=None)):
+    """Stop the turn running in this task — the Stop button's `agent._cancel`
+    (interrupt first, then the process tree) -> `{cancelled: true}`.
+
+    A `pending:<entry>` key cancels that scheduled message instead (it has no
+    run to stop). Nothing live -> 404 `{"error": "not_running"}`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    entry_id = tasks_store.pending_entry(key)
+    if entry_id:
+        if schedule.cancel(entry_id) is not None:
+            tasks_watch.notify({key})
+            return {"cancelled": True}
+        # NOT CANCELLABLE AS A MESSAGE ANY MORE — it has been claimed and may
+        # already be running. `create` hands the page this pending key at once
+        # and the handle holds it until the session row appears, so an early
+        # cancel lands here while the run it started is going. Stop that run.
+        target, session = _started_entry_session(entry_id)
+        if not session:
+            return _error("not_running", status=404)
+        return _cancel_live(key, target, session)
+    task = _collect().get(key)
+    if task is None:
+        return _error("not_running", status=404)
+    session = str(task.get("session_id") or key)
+    target = str(task.get("target") or task.get("project") or "")
+    return _cancel_live(key, target, session)
+
+
+# How long a cancel on a just-claimed entry waits for the scheduler to write the
+# session its run minted. The spawn ordinarily reports inside a second or two;
+# past this the cancel gives up with not_running rather than hang the page.
+_CANCEL_SESSION_WAIT_S = 2.0
+_CANCEL_SESSION_STEP_S = 0.1
+
+
+def _started_entry_session(entry_id: str) -> tuple[str, str]:
+    """`(target, session)` of a claimed entry's run, or `(target|"", "")`.
+
+    `claude_session_id` is the session the scheduler recorded for the run. A
+    `sending` entry with none yet is mid-spawn: poll briefly for it. Any other
+    state with no session (pending again, failed, cancelled) has no run."""
+    deadline = time.monotonic() + _CANCEL_SESSION_WAIT_S
+    while True:
+        entry = next((e for e in schedule.list_entries()
+                      if str(e.get("id") or "") == entry_id), None)
+        if entry is None:
+            return "", ""
+        target = str(entry.get("target") or "")
+        session = str(entry.get("claude_session_id") or "")
+        if session:
+            return target, session
+        if (str(entry.get("state") or "") != schedule.SENDING
+                or time.monotonic() >= deadline):
+            return target, ""
+        time.sleep(_CANCEL_SESSION_STEP_S)
+
+
+def _cancel_live(key: str, target: str, session: str):
+    """Stop the turn open in `session` on `target` — `agent._cancel`, interrupt
+    first — or 404 not_running when none is."""
+    agent = project_queue.agent_module()
+    if agent is None:
+        return _error("the claude agent is not available", status=503)
+    run_id = (str((agent._live_run(target, session) or {}).get("run_id") or "")
+              if target else "")
+    if not run_id:
+        return _error("not_running", status=404)
+    agent._cancel(run_id)
+    tasks_watch.notify({key, session})
+    return {"cancelled": True}

@@ -25,9 +25,9 @@
 // `protocol/history.ts`'s copy already had all three right and was imported by
 // nothing but its own test, while the live rows rendered this one.
 import type { Task } from "@platform/lib/api";
-import { chatDraftKey, fetchChatDraft } from "@platform/lib/drafts";
 import { urlForFsPath } from "@platform/lib/router";
-import { isChatDraftTask } from "@shell/tasks-lib";
+import { schedulerUrl } from "../sched/scheduled";
+import { isChatDraftTask, isDraftTask } from "@shell/tasks-lib";
 import { sessionTitle } from "../protocol/history";
 
 export { sessionTitle };
@@ -99,38 +99,62 @@ export function paneChatUrl(pane: string, sessionId: string): string {
 }
 
 /**
- * A DRAFT ROW'S WORDS, FOR THE COMPOSER THE READER IS ALREADY LOOKING AT
- * (Akshil, 2026-09-15).
+ * WHERE A CHAT DRAFT'S "BACK TO CHAT" LANDS — the conversation the words belong
+ * to, derived from the row rather than from whoever pressed it.
  *
- * A draft row used to be a DOOR: a chat draft about another file hopped the
- * host to that file's chat, and a task draft left the app entirely for
- * `/tasks?draft=<id>`. Both were navigations away from the landing page in
- * answer to a press on a list that sits UNDER the landing's own composer —
- * which is the one box those words belong in. So neither goes anywhere now:
- * the press fills the composer and puts the caret after the text, and the
- * reader decides what to do with it from there.
- *
- * WHERE THE WORDS COME FROM is the one asymmetry between the two kinds:
- *
- *   * a CHAT draft is stored under `new:<file>` and the row carries only a
- *     `preview` of it — a first line, clipped (`fused_render/drafts.preview`)
- *     — so the full text is FETCHED, through the same door the composer's own
- *     seed effect uses. The preview stands in only if that read answers
- *     nothing, because half a sentence is better than an empty box;
- *   * a TASK draft carries its whole stored form on the row already (`form`,
- *     the field the modal used to reopen on), so its description — or its
- *     title, for a title-only form — is read straight off it.
+ * A row knows its own folder (`file`/`target`) and, when the draft is a
+ * session's, the thread to resume; the presser knows neither, and asking it for
+ * a route only means every view has to answer the same question its own way.
  */
-export async function draftTextOf(task: Task): Promise<string> {
+export function draftChatUrl(task: Task): string {
+  const at = task.file || task.target || "";
+  if (!at) return "";
+  // A `new:<file>` row has no session to continue; a row keyed on one does, and
+  // naming it is what makes the chat open on that thread rather than on a blank
+  // landing beside it.
+  return paneChatUrl(at, task.key.includes(":") ? "" : task.key);
+}
+
+/**
+ * WHERE A DRAFT ROW'S PRESS GOES — THE NEW TASK MODAL, FROM EVERYWHERE (Akshil,
+ * 2026-09-16, superseding design "one record" §1's two doors).
+ *
+ * A press OPENS the record where it already lives; it never copies it, never
+ * moves it, and never mints a second one. What changed is that BOTH kinds of
+ * draft now open the same card:
+ *
+ *   * a CHAT draft (`new:<file>`, or a session's) is pressed through the hop the
+ *     composer's own Schedule button builds — `?new=1&draft=<key>&target=&from=`
+ *     — so the card opens on that very record, pre-filled, and "Back to chat"
+ *     lands in the folder it came from;
+ *   * a TASK draft is `/tasks?draft=<id>`, which is the same card by id.
+ *
+ * WHY ONE DOOR. A draft row looks identical in all six places it is drawn, and
+ * it used to do two different things depending on what was behind it: a chat
+ * draft navigated to a composer, a task draft opened a form, and the row in the
+ * composer's OWN folder did neither — it asked for the keyboard. Three
+ * behaviours behind one affordance is three things to learn, and the composer
+ * arm was the one nobody could predict from looking. The record is the same
+ * either way, the card edits it in place, and the composer goes on autosaving
+ * the same key — so the press costs a URL and nothing is minted.
+ *
+ * WHAT THIS REPLACED before that was a MOVE: the press read the source record
+ * whole, wrote its words into the composer the reader happened to be looking at,
+ * and deleted the source. It had to be read-whole-or-refuse, guarded against a
+ * second press landing mid-move, ordered against the destination's own
+ * autosave, and undone when any step failed — five mechanisms in aid of a press
+ * that now costs a URL, because the one thing a move existed to prevent (one
+ * sentence, two rows, two TASK numbers) cannot happen if nothing is ever copied.
+ */
+export function draftHref(task: Task): string | null {
+  if (!isDraftTask(task)) return null;
   if (isChatDraftTask(task)) {
-    const key = chatDraftKey(null, task.file || task.target || "");
-    const saved = await fetchChatDraft(key);
-    return saved?.text || task.draft?.preview || "";
+    // The FOLDER, stated rather than derived: a session key spells no path at
+    // all, and a card that has to guess one guesses the reader's home.
+    const at = task.project || task.file || task.target || "";
+    return schedulerUrl(task.key, draftChatUrl(task), at);
   }
-  const form = (task.form ?? {}) as { description?: unknown; title?: unknown };
-  const described = String(form.description ?? "").trim();
-  if (described) return described;
-  return String(form.title ?? task.title ?? "").trim();
+  return task.draft_id ? `/tasks?draft=${encodeURIComponent(task.draft_id)}` : null;
 }
 
 /** T:17947-17953. */

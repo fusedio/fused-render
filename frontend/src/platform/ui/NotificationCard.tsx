@@ -77,6 +77,11 @@ export interface NotificationCardRowClick {
 }
 
 export interface NotificationCardProps {
+  /** Extra class name(s) appended to the row's own `.dl-row` — §3's group
+   *  row uses this for `.dl-row-group-attention`, the one caller so far that
+   *  needs a class beyond what this component already derives from its own
+   *  props (`is-stalled`, `dl-row-open`). */
+  className?: string;
   /** `.dl-title`. The only required part. */
   title: ReactNode;
   /** `'wrap'` (default): two-line clamp, wraps anywhere — a prompt. `'id'`
@@ -93,6 +98,14 @@ export interface NotificationCardProps {
    *  (`Job.origin`, jobs.ts), on its own line under `secondary`/the head.
    *  Undefined/"" draws no element at all, same as `secondary`. */
   caption?: ReactNode;
+  /** A compact, right-aligned relative-time stamp (status-popovers R5) —
+   *  `compactAge()`'s output ("now"/"4m"/"2h"/"3d"). Shares `caption`'s own
+   *  line — origin on the left, age on the right — rather than a second line
+   *  nothing asked for; a caller with no `caption` still gets the line, age
+   *  alone, right-aligned. Every Notifications row kind passes this; every
+   *  Activity row kind omits it, so `.dl-origin` draws exactly as before
+   *  wherever this is undefined. */
+  age?: ReactNode;
   /** `.dl-row-figures` — the Models row's memory cells. */
   figures?: ReactNode;
   /** `.dl-bar`/`.dl-bar-fill`. `number` (0–1) is the fill; `null` draws the
@@ -130,6 +143,7 @@ export interface NotificationCardProps {
 }
 
 export default function NotificationCard({
+  className,
   title,
   titleMode = "wrap",
   titleTooltip,
@@ -137,6 +151,7 @@ export default function NotificationCard({
   secondary,
   secondaryTooltip,
   caption,
+  age,
   figures,
   progress,
   stalled = false,
@@ -155,6 +170,7 @@ export default function NotificationCard({
     "dl-row",
     stalled ? "is-stalled" : "",
     rowClick ? "dl-row-open" : "",
+    className ?? "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -199,8 +215,32 @@ export default function NotificationCard({
         .join(" ")
     : undefined;
 
+  // A caption-less row (most repo rows) has nothing to share the eyebrow
+  // line with — the age moves inline onto the title line instead of sitting
+  // alone on an otherwise empty line above it. See the age placement below.
+  const hasCaption = caption != null && caption !== "";
+
   return (
     <div className={rowClassName} {...rowClickProps}>
+      {/* DEFECT 3(a) (live testing, 2026-09-17): a small dimmed EYEBROW naming
+          who raised this row, ABOVE the title — the user's own words, "a top
+          row/section for the emitting page context". Fix 17 originally drew
+          this caption AFTER `secondary` (`.dl-model`), so a card read title,
+          then model, then the page name buried on a third line — exactly
+          backwards from "context first". Moved here, before `.dl-row-head`,
+          so every surface that already passes `caption` (JobRow, GroupJobRow,
+          AttentionRowView, MessageRowView, JobPopupCard, MessagePopupCard —
+          all six go through this one component) gets the eyebrow placement
+          for free, from this single change. `.dl-model` (the model name)
+          stays exactly where it was, unmoved. */}
+      {hasCaption && (
+        <div
+          className={"dl-origin dl-eyebrow" + (age != null ? " dl-meta-line" : "")}
+        >
+          <span className="dl-origin-text">{caption}</span>
+          {age != null && <span className="dl-row-age">{age}</span>}
+        </div>
+      )}
       <div className="dl-row-head">
         <span
           className={"dl-title" + (titleMode === "id" ? " dl-title-id" : "")}
@@ -208,6 +248,12 @@ export default function NotificationCard({
         >
           {title}
         </span>
+        {/* No caption means no eyebrow line above this one at all — drawing
+            the age there alone would waste a whole line on nothing else.
+            Inline here instead, at the end of the title line and before the
+            action buttons, the same age text the eyebrow line uses when
+            there IS a caption to share the line with. */}
+        {!hasCaption && age != null && <span className="dl-row-age dl-row-age-inline">{age}</span>}
         {trailing}
         {liveAction && (
           <button
@@ -263,7 +309,6 @@ export default function NotificationCard({
           {secondary}
         </div>
       )}
-      {caption != null && caption !== "" && <div className="dl-origin">{caption}</div>}
       {figures != null && <div className="dl-row-figures">{figures}</div>}
       {progress !== undefined && (
         <div className={"dl-bar" + (stalled ? " is-stalled" : "")}>

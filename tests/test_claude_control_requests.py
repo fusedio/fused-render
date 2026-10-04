@@ -30,7 +30,7 @@ import pytest
 # does cover instead of red for everything (2026-09-04, red since #979).
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="claude session host does not start on Windows yet (#979)")
 
-from _claude_stub_cli import write_stub_cli
+from _claude_stub_cli import reap_host, write_stub_cli
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 
@@ -84,6 +84,19 @@ for line in sys.stdin:
 @pytest.fixture()
 def stub_cli(tmp_path):
     return write_stub_cli(tmp_path / "bin", _STUB.format(python=sys.executable))
+
+
+@pytest.fixture(autouse=True)
+def _reap_hosts(agent):
+    """Every test here starts a real detached host; kill each one on the way
+    out (see reap_host) or they outlive the run until reboot."""
+    yield
+    try:
+        run_ids = os.listdir(agent.RUNS)
+    except OSError:
+        return
+    for run_id in run_ids:
+        reap_host(os.path.join(agent.RUNS, run_id))
 
 
 @pytest.fixture()

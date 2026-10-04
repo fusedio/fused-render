@@ -11,9 +11,8 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  navigate,
   navigateUrl,
-  urlForFsPath,
+  spaLinkProps,
   embedUrlForFsPath,
   EMBED_PREFIX,
   VIEW_PREFIX,
@@ -31,6 +30,8 @@ import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
+import { useLivePreviewsFeature } from "@platform/lib/live-previews-flag";
+import { ThumbPlaceholder } from "@platform/ui/ThumbPlaceholder";
 
 // The iframe renders at desktop width and is scaled into the preview box —
 // same pure-CSS trick as AppPreviewCard.
@@ -61,7 +62,12 @@ function joinPath(dir: string, name: string): string {
 // scrolling a folder card into view reshuffles the /apps hub's recency order.
 export function LivePreview({ src }: { src: string }) {
   const [previewRef, nearViewport] = useNearViewport<HTMLSpanElement>();
-  const { started, settled } = usePreviewStart(nearViewport);
+  // Whether live thumbnails are allowed at all — the `live_previews_enabled`
+  // preference (live-previews-flag.ts; opt-in, and off until the one shared
+  // read lands). `false` swaps the whole iframe for the placeholder mark,
+  // below. Read before the early returns: hook order.
+  const liveAllowed = useLivePreviewsFeature();
+  const { started, settled } = usePreviewStart(liveAllowed === true && nearViewport);
   // Separate from `started`/`settled`: those track the SCHEDULER's slot (freed
   // on load OR error OR timeout, so a stuck preview doesn't starve the other
   // one), while `loaded` tracks whether the iframe has actually PAINTED
@@ -80,6 +86,17 @@ export function LivePreview({ src }: { src: string }) {
   useEffect(() => {
     setLoaded(false);
   }, [started, src]);
+  if (liveAllowed === false) {
+    // Live previews off: the mark stands where the page would have rendered.
+    // Covers every LivePreview site at once — a file bookmark, a recent, and
+    // the folder stack's front-sheet peek (including ImagePreview's broken-
+    // image fallback). The ref stays attached so the observer has an element.
+    return (
+      <span ref={previewRef} className="fhb-preview" aria-hidden="true">
+        <ThumbPlaceholder />
+      </span>
+    );
+  }
   if (!started) {
     return (
       <span ref={previewRef} className="fhb-preview" aria-hidden="true">
@@ -505,17 +522,7 @@ export function RecentPreviewCard({
 // card's header, so it would have to arrive as a prop — none does, on purpose.
 export function FolderPreviewCard({ path }: { path: string }) {
   return (
-    <a
-      className="fhb-card"
-      href={urlForFsPath(path)}
-      title={path}
-      onClick={(e) => {
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-          return;
-        e.preventDefault();
-        navigate(path, { isDir: true });
-      }}
-    >
+    <a className="fhb-card" title={path} {...spaLinkProps(path, { isDir: true })}>
       <span className="fhb-card-head">
         <span className="fh-card-icon" aria-hidden="true">
           {iconForEntry(basename(path), true)}

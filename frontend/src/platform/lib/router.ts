@@ -4,6 +4,7 @@
 // navigateUrl dispatch it after pushState, popstate is subscribed alongside it.
 import { carries as snapshotCarries, getSnapshotAppDir } from
   "@platform/lib/snapshot-param";
+import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
 
 export const VIEW_PREFIX = "/explorer/view/";
 
@@ -12,8 +13,8 @@ export const VIEW_PREFIX = "/explorer/view/";
 // prefixes are served by full page loads, so it can't change without one.
 export const EMBED_PREFIX = "/explorer/embed/";
 
-// Pre-rename URL shapes (old bookmarks/recents entries, .bookmark files,
-// external embed links). Settings sentinels became plain routes at the same
+// Pre-rename URL shapes (old bookmarks/recents entries, external embed
+// links). Settings sentinels became plain routes at the same
 // time as the /explorer prefix rename.
 const LEGACY_SENTINELS: Record<string, string> = {
   "/view/_home": "/apps",
@@ -49,15 +50,40 @@ export function rewriteLegacyUrl(url: string): string {
 
 // Rewritten in place at module init — before IS_EMBED is computed, so a
 // legacy /embed/ load still comes up in embed mode.
+// WHERE THE PAGE BOOTED, read once for the module-scope constants below. In
+// the browser it IS `location`, live. Under `bun test` there is no DOM: every
+// suite runs in one process, files run in whatever order the runner finds
+// them, and a suite that imports this module (transitively — most do) before
+// any other has installed the test shim used to die HERE at module init,
+// which poisoned the module for every later importer — 160 failures, CI
+// only, order-dependent (2026-09-24). With no `location` the page is simply
+// not an embed, a preview or a snapshot; nothing here is worth throwing for.
+const boot: { pathname: string; search: string } =
+  typeof location === "undefined" ? { pathname: "/", search: "" } : location;
+
 (function rewriteLegacyPath(): void {
+  if (typeof location === "undefined") return;
   const current = location.pathname + location.search;
   const next = rewriteLegacyUrl(current);
   if (next !== current) history.replaceState(history.state, "", next);
 })();
 
+// The QUERY spelling of embed mode, for shell routes that have no /embed/
+// prefix of their own: a fused app page frames `/tasks?embed=1` as a chrome-free
+// task UI. Same fixed-at-load contract as the prefix — the pages that honour it
+// carry it across their own replaceState writes (Scheduled's `?view=`, the peek
+// store's `?peek=`), so a refresh stays embedded.
+export const EMBED_PARAM = "embed";
+
+// The query spelling alone — a framed shell route (`/tasks?embed=1`), never an
+// explorer pane/tab. Lets such a route keep its outbound explorer links on the
+// embed prefix without changing what the prefix-embed panes already do.
+export const IS_QUERY_EMBED = new URLSearchParams(boot.search).get(EMBED_PARAM) === "1";
+
 export const IS_EMBED =
-  location.pathname.startsWith(EMBED_PREFIX) ||
-  location.pathname === "/explorer/embed";
+  boot.pathname.startsWith(EMBED_PREFIX) ||
+  boot.pathname === "/explorer/embed" ||
+  IS_QUERY_EMBED;
 
 // The param a display-only card peek stamps on its embed URL (BookmarkCards'
 // LivePreview), and the flag GET /render takes to skip open recording (D301).
@@ -92,7 +118,7 @@ function ancestorIsPreview(): boolean {
 // app's entry page RECORDS AN OPEN of that app every time the card scrolls
 // into view, and the /apps recency order rearranges itself.
 export const IS_PREVIEW =
-  (IS_EMBED && new URLSearchParams(location.search).get(PREVIEW_PARAM) === "1") ||
+  (IS_EMBED && new URLSearchParams(boot.search).get(PREVIEW_PARAM) === "1") ||
   ancestorIsPreview();
 
 // Mark an embed/render URL as a thumbnail. Idempotent (a bookmark's stored
@@ -150,7 +176,7 @@ export function withPreviewFlag(src: string): string {
 // loads, so the framing cannot change without one, and a value read per render
 // would be a second source of truth for a fact that never moves.
 export const IS_SNAPSHOT =
-  new URLSearchParams(location.search).get("snapshot") === "1";
+  new URLSearchParams(boot.search).get("snapshot") === "1";
 
 // AM I A TOP-LEVEL EMBED? — the embed shell running as the WHOLE WINDOW, not
 // framed by anything: a Finder double-click on a `.fused` (the view-URL codec
@@ -167,6 +193,19 @@ export const IS_SNAPSHOT =
 // practice, but the guards make the intent explicit and cost nothing. Read
 // once at module init like the flags above — a document cannot be re-parented.
 export const IS_TOP_EMBED = IS_EMBED && window === window.top && !IS_PREVIEW && !IS_SNAPSHOT;
+
+// AM I ONE OF THE MACOS APP'S NATIVE WINDOWS? — the shell as the whole of a
+// WKWebView the app owns (fused_render/mac_window.py), told apart from a
+// browser tab by the `FusedRender/<version>` marker that window's web views
+// add to the user agent. NOT the `native_windows_enabled` preference: that
+// is also on in a browser tab, which must keep navigating in place. Top
+// level only — a frame inside such a window carries the same user agent but
+// is never the surface an app click should leave. There, an app click opens
+// the app in a window of its own (platform/lib/native-window.ts) instead of
+// navigating this one.
+export const IS_NATIVE_WINDOW =
+  window === window.top && /\bFusedRender\/\S+/.test(navigator.userAgent) &&
+  !/\bLauncher\b/.test(navigator.userAgent);
 
 // Is this pathname panel mode's sentinel route? Both prefixes, because panel
 // mode lives under the page's own one (Panel.tsx's PANEL_PATH) so that
@@ -294,6 +333,101 @@ function notifyNavigate(): void {
   window.dispatchEvent(new Event(NAV_EVENT));
 }
 
+// ---- the leave guard ------------------------------------------------------
+//
+// SOMETHING ON THIS PAGE HOLDS WORK THAT LEAVING WOULD LOSE, and it wants to
+// ask before the push happens. The chat composer is the one caller today: it
+// no longer autosaves what is being typed (design "drafts: one record", the
+// composer's own header), so an in-app hop is the moment its text either
+// becomes a draft or is thrown away — and only the reader can say which.
+//
+// A REGISTRY RATHER THAN A PROP, because the hops that can lose the text are
+// spread across the whole shell (a folder row, a breadcrumb, the Tasks page,
+// a notification) and none of them knows a composer exists. `navigate` and
+// `navigateUrl` are the two doors every in-app hop goes through, so the
+// question is asked once, here.
+//
+// SYNCHRONOUS WHEN NOBODY IS ASKING. An answer needs a modal and so a promise,
+// but the overwhelmingly common case is an empty registry — and every caller in
+// this app was written against a `navigate` that had already pushed by the time
+// it returned. With no guard registered the push happens in the same tick it
+// always did; only a registered guard makes a hop asynchronous.
+//
+// `replaceSearch` is deliberately NOT guarded: it is the in-place param sync
+// (sort, search, `_mode`, `_side`), which is not leaving the page and would
+// put the question in front of a reader who only changed a sort order.
+export type LeaveGuard = () => boolean | Promise<boolean>;
+
+const leaveGuards = new Set<LeaveGuard>();
+
+/**
+ * Ask me before the next in-app navigation; the answer detaches me.
+ *
+ * SEVERAL MAY BE REGISTERED — two panes, each with a composer — AND ONLY THE
+ * NEWEST IS ASKED (Bugbot review of caef75eb1, LOW). Asking all of them put two
+ * "unsent message" dialogs on screen for one click, one behind the other, and a
+ * reader cannot answer a question they cannot see. The newest registration is
+ * the composer the reader most recently had something in, which is the one the
+ * click is about; the others keep their words the way every other unasked host
+ * does — the composer's own unmount save.
+ */
+export function registerLeaveGuard(guard: LeaveGuard): () => void {
+  leaveGuards.add(guard);
+  return () => {
+    leaveGuards.delete(guard);
+  };
+}
+
+/**
+ * MAY THIS PAGE BE LEFT — for a call site that is not a `navigate`.
+ *
+ * Closing the Claude panel in the explorer's listing and switching the session
+ * inside one pane both replace what is on screen without pushing a URL, and
+ * both lose an unsent composer exactly as a hop would. They ask this instead.
+ *
+ * A GUARD THAT THROWS IS A YES. A broken question must never be a door that
+ * cannot be opened.
+ */
+export async function confirmLeave(): Promise<boolean> {
+  if (!leaveGuards.size) return true;
+  // A `Set` keeps insertion order, so the last entry is the newest guard.
+  const asked = Array.from(leaveGuards).pop();
+  if (!asked) return true;
+  try {
+    return await asked();
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The push itself, run now when nothing is asking and after the answer when
+ * something is.
+ *
+ * A SECOND CLICK WHILE THE QUESTION IS UP IS DROPPED, deliberately. The guard
+ * answers a second ask with `false` while its dialog is on screen (see
+ * `askBeforeLeaving` in the composer), so this hop simply does not happen —
+ * which is the right outcome for a reader who is being asked about the first
+ * one. The click can be made again the moment the dialog is answered.
+ *
+ * AND THE BROWSER'S OWN BACK/FORWARD IS NOT GUARDED AT ALL (Bugbot review,
+ * MED-5). A `popstate` has already happened by the time a listener hears it,
+ * and the only ways to put a question in front of it are a pushState sentinel
+ * that fights the reader's history or the native `beforeunload` prompt, which
+ * does not apply to a same-document hop. The floor under it is the composer's
+ * unmount save: Back out of a chat with words in the box and they are written,
+ * not lost — silently, which is the trade this door is stuck with.
+ */
+function guarded(go: () => void): void {
+  if (!leaveGuards.size) {
+    go();
+    return;
+  }
+  void confirmLeave().then((ok) => {
+    if (ok) go();
+  });
+}
+
 // Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
 // shell's canonical form keeps forward slashes and adds a leading slash only
 // for POSIX paths. A bare drive ("C:", how a drive root decodes from a URL,
@@ -354,6 +488,21 @@ export function embedUrlForFsPath(fsPath: string, search?: string): string {
 // embed prefix there, framing the top window itself chrome-free.
 export function viewUrlForFsPath(fsPath: string, search?: string): string {
   return VIEW_PREFIX + encodeFsPathSegments(fsPath) + (search || "");
+}
+
+// The `?_mode=`/`?sel=`/`?q=` triple, serialized the one way navigate() and
+// spaLinkProps both need to agree on: navigate() appends these onto whatever
+// snapshot/`_side` carry-over it already decided, and spaLinkProps's href has
+// no page state to carry, so this is the whole of its query string. One
+// function rather than two independently-written encodings is what makes a
+// caller's href and its own click destination the same URL by construction —
+// see spaLinkProps below for the bug two copies of this produced.
+function destOptsQuery(opts?: { mode?: string; sel?: string | null; q?: string }): string[] {
+  const parts: string[] = [];
+  if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
+  if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
+  if (opts?.q) parts.push("q=" + encodeURIComponent(opts.q));
+  return parts;
 }
 
 export function navigate(
@@ -444,15 +593,13 @@ export function navigate(
   // default (the preview pane's expand button carries the mode it is showing).
   // Its other producer, the explorer's "Open as app", is gone with the app
   // concept (D264).
-  if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
-  if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
   // `opts.q` carries a query straight onto the destination folder's own box —
   // the file view's merged field pushes here once its query is already
   // committed (typed, or gate-open by itself for a non-escaping pattern), and
   // the destination is meant to show results immediately rather than making
   // the user press Enter a second time. See `qCommitted` below for the half
   // of this that rides in history.state instead of the URL.
-  if (opts?.q) parts.push("q=" + encodeURIComponent(opts.q));
+  parts.push(...destOptsQuery(opts));
   const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
   // knows whether the target is a directory): it rides in history.state so the
@@ -476,8 +623,13 @@ export function navigate(
           ...(typeof opts?.q === "string" ? { qCommitted: true } : null),
         }
       : null;
-  history.pushState(state, "", urlForFsPath(fsPath, search));
-  notifyNavigate();
+  // THE URL IS BUILT NOW AND PUSHED WHEN THE GUARD ANSWERS: everything above
+  // reads `location.search`, which is still this page's while the question is up.
+  const href = urlForFsPath(fsPath, search);
+  guarded(() => {
+    history.pushState(state, "", href);
+    notifyNavigate();
+  });
 }
 
 // The directory hint carried by the navigation that landed on the current URL
@@ -515,6 +667,46 @@ export function replaceSearch(url: string): void {
   history.replaceState(history.state, "", url);
 }
 
+// The shared "this is a real anchor, but a plain left-click is client-side
+// navigation" props — spread onto an <a>. It exists because that gesture
+// grew past a third hand-rolled copy (BookmarkCards' folder card, FilesHome's
+// search result row, the AI Models page's cache-dir link, …), and a fourth
+// place getting the guard right by hand was only ever a matter of time —
+// AppPage/AppFiles/AppApi's "Open the folder" links had NO guard at all (a
+// raw `<a href>`, a full document reload), which is the bug this was written
+// to fix. A hard navigation tears down the JS context, which is fatal for
+// anything held in a module-level store — the explorer clipboard's pending
+// cut, most of all (fs-clipboard.ts).
+//
+// `href` stays the true destination (not "#" or "javascript:void(0)"), so
+// every browser affordance an anchor gets for free — Cmd/Ctrl-click,
+// middle-click, "Open Link in New Tab" from the context menu, drag-to-bookmark
+// — keeps working; only the plain left-click a normal <a> would turn into a
+// full page load is caught and redirected through `navigate` instead.
+//
+// `href` and the click destination are built from the SAME `mode`/`sel`/`q`
+// via `destOptsQuery` — one source of truth for one destination, so a caller
+// that passes `mode`/`sel`/`q` cannot end up with an anchor whose href
+// disagrees with what its own left-click does. `opts.search` is an escape
+// hatch for a caller whose destination isn't expressible as `mode`/`sel`/`q`
+// (there is none today) and, when given, wins outright over the derived
+// query rather than merging with it.
+export function spaLinkProps(
+  fsPath: string,
+  opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string; search?: string },
+): { href: string; onClick: (e: { defaultPrevented: boolean; button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; preventDefault: () => void }) => void } {
+  const derivedParts = destOptsQuery(opts);
+  const search = opts?.search ?? (derivedParts.length ? "?" + derivedParts.join("&") : undefined);
+  return {
+    href: urlForFsPath(fsPath, search),
+    onClick: (e) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      navigate(fsPath, { isDir: opts?.isDir, mode: opts?.mode, sel: opts?.sel, q: opts?.q });
+    },
+  };
+}
+
 export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // Like navigate(), but preserves the full url (incl. query string) — used
   // when opening a bookmark, whose url carries saved view params. Callers
@@ -522,11 +714,14 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // folder's chat) pass the same isDir nav hint navigate() takes, so the
   // destination paints the right scaffold instead of the file one.
   const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
-  // Stored urls (bookmarks, recents, .bookmark files) may predate the
+  // Stored urls (bookmarks, recents) may predate the
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
-  history.pushState(state, "", rewriteLegacyUrl(url));
-  notifyNavigate();
+  const href = rewriteLegacyUrl(url);
+  guarded(() => {
+    history.pushState(state, "", href);
+    notifyNavigate();
+  });
 }
 
 export function currentUrl(): string {
@@ -551,17 +746,13 @@ export function currentUrl(): string {
 // and an ordinary page both pass.
 // This same closed set keys `_ORIGIN_BY_ROUTE` in `fused_render/jobs.py`,
 // which `origin_for_page` reads to name a page-owned job's `origin` caption
-// from its own X-Fused-Page header — kept there rather than duplicated as a
-// second table; a route added here needs a matching entry there to get a
-// label.
-const JOB_PAGE_ROUTES: ReadonlySet<string> = new Set([
-  "/ai-models/local",
-  "/ai-models/benchmark",
-  "/claude-config",
-  "/preferences",
-  "/preferences?tab=indexing",
-  "/tasks",
-]);
+// from its own X-Fused-Page header — and `ORIGIN_BY_ROUTE`
+// (`platform/lib/originRoutes.ts`), the shared leaf table both this set and
+// that Python dict now derive from/mirror. DERIVED from that table's keys
+// rather than a second literal list: a route without a label makes no sense
+// to navigate to as a "job page" either, so the membership set and the
+// label table can never drift from each other on this side.
+const JOB_PAGE_ROUTES: ReadonlySet<string> = new Set(Object.keys(ORIGIN_BY_ROUTE));
 
 export function navigateToJobPage(page: string): void {
   if (JOB_PAGE_ROUTES.has(page)) {

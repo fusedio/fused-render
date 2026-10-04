@@ -15,6 +15,7 @@ export {
   ANN_ARMED_TITLE,
   ANN_BAR,
   ANN_BAR_TOKENS,
+  ANN_DONE_CHORD,
   ANN_LAYER_MARK,
   ANN_OFFSCREEN_DETACHED,
   ANN_OFFSCREEN_SCROLLED,
@@ -89,6 +90,7 @@ export { isWired, wireTarget, type WireTargetDeps } from "./wire-target";
 export {
   createAnnMode,
   escapeAction,
+  isDoneChord,
   walkthroughOwns,
   type AnnModeDeps,
   type AnnModeMachine,

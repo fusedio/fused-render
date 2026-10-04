@@ -116,6 +116,11 @@ EXPECTED_STARTUP = [
     "_startup_warm_engine",
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
+    # Added 2026-09-17 (PR 2): the project queue's factory is registered here
+    # explicitly, and with the flag on the manager is built and reconciled once
+    # so a restart resumes every folder's line. BEFORE `_startup_schedule`, whose
+    # first tick otherwise self-wires it as a fallback.
+    "_startup_queue_manager",
     "_startup_schedule",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
@@ -124,7 +129,14 @@ EXPECTED_STARTUP = [
     "_startup_ai_hub_metadata_refresh",
     "_startup_ai_hub_catalog_refresh",
     "_startup_gc_project_venvs",
+    # Added: code review finding 1 — nothing else ever called the shim's
+    # `rules` action, so share_file's catalog cache was never built and
+    # every extension but the built-in `.fused` refused to share.
+    "_startup_warm_share_rules",
     "_startup_index_scan",
+    # Added 2026-09-21: the live filesystem watcher (index_watch.py) that
+    # replaces time-based staleness guessing with an actual change feed.
+    "_startup_index_watch",
     "_startup_update_dev_manager",
 ]
 
@@ -139,6 +151,13 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_captures",
     "_shutdown_ai_workers",
     "_shutdown_engines",
+    # Status-bar terminal (PLAN-status-bar-terminal.md): registered where
+    # `terminal_router` is included in `create_app`, well after the handlers
+    # above — reaps every live pty session (pty_session.py's
+    # PtySessionRegistry.shutdown_all) so a server restart never leaves an
+    # orphaned shell running.
+    "_shutdown_terminal_sessions",
+    "_shutdown_index_watch",
 ]
 
 

@@ -4,16 +4,23 @@
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
 import { useEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch, spaLinkProps } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
+import type {
+  Config,
+  ClaudeSessionFolder,
+  GitRepos,
+  IndexRankResult,
+  IndexStatus,
+} from "@platform/lib/api";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import {
   getClaudeSessionFolders,
   getGitRepos,
   indexRank,
+  requestFolderScan,
   startIndexScan,
   statPath,
 } from "@platform/lib/api";
@@ -77,6 +84,68 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 // the grid happens to lay out at the current width.
 // 9 fills a 3×3 grid at the layout's usual three columns.
 const MAX_CARDS = 9;
+
+// The server's own DEBUG/WARNING log line (api_index_rank) promotes at
+// 750ms — but that only covers time INSIDE the handler. The client measures
+// the full round trip (`issuedAt.current` to the response landing), so a
+// customer stuck at 6-7s with a healthy server would never see anything past
+// that 750ms threshold. 2s is well clear of it — comfortably past normal
+// variance — and picks out only the episodes a user would actually notice
+// and complain about, not every request that nudges past the server's own
+// much tighter bar.
+const SLOW_SEARCH_WARN_MS = 2000;
+
+// Rounds to 1 decimal place for display. The server already rounds its own
+// timing numbers to 1 decimal (see fused_render/server/routers/index.py), so
+// this is a no-op on those — but `elapsedMs - timing.total_ms` is a fresh
+// subtraction of an integer (`Date.now()` deltas) against that rounded
+// float, and float subtraction of the two does not land on a clean decimal
+// (e.g. `2000 - 1600.1 === 399.9000000000001`). Rounding every number that
+// reaches this line, derived or echoed, means the printed line can never
+// carry a 15-17 significant-digit float for a support engineer to puzzle
+// over on a screenshot.
+function r1(ms: number): number {
+  return Math.round(ms * 10) / 10;
+}
+
+/** A single, self-explanatory console line for a support engineer reading a
+ * screenshot: the query, what the browser measured end to end, and — when
+ * the server sent it — its own breakdown of where that time went inside the
+ * handler. The gap between the two (`elapsedMs` minus the server's own
+ * `total_ms`) is real time this request spent somewhere the server never
+ * saw it: connection queueing, ASGI accept backlog, transit, etc. It is
+ * labeled "unaccounted / outside handler" rather than named as any one of
+ * those, because nothing here actually measures which. */
+function warnSlowSearch(query: string, elapsedMs: number,
+                        timing: IndexRankResult["timing"]): void {
+  if (!timing) {
+    console.warn(
+      `[explorer] slow home search: query=${JSON.stringify(query)} ` +
+      `elapsed=${elapsedMs}ms — server timing unavailable (older server, ` +
+      `or the response omitted it)`);
+    return;
+  }
+  const unaccountedMs = Math.max(0, r1(elapsedMs - timing.total_ms));
+  console.warn(
+    `[explorer] slow home search: query=${JSON.stringify(query)} ` +
+    `elapsed=${elapsedMs}ms | server: total=${r1(timing.total_ms)}ms ` +
+    `lane_wait=${r1(timing.lane_wait_ms)}ms worker=${r1(timing.worker_ms)}ms | ` +
+    `unaccounted/outside-handler=${unaccountedMs}ms`);
+}
+
+/** Same audience and shape as `warnSlowSearch` above, for the branch that
+ * never gets there: a slow request that THROWS (a wedged-index 503 after
+ * `ABANDON_S`, pool exhaustion, a network failure) never reaches `.then()`,
+ * so without this the exact scenario the feature exists for — a customer
+ * stuck for many seconds on a wedged read — logs nothing. Prefixed
+ * "FAILED" and carries the error text so a support engineer can tell a
+ * successful-but-slow search from a failed one at a glance, never having to
+ * infer it from which of two near-identical lines they're looking at. */
+function warnSlowSearchFailed(query: string, elapsedMs: number, error: Error): void {
+  console.warn(
+    `[explorer] slow home search FAILED: query=${JSON.stringify(query)} ` +
+    `elapsed=${elapsedMs}ms — request failed: ${error.message}`);
+}
 
 type LaunchTab = "recents" | "sessions" | "repos";
 
@@ -174,15 +243,9 @@ function FileRow({
     <li role="option" id={id} aria-selected={active}>
       <a
         className={"fh-result" + (active ? " is-active" : "")}
-        href={urlForFsPath(hit.path)}
         title={hit.path}
         onMouseMove={onHover}
-        onClick={(e) => {
-          if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-            return;
-          e.preventDefault();
-          navigate(hit.path, { isDir: hit.is_dir });
-        }}
+        {...spaLinkProps(hit.path, { isDir: hit.is_dir })}
       >
         <span className="fh-result-icon" aria-hidden="true">
           {iconForEntry(name, hit.is_dir)}
@@ -378,14 +441,31 @@ export function FilesSearch({
   // apps/canvases/feature-flag.ts already established for "a Preferences-page
   // boolean a component elsewhere in the app needs on every request".
   const ranked = useRankedSearchEnabled();
-  const q = query.trim();
-  const active = q !== "";
+  // A1 (code review): `q` used to be `query.trim()`, which silently dropped a
+  // leading/trailing whitespace run before it ever reached `indexRank` — one
+  // layer below where `expand_whitespace_query` (fused_render/index/query.py)
+  // could ever see the space it exists to treat as meaningful (A3,
+  // DECISIONS.md). "report" and "report " resolve to different server
+  // patterns ("report" substring vs "**report**" glob) and must stay
+  // different queries all the way down — the memo key, the AI row's `query`
+  // prop, and the request itself all read this raw value now. A SEPARATE,
+  // trimmed value (`trimmedQ` below) is used only where the question being
+  // asked is "is there any real content here at all", the same question
+  // `expand_whitespace_query` asks when it collapses a whitespace-only string
+  // to `""` (A2).
+  const q = query;
+  const trimmedQ = query.trim();
+  const active = trimmedQ !== "";
   // Below MIN_QUERY_CHARS the REQUEST is gated, not `active`: `active` is what
   // hides bookmarks/recents and hands the page body to this panel, and doing
   // that on the first character would bounce the whole page as the user types
   // their second one. `searchable` instead governs whether a rank request goes
   // out and whether the AI row can ever be armed for the current query.
-  const searchable = q.length >= MIN_QUERY_CHARS;
+  // Measured on the TRIMMED length: a single real character padded with
+  // spaces ("a ") is exactly that same thin query, not a two-character one,
+  // and a whitespace-derived pattern is at least as indiscriminate as a bare
+  // substring search (see MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
+  const searchable = trimmedQ.length >= MIN_QUERY_CHARS;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
 
   // -- a query that is really an address --------------------------------------
@@ -513,6 +593,37 @@ export function FilesSearch({
   // failure was terminal: none of the other deps is something a user can move,
   // so search stayed dead until a reload.
   const [retryNonce, setRetryNonce] = useState(0);
+  // Per-query dedup for the covered-but-empty scan trigger below
+  // (SPEC-empty-search-scan.md, code review finding 5): keyed on `trimmedQ`,
+  // not the raw `q` — the spec asks for "at most once per distinct trimmed
+  // query string", and "report" vs "report " are the SAME scan target (both
+  // resolve to `next.base`, a folder, never a whitespace-sensitive glob) even
+  // though A1 above deliberately keeps them different RANK requests. Reset
+  // scope is root-only (`[home]`), matching `useListingSearch.ts`'s own reset
+  // (finding 5's other half — the two implementations must agree): resetting
+  // on a lifecycle/mutation bump instead would re-arm the very query whose
+  // scan just finished, the moment that scan's own completion bumps the
+  // lifecycle counter, re-firing a request for a root that was JUST scanned.
+  // A different root is a different session for this purpose; nothing else
+  // is.
+  const firedEmptyScan = useRef<Set<string>>(new Set());
+  // Whether a scan THIS page itself asked for (the trigger below) has been
+  // confirmed running via `requestFolderScan`'s own `started` reply — see
+  // `ourScanRunning` in useListingSearch.ts for why this can't reuse
+  // `liveScanning` (code review finding 2: that poll is machine-wide, true
+  // for any scan of any root).
+  const [emptyScanRunning, setEmptyScanRunning] = useState(false);
+  useEffect(() => {
+    firedEmptyScan.current = new Set();
+    setEmptyScanRunning(false);
+  }, [home]);
+  // `home` captured by ref so the scan reply handler (below, inside the fetch
+  // effect's `.then`) can tell a reply for a since-abandoned root from a
+  // fresh one without an epoch counter — this page has no `sourceEpoch`
+  // mechanism the way useListingSearch.ts does, and a ref read at reply time
+  // is the same guarantee without adding one just for this.
+  const homeRef = useRef(home);
+  homeRef.current = home;
 
   // A scan finishing or the index being deleted changes what a query ANSWERS
   // to, and no other signal reports it — the filesystem did not change (see
@@ -578,6 +689,19 @@ export function FilesSearch({
       setPending(false);
       return;
     }
+    // This effect is about to schedule a request for a query (or home/
+    // lifecycle/mutations/ranked) that differs from whatever produced the
+    // request currently in flight -- every dep in this effect's array is a
+    // real change (there is no poll-tick-style dep here that re-runs this
+    // effect for an unchanged query), so any in-flight request is for a
+    // now-superseded state. Abort it HERE, at scheduling time, not inside
+    // `run`: under a debounce-resetting typing burst (gaps under
+    // INSTANT_DEBOUNCE_MS) `run` itself never fires mid-burst, so the abort
+    // that used to live only inside it never ran either -- the superseded
+    // request kept running for the whole burst, holding an interactive-lane
+    // permit and DuckDB threads the request the user is waiting on competes
+    // for.
+    inflight.current?.abort();
     const run = () => {
       // Abort, never queue: the answer to a query the user has already edited
       // is worth nothing, and letting it land would repaint the list backwards.
@@ -586,6 +710,13 @@ export function FilesSearch({
       inflight.current = ctl;
       issuedAt.current = Date.now();
       setPending(true);
+      // A fresh request retires any "still building" note the PREVIOUS
+      // query's trigger left up — that confirmation was for a scan of a root
+      // this new query may not even share, and `firedEmptyScan`'s own dedup
+      // (keyed on `trimmedQ`, reset only on `[home]`) is not enough to catch
+      // it since two different queries against the same root are two
+      // different dedup entries.
+      setEmptyScanRunning(false);
       // The previous failure is not this request's verdict. Left standing it
       // kept the banner up over rows that were about to be replaced, and — via
       // rankingSettled — armed the AI row on every keystroke after one
@@ -594,14 +725,50 @@ export function FilesSearch({
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT, ranked }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const next = answerFrom(res, q, Date.now() - issuedAt.current);
+          const elapsedMs = Date.now() - issuedAt.current;
+          if (elapsedMs >= SLOW_SEARCH_WARN_MS) warnSlowSearch(q, elapsedMs, res.timing);
+          const next = answerFrom(res, q, elapsedMs);
           memo.current.put(q, next);
           setAnswer(next);
           setFailure("");
           setPending(false);
+          // The covered-but-empty scan trigger (SPEC-empty-search-scan.md):
+          // a settled answer that says the root IS covered (reason === "")
+          // but found no files is real evidence the index may be behind
+          // this exact query — ask for a background scan of the answer's
+          // OWN root (`next.base`, never a hardcoded `home`: a leading
+          // "~"/"/" query can resolve elsewhere). `searchable` gates this
+          // whole effect, which already enforces MIN_QUERY_CHARS, so no
+          // extra length check is needed here. `firedEmptyScan` is the
+          // per-query dedup the spec requires (keyed on `trimmedQ` — finding
+          // 5); the server's own SCAN_DEBOUNCE_S is the cross-query floor
+          // and is not duplicated here.
+          if (next.reason === "" && next.hits.length === 0 && !firedEmptyScan.current.has(trimmedQ)) {
+            firedEmptyScan.current.add(trimmedQ);
+            // `r.started` (code review finding 3): a refusal
+            // (`refused`/`debounced`/`joined`) is durable and expected, not
+            // evidence a build is running — only `started` means this
+            // page's own note may say so. The `homeRef` check (finding 4's
+            // fix, since this page has no epoch counter) discards a reply
+            // that lands after the user has moved to a different root. A
+            // thrown fetch is silent either way — a search must never fail
+            // over housekeeping (routers/index.py:627).
+            void requestFolderScan(next.base || home).then(
+              (r) => {
+                if (homeRef.current !== home) return;
+                if (r.started) {
+                  setEmptyScanRunning(true);
+                  onScanRequested();
+                }
+              },
+              () => {},
+            );
+          }
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
+          const elapsedMs = Date.now() - issuedAt.current;
+          if (elapsedMs >= SLOW_SEARCH_WARN_MS) warnSlowSearchFailed(q, elapsedMs, err);
           // The rows in hand STAY. They are the best answer available on a page
           // with no live walk, and the banner below says the refresh failed.
           setFailure(err.message);
@@ -771,11 +938,21 @@ export function FilesSearch({
   };
 
   // A ?q= restored from the URL was a committed AI search, so it re-runs one.
+  //
+  // `runAi` gets `initialQuery` UNTRIMMED, matching `q` (initialized from the
+  // same `initialQuery`, verbatim — see `query`'s `useState` above): a
+  // trailing space is meaningful and not trimmed away anywhere else on this
+  // page (`?q=report+` round-trips to `q = "report "`), so `ai.query` must
+  // agree with `q` byte-for-byte or `showingAi` (`ai.status === "done" &&
+  // ai.query === q`) is permanently false — the AI call still runs and gets
+  // billed, but its result never renders (code review finding). The `.trim()`
+  // stays on the GUARD only: a `?q=` that is pure whitespace has nothing to
+  // search for and must not re-bill a model call for it.
   const ranInitial = useRef(false);
   useEffect(() => {
     if (ranInitial.current) return;
     ranInitial.current = true;
-    if (initialQuery.trim()) runAi(initialQuery.trim());
+    if (initialQuery.trim()) runAi(initialQuery);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -835,10 +1012,33 @@ export function FilesSearch({
   // earlier branches: `showOpenRow` and `!searchable` short-circuit it before
   // any `gap === …` case — the "Open" note (below) already owns that row's
   // real estate, and a query under MIN_QUERY_CHARS never asked anything.
+  // A covered (`reason === ""`) answer normally means the ternary below's
+  // plain "No file name matched" is the whole story. The one exception: the
+  // covered-but-empty scan trigger (SPEC-empty-search-scan.md, in the fetch
+  // effect above) can have a scan running RIGHT NOW for this exact root.
+  // `emptyScanRunning` (not `liveScanning` — code review finding 2) is the
+  // one signal that means "a scan WE asked for, for THIS root, is confirmed
+  // running": `liveScanning` is the machine-wide poll, true for any scan of
+  // any root, so using it here made an unrelated scan elsewhere (e.g. the
+  // whole-index button) claim a build was in progress for a root nothing is
+  // scanning. Gated on `hits.length === 0` so a covered answer that DOES have
+  // rows never loses them to a "still building" note. `failure === ""`
+  // (finding 6) keeps a failed request's held answer — real evidence about a
+  // PREVIOUS query, not this one — from reading as "no matches" for a query
+  // that never actually got a covered-but-empty verdict of its own.
   const gap =
     displayAnswer !== null && !displayAnswer.covered && !showOpenRow && searchable
       ? indexGap(displayAnswer.reason, liveScanning)
-      : null;
+      : displayAnswer !== null &&
+          displayAnswer.covered &&
+          !showOpenRow &&
+          searchable &&
+          settled &&
+          failure === "" &&
+          hits.length === 0 &&
+          emptyScanRunning
+        ? "scanning"
+        : null;
   // The `buildable` and `fda` branches yield nothing — the `.fh-index-cta`
   // callout is the message for those states — so the note paragraph is empty
   // and the suffix's leading "·" would separate nothing.

@@ -14,13 +14,14 @@ import {
   renameEntry,
   copyEntry,
   compressEntry,
-  downloadAppFile,
   gitRepoInfo,
   statPath,
   revealPath,
   getConfig,
 } from "@platform/lib/api";
 import type { ArchiveFormat } from "@platform/lib/api";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import {
   normDir,
   join,
@@ -38,10 +39,18 @@ import {
   buildCompressItems,
   friendlyFsError,
   claudeTerminalCommand,
+  claudeTerminalCwd,
 } from "@apps/explorer/lib/fs-actions";
+import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
+import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
-import { crumbMenu, folderBarMenu, withFolderRename, type RenameBaseGuard } from "@apps/explorer/lib/bar-menus";
-import { enterPanel } from "@apps/explorer/lib/split-actions";
+import {
+  canRenameBase,
+  crumbMenu,
+  folderMenu,
+  type FolderMenuGroups,
+  type RenameBaseGuard,
+} from "@apps/explorer/lib/bar-menus";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import {
   applyFsOp,
@@ -73,6 +82,7 @@ export function useFileOps({
   refetch,
   pendingSelectRef,
   ownsBar,
+  folderMenuRef,
 }: {
   base: string;
   clipboard: Clipboard | null;
@@ -86,13 +96,28 @@ export function useFileOps({
   // topbar-menu.ts. A listing embedded in a preview pane has its own chrome and
   // passes false, or the bar would answer with the wrong folder's actions.
   ownsBar?: boolean;
+  // THE folder menu, as the owning view composes it — this hook's own groups
+  // (`folderGroups`) plus whatever the view adds (Listing: the app rows, the
+  // embed row, the splits), through bar-menus' folderMenu. The bar's
+  // right-click opens it, so the bar, the kebab and the background all show one
+  // list. A ref, because the view can only build it AFTER this hook has
+  // returned the groups it composes from; read at click time, never captured.
+  // Absent, the bar falls back to this hook's groups alone.
+  folderMenuRef?: React.MutableRefObject<(() => MenuEntry[]) | null>;
 }) {
+  // Whether a folder row's menu offers Share (the sheet) or the plain
+  // "Export App File" — see share-app-flag.ts; default off. Read here, at the
+  // hook's top, not inside the menu closure (which is not a render).
+  const sharing = useAppSharingFeature();
+  // Same reasoning: read once here, not inside fileGroups/folderGroups (plain
+  // closures rebuilt per call, not renders of their own).
+  const canRun = useCanRunInTerminal();
   // The open context menu (position + items) and the open modal, both local to
   // this folder view.
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
 
-  // Home + mounts-root, for backgroundMenu's "may THIS folder be renamed?"
+  // Home + mounts-root, for folderGroups' "may THIS folder be renamed?"
   // guard (bar-menus.canRenameBase). Fetched once and starts empty, which the
   // guard reads as "fail closed" — no Rename item flashes on before /api/config
   // answers, well before a user's first right-click in practice.
@@ -525,11 +550,22 @@ export function useFileOps({
     });
   };
 
-  // Hand the user the command instead of launching anything: a dir cd's into
-  // itself, a file into its parent, and the paste happens in the terminal (and
-  // the session) they already chose. Same shape as the config app's install
-  // commands — copy, then say so.
+  // Where the status-bar drawer exists, run a new Claude Code session on the
+  // row's folder there directly. Elsewhere, hand the user the command
+  // instead: a dir cd's into itself, a file into its parent, and the paste
+  // happens in the terminal (and the session) they already chose. Same shape
+  // as the config app's install commands — copy, then say so.
   const doOpenInClaude = (path: string, isDir: boolean, parentDir: string) => {
+    void runOrCopyInTerminal("claude", {
+      cwd: claudeTerminalCwd(path, isDir, parentDir),
+      copyCommand: claudeTerminalCommand(path, isDir, parentDir),
+    });
+  };
+
+  // THE SECONDARY DOOR, only where the primary one no longer copies: a user
+  // with their own terminal should not have to fight the drawer for the
+  // string.
+  const doCopyClaudeCommand = (path: string, isDir: boolean, parentDir: string) => {
     copyToClipboard(claudeTerminalCommand(path, isDir, parentDir)).then((ok) => {
       if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
     });
@@ -599,7 +635,7 @@ export function useFileOps({
     });
 
   // Rename the CURRENT folder itself — the crumb bar / folder background
-  // menu's "Rename…" (gated by canRenameBase, see backgroundMenu below), not
+  // menu's "Rename…" (gated by canRenameBase, see folderGroups below), not
   // a row inside it. No `selectStem`: a folder name has no extension to
   // spare, so the whole name is selected, unlike startRename's file case.
   // Navigates to the new path on success (rather than pendingSelectRef, which
@@ -821,20 +857,28 @@ export function useFileOps({
       ...(row.isDir
         ? [{ label: "Compress", icon: MenuIcons.compress, submenu: loadCompress(row) } as MenuEntry]
         : []),
-      // Folders only, like Compress: the whole folder as one .fused app file
-      // (SPEC §43 AF-4). Offered on every folder rather than probing the app
-      // entry up front — the export route validates server-side and its
-      // "not a fused app" reason surfaces as the toast.
+      // Folders only, like Compress: the share sheet (ShareAppModal) — a public
+      // link or the whole folder as one .fused app file (SPEC §43 AF-4). Offered
+      // on every folder rather than probing the app entry up front — both
+      // routes validate server-side and their "not a fused app" reason is
+      // what the sheet's cards then say. Behind `app_sharing_enabled`
+      // (share-app-flag.ts, default off): flag off, the row is the plain
+      // "Export App File" it was before the sheet — straight to Downloads.
       ...(row.isDir
-        ? [{
-            label: "Export App File",
-            icon: MenuIcons.compress,
-            onClick: () => {
-              downloadAppFile(row.path, row.name).catch((e: Error) =>
-                notify({ title: "Could not export " + row.name + ": " + e.message, tone: "error" }),
-              );
-            },
-          } as MenuEntry]
+        ? [sharing
+            ? {
+                label: "Share…",
+                icon: MenuIcons.share,
+                onClick: () => openShareApp({ path: row.path, name: row.name }),
+              } as MenuEntry
+            : {
+                label: "Export App File",
+                // `download`, not `compress`: the Compress row sits directly
+                // above this one, and two rows with one glyph read as one
+                // action. Same glyph as the other flag-off surfaces.
+                icon: MenuIcons.download,
+                onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
+              } as MenuEntry]
         : []),
       "separator",
       { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },
@@ -844,66 +888,91 @@ export function useFileOps({
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
       { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
       {
-        label: "Copy Claude session command",
+        label: canRun ? "Open in Claude" : "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: () => doOpenInClaude(row.path, row.isDir, row.parentDir),
       },
+      ...(canRun
+        ? [
+            {
+              label: "Copy Claude session command",
+              icon: MenuIcons.copyPath,
+              onClick: () => doCopyClaudeCommand(row.path, row.isDir, row.parentDir),
+            },
+          ]
+        : []),
     ];
   };
 
-  // Menu for the empty listing background — operates on the current folder.
-  // Finder order: New Folder before New File. "Rename…" leads the list
-  // (mirroring fileBarMenu's own item-then-separator opener) whenever
-  // canRenameBase allows renaming THIS folder — root, home and mount roots
-  // never get it (withFolderRename, bar-menus.ts).
-  const backgroundMenu = (): MenuEntry[] => {
+  // This hook's share of the FOLDER MENU (bar-menus' folderMenu groups) —
+  // everything that operates on the current folder through the clipboard,
+  // the dialogs and the refetch this hook owns. The owning view adds its own
+  // groups (Listing: the app rows, embed, splits) and composes the one list
+  // every surface shows; nothing here is a menu on its own.
+  //
+  // Finder order within `create`: New Folder before New File. "Rename…" is in
+  // `folder` only when canRenameBase allows renaming THIS folder — root, home
+  // and mount roots never get it. Rebuilt per call, which is how Paste's
+  // enabled state tracks the clipboard.
+  const folderGroups = (): Pick<FolderMenuGroups, "create" | "folder" | "open" | "copy"> => {
     loadRenameGuard(); // a failed mount-time read gets another go on every open
-    return withFolderRename(
-      [
+    const dir = normDir(base);
+    return {
+      create: [
         { label: "New Folder…", icon: MenuIcons.newFolder, onClick: () => startNewFolder(base) },
         { label: "New File…", icon: MenuIcons.newFile, onClick: () => startNewFile(base) },
-        "separator",
         { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(base) },
-        "separator",
-        { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
-        { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
-        // Beside Reveal: both are "this folder, but elsewhere". Here the folder is
-        // the one being listed, so the new tab opens on the current directory.
-        {
-          label: "Open in New Tab",
-          icon: MenuIcons.newTab,
-          onClick: () => doOpenInNewTab(normDir(base)),
-        },
-        { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(normDir(base)) },
-        {
-          label: "Copy Claude session command",
-          icon: MenuIcons.openWith,
-          onClick: () => doOpenInClaude(normDir(base), true, normDir(base)),
-        },
       ],
-      normDir(base),
-      renameGuard,
-      () => startRenameFolder(normDir(base))
-    );
+      folder: [
+        ...(canRenameBase(dir, renameGuard)
+          ? [{ label: "Rename…", icon: MenuIcons.rename, onClick: () => startRenameFolder(dir) }]
+          : []),
+        { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
+      ],
+      // Reveal → Open in New Tab, then (from the view) embed and the splits, in
+      // the order the file menu (bar-menus' fileMenu) keeps the shared
+      // pair: the two bars are one surface to the user. Here the folder is the
+      // one being listed, so the new tab opens on the current directory.
+      open: [
+        { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(dir) },
+        { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(dir) },
+      ],
+      copy: [
+        { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) },
+        {
+          label: canRun ? "Open in Claude" : "Copy Claude session command",
+          icon: MenuIcons.openWith,
+          onClick: () => doOpenInClaude(dir, true, dir),
+        },
+        ...(canRun
+          ? [
+              {
+                label: "Copy Claude session command",
+                icon: MenuIcons.copyPath,
+                onClick: () => doCopyClaudeCommand(dir, true, dir),
+              },
+            ]
+          : []),
+      ],
+    };
   };
 
-  // The folder's menu as the CRUMB BAR offers it: this folder's own actions plus
-  // the splits — item for item what the middle panel's header `⋮` shows, because
-  // it is the same builder (lib/bar-menus). Two surfaces, one list.
-  const barMenu = (): MenuEntry[] => folderBarMenu(backgroundMenu(), (dir) => enterPanel(base, dir));
+  // The list the crumb bar's right-click opens: the view's composed menu when
+  // it published one, this hook's groups alone otherwise.
+  const barMenu = (): MenuEntry[] => folderMenuRef?.current?.() ?? folderMenu(folderGroups());
 
   // Hand that menu to the crumb bar for as long as this view owns it.
   //
-  // Through a ref, not by re-publishing: `barMenu` closes over the clipboard
+  // Through a ref, not by re-publishing: the menu closes over the clipboard
   // (Paste's disabled state), `base` and the dialog setters, so a captured
   // function would go stale within a keystroke — and re-running the effect on
   // every change would churn the publish/release pair for no reason. The
   // published thunk is stable and reads the current one.
   //
   // `crumb` is an ANCESTOR crumb the right-click landed on (Breadcrumb's
-  // onBarContextMenu): a folder that is not `base`, so the folder menu above —
-  // New File, Paste, Refresh, all about `base` — is the wrong list for it. It
-  // gets the ancestor pair instead.
+  // onBarContextMenu): a folder that is not `base`, so the folder menu — New
+  // File, Paste, Refresh, all about `base` — is the wrong list for it. It gets
+  // the ancestor pair instead.
   const openBarMenuRef = useRef<(x: number, y: number, crumb?: string) => void>(() => {});
   openBarMenuRef.current = (x, y, crumb) =>
     setMenu({
@@ -924,7 +993,6 @@ export function useFileOps({
   return {
     menu,
     setMenu,
-    barMenu,
     dialog,
     setDialog,
     doPaste,
@@ -937,6 +1005,6 @@ export function useFileOps({
     startRenameFolder,
     startNewFolder,
     rowMenu,
-    backgroundMenu,
+    folderGroups,
   };
 }

@@ -968,12 +968,18 @@ def _report(job: str, **fields) -> None:
     (still "" for a prefix family with no fixed destination), and `upsert`
     only ever writes a truthy `page`, so a tick that has nothing to say about
     it leaves whatever the opening report already set untouched.
+
+    `source` (`Job.source`, SPEC-quiet-notifications.md bug 1) defaults to
+    whatever `page` just resolved to above — correct for every caller here
+    except `_start_render`, which passes its own `source` explicitly on every
+    tick so a render's raiser never inherits `page`'s output-path fallback.
     """
     page = fields.pop("page", None)
     if page is None:
         page = _job_page(job)
+    source = fields.pop("source", page)
     try:
-        jobs.upsert({"id": job, **fields}, page=page, server=True)
+        jobs.upsert({"id": job, **fields}, page=page, source=source, server=True)
     except (jobs.JobError, ValueError):
         pass
 
@@ -1620,7 +1626,8 @@ def image_job_id(uid: str) -> str:
 
 
 def _start_render(capability: str, model: str, request: dict, job: str,
-                   generate, *, noun: str, thread_name: str, page: str = "") -> None:
+                   generate, *, noun: str, thread_name: str, page: str = "",
+                   source: str = "") -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
@@ -1645,6 +1652,17 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     already created it before starting this render). Either way `jobs.upsert`
     keeps a truthy `page` already on the row through every later tick that
     does not repeat it, so the two writes never race each other.
+
+    `source` (`Job.source`, SPEC-quiet-notifications.md bug 1) is reported
+    VERBATIM on all three ticks below — the opening one and BOTH terminal
+    ones — and, unlike `page`, NEVER falls back to `out_dir`/`done_page`. That
+    is the entire point of the field existing: `page` above is deliberately
+    left free to end up pointing at the render's own output file so a click
+    opens it, which makes `page` useless for "was the user already looking at
+    the page that asked for this" (an absolute `.png` path can never match an
+    open shell route) — `source` is the caller's raw raising page (or "" if
+    truly unknown, e.g. the Playground's own shell chrome), always, so a
+    suppression check reading it can actually tell.
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
@@ -1671,7 +1689,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # repeat it.
     _report(job, title=title[:80], model=model, state="running", kind="task",
             cancellable=True, unit="", detail="Preparing…", done=None, total=None,
-            page=page, origin=jobs.origin_for_page(page, default="Playground"))
+            page=page, source=source, origin=jobs.origin_for_page(page, default="Playground"))
 
     # Where the row opens when NOBODY raised this render from a page — the
     # AI Models Playground runs in the shell, not in a page iframe, and has no
@@ -1692,9 +1710,9 @@ def _start_render(capability: str, model: str, request: dict, job: str,
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
-                _report(job, state="cancelled", page=page or out_dir or "")
+                _report(job, state="cancelled", page=page or out_dir or "", source=source)
             else:
-                _report(job, state="error", message=message, page=page or out_dir or "")
+                _report(job, state="error", message=message, page=page or out_dir or "", source=source)
             return
         # `result["path"]` is the worker's own field, written with `os.path` on
         # its side of the boundary — canonicalized here for the same reason
@@ -1703,19 +1721,22 @@ def _start_render(capability: str, model: str, request: dict, job: str,
         done_page = canonical_fs_path(str(result.get("path"))) if result.get("path") else ""
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
                 detail=f"Saved {os.path.basename(result.get('path') or noun)}",
-                page=page or done_page or out_dir or "")
+                page=page or done_page or out_dir or "", source=source)
 
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 
 
-def start_image(model: str, request: dict, job: str, page: str = "") -> None:
+def start_image(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
     """Open `job` and render an image on a thread. See `_start_render`.
 
     `page` is the caller's own page (`/api/ai/image`'s `X-Fused-Page`) — the
-    destination a click on this row should go to.
+    destination a click on this row should go to. `source` is who RAISED it
+    (`X-Fused-Source`, defaulting to `page` at the router) — see `Job.source`
+    and `_start_render`'s own docstring for why the two are threaded
+    separately.
     """
     _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
-                  noun="image", thread_name="ai-image", page=page)
+                  noun="image", thread_name="ai-image", page=page, source=source)
 
 
 #: What a queued transcription's row says while it waits.
@@ -2643,29 +2664,33 @@ def generate_text(model: str, body: dict):
                 yield event
 
 
-def generate_embed(model: str, body: dict) -> dict:
-    """One `{vectors, dim, model}` reply from the resident embedding model.
+def _generate_sync(capability: str, model: str, body: dict,
+                   failed: str) -> dict:
+    """One reply, inside the request, from the resident `capability` worker.
 
     The same fail-fast shape as `generate_text`, not the wait-inside-a-job shape
-    `generate_image` and `_wait_ready` use: an embed call answers in
-    milliseconds once the model is resident, so there is no job for a cold load
-    to hide inside the way a multi-minute render has one already. A cold model
-    therefore raises `ModelNotReady` — the load STARTS, its job id comes back on
-    the exception, and the caller is meant to watch it and ask again, exactly as
-    `/api/ai` already does for text.
+    `generate_image` and `_wait_ready` use: a call on one of these capabilities
+    answers in milliseconds once the model is resident, so there is no job for
+    a cold load to hide inside the way a multi-minute render has one already. A
+    cold model therefore raises `ModelNotReady` — the load STARTS, its job id
+    comes back on the exception, and the caller is meant to watch it and ask
+    again, exactly as `/api/ai` already does for text.
 
-    Blocking, and cheap to block on: unlike an image or a transcription this is
-    one forward pass through a small tower, so holding the request open for it
-    costs nothing the caller was not already waiting on.
+    Blocking, and cheap to block on: one forward pass through a small tower, so
+    holding the request open for it costs nothing the caller was not already
+    waiting on.
+
+    `failed` is the sentence for a worker reply that carries no error text —
+    the one word that differs between the two callers.
     """
-    worker = ready_worker(registry.EMBEDDINGS, model)
+    worker = ready_worker(capability, model)
     if worker is None:
         with _lock:
-            current = _workers.get(registry.EMBEDDINGS)
+            current = _workers.get(capability)
         if current is not None and current.model == model:
             raise ModelNotReady(
                 f"{model} is still loading ({current.state})", job_id_for(model))
-        started = load(model, registry.EMBEDDINGS)
+        started = load(model, capability)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
     try:
@@ -2679,8 +2704,23 @@ def generate_embed(model: str, body: dict) -> dict:
         except ValueError as e:
             raise SupervisorError("the model process sent a malformed reply") from e
     if not payload.get("ok"):
-        raise SupervisorError(str(payload.get("error") or "the embedding failed"))
+        raise SupervisorError(str(payload.get("error") or failed))
     return payload.get("result") or {}
+
+
+def generate_embed(model: str, body: dict) -> dict:
+    """One `{vectors, dim}` reply from the resident embedding model — see
+    `_generate_sync` for the shape and why it is synchronous."""
+    return _generate_sync(registry.EMBEDDINGS, model, body, "the embedding failed")
+
+
+def generate_decide(model: str, body: dict) -> dict:
+    """One `{answers, usage}` reply from the resident Laya agent (D887) —
+    `{state, questions}` in, calibrated probabilities per question out. Same
+    shape as `generate_embed`, for the same reason: one encoder pass per
+    question, ~13 ms each, zero output tokens; nothing to stream and nothing
+    to hide a cold load inside."""
+    return _generate_sync(registry.DECISIONS, model, body, "the decision failed")
 
 
 def _wait_ready(model: str, capability: str, job: str,
@@ -2830,16 +2870,17 @@ def video_job_id(uid: str) -> str:
     return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_video(model: str, request: dict, job: str, page: str = "") -> None:
+def start_video(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
     """Open `job` and render a video on a thread. See `_start_render`.
 
     Raises before starting if it cannot — a request this machine cannot
     serve (no Apple Silicon) answers with the reason instead of opening a
     row that immediately dies. `page` is the caller's own page
-    (`/api/ai/video`'s `X-Fused-Page`).
+    (`/api/ai/video`'s `X-Fused-Page`). `source` is `start_image`'s twin —
+    who RAISED it (`X-Fused-Source`), threaded separately from `page`.
     """
     _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
-                  noun="video", thread_name="ai-video", page=page)
+                  noun="video", thread_name="ai-video", page=page, source=source)
 
 
 def _generate_via_worker(capability: str, model: str, request: dict, job: str,

@@ -10,12 +10,18 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task } from "@platform/lib/api";
+import { installDomShim } from "@platform/lib/testDomShim";
 
 const g = globalThis as unknown as Record<string, unknown>;
 g.location = { pathname: "/tasks", search: "", hash: "", href: "http://x/tasks", origin: "http://x" };
 g.history = { replaceState() {}, pushState() {}, state: null };
 g.window = globalThis;
-g.document = { addEventListener() {}, removeEventListener() {}, querySelector: () => null };
+// `installDomShim()`'s idempotent (`??=`) `document` stub, not a competing
+// ad-hoc one: an unconditional `g.document = {...}` here pre-empted whichever
+// OTHER file's shim would have run first, leaving `document` without
+// `activeElement` for the rest of the process — see JobPopupCard.test.tsx's
+// "an iframe taking focus..." test, which narrows on exactly that member.
+installDomShim();
 
 let canRunDraft: typeof import("./draft-run").canRunDraft;
 let draftRunPayload: typeof import("./draft-run").draftRunPayload;
@@ -143,9 +149,14 @@ describe("what a drop puts on the wire", () => {
     expect(body.session_id).toBe("sess-9");
   });
 
-  test("the chat draft these words came from is dropped too", () => {
+  test("nothing names a second draft to drop", () => {
+    // `from_chat_key` is gone with the design that needed it (design "one
+    // record", §1): a task draft is never made out of a chat draft any more, so
+    // there is no second record for a drop to have to clean up behind it. A
+    // stored record that still carries the old field is simply dropped on read.
     const body = draftRunPayload(draft({ ...FORM, from_chat_key: "new:/a/x.html" }), NOW)!;
-    expect(body.from_chat_key).toBe("new:/a/x.html");
+    expect("from_chat_key" in body).toBe(false);
+    expect("draft_key" in body).toBe(false);
   });
 
   test("a repeat survives the drop, anchored on now", () => {
@@ -247,7 +258,7 @@ describe("composer words, sent into their own conversation", () => {
     // scheduling into, so the chip goes in the same request the words do —
     // there is no `draft_id` here and no second call to half-fail.
     expect(body.draft_id).toBeUndefined();
-    expect(body.from_chat_key).toBeUndefined();
+    expect("draft_key" in body).toBe(false);
     const src = readFileSync(join(import.meta.dir, "draft-run.ts"), "utf8");
     expect(src).not.toContain("deleteChatDraft");
   });

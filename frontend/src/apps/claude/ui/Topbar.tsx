@@ -25,13 +25,34 @@
 // that, so the chat borrows the peek's own component rather than growing a
 // second header that must be kept looking like it.
 import type { Task } from "@platform/lib/api";
+// THE QUEUE'S WORDS, from the one builder four surfaces share — "after TASK-046
+// | 2nd" (platform/lib/queue). The header says the same sentence the Tasks row
+// says, because it is the same fact about the same task.
+import {
+  type QueueCaption,
+  queueCaption,
+  type QueueFacts,
+} from "@platform/lib/queue";
 // THE TASK PANEL'S OWN IDENTITY BLOCK (shell/TaskPeekWho.tsx). Imported rather
 // than restated: the side peek and this header are two windows onto one
 // conversation, and a reader who moves between them must not have to pair up
 // two different headers (Akshil, 2026-09-14). Its CSS is `styles/task-peek.css`,
 // which the shell loads for every page through `shell.css` — the chat draws
 // inside that document, so there is nothing to import here.
+// THE LIST'S OWN STATUS RING AND THE LIST'S OWN CAPTION. A queued task wears a
+// dashed ring on the Tasks page (`schedule-ring--queued`, styles/schedule.css)
+// followed by its place in the line (`QueueCaptionText`), and the chat header
+// now wears both — reused rather than restated, so the two cannot drift into two
+// vocabularies for one state (the drift this whole header was written against).
+//
+// AND IN THE SAME ORDER THE ROW READS IN: ring, number, title, caption, left to
+// right (Akshil, 2026-09-18). The first cut hung the ring and the words off the
+// RIGHT end of the header, in the usage limit's red seat — which made one state
+// look like two different objects on two surfaces three pixels apart, and made
+// waiting look like failing.
+import { QueueCaptionText, StatusIcon } from "@shell/ScheduleTaskViews";
 import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
+import { shortTaskId } from "@shell/tasks-lib";
 import "../styles/composer.css";
 // The skeleton below wears the landing list's own placeholder bar
 // (`.c-skel-bar`, `home.css`), which is the one shimmer this app draws. Imported
@@ -77,6 +98,30 @@ export interface TopbarProps {
   /** A turn is live: one source of truth for the mark and the composer's stop
    *  square (T:1342-1349). */
   running: boolean;
+  /**
+   * THE OTHER WORD THIS SEAT CAN SAY — "paused · resumes 4:00 AM", when the
+   * plan's usage limit stopped this session (`platform/lib/usage-limit`).
+   *
+   * It REPLACES "running" rather than sitting beside it: they are answers to one
+   * question ("is anything happening here"), and a limited session is precisely
+   * one where nothing is. "" on every ordinary chat.
+   */
+  status?: string;
+  /**
+   * THIS CONVERSATION'S OWN QUEUE FACTS (`useSchedule.row`) — the live
+   * `/api/tasks` row, off the change feed.
+   *
+   * The Tasks page has always drawn a queued chat as a dashed yellow ring and a
+   * caption; this pane drew nothing at all, so a reader whose send was sitting
+   * behind somebody else's run had a header that looked exactly like a chat that
+   * was idle (Akshil, 2026-09-17). Nothing new is invented for it: the ring is
+   * the list's `StatusIcon` and the words are `queueCaption`'s.
+   *
+   * Only `status === "queued"` draws — `queueCaption` answers null for every
+   * other row, and a running conversation already has the ring in `TaskPeekWho`
+   * and the composer's own clock to say so.
+   */
+  queue?: (QueueFacts & Pick<Partial<Task>, "task_id" | "title">) | null;
 }
 
 export function Topbar({
@@ -87,8 +132,36 @@ export function Topbar({
   pending,
   home,
   running,
+  status,
+  queue,
 }: TopbarProps) {
-  if (task) {
+  // Null on every row that is not waiting in a line, which is the common case.
+  const line = queue ? queueCaption(queue) : null;
+  // ONE ROW FOR THE RING AND THE WORDS (Bugbot, PR #1194, eighth round). The
+  // identity block came from the SESSION's row (`useSessionTask`) and the
+  // caption from the chat's LIVE row (`useSchedule.row`, pending key first) —
+  // two rows once a done chat's next send queued under `pending:<entry>`: a
+  // done ring and the old title beside "2nd". While the line says
+  // queued, the identity is the queued row's own — its status draws the dashed
+  // ring, its number and title are the message that is waiting — over the
+  // session row's project and target, which the queued row does not carry.
+  //
+  // ONLY THE THREE FACTS THE IDENTITY BLOCK DRAWS come from the queued row
+  // (Bugbot, PR #1194, ninth round): its number, its title and its ring's
+  // status. The live row is a whole listing row, and a send queued into
+  // ANOTHER folder's task is keyed `pending:<entry>` with that folder as its
+  // project — spread over the session row it painted the other folder on this
+  // chat's header. Project, target and session stay the open chat's.
+  const who: Task | null =
+    task && line && queue
+      ? ({
+          ...task,
+          ...(queue.task_id ? { task_id: queue.task_id } : {}),
+          ...(queue.title ? { title: queue.title } : {}),
+          status: "queued",
+        } as Task)
+      : (task ?? null);
+  if (who) {
     return (
       // THE FULL SESSION ID STAYS REACHABLE. The peek's identity block prints
       // TASK-nnn and the title, which is the reader's question — but the hash is
@@ -96,9 +169,27 @@ export function Topbar({
       // in this branch there is no `.c-session` span left carrying it. The
       // tooltip goes on the line itself rather than on a span of its own, so the
       // header spends no width on a string nobody reads on purpose (T:12700).
-      <div className="c-topbar" title={sessionId || undefined}>
-        <TaskPeekWho task={task} />
-        <TaskPeekProject task={task} {...(home ? { home } : {})} />
+      <div
+        className={"c-topbar" + (line ? " is-queued" : "")}
+        title={sessionId || undefined}
+      >
+        {/* THE RING IS INSIDE THIS BLOCK, at the left end, and the row's own
+            `status: "queued"` is what draws it dashed (taskColumn → StatusIcon).
+            Nothing queued-specific is passed: the peek block already says what
+            this task is doing, and this header only has to stop hiding it. */}
+        <TaskPeekWho task={who} running={line ? false : running} />
+        {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
+            row puts it, rather than at the far end of the header. */}
+        {line ? <QueuedCaption line={line} /> : null}
+        <TaskPeekProject task={who} {...(home ? { home } : {})} />
+        {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
+            the ring says running or not, and "resumes 4:00 AM" is the one fact
+            about this conversation the ring cannot carry. */}
+        {status ? (
+          <span className="c-tb-paused" aria-live="polite">
+            {status}
+          </span>
+        ) : null}
         {/* NO "running" WORD HERE (Akshil, 2026-09-14): the ring at the left
             already says it, and one line saying one thing twice spends the
             header's last inch on nothing. The page's own turn clock still
@@ -117,7 +208,11 @@ export function Topbar({
   // above (Akshil QA, 2026-09-14): `pending` is "nobody has answered", and a
   // header holding a row HAS its answer — a skeleton over it would be the
   // placeholder hiding the very thing it stands in for.
-  if (pending && !task) {
+  // …AND A QUEUED LINE OUTRANKS THE SKELETON (Akshil, 2026-09-18). A chat whose
+  // first message is still keyed `pending:<entry id>` is precisely the one with
+  // no task row to read, and it is also the one the reader most needs told: a
+  // placeholder over a KNOWN state would hide the only answer the header has.
+  if (pending && !task && !line) {
     return (
       <div className="c-topbar" title={sessionId || undefined}>
         <span className="c-tb-skel" aria-hidden="true">
@@ -132,14 +227,25 @@ export function Topbar({
   // slow listing is the old label, never a gap). Computed HERE and not above the
   // branch: only this line prints it.
   const label =
-    taskId ||
-    knownTaskId(sessionId) ||
+    shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
 
   return (
-    <div className="c-topbar">
-      <ClaudeMark className="c-spark" />
+    <div className={"c-topbar" + (line ? " is-queued" : "")}>
+      {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line
+          keeps ONE glyph at its left end, and on a waiting chat the fact worth a
+          glyph is that it is waiting — the ✻ names the tool, which the page says
+          in three other places. Same order as the header above and as a Tasks
+          row: ring, name, caption. */}
+      {line ? (
+        <span className="task-side-peek-status" title="Queued">
+          <StatusIcon status="queued" />
+        </span>
+      ) : (
+        <ClaudeMark className="c-spark" />
+      )}
       <span className="c-tb-title">Claude</span>
+      {line ? <QueuedCaption line={line} /> : null}
       <span className="c-tb-file" title={subtitle || undefined}>
         {subtitle ?? ""}
       </span>
@@ -154,11 +260,55 @@ export function Topbar({
       {/* `aria-live="polite"`, not assertive: this is an ambient state, and a
           reader that interrupts to announce the start of every turn is worse
           than one that mentions it when it next comes up for air (T:4078). */}
-      {running ? (
+      {status ? (
+        // NOT `.c-tb-run`: that word shimmers, and a shimmer on "paused" would
+        // animate the one state whose whole content is that nothing is moving.
+        <span className="c-tb-paused" aria-live="polite">
+          {status}
+        </span>
+      ) : running ? (
         <span className="c-tb-run" aria-live="polite">
           running
         </span>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "after TASK-046 | 2nd".
+ *
+ * THE TASKS ROW'S OWN MARKUP, classes and all (`tasks-row-queue` /
+ * `tasks-queue-text`, styles/tasks.css, which `shell.css` loads for every page —
+ * the chat draws inside that document). The words are `queueCaption`'s, the
+ * pointer's title is the row's, and the ink is the row's muted register: one
+ * fact, one sentence, one look, wherever a reader meets it.
+ *
+ * NO ⤒ AND NO SECOND COLOUR, for the reason the row and the card dropped them
+ * (Akshil, 2026-09-19): a skip changes the ORDER, which this sentence prints,
+ * and nothing about it is a highlight.
+ *
+ * THE HEADER IS NOT A ROW, so there is nothing for a press on the words to open
+ * — only the id is a door, and it is the same `<a>` the list draws.
+ *
+ * IT IS NOT THE USAGE LIMIT'S SEAT any more (`.c-tb-paused`, which keeps its one
+ * job): that span is Blocked's red at the right end of the line, and a queued
+ * chat is neither blocked nor at the end of anything — it is a task with a place
+ * in a line, and the place belongs beside the name it is a place for.
+ *
+ * `aria-live="polite"`: an ambient state, mentioned when the reader next comes up
+ * for air. The ring beside it already says "Queued" out loud.
+ */
+function QueuedCaption({ line }: { line: QueueCaption }) {
+  return (
+    <span
+      className="tasks-row-queue"
+      data-hint={line.aheadTitle || line.text}
+      aria-live="polite"
+    >
+      <span className="tasks-queue-text">
+        <QueueCaptionText queue={line} />
+      </span>
+    </span>
   );
 }

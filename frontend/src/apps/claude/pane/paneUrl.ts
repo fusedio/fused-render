@@ -272,16 +272,6 @@ export function homePlaceholderFor(noun: TargetNoun): string {
   return noun ? "Ask Claude about this " + noun + "…" : "Ask Claude…";
 }
 
-/** The footnote's kind-dependent first sentence (T:5399-5403). A file is the
- *  subject itself, so "files in this file" is not a sentence — and "and the
- *  assets it references" is exactly the reach `_system_prompt` gives the agent
- *  for a file target. The second sentence is its own element (fitFootnote). */
-export function footnoteFor(noun: TargetNoun): string {
-  if (noun === "file") return "Claude can read and edit this file and the assets it references.";
-  if (!noun) return "Claude can read and edit files here.";
-  return "Claude can read and edit files in this " + noun + ".";
-}
-
 /** The annotate switch's idle spoken name (T:5377). PR3 owns the armed names —
  *  `applyPaneNoun` is gated on `!annOn` so a noun resolving mid-mode never
  *  overwrites the Done face (Bugbot PR #665). */

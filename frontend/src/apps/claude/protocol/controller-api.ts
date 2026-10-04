@@ -9,9 +9,11 @@
 import type {
   Activity,
   AppStateRow,
+  ContextUsage,
   Decision,
   DecisionScope,
   HistoryTurn,
+  InboxMessage,
   PermissionMode,
   PermissionRow,
   Phase,
@@ -36,10 +38,8 @@ export interface UserTurn {
   raw?: string;
   /**
    * This message carried a `<live-app-state>` description of the app the pane
-   * was showing. The UI draws the receipt legacy draws — "app state attached",
-   * a faint caption under the bubble (T:16588-16596, `.user .attach` at
-   * T:1802) — because the push channel is otherwise invisible and the reader
-   * has no way to know the agent was told what they were looking at.
+   * was showing. Recorded only — nothing is drawn for it (the "app state
+   * attached" caption went 2026-09-20); the "what was sent" panel reads `raw`.
    */
   appState?: true;
   uuid?: string;
@@ -64,6 +64,15 @@ export interface UserTurn {
    * when the session is reopened.
    */
   attachments?: Receipt[];
+  /**
+   * THIS PAGE HAS NOT HANDED THE LINE TO THE RUN YET (the page outbox,
+   * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
+   * its turn; `"notSent"` — handed back (a failed send, an interrupt) and
+   * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
+   * the way Claude Code's terminal greys a queued line. Comes off when the real
+   * send adopts the row (`addUser` rebuilds the turn without it).
+   */
+  pending?: "queued" | "notSent";
 }
 
 export interface AssistantTurn {
@@ -187,6 +196,25 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   runId: string | null;
+  /**
+   * THE LAST RUN THIS CONVERSATION HAD, and unlike `runId` it OUTLIVES the turn.
+   *
+   * `runId` is in-flight bookkeeping: it is cleared the moment the turn ends
+   * (`setRunningUi(false)`), which is correct for everything that draws it and
+   * wrong for the one question the project queue asks — "is the thing holding
+   * this folder this very page?". A reply finishes, the host is still tearing
+   * down and the registry still says busy, and the second message the reader
+   * types lands in that window: with `runId` already null and a session id the
+   * chat may not have in state yet, the admit body was ANONYMOUS, so the server
+   * had nothing to recognise its own caller by and queued the message behind the
+   * reader's own finished run (Akshil, browser QA 2026-09-12).
+   *
+   * Set where a run goes live (`pollLoop`, the one place a run is ever in
+   * flight, which covers a re-attached and a scheduled one for free) and cleared
+   * only where the CONVERSATION changes — `openSession` and `newChat` — because
+   * a run id belongs to the chat it ran in.
+   */
+  lastRunId: string | null;
   status: RunStatus;
   /** Ordered transcript. The last assistant turn is the live bubble while running. */
   turns: Turn[];
@@ -211,6 +239,18 @@ export interface ChatState {
   permissionMode: PermissionMode;
   /** Follow-ups typed while a run is live, not yet acknowledged (T:16024 sendFollowUp). */
   queued: string[];
+  /**
+   * THE SAME MESSAGES AS THE RUN SEES THEM — the live host's undrained inbox
+   * (`PollResponse.inbox`), reported by the poll and therefore SURVIVING A
+   * RELOAD, which `queued` above cannot: that list is this document's memory of
+   * what it sent, and a replaced transcript or a refresh takes it with it while
+   * the CLI goes on holding the words.
+   *
+   * Drawn as ordinary user bubbles under the transcript, deduped against
+   * `queued` and against the turns (`protocol/inbox.inboxBubbles`), and empty
+   * between runs: a run that has ended has drained or died with its inbox.
+   */
+  inbox: InboxMessage[];
   historyLoading: boolean;
   /**
    * A RESTORE IS NOT FINISHED UNTIL ADOPTION HAS SPOKEN. True from the first
@@ -227,6 +267,23 @@ export interface ChatState {
    */
   adopting: boolean;
   transcript: TranscriptStat | null;
+  /**
+   * HOW FULL THE CONTEXT WINDOW IS — the latest usable `usage` the API
+   * reported for this conversation (`HistoryResponse.context`, agent.py
+   * `_context_usage`). The composer's context meter draws it.
+   *
+   * TWO WRITERS, ONE OF THEM ALLOWED TO CLEAR IT. History owns the field: it
+   * lands the reading, a refresh replaces it, opening another session clears
+   * it, and a brand-new chat has `null`. The live poll only ever RAISES a
+   * fresher reading onto it — the CLI updates its own statusline after every
+   * API response, and a turn that calls six tools is seven responses, so a
+   * meter that waited for the turn to end would sit still through the exact
+   * stretch in which the window fills. A poll with nothing to say leaves the
+   * value alone rather than blanking it.
+   *
+   * `null` is "nothing to draw": no meter, rather than a truthful-looking 0%.
+   */
+  context: ContextUsage | null;
   /** T:16411 `ownRunEndedAt` — the clock reading at which a run THIS frame was
    *  streaming last ended, or 0 if none has. D415's transcript follower (PR4)
    *  compares against it so rows this page just wrote are not read back as
@@ -301,6 +358,39 @@ export interface SendOptions {
    * drops it (`returnSend`).
    */
   optimisticKey?: string;
+  /**
+   * ADDED (Bugbot, PR #1194): the per-send claim token `/api/tasks/queue/admit`
+   * minted for THIS send, when the project queue admitted it. Forwarded on the
+   * run request as `queue_claim` so the server gate can tell a send that was
+   * admitted (look only — `queue_manager.consume_claim`) from one that skipped
+   * admission (claim the folder itself, refusing another owner). Absent for a
+   * flag-off admission, a send that never asked admission (a follow-up
+   * dispatched into a run already live), or an older server with nothing to
+   * mint one.
+   */
+  queueClaim?: string;
+  /**
+   * A FOLLOW-UP THAT MAY OPEN A FRESH TURN INSTEAD. `sendFollowUp` waits a
+   * bounded moment for a live run and, finding none, hands the words back with
+   * "no run to attach this message to". A line the page PARKED behind a send
+   * (`ui/outbox.ts`) is different: it was typed to be said whatever the run
+   * does, and the run it was parked behind may well have ended in the seconds
+   * before the drain reached it. With this set, that road falls through to
+   * `sendMessage` — same words, same bubble — rather than giving up.
+   */
+  orStart?: boolean;
+}
+
+/** One follow-up a stop handed back (`ChatControllerDeps.onStranded`). */
+export interface StrandedLine {
+  text: string;
+  /** The page's own id for the send (`SendOptions.sendId`), when it gave one. */
+  sendId?: string;
+  /** This send's `returnSend` already fired for THIS stop — its pictures went
+   *  back through `onSendReturned` in the same tick. The words still come
+   *  through here (a page that keys rows by `sendId` may already have posted
+   *  one for it, and skips). */
+  returned?: boolean;
 }
 
 /**
@@ -366,9 +456,12 @@ export interface ChatController {
    * bubble adopt this row instead of adding a second. Empty text posts nothing
    * and answers "".
    */
-  postOptimisticUser(text: string): string;
+  postOptimisticUser(text: string, pending?: UserTurn["pending"]): string;
   /** Drop an optimistic bubble whose send never reached `sendMessage` at all. */
   dropOptimisticUser(key: string): void;
+  /** Re-tag an optimistic bubble (queued → not sent, or clear the tag) without
+   *  moving it. No-op for a key that is not a user row. */
+  setOptimisticPending(key: string, pending: UserTurn["pending"] | undefined): void;
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
@@ -438,6 +531,18 @@ export interface ChatController {
   /** A ◷ / ⏹ / ◍ / ◆ row in the transcript (T:13722 `addNote`). ADDED so the
    *  scheduled-run poller can say what it just attached to. */
   addNote(text: string, glyph?: NoteTurn["glyph"]): void;
+
+  /**
+   * Put a failure in the chat's own error slot — `ChatState.trouble`, the card
+   * a failed send already lands on (`sendMessage`'s catch).
+   *
+   * ADDED for the one failure that happens OUTSIDE this controller: the project
+   * queue's admission is asked by the composer, ahead of `start`/`send`, so a
+   * send it refuses never reaches the code that would have reported it. Saying
+   * so anywhere else would be a second error affordance in this pane for a
+   * failure the reader cannot tell apart from the first.
+   */
+  reportTrouble(trouble: Trouble): void;
 
   /** `activeRun || sending` — the one question both PR4 watchers ask before
    *  touching the transcript (T:17429, 17604). Read live, never memoised: it is
@@ -520,6 +625,9 @@ export interface ControllerDeps {
   historyCache?: {
     get(file: string, sessionId: string): import("./types").HistoryResponse | undefined;
     set(file: string, sessionId: string, res: import("./types").HistoryResponse): void;
+    /** Forget one conversation — its history answer said `deleted`. Optional:
+     *  a host cache without it simply keeps the entry. */
+    delete?(file: string, sessionId: string): void;
   };
   /** ADDED: the comeback after a usage limit. Injectable so bun tests see the
    *  body without a server; defaults to `@platform/lib/api`'s `scheduleMessage`
@@ -555,8 +663,12 @@ export interface ControllerDeps {
    */
   hasPane?: () => boolean | null;
   /** ADDED: follow-ups the CLI never delivered, handed back to the composer on
-   *  a stop (`still_queued`, T:15911). */
-  onStranded?: (texts: string[]) => void;
+   *  a stop (`still_queued`, T:15911). Each line names its send when the page
+   *  gave it one (`SendOptions.sendId`), so the page can tell a line it
+   *  already took back through `onSendReturned` from one it has not — by id,
+   *  never by text (Bugbot round 3, PR #1323). A line the CLI named that this
+   *  page has no entry for carries no id. */
+  onStranded?: (lines: StrandedLine[]) => void;
   /** ADDED: every 8th poll (~3.2 s) and once at the run's end — where PR4 hangs
    *  its artifacts read (T:16229, 16330). */
   onArtifactsTick?: () => void;

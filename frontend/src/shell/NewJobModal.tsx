@@ -11,6 +11,10 @@
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { shortTaskId } from "@platform/lib/task-id";
+import {
+  readClaudeDefaults, subscribeClaudeDefaults,
+} from "@platform/lib/claude-defaults";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
@@ -25,25 +29,55 @@ import {
 } from "@platform/lib/api";
 import type { Config, RecurrenceRule, ScheduledMessage, StatResult,
   TaskAttachment } from "@platform/lib/api";
-// The seal a display-only frame wears, read from the one module that owns it —
-// imported rather than mirrored, which is what stops this viewer's sandbox from
-// drifting from the card grid's (D616 makes the same point about the claude
-// template, which can only mirror it because it is vanilla JS in a folder).
+// THE APP'S OWN TYPEAHEAD KEYS, not a second reading of the same four presses.
+// `completionKeyAction` is the pure key→meaning map the Explorer's address bar
+// runs on (apps/explorer/listing/completion-keys.ts), and `moveHighlight` is its
+// wraparound. The shell may import an app (scripts/check-boundaries.mjs), and
+// these two are DOM-free functions — so the path field below answers ArrowDown,
+// ArrowUp and Enter with exactly the rules the reader already learnt one field
+// over, rather than a fifth hand-rolled combobox.
+import { completionKeyAction, moveHighlight }
+  from "@apps/explorer/listing/completion-keys";
+// …AND TWO MORE OF THE EXPLORER'S ADDRESS BAR, imported rather than mirrored.
+// Both are pure functions — no DOM, no React, no app state — so the shell may
+// hold them (scripts/check-boundaries.mjs), and a second copy of "does this text
+// name a place" is exactly the divergence one shared rule prevents.
+//
+//   `isPathShapedQuery` — does the text NAME A PLACE at all: true for anything
+//     that escapes its base (leading `/`, `~`, `~/`, a drive, or a `..`
+//     segment) and names no glob. A bare word is never an address, and the path
+//     check below has nothing to say about one.
+import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
+//   `listingAddress`   — the Explorer's own `~`/drive/relative expander: the
+//     absolute path a typed address MEANS. The field goes on showing what the
+//     reader typed; everything that touches the disk asks this first.
+import { listingAddress } from "@apps/explorer/listing/listing-address";
 import { THUMB_SEAL } from "@platform/lib/frame-focus";
 import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
 import { navigateUrl } from "@platform/lib/router";
-import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
-  deleteTaskDraft,
+  chatKeySession,
+  draftSyncer,
+  draftVersion,
+  forgetDraftVersion,
+  joinDraft,
   newChatFile,
   NEW_CHAT_PREFIX,
   newTaskDraftId,
-  saveChatDraft,
-  saveTaskDraft,
+  splitDraft,
+  taskDraftKey,
   useAutosave,
+  type DraftConflictRule,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
+
+// THE PROSE CONVENTION, RE-EXPORTED FROM WHERE IT USED TO LIVE. It moved to
+// `platform/lib/drafts` so the chat composer can use the same cut (an app may
+// not import the shell); every reader who learnt it here still finds it here.
+export { joinDraft, splitDraft } from "@platform/lib/drafts";
+import { notify } from "@platform/lib/notifications";
 import {
   TASK_EFFORTS,
   TASK_MODELS,
@@ -56,6 +90,21 @@ import {
   taskRunOptions,
 } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+// `~/…` for a path under home — the one way this app shortens a folder, shared
+// with the Tasks page rather than written a second time here.
+// …and `projectMatches`, which is the Tasks toolbar's Project filter's OWN
+// search: name-only, case-folded substring (PR #1229). The folder field
+// searches the same folders with the same rule, because a reader who has
+// learnt one of the two controls has learnt both — a field that found
+// `~/Desktop` for "desktop" while the filter beside it did not would be two
+// searches wearing one word.
+import { projectMatches, tildePath } from "./tasks-lib";
+// THE PATH HALF OF A ROW: as much of it as fits, cut out of the MIDDLE, and the
+// whole of it on hover. See PathTip.tsx for why neither `text-overflow` (it
+// only ever cuts the tail, and the tail is the half that names the folder) nor
+// `title` (held back a second, drawn by the OS, unstylable) could do it.
+import { FitPath, usePathTip } from "./PathTip";
+import { onDraftChange } from "./tasksPulse";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -82,6 +131,138 @@ export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
 // pattern).
 const RECENTS_KEY = "fused-render:recent-paths";
 const RECENTS_SHOWN = 5;
+
+/** The `projects` prop's default, hoisted so it is the SAME array every render
+ *  — a fresh `[]` in the signature would rebuild the rows memo on every
+ *  keystroke of a card that was handed no listing. */
+const NO_PROJECTS: string[] = [];
+
+/** One row the folder field can offer: a path to take, and how to say it.
+ *
+ *  Every row this list builds is a FOLDER — a remembered target, a project, or
+ *  one about to be created — so there is no `is_dir` to branch on any more.
+ *  (There was, and both arms drew the same folder glyph.) */
+export interface FolderRow {
+  /** What goes IN THE FIELD when this row is taken — the whole path. */
+  path: string;
+  /** The basename, which is all a row PRINTS — the Explorer shows the name and
+   *  never the address, because the address is already in the field. */
+  name: string;
+  /** The address, muted, at the end of the row: where a remembered folder
+   *  SITS (its parent — the name beside it is the folder itself), or, for a
+   *  project, the whole path, because a search answers with places the reader
+   *  has not typed their way to. "" when there is nothing to add. */
+  where: string;
+}
+
+/** `dirname`, for the muted half of a row. */
+function parentOf(p: string): string {
+  const cut = p.replace(/\/+$/, "").lastIndexOf("/");
+  return cut > 0 ? p.slice(0, cut) : cut === 0 ? "/" : "";
+}
+
+/** `basename`, on a path that may end in a separator. */
+function leafOf(p: string): string {
+  const trimmed = p.replace(/\/+$/, "");
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
+}
+
+
+/**
+ * WHAT THE FOLDER FIELD'S DROP OFFERS, and it is one of two lists.
+ *
+ * THE FIELD IS AN ADDRESS BEING EDITED, nearly always: the card opens
+ * pre-filled with a path, so a keystroke in it is an edit of something the
+ * reader can already see. Nothing narrows then — the drop shows the handful of
+ * folders this form has been pointed at before, newest first, and typing does
+ * not touch them. That is the whole of what #1239 restored, and it is still the
+ * default.
+ *
+ * CLEAR IT AND TYPE A WORD AND IT IS A SEARCH (Akshil, 2026-09-19: "when I
+ * clear the path and search, it should search from projects — the same project
+ * options I have in the filter beside the New task button"). The folders
+ * searched are the Tasks page's OWN projects, handed down as a prop, matched
+ * with the toolbar filter's own `projectMatches` — name only. Not the file
+ * index: this list is small, already in memory, and is the vocabulary the page
+ * uses for "project" everywhere else. No cap, because the panel scrolls.
+ *
+ * WHICH OF THE TWO, in three tests, all about the TEXT rather than about the
+ * history:
+ *   · the drop has to be OPEN — a closed list answers nothing;
+ *   · the text must be something SOMEBODY TYPED. Empty, or still the value the
+ *     card opened on, means nobody has said anything yet, and a field answering
+ *     a search for its own default would be the card searching for itself. It
+ *     is the text that decides, not a "has been edited" flag, so leaving the
+ *     field and coming back answers the same way it did before;
+ *   · and it must NOT NAME A PLACE (`isPathShapedQuery`): a leading `/`, `~`, a
+ *     drive letter or a `..` segment is an address, and an address is the case
+ *     above — recents, unchanged.
+ *
+ * Pure, and exported, because that decision is the whole feature and it is
+ * worth asserting without a DOM (new-task-form.test.ts).
+ */
+export function folderFieldRows({
+  target,
+  defaultTarget,
+  open,
+  recents,
+  projects,
+  home,
+}: {
+  /** What is in the field, as typed. */
+  target: string;
+  /** The text the card OPENED on — the default nobody chose. */
+  defaultTarget: string;
+  /** Is the drop open at all. */
+  open: boolean;
+  /** The folders this form remembers, newest first. */
+  recents: string[];
+  /** Every folder the Tasks page knows, in its own order. */
+  projects: string[];
+  /** Home, for the address test — "" until `/api/config` answers. */
+  home: string;
+}): { rows: FolderRow[]; searching: boolean } {
+  const q = target.trim();
+  // `~` IS AN ADDRESS BEFORE HOME IS KNOWN. `isPathShapedQuery` can only call a
+  // tilde path an address once it has `home` to resolve it against, and `home`
+  // is "" until `/api/config` answers (for good, if it never does). In that
+  // window `~/Desktop/fu` would read as a search and swap the recents and the
+  // create-folder row for "No project matches" (Bugbot, PR #1239). A leading
+  // tilde names a place whatever home turns out to be, so it is one here too.
+  const searching =
+    open
+    && q !== ""
+    && q !== defaultTarget.trim()
+    && !q.startsWith("~")
+    && !isPathShapedQuery(q, home, home || undefined);
+  if (!searching) {
+    return {
+      searching: false,
+      rows: recents
+        .slice(0, RECENTS_SHOWN)
+        .map((r) => ({ path: r, name: leafOf(r), where: parentOf(r) })),
+    };
+  }
+  return {
+    searching: true,
+    // The projects' OWN order — the one the filter menu prints, which is
+    // alphabetical by the name it shows (tasks-lib `projectOptions`). A second
+    // ranking here would put the same folders in two orders in two controls.
+    //
+    // `where` is the WHOLE path, not the parent: a searched folder is one the
+    // reader has not typed their way to, so the row says where it is in full
+    // — `[project-name]   ~/Desktop/…/project-name` — and `FitPath` decides how
+    // much of that fits.
+    rows: projects
+      .filter((project) => projectMatches(project, q))
+      .map((project) => ({
+        path: project,
+        name: leafOf(project),
+        where: project,
+      })),
+  };
+}
+
 
 function readRecents(): string[] {
   try {
@@ -463,6 +644,19 @@ function ExplorerPanel({
   useEffect(() => {
     if (naming) nameRef.current?.focus();
   }, [naming]);
+  // FOCUS STAYS IN THE PANEL when the listing changes. A folder row is a
+  // button that unmounts the moment it is pressed (the listing re-renders for
+  // the new folder), so focus fell out of the panel and the modal chassis
+  // parked it on the first thing it could — its own ✕ — where the reader's
+  // next Enter closed the whole form (Akshil, 2026-09-24: "I pressed enter
+  // while I was selected a folder and suddenly it closed"). The filter box is
+  // the one control that survives every navigation, and typing is the next
+  // thing a reader does after opening a folder anyway. The naming row keeps
+  // its own focus (above) while it is up.
+  const filterRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!naming) filterRef.current?.focus();
+  }, [path, naming]);
 
   const go = (p: string) => {
     setPath(p);
@@ -543,6 +737,7 @@ function ExplorerPanel({
         )}
       </div>
       <input
+        ref={filterRef}
         type="text"
         className="field-control schedule-picker-filter"
         placeholder="Filter this folder"
@@ -638,18 +833,103 @@ function ExplorerPanel({
 // shipped cut off mid-row (Akshil, 2026-08-16 screenshot). Fixed escapes the
 // clip; when the viewport below the trigger is shorter than the panel, it
 // opens upward instead.
+/**
+ * HOW TALL A LIST-SHAPED PANEL MAY GET, and the gap it keeps off the window's
+ * edges. The Tasks page's own popovers already answer this — `POP_MAX_HEIGHT`
+ * in ScheduleTaskViews, with the same reasoning: a column of twenty-eight is
+ * not a menu, it is a page. Same number, so the two lists in this app cap alike.
+ */
+const POP_MAX_HEIGHT = 320;
+const POP_EDGE = 8;
+
+/**
+ * WHAT `position: fixed` IS ACTUALLY MEASURED FROM — the viewport, unless some
+ * ancestor is transformed, and in this card one always is.
+ *
+ * `.modal-dialog.deploy-dialog` carries `transform: scale(.98)` from the open
+ * animation, and a transformed element becomes the containing block for every
+ * `fixed` descendant. So `top`/`left`/`bottom` are resolved against the CARD
+ * while `getBoundingClientRect` answers in VIEWPORT coordinates, and the two
+ * have been quietly disagreeing for as long as this function has existed. It
+ * went unnoticed because every other menu here is short and opens downward, so
+ * the error was a few pixels; a 50-row folder list opening upward put the panel
+ * 150px off the top of the window (measured, 2026-09-18).
+ *
+ * Returns the origin to subtract and the box to fit inside. No transformed
+ * ancestor — every other host of this card — answers the viewport, which is what
+ * the arithmetic below has always assumed.
+ */
+function fixedBox(el: HTMLElement | null): { x: number; y: number; h: number } {
+  for (let node = el?.parentElement ?? null; node; node = node.parentElement) {
+    const cs = getComputedStyle(node);
+    // `""` is what a stand-in stylesheet answers, and it is not a transform —
+    // testing truthiness first keeps a test DOM from naming every ancestor.
+    const transformed = (cs.transform && cs.transform !== "none")
+      || (cs.filter && cs.filter !== "none")
+      || (cs.perspective && cs.perspective !== "none");
+    if (transformed) {
+      const r = node.getBoundingClientRect();
+      return { x: r.left, y: r.top, h: r.height };
+    }
+  }
+  return { x: 0, y: 0, h: window.innerHeight };
+}
+
 function popStyle(
   el: HTMLElement | null,
   estHeight: number,
   matchWidth = false,
+  /**
+   * CAP THE HEIGHT AND LET IT SCROLL, for a panel whose length is the disk's
+   * business rather than the form's (Akshil, 2026-09-18: typing
+   * `/Users/akshilthumar/` listed eight folders and cut off).
+   *
+   * Off by default, because it must be: the date grid, the time list and the
+   * repeat menu are all fixed-length things this function has always placed by
+   * their own height, and capping them would be a change nobody asked for. The
+   * folder list is the one whose content is unbounded.
+   *
+   * The arithmetic is `ScheduleTaskViews.popStyle`'s, which fixed this exact
+   * bug on the project menu ("sliced off at the bottom with a handful of its 28
+   * folders showing"): height is never SET — a two-row list is two rows tall —
+   * only capped, and capped by the room actually there so the panel can never
+   * run off the card or the viewport.
+   */
+  scrolls = false,
 ): React.CSSProperties {
   const r = el?.getBoundingClientRect();
   if (!r) return {};
-  const s: React.CSSProperties = { position: "fixed", left: r.left, right: "auto" };
-  if (r.bottom + 4 + estHeight > window.innerHeight && r.top - 4 - estHeight > 0) {
-    s.bottom = window.innerHeight - r.top + 4;
+  // BOTH EDGES ARE ALWAYS STATED, and one of them is always `auto`. A panel that
+  // flips up sets `bottom` — and the stylesheet that placed it before this
+  // function existed still says `top: calc(100% + 4px)`, which a `position:
+  // fixed` box resolves too. Two resolved edges do not mean "prefer the inline
+  // one": they mean the height is the distance BETWEEN them, and for a panel
+  // opening upward that distance is negative, so it collapsed to its padding.
+  // Measured on `/Users/akshilthumar/`: a 50-row list 10px tall with 1473px of
+  // scroll inside it. `tasks.css` fixes the same collision on the Tasks
+  // popovers from the stylesheet's side (`top: auto`); doing it here fixes it
+  // for every menu this function places, including the date, time and repeat
+  // menus, which have had the same latent flip-up bug all along.
+  // The box the offsets are resolved against — see `fixedBox`. The ROOM is still
+  // reckoned in viewport terms, because what the reader cares about is whether
+  // the panel is on their screen; only the offsets are converted.
+  const o = fixedBox(el);
+  const s: React.CSSProperties = {
+    position: "fixed", left: r.left - o.x, right: "auto", top: "auto", bottom: "auto",
+  };
+  if (scrolls) {
+    const below = window.innerHeight - r.bottom - 4 - POP_EDGE;
+    const above = r.top - 4 - POP_EDGE;
+    // Flip only when up is genuinely roomier — a panel that jumps above its
+    // trigger to gain twenty pixels is a panel that moved for nothing.
+    const up = above > below && below < POP_MAX_HEIGHT;
+    s.maxHeight = Math.max(120, Math.min(POP_MAX_HEIGHT, up ? above : below));
+    if (up) s.bottom = o.y + o.h - r.top + 4;
+    else s.top = r.bottom + 4 - o.y;
+  } else if (r.bottom + 4 + estHeight > window.innerHeight && r.top - 4 - estHeight > 0) {
+    s.bottom = o.y + o.h - r.top + 4;
   } else {
-    s.top = r.bottom + 4;
+    s.top = r.bottom + 4 - o.y;
   }
   // A menu is as wide as the control that opened it — the CSS floor of 180px
   // made the repeat menu wider than its chip and the recurrence units menu
@@ -1468,6 +1748,9 @@ export const TITLE_PLACEHOLDER = "What should Claude do?";
 // and leaving that question here while the field above asks it too would put the
 // user in front of the same question twice.
 export const ASK_PLACEHOLDER = "Additional instructions (optional)";
+// The second line of the ask's placeholder: the key that brings the caret
+// down from the title (its onKeyDown).
+export const ASK_HINT_KEY = "shift + enter";
 
 // One line of a block of prose, trimmed. Used to reduce a multi-line value to
 // something an <input> can hold — it would strip the newlines anyway. It also
@@ -1523,42 +1806,6 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
 }
 
-// -- The chat handoff fills BOTH fields ---------------------------------------
-// A draft arriving from the chat composer's Schedule button
-// (`?new=1&message=…`) is one block of prose written for Claude, and the form
-// now has two places to put it. It is SPLIT rather than dropped whole into the
-// description (Akshil, 2026-08-18): the first line is what the draft is about,
-// which is exactly what a title is, and the rest is the body.
-//
-// This is NOT the bug of 2026-08-17 coming back. That one prefilled Title with
-// `firstLine(ask)` while the SAME text also filled the description — the message
-// arrived duplicated into both fields, and the task ended up named after its own
-// body. Here the two fields PARTITION the draft: what goes in the first field is
-// removed from the second, and composeTaskMessage puts it back together on Save,
-// so nothing is said twice and nothing is lost.
-//
-// THE LINE BREAK IS THE ONLY CUT (Akshil, 2026-08-18). A long first line is kept
-// whole rather than clamped to a name: the field asks "What should Claude do?",
-// and a clamp answers that question with two thirds of a sentence. The clamp
-// that was here also had to keep the draft ENTIRE in the description to avoid
-// losing the tail, so a long draft arrived with its opening said twice — worse
-// than the long value it was avoiding. TITLE_MAX still governs a name DERIVED
-// from a session's first message (shortTitle), which is a different job: that is
-// the app naming a thread nobody named, where a clamp is all there is. Here the
-// user wrote the line, and the field is theirs to shorten.
-export function splitDraft(draft?: string | null): {
-  title: string;
-  description: string;
-} {
-  const text = (draft ?? "").trim();
-  if (!text) return { title: "", description: "" };
-  const brk = text.indexOf("\n");
-  return {
-    title: (brk < 0 ? text : text.slice(0, brk)).trim(),
-    description: brk < 0 ? "" : text.slice(brk + 1).trim(),
-  };
-}
-
 /**
  * WHERE "BACK TO CHAT" LANDS A REOPENED DRAFT, out of the chat key the hop
  * stored on it (design.md, Round 2: "A draft moves, never duplicates").
@@ -1589,29 +1836,6 @@ export function backChatHref(key: string, target: string): string {
     return file ? chatPaneUrl(file) : "";
   }
   return target ? explorerUrl(target, key) : "";
-}
-
-/**
- * `splitDraft` RUN BACKWARDS — the card's two fields put back into the one
- * block of prose the composer was holding (design.md, Round 2: "'Back to chat'
- * reverses it").
- *
- * The hop split a sentence across Title and the description; going back has to
- * hand the composer one string again. Title line, blank line, body — the same
- * shape the composer's own text had when it left, so `splitDraft` on the way
- * out again lands on the same two fields.
- *
- * EITHER HALF ALONE IS JUST THAT HALF, with no separator to show for the one
- * that is missing: a card whose title was cleared must not come back as a
- * message opening on two blank lines, and one with nothing but a title must not
- * come back with a trailing gap (Akshil, 2026-09-11).
- */
-export function joinDraft(title?: string | null, description?: string | null): string {
-  const head = (title ?? "").trim();
-  const body = (description ?? "").trim();
-  if (!head) return body;
-  if (!body) return head;
-  return `${head}\n\n${body}`;
 }
 
 // A prefill this field must refuse, whichever source produced it: a transcript
@@ -2096,19 +2320,15 @@ export function buildSchedulePayload(form: {
   // same request that creates the task: two round trips could half-fail and
   // leave a draft row sitting beside the task it had already become.
   draftId?: string;
-  // THE CHAT DRAFT THESE WORDS WERE TYPED IN, for a card opened from the
-  // composer's Schedule button — or re-opened from a draft that remembers one
-  // (`form.from_chat_key`). Sent so the server drops the chat's copy in the same
-  // request that creates the task.
+  // THE CHAT RECORD THIS FORM IS, for a card opened from the composer's
+  // Schedule button or from the Draft chip — the same key the card has been
+  // autosaving onto. Sent so the server deletes that record in the same request
+  // that creates the task, and moves its TASK number onto the new entry, exactly
+  // as `draft_id` does for a task draft (contract §5, `draft_key`).
   //
-  // IT IS NOT REDUNDANT WITH `draftId`, which is the bug it fixes (Bugbot, PR
-  // #1118): the hop's first autosave is what normally moves the chat draft onto
-  // the task draft, and pressing Schedule inside that 600 ms debounce means
-  // there IS no task draft — no id, no move, and the chat draft (with its row
-  // and its TASK number) outlives the task it just became. Nor is it covered by
-  // `sessionId`: a chat that has never sent anything has no session at all, and
-  // its draft is keyed `new:<file>`.
-  fromChatKey?: string;
+  // THE TWO ARE ALTERNATIVES, not a pair: a card edits one record, and which
+  // kind it is decides which key names it.
+  draftKey?: string;
   // DID ANYONE PICK THIS TIME? False when the card was opened from the List or
   // the Board — where the when-row starts folded away — and the user never
   // touched it, so `when` is only the form's own default of "now". The task
@@ -2194,7 +2414,7 @@ export function buildSchedulePayload(form: {
     // same reason `title` is.
     ...(form.replacesEntryId ? { replaces: form.replacesEntryId } : {}),
     ...(form.draftId ? { draft_id: form.draftId } : {}),
-    ...(form.fromChatKey ? { from_chat_key: form.fromChatKey } : {}),
+    ...(form.draftKey ? { draft_key: form.draftKey } : {}),
     ...(form.images && form.images.length ? { images: form.images } : {}),
     ...(form.attachments && form.attachments.length
       ? { attachments: form.attachments } : {}),
@@ -2358,6 +2578,9 @@ export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0] & {
  * there is a card that will not open at all.
  */
 export interface DraftSeed {
+  /** The task draft this card is reopening, or `""` for a seed that carries no
+   *  draft at all — a chat hop's record, or a folder to open a blank card on.
+   *  `""` is NOT a minted form: see `draftId` (Bugbot 4028344040). */
   id: string;
   form?: Record<string, unknown> | null;
 }
@@ -2374,24 +2597,13 @@ export interface SeededDraftForm {
   attachments: { path: string; name: string; kind: "image" | "file" }[] | null;
   newTaskEachRun: boolean | null;
   /**
-   * THE CONVERSATION THESE WORDS WERE TYPED IN, when the draft came from one.
-   *
-   * Stored server-side by the hop's first save (`drafts.TASK_FIELDS`), so it is
-   * still here when the modal is REOPENED from the draft's row — the one
-   * opening with no `?back=` in the URL and nothing left in sessionStorage.
-   * It is what "Back to chat" aims at on that card (`backToChat`).
-   */
-  fromChatKey: string | null;
-  /**
    * THE CONVERSATION THIS DRAFT IS A MESSAGE TO (Akshil, 2026-09-12).
    *
-   * `fromChatKey` above is where the words were TYPED and is spent the moment
-   * the chat's own copy is deleted; this is where the task is GOING, and it has
-   * to survive the card being closed. A hop out of a session that has already
-   * run schedules into that session — same thread, same TASK number — and the
-   * page knew that only while it stayed open: exit the card, reopen the draft
-   * from its row and press Schedule, and the message started a new conversation
-   * under a new number instead.
+   * Where the task is GOING, and it has to survive the card being closed. A hop
+   * out of a session that has already run schedules into that session — same
+   * thread, same TASK number — and the page knew that only while it stayed
+   * open: exit the card, reopen the draft from its row and press Schedule, and
+   * the message started a new conversation under a new number instead.
    *
    * It is what `sessionId` on the Schedule payload falls back to, and it is
    * what the server's listing reads to give this draft the session's own row
@@ -2460,7 +2672,6 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     permission: str("permission"),
     attachments: attachments && attachments.length ? attachments : null,
     newTaskEachRun: typeof f.new_task_each_run === "boolean" ? f.new_task_each_run : null,
-    fromChatKey: str("from_chat_key"),
     sessionId: str("session_id"),
     customRule: parseCustomRule(f.custom_rule),
   };
@@ -2474,12 +2685,13 @@ export default function NewJobModal({
   initialDraft,
   chatSessionId,
   chatBack,
-  fromChatKey,
+  chatKey,
   lockTarget = false,
   sourceTask = null,
   editing,
   permissionModes,
   recentTargets,
+  projects = NO_PROJECTS,
   planning = false,
   onClose,
   onCreated,
@@ -2522,19 +2734,19 @@ export default function NewJobModal({
   // point is a round trip (chat → schedule → back → adjust → again).
   chatBack?: string | null;
   /**
-   * THE CHAT DRAFT THIS CARD'S WORDS CAME FROM (design.md, Round 2: "A draft
-   * moves, never duplicates").
+   * THE CHAT RECORD THIS CARD IS EDITING (design "one record", §1).
    *
-   * Only on the Schedule hop, and it is the key the composer's own autosave was
-   * writing under — `<session_id>`, or `new:<file>` for a chat that has none.
-   * The FIRST task-draft save names it, and the server deletes that chat draft
-   * as it stores this one: the sentence exists in exactly one place at every
-   * instant, so the List never shows it twice and the TASK number moves rather
-   * than being allocated a second time.
+   * The key the composer's own autosave writes under — `<session_id>`, or
+   * `new:<file>` for a chat that has none — and, when it is set, the record THIS
+   * card autosaves onto as well. Not a key to supersede: there is no second
+   * record to mint and none to delete, so the sentence is in exactly one place
+   * at every instant by construction rather than by a delete racing a write.
    *
-   * It is also what "Back to chat" reverses — see `backToChat` below.
+   * Set by the Schedule hop, by the Draft chip's press, and by nothing else. `""`
+   * (or absent) is a card with no chat behind it, which autosaves to a
+   * `draft:<id>` task record exactly as it always has.
    */
-  fromChatKey?: string | null;
+  chatKey?: string | null;
   /**
    * THE PATH IS NOT A QUESTION HERE (design.md §2, 2026-09-14).
    *
@@ -2551,10 +2763,22 @@ export default function NewJobModal({
    */
   lockTarget?: boolean;
   /**
+   * THE FOLDERS THIS PAGE CALLS PROJECTS — the very array the toolbar's Project
+   * filter offers (Scheduled.tsx `projectOptions`), handed down rather than
+   * re-derived (Akshil, 2026-09-19: "the same project options I have in the
+   * filter beside the New task button").
+   *
+   * It is what the folder field SEARCHES once the address is cleared and a bare
+   * word is typed; while the field holds an address it is not consulted at all.
+   * Empty on every opening that has no listing behind it (the app page's scoped
+   * card, a deep link), and an empty list simply means a search finds nothing.
+   */
+  projects?: string[];
+  /**
    * THE TASK THESE WORDS CAME OUT OF, when the card was opened from one
    * (design.md B, Option 1).
    *
-   * Scheduling from a task flows through `chatSessionId` / `fromChatKey`, which
+   * Scheduling from a task flows through `chatSessionId` / `chatKey`, which
    * name a SESSION — nothing on the card said which task that session is, so a
    * reader mid-form had no way to check what they were continuing. The header
    * says it as a chip beside the title, and pressing it opens that task.
@@ -2805,7 +3029,11 @@ export default function NewJobModal({
   //
   // Held in consts for the same reason `initialAsk` is: the BASELINE (`initial`)
   // has to be the identical value or an untouched Edit reads as dirty.
-  const nameSession = (editing?.session_id || chatSessionId) ?? "";
+  // …AND THE SAME THREE SOURCES NAME IT (`boundSessionId`, below): a hop's key
+  // IS the session when the chat has run, which is what lets the title field
+  // fill itself from the conversation instead of opening blank.
+  const nameSession =
+    (editing?.session_id || chatKeySession(chatKey ?? "") || chatSessionId) ?? "";
   const { title: derivedTitle, lookupSession: titleLookup } =
     initialTitleStateOf(editing, nameSession, draft.title);
   const [title, setTitle] = useState(saved.title ?? derivedTitle);
@@ -2872,7 +3100,7 @@ export default function NewJobModal({
   );
   const [customRule, setCustomRule] = useState<RecurrenceRule | null>(() => {
     // A REOPENED DRAFT'S OWN RULE OUTRANKS `editing` — the two are mutually
-    // exclusive (a draft never carries `editing`, per `hopSeeded`'s comment
+    // exclusive (a draft never carries `editing`, per `draftBody`'s comment
     // above), and reading it here is the other half of the fix `custom_rule`
     // exists for: storing it was pointless if nothing ever seeded it back
     // (Bugbot, PR #1118).
@@ -2910,8 +3138,74 @@ export default function NewJobModal({
   // this form has an opinion about (a task runs unattended, so "auto"), while a
   // model is one the CLI is better placed to pick per project than we are from
   // here. An edit prefills from the entry, so a task keeps what it was set to.
-  const [model, setModel] = useState(saved.model ?? editing?.model ?? "");
+  //
+  // THROUGH `normalizeModel`, and this is the one door a stored value comes in
+  // by. An entry booked before the pinned Fable id was retired still says
+  // "claude-fable-5-1"; left raw it is a value TASK_MODELS has never heard of,
+  // so `taskRunOptions` carries it through as its own row and the card shows a
+  // reader the CLI's spelling of a model the menu now calls Fable — and writes
+  // it back on the next Save.
+  const [model, setModel] = useState(() => {
+    const stored = saved.model ?? editing?.model ?? "";
+    return listedModelIn(stored, TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
+  });
   const [effort, setEffort] = useState(saved.effort ?? editing?.effort ?? "");
+  // A FIELD NOBODY CHOSE OPENS ON WHAT THE RUN WILL GET (Akshil, 2026-09-21:
+  // "remove the default field … show the model and effort"). "" used to be the
+  // leading "Default" row — no flag, the CLI decides at spawn. The row is gone;
+  // the card asks the server for the global Claude preference instead and
+  // writes it into whichever of the pair is still "" — per field, so a draft
+  // that chose a model keeps it and only its thinking is filled in. One read
+  // per open, and a read that fails leaves "" — the dropdown then shows its
+  // first option's label and the spawn still resolves as it always did.
+  const askedDefaults = useRef(false);
+  useEffect(() => {
+    if (askedDefaults.current || (model && effort)) return;
+    askedDefaults.current = true;
+    let live = true;
+    readClaudeDefaults().then(
+      (d) => {
+        if (!live) return;
+        setModel((m) => m || d.model);
+        setEffort((e) => e || d.effort);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [model, effort]);
+  // WHICH OF THE PAIR THIS CARD TOOK FROM THE GLOBAL, rather than from a
+  // reopened draft or the entry being edited — captured on the first render,
+  // because that is the only moment the distinction is visible. Only those two
+  // may be moved underneath the reader by another surface's write below: a
+  // draft that chose Opus is a choice this card is holding, and a composer pill
+  // somewhere else must not overwrite it.
+  const tookGlobal = useRef<{ model: boolean; effort: boolean } | null>(null);
+  if (tookGlobal.current === null) tookGlobal.current = { model: !model, effort: !effort };
+  // A PICK HERE IS THIS TASK'S PICK, NOT THE GLOBAL'S (Akshil, 2026-10-01,
+  // reversing 2026-09-21's "one value, two surfaces"): the global pair in
+  // `~/.claude/settings.json` is edited from the Claude config page and nowhere
+  // else. A new task still OPENS on the global and keeps following it while a
+  // field is untouched — the config page saving a new default should reach a
+  // card that has not chosen — but the first pick on a field makes it this
+  // card's own, and nothing is written back.
+  const globalFollower = !editing;
+  useEffect(() => {
+    if (!globalFollower) return;
+    return subscribeClaudeDefaults((d) => {
+      if (tookGlobal.current?.model && d.model) setModel(d.model);
+      if (tookGlobal.current?.effort && d.effort) setEffort(d.effort);
+    });
+  }, [globalFollower]);
+  const pickModel = useCallback((value: string) => {
+    if (tookGlobal.current) tookGlobal.current.model = false;
+    setModel(value);
+  }, []);
+  const pickEffort = useCallback((value: string) => {
+    if (tookGlobal.current) tookGlobal.current.effort = false;
+    setEffort(value);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -3056,11 +3350,33 @@ export default function NewJobModal({
       return true;
     });
   }, [recentTargets, sessionFolders]);
+  //: IS THE PATH CHECK STILL OUT — the 400ms verdict below (`newFolder` /
+  //: `pathError`). The "create this folder" row waits on it: an offer that
+  //: arrives before the answer does is the flicker this closes.
+  const [pathChecking, setPathChecking] = useState(false);
   const openRecents = useCallback(() => {
     setRecents(readRecentList());
     setRecentsOpen(true);
   }, [readRecentList]);
-
+  //: DOES THE FIELD HOLD AN ADDRESS AT ALL. The create-new offer is a statement
+  //: about a path, and a bare word names no place for a folder to be made in.
+  const targetIsPath = isPathShapedQuery(target.trim(), home, home || undefined);
+  // WHAT THE DROP OFFERS — the remembered folders, or the page's projects when
+  // the address has been cleared and a word typed in its place. One pure
+  // function decides which (`folderFieldRows`, top of this file), so the rule
+  // can be read and asserted in one place instead of inferred from four
+  // conditions spread through the render.
+  const { rows: folderRows, searching: pathSearching } = useMemo(
+    () => folderFieldRows({
+      target,
+      defaultTarget: initialTargetValue,
+      open: recentsOpen,
+      recents,
+      projects,
+      home,
+    }),
+    [target, initialTargetValue, recentsOpen, recents, projects, home],
+  );
   // Early path validation (Akshil, 2026-08-16 — "detect it before me
   // scanning the input"): a beat after typing stops, ask the server whether
   // the path exists. A folder answers listDir directly; a FILE fails it, so
@@ -3078,8 +3394,31 @@ export default function NewJobModal({
     if (!p) {
       setPathError(null);
       setNewFolder(null);
+      setPathChecking(false);
       return;
     }
+    // A BARE WORD IS NOT AN ADDRESS, so there is no address to have a verdict
+    // about (see `newFolderShown`). The red "only one new folder can be created"
+    // line was this check reporting on a path it had invented out of a word.
+    if (!isPathShapedQuery(p, home, home || undefined)) {
+      setPathError(null);
+      setNewFolder(null);
+      setPathChecking(false);
+      return;
+    }
+    // `~` WITH NO HOME YET IS NOT A VERDICT, IT IS A WAIT (Bugbot, PR #1213).
+    // `home` arrives from `/api/config` a beat after mount, and a `~/…` path
+    // typed or PASTED before it landed would be probed literally — the red
+    // "Only one new folder can be created" line, again, on a path that is
+    // perfectly good. There is nothing to say about it yet, so nothing is said:
+    // the check stays pending and the effect re-runs when `home` lands (it is a
+    // dep). The last verdict is left alone rather than cleared, which is the
+    // same discipline `settle` keeps.
+    if (p.startsWith("~") && !home) {
+      setPathChecking(true);
+      return;
+    }
+    setPathChecking(true);
     let stale = false;
     // Neither piece of state is cleared up front: the last verdict stays on
     // screen until the next one resolves, so the note does not blink off and
@@ -3088,15 +3427,29 @@ export default function NewJobModal({
       if (stale) return;
       setPathError(v.kind === "bad" ? v.text : null);
       setNewFolder(v.kind === "new-folder" ? v.name : null);
+      setPathChecking(false);
     };
+    // `~` IS A PLACE, NOT A FOLDER NAME (Akshil, 2026-09-18 screenshot: typing
+    // `~/Desktop/` drew the red "Only one new folder can be created" line). This
+    // check reads the disk, and the disk has never heard of `~` — so it asked
+    // for a folder literally called "~", found nothing, and reported every
+    // segment under it as a folder to be created.
+    //
+    // Expanded with the EXPLORER'S OWN expander (`listingAddress`), which is
+    // what its address bar resolves `~`, a drive letter and a relative path
+    // with. The field keeps showing `~/…`: what the reader typed is what they
+    // read back, and the server expands it again on the way in
+    // (`schedule.create`: `abspath(expanduser(target))`), so the stored target
+    // is the real path either way.
+    const probe = listingAddress(p, home, home || undefined) ?? p;
     const timer = window.setTimeout(() => {
-      listDir(p).then(
+      listDir(probe).then(
         () => settle({ kind: "ok" }),
         () => {
-          const { parent } = splitTargetPath(p);
+          const { parent } = splitTargetPath(probe);
           listDir(parent).then(
-            (r) => settle(targetVerdict(p, r.entries.map((e) => e.name))),
-            () => settle(targetVerdict(p, null)),
+            (r) => settle(targetVerdict(probe, r.entries.map((e) => e.name))),
+            () => settle(targetVerdict(probe, null)),
           );
         },
       );
@@ -3105,7 +3458,156 @@ export default function NewJobModal({
       stale = true;
       window.clearTimeout(timer);
     };
-  }, [target]);
+    // `home` IS A DEP, and Bugbot caught that it was not: it arrives from
+    // `/api/config` after mount, so a `~` path checked before it landed was
+    // checked literally and never re-checked. The check is cheap and `home`
+    // changes once in the life of the card.
+  }, [target, home]);
+
+  // IS THE "<name> — New folder" SUGGESTION ON SCREEN. It is drawn by its own
+  // branch (a different shape — a badge and a line about when it becomes true),
+  // so "which row is that one" is asked in three places and has to be one
+  // answer.
+  /**
+   * ONLY A PATH CAN NAME A FOLDER TO CREATE (Akshil, 2026-09-18, and this one
+   * MADE A FOLDER IN THE WRONG PLACE). Typing a bare `123` offered "New folder
+   * — created when the task is saved", and saving it created
+   * `…/fused-render-wt/agent-20260918-tasks-and-new-task/123`: the server
+   * resolved the name against ITS OWN cwd, because a name says nothing about
+   * where it lives.
+   *
+   * A NAME IS NOT AN ADDRESS. `~/new-folder1` and
+   * `/Users/ask/desktop/fold1-new` say where the folder would go; `newfold1`
+   * does not, so the field does not offer to make it.
+   *
+   * THE CARD'S HALF IS THE OFFER; the server refuses to MAKE one either way
+   * (`schedule.create`, `_names_a_place`). This stops the reader being asked; a
+   * client that asks anyway is still refused.
+   *
+   * …and only once the answer has LANDED. "Create this folder" is a statement
+   * about a folder that does not exist, and while the check is still out the app
+   * does not yet know that — "for a split second it shows me create new folder".
+   */
+  const newFolderShown = !pathError && !!newFolder && !pathChecking && targetIsPath;
+  // EVERY ROW THAT PICKS A PATH, in the order they are drawn — the ring the
+  // arrow keys walk. Browse and New folder are VERBS: they open a panel rather
+  // than answering the field, and an Enter that opened a side panel where the
+  // reader expected a folder would be the one press this list must not get
+  // wrong. The new-folder SUGGESTION is in the ring, because it answers with
+  // the path the field already holds (its click does the same).
+  //
+  // IT COMES LAST, AND THAT IS THE WHOLE OF IT (browser QA, 2026-09-18). It led
+  // the ring for one round, which made the commonest keystroke pair on any
+  // typeahead — ArrowDown, Enter — CREATE A FOLDER rather than pick the folder
+  // sitting right underneath it. The one row a reader almost never wants was
+  // the one the keyboard reached first, and the mistake it makes is the
+  // expensive kind. Remembered folders first, the new thing after them, which
+  // is where every tag and folder picker puts "Create '<typed>'".
+  //
+  // The DOM order below is this order too. A ring that walks one way while the
+  // list reads the other is a reader watching `aria-activedescendant` jump
+  // backwards.
+  //
+  // `newFolder` is the server's verdict on the typed path, so this list is only
+  // ever built out of things the form has already checked or already knew — and
+  // it joins the ring on exactly the condition the ROW is drawn on, or the
+  // indices here and the ones in the markup would part company.
+  const pathRows = useMemo<FolderRow[]>(
+    () => [...folderRows,
+           ...(newFolderShown && newFolder
+             ? [{ path: newFolder, name: leafOf(newFolder),
+                  where: parentOf(newFolder) }]
+             : [])],
+    [newFolderShown, newFolder, folderRows],
+  );
+  //: Where that suggestion sits in the ring — the end — or -1 when it is not
+  //: offered at all. One expression, read by the markup and by
+  //: `aria-activedescendant`.
+  const newFolderAt = newFolderShown ? pathRows.length - 1 : -1;
+  //: The rows of THIS render, for `setPathAt` to turn an index into a path
+  //: without being rebuilt on every keystroke.
+  const pathRowsRef = useRef(pathRows);
+  pathRowsRef.current = pathRows;
+  //: The panel itself, for the keyboard to scroll the highlighted row back into
+  //: view — a capped list is a list you can arrow off the bottom of.
+  const recentsRef = useRef<HTMLDivElement | null>(null);
+  //: THE WHOLE PATH, ON HOVER. One portalled element for the list — see
+  //: PathTip.tsx for why it is not a `title` and not drawn inside the panel.
+  const pathTip = usePathTip();
+  //: Is the next mouse-up the tail of the click that focused the field — see
+  //: `onMouseDown` / `onMouseUp` on the input.
+  const selectOnUp = useRef(false);
+  //: …and it goes when the ROWS go. It is dismissed on pointer-leave, blur,
+  //: scroll and resize, but a keystroke that swaps the recents for project rows
+  //: (or back) remounts the buttons under a pointer that never left, and the tip
+  //: would keep naming a folder that is no longer on screen at coordinates that
+  //: no longer hold a row (Bugbot, PR #1239). Keyed on the list's identity.
+  const { hide: hidePathTip } = pathTip;
+  useEffect(() => { hidePathTip(); }, [pathRows, hidePathTip]);
+  /**
+   * WHICH ROW THE ARROWS ARE ON — held as the row's own PATH, not its index
+   * (Bugbot, PR #1213: "stale highlight after async rows").
+   *
+   * An index is a promise about a list that is still arriving. The reader arrows
+   * to row 2, the path check answers and the "create this folder" row appears or
+   * goes — and Enter takes whatever is at index 2 now, which is a DIFFERENT
+   * FOLDER from the one they were looking at. A path cannot do that: if it is
+   * still on screen the highlight is still on it, and if it is gone the
+   * highlight is gone with it and Enter passes through to the form.
+   *
+   * "" — nothing — is where it rests, and it only ever moves on an explicit
+   * arrow: a seeded highlight would make Enter mean something the reader never
+   * chose (the property `completionKeyAction`'s header exists to guarantee).
+   */
+  const [pathMark, setPathMark] = useState("");
+  useEffect(() => { setPathMark(""); }, [target, recentsOpen]);
+  //: …and the index the key map wants, DERIVED. -1 the moment the marked row
+  //: leaves the list, which is exactly the clamp this replaces.
+  const pathAt = pathMark ? pathRows.findIndex((r) => r.path === pathMark) : -1;
+  const setPathAt = useCallback((i: number) => {
+    setPathMark(i >= 0 ? (pathRowsRef.current[i]?.path ?? "") : "");
+  }, []);
+  /**
+   * TAKING A ROW, the Explorer's two ways.
+   *
+   * `acceptPath` is Tab: the path goes INTO THE FIELD and the list stays open,
+   * so the reader can go on editing the address they were just handed — the
+   * Explorer's `acceptCompletion`, for the field that is its cousin.
+   *
+   * `pickPath` is the other ending: this is the answer, close the list. A
+   * remembered folder is a whole address rather than a step towards one, so that
+   * is what Enter on one does.
+   */
+  const acceptPath = useCallback((row: FolderRow) => {
+    setTarget(row.path);
+    setPathMark("");
+    pathRef.current?.focus();
+  }, []);
+  // KEEP THE HIGHLIGHTED ROW IN VIEW. The same one line the `Dropdown` at the
+  // top of this file uses and the task peek uses (`block: "nearest"`), and the
+  // reason it is needed here now: the panel is capped and scrolls, so arrowing
+  // past its edge would otherwise move a highlight the reader cannot see.
+  //
+  // Keyed on the MARK rather than on an index, like everything else about this
+  // highlight — a row that arrives while the mark is on it is still the row to
+  // scroll to.
+  useEffect(() => {
+    if (!recentsOpen || !pathMark) return;
+    recentsRef.current
+      ?.querySelector<HTMLElement>(".is-active")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [pathMark, recentsOpen, pathRows]);
+  const pickPath = useCallback((row: FolderRow) => {
+    const path = row.path.replace(/\/+$/, "");
+    setTarget(path);
+    // …AND THE CARD REMEMBERS IT, whichever list it came off. A project picked
+    // out of a search is a folder this form has now been pointed at, so the
+    // next opening offers it without being asked — the same thing Browse's own
+    // pick and a saved task already do.
+    rememberRecent(path);
+    setRecentsOpen(false);
+    setPathMark("");
+  }, []);
 
   // The verdict row rides the dropdown and NEVER forces it open. The reveal
   // flag this replaced looked helpful — bring the list back so a late verdict
@@ -3230,7 +3732,16 @@ export default function NewJobModal({
   // abandoning one is a cancel rather than a draft (design.md, Not in scope) —
   // so `editing` writes nothing here and keeps the close-twice guard it has
   // always had.
-  const [draftId, setDraftId] = useState<string | null>(initialDraft?.id ?? null);
+  //
+  // `""` IS NOT AN ID (Bugbot 4028344040). Two doors seed this card with a
+  // DraftSeed that carries no id at all and only exists to state a folder or a
+  // stored form — the chat hop (`chatHopSeed`, whose record is a chat key, not
+  // a task draft) and the empty never-sent hop, which opens a blank card on the
+  // folder its chat was mounted on. An empty string is not null, so the card
+  // read both as "already minted" and autosaved a settings-only change — a time,
+  // a model, a folder — into the Untitled draft it refuses to mint everywhere
+  // else. A seed says "no draft yet" by saying nothing, however it spells it.
+  const [draftId, setDraftId] = useState<string | null>(initialDraft?.id || null);
   const draftIdRef = useRef(draftId);
   draftIdRef.current = draftId;
   // The form as the store holds it. `when` / `repeat` / `new_task_each_run` are
@@ -3238,60 +3749,27 @@ export default function NewJobModal({
   // the same distinction `timePicked` draws on the card: "never opened the
   // when-row" is not the same answer as "chose now".
   /**
-   * THE HOP'S WORDS ARE ALREADY A DRAFT (design.md, Round 2: "the task draft is
-   * minted at once from the hop content").
+   * THE RECORD THIS CARD WRITES INTO — a chat key, or nothing (design "one
+   * record", §1 and §4).
    *
-   * `dirty` above is the ✕ guard's question — "has the user changed anything
-   * here" — and on a card opened from the chat's Schedule button the honest
-   * answer is no: the prefill moved the baseline with it, exactly as an Edit's
-   * does, so that a close needs one click and not two. But the DRAFT's question
-   * is a different one: are there words here that would be lost. The hop's words
-   * were typed, a moment ago, in the composer — and the composer's own copy of
-   * them is about to be deleted in favour of this one (`fromChatKey`). Waiting
-   * for a keystroke here would be waiting to lose them.
+   * When it is set, the card is a second door onto a CHAT record: the composer's
+   * own, edited in place. There is no mint, no origin key to spend, no delete of
+   * a copy, and no write-at-mount — all four existed because a hop used to create
+   * a task draft over words that already lived somewhere, and the window between
+   * "words exist here" and "words exist there" was the whole bug.
    *
-   * So the two questions are asked apart, and the ✕ keeps the behaviour it has
-   * always had. This one is answered once, at mount, off the props: a chat
-   * handoff with something in it, on a card that is not an Edit (an Edit is a
-   * stored entry, not a draft at all).
-   *
-   * A RE-OPENED DRAFT IS INCLUDED WHEN THE HOP BROUGHT WORDS (Akshil,
-   * 2026-09-12). Reopening a draft from its row carries no hop, so nothing
-   * changes there. But a hop out of a chat that already has a bound form
-   * reopens THAT form (shell/Scheduled `boundDraftSeed`) with the composer's
-   * newer words merged into it — and those words are in exactly the position
-   * this flag exists for: typed a moment ago, about to have the composer's own
-   * copy deleted, and not yet anywhere else. Writing at mount is what stops a
-   * close from losing them; the id is the draft's own, so it is one more save
-   * of the same form rather than a second draft.
+   * AN EDIT-TASK CARD JOINS THEM (design §4). An Edit used to autosave nowhere
+   * at all — `draftBody` was null whenever `editing` was set — so ✕ on a card
+   * with ten minutes of changes in it dropped every one of them silently. A task
+   * that has run has a session, and that session has a chat record, so the Edit
+   * writes into it exactly as the Draft chip's card does. A task with no session has
+   * no record to write into and keeps the old behaviour, which is the honest
+   * answer rather than a `draft:<id>` invented for it.
    */
-  // …and a hop can arrive as FILES with no words at all — a picture dropped into
-  // an empty composer is a chat draft (`drafts.put_chat`), so it is a task draft
-  // the moment it lands here, or the composer's copy would sit beside this card
-  // as a second row (Akshil, 2026-09-12).
-  const hopSeeded = !editing
-    && (!!(initialMessage ?? "").trim() || !!initialAttachments?.length);
-  /**
-   * THE CHAT THIS CARD'S WORDS CAME OUT OF, whichever way the card was opened —
-   * and the thing `POST /api/schedule` is told so it can drop that draft (Bugbot,
-   * PR #1118).
-   *
-   * The move is normally made by the first autosave (`from_chat_key` on the
-   * task-draft PUT, below). But Schedule pressed inside the 600 ms debounce
-   * never gets there: no id is minted, no PUT goes out, and the composer's draft
-   * — its row and its TASK number with it — sits beside the task it just became.
-   * `session_id` on the payload does not cover it either: a chat with no session
-   * yet is keyed `new:<file>`, which is not a session id.
-   *
-   * Two sources, same answer. The FRESH hop is handed the key as a prop; a card
-   * REOPENED from its draft row has only what the server stored on the draft
-   * (`form.from_chat_key`) — the same fact `backToChat` aims at below, for the
-   * same reason it exists at all.
-   */
-  const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");
+  const recordKey = (chatKey ?? "") || (editing?.session_id ?? "");
   /**
    * THE CONVERSATION THIS CARD'S TASK IS A MESSAGE TO — the destination, where
-   * `originChatKey` is the provenance (Akshil, 2026-09-12).
+   * `recordKey` is the record being edited (Akshil, 2026-09-12).
    *
    * A hop out of a chat that HAS ALREADY RUN is a message into that thread:
    * `POST /api/schedule` is given the session, the entry is filed under it, and
@@ -3301,17 +3779,35 @@ export default function NewJobModal({
    * pressing Schedule opened a SECOND session with a SECOND task number and the
    * TASK-nnn the reader had been watching was gone.
    *
-   * Two sources, same answer, and the same shape as `originChatKey` one line
-   * up: the fresh hop is handed the id as a prop, and a card reopened from its
-   * draft row has only what the server stored on the draft. It rides the
-   * autosave body (below) and the Schedule payload (`sessionId`), so the
-   * binding is written down the first time the card saves and read back every
-   * time it opens.
+   * THREE SOURCES, ONE ANSWER, and the FIRST of them is the record's own key
+   * (`chatKeySession`, Akshil, 2026-09-17). A hop out of a chat that has run
+   * opens this card on that conversation's record, and a session's record is
+   * filed under the session id itself — so the key the card is editing IS the
+   * thread, and nothing has to be told it separately. It used to be told:
+   * `?session_id=` rode the hop's URL and arrived here as `chatSessionId`. The
+   * param went when the hop stopped carrying copies of what the server already
+   * holds (design "one record", §1) and this const was left reading a prop
+   * nobody passes any more.
    *
-   * "" for a hop out of a chat with no session yet: there is no thread to
-   * continue, and that draft is keyed `new:<file>` precisely because of it.
+   * WHAT THAT COST, because it is the bug and not a tidiness point: with no
+   * session the Schedule payload named none, so `POST /api/schedule` filed the
+   * message as a task of its OWN — a fresh `pending:<entry>` row with a fresh
+   * TASK number, sitting beside the conversation it was supposed to be the next
+   * message of. One booking, two rows, and the reader's report was exactly that:
+   * "scheduling a task creates double entries". `chatHopSeed` restates the same
+   * id into the stored form, which is why the everyday hop (a composer with
+   * words in it, a record already on the server) still worked — and why the
+   * empty-composer hop, whose record does not exist yet, did not.
+   *
+   * So: the key when the key is a session, else what the stored record said,
+   * else the prop for any caller that still hands one over. "" for a hop out of
+   * a chat with no session yet — there is no thread to continue, and that draft
+   * is keyed `new:<file>` precisely because of it.
    */
-  const boundSessionId = (chatSessionId ?? "") || (saved.sessionId ?? "");
+  const boundSessionId =
+    chatKeySession(chatKey ?? "")
+    || (chatSessionId ?? "")
+    || (saved.sessionId ?? "");
   /**
    * IS THERE ANYTHING IN THIS CARD WORTH KEEPING — words, or files. Nothing
    * else (Akshil, 2026-09-12).
@@ -3329,15 +3825,26 @@ export default function NewJobModal({
     || images.some((i) => i.path);
   /**
    * …AND ONCE A DRAFT EXISTS, EMPTYING IT IS A WRITE, not a silence. The body
-   * keeps being produced while `draftId` is set, so clearing the last words
+   * keeps being produced while the card HAS a record, so clearing the last words
    * sends the empty form and the server turns that PUT into a delete
-   * (`drafts._empty_task`). Without it the card went quiet at exactly the
+   * (`drafts._empty_task`; for a chat record, into "clear the words, keep the
+   * settings" — contract §2). Without it the card went quiet at exactly the
    * moment it had something to say, and the reported shape of that was: clear
    * the text and the row reads "Untitled draft", then remove the attachment and
    * the row never goes away at all.
+   *
+   * NOTHING IS WRITTEN UNTIL SOMEBODY CHANGES SOMETHING (design §4). `dirty` is
+   * the whole gate now: there is no write-at-mount arm any more, because a hop
+   * no longer arrives holding words that exist nowhere else — they are already
+   * on the record this card is about to edit. Open the card, press ✕, and
+   * nothing at all has happened.
+   *
+   * AN EDIT WRITES TOO, when it has a record to write into (`recordKey`) — see
+   * that constant. An Edit on a task with no session still writes nothing: it is
+   * a stored entry, not a draft.
    */
-  const draftBody: TaskDraftForm | null = !editing && (dirty || hopSeeded)
-    && (draftContent || draftId !== null)
+  const draftBody: TaskDraftForm | null = (!editing || !!recordKey) && dirty
+    && (draftContent || draftId !== null || !!recordKey)
     ? {
       title,
       description: message,
@@ -3353,10 +3860,7 @@ export default function NewJobModal({
         .filter((i) => i.path)
         .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
       new_task_each_run: repeatOn ? newTaskEachRun : null,
-      // WHERE THIS TASK IS GOING, restated on every save — see
-      // `boundSessionId`. Unlike `from_chat_key` (spent once, because it makes
-      // the server delete something) this is plain state, and a card that
-      // restates it cannot lose the binding to a merge.
+      // WHERE THIS TASK IS GOING, restated on every save — see `boundSessionId`.
       session_id: boundSessionId,
       // THE RULE `repeat` POINTS AT, when the choice is Custom — null the same
       // moment `repeat` itself goes null, so a draft can never say "custom"
@@ -3364,83 +3868,197 @@ export default function NewJobModal({
       custom_rule: repeatOn && repeat === "custom" ? customRule : null,
     }
     : null;
-  // NULL UNTIL THE FORM IS DIRTY, and that is what "nothing minted for an
-  // untouched modal" is made of: the autosave writes when its value CHANGES, so
-  // a card nobody has touched — including one whose prefill effects have since
-  // fired, since those move the baseline too — never leaves null and never
-  // writes. The mint happens inside the write, so the id and the first save are
-  // one event and a card cannot end up with an id and no stored draft.
-  //
-  // …and on a HOP-SEEDED card it writes once with nobody having typed at all
-  // (`writeInitial`): the value it mounts on is already a draft, so the opening
-  // value counts as unwritten and the first debounce mints it.
-  //
-  // THE CHAT KEY RIDES THAT FIRST WRITE AND ONLY THAT ONE. It tells the server
-  // to delete the composer's copy of these words as it stores this one, so the
-  // sentence is in exactly one place at every instant (design.md, Round 2: "A
-  // draft moves, never duplicates"). Latched on a ref rather than re-read from
-  // the prop: the second PUT is an ordinary keystroke save, and repeating a
-  // delete for a key that is already gone can only be a no-op or a surprise
-  // (Akshil, 2026-09-11).
-  const chatKeySpent = useRef(false);
-  const autosave = useAutosave(draftBody, (value, opts) => {
+  /**
+   * ONE HOOK, TWO RECORDS. `recordKey` decides which store the same form goes
+   * into, and the two calls differ only in shape:
+   *
+   *   * a CHAT record takes the prose as ONE string — `joinDraft(title,
+   *     description)`, the composer's own box put back together — plus the
+   *     settings as a `form` patch. That is what makes the round trip lossless:
+   *     the composer reads `text`, the card reads `splitDraft(text)`, and
+   *     neither has a second copy of the other's half (contract §1);
+   *   * a TASK record takes the form as it always has, under a uuid this card
+   *     mints inside the write, so the id and the first save are one event and a
+   *     card cannot end up with an id and no stored draft.
+   *
+   * THE CONFLICT RULE IS THE COMPOSER'S (design §2). A 409 means the record
+   * moved under this card — the other tab, or the composer this hop came out of,
+   * still open behind it. Nothing focused in this form means the server's copy
+   * is simply newer, and the card closes onto it rather than showing a form that
+   * no longer exists; a reader mid-field keeps what they are typing, once, with
+   * the same soft toast the composer raises.
+   */
+  /**
+   * THE KEY THIS CARD IS THE EDITOR OF — the chat record it was opened on, or
+   * the task draft it has minted. `""` while it is neither, which is a card
+   * nobody has typed in yet.
+   */
+  const syncKey = recordKey || (draftId ? taskDraftKey(draftId) : "");
+  const autosave = useAutosave(draftBody, (value) => {
     if (!value) return;
+    // ONE SYNCER, TWO SHAPES. `recordKey` decides which store the same form goes
+    // into, and the two statements differ only in shape:
+    //
+    //   * a CHAT record takes the prose as ONE string — `joinDraft(title,
+    //     description)`, the composer's own box put back together — plus the
+    //     settings as a `form` patch. That is what makes the round trip
+    //     lossless: the composer reads `text`, the card reads `splitDraft(text)`,
+    //     and neither has a second copy of the other's half (contract §1);
+    //   * a TASK record takes the form as it always has, under a uuid this card
+    //     mints at the first statement, so the id and the first save are one
+    //     event and a card cannot end up with an id and no stored draft.
+    if (recordKey) {
+      draftSyncer(recordKey).setText(
+        joinDraft(value.title, value.description),
+        value.attachments,
+        {
+          when: value.when,
+          repeat: value.repeat,
+          custom_rule: value.custom_rule,
+          model: value.model,
+          effort: value.effort,
+          permission: value.permission,
+          target: value.target,
+          new_task_each_run: value.new_task_each_run,
+        },
+        { defer: true },
+      );
+      return;
+    }
     let id = draftIdRef.current;
     if (!id) {
       id = newTaskDraftId();
       draftIdRef.current = id;
       setDraftId(id);
     }
-    const moving = chatKeySpent.current ? "" : (fromChatKey ?? "");
-    chatKeySpent.current = true;
-    // Returned (not `void`-discarded) so `autosave.settle()` — Discard and
-    // Schedule both call it before their own delete — can tell when this
-    // particular write actually lands (Akshil, 2026-09-11).
-    //
-    // …AND THE ID COMES BACK, because the write may not have landed on the id
-    // it named (Bugbot, PR #1126, 2026-09-12). A card opened by the Schedule
-    // hop whose `GET /api/drafts` failed cannot see the form already bound to
-    // this conversation, so it mints a new id and saves under it; the server
-    // folds that write into the bound draft rather than evicting it, and
-    // answers the id it actually landed on. Adopting it here is what keeps the
-    // rest of this card pointing at the same record — the next autosave, the
-    // Discard, and the `draft_id` Schedule hands the server so it can drop the
-    // draft as the task is created. Keeping the minted id instead would leave
-    // every one of those three aimed at a record that does not exist. `""` is a
-    // write that failed and says nothing about anything.
-    return saveTaskDraft(id, value, opts, moving || undefined).then((landed) => {
-      if (landed && landed !== draftIdRef.current) {
-        draftIdRef.current = landed;
-        setDraftId(landed);
-      }
-      return !!landed;
-    });
-  }, { writeInitial: hopSeeded });
+    // STATED, NOT SENT (Akshil, 2026-09-17): the card writes when the window
+    // loses focus, when the page goes, when it closes — not 600 ms after every
+    // keystroke. Same rule as the composers.
+    draftSyncer(taskDraftKey(id)).setTask(value, { defer: true });
+  }, { key: syncKey });
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
-  // Discard: the draft goes, and so does the card. `stop` first — a write still
-  // in the debounce would otherwise land after the DELETE and put it back.
-  // `stop` alone only disarms the NEXT write, though: a PUT already sent to
-  // the server cannot be cancelled, so `settle` waits for that one write
-  // (whichever is running) before the delete goes out — otherwise it can
-  // land after the delete and resurrect the draft this button just asked to
-  // throw away (Akshil, 2026-09-11).
-  //
-  // AND THE ID IS READ AFTER `settle`, NOT BEFORE IT (Bugbot, PR #1126,
-  // 2026-09-12). The write being waited out is also the write that can CHANGE
-  // the id: a card whose `GET /api/drafts` failed saves under a freshly minted
-  // one, the server folds that write into the draft already bound to this
-  // conversation, and the autosave adopts the id it answers with — inside the
-  // promise `settle` waits on (see the save above), so by the line below the
-  // adoption has happened. Reading the id first aimed the DELETE at the minted
-  // id the server had already dropped: the request succeeded against nothing
-  // and the bound draft lived on holding the very words this button was pressed
-  // to be rid of.
-  const discard = async () => {
-    autosaveRef.current.stop();
-    await autosaveRef.current.settle();
+  // CLOSING THE CARD IS A SAVE MOMENT. Discard and Schedule have already said
+  // their piece (`reset(null)` + delete / forget), so this finds nothing to send
+  // on those roads; on a plain ✕ it carries the last edits.
+  useEffect(() => () => autosaveRef.current.flush(), []);
+  /**
+   * WHAT THIS CARD ANSWERS WHEN THE RECORD MOVED UNDER IT (design §2), read
+   * through a ref because the rule is registered with the KEY and the fields it
+   * asks about change on every keystroke.
+   *
+   * A 409 means somebody else wrote first — the other tab, or the composer this
+   * hop came out of, still open behind it. Nothing focused in this form means
+   * the server's copy is simply newer, and the card closes onto it rather than
+   * showing a form that no longer exists; a reader mid-field keeps what they are
+   * typing, once, with the same soft toast the composer raises.
+   */
+  const ruleRef = useRef<DraftConflictRule | null>(null);
+  ruleRef.current = {
+    // The card is a modal, so anything focused in a field IS this card's —
+    // there is nothing else on the page a caret can be in while it is open.
+    focused: () => {
+      const el = typeof document === "undefined" ? null : document.activeElement;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+    },
+    localText: () => `${title}\u0000${message}`,
+    adopt: () => {
+      // A CARD CANNOT REPAINT ITSELF FROM A RECORD: every field is seeded in a
+      // `useState` initialiser, which is what makes a re-opened draft a fresh
+      // mount (shell/Scheduled's `key`). So adopting is closing — the record on
+      // the server is the newer one, and the card that was showing the older
+      // one has nothing left to say. Nobody typed anything here, by the rule
+      // that got us into this branch, so there is nothing to lose by it.
+      notify({ title: "That draft changed elsewhere", tone: "info" });
+      onClose();
+    },
+    onKept: () =>
+      notify({ title: "Updated elsewhere, kept your text", tone: "info" }),
+    // THE ID THE WRITE LANDED ON, when the store folded this form into a draft
+    // that already held this conversation (Bugbot, PR #1126). Adopting it keeps
+    // the Discard and the `draft_id` Schedule hands over pointing at the record
+    // that exists.
+    onTaskId: (id: string) => {
+      if (!id || id === draftIdRef.current) return;
+      draftIdRef.current = id;
+      setDraftId(id);
+    },
+  };
+  useEffect(() => {
+    if (!syncKey) return;
+    return draftSyncer(syncKey).watch({
+      focused: () => !!ruleRef.current?.focused(),
+      localText: () => ruleRef.current?.localText() ?? "",
+      adopt: (record) => ruleRef.current?.adopt(record),
+      onKept: () => ruleRef.current?.onKept?.(),
+      onTaskId: (id) => ruleRef.current?.onTaskId?.(id),
+    });
+  }, [syncKey]);
+  const recordKeyRef = useRef(recordKey);
+  recordKeyRef.current = recordKey;
+  /**
+   * THE RECORD THIS CARD IS EDITING CHANGED SOMEWHERE ELSE (design §3).
+   *
+   * Two things can happen to it while the card is open: the trash on its row is
+   * pressed (from the List behind it, the Board, the Cards wall, another window
+   * entirely), or somebody saves it — the composer this hop came out of, still
+   * mounted on the same key, or a second tab. Both arrive here the same way, on
+   * the change feed, with the key and the version.
+   *
+   * GONE CLOSES THE CARD, with the toast, because the form it is showing no
+   * longer stands for anything: leaving it up would let the reader go on editing
+   * a record that would be re-created by their next keystroke — which is the
+   * resurrection this whole design exists to make impossible.
+   *
+   * CHANGED IS LEFT TO THE NEXT SAVE. Every field here is seeded in a `useState`
+   * initialiser, so this card cannot repaint itself from a record; what it can
+   * do is refuse to overwrite one, and the 409 rule above does exactly that —
+   * the write is refused, and either the card closes onto the newer record or
+   * the reader's own words win with a toast.
+   *
+   * ONLY FOR A KEY THIS CLIENT HOLDS A VERSION FOR (contract §3) — WHEN THE FEED
+   * IS THE ONE SAYING IT: the announced key set is noisy, and closing a card on
+   * a `gone` for a record that never existed would be the worst possible
+   * reading of it. A discard made on THIS page carries `certain` and is acted on
+   * regardless, because the delete it came out of has already forgotten the very
+   * version the guard asks for (tasksPulse `announceDraftsGone`).
+   */
+  useEffect(() => onDraftChange((_changed, gone, certain) => {
+    const key = recordKeyRef.current;
     const id = draftIdRef.current;
-    if (id) void deleteTaskDraft(id);
+    const mine = key || (id ? taskDraftKey(id) : "");
+    if (!mine) return;
+    if (!certain && draftVersion(mine) === undefined) return;
+    if (!gone.includes(mine)) return;
+    forgetDraftVersion(mine);
+    notify({ title: "Discarded elsewhere", tone: "info" });
+    onClose();
+  }), [onClose]);
+  /**
+   * DISCARD — the draft goes, and so does the card.
+   *
+   * THREE LINES, where it used to be six. `stop()` then `await settle()` before
+   * the DELETE was an ordering protocol against this card's own in-flight PUT;
+   * the version does that now, so a write still on the wire is refused by the
+   * server instead of landing after the delete and putting the row back. And
+   * `reset` is what stops the unmount flush from writing on the way out.
+   *
+   * WHICH RECORD depends on which one this card has been writing into — the
+   * chat record it was opened on, or the task draft it minted. One card, one
+   * record, so there is never a second one left standing.
+   */
+  const discard = async () => {
+    autosaveRef.current.reset(null);
+    // ONE STATEMENT TO THE ONE WRITER: this record should not exist. `handoff`
+    // waits for the server to agree, so the card closes on a fact rather than on
+    // a hope — and a write of this card's own that was still on the wire cannot
+    // land afterwards and put the row back, because the syncer is what it was
+    // waiting on.
+    if (syncKey) {
+      const sync = draftSyncer(syncKey);
+      sync.markDeleted();
+      await sync.handoff();
+    }
     onClose();
   };
 
@@ -3459,11 +4077,13 @@ export default function NewJobModal({
   // it. Only ever one of the two is on screen (a refusal and a promise about the
   // same path cannot both be true), so they share the one slot.
   const newFolderId = useId();
+  //: The path list's own id, so the input can point `aria-controls` and
+  //: `aria-activedescendant` at it and at one of its rows.
+  const recentsId = useId();
   // …and the line a LOCKED path prints instead of either (design.md §2): not a
   // refusal and not a promise, but the reason the field cannot be typed in.
   // Same slot, for the same reason — a locked field has no recents to open and
   // therefore no new folder to be about.
-  const lockedTargetId = useId();
   // …and the third: what the repeat does to this task's thread, attached to
   // the checkbox that decides it.
   const threadHintId = useId();
@@ -3537,33 +4157,23 @@ export default function NewJobModal({
     [],
   );
   //
-  // AND IT REVERSES THE MOVE (design.md, Round 2: "'Back to chat' reverses it").
-  // The hop deleted the chat draft and minted a task draft in its place; going
-  // back deletes the task draft, and the composer's own autosave re-creates the
-  // chat one from the sessionStorage stash it re-seeds from. Exactly one draft
-  // exists at every instant, and it is the one belonging to whichever surface
-  // the reader is actually looking at — leaving the task draft behind would put
-  // a row on the List for a card the user just walked out of.
+  // AND IT REVERSES NOTHING, because there is nothing to reverse (design "one
+  // record", §1). The hop used to delete the chat draft and mint a task draft in
+  // its place, so walking back had to undo that in three ordered steps — flush,
+  // settle, write the words onto the chat key, delete the task draft, navigate —
+  // with a separate arm for the bound case where the two "records" were secretly
+  // one. The card now edits the composer's own record, so Back to chat is a
+  // FLUSH and a navigation: the record is untouched, and the composer on the
+  // other side seeds from the very thing this card was writing into.
   //
-  // `stop` then `settle` before the delete, for Discard's reason and it is the
-  // same hazard: a debounced PUT still in the pipe (or one already sent) would
-  // land after the DELETE and resurrect exactly the draft this is disposing of.
-  // The navigation waits on that — it is one round trip, and leaving without it
-  // is how the row comes back (Akshil, 2026-09-11).
+  // FLUSH AND NOT `stop`: the last 600 ms of typing are still in the debounce,
+  // and the box being walked back to is where those keystrokes belong.
   //
-  // THE WAY BACK OUTLIVES THE HOP'S URL (Akshil, 2026-09-11 — the bug). The two
-  // paragraphs above describe the FRESH hop: `?back=…` names where to land, and
-  // the composer re-seeds itself from the sessionStorage stash the hop left. A
-  // draft REOPENED from its row on the List has neither — the URL is `/tasks`
-  // and the stash was spent on read — so for that card the round trip has to be
-  // rebuilt out of the one thing that survived, `form.from_chat_key`, which the
-  // server now stores. Same three steps in the same order, with the chat draft
-  // written BY HAND where the fresh hop had a stash to do it: stop autosaving,
-  // settle whatever is in flight, PUT the words back onto the chat key, delete
-  // the task draft, then navigate. Exactly one draft exists at every instant,
-  // which is the whole rule.
-  const backChatKey = chatBack ? "" : (saved.fromChatKey ?? "");
-  const canGoBack = !!chatBack || !!backChatKey;
+  // WHERE IT LANDS is `?from=` when the hop carried one, and otherwise the
+  // record's own key turned into a route (`backChatHref`) — which is what the Draft
+  // chip's card has, since that press starts on this page and names no route.
+  const backHref = chatBack || backChatHref(recordKey, target);
+  const canGoBack = !!backHref;
   const backToChat = async () => {
     if (!canGoBack) return;
     if (dirty && !backConfirm) {
@@ -3572,48 +4182,8 @@ export default function NewJobModal({
       backTimer.current = window.setTimeout(() => setBackConfirm(false), 2000);
       return;
     }
-    // FLUSH FIRST, on the bound arm's account (Bugbot, PR #1126, 2026-09-12):
-    // the last 600 ms of typing are still in the debounce, and the composer
-    // this hands off to seeds from the FORM — so those keystrokes have to land
-    // in the form before the walk, and `stop` would otherwise also silence the
-    // unmount flush that used to catch them. The unbound arm re-saves the live
-    // words by hand below, so the flush is harmless there (one write, same
-    // value, then the delete).
     autosaveRef.current.flush();
-    autosaveRef.current.stop();
-    await autosaveRef.current.settle();
-    // AFTER `settle`, for Discard's reason (Bugbot, PR #1126, 2026-09-12): the
-    // write this just waited out is the one that can rename the draft, when the
-    // server folds it into a form already bound to this conversation. Read
-    // before, the DELETE below names an id the server has already dropped and
-    // the bound draft outlives the words being handed back to the composer —
-    // which is the duplicate the whole move exists to prevent.
-    const id = draftIdRef.current;
-    // ONE RECORD, TWO DOORS (Bugbot, PR #1126, 2026-09-12). A draft bound to a
-    // session IS the chat draft: the server's chat view reads the form's words
-    // off the same record the autosave just wrote (`put_chat` writes the bound
-    // form when the key is that session). Re-saving the chat draft here would
-    // only update that record, and the delete that follows would remove it —
-    // the composer then seeds from nothing. So on the bound arm the record must
-    // survive: stop, settle, walk through the other door. Only the unbound
-    // draft (`new:<file>`, no session) is two records, and only it re-seeds by
-    // hand and deletes.
-    if (boundSessionId) {
-      navigateUrl(chatBack || backChatHref(backChatKey, target));
-      return;
-    }
-    if (backChatKey) {
-      // The inverse of the split the hop made — `joinDraft` puts the title line
-      // and the body back into the one block of prose the composer holds. The
-      // attachments ride along as the same three fields the task draft stored
-      // them as; a chip whose upload has not answered names no file yet and is
-      // dropped, exactly as the task draft drops it.
-      await saveChatDraft(backChatKey, joinDraft(title, message),
-        images.filter((i) => i.path)
-          .map((i) => ({ path: i.path, name: i.name, kind: i.kind })));
-    }
-    if (id) await deleteTaskDraft(id);
-    navigateUrl(chatBack || backChatHref(backChatKey, target));
+    navigateUrl(backHref);
   };
 
   // The replacement was created but the original could not be withdrawn: the
@@ -3749,24 +4319,23 @@ export default function NewJobModal({
       // 2026-08-16; Bugbot, PR #548), and the task's OWN thread is carried
       // through the re-create an edit really is.
       // THE DRAFT STOPS HERE. The server deletes it as part of creating the
-      // task (it is handed `draft_id` below), so the only thing left to do is
-      // make sure nothing this card has queued can write it back — a debounced
-      // save from the keystroke before Schedule would otherwise resurrect a
-      // draft for a task that now exists (Akshil, 2026-09-11). `stop` disarms
-      // the NEXT write; it cannot cancel one already sent to the server, so
-      // `settle` waits that one out too, BEFORE the request below goes out —
-      // the server-side delete must be ordered after the last PUT, not merely
-      // after the last one this client could still call off.
+      // task (it is handed `draft_id` or `draft_key` below), so the only thing
+      // left to do is make sure nothing this card has queued writes it back.
+      // `reset(null)` is the whole of that now: it forgets the pending debounce
+      // AND leaves the unmount flush with nothing to say. A PUT already on the
+      // wire needs no handling — it states the version it read, the create bumps
+      // past it, and the server refuses it.
       //
-      // `flush` FIRST, and it is load-bearing on a HOP-SEEDED card: `writeInitial`
-      // only arms the 600 ms debounce, so a Schedule pressed within that window
-      // (the whole point of a hop is that the card opens ready to send) would
-      // otherwise reach `stop` before a single write ever went out — no id
-      // minted, no `from_chat_key`, and the chat draft this hop was supposed to
-      // retire outlives the task it became (Bugbot, this batch).
-      autosaveRef.current.flush();
-      autosaveRef.current.stop();
-      await autosaveRef.current.settle();
+      // A HOP-SEEDED CARD NEEDS NO FLUSH FIRST any more either. There is no
+      // first write to force out: the words were already on the record before
+      // this card opened, so `draft_key` below names something that exists
+      // whether or not anybody has typed since (the bug that flush was added
+      // for cannot occur).
+      autosaveRef.current.reset(null);
+      // …AND THE SYNCER FORGETS IT. The debounce belongs to the KEY now, not to
+      // this card, so a keystroke 300 ms before Save would otherwise fire after
+      // the create and write the draft the server has just deleted straight back.
+      if (syncKey) draftSyncer(syncKey).forget();
       await scheduleMessage(
         buildSchedulePayload({
           target,
@@ -3804,9 +4373,11 @@ export default function NewJobModal({
           // to chat now take). Naming the minted id instead left the bound
           // draft standing beside the task it had just become.
           draftId: draftIdRef.current ?? "",
-          // …and the chat draft this card was composed out of, for the case the
-          // autosave never got to move it. See originChatKey.
-          fromChatKey: originChatKey,
+          // …and the CHAT record this card was editing, so the server deletes
+          // it and moves its TASK number onto the entry — `draftId`'s twin for
+          // the other kind of record (contract §5). Never both: a card edits one
+          // record.
+          draftKey: recordKey,
           // Whether anybody chose this time, which is what decides if the task
           // is a plan or a thing to run. See `timePicked`.
           timePicked,
@@ -3916,6 +4487,7 @@ export default function NewJobModal({
   return (
     <Modal
       title={editing ? "Edit task" : "New task"}
+      dialogClassName="new-task-dialog"
       // …plus WHICH TASK this one came out of, when it came out of one
       // (design.md B, Option 1). A chip, not a field: it states the fact the
       // session id was already carrying silently, and pressing it opens that
@@ -3933,16 +4505,16 @@ export default function NewJobModal({
             <button
               type="button"
               className="new-task-source"
-              title={`Open ${sourceTask.taskId}`}
+              title={`Open ${shortTaskId(sourceTask.taskId)}`}
               onClick={sourceTask.onOpen}
             >
-              from {sourceTask.taskId}
+              from {shortTaskId(sourceTask.taskId)}
             </button>
           )
           // No door on this surface, so no control: the same chip, saying the
           // same thing, with nothing to press. A button that answers a press
           // with nothing is the worse of the two.
-          : <span className="new-task-source">from {sourceTask.taskId}</span>,
+          : <span className="new-task-source">from {shortTaskId(sourceTask.taskId)}</span>,
       })}
       onClose={onClose}
       busy={busy}
@@ -3993,7 +4565,7 @@ export default function NewJobModal({
               depending on what you opened. The LABEL still differs, because the
               verbs do: one withdraws a running task, one drops an unfinished
               form. No arming step here — there is nothing scheduled to undo. */}
-          {draftId && (
+          {(draftId || (recordKey && !editing)) && (
             <button
               type="button"
               className="btn btn-danger-text new-task-delete"
@@ -4006,11 +4578,10 @@ export default function NewJobModal({
             </button>
           )}
           {/* The way back completes the chat's round trip: chat → schedule →
-              adjust the draft → schedule again. Only shown when a chat sent us
-              here — from anywhere else there is no "back". Two ways it can have:
-              the hop's own `?back=` URL, and a REOPENED draft's stored
-              `from_chat_key`, which is the only trace left once the hop's URL
-              is gone (see `backToChat`). */}
+              adjust the draft → schedule again. Only shown when there is a chat
+              record behind this card — from anywhere else there is no "back".
+              Two ways it can have: the hop's own `?from=` route, and the record's
+              own key turned into one (see `backToChat`). */}
           {canGoBack && (
             <button type="button" className="btn btn-secondary schedule-back-chat"
                     disabled={busy}
@@ -4033,38 +4604,15 @@ export default function NewJobModal({
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
-            {/* THE HOTKEY, ON THE BUTTON (Akshil, 2026-08-27: "show that hotkey
-                on the schedule button as well"). ⌘↩ from any field submits —
-                see the form's onKeyDown — and a shortcut nobody is told about
-                is one nobody uses. Hidden while busy: the button is disabled
-                then and a live-looking hotkey on a dead button is a lie. */}
-            {!busy && (
-              <kbd className="schedule-save-key" aria-hidden>
-                <span>{MOD_LABEL}</span>
-                <span className="schedule-save-key-plus">+</span>
-                <span>{ENTER_LABEL}</span>
-              </kbd>
-            )}
+            {/* No hotkey badge (Akshil, 2026-09-23): the chord it advertised
+                (⌘↩) is gone, and a bare ↩ beside "Create" said nothing a
+                reader would not try first. */}
           </button>
         </>
       }
     >
       <div
         className="schedule-form"
-        // ⌘↩ / Ctrl+Enter SUBMITS, from any field (Akshil, 2026-08-27). Plain
-        // Enter has a job in every box here — next line in the ask, next field
-        // from the title, a pick in the recents list — so the commit needs the
-        // modifier, and the modifier is the one every composer on the machine
-        // already uses for "send". Goes through trySubmit, not submit, so a form
-        // that cannot be saved answers the same way the button does: says which
-        // field, moves the caret. Left alone inside the folder explorer, whose
-        // own Enter picks a row, and while a save is already in flight.
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" || !isMod(e) || busy) return;
-          if ((e.target as HTMLElement).closest(".schedule-explorer")) return;
-          e.preventDefault();
-          trySubmit();
-        }}
       >
         {/* ONE WRITING SURFACE, not two controls (Akshil, 2026-08-17, reference
             image): the title and the description share a single borderless
@@ -4128,21 +4676,21 @@ export default function NewJobModal({
             placeholder={TITLE_PLACEHOLDER}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            // ENTER MOVES DOWN, into the instructions (Akshil, 2026-08-27: "when
-            // I am typing in the title, when I click enter, it should go to
-            // additional instructions"). The two fields are one message and the
-            // title is its first line, so Enter at the end of the first line
-            // means what it means in any editor: start the next one. It does
-            // NOT submit — a single-line field that fires Save on Enter would
-            // create a task on the way to describing it. An IME composition's
-            // Enter commits the candidate, not the line, and is left alone.
-            // A MODIFIED Enter is not this field's: ⌘↩ / Ctrl+Enter is the
-            // form's Save chord (the wrap's onKeyDown), and it must bubble there
-            // untouched rather than also walk the caret down (Bugbot).
+            // ENTER CREATES THE TASK; SHIFT+ENTER MOVES DOWN into the
+            // instructions (Akshil, 2026-09-23). It was the other way round —
+            // Enter walked the caret down and ⌘↩ saved — and the card asked
+            // for a chord to do the one thing it exists for. An IME
+            // composition's Enter commits the candidate, not the line, and is
+            // left alone. Goes through trySubmit, not submit, so a form that
+            // cannot be saved answers the same way the button does.
             onKeyDown={(e) => {
-              if (e.key !== "Enter" || e.nativeEvent.isComposing || isMod(e)) return;
+              if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
               e.preventDefault();
-              askRef.current?.focus();
+              if (e.shiftKey) {
+                askRef.current?.focus();
+                return;
+              }
+              if (!busy) trySubmit();
             }}
             autoFocus
           />
@@ -4163,16 +4711,35 @@ export default function NewJobModal({
               deliberately does not have: multi-line, autogrowing with the text
               from the floor `.new-task-ask` sets up to its max-height, then
               scrolling. */}
-          <textarea
-            ref={askRef}
-            className="new-task-field new-task-ask"
-            rows={2}
-            aria-label="Additional instructions"
-            placeholder={ASK_PLACEHOLDER}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onPaste={pasteFiles}
-          />
+          <div className="new-task-ask-wrap">
+            <textarea
+              ref={askRef}
+              className="new-task-field new-task-ask"
+              rows={2}
+              aria-label="Additional instructions"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onPaste={pasteFiles}
+              // Enter creates the task here too; Shift+Enter is the textarea's
+              // own newline and is left to it (Akshil, 2026-09-23).
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
+                e.preventDefault();
+                if (!busy) trySubmit();
+              }}
+            />
+            {/* The placeholder, drawn rather than set: a native `placeholder`
+                is one run of text, and this one is two — the words, and under
+                them the key that gets the caret here, in italics. Hidden the
+                moment there is text, like the native one; `aria-hidden`
+                because the field's `aria-label` already says what it is. */}
+            {!message && (
+              <div className="new-task-ask-hint" aria-hidden="true">
+                <span>{ASK_PLACEHOLDER}</span>
+                <em>{ASK_HINT_KEY}</em>
+              </div>
+            )}
+          </div>
 
           {/* The attachments, minimal on purpose (Akshil, 2026-08-26: "just
               the image and the x icon on it"): a bare thumbnail that OPENS the
@@ -4318,6 +4885,14 @@ export default function NewJobModal({
             button next to the field moved in here). Blur closes it, but only
             when focus truly leaves the wrap — clicking a row moves focus INTO
             the dropdown, and closing on that blur would eat the click. */}
+        {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
+            dedicated tasks when we open the new task modal, hide the path field").
+            It used to sit here disabled with a line saying why; a control whose
+            one answer is already known is a control the card is better off
+            without. The target is still saved — `target` is seeded from the
+            scope and never touched — and Save's own check still refuses a path
+            it could not clear. */}
+        {!lockTarget && (
         <div className="schedule-form-line">
           {ICON_FOLDER}
           <div
@@ -4334,10 +4909,62 @@ export default function NewJobModal({
               if (e.key === "Escape" && recentsOpen) {
                 e.stopPropagation();
                 setRecentsOpen(false);
+                setPathAt(-1);
                 if (document.activeElement !== pathRef.current) {
                   suppressOpen.current = true;
                   pathRef.current?.focus();
                 }
+              }
+              // ARROWS, TAB AND ENTER, read by the Explorer address bar's own
+              // key map (`completionKeyAction`) and dispatched the way it
+              // dispatches them.
+              //
+              // TAB ACCEPTS (Akshil, 2026-09-18). This round called it the other
+              // way — "Tab leaves a form field" — and that was the wrong call
+              // here: the Explorer completes on Tab, this field is the same kind
+              // of control, and one address bar in the app that answers Tab
+              // differently from the other is worse than one that takes the key.
+              // It only ever fires while the list is OPEN with rows in it;
+              // everywhere else Tab is untouched and moves focus, because
+              // `completionKeyAction` answers `none` when the list is shut.
+              //
+              // …BUT ONLY ONTO A ROW THE READER ARROWED TO (review, 2026-09-19).
+              // `completionKeyAction` answers Tab with row 0 when nothing is
+              // highlighted (`tabDefaultIndex`), which is right for the
+              // Explorer — there row 0 completes the segment being typed — and
+              // wrong here: row 0 is a folder from LAST WEEK, and Tab out of a
+              // freshly typed path replaced it with that folder. Tab with
+              // nothing arrowed to is left alone, so it does what Tab does and
+              // moves on.
+              const act = completionKeyAction(
+                e.key, recentsOpen, pathAt, pathRows.length);
+              if (act.type === "tab-accept" && pathAt < 0) return;
+              if (act.type === "move") {
+                e.preventDefault();
+                setPathAt(moveHighlight(pathAt, act.delta, pathRows.length));
+              } else if (act.type === "tab-accept" || act.type === "enter-accept") {
+                e.preventDefault();
+                const row = pathRows[act.index];
+                if (!row) return;
+                // THE NEW-FOLDER SUGGESTION ANSWERS WITH THE PATH THE FIELD
+                // ALREADY HOLDS, so taking it is only ever "close the list" —
+                // the same thing its click has always done. Named by index
+                // rather than by shape: it is the one row whose text is a NAME
+                // and not an address, and writing that name into the field
+                // would throw away the path it was derived from (caught in the
+                // browser — Enter on it turned `/Users/me/Desktop/fu` into
+                // `fu`).
+                if (act.index === newFolderAt) {
+                  setRecentsOpen(false);
+                  setPathAt(-1);
+                  return;
+                }
+                // TAB PUTS IT IN THE FIELD, ENTER ANSWERS WITH IT. Tab leaves
+                // the list open on a path the reader can go on editing; Enter
+                // settles, because a folder on this list is a whole address
+                // rather than a way towards one.
+                if (act.type === "tab-accept") acceptPath(row);
+                else pickPath(row);
               }
             }}
           >
@@ -4365,29 +4992,59 @@ export default function NewJobModal({
               // The new-folder row only exists while the list is open, so it is
               // only pointed at while it is there — a describedby aimed at a
               // node that is not in the document says nothing at all.
-              // …and a locked field points at its own line instead: there is no
-              // list to open, so neither of the other two can ever be on screen.
               aria-describedby={
-                lockTarget
-                  ? lockedTargetId
-                  : pathError
-                    ? pathErrorId
-                    : newFolder && recentsOpen
-                      ? newFolderId
-                      : undefined
+                pathError
+                  ? pathErrorId
+                  : newFolder && recentsOpen
+                    ? newFolderId
+                    : undefined
               }
               placeholder="Add folder or file"
               // Not a combobox when there is nothing to expand: announcing one
               // promises a list that a disabled field can never produce.
               role={lockTarget ? undefined : "combobox"}
               aria-expanded={lockTarget ? undefined : recentsOpen}
+              // THE ROW THE ARROWS ARE ON, announced. Focus never leaves this
+              // input while the list is walked — the same discipline the
+              // dropdowns above this field keep — so the highlighted row has to
+              // be named here or a screen reader is told nothing moved.
+              aria-controls={recentsOpen ? recentsId : undefined}
+              aria-activedescendant={
+                recentsOpen && pathAt >= 0
+                  ? (pathAt === newFolderAt
+                      ? newFolderId : `${recentsId}-${pathAt}`)
+                  : undefined
+              }
               value={target}
-              onFocus={() => {
+              onFocus={(e) => {
+                // THE WHOLE PATH IS SELECTED ON ARRIVAL (Akshil, 2026-09-19:
+                // "when I select the field it should select the whole path, and
+                // I can replace it directly"). The field opens holding an
+                // address the reader most often wants to replace, not edit, so
+                // the first keystroke replaces it — and a bare word is the
+                // project search one line up. Only on focus: a second click
+                // places the caret like any text field, so editing is still
+                // there for whoever wants it.
+                e.currentTarget.select();
                 if (suppressOpen.current) {
                   suppressOpen.current = false;
                   return;
                 }
                 openRecents();
+              }}
+              // The mouse-up that ends the focusing click would collapse the
+              // selection to a caret in Safari and Chrome alike; swallowed once,
+              // for that click only, so the selection made on focus survives it.
+              // Armed on the mouse-DOWN that finds the field unfocused — not on
+              // focus itself — so a Tab into the field never leaves a swallow
+              // waiting for the first real click.
+              onMouseDown={(e) => {
+                selectOnUp.current = document.activeElement !== e.currentTarget;
+              }}
+              onMouseUp={(e) => {
+                if (!selectOnUp.current) return;
+                selectOnUp.current = false;
+                e.preventDefault();
               }}
               onClick={openRecents}
               onChange={(e) => setTarget(e.target.value)}
@@ -4398,34 +5055,141 @@ export default function NewJobModal({
               // blur handler's relatedTarget is null there and the list would
               // unmount before its click fired (Bugbot, PR #541).
               <div
+                ref={recentsRef}
                 className="schedule-recents"
-                style={popStyle(pathRef.current, 240, true)}
+                style={popStyle(pathRef.current, 240, true, true)}
                 onMouseDown={(e) => e.preventDefault()}
+                // The pointer leaving takes the highlight with it — the same
+                // rule the dropdowns at the top of this file keep, so a row left
+                // lit under a pointer that has gone is never the row an Enter
+                // would take.
+                onMouseLeave={() => {
+                  setPathAt(-1);
+                  pathTip.hide();
+                }}
               >
+                {/* THE ROWS SCROLL; THE VERBS DO NOT (Akshil, 2026-09-18:
+                    "Browse… and + New folder are scrolling WITH the results").
+                    They are not results — they are the two ways out of a list
+                    that did not have the answer — and a way out that scrolls
+                    off the bottom of fifty folders is a way out you have to go
+                    looking for.
+
+                    So the panel is a FRAME now: this box takes whatever height
+                    is left under the cap and scrolls, and the footer below it is
+                    a sibling that keeps its own. No arithmetic — `flex: 1 1
+                    auto` with `min-height: 0` against a `flex: 0 0 auto` footer
+                    is what makes "the total never exceeds the cap" a fact about
+                    the layout rather than a number to keep in step.
+
+                    THE LISTBOX MOVED HERE WITH THE OPTIONS. `aria-controls` and
+                    `aria-activedescendant` on the field point at a list, and the
+                    list is the scroller — the verbs underneath are buttons, not
+                    options, and were never in the ring. */}
+                <div
+                  ref={recentsRef}
+                  id={recentsId}
+                  role="listbox"
+                  aria-label="Folders"
+                  className="schedule-recents-scroll"
+                >
+                {/* THE REMEMBERED FOLDERS, in `pathRows`' own order — which is
+                    what makes `aria-activedescendant` and the arrow ring agree
+                    with what is on screen. */}
+                {pathRows.map((p, i) => {
+                  // The LAST row is the new-folder suggestion when there is
+                  // one; it is a different shape and draws itself below. Same
+                  // index `pathRows` put it at, or the ring and the markup part
+                  // company the moment the path check refuses something.
+                  if (i === newFolderAt) return null;
+                  return (
+                    <button
+                      key={p.path}
+                      id={`${recentsId}-${i}`}
+                      type="button"
+                      role="option"
+                      aria-selected={pathAt === i}
+                      className={"schedule-picker-row" + (pathAt === i ? " is-active" : "")}
+                      onMouseEnter={() => setPathAt(i)}
+                      // THE WHOLE PATH WHILE THE POINTER IS ON THE ROW, with no
+                      // delay — pointing at a row IS the question. On focus
+                      // too, so a row reached by Tab is told the same thing.
+                      onPointerEnter={(e) => pathTip.show(e.currentTarget, p.path)}
+                      onPointerLeave={pathTip.hide}
+                      onFocus={(e) => pathTip.show(e.currentTarget, p.path)}
+                      onBlur={pathTip.hide}
+                      onClick={() => pickPath(p)}
+                    >
+                      {ICON_FOLDER}
+                      {/* THE NAME, and the address beside it, muted. The
+                          Explorer's rows print `item.name` and never the
+                          address, because the address is in the field one line
+                          above; a row on THIS list did not come from that line
+                          — it is remembered, or it was searched for — so it says
+                          where it is, quietly.
+
+                          MIDDLE-TRUNCATED, and only as far as it has to be
+                          (`FitPath`, which measures this row): the start says
+                          which part of the machine, the end says which folder,
+                          and the segments in between are the ones every path
+                          here shares. The hover tooltip carries the whole of
+                          it, and so does the span's `aria-label`. */}
+                      <span className="schedule-recents-path">{p.name}</span>
+                      {p.where && (
+                        <FitPath
+                          className="schedule-recents-where"
+                          path={tildePath(p.where, home)}
+                          fullPath={p.path}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+                {/* A SEARCH THAT FOUND NOTHING STILL ANSWERS. Only ever while
+                    SEARCHING: an empty recents list is a card nobody has used
+                    yet, and "No project matches" would be a wrong answer to a
+                    question nobody asked. Same sentence and same shape as the
+                    Tasks page's own project menu. */}
+                {pathSearching && !pathRows.length && (
+                  <p className="schedule-recents-empty">No project matches</p>
+                )}
                 {/* What the typed path IS, answered where the other answers
-                    about folders are — first row, above the folders that
-                    already exist, in the same row shape as them. A BUTTON like
-                    every row around it: it started as an inert status and a
-                    click on it did nothing, which read as broken next to five
-                    siblings that all accept the click (Akshil, 2026-08-20).
-                    Picking it picks the path the field already holds, so the
-                    click's whole job is to close the list — same ending as
-                    picking any folder above. The badge carries the fact and
-                    the line under it says when it becomes true, because a
-                    badge alone reads as a label on a folder that is already
-                    there. */}
-                {!pathError && newFolder && (
+                    about folders are — in the dropdown, in the same row shape
+                    as them (Akshil, 2026-08-20: "this UI should be in
+                    dropdown"; it was an inline note under the field that pushed
+                    the rest of the card down as you typed). A BUTTON like every
+                    row around it: it started as an inert status and a click on
+                    it did nothing, which read as broken next to five siblings
+                    that all accept the click. Picking it picks the path the
+                    field already holds, so the click's whole job is to close
+                    the list — same ending as picking any folder above. The
+                    badge carries the fact and the line under it says when it
+                    becomes true, because a badge alone reads as a label on a
+                    folder that is already there.
+
+                    LAST, UNDER THE REMEMBERED FOLDERS, and not first as it was
+                    for one round — see `pathRows` for the ArrowDown-Enter that
+                    created a folder nobody asked for. */}
+                {newFolderAt >= 0 && (
                   <button
                     type="button"
                     id={newFolderId}
-                    className="schedule-picker-row schedule-recents-new"
+                    role="option"
+                    aria-selected={pathAt === newFolderAt}
+                    className={"schedule-picker-row schedule-recents-new"
+                      + (pathAt === newFolderAt ? " is-active" : "")}
+                    onMouseEnter={() => setPathAt(newFolderAt)}
                     onClick={() => setRecentsOpen(false)}
                   >
                     {ICON_FOLDER}
                     <span className="schedule-recents-new-text">
                       <span className="schedule-recents-new-top">
-                        <span className="schedule-picker-name" title={newFolder}>
-                          {newFolder}
+                        {/* Read out of the ring rather than off `newFolder`
+                            again: one value, so the row and the Enter that
+                            takes it can never name two different folders. */}
+                        <span className="schedule-picker-name"
+                              title={pathRows[newFolderAt]?.path}>
+                          {pathRows[newFolderAt]?.name}
                         </span>
                         <span className="schedule-new-badge">New folder</span>
                       </span>
@@ -4435,19 +5199,10 @@ export default function NewJobModal({
                     </span>
                   </button>
                 )}
-                {recents.slice(0, RECENTS_SHOWN).map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className="schedule-picker-row"
-                    onClick={() => {
-                      setTarget(p);
-                      setRecentsOpen(false);
-                    }}
-                  >
-                    {ICON_FOLDER} <span className="schedule-recents-path" title={p}>{p}</span>
-                  </button>
-                ))}
+                </div>
+                {/* THE FOOTER — outside the scroller, so it is on screen
+                    whatever the list is doing. */}
+                <div className="schedule-recents-foot">
                 {/* A separator ELEMENT, not a border-top on Browse: the border
                     version sat flush against the row's hover wash and read as
                     part of the button rather than as the line between the
@@ -4488,20 +5243,16 @@ export default function NewJobModal({
                   {ICON_PLUS}
                   New folder
                 </button>
+                </div>
+                {/* THE HOVER TOOLTIP, portalled to `<body>` from here —
+                    rendered inside the panel so the list closing takes it with
+                    it, drawn outside every stacking context this modal makes so
+                    nothing can cover it. */}
+                {pathTip.host}
               </div>
             )}
           </div>
         </div>
-        {/* WHY THE FIELD ABOVE CANNOT BE TYPED IN (design.md §2). A statement,
-            not a refusal: nothing is wrong, the answer is simply already known.
-            It replaces the path error rather than sitting beside it — a locked
-            path is the app's own folder, and the one case where the check could
-            still fail (the app deleted under the open card) is not something
-            this card can offer a fix for. */}
-        {lockTarget && (
-          <span id={lockedTargetId} className="field-hint schedule-form-sub">
-            Tasks here run against this project.
-          </span>
         )}
         {!lockTarget && pathError && (
           <span id={pathErrorId} className="field-hint schedule-form-bad schedule-form-sub"
@@ -4818,7 +5569,7 @@ export default function NewJobModal({
               this same card reopened on an edit, prefilled.
 
               ONE ROW, two equal columns (Akshil, 2026-09-03). They are one
-              decision read together — "Fable 5.1, thinking high" is the
+              decision read together — "Fable, thinking high" is the
               sentence — and stacking them spent two full rows of the card's
               least-used section saying half of it each. Permissions stays on
               its own line above: it is a policy with a consequence to explain,
@@ -4839,7 +5590,7 @@ export default function NewJobModal({
                 // an unrecognised stored value selectable instead of silently
                 // resetting the task to the default on the next edit.
                 options={taskRunOptions(TASK_MODELS, model)}
-                onPick={setModel}
+                onPick={pickModel}
               />
             </div>
             <div className="field">
@@ -4853,7 +5604,7 @@ export default function NewJobModal({
                 ariaLabel="Thinking"
                 value={taskRunLabel(TASK_EFFORTS, effort)}
                 options={taskRunOptions(TASK_EFFORTS, effort)}
-                onPick={setEffort}
+                onPick={pickEffort}
               />
             </div>
           </div>

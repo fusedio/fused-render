@@ -9,7 +9,8 @@
 import { listDir, deleteEntry, statPath, resolveConditions } from "@platform/lib/api";
 import { visibleModes } from "@platform/lib/mode-visibility";
 import type { ArchiveFormat, TemplateEntry } from "@platform/lib/api";
-import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
+import { copyToClipboard as writeSystemClipboard } from "@platform/lib/clipboard";
+import { getClipboard, getClipboardEpoch, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { dropRecentsFor } from "@apps/explorer/lib/recents";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "@apps/explorer/ModeSwitcher";
@@ -139,6 +140,15 @@ function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, `'\\''`) + "'";
 }
 
+// A dir cd's into itself; a file cd's into its parent — the folder a new
+// Claude Code session on this listing entry starts in. Shared by the copyable
+// command below and by the "Open in Claude" row that runs it in the
+// status-bar drawer directly (openTerminal({cwd, command: "claude"})) rather
+// than composing this same string a second way.
+export function claudeTerminalCwd(path: string, isDir: boolean, parentDir: string): string {
+  return isDir ? path : normDir(parentDir);
+}
+
 // The terminal command that starts a NEW Claude Code session on a listing
 // entry, for the CLIPBOARD — not a launch. It used to be a `claude-cli://`
 // deep link (the scheme Claude Code registers OS-wide, still how
@@ -147,18 +157,46 @@ function shellQuote(s: string): string {
 // plugin/marketplace install commands make: the user pastes it into the
 // terminal they already have open, in the session they want.
 //
-// A dir cd's into itself; a file cd's into its parent. No starter prompt: a
-// prompt passed on the command line (`claude "…"`) is SENT immediately, and the
-// deep link's `q` was deliberately a prefilled, unsent line.
+// No starter prompt: a prompt passed on the command line (`claude "…"`) is
+// SENT immediately, and the deep link's `q` was deliberately a prefilled,
+// unsent line.
 export function claudeTerminalCommand(path: string, isDir: boolean, parentDir: string): string {
-  return "cd " + shellQuote(isDir ? path : normDir(parentDir)) + " && claude";
+  return "cd " + shellQuote(claudeTerminalCwd(path, isDir, parentDir)) + " && claude";
 }
 
-// Re-exported, not defined here: the app-card context menu needs the same
-// clipboard write and lives in another app, which may not import this one, so
-// the implementation moved to @platform/lib/clipboard. Kept exported from here
-// so every existing `from "./fs-actions"` call site is untouched.
-export { copyToClipboard } from "@platform/lib/clipboard";
+// Wraps @platform/lib/clipboard's copyToClipboard (the app-card context menu
+// needs the same system-clipboard write and lives in another app, which may
+// not import this one, so the write itself stays platform-level) with the one
+// rule every in-app text write to the clipboard owes the file explorer's
+// clipboard: writing text there replaces whatever file flavor a pending COPY
+// was published as, invalidating it with no reconcile ever firing to notice —
+// nothing else changes focus, so os-clipboard.ts's mount/focus-time check
+// never runs. A pending CUT is untouched: it was never on the OS clipboard to
+// begin with, so a text write there says nothing about it. Every explorer
+// call site (Copy Path, Copy Paths, the Claude session command, Preview's
+// trouble report) imports copyToClipboard from here rather than from the
+// platform module directly, so this is the one place the rule lives FOR
+// EXPLORER-ORIGINATED WRITES. It does not cover a text write from anywhere
+// else in the SPA: the app-card menu's "Copy path" (platform/lib/appCardMenu.ts,
+// used by apps/builder/Apps.tsx), shell/TaskPeek.tsx's "copy resume command",
+// and claude_config's SkillsSection/PluginsSection all write straight to
+// @platform/lib/clipboard without clearing a pending explorer copy. Since none
+// of those moves focus away from the window, os-clipboard.ts's reconcile never
+// runs either — the explorer keeps offering a Paste whose file flavor is
+// already gone until the next focus change.
+export async function copyToClipboard(text: string): Promise<boolean> {
+  // Captured before the write, checked after it: the write is a round-trip
+  // (a permission prompt can gate it for seconds in Firefox/Safari), and the
+  // user can select new files and copy again while it's in flight. If they
+  // did, the epoch has moved and the pending copy this write would clear is
+  // not the one it observed — clearing it anyway would wipe the newer copy
+  // while the OS clipboard still holds its files. Same guard os-clipboard.ts
+  // uses across its own read.
+  const epoch = getClipboardEpoch();
+  const ok = await writeSystemClipboard(text);
+  if (ok && getClipboardEpoch() === epoch && getClipboard()?.op === "copy") setClipboard(null, false);
+  return ok;
+}
 
 // Drop every path that lives INSIDE another path of the same set, keeping the
 // outermost ancestors (input order preserved).

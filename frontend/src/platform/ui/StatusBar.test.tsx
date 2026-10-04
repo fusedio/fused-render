@@ -47,6 +47,42 @@ test("renders all three sections, left to right: models, activity, repoUpdates",
   ]);
 });
 
+test("the System chip renders first, alone in the left-hugging start slot", () => {
+  const tree = create(
+    <StatusBar
+      terminalDock={<div className="fake-terminal">t</div>}
+      system={<div className="fake-system">s</div>}
+      models={<div className="fake-models">m</div>}
+      activity={<div className="fake-activity">a</div>}
+    />,
+  ).toJSON();
+  const bar = tree as ReactTestRendererJSON;
+  const kids = bar.children as unknown as ReactTestRendererJSON[];
+  expect(classesOf(kids)).toEqual([
+    "status-bar-start",
+    "fake-terminal",
+    "fake-models",
+    "fake-activity",
+  ]);
+  expect(classesOf(kids[0].children as unknown as ReactTestRendererJSON[])).toEqual([
+    "fake-system",
+  ]);
+});
+
+test("no System chip, no start slot: the right-packed run is untouched", () => {
+  const tree = create(
+    <StatusBar
+      terminalDock={<div className="fake-terminal">t</div>}
+      activity={<div className="fake-activity">a</div>}
+    />,
+  ).toJSON();
+  const bar = tree as ReactTestRendererJSON;
+  expect(classesOf(bar.children as unknown as ReactTestRendererJSON[])).toEqual([
+    "fake-terminal",
+    "fake-activity",
+  ]);
+});
+
 test("omitted sections render nothing for their slot — not an empty wrapper", () => {
   const tree = create(<StatusBar activity={<div className="fake-activity">a</div>} />).toJSON();
   const bar = tree as ReactTestRendererJSON;

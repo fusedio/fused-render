@@ -23,6 +23,8 @@
 // pollution the lock prevents, and the schedule is the only thing that could
 // ever have explained it (T:17383-17390).
 
+import { CONTINUE_PROMPT, CONTINUE_TITLE } from "../protocol/quota";
+
 /** The `/api/schedule` entry, narrowed to what these rules read (T:16892-16899,
  *  17061-17070, 17395). Structurally satisfied by `platform/lib/api`'s
  *  `ScheduledMessage`; declared locally so the rules stay pure. */
@@ -33,11 +35,27 @@ export interface SchedEntry {
   claude_session_id?: string;
   due?: string;
   message?: string;
+  /** The listing's own name for it. The chat's comeback (`protocol/quota`
+   *  `CONTINUE_TITLE`) is told apart by this and nothing else. */
+  title?: string;
   target?: string;
   run_id?: string;
   template_id?: string;
   repeats?: string;
   rule?: unknown;
+  /** WHO PUT IT IN THE LINE — `"chat"` when the project queue admitted it out of
+   *  a composer, ABSENT for everything a person scheduled. The chat's whole
+   *  reason for asking: a chat-origin entry never shuts the box (the reader's own
+   *  words, in their own order), a calendar one still does (a run the scheduler
+   *  is about to start in this very session). See `schedCalendarHere`. */
+  origin?: string;
+  /** Skipped to the head of its folder's line. */
+  priority?: boolean;
+  /** The queued entry this one was typed behind, on a chat with no session yet
+   *  (`admitQueueSend`'s `follow_of`) — the thread `waiting.waitingFor` walks to
+   *  decide which conversation a message belongs to when it names no session of
+   *  its own, which every follower does until the server claims it. */
+  follow_of?: string;
 }
 
 /** The `/api/tasks` row, narrowed the same way (T:17010-17014). */
@@ -48,6 +66,50 @@ export interface SchedTask {
   status?: string;
   failed?: boolean;
   messages?: { entry_id?: string }[];
+  /** THE QUEUE'S OWN FIELDS, and the reason this row is read at all under the
+   *  flag: "behind TASK-038" is a fact about a FOLDER and a TASK, not about one
+   *  message, so every waiting row in this chat shares one answer and that answer
+   *  is the server's — which is what makes a reload draw the identical picture.
+   *  All optional: an older server sends none of them and every reader treats a
+   *  missing one as "nothing is in front". */
+  queue_position?: number;
+  queue_ahead?: string;
+  queue_ahead_title?: string;
+  queue_ahead_session?: string;
+  queue_ahead_target?: string;
+  /** …AND THE HOLDER'S OWN LISTING KEY, which is the OTHER door the id opens: a
+   *  holder whose run has not published a session yet is keyed
+   *  `pending:<entry id>`, and that entry IS a conversation
+   *  (platform/lib/queue.queueAheadHref).
+   *
+   *  IT WAS MISSING FROM THIS ROW and the chat header paid for it twice (Akshil,
+   *  2026-09-18). The Tasks row drew "behind TASK-046" as a link and the header
+   *  three pixels away drew it as plain text, because `sameQueueRow` below is the
+   *  gate every feed answer passes through and a field it does not compare is a
+   *  change it cannot see: the listing that finally named the holder's key was
+   *  read as "the same answer" and thrown away, so the header kept the older row
+   *  — the one with no door on it — for as long as nothing else about the line
+   *  moved. */
+  queue_ahead_key?: string;
+  queue_priority?: boolean;
+  /** HOW MANY OF THIS TASK'S MESSAGES ARE WAITING — the server's count, and the
+   *  only honest one: it is the side that can see every entry, and "waiting"
+   *  means DUE and held, which a client counting its own rows cannot tell from
+   *  "scheduled for next Tuesday". Counting rows said `1 message waiting` for
+   *  six days about a message nobody was waiting behind (design.md, UI). */
+  queue_waiting?: number;
+  /** MUST THE COMPOSER SHUT — the server's own verdict, true only for a message
+   *  somebody SCHEDULED into this conversation. `schedIsCalendar` is the same
+   *  rule read off the ENTRY, and it is the fallback for a chat with no row yet
+   *  rather than a second opinion (design.md, UI: one rule, server first). */
+  queue_blocking?: boolean;
+  /** WHY THE RUN STOPPED, when it stopped — `"usage_limit"` for a session the
+   *  plan's window cut off, with the instant it reopens beside it. The chat's
+   *  header says them ("paused · resumes 4:00 AM", platform/lib/usage-limit);
+   *  the Tasks page says the same thing on the same fields. Absent everywhere
+   *  else, and on an older server. */
+  blocked_reason?: string;
+  resumes_at?: number;
 }
 
 /** T:16749. */
@@ -89,10 +151,80 @@ export const SCHEDULE_IMMINENT_MS = 120000;
 export const SCHEDULE_VIEW_KEY = "fused-render:scheduled-view";
 /** The route the row lands on. */
 export const SCHEDULE_URL = "/tasks";
+
+/**
+ * THE HOP'S URL — which record, where Back goes, and which folder (design §1).
+ *
+ * `new=1` is what makes the hop feel like one control rather than two: the form
+ * opens immediately, so the click lands on a filled-in dialog (T:12019-12029).
+ * `draft` is the CHAT KEY (`platform/lib/drafts.chatDraftKey`) — the record the
+ * task form is about to edit, not a new one to mint. `from` is where "Back to
+ * chat" lands, which the caller supplies because a native chat has no
+ * `window.top` split to make (T:11979).
+ *
+ * `target` IS THE THIRD THING, and it is here because the key cannot stand in
+ * for it (Akshil, 2026-09-16). A `new:<file>` key carries its folder in the key
+ * itself, so the card could always derive one; a SESSION key carries nothing but
+ * the thread, and the card fell back to the reader's home folder — a hop out of
+ * an ongoing conversation opened a task aimed at `~`, and the modal's first
+ * autosave wrote that home path onto the conversation's own record. The caller
+ * knows the folder (the chat's `file`, or a draft row's `project`), so it says
+ * it, and the stored form still outranks it when the record has one.
+ *
+ * It lives HERE rather than beside the button that first built it so a draft
+ * ROW can press the same URL (`ui/list-rows.draftHref`) without dragging the
+ * button — and its popover — into the rows' module.
+ */
+export function schedulerUrl(draftKey: string, from: string, target = ""): string {
+  return (
+    `${SCHEDULE_URL}?new=1&draft=${encodeURIComponent(draftKey)}`
+    + (target ? `&target=${encodeURIComponent(target)}` : "")
+    + (from ? `&from=${encodeURIComponent(from)}` : "")
+  );
+}
+
+/**
+ * THE OTHER DOOR ONTO THE SAME CARD — a TASK draft, by id (Akshil, 2026-09-16).
+ *
+ * A Schedule pressed in a chat that has never been sent does not hand the card
+ * a chat record any more; it mints a `draft:<id>` of its own, one per press, so
+ * the second thing the reader schedules out of a folder is a second Upcoming
+ * row rather than a silent overwrite of the first (`composerTaskDraft`). That
+ * record is opened by `?draft=<id>`, which is the URL a draft ROW has always
+ * pressed (`ui/list-rows.draftHref`) — one arm, not a third.
+ *
+ * `from` is the one thing the row does not send: a reader who hopped out of a
+ * chat can walk back to it, and a reader who pressed a row on the Tasks page
+ * has nowhere to walk back to. The card shows the button only when it is given
+ * one (`Scheduled`'s `chatBack`).
+ *
+ * NO `target` PARAM. The folder is written onto the draft itself, so the card
+ * reads it off the record it opens on — which is also what makes it survive a
+ * reload, where a URL param would not.
+ *
+ * `&hop=1` — THIS OPENING CAME OUT OF A COMPOSER (Bugbot 4028344051). A draft
+ * ROW is a reopen: the card takes the time the draft stored, and an immediate
+ * draft stays immediate. A SCHEDULE PRESS is not — it is the same gesture the
+ * `?new=1` hop makes, and that one lands on now+2m with the card planning.
+ * Without the flag this road opened with no lead time and the when-row folded,
+ * so the card said "scheduled" in the confirm and ran the task at once. The row
+ * sends no flag and keeps the reopen rule it has always had.
+ */
+export function taskDraftUrl(draftId: string, from = "", hop = false): string {
+  return (
+    `${SCHEDULE_URL}?draft=${encodeURIComponent(draftId)}`
+    + (hop ? "&hop=1" : "")
+    + (from ? `&from=${encodeURIComponent(from)}` : "")
+  );
+}
+
 /** T:17222 — short, because this box is 300px wide in the side pane and a
  *  longer line is simply clipped. The banner carries the explanation; this only
  *  has to say the box is not broken. */
 export const BLOCKED_PLACEHOLDER = "Waiting on a scheduled message…";
+/** …and the comeback's own: the box is shut because the plan is, not because
+ *  the reader queued anything. */
+export const COMEBACK_PLACEHOLDER = "Paused until your usage limit resets…";
 /** T:17242 — the calendar button's other reason for being off (annNavLocked). */
 export const NAV_LOCKED_REASON = "finish or discard the notes first";
 /** T:17427 / T:17434 — the two transcript notes, and the ◷ they are drawn with. */
@@ -134,6 +266,50 @@ export function scheduledRunIsOurs(entry: SchedEntry, mine: string): boolean {
 }
 
 /**
+ * IS THIS ENTRY STILL A MESSAGE THAT HAS NOT BEEN SAID — pending, or CLAIMED and
+ * about to be.
+ *
+ * `sending` is the scheduler's own word for "I have taken this entry and I am
+ * spawning its run": the words have left the line and have not yet reached the
+ * transcript. Reading `pending` alone made that second a HOLE — the row came
+ * down on the poll that saw the claim and the turn arrived on the poll after it,
+ * so the reader's own message blinked out of the conversation for up to a lap
+ * (Bugbot PR #1124). It is drawn for that second with its own word (`starting`)
+ * and no delete, because there is nothing left to take back.
+ *
+ * THE BLOCK READS IT TOO, flag or no flag, and that is the same fix rather than
+ * a second one: a claimed entry aimed at this session is a run the scheduler is
+ * spawning INTO it, which is precisely the state the composer has always shut
+ * for — main simply never asked about the one second it is in.
+ */
+export function schedIsWaiting(entry: SchedEntry | null | undefined): boolean {
+  return !!entry && (entry.state === "pending" || entry.state === "sending");
+}
+
+/**
+ * THE NARROWER HALF — `pending` and nothing else, which is what MAIN asks.
+ *
+ * `schedIsWaiting` widened the question for the queue's ROWS, and the widening
+ * leaked: the same list feeds the flag-OFF block, where it shut a composer for
+ * the second a claimed entry spends in `sending` — a state main never drew and
+ * never blocked for (regression found 2026-09-12). Flag off has to be main byte
+ * for byte, so the flag-off road reads this one.
+ *
+ * The predicate lives beside its wider twin rather than inline at the call site
+ * because that is the whole point of the pair: two questions, one about a ROW
+ * ("is this message still unsaid") and one about the COMPOSER ("is the scheduler
+ * about to type into this session"), which parted on exactly one state.
+ */
+export function schedIsPending(entry: SchedEntry | null | undefined): boolean {
+  return !!entry && entry.state === "pending";
+}
+
+/** The pending-only half of a list of waiting entries — the flag-off filter. */
+export function schedPendingOnly(rows: readonly SchedEntry[]): SchedEntry[] {
+  return rows.filter((e) => schedIsPending(e));
+}
+
+/**
  * Which pending messages are aimed at THIS conversation, soonest first
  * (T:16892-16899). `session_id` is the input ("resume this one") and
  * `claude_session_id` is what a run reported it landed in; either naming the
@@ -150,13 +326,76 @@ export function schedPendingHere(
   if (!mine) return [];
   const ours = (entries || []).filter(
     (e) =>
-      !!e &&
-      e.state === "pending" &&
+      schedIsWaiting(e) &&
       (e.session_id === mine || e.claude_session_id === mine),
   );
   // ISO stamps with one offset spelling, so a string sort is a time sort.
   ours.sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
   return ours;
+}
+
+/**
+ * IS THIS ENTRY ONE THE READER SCHEDULED, rather than one they typed?
+ *
+ * The `origin` field is written by the admission and by nothing else, so its
+ * ABSENCE is the calendar, the New task form, a repeat's occurrence — and every
+ * entry stored before the field existed. That asymmetry is deliberate and it
+ * falls the cautious way: an entry this client cannot classify is treated as a
+ * run the scheduler is about to start in this session, which is the state the
+ * composer has always shut for.
+ */
+export function schedIsCalendar(entry: SchedEntry | null | undefined): boolean {
+  return !!entry && !entry.origin;
+}
+
+/**
+ * The pending messages aimed at this conversation that the READER scheduled —
+ * the only ones that still shut the box under the project queue.
+ *
+ * A chat-origin entry is this reader's own line, admitted into their own
+ * conversation's order, with the bubble already on screen and the composer open
+ * behind it. A calendar entry is a turn the scheduler is about to run in this
+ * very session, and a line typed over that is two messages racing into one run.
+ */
+export function schedCalendarHere(rows: readonly SchedEntry[]): SchedEntry[] {
+  return rows.filter((e) => schedIsCalendar(e));
+}
+
+/**
+ * WHICH CONVERSATION EACH ENTRY'S RUN LANDED IN — entry id → `claude_session_id`,
+ * for every entry that has reported one.
+ *
+ * THE ONE FACT A QUEUED NEW CHAT CANNOT GET ANY OTHER WAY. A chat whose first
+ * message was queued has NO session: nothing of its has run, so `sessionId` is
+ * "" and every later send is admitted as a follower of that first entry
+ * (`sched/queue-leader`). The scheduler eventually runs the leader, the run
+ * opens a Claude session, and the entry records it here — and until this page
+ * reads it off the entry, the chat goes on being a chat with no session:
+ * followers for ever, a composer that never returns to the ordinary send path,
+ * and a transcript that shows none of what the run actually said.
+ *
+ * THE ATTACH PATH BELOW IS NOT AN ANSWER TO IT, which is why this exists. That
+ * path needs a LIVE run — a `run_id` the agent will still answer a poll about —
+ * so a leader that ran and finished while this tab was in the background leaves
+ * nothing to attach to, and `scheduledRunIsOurs` writes off the FOLLOWER's run
+ * outright (a follower's `session_id` is resolved at claim time, and a
+ * session-less screen only adopts entries that name no session). The entry
+ * record outlives all of that.
+ *
+ * ENTRIES THAT REPORT NOTHING ARE LEFT OUT rather than mapped to "": the map is
+ * asked "has this one run yet?", and an empty string is not an answer to open a
+ * conversation with.
+ */
+export function schedRanSessions(
+  entries: readonly SchedEntry[] | null | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const e of entries || []) {
+    if (!e) continue;
+    const sid = String(e.claude_session_id || "");
+    if (sid) out.set(String(e.id), sid);
+  }
+  return out;
 }
 
 /**
@@ -237,12 +476,43 @@ export function schedStopTarget(entry: SchedEntry | null | undefined): string {
     : String((entry && entry.id) || "");
 }
 
+/**
+ * THE CHAT'S OWN COMEBACK — the follow-up `scheduleComeback` posts when a turn
+ * dies on the plan limit (`protocol/run-controller`), told apart by the two
+ * fixed marks it carries: its title (the same test `tasks.py _comeback_at`
+ * spends) or, for a listing that spelled no title, its prompt — both are
+ * constants the chat wrote, never the reader.
+ *
+ * READ OFF THE ENTRY ONLY. The `/api/tasks` row is the CONVERSATION's, and a
+ * conversation once rescued keeps that title for every later message a person
+ * schedules into it; testing the row would dress each of those as a
+ * usage-limit pause, stop control included (Bugbot, PR #1292).
+ */
+export function schedIsComeback(entry: SchedEntry | null | undefined): boolean {
+  if (!entry) return false;
+  if (String(entry.title || "").trim() === CONTINUE_TITLE) return true;
+  const said = String(entry.message || "").replace(/\s+/g, " ").trim();
+  return said === CONTINUE_PROMPT.replace(/\s+/g, " ").trim();
+}
+
 /** T:17082-17086 — WHY the box is shut, in one sentence, and it has one author:
  *  the banner shows it as its only line of prose and the calendar button
  *  carries it as its tooltip and its spoken name. The repeat gets its own
  *  wording because the ESCAPE differs — "scheduled" is a message you can
- *  cancel, "repeating" is a job you have to stop. */
-export function schedBlockReason(entry: SchedEntry | null | undefined): string {
+ *  cancel, "repeating" is a job you have to stop.
+ *
+ *  THE COMEBACK IS NOT "BLOCKED". Nobody queued it; the plan ran out and the
+ *  chat put itself back on the calendar. A reader who hit the limit and sees
+ *  "Blocked — a scheduled message runs in this chat" has to work out that the
+ *  message is their own rescue, so the line says the rescue outright and WHEN
+ *  (Akshil, 2026-09-21). */
+export function schedBlockReason(
+  entry: SchedEntry | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (schedIsComeback(entry)) {
+    return `Paused on your usage limit — this chat picks up again by itself ${schedWhenText(entry?.due, now)}.`;
+  }
   return schedIsRepeat(entry)
     ? "Blocked — a repeating message runs in this chat."
     : "Blocked — a scheduled message runs in this chat.";
@@ -251,11 +521,11 @@ export function schedBlockReason(entry: SchedEntry | null | undefined): string {
 /** The whole reason line: the soonest is NAMED by the row below and the rest are
  *  counted here, because naming one answers "what is coming?" and a list of five
  *  would be the Tasks page in a strip above a chat (T:17111-17113). */
-export function schedWhyLine(blockers: readonly SchedEntry[]): string {
+export function schedWhyLine(blockers: readonly SchedEntry[], now: Date = new Date()): string {
   const next = blockers[0];
   if (!next) return "";
   const others = blockers.length - 1;
-  return schedBlockReason(next) + (others > 0 ? " " + others + " more after it." : "");
+  return schedBlockReason(next, now) + (others > 0 ? " " + others + " more after it." : "");
 }
 
 /** T:16904-16908 — local calendar days apart, computed from MIDNIGHTS rather
@@ -328,18 +598,39 @@ export function schedFindTask(
   tasks: readonly SchedTask[] | null | undefined,
   entry: SchedEntry | null | undefined,
   mine: string,
+  leader: string = "",
 ): SchedTask | null {
   const id = String((entry && entry.id) || "");
   const pending = "pending:" + id;
+  // THE LEADER'S KEY, for the chat that has no session at all. Its task is named
+  // after the FIRST entry it queued (`pending:<leader>`) and every later message
+  // is a follower of that one — so the entry at the front of its line is usually
+  // NOT the entry the task is named after, and asking for `pending:<follower>`
+  // finds nothing. Without this the card and the rows of a queued new chat had
+  // no server row to read their queue facts off at all (Bugbot PR #1124).
+  const byLeader = leader ? "pending:" + leader : "";
+  let byPending: SchedTask | null = null;
+  let bySession: SchedTask | null = null;
   let byMessage: SchedTask | null = null;
   for (const task of tasks || []) {
     if (!task) continue;
-    if ((mine && task.key === mine) || task.key === pending) return task;
+    // PRIORITIZE the pending key: when a message is sent to a different
+    // folder's task, the entry gets a new pending:<entry_id> key, not the
+    // session key. Without this, schedFindTask returns an old done task with the
+    // same sessionId, so the header keeps the done ring when it should show
+    // queued (Bugbot, 2026-09-17).
+    if (!byPending && (task.key === pending || task.key === byLeader)) {
+      byPending = task;
+    }
+    if (!bySession && mine && task.key === mine) {
+      bySession = task;
+    }
     if (!byMessage && (task.messages || []).some((m) => m && m.entry_id === id)) {
       byMessage = task;
     }
   }
-  return byMessage;
+  // Return in priority order: pending/leader key, then session key, then message scan.
+  return byPending || bySession || byMessage;
 }
 
 /**
@@ -420,7 +711,10 @@ export function schedRefusalNote(repeat: boolean): string {
 
 /** T:17153-17156 — say what the control DOES, and for the repeat say what it
  *  COSTS on the press that spends it. */
-export function schedStopLabel(repeat: boolean, armed: boolean): string {
+export function schedStopLabel(repeat: boolean, armed: boolean, comeback = false): string {
+  // The comeback's escape is its own sentence: nothing was "scheduled" by the
+  // reader, so "Cancel this message" names a message they never wrote.
+  if (comeback) return "Don't resume automatically";
   return repeat
     ? armed
       ? "Cancel every future run"
@@ -428,17 +722,11 @@ export function schedStopLabel(repeat: boolean, armed: boolean): string {
     : "Cancel this message";
 }
 
-/** T:17157-17159. */
-export function schedStopTitle(repeat: boolean): string {
+export function schedStopTitle(repeat: boolean, comeback = false): string {
+  if (comeback) return "Cancels the automatic resume, and this chat reopens now";
   return repeat
     ? "Stops the repeating task: this chat reopens and no further runs are scheduled"
     : "Cancels this scheduled message, and this chat reopens";
-}
-
-/** T:17136-17137 — the ONE title in this card, and it describes the HOP rather
- *  than repeating text already on screen. */
-export function schedRowTitle(rec: SchedTask | null | undefined): string {
-  return "Open " + ((rec && rec.task_id) || "this task") + " on the Tasks calendar";
 }
 
 // ---- the poller (T:17379-17447) --------------------------------------------
@@ -457,6 +745,50 @@ export interface ScheduleWatcherDeps {
   /** The pending messages aimed at this conversation, soonest first. Called on
    *  EVERY tick, including the failing ones (with `[]`). */
   onBlockers(blockers: SchedEntry[]): void;
+  /**
+   * EVERY pending entry's id, this conversation's or not — the queue chip's
+   * liveness, and the one thing `onBlockers` cannot answer for it.
+   *
+   * A chip says "this message is waiting in its folder's line", and it has to
+   * come down the moment the message goes. `onBlockers` is filtered by SESSION,
+   * and the chat that most needs the chip is the one that has no session yet
+   * (a brand-new task queues as `pending:<id>`), so the filtered list answers
+   * `[]` for it and would take the chip down the instant it went up.
+   *
+   * NOT called on a failing tick, unlike `onBlockers` — and that asymmetry is
+   * the point. Failing open is right for a BLOCK (a schedule nobody can read
+   * blocks nothing); it is wrong for this, where "I could not ask" would read
+   * as "your message went" and silently drop the chip.
+   */
+  onPending?(ids: string[]): void;
+  /**
+   * EVERY ENTRY THE TICK SAW, WHOLE — pending, claimed, and long since run.
+   *
+   * A chat with no session has no `onBlockers` list (that filter is by session,
+   * and there is none), so the only address its waiting messages have is the
+   * leader entry they were admitted behind; drawing them needs the entries
+   * themselves — their words, their due stamps, their origin.
+   *
+   * AND THE ONES THAT ARE NO LONGER PENDING ARE THE OTHER HALF OF THE SAME
+   * QUESTION, which is why this is the whole listing rather than the pending
+   * slice it used to be. Once the leader RUNS, it is the only row in the schedule
+   * carrying the link between this conversation's session id and the entry its
+   * followers name in `follow_of` — and the followers themselves still say
+   * nothing about any session (the server resolves that at claim time). Publish
+   * only the pending rows and that link is gone, so the followers of a chat that
+   * has just adopted its session belong to nobody and their bubbles vanish
+   * (`waiting.waitingFor`, Bugbot PR #1124).
+   */
+  onAllRows?(rows: SchedEntry[]): void;
+  /**
+   * WHICH SESSION EACH RUN ENTRY OPENED (`schedRanSessions`) — the half of the
+   * queue a chat with no session of its own depends on.
+   *
+   * Called beside `onPending`, on successful ticks only and for the same
+   * reason: "I could not ask" must never be spelled the same way as "it has not
+   * run", or a chat would adopt nothing on a blip and then never look again.
+   */
+  onSessions?(sessions: Map<string, string>): void;
   /** A ◷ row in the transcript. */
   addNote(text: string): void;
   /** `params.set("run", id, {history:"replace"})` — a reload, or a mode switch
@@ -514,7 +846,12 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // composer; only an IMMINENT one earns the fast poll (M1) — so the rate can
     // come up as a far-future entry's due time approaches, and go back down on
     // the tick after it clears, without the blocker list changing shape.
-    const fast = schedImminent(rows, (deps.now || Date.now)());
+    // …AND THE RATE READS THE PENDING HALF ONLY (`schedPendingOnly`, 🔴 review
+    // 2026-09-12). `rows` is the WIDENED list — it carries a claimed `sending`
+    // entry, which the queue's rows draw and which main never knew about — and
+    // spending the fast poll on one would put a flag-OFF page on the 3 s rate for
+    // a state it does not draw. Flag off is main byte for byte, here too.
+    const fast = schedImminent(schedPendingOnly(rows), (deps.now || Date.now)());
     rearm?.(fast ? SCHEDULE_POLL_BLOCKED_MS : SCHEDULE_POLL_MS);
   }
 
@@ -535,6 +872,33 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // rendered — so it is applied before the home-view return and before the
     // baseline (T:17391-17394).
     publish(schedPendingHere(entries, deps.sessionId()));
+    // …and the unfiltered pending set, for the queue chips (see `onPending`).
+    // After `publish`, so a tick that reaches here has already done the job it
+    // has always done — this is an addition to the pass, never a gate on it.
+    // A CLAIMED ENTRY IS STILL ONE OF THESE (`schedIsWaiting`): the ids are what
+    // keeps an optimistic row up until the server has listed its entry, and a
+    // row retired on the claim leaves a hole where the message was until the
+    // turn lands.
+    const waiting = entries.filter((e) => schedIsWaiting(e));
+    deps.onPending?.(waiting.map((e) => String(e.id)));
+    // …and EVERY row the tick saw, for the one chat the session filter above
+    // cannot serve: a chat with no session draws its waiting messages by leader,
+    // and an id alone has no words, no due time and no origin to draw. The rows
+    // that have already run are carried for the link only they hold — see
+    // `onAllRows`. Same tick, same payload, so the two can never disagree about
+    // an entry that fired between two reads.
+    // …AND ONLY THE ROWS THAT CAN ANSWER EITHER QUESTION (🔴 review 2026-09-12).
+    // This list exists for two readers: the waiting rows of a chat with no
+    // session (which need entries still in the line — `schedIsWaiting`, pending
+    // or claimed) and the LINK from a leader that has already run to the session
+    // it opened (`claude_session_id`). A done entry with neither is a row nobody
+    // reads, published four times a minute into a memo that re-renders the
+    // composer's column whenever its shape changes.
+    deps.onAllRows?.(entries.filter((e) => schedIsWaiting(e) || !!(e && e.claude_session_id)));
+    // …and which conversation each entry's run opened, for a chat that is still
+    // waiting to learn its own (see `onSessions`). Same tick, same payload: the
+    // pair cannot disagree about an entry that fired between two reads.
+    deps.onSessions?.(schedRanSessions(entries));
     if (!deps.inChat()) return;
     const fired = entries.filter((e) => e && e.target === deps.file && e.run_id);
     // The FIRST pass is a silent baseline: every run already recorded happened
@@ -581,7 +945,13 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
       // turn that never appears at all. Returning leaves the entry unmarked for
       // the next tick (T:17423-17429).
       if (deps.busy()) return;
-      deps.addNote(NOTE_OURS);
+      // NO NOTE FOR A CHAT-ORIGIN ENTRY (Akshil, 2026-09-21). A message the
+      // reader typed into this chat and the queue admitted later — pumped or
+      // Force-started — is their own bubble finally going; "Your scheduled
+      // message is running now" is a sentence about the calendar, and it
+      // read as noise above a turn they had just pressed for. `schedIsCalendar`
+      // is the same classifier the composer lock uses.
+      if (schedIsCalendar(entry)) deps.addNote(NOTE_OURS);
       attached.add(runId);
       deps.setRunParam(runId);
       await deps.resumeRun(runId);

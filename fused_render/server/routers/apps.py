@@ -54,8 +54,10 @@ startup and again here at create time. The user's own later ``claude`` in the
 folder is covered by the published plugin instead (user_plugin.py, D492), which
 is machine-wide and synced only at startup.
 """
+import logging
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -66,6 +68,8 @@ from fused_render import app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -182,18 +186,16 @@ def _app_recency(app: dict) -> float:
     return opened if isinstance(opened, (int, float)) else (app.get("updated_at") or 0)
 
 
-@router.get("/api/apps/home")
-def api_home_apps(limit: int = HOME_APPS_LIMIT):
-    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+def recent_apps(limit: int) -> list[dict]:
+    """At most ``limit`` recently OPENED apps, newest open first — the one
+    definition of "recently opened" on this machine, merged from the three
+    stores that record an open (every one written by GET /render, D301): the
+    workspace recents (``app_recents.json``), the linked apps' own
+    ``openedAt`` and the opened ``.fused`` files (D396). Every row carries
+    ``opened_at``. Home's strip and the launcher's empty query both read
+    this, so an app opened anywhere lands at the top of both."""
+    from fused_render import exported_apps, registered_apps
 
-    A warm Home visit touches only explicit paths from the two recents stores.
-    When those do not fill its single row, the ordinary workspace listing runs
-    once and fills the holes; because showcase is an ordinary workspace tag,
-    that fallback preserves unopened showcase cards as well as new local apps.
-    """
-    from fused_render import registered_apps
-
-    limit = max(1, min(limit, HOME_APPS_LIMIT))
     recent = _recent_workspace_apps(limit)
     recent.extend(
         registered_apps.registered_apps(
@@ -202,13 +204,25 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT):
     )
     # Opened .fused files (D396): their recents store is already newest-first
     # and every entry carries openedAt, so they merge exactly as the other two.
-    from fused_render import exported_apps
-
     recent.extend(exported_apps.recent_exported_apps(limit))
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )
-    recent = recent[:limit]
+    return recent[:limit]
+
+
+@router.get("/api/apps/home")
+def api_home_apps(limit: int = HOME_APPS_LIMIT):
+    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+
+    A warm Home visit touches only explicit paths from the recents stores
+    (`recent_apps`). When those do not fill its single row, the ordinary
+    workspace listing runs once and fills the holes; because showcase is an
+    ordinary workspace tag, that fallback preserves unopened showcase cards
+    as well as new local apps.
+    """
+    limit = max(1, min(limit, HOME_APPS_LIMIT))
+    recent = recent_apps(limit)
     if len(recent) >= limit:
         return {"apps": recent}
 
@@ -332,7 +346,8 @@ def _app_folder_exists(rel: str) -> bool:
 
 @router.get("/api/apps/icon")
 def api_app_icon(path: str):
-    """The optional ``icon.svg`` of the app that owns ``path`` — the folder
+    """The optional icon (``icon.svg``, else ``icon.png``) of the app that
+    owns ``path`` — the folder
     itself, or a file anywhere inside an app (a page open in the explorer).
     Ownership is the tasks' rule (`current_apps.app_dir_for`: registry first,
     then the workspace climb to the first tagged folder), so the favicon on
@@ -409,9 +424,11 @@ def api_app_remove_icon(
     path: str,
     x_fused: str | None = Header(default=None),
 ):
-    """Delete the app's ``icon.svg`` — the picker's "Remove", back to the
-    generic mark. A folder without the file is already there: ``removed``
-    false, not an error."""
+    """Delete the app's icon — EVERY name in ``ICON_NAMES`` (``icon.svg`` and
+    ``icon.png``), so the picker's "Remove" means "no icon": unlinking only
+    the svg would resurface a png the author dropped in underneath, not the
+    generic mark the button promises. A folder with none is already there:
+    ``removed`` false, not an error."""
     from fused_render import current_apps
 
     guard = _require_fused(x_fused)
@@ -422,14 +439,17 @@ def api_app_remove_icon(
     folder = current_apps.app_dir_for(path)
     if folder is None:
         return _error("not an app folder", status=404)
-    target = os.path.join(folder, current_apps.ICON_NAME)
-    try:
-        os.unlink(target)
-    except FileNotFoundError:
-        return {"removed": False}
-    except OSError as exc:
-        return _error(f"could not remove icon.svg: {exc.strerror or exc}", status=500)
-    return {"removed": True}
+    removed = False
+    for name in current_apps.ICON_NAMES:
+        target = os.path.join(folder, name)
+        try:
+            os.unlink(target)
+            removed = True
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return _error(f"could not remove {name}: {exc.strerror or exc}", status=500)
+    return {"removed": removed}
 
 
 @router.get("/api/apps/entry")
@@ -591,23 +611,28 @@ def _doctor_folder(path) -> tuple[str, JSONResponse | None]:
     return os.path.abspath(path), None
 
 
-def _live_doctor_tasks(entry_html: str | None) -> dict[str, dict]:
-    """`{check_id: task}` for every App Doctor fix task on `entry_html` that
-    is still live — the per-check version of `_live_app_task`, since the fix
-    task is now one per ROW rather than one for the whole report. Reuses the
-    same schedule scan `_live_app_task` does rather than calling it once per
-    row: a report has up to eleven rows, and eleven passes over the same
+def _live_doctor_tasks(entry_html: str | None) -> tuple[dict[str, dict], dict[str, dict]]:
+    """`(fixes, checks)`, each `{check_id: task}`, for every App Doctor task on
+    `entry_html` that is still live — the per-check version of
+    `_live_app_task`, since the fix task is one per ROW rather than one for
+    the whole report. `fixes` are fix sessions (the row's Fix/Review button,
+    or "Fix all" under `app_doctor.ALL`); `checks` are the on-demand row's
+    own CHECK tasks (`app_doctor.check_prompt`), kept apart because the
+    panel draws one as "Fix in progress" and the other as "checking". Reuses
+    the same schedule scan `_live_app_task` does rather than calling it once
+    per row: a report has up to eleven rows, and eleven passes over the same
     entries table would be eleven times the cost for the same answer."""
     from fused_render import app_doctor
 
     if not entry_html:
-        return {}
+        return {}, {}
     want = os.path.realpath(entry_html)
     try:
         entries = schedule.list_entries()
     except Exception:  # noqa: BLE001 — a store that cannot be read is "none live"
-        return {}
-    out: dict[str, dict] = {}
+        return {}, {}
+    fixes: dict[str, dict] = {}
+    checks: dict[str, dict] = {}
     for e in entries:
         if e.get("state") not in (schedule.PENDING, schedule.SENDING, schedule.SENT):
             continue
@@ -622,16 +647,103 @@ def _live_doctor_tasks(entry_html: str | None) -> dict[str, dict]:
         check_id = app_doctor.doctor_task_check_id(message)
         if not check_id:
             continue
-        out[check_id] = {
+        task = {
             "id": str(e.get("id") or ""),
             "state": str(e.get("state") or ""),
             "run_id": e.get("run_id") or None,
         }
-    return out
+        (checks if app_doctor.is_doctor_check_prompt(message) else fixes)[check_id] = task
+    return fixes, checks
+
+
+def _settle_check_row(folder: str, row: dict, live_check: dict | None) -> None:
+    """Attach the on-demand row's CHECK task and settle its UNRUN wording.
+
+    `app_doctor_ai.row_state` reads the two cache files and cannot see the
+    schedule store, so "run record, no verdict yet" comes out as one detail
+    (`CHECKING_DETAIL`). Here, with the store in hand, that splits in two:
+    the task is still live → keep the wording and attach it as `check_task`
+    (the panel's "Checking…" state, and its link to the Tasks tab); no live
+    task → it ended without writing a verdict (failed, cancelled, or wrote
+    something that does not read), so the row says that instead and offers
+    Check again. Every other row gets `check_task: None`."""
+    from fused_render import app_doctor, app_doctor_ai
+
+    row["check_task"] = live_check
+    row["verdict_task"] = None
+    if not row.get("ondemand"):
+        return
+    if row["state"] in (app_doctor.PASS, app_doctor.FAIL):
+        # A settled verdict: the task that wrote it, so the row can offer a
+        # way back to the session's own reading (the plain per-finding lines
+        # it left in the chat). Looked up by the run record's task id in the
+        # store; a task since erased just leaves the row without the link.
+        row["verdict_task"] = _verdict_task(folder)
+        return
+    if row["state"] != app_doctor.UNRUN:
+        return
+    if row["detail"] != app_doctor_ai.CHECKING_DETAIL:
+        return
+    if live_check is not None:
+        return
+    # The task is no longer live and the cache has no verdict. The task runs
+    # in plan mode and could not write one — the verdict is in its REPLY. Lift
+    # it off the transcript now (once: a written verdict file ends this branch
+    # on the next GET), then redraw the row from the cache. A reply with no
+    # readable JSON block, or a task that failed/was cancelled/is gone from
+    # the store, leaves the row on ENDED_DETAIL, Check again.
+    done = _verdict_task(folder)
+    if done and done["session_id"] and app_doctor_ai.settle_from_task(folder, done["session_id"]):
+        fresh = app_doctor.report_one(folder, row["id"])
+        if fresh is not None:
+            row.update({k: fresh[k] for k in ("state", "detail", "findings")})
+            row["verdict_task"] = done
+            return
+    row["detail"] = app_doctor_ai.ENDED_DETAIL
+
+
+_doctor_run_locks: dict[str, threading.Lock] = {}
+_doctor_run_locks_guard = threading.Lock()
+
+
+def _doctor_run_lock(folder: str) -> threading.Lock:
+    """The per-folder lock `api_app_doctor_run` holds across its gate-and-
+    create span. Keyed on the real path so two spellings of one folder share
+    a lock; never freed — a folder that was checked once is a few bytes."""
+    key = os.path.realpath(folder)
+    with _doctor_run_locks_guard:
+        return _doctor_run_locks.setdefault(key, threading.Lock())
+
+
+def _verdict_task(folder: str) -> dict | None:
+    """`{id, session_id, target}` for the check task the cached verdict came
+    from, or None — no run record, or the entry is gone from the store.
+    `session_id` is the conversation the turn actually ran in
+    (`claude_session_id`, learned when the run answered), which is what
+    `chatUrl` opens; falls back to the entry's own `session_id`."""
+    from fused_render import app_doctor_ai
+
+    record = app_doctor_ai.read_run(folder)
+    task_id = str((record or {}).get("task_id") or "")
+    if not task_id:
+        return None
+    try:
+        entries = schedule.list_entries()
+    except Exception:  # noqa: BLE001 — a store that cannot be read is "no link"
+        return None
+    for e in entries:
+        if str(e.get("id") or "") != task_id:
+            continue
+        return {
+            "id": task_id,
+            "session_id": str(e.get("claude_session_id") or e.get("session_id") or ""),
+            "target": str(e.get("target") or ""),
+        }
+    return None
 
 
 @router.get("/api/apps/doctor")
-def api_app_doctor(path: str):
+def api_app_doctor(path: str, fetch: bool = True):
     """The App Doctor report for one folder: the deterministic checklist the
     modal draws (`app_doctor.report` — what it checks and why lives there),
     each row carrying its own live fix task if one is already running.
@@ -659,8 +771,19 @@ def api_app_doctor(path: str):
     own task, and the modal's per-row Fix/Review button and its footer must
     both read that as in-progress rather than idle (see `_live_doctor_tasks`:
     `"all"` is never a real check id, so a naive `live.get(c["id"])` would
-    silently drop a live Fix-all session for every row)."""
-    from fused_render import app_doctor
+    silently drop a live Fix-all session for every row).
+
+    OPENING DOCTOR FORCES A FETCH: unlike every other caller of the `git` row
+    (which only ever reads `git_upstream`'s own throttled background cache),
+    this GET is the modal's own "load" — the one moment a person is actually
+    looking at "Repo in sync" and deciding whether to trust it. So this calls
+    `git_upstream.force_check` first, bypassing the normal five-minute
+    throttle, bounded to `DOCTOR_TIMEOUT_S` so a slow or unreachable remote
+    never makes the modal hang: past that budget it just proceeds with
+    whatever's cached (fresh or stale) while the fetch keeps running in the
+    background, and `app_doctor.report`'s own `_repo_health_check` reads
+    whatever `force_check` managed to land."""
+    from fused_render import app_doctor, git_upstream
 
     folder, err = _doctor_folder(path)
     if err is not None:
@@ -670,12 +793,20 @@ def api_app_doctor(path: str):
         entry_html = app_listing.app_entry(folder)
     except OSError:
         entry_html = None
-    live = _live_doctor_tasks(entry_html)
-    all_task = live.get(app_doctor.ALL)
+    fixes, checks = _live_doctor_tasks(entry_html)
+    all_task = fixes.get(app_doctor.ALL)
 
+    # `fetch=0` is the POLL: the panel and the header dot re-ask every few
+    # seconds while a check task is live, and that traffic must not turn the
+    # modal-open force-fetch into a git fetch every four seconds (nor block
+    # each tick on the remote). The row then reads `git_upstream`'s own
+    # throttled cache, as every other caller does.
+    if fetch:
+        git_upstream.force_check(folder)
     report = app_doctor.report(folder)
     for c in report["checks"]:
-        c["task"] = live.get(c["id"]) or all_task
+        c["task"] = fixes.get(c["id"]) or all_task
+        _settle_check_row(folder, c, checks.get(c["id"]))
     return report
 
 
@@ -740,6 +871,19 @@ def api_app_doctor_fix(body: dict = Body(...),
             entry_html, app_doctor.report(folder)["checks"])
     else:
         row = app_doctor.report_one(folder, check_id)
+        if row and row["ondemand"] and row["state"] == app_doctor.UNRUN:
+            # An on-demand row's findings live in a cache keyed on the app's
+            # content. UNRUN here means nobody has run it, the app changed
+            # since, or a check task is still writing the verdict — either
+            # way the findings a session would be handed do not describe the
+            # folder as it is. Re-run (or wait) first.
+            from fused_render import app_doctor_ai
+
+            if row["detail"] == app_doctor_ai.CHECKING_DETAIL:
+                return _error("a check task is already running on this row — "
+                              "wait for its verdict", status=409)
+            return _error("this check has not been run on the app as it is now — "
+                          "press Check first", status=409)
         findings = row["findings"] if row else []
         detail = row["detail"] if row else ""
         prompt = app_doctor.doctor_prompt(entry_html, check_id, findings, detail)
@@ -753,6 +897,124 @@ def api_app_doctor_fix(body: dict = Body(...),
         "task": task,
         "task_error": task_error,
     }
+
+
+@router.post("/api/apps/doctor/run")
+def api_app_doctor_run(body: dict = Body(...),
+                       x_fused: str | None = Header(default=None)):
+    """RUN one on-demand row — today only `cross-browser` (`app_doctor_ai`):
+    create the CHECK TASK, a session on the app's entry page that reads the
+    view files against the cross-browser skill and writes its verdict under
+    `.fused/cache/`, and return at once. The row then reads "checking" off
+    the store on every GET (`_settle_check_row`) until the verdict lands —
+    the same seam as the fix task (`_create_app_task`), so the Tasks tab
+    lists it, the shell's finished-task notice fires for it and the sidebar's
+    unread dot lights up, none of which a blocking call inside this request
+    could do (the first build did exactly that: no notice, and a tab switch
+    lost the in-flight state).
+
+    Returns the refreshed ROW in the shape `GET /api/apps/doctor` emits — its
+    `check_task` is the new task, or null when the cache already answered
+    (a matching verdict, or a task still working: a second press is a no-op,
+    not a second task) — plus `task`/`task_error` in the fix endpoint's own
+    shape. `_require_fused`, because this spends the user's tokens; 400 for
+    a row that is not on demand (the deterministic rows re-run on every GET
+    already); 404 when the folder has no entry page (a task has to land on a
+    page, as for a fix); 409 while ANY App Doctor task is live on the app —
+    a fix is rewriting the files a check would read; 502 when the folder
+    cannot hold a verdict or the task could not be stored.
+
+    `force` is the Re-check button: run again although the cached verdict
+    still matches (the rubric may have moved on). A plain Check on a run
+    whose task ended without a verdict is treated as a fresh run too — that
+    is what its row invites."""
+    from fused_render import app_doctor, app_doctor_ai
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    folder, err = _doctor_folder(body.get("path"))
+    if err is not None:
+        return err
+    check_id = body.get("check")
+    if not isinstance(check_id, str) or check_id not in app_doctor.ON_DEMAND:
+        return _error("'check' must be one of: " + ", ".join(sorted(app_doctor.ON_DEMAND)))
+    try:
+        entry_html = app_listing.app_entry(folder)
+    except OSError:
+        entry_html = None
+    if not entry_html:
+        return _error('this folder has no app entry page (no <meta name="fused-app">)',
+                      status=404)
+
+    def row_now(task: dict | None = None) -> dict:
+        row = app_doctor.report_one(folder, check_id)
+        _fixes, checks = _live_doctor_tasks(entry_html)
+        row["task"] = _fixes.get(check_id) or _fixes.get(app_doctor.ALL)
+        _settle_check_row(folder, row, task or checks.get(check_id))
+        return row
+
+    # ONE PRESS AT A TIME PER FOLDER: the gate below reads the store and the
+    # task is created several lines later, so two overlapping presses (two
+    # tabs, a double-click) could both pass the gate and create two tasks.
+    # The old blocking `run()` single-flighted per folder; this lock is its
+    # replacement, held only for the gate-and-create span (the create waits
+    # up to `_SENT_WAIT_S` for a run id, so the second press queues behind
+    # it and then finds the task live).
+    with _doctor_run_lock(folder):
+        # The gate comes BEFORE `begin`: a forced re-check drops the cached
+        # verdict, and doing that while a fix session is live would leave a
+        # successful run reading as "ended without a verdict" (a second window's
+        # stale page can press what this one has disabled). A live CHECK task is
+        # caught here too — the cache would have answered "reuse" for it anyway.
+        live = _live_app_task(entry_html, app_doctor.is_doctor_prompt)
+        if live is not None:
+            _fixes, checks = _live_doctor_tasks(entry_html)
+            if checks.get(check_id):
+                # This row's own check is already running: not an error, the
+                # row as it stands (Checking…) is the answer.
+                return {"path": folder, "entry_html": entry_html, "check": row_now(),
+                        "task": None, "task_error": None}
+            return _error("an App Doctor task for this app is already in progress",
+                          status=409)
+
+        force = bool(body.get("force"))
+        gathered, begin_error, reuse = app_doctor_ai.begin(folder, force=force)
+        if begin_error is not None:
+            return _error(begin_error, status=502)
+        if reuse:
+            row = row_now()
+            # The cache answered — unless it answered "a task is on it" and that
+            # task is gone (ended without a verdict): then the row's own detail
+            # says to press Check again, and this IS that press.
+            if row["detail"] != app_doctor_ai.ENDED_DETAIL:
+                return {"path": folder, "entry_html": entry_html, "check": row,
+                        "task": None, "task_error": None}
+            gathered, begin_error, _reuse = app_doctor_ai.begin(folder, force=True)
+            if begin_error is not None:
+                return _error(begin_error, status=502)
+
+        prompt = app_doctor.check_prompt(entry_html, gathered["files"])
+        task, task_error = _create_app_task(
+            entry_html, prompt, app_doctor_ai.MODEL, app_doctor_ai.EFFORT,
+            permission_mode=app_doctor_ai.PERMISSION_MODE)
+        if task is None:
+            # No task, so no run record: the row goes back to "not checked yet"
+            # (the previous verdict was already dropped by `begin`, which is the
+            # honest state — it described files the user asked to re-judge).
+            app_doctor_ai.clear_run(folder)
+            return _error(task_error or "the check task could not be created", status=502)
+        task_id = str(task.get("id") or "")
+        if not app_doctor_ai.record_task(folder, gathered, task_id):
+            # The task is running but its verdict will never join a run record.
+            # `begin` checked `ensure` a moment ago, so this is a race with the
+            # folder going read-only — rare enough to report, not to unwind.
+            task_error = (task_error or "") or (
+                "the check task started but its verdict cannot be cached in this folder")
+        live = {"id": task_id, "state": str(task.get("state") or ""),
+                "run_id": task.get("run_id") or None}
+        return {"path": folder, "entry_html": entry_html, "check": row_now(live),
+                "task": task, "task_error": task_error}
 
 
 # The authored thumbnail's cap and signature — the same two the .fused
@@ -961,7 +1223,8 @@ def _session_choice_error(field: str, value, allowed) -> str | None:
 
 
 def _create_app_task(entry_html: str, prompt: str, model: str = "",
-                     effort: str = "") -> tuple[dict | None, str | None]:
+                     effort: str = "",
+                     permission_mode: str = "") -> tuple[dict | None, str | None]:
     """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
     The seam a test stubs. `schedule.create` is the New task form's own path
@@ -997,9 +1260,13 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
     was stored but whose send failed comes back as the entry — its own
     `state`/`error` say so, where every task's does."""
     try:
+        # `permission_mode` "" keeps `schedule.create`'s default ("auto", the
+        # broadest); the App Doctor CHECK task passes "plan" so the CLI itself
+        # refuses every edit — see app_doctor_ai.PERMISSION_MODE.
         entry = schedule.create(
             entry_html, prompt, datetime.now(timezone.utc),
-            immediate=True, model=model, effort=effort)
+            immediate=True, model=model, effort=effort,
+            permission_mode=permission_mode)
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
         return None, f"failed to create the app's task: {exc}"
     entry_id = str(entry.get("id") or "")
@@ -1114,11 +1381,23 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     # BEFORE any session runs — so the scaffolding turn's work diffs against
     # the boilerplate, not nothing. Best-effort (no git on the machine still
     # gets a working app).
-    from fused_render import app_git
+    from fused_render import app_git, app_id as app_identity
+
+    entry_html = os.path.abspath(os.path.join(dest, "index.html"))
+    # Identity from birth too: mint the app's `<meta name="fused-app-id">`
+    # into the fresh copy BEFORE the boilerplate commit, so the tag lands in
+    # history with the rest of the starter instead of appearing later as an
+    # uncommitted server write (export used to mint it, and the stamp then
+    # sat dirty until some unrelated commit swept it in). The starter template
+    # itself still carries no tag — a fixed id there would be copied into
+    # every app; this stamps a fresh one per copy. Best-effort: `ensure`
+    # never raises, and an app that could not take the tag is still an app
+    # (export mints it later, as before).
+    if app_identity.ensure(entry_html, name) is None:
+        logger.warning("create app: could not stamp fused-app-id into %s", entry_html)
 
     app_git.init_repo(dest)
 
-    entry_html = os.path.abspath(os.path.join(dest, "index.html"))
     task, task_error = None, None
     if prompt.strip():
         task, task_error = _create_app_task(entry_html, prompt, model, effort)
