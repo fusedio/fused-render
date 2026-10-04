@@ -731,21 +731,28 @@ def test_the_check_only_manager_never_sweeps_the_shared_updates_dir(monkeypatch)
     swept = []
     monkeypatch.setattr(manager, "_sweep_stale_downloads", lambda: swept.append(1))
     monkeypatch.setattr(manager, "check", lambda force=False: None)
+    # The loop's pref read (lazy `shell.prefs` import) is slow on some lanes and
+    # irrelevant here; stub it so the daemon reaches its sleeps promptly.
+    monkeypatch.setattr(manager, "maybe_auto_install", lambda: None)
     monkeypatch.setattr(mac, "MAC_STARTUP_DELAY_S", 0.0)
     ticks = []
+    done = threading.Event()
+    # `mac.time` IS the `time` module: patching mac.time.sleep patches it
+    # globally, so the main thread must wait on an Event, never time.sleep(),
+    # or its own polling would consume the loop's tick budget.
+    main_thread = threading.current_thread()
 
     def one_tick(seconds):
+        if threading.current_thread() is main_thread:
+            return  # never raise into the test's own thread
         ticks.append(seconds)
         if len(ticks) >= 2:
+            done.set()
             raise SystemExit  # ends the daemon loop after one check
     monkeypatch.setattr(mac.time, "sleep", one_tick)
     monkeypatch.delenv("FUSED_RENDER_NO_AUTO_UPDATE", raising=False)
     manager.start_auto_checks()
-    import time as _t
-    for _ in range(50):
-        if len(ticks) >= 2:
-            break
-        _t.sleep(0.02)
+    assert done.wait(5.0), "the auto-check loop never reached its second sleep"
     assert swept == []
 
 
