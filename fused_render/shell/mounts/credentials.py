@@ -265,7 +265,9 @@ def _rclone_state() -> dict:
         except RuntimeError:
             names = []
         return _rclone_state_view(version, names, bin_)
-    return {"available": False, "version": None, "remotes": [], "suggested": []}
+    from fused_render.shell.mounts import rclone_unavailable_reason
+    return {"available": False, "version": None, "remotes": [], "suggested": [],
+            "reason": rclone_unavailable_reason()}
 
 
 def broken_mount_error(path: str) -> str | None:

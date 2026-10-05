@@ -156,7 +156,14 @@ export default function Mounts() {
         </div>
       )}
 
-      {state && !state.rclone.available && (
+      {state && !state.rclone.available && state.rclone.reason && (
+        <div className="mount-callout">
+          <div className="mount-callout-title">Mounts unavailable</div>
+          <div className="mount-callout-body">{state.rclone.reason}</div>
+        </div>
+      )}
+
+      {state && !state.rclone.available && !state.rclone.reason && (
         <div className="mount-callout">
           <div className="mount-callout-title">rclone not found</div>
           <div className="mount-callout-body">

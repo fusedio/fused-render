@@ -49,7 +49,18 @@ def test_unavailable_when_no_binary_and_no_daemon(monkeypatch):
     monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
     state = mounts_mod._rclone_state()
     assert state == {"available": False, "version": None,
-                     "remotes": [], "suggested": []}
+                     "remotes": [], "suggested": [], "reason": None}
+
+
+def test_unavailable_state_carries_the_macos_version_reason(monkeypatch):
+    _neuter_labeling(monkeypatch)
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
+    monkeypatch.setattr(mounts_mod, "rclone_unavailable_reason",
+                        lambda: "Cloud mounts need macOS 15 or later (this Mac runs 14.6).")
+    state = mounts_mod._rclone_state()
+    assert state["available"] is False
+    assert "macOS 15" in state["reason"]
 
 
 def test_daemon_alive_but_rc_errors_still_available(monkeypatch):
