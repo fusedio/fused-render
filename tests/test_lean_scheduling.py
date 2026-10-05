@@ -303,3 +303,60 @@ def test_simultaneous_first_launches_do_not_wipe_each_others_core_templates(tmp_
     time.sleep(1.5)  # let every child finish importing and reach the gate
     go.write_text("go")
     _wait_all(procs)
+
+
+# ------------------------------------------------------------------ H9
+
+
+def test_tasks_watch_sees_another_processs_schedule_edit(tmp_path, monkeypatch):
+    """A lean page long-polls THIS process's `tasks_watch`. The scheduler (and
+    every other writer) may live in another process, whose edits it can only
+    notice by looking at the files."""
+    from fused_render import schedule_wake, tasks_store, tasks_watch
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(tmp_path / "home" / "claude-sessions"))
+    monkeypatch.setattr(tasks_store, "PROJECTS_DIR", str(tmp_path / "projects"))
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(schedule_wake, "sync", lambda due: False)
+    tasks_watch.reset()
+    target = tmp_path / "proj"
+    target.mkdir()
+    try:
+        tasks_watch.tick()  # the baseline announces nothing
+        before = tasks_watch.generation()
+        tasks_watch.tick()
+        assert tasks_watch.generation() == before, "an idle tick must not bump"
+
+        env = dict(os.environ, FUSED_RENDER_HOME=str(tmp_path / "home"))
+        subprocess.run([sys.executable, CHILD, "sched_create", str(target), "1"],
+                       env=env, check=True, capture_output=True, timeout=120)
+        tasks_watch.tick()
+        assert tasks_watch.generation() == before + 1
+        gen, keys = tasks_watch.wait(before, timeout=1)
+        assert gen == before + 1 and keys is None  # a full reload
+
+        tasks_watch.tick()
+        assert tasks_watch.generation() == before + 1, "the same edit must not bump twice"
+    finally:
+        tasks_watch.reset()
+
+
+def test_tasks_watch_sees_another_processs_queue_index_edit(tmp_path, monkeypatch):
+    from fused_render import queue_manager, tasks_store, tasks_watch
+
+    state = tmp_path / "home" / "claude-sessions"
+    state.mkdir(parents=True)
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(state))
+    monkeypatch.setattr(tasks_store, "PROJECTS_DIR", str(tmp_path / "projects"))
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    tasks_watch.reset()
+    try:
+        tasks_watch.tick()
+        before = tasks_watch.generation()
+        (state / queue_manager.INDEX_FILE).write_text('{"folders": {}}')
+        tasks_watch.tick()
+        assert tasks_watch.generation() == before + 1
+    finally:
+        tasks_watch.reset()

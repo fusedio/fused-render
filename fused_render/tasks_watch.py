@@ -1053,6 +1053,39 @@ def _read_permission_cards() -> set[str]:
     return keys
 
 
+# (mtime_ns, size) of each shared store last seen, keyed by path. These are
+# edited by OTHER processes — the machine-duties leader's scheduler writes the
+# schedule store and the queue index for every app on the machine — and a lean
+# page long-polls THIS process, which would otherwise never hear about them.
+_store_stamps: dict[str, tuple[int, int] | None] = {}
+
+
+def _store_paths() -> list[str]:
+    # Deferred: both modules reach back into this one.
+    from fused_render import queue_manager, schedule
+
+    return [schedule.store_path(),
+            os.path.join(tasks_store.STATE_DIR, queue_manager.INDEX_FILE)]
+
+
+def _read_store_files() -> bool:
+    """Did any shared store change on disk since the last pass? Both are
+    replaced atomically, so a change always shows as a new mtime or size. The
+    edit cannot be named row by row from here, so the caller announces a full
+    reload."""
+    changed = False
+    for path in _store_paths():
+        try:
+            st = os.stat(path)
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = None
+        if path in _store_stamps and _store_stamps[path] != stamp:
+            changed = True
+        _store_stamps[path] = stamp
+    return changed
+
+
 def tick() -> set[str]:
     """One pass over the registry, the transcripts it names, the permission
     cards this app's own runs have raised or had answered, and the marks that
@@ -1087,9 +1120,14 @@ def tick() -> set[str]:
     # either way — `_live` reads `busy` over a mark — but the announcement
     # belongs after the fact that replaces it.
     keys |= _expire_marks(time.time())
+    stores_moved = _read_store_files()
     if not _primed:
         _primed = True
         return set()
+    if stores_moved:
+        # One full reload covers `keys` too, and a tick bumps at most once.
+        _bump(None)
+        return keys
     if keys:
         _bump(keys)
     return keys
@@ -1151,3 +1189,4 @@ def reset() -> None:
     _tr_paths.clear()
     _tr_sizes.clear()
     _perm_stamps.clear()
+    _store_stamps.clear()
