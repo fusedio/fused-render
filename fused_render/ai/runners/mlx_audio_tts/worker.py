@@ -47,7 +47,9 @@ def _pin_stream():
 
 
 def download(model_id):
-    return worker_base.download_snapshot(model_id)
+    """The repo minus the formats MLX cannot open (`formats.MLX_IGNORE`)."""
+    return worker_base.download_snapshot(
+        model_id, ignore_patterns=list(formats.MLX_IGNORE))
 
 
 def _read_config(path):

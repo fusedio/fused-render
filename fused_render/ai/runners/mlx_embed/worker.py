@@ -159,10 +159,12 @@ def _pin_stream():
 
 
 def download(model_id):
-    """The whole repo. `mlx-embeddings` reads a directory of safetensors plus
-    the processor's own config — the same shape every other runner here
-    downloads whole."""
-    return worker_base.download_snapshot(model_id)
+    """The repo minus the formats MLX cannot open (`formats.MLX_IGNORE`) —
+    sentence-transformers originals carry `onnx/` and `openvino/` exports
+    beside the safetensors. `mlx-embeddings` reads safetensors plus the
+    processor's own configs, which are open-ended, hence an ignore list."""
+    return worker_base.download_snapshot(
+        model_id, ignore_patterns=list(formats.MLX_IGNORE))
 
 
 def _mlx_load(repo_id):

@@ -41,6 +41,7 @@ import threading  # noqa: E402
 import time  # noqa: E402
 import warnings  # noqa: E402
 
+import formats  # noqa: E402 - the shared download scopes; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 log = logging.getLogger("fused_render.ai.laya")
@@ -103,10 +104,12 @@ def _pin_stream():
 
 
 def download(model_id):
-    """The whole repo. A Laya export is `model.safetensors` beside three small
-    configs and a tokenizer folder — under a gigabyte, and nothing to pick
-    out of it — so it downloads whole like every other MLX runner here."""
-    return worker_base.download_snapshot(model_id)
+    """The repo minus the formats MLX cannot open (`formats.MLX_IGNORE`). A Laya
+    export is `model.safetensors` beside small configs and a tokenizer folder;
+    the loader takes the directory, so the scope is an ignore list rather than
+    an allow list naming files this build cannot verify."""
+    return worker_base.download_snapshot(
+        model_id, ignore_patterns=list(formats.MLX_IGNORE))
 
 
 def _laya_load():

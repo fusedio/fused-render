@@ -125,7 +125,7 @@ Decision section below.
 
 Linux gets the same native windows macOS has (home window, one window per app
 with focus-or-open, external links to the default browser, the **Native
-windows** preference), decision D1308.
+windows** preference), decision D1309.
 
 **Design.** A separate process, `fused_render/supervisor/_linux/window_host.py`
 (GTK3 + WebKit2 4.1 through PyGObject), is spawned by the supervisor *after* the

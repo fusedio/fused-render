@@ -58,8 +58,10 @@ _loaded = {}
 
 
 def download(model_id):
-    """A Whisper repo is an ordinary multi-file snapshot — nothing clever."""
-    return worker_base.download_snapshot(model_id)
+    """faster-whisper's own file set (`formats.CT2_FILES`) — `model.bin` and the
+    JSON configs. A closed set, so an allow list; never an ignore of `*.bin`."""
+    return worker_base.download_snapshot(
+        model_id, allow_patterns=list(formats.CT2_FILES))
 
 
 def _placement():
