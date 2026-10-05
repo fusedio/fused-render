@@ -9,7 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { canForceStart, canRunNext, waitingCardText } from "@platform/lib/queue";
+import { canForceStart, waitingCardText } from "@platform/lib/queue";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const API = readFileSync(join(SHELL, "../platform/lib/api.ts"), "utf8");
@@ -42,21 +42,12 @@ const css = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "");
 describe("the three endpoints", () => {
   it("are the design's own, with the bodies it names", () => {
     expect(API).toContain('postJson<QueueAdmission>("/api/tasks/queue/admit", body)');
-    // SKIP TAKES EITHER NAME, and the body is the CALLER's — a Tasks row holds a
-    // task (`{key}`), a chat's chip holds one entry (`{entry_id}`), and only the
-    // second survives the rekey a first run performs on a `pending:<id>` task.
-    expect(API).toContain('postJson<SkipResult>("/api/tasks/queue/skip", what)');
-    // …and Skip answers with the LINE IT JUST CHANGED as well, the same five
-    // `ahead_*` fields admit and run-now carry (🟡 review, 2026-09-12).
-    const skip = API.slice(API.indexOf("export interface SkipResult"));
-    const shape = skip.slice(0, skip.indexOf("}"));
-    for (const field of ["ahead_key?", "ahead?", "ahead_title?", "ahead_session?",
-                         "ahead_target?"]) {
-      expect(shape).toContain(field);
-    }
-    expect(API).toContain("what: { key: string } | { entry_id: string },");
-    // No view presses skip any more (Akshil, 2026-09-21); the Board and the
-    // List name the TASK to Force start instead.
+    // Skip the line is gone (Akshil, 2026-09-22): no `/api/tasks/queue/skip`, no
+    // `SkipResult`, no `skipQueue`. The Board and the List name the TASK to
+    // Force start instead.
+    expect(API).not.toContain("/api/tasks/queue/skip");
+    expect(API).not.toContain("SkipResult");
+    expect(API).not.toContain("skipQueue");
     expect(VIEWS).not.toContain("skipQueue(");
     expect(VIEWS).toContain("await forceStart({ key: task.key });");
     expect(API).toContain('postJson<QueueDecision>("/api/tasks/queue/decide", body)');
@@ -120,7 +111,7 @@ describe("the Preferences switch", () => {
 });
 
 describe("the Board's waiting cards", () => {
-  it("draws NO place caption, and NOTHING that marks a skip", () => {
+  it("draws NO place caption, and NOTHING that marks a promoted card", () => {
     // THE CARD SAYS NOTHING ABOUT WHERE IT STANDS (Akshil, 2026-09-21). The
     // dashed ring and the status word carry "this is waiting", which is what a
     // reader scanning a lane wants; the ordinal was a third thing saying the
@@ -132,15 +123,16 @@ describe("the Board's waiting cards", () => {
     expect(CARD).not.toContain("<QueueCaptionText");
     expect(ROW).not.toContain("queueCaption(task)");
     expect(ROW).not.toContain("<QueueCaptionText");
-    // NO HIGHLIGHT FOR A SKIPPED CARD (Akshil, 2026-09-19). It used to lead with
-    // the ⤒ and repaint the sentence in the queued hue, which made one card in a
-    // lane of waiting cards read as a different KIND of thing — where all a skip
-    // does is change the ORDER, and the order is what the caption already says.
+    // NO HIGHLIGHT FOR A PROMOTED CARD (Akshil, 2026-09-19). It used to lead
+    // with the ⤒ and repaint the sentence in the queued hue, which made one card
+    // in a lane of waiting cards read as a different KIND of thing — where all a
+    // promotion does is change the ORDER, and the order is what the caption
+    // already says.
     //
-    // …AND THE GLYPH IS DRAWN NOWHERE AT ALL SINCE 2026-09-21, because the Run
-    // next button whose face it was is out of the UI. Rows promoted before that
-    // deploy still carry `queue_priority` in the index, so this is the guard that
-    // they come back as ordinary waiting rows and not as decorated ones.
+    // …AND THE GLYPH IS DRAWN NOWHERE AT ALL SINCE 2026-09-21, and its own
+    // constant is gone with the button whose face it was (2026-09-22): a Run now
+    // that has to wait can still promote a row (`queue_priority`), but nothing
+    // paints it any differently from an ordinary waiting one.
     for (const src of [CARD, ROW]) {
       expect(src).not.toContain("is-next");
       expect(src).not.toContain("tasks-queue-glyph");
@@ -175,16 +167,17 @@ describe("the Board's waiting cards", () => {
   });
 
   it("a queued card dropped on In Progress is a FORCE START, never a skip", () => {
-    // Skip the line is gone from every surface (Akshil, 2026-09-21); the drag
-    // presses the same verb as the row's button and reloads the listing.
-    expect(BOARD).toContain('if (action.kind === "skip") {');
+    // Skip the line is gone from every surface (Akshil, 2026-09-21) and from the
+    // code (2026-09-22): the drag kind itself is named for the verb it presses
+    // and reloads the listing.
+    expect(BOARD).toContain('if (action.kind === "force") {');
     expect(BOARD).toContain("await performForceStart(task);");
     expect(VIEWS).not.toContain("performSkip");
     expect(VIEWS).not.toContain("skipQueue");
     expect(VIEWS).not.toContain("Next in this folder");
     // …and the warning under the cursor uses the button's own words.
     expect(VIEWS).toMatch(
-      /skip: \{\s*title: FORCE_START_LABEL,\s*hint: FORCE_START_HINT,\s*\}/,
+      /force: \{\s*title: FORCE_START_LABEL,\s*hint: FORCE_START_HINT,\s*\}/,
     );
     // AND NO "Run next" ANYWHERE A READER CAN SEE IT (Akshil, 2026-09-21).
     expect(VIEWS).not.toContain("Run next —");
@@ -194,6 +187,10 @@ describe("the Board's waiting cards", () => {
     // file's other "Skip" is the repeat-occurrence verb on a message row, which
     // is a different feature and keeps its own word.)
     expect(VIEWS).not.toContain("Skip the queue");
+    // NEITHER THE TYPE NOR THE JSX SAYS "skip" ANY MORE — the drop kind, the
+    // lane detector and the act's own class all wear the verb they press.
+    expect(LIB).not.toContain('kind: "skip"');
+    expect(LIB).not.toContain('{ kind: "skip"; key: string }');
   });
 
   it("offers FORCE START as its one queue button, and Run next as none", () => {
@@ -201,10 +198,10 @@ describe("the Board's waiting cards", () => {
     // — a queued card dropped on In Progress goes to the head of its lane and
     // interrupts nothing — and the BUTTON is now the other verb entirely: it
     // takes the message out of the line and starts it beside the folder's
-    // owner. The card wears the same seat the ⤒ did (`.tasks-act--skip`, kept
+    // owner. The card wears the same seat the ⤒ did (`.tasks-act--force`, kept
     // with its skin) and reads its condition from the one place all three
     // surfaces read it.
-    expect(CARD).toContain("tasks-act--skip");
+    expect(CARD).toContain("tasks-act--force");
     expect(CARD).toContain("canForceStart(task)");
     expect(CARD).toContain("FORCE_START_LABEL");
     expect(CARD).toContain("onForceStart()");
@@ -241,15 +238,17 @@ describe("the List's waiting row", () => {
 
   it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {
     // The ⤒ button lived in this strip until 2026-09-21 and Force start took the
-    // seat. What must not come back is the CONDITION: `canRunNext` hid the
-    // control at position 1, which is the position a reader most wants this one
-    // at (standing 1st is still waiting on a turn with an hour left in it).
-    expect(ROW).toContain("tasks-act--skip");
+    // seat. What must not come back is the OLD CONDITION: `canRunNext`, which
+    // hid the control at position 1 — the position a reader most wants this one
+    // at (standing 1st is still waiting on a turn with an hour left in it) — is
+    // gone from the module entirely since 2026-09-22.
+    expect(ROW).toContain("tasks-act--force");
     expect(ROW).toContain("canForceStart(task)");
     expect(ROW).toContain("FORCE_START_LABEL");
     expect(ROW).toContain("void force();");
     expect(VIEWS).not.toContain("canRunNext");
     expect(VIEWS).not.toContain("void skip();");
+    expect(LIB).not.toContain("canRunNext");
     // …and the DRAG presses the same verb.
     expect(BOARD).toContain("await performForceStart(task);");
     // The row is mounted and its buttons counted in queue-caption-press.test.tsx
@@ -261,11 +260,7 @@ describe("the List's waiting row", () => {
     // THE CAPTION WAS NEVER GATED ON A BUTTON, and that is why swapping the verb
     // in the seat changes no sentence: `1 message queued · after TASK-056` is
     // true at the head of the line and stays printed whether or not a press is
-    // drawn beside it. `canRunNext` survives in platform/lib/queue for the
-    // follow-up that removes the skip endpoint with it, and both conditions are
-    // tested there — including the one position they disagree at.
-    expect(canRunNext({ status: "queued", queue_position: 2, queue_ahead: "TASK-056" })).toBe(true);
-    expect(canRunNext({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
+    // drawn beside it.
     expect(canForceStart({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
       true,
     );
@@ -405,19 +400,19 @@ describe("the queue's ink", () => {
     // while SHOW_ROW_ACTIONS is down, and wrong for one drawn on every waiting
     // row: at a 400px pane the reservation plus its gap left the title at 2.8px.
     const skip = css(TASKS_CSS).slice(
-      css(TASKS_CSS).indexOf(".tasks-row .tasks-act--skip {"),
-      css(TASKS_CSS).indexOf("}", css(TASKS_CSS).indexOf(".tasks-row .tasks-act--skip {")),
+      css(TASKS_CSS).indexOf(".tasks-row .tasks-act--force {"),
+      css(TASKS_CSS).indexOf("}", css(TASKS_CSS).indexOf(".tasks-row .tasks-act--force {")),
     );
     expect(skip).toContain("min-width: 0");
     expect(skip).toContain("overflow: hidden");
     expect(/flex-shrink:\s*(\d+)/.exec(skip)).not.toBe(null);
     expect(Number(/flex-shrink:\s*(\d+)/.exec(skip)![1])).toBeGreaterThan(1);
     expect(skip).not.toMatch(/(?<!-)\bwidth:\s*\d/);
-    expect(css(TASKS_CSS)).toContain(".tasks-row .tasks-act--skip:focus-visible {");
+    expect(css(TASKS_CSS)).toContain(".tasks-row .tasks-act--force:focus-visible {");
     // No media query was added for any of it — here or in the chat, whose pane is
     // 340px in a sidebar and 900px in a canvas and knows neither.
     expect(css(TASKS_CSS)).not.toMatch(/@media[^{]*\{[^}]*tasks-(row|card)-queue/);
-    expect(css(TASKS_CSS)).not.toMatch(/@media[^{]*\{[^}]*tasks-act--skip/);
+    expect(css(TASKS_CSS)).not.toMatch(/@media[^{]*\{[^}]*tasks-act--force/);
     expect(css(CHAT_CSS)).not.toMatch(/@media[^{]*\{[^}]*c-wait/);
     // …and the divider is a border on a growing row rather than a measured rule.
     const split = css(SCHEDULE_CSS).slice(

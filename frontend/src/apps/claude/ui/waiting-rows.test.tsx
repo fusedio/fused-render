@@ -329,9 +329,9 @@ describe("the card over the composer", () => {
   });
 
   it("reads 'next in this folder' once the spot is claimed", () => {
-    // A skip sets `queue_priority`: TASK-038 is STILL holding the folder, and
-    // nothing WAITING is in front of this any more, which is the one fact that
-    // replaces the "after …" half of the sentence.
+    // A Run now that had to wait sets `queue_priority`: TASK-038 is STILL
+    // holding the folder, and nothing WAITING is in front of this any more,
+    // which is the one fact that replaces the "after …" half of the sentence.
     const after = render(
       <WaitingCard
         count={2}
@@ -452,7 +452,12 @@ describe("the rows come from the server, which is what a reload reads", () => {
     // same thing. The authority is this conversation's `/api/tasks` row, which
     // survives a reload; the admission's answer is the fallback for the first
     // paint and for a chat that has no row at all.
-    expect(CHAT).toContain("waitingFacts(sched.rec, admitAhead, claimedNext)");
+    expect(CHAT).toContain("waitingFacts(sched.rec, admitAhead)");
+    // THE THIRD ARGUMENT — the Run next button's own optimistic claim,
+    // `claimedNext` — is gone with the button (2026-09-22): nothing in this
+    // pane has produced one since 2026-09-21, and the pane's `nextClaim` state
+    // was the last of it.
+    expect(CHAT).not.toContain("nextClaim");
     expect(WATCHER).toContain("queue_ahead_session?: string;");
     expect(USE_SCHEDULE).toContain("if (!hasCard || !nextId) return;");
   });
