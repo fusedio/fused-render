@@ -15,7 +15,19 @@
 // keeps it on screen. The AI models page's task/sort menus are that (D426).
 //
 // Styling lives in shell.css (.context-menu*), matching the pane-mode-dropdown.
+//
+// RENDERED THROUGH A PORTAL TO <body>, like every other overlay here (Modal,
+// PathTip, the shadcn DropdownMenu/Popover via Base UI's Portal). A fixed
+// menu left in place under its host inherits the host's ancestors, and any
+// ancestor that is a containing block for `position: fixed` — a `transform`,
+// a `filter`, `contain: layout`, and on WebKit before Safari 18.4 (macOS 14,
+// macOS 15.0–15.3 native windows) a `container-type` as well — pins the menu
+// to that box instead of the viewport: the explorer's kebab menu opened 500px
+// left of its trigger because `.listing-main` is a size container. Under
+// <body> there is no such ancestor. React events still bubble to the host's
+// React tree, so a row's stopPropagation keeps working as before.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export interface MenuItem {
   label: string;
@@ -261,7 +273,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
   const topHasIcon = groupHasIcon(items);
   const subHasIcon = subItems !== null && groupHasIcon(subItems);
 
-  return (
+  return createPortal(
     <div
       ref={rootRef}
       className={"context-menu" + (pos ? " placed" : " measuring")}
@@ -309,6 +321,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
           </div>
         )
       )}
-    </div>
+    </div>,
+    document.body
   );
 }

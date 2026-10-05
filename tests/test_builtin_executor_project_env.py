@@ -172,12 +172,13 @@ def test_an_import_error_with_no_module_name_is_left_alone(tmp_path):
 
 
 def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
-    """`map/worker.py` writes its own richer message; both cases are pinned.
+    """`map/prepare.py` writes its own richer message; both cases are pinned.
 
-    `worker.py` raises `ModuleNotFoundError("No module named 'x'. A Python map
-    target runs inside …")` when the user's own map target fails to import, and
-    that message opens with the exact phrase this enrichment matches on. Which
-    one the user sees depends on whether `x` is something map DECLARES:
+    `prepare.py` answers `"No module named 'x'. A map script runs in the Map
+    Viewer's own environment …"` when the user's own map script fails to
+    import, and that message opens with the exact phrase this enrichment
+    matches on. Which one the user sees depends on whether `x` is something
+    map DECLARES:
 
       * **not declared** (`user_owned_module`, `torch`, anything of the user's own) —
         worker's message survives, because the gate is the declaration and a
@@ -194,10 +195,10 @@ def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
     engine setting is why the environment was never built. Losing worker's extra
     sentence about which process the target ran in is the accepted cost.
     """
-    worker = os.path.join(_TEMPLATES, "map", "worker.py")
+    worker = os.path.join(_TEMPLATES, "map", "prepare.py")
     worker_message = (
-        "No module named '{}'. A Python map target runs inside the Map "
-        "Viewer's own environment (…)"
+        "No module named '{}'. A map script runs in the Map Viewer's own "
+        "environment (…)"
     )
 
     _absent(monkeypatch, "duckdb")

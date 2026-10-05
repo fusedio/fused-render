@@ -4397,6 +4397,98 @@ def test_a_download_the_WORKER_stopped_reports_cancelled_not_error(
     assert not row.get("message")
 
 
+def test_a_failed_download_reports_the_written_sentence_not_a_traceback(
+        fake_runner, monkeypatch, tmp_path):
+    """Item 6 of the architecture-detection brief. The failure this exists to
+    fix: a runner's `download()` raises a deliberately-written
+    `RuntimeError("...")` — a sentence meant for the person reading the job
+    row — but `worker_base.serve`'s `--download-only` except-branch prints the
+    FULL traceback to stderr before that sentence, and `_tail` reads the
+    entire last-2000-chars of the log file, traceback included.
+
+    `worker_base.serve` writes `JOB_ERROR_MARKER` immediately before that final
+    line specifically so `_download_failure_text` can pull out just the
+    sentence. Since follow-up review finding 6, a `RuntimeError`'s marker
+    line is the BARE sentence (no class-name prefix) — this test writes a
+    log file shaped exactly like that real output (a multi-line traceback,
+    then the marker, then the bare sentence) and proves the row's `message`
+    is the sentence ALONE — the traceback lines must not appear in it at
+    all.
+    """
+    from fused_render.ai.runners import worker_base
+
+    log = tmp_path / "log.txt"
+    stderr_blob = (
+        "Traceback (most recent call last):\n"
+        '  File "worker.py", line 42, in download\n'
+        "    raise RuntimeError(\"this model needs the Diffusers engine\")\n"
+        f"\n{worker_base.JOB_ERROR_MARKER}this model needs the Diffusers engine\n"
+    )
+
+    class _FailedProc:
+        pid = 4242
+        returncode = 1
+        def poll(self):
+            return 1
+
+    def fake_popen(argv, **kwargs):
+        # `_fetch_only` opens the log file itself and hands the fd to
+        # `subprocess.Popen` as `stderr=`; a real worker process writes into
+        # that same fd. Writing through the fd our fake is handed (rather
+        # than `log.write_text` beforehand) is the only way to land content
+        # AFTER `_fetch_only`'s own `open(log, "w")` truncates the file.
+        kwargs["stderr"].write(stderr_blob)
+        kwargs["stderr"].close()
+        return _FailedProc()
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(log))
+
+    job = supervisor.JOB_PREFIX + "org-badconfig"
+    jobs.upsert({"id": job, "title": "org/badconfig", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/badconfig", job)
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "error"
+    assert row["message"] == "this model needs the Diffusers engine"
+    assert "Traceback" not in row["message"]
+    assert "line 42" not in row["message"]
+
+
+def test_a_failed_download_with_no_marker_falls_back_to_the_whole_tail(
+        fake_runner, monkeypatch, tmp_path):
+    """A worker that dies before `serve`'s except-branch ever runs (killed by
+    a signal, an import error at module load) never writes
+    `JOB_ERROR_MARKER` at all. `_download_failure_text` must still hand back
+    SOMETHING rather than an empty message — the old whole-tail behaviour,
+    unchanged, for exactly this case."""
+    log = tmp_path / "log.txt"
+
+    class _FailedProc:
+        pid = 4242
+        returncode = 1
+        def poll(self):
+            return 1
+
+    def fake_popen(argv, **kwargs):
+        kwargs["stderr"].write("Fatal Python error: Segmentation fault\n")
+        kwargs["stderr"].close()
+        return _FailedProc()
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(log))
+
+    job = supervisor.JOB_PREFIX + "org-crashed"
+    jobs.upsert({"id": job, "title": "org/crashed", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/crashed", job)
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "error"
+    assert row["message"] == "Fatal Python error: Segmentation fault"
+
+
 def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path):
     """`envinstall.start()` names its own key, and it is not always ours.
 
@@ -5280,7 +5372,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video", "laya-mlx"}
+        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -5296,7 +5388,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
                  "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe",
-                 "/api/ai/video"):
+                 "/api/ai/video", "/api/ai/speech"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
@@ -7532,7 +7624,7 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
 # -- a reference image (I2V) -----------------------------------------------------
 # One image, a single string, conditioning at frame 0 with strength 1.0 — the
 # same scope decision `/api/ai/image`'s own `image` option made for editing,
-# restated for video. `_resolve_reference_image` is the shared helper both
+# restated for video. `_resolve_reference_file` is the shared helper both
 # routes call; these tests exercise it through `/api/ai/video`, the same way
 # the block above exercises `_edit_default_size` through `/api/ai/image`.
 
@@ -10650,9 +10742,12 @@ def dispatched(monkeypatch):
     """
     calls = []
 
-    def fake_load(model, capability, *, weights_only=False):
-        calls.append({"model": model, "capability": capability,
-                      "weightsOnly": weights_only})
+    def fake_load(model, capability, *, weights_only=False, file=None):
+        entry = {"model": model, "capability": capability,
+                 "weightsOnly": weights_only}
+        if file is not None:
+            entry["file"] = file
+        calls.append(entry)
         return {"jobId": "job", "model": model, "state": "loading"}
 
     monkeypatch.setattr(supervisor, "load", fake_load)
@@ -10788,28 +10883,24 @@ def test_an_unrecognised_head_stays_unloadable_even_unmapped(client, hub, dispat
     assert dispatched == []
 
 
-def test_a_ruled_out_task_is_not_rescued_by_readable_weights(client, hub, dispatched):
-    """The TTS-under-TEXT bug, which is a DIFFERENT path from SymphonyGen below.
-
-    A real speech-synthesis repo has everything the text branch wants — a
-    `config.json` mlx-lm could resolve, a directory of safetensors — so
-    `formats.loaders` answers `('mlx-text',)` and the config guard never fires.
-    What stops it is the other gate: the card SAID what this is
-    (`text-to-speech`), that task is one we have ruled out, and a task we
-    recognise and do not serve is never overruled by what the weight files look
-    like. Without it the loaders-unanimity fallback files this under text
-    generation, which is how a Qwen3-TTS repo came to sit in the Playground's
-    chat section with a Load button.
-    """
-    repo = _cached_repo(hub, "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+def test_a_speech_card_on_a_format_no_runner_reads_is_not_a_chat_model(client, hub, dispatched):
+    repo = _cached_repo(hub, "org/other-tts",
                         files=("model.safetensors",), config={"model_type": "qwen3"})
     (repo / "snapshots" / "c0ffee" / "README.md").write_text(
         "---\npipeline_tag: text-to-speech\n---\n")
-    reading = ai_models.cached_capability("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
-    assert reading.cached and reading.capability is None
-    assert reading.support == "no-runner" and reading.reason
-    assert _load(client, {"model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base"}).status_code == 400
-    assert dispatched == []
+    reading = ai_models.cached_capability("org/other-tts")
+    assert reading.cached and reading.capability == registry.TEXT_TO_SPEECH
+    assert reading.runner_code is None
+    assert _load(client, {"model": "org/other-tts"}).status_code == 200
+    assert [call["capability"] for call in dispatched] == [registry.TEXT_TO_SPEECH]
+
+
+def test_a_qwen3_tts_snapshot_reads_as_speech_for_the_mlx_audio_runner(hub):
+    _cached_repo(hub, "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+                 files=("model.safetensors",), dirs=("speech_tokenizer",),
+                 config={"model_type": "qwen3_tts", "tts_model_type": "base"})
+    reading = ai_models.cached_capability("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
+    assert reading.cached and reading.capability == registry.TEXT_TO_SPEECH
 
 
 def test_weights_with_no_config_are_not_a_chat_model(client, hub, dispatched):
@@ -11993,3 +12084,418 @@ def test_neither_spawn_site_forgets_the_model(monkeypatch):
         assert ast.unparse(call.args[1]) in ("worker.model", "model"), (
             f"_child_env at line {call.lineno} passes "
             f"{ast.unparse(call.args[1])!r} as the model")
+
+
+# -- item A: per-variant download's `file` threading through the supervisor -----
+
+
+class _FakeProc:
+    """A subprocess.Popen stand-in that has already finished successfully."""
+    def __init__(self, argv, **kwargs):
+        self.argv = argv
+        self.pid = 4242
+        self.returncode = 0
+    def poll(self):
+        return self.returncode
+
+
+def test_fetch_only_argv_gains_file_flag_when_given(fake_runner, monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        return _FakeProc(argv)
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(tmp_path / "log.txt"))
+    job = supervisor.JOB_PREFIX + "org-fetched"
+    jobs.upsert({"id": job, "title": "org/fetched", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/fetched", job, file="model-Q4_K_M.gguf")
+    assert "--file" in captured["argv"]
+    assert captured["argv"][captured["argv"].index("--file") + 1] == "model-Q4_K_M.gguf"
+
+
+def test_fetch_only_argv_is_byte_identical_when_file_is_absent(fake_runner, monkeypatch, tmp_path):
+    """No `file` at all: the spawned argv must not gain a `--file` flag —
+    proof that an ordinary download's subprocess invocation is unchanged."""
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        return _FakeProc(argv)
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(tmp_path / "log.txt"))
+    job = supervisor.JOB_PREFIX + "org-fetched"
+    jobs.upsert({"id": job, "title": "org/fetched", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/fetched", job)
+    assert "--file" not in captured["argv"]
+    assert captured["argv"] == [
+        sys.executable, fake_runner.worker, "--model", "org/fetched",
+        "--job", job, "--download-only",
+    ]
+
+
+# -- item A: per-variant download's `file` override on the download route -------
+
+
+def _mock_repo_files(monkeypatch, files):
+    """Fakes `huggingface_hub.list_repo_files` for `_repo_gguf_siblings`."""
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda model_id, **kw: list(files))
+
+
+def test_download_with_a_valid_file_threads_it_to_the_supervisor(
+        client, hub, dispatched, monkeypatch):
+    """A `file` naming one of the repo's own real GGUF candidates is passed
+    straight through to `supervisor.load`."""
+    repo_dir = _cached_repo(hub, "org/gguf-multi", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    _mock_repo_files(monkeypatch, ["model-Q4_K_M.gguf", "model-Q8_0.gguf"])
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi", "file": "model-Q8_0.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert dispatched[0]["file"] == "model-Q8_0.gguf"
+
+
+def test_download_without_a_file_is_unaffected(client, hub, dispatched):
+    """Absent `file`: the regression proof — an ordinary download's dispatch
+    to the supervisor is unchanged (no `file` key at all)."""
+    repo_dir = _cached_repo(hub, "org/gguf-only-plain", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download", json={"model": "org/gguf-only-plain"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert "file" not in dispatched[0]
+
+
+def test_download_refuses_a_file_with_a_non_gguf_extension(
+        client, hub, dispatched):
+    repo_dir = _cached_repo(hub, "org/gguf-multi-ext", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-ext", "file": "model.bin"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_download_refuses_a_file_with_a_path_traversal(client, hub, dispatched):
+    repo_dir = _cached_repo(hub, "org/gguf-multi-trav", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-trav", "file": "../model.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_download_refuses_a_file_not_among_the_repos_own_candidates(
+        client, hub, dispatched, monkeypatch):
+    repo_dir = _cached_repo(hub, "org/gguf-multi-bad", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    _mock_repo_files(monkeypatch, ["model-Q4_K_M.gguf"])
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-bad", "file": "not-a-real-variant.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_download_refuses_a_file_when_siblings_cannot_be_verified(
+        client, hub, dispatched, monkeypatch):
+    """`_repo_gguf_siblings` returns `None` on any lookup failure — the route
+    must refuse rather than trust an unverifiable filename."""
+    repo_dir = _cached_repo(hub, "org/gguf-multi-neterr", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    import huggingface_hub
+
+    def raise_lookup(model_id, **kw):
+        raise RuntimeError("network is down")
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", raise_lookup)
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-neterr", "file": "model-Q4_K_M.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_repo_gguf_siblings_passes_token_and_endpoint(client, hub, dispatched, monkeypatch):
+    """Item 4 (code review): `_repo_gguf_siblings` must use the SAME
+    `_token()`/`hub_endpoint()` helpers every other Hub call in
+    `hub_models.py` uses — a bare `list_repo_files(model_id)` call silently
+    went out anonymous against the real Hub only."""
+    import huggingface_hub
+
+    from fused_render.server.routers import hub_models
+
+    monkeypatch.setattr(hub_models, "_token", lambda: "fake-token-xyz")
+    monkeypatch.setattr(hub_models, "hub_endpoint", lambda: "https://mirror.test")
+    captured = {}
+
+    def fake_list_repo_files(model_id, **kwargs):
+        captured["model_id"] = model_id
+        captured.update(kwargs)
+        return ["model-Q4_K_M.gguf"]
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", fake_list_repo_files)
+    repo_dir = _cached_repo(hub, "org/gguf-tokened", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-tokened", "file": "model-Q4_K_M.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert captured["model_id"] == "org/gguf-tokened"
+    assert captured["token"] == "fake-token-xyz"
+    assert captured["endpoint"] == "https://mirror.test"
+
+
+def test_a_curated_key_plus_file_reaches_the_supervisor(client, hub, dispatched, monkeypatch):
+    """Item 1 (code review): a curated `GGUF_RECIPES` key (a bare filename, not a
+    Hub repo id) plus a `file` override must resolve through the SAME
+    curated-key -> repo mapping `llama_text.download` uses, so
+    `_repo_gguf_siblings` lists the real repo instead of 400ing on the
+    filename key itself.
+
+    The fake `list_repo_files` here asserts it is called with the RESOLVED
+    repo id, not the curated filename key verbatim — a fake that ignored its
+    argument (as `_mock_repo_files` does) would pass even without the fix,
+    since the route would still 400 or 200 independent of what the fake
+    returns for a wrong id. Asserting the argument makes this a real
+    regression test for the resolution step itself."""
+    entry_id = "gemma-4-E4B-it-Q4_K_M.gguf"
+    recipe = formats.GGUF_RECIPES[entry_id]
+    repo_dir = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo_dir / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(_gguf_bytes("gemma4"))
+    import huggingface_hub
+
+    def fake_list_repo_files(model_id, **kw):
+        assert model_id == recipe["repo"], (
+            f"expected the resolved repo {recipe['repo']!r}, got {model_id!r}")
+        return [recipe["file"], "gemma-4-E4B-it-Q8_0.gguf"]
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", fake_list_repo_files)
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": entry_id, "file": "gemma-4-E4B-it-Q8_0.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert dispatched[0]["file"] == "gemma-4-E4B-it-Q8_0.gguf"
+
+
+def test_a_curated_key_plus_a_file_not_in_its_repo_is_refused(client, hub, dispatched, monkeypatch):
+    """The other half: a curated key whose `file` is NOT among the resolved
+    repo's real siblings still 400s, proving the mapping is used for
+    validation and not merely accepted verbatim."""
+    entry_id = "gemma-4-E4B-it-Q4_K_M.gguf"
+    recipe = formats.GGUF_RECIPES[entry_id]
+    repo_dir = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo_dir / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(_gguf_bytes("gemma4"))
+    import huggingface_hub
+
+    def fake_list_repo_files(model_id, **kw):
+        assert model_id == recipe["repo"]
+        return [recipe["file"]]
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", fake_list_repo_files)
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": entry_id, "file": "not-a-real-variant.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_repo_gguf_siblings_logs_a_warning_with_the_repo_id_on_failure(
+        client, hub, dispatched, monkeypatch, caplog):
+    """Item 4 (code review): a lookup failure must be logged at WARNING
+    (with the repo id) rather than swallowed silently."""
+    import logging
+
+    import huggingface_hub
+
+    def raise_lookup(model_id, **kw):
+        raise RuntimeError("network is down")
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", raise_lookup)
+    repo_dir = _cached_repo(hub, "org/gguf-logtest", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/api/ai/runtime/download",
+            json={"model": "org/gguf-logtest", "file": "model-Q4_K_M.gguf"},
+            headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert any("org/gguf-logtest" in r.message for r in caplog.records)
+
+
+def test_download_refuses_a_sharded_quants_first_part(
+        client, hub, dispatched, monkeypatch):
+    """Item 3 (code review): shard part 1 IS one of `gguf_candidate_files`'s
+    own entries (kept there to count the shard set as one variant), but it
+    is not fetchable on its own — the route must refuse it exactly as it
+    refuses a filename that is not a candidate at all."""
+    repo_dir = _cached_repo(hub, "org/gguf-sharded", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    _mock_repo_files(monkeypatch, [
+        "model-Q8_0-00001-of-00003.gguf",
+        "model-Q8_0-00002-of-00003.gguf",
+        "model-Q8_0-00003-of-00003.gguf",
+        "model-Q4_K_M.gguf",
+    ])
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-sharded", "file": "model-Q8_0-00001-of-00003.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+@pytest.fixture()
+def fake_speech_runner(tmp_path, monkeypatch):
+    folder = tmp_path / "fake_speech_runner"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code="fake-speech", capability=registry.TEXT_TO_SPEECH,
+        folder=str(folder), label="Fake speech",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-speech", [
+        {"id": "org/fake-preset", "label": "Fake preset", "size_gb": None, "note": "",
+         "voiceMode": "preset"},
+        {"id": "org/fake-clone", "label": "Fake clone", "size_gb": None, "note": "",
+         "voiceMode": "clone"},
+        {"id": "org/fake-design", "label": "Fake design", "size_gb": None, "note": "",
+         "voiceMode": "design"},
+    ])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+def _speech(client, body):
+    return client.post("/api/ai/speech", json=body, headers={"X-Fused": "1"})
+
+
+def test_speech_renders_to_disk_with_the_default_model(client, fake_speech_runner):
+    response = _speech(client, {"text": "Hello there."})
+    assert response.status_code == 200, response.json()
+    started = response.json()
+    assert started["jobId"].startswith(supervisor.SPEECH_JOB_PREFIX)
+    assert started["model"] == "org/fake-preset"
+    assert started["path"].endswith(".wav")
+    assert started["language"] == "auto" and started["text"] == "Hello there."
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    assert row["title"] == "Hello there."
+    assert os.path.isfile(started["path"])
+
+
+def test_speech_needs_text(client, fake_speech_runner):
+    for body in ({}, {"text": "   "}):
+        response = _speech(client, body)
+        assert response.status_code == 400, body
+        assert "'text'" in response.json()["error"]
+
+
+@pytest.mark.parametrize("provider", ["apple", "claude"])
+def test_speech_is_local_only(client, fake_speech_runner, provider):
+    assert _speech(client, {"text": "x", "provider": provider}).status_code == 409
+
+
+def test_speech_refuses_options_the_named_model_does_not_take(client, fake_speech_runner,
+                                                              base_photo):
+    page, _ = base_photo
+    clone = {"refAudio": "photo.png", "refText": "hi", "base": page}
+    cases = [
+        ({"model": "org/fake-clone"}, "needs 'refAudio', 'refText'"),
+        ({"model": "org/fake-clone", "refAudio": "photo.png", "base": page}, "needs 'refText'"),
+        ({"model": "org/fake-preset", **clone}, "not 'refAudio', 'refText'"),
+        ({"model": "org/fake-design"}, "needs 'instruct'"),
+    ]
+    for extra, fragment in cases:
+        response = _speech(client, {"text": "x", **extra})
+        assert response.status_code == 400 and fragment in response.json()["error"], extra
+
+
+def test_speech_ref_audio_resolves_beside_the_page(client, fake_speech_runner, base_photo):
+    page, sample = base_photo
+    response = _speech(client, {"text": "x", "model": "org/fake-clone",
+                                "refAudio": "photo.png", "refText": "hi", "base": page})
+    assert response.status_code == 200, response.json()
+    started = response.json()
+    assert os.path.samefile(started["refAudio"], sample)
+    assert started["refText"] == "hi"
+    _wait_job(started["jobId"])
+
+
+def test_speech_ref_audio_must_exist_and_be_resolvable(client, fake_speech_runner, tmp_path):
+    missing = _speech(client, {"text": "x", "model": "org/fake-clone",
+                               "refAudio": str(tmp_path / "nope.wav"), "refText": "hi"})
+    assert missing.status_code == 400 and "no such file" in missing.json()["error"]
+    relative = _speech(client, {"text": "x", "model": "org/fake-clone",
+                                "refAudio": "nope.wav", "refText": "hi"})
+    assert relative.status_code == 400
+    assert "'refAudio' must be absolute" in relative.json()["error"]
+
+
+def test_speech_checks_voices_and_languages_off_the_cached_config(client, fake_speech_runner,
+                                                                  hub):
+    _cached_repo(hub, "org/fake-preset", files=("model.safetensors",),
+                 dirs=("speech_tokenizer",),
+                 config={"model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+                         "talker_config": {"spk_id": {"serena": 1, "ryan": 2},
+                                           "codec_language_id": {"english": 1,
+                                                                 "sichuan_dialect": 2}}})
+    voice = _speech(client, {"text": "x", "voice": "nobody"})
+    assert voice.status_code == 400 and "ryan, serena" in voice.json()["error"]
+    language = _speech(client, {"text": "x", "language": "sichuan_dialect"})
+    assert language.status_code == 400 and "english" in language.json()["error"]
+    named = _speech(client, {"text": "x", "voice": "Ryan", "language": "English"}).json()
+    assert (named["voice"], named["language"]) == ("ryan", "english")
+    default = _speech(client, {"text": "x"}).json()
+    assert default["voice"] == "ryan"
+    _wait_job(named["jobId"])
+    _wait_job(default["jobId"])
+
+
+def test_the_catalog_carries_each_speech_models_voice_mode(client, fake_speech_runner, hub):
+    _cached_repo(hub, "org/fake-preset", files=("model.safetensors",),
+                 dirs=("speech_tokenizer",),
+                 config={"model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+                         "talker_config": {"spk_id": {"ryan": 1},
+                                           "codec_language_id": {"english": 1}}})
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    row = next(r for r in rows if r["capability"] == registry.TEXT_TO_SPEECH)
+    models = {m["id"]: m for m in row["models"]}
+    assert models["org/fake-preset"]["voiceMode"] == "preset"
+    assert models["org/fake-preset"]["voices"] == ["ryan"]
+    assert models["org/fake-preset"]["languages"] == ["english"]
+    assert models["org/fake-clone"]["voiceMode"] == "clone"
+    assert "voices" not in models["org/fake-clone"]
+
+
+def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_runner,
+                                                         base_photo):
+    page, _ = base_photo
+    started = _speech(client, {"text": "x", "model": "org/fake-clone",
+                               "refAudio": "photo.png", "refText": "hi", "base": page}).json()
+    fields = ((set(started) - {"jobId", "model", "path", "provider", "warnings"})
+              | {"audio", "url", "mediaType", "response", "providerMetadata", "usage"})
+    section = _skill_section("Speech: `fused.ai.speech({text, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])

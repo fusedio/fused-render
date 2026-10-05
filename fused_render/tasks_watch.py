@@ -190,6 +190,25 @@ def generation() -> int:
         return _generation
 
 
+def running() -> bool:
+    """Whether the watcher thread is up — i.e. whether `generation()` is a live
+    change signal or a counter nothing drives. The listing's snapshot builder
+    (routers/tasks.py `_builder_loop`) only exists when this is true: a snapshot
+    nobody bumps is a stale listing, so without the watcher every listing is
+    built fresh, which is what tests (which never start the thread) rely on."""
+    return _started
+
+
+def anything_live() -> bool:
+    """Whether any session is known to be alive right now — in the registry or
+    inside its send mark. The gate `tick()` applies before walking the runs
+    tree for permission cards, offered to the listing so `_parked_runs` can
+    skip the same walk for the same reason: a card is raised by a live run, and
+    a live run is either registered or still inside its mark."""
+    with _cond:
+        return bool(_registry) or bool(_marks)
+
+
 def registry_row(session_id: str) -> dict | None:
     """The live-registry record for a session, or None if no `claude` process
     currently holds it."""

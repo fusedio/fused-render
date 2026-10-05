@@ -39,6 +39,42 @@ One plain fn `main(**params)`. Rules:
 - **Fresh subprocess per call.** No globals survive. Import cost paid every call (pandas ≈ 1 s). Killed at **60 s** (`DEFAULT_TIMEOUT`, `fused_render/executor.py`), no override. Longer work → `fused-render-jobs`.
 - `print()` → browser console as `[python]`.
 
+### App SKILL.md — bot-callable files (SPEC §49)
+
+A bot (OpenBot's `py` action) can run a `.py` beside the page **without the page**, through the same `/api/run` the page uses. It learns what each file does from the app's **`SKILL.md`** at the folder root, beside `index.html` — nothing parses the code. No SKILL.md, or no section for a file → a bot cannot call it. Every app with a `.py` that has a `main` ships one.
+
+```markdown
+---
+name: expense-tracker
+description: Local expense ledger. Add an entry, total spend by category or month.
+approve: [add_entry.py]   # optional: own-build bots still ask before these
+---
+# Expense tracker
+
+Data lives in .fused/data/ledger.json; the page and these files share it.
+
+## summary.py
+Totals per category for one month. Reads the ledger; writes nothing.
+- Args: `month` (str, "YYYY-MM", default: current month)
+- Returns: `{"month": str, "total": float, "by_category": {name: float}}`
+- Example: `{"action":"py","app":"expense-tracker","file":"summary.py","args":{"month":"2026-09"}}`
+
+## add_entry.py
+Appends one expense to the ledger. Writes .fused/data/ledger.json.
+- Args: `amount` (float, required), `category` (str, required), `note` (str, default "")
+- Returns: `{"ok": true, "id": str}`
+- Example: `{"action":"py","app":"expense-tracker","file":"add_entry.py","args":{"amount":12.5,"category":"food"}}`
+```
+
+- **Frontmatter:** `name` (folder slug), `description` (one line a bot reads in its app list: what the app does for it). `approve:` lists files that change or delete something the user cares about; it only adds a pause, never removes one.
+- **One `## <file>.py` heading per callable file** — the exact filename; that heading is the only thing a bot parses. Helpers without `main` get no heading.
+- **First line under the heading** = what it does + what it changes ("Reads the ledger; writes nothing." / "Writes .fused/data/ledger.json"). A bot calling an app it did not build shows the user this line before running.
+- **Args with type, default, required; return shape; one example call** with real values. Keep them exactly in step with `main`'s signature — the runner silently drops an arg `main` does not take and fails a missing required one (`ParamError`), so a stale section means a bot call that quietly does the wrong thing.
+- **Edit the section in the same change as the `.py`.** Add, rename or delete a file → add, rename or delete its section.
+- The file side stays: **one top-level sync annotated `main(**params)`** (the runner binds only `main`; annotations coerce), defaults on every param, JSON-native return, ≤ 60 s, **secrets never in params** (read them from `.fused/data` or the keychain inside `main`). A resident daemon (`fused-render-background-apps`) is not callable this way — say so in prose.
+
+Run: the page's own `POST /api/run {py, html, params}` → `{ok, result, error, stdout, duration_ms}`.
+
 ### Available Python libraries
 
 A `pyproject.toml` is always expected — App Doctor's `pyproject` row fails a folder that lacks one. Without one, the app interpreter falls back to stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). `dependencies` should list the app's own third-party imports — NOT this bundled set; an app that only imports from it declares an empty `dependencies` list, which keeps it on that zero-install interpreter.
@@ -159,7 +195,7 @@ URLs under that origin:
 - `/explorer/view/<path>` — full shell chrome.
 - Templates: open TARGET file's path; or template html directly with `?_file=<abs target>`.
 
-Render App only (no fused-render installed — origin on `2777`, `server.json` under `~/.fused-render-app`): its embed equivalent is `/render?path=<abs html>` — any absolute `.html`, `runtime.js` injected, relative `.py` resolved against it, env picked from the folder's `pyproject.toml`, params after `path` in the URL. `/explorer/*` there is the chat shell, not a view. Same render → interact → refresh loop; verification is the browser console (see below).
+Render App only (no fused-render installed — origin on `2777`, `server.json` under `~/.fused-render-app`): its embed equivalent is `/render?path=<abs html>` — `path` is the entry FILE (`<app dir>/index.html`), never the bare folder; any absolute `.html`, `runtime.js` injected, relative `.py` resolved against it, env picked from the folder's `pyproject.toml`, params after `path` in the URL. `/explorer/*` there is the chat shell, not a view. Same render → interact → refresh loop; verification is the browser console (see below).
 
 Loop: render → interact → URL updates → hard refresh → identical view.
 

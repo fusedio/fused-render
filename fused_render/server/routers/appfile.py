@@ -31,7 +31,7 @@ from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
-from fused_render import appfile, jobs
+from fused_render import appfetch, appfile, jobs
 from fused_render._view_url_codec import canonical_fs_path, embed_url_path
 from fused_render.server.index_touch import note_index_mutation
 
@@ -320,6 +320,31 @@ def api_appfile_overwrite(body: dict = Body(...), x_fused: str | None = Header(d
         return appfile.overwrite_app_file(file)
     except appfile.AppFileError as exc:
         return _error(str(exc))
+
+
+@router.post("/api/appfile/fetch")
+def api_appfile_fetch(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Download the ``.fused`` at the http(s) ``url`` into the managed
+    downloads dir and answer ``{file}`` — the saved absolute path, which the
+    caller then opens like any other ``.fused`` (DL-8). The one caller is the
+    shell's ``FetchAppFileBoot``, fed by a ``fused-render://open?url=`` link.
+
+    X-Fused-guarded: it writes. There is deliberately NO confirm step before
+    it (owner call, same as Render App's lite PR #30): the deep-link click is
+    the gesture. The recorded cost is that a web page which can navigate the
+    browser to this origin with ``?_fetch_appfile=`` gets a remote ``.fused``
+    downloaded and opened without a prompt."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    url = str(body.get("url") or "").strip()
+    if not appfetch.is_url(url):
+        return _error("url must be an http:// or https:// link to a .fused file")
+    try:
+        file = appfetch.download_app_file(url)
+    except appfetch.FetchError as exc:
+        return _error(str(exc))
+    return JSONResponse({"file": file.replace(os.sep, "/")})
 
 
 @router.post("/api/appfile/open")

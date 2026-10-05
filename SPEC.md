@@ -613,17 +613,17 @@ const page = await fused.runPython("./reader.py",
 
 ## 12. macOS Distribution (DMG) — M3
 
-Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
+Distribute as a DMG containing a menu-bar app. On macOS the UI lives in the app's own windows — `NSWindow` + `WKWebView` on the in-process server (`fused_render/mac_window.py`, decisions in `window_policy.py`): one shell window at launch, and a new window for what would have been a new tab (`target=_blank`, `window.open`, ⌘-click, a Finder open, a deep link). External links go to the default browser; "Open in Browser" (title bar, View menu, popover) still hands the current page to it. Windows and Linux stay browser-based. Should the window manager fail to build, every surface falls back to a browser tab.
 
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
 - **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and a documented library list may not promise a library the app lacks (`test_the_documented_library_list_only_promises_what_ships`, over `skills/fused-render-authoring/SKILL.md` — the Learn page's own table was the second copy that test pinned until the learn content left the app, D419). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
 - **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
-- **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open browser.
+- **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running (a second source run) ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open a Home window (`FUSED_RENDER_NO_BROWSER=1` suppresses it). A Dock click on the running app brings the front window forward, or opens a Home window when none is open.
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
 - **DM-9** **Quit is an ordered teardown that ends in `os._exit`, never in AppKit's termination (D357).** Every surface — the popover/tray Quit, the `fused-render://relaunch` deep link, and AppKit's own Dock-menu Quit / ⌘Q / logout-restart (via an `applicationShouldTerminate:` added to rumps' delegate class) — funnels through `app.begin_quit`, which claims exactly ONE teardown under `_quit_lock`, removes the pidfile on the calling thread, and runs `quit_teardown` off the AppKit main thread in a fixed order: drain the server → close duckdb (the reader's stashed HTTP connection AND duckdb's default connection) → detach every mount through the rc-unmount → force-unmount ladder → reap rcd. Each rung is a precondition of the next and each is independently guarded, and the whole thing is bounded by `QUIT_HARD_DEADLINE_S`, DERIVED from the imported budgets of the steps it waits on — an app that cannot be quit is worse than one that quits with a mount attached. When the teardown finishes (or that deadline fires) the shared `quit_ready` event is set and the process dies via `app.hard_exit` → a bounded log flush (`logging.shutdown()` on a daemon thread, joined for `QUIT_LOG_FLUSH_S`) + `os._exit`. Work that must complete before the process can die cannot be sequenced after `begin_quit` returns — a teardown with nothing to unmount can finish first — so it hangs off `begin_quit`'s `on_claim` hook, which runs inside the claim; the `fused-render://relaunch` spawn is the one caller. It must NOT die via `-[NSApplication terminate:]`/`exit()`: that runs `__cxa_finalize` over every dylib's static destructors with the GIL released (pyobjc drops it for the ObjC call), and a native extension's C++ global touching the Python C-API on the way out aborts the process after a teardown that fully succeeded (INCIDENT 2026-07-29 and 2026-08-19; D357 has the measurements). Skipping atexit and Python finalization is sound precisely because the teardown above is the shutdown. The AppKit hook still answers `NSTerminateLater` so the teardown stays off the main thread; `replyToApplicationShouldTerminate:` survives only as the last resort for a hard exit that somehow returned.
-- **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens a browser tab at `/view/<path>`. Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file view (no stray home tab).
+- **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens in a window of its own at `/explorer/view/<path>` (a `.fused` at its embed URL, D390). Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file window (no stray Home window). Each app and file remembers its own window frame (`window_policy.frame_autosave_name`); a second window of the same thing cascades from the first.
 
 ## 12b. Milestones
 
@@ -1394,6 +1394,11 @@ never imports server).
   (CL-7), a second "Logs" heading beside the Call log section read as the call
   log's own settings. The durable log a user has settings for is the call log
   (§31); the disposable one belongs to the process, not to preferences.
+  **Amended by D1307:** the page now has a **Diagnostics** section whose one
+  action is "Save diagnostics…" (`POST /api/diagnostics`, previewed by
+  `GET /api/diagnostics/plan`, DG-18). The log itself is still not shown or
+  configured here: the section packs it into a zip the user chooses to send;
+  it does not bring back a second "Logs" heading.
 
 ### 20.4 Deploy to Fused account — **REMOVED**
 
@@ -2117,6 +2122,39 @@ when one exists, else the folder itself.
   and files the payload does not carry stay; then a reload of the copy's
   entry page) and *Cancel* / close (nothing written, keep working on the
   copy). `/api/clone/info` and `POST /api/clone` stay git-only.
+- **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
+  a .fused>`, the link percent-encoded once by the sender and decoded once
+  here, verbatim to end-of-string like `git=`/`file=`. Render App's
+  `render-app://open?url=` ported one-to-one (fused-render-lite PRs #27/#30):
+  a web page's "Open in fused-render" link. Same no-page shape as DL-7:
+  `GET /clone` answers a 303 to Home with the link as `?_fetch_appfile=`
+  (nothing is on disk yet, and nothing is written on the GET, D3; a non-http(s)
+  payload rides along verbatim so the shell reports it). The shell's
+  `FetchAppFileBoot` (top document, `!IS_EMBED`, beside `EditAppFileBoot`)
+  reads the param once, strips it before any async work, then **downloads
+  without a confirm step** (owner call; the link click is the gesture) through
+  the X-Fused `POST /api/appfile/fetch {url} → {file}` (`appfetch.py`: http(s)
+  only, every redirect hop re-checked, 1 GB cap by `Content-Length` and while
+  streaming, temp file validated with `appfile.read_manifest` then
+  `os.replace`d, nothing left on disk on failure) into
+  `~/.fused-render/downloads/<app_id>.fused` — keyed on the app's stable id
+  (D884) so every link to one app updates one file and one Apps-hub row;
+  `<name>-<url sha 8>.fused` for files that predate the id — and opens the
+  saved file **as an app**, the Finder double-click shape (D390), never the
+  explorer's view of it: the top document hard-loads the file's embed URL
+  (a full load, since the embed/view prefix is read once at module init),
+  where the `fusedapp` template runs it and `exported_apps.record_open`
+  lists it under recents. Deliberately not `POST /api/windows/open`: a deep
+  link always arrives in a fresh native window parked on Home by the 303, and
+  loading the embed there makes that window the app's own (the URL observer
+  re-keys it, the title-bar Edit button is the way into the explorer) instead
+  of leaving it orphaned beside a second one. In a browser tab the same load
+  lands under the EmbedStrip, whose "Open in explorer" is the way out. A re-click on a link to
+  a NEW version of the same app overwrites the one saved file, extracts the
+  new bytes, and keeps everything the app saved in `.fused` (AF-13's shared
+  state dir): app files replaced, state retained. Recorded cost of the
+  missing gate: a web page that can navigate the browser to this origin with
+  `?_fetch_appfile=` gets a remote `.fused` downloaded and opened unprompted.
 
 ---
 
@@ -2522,9 +2560,13 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
 - **CL-7** **Store.** `~/.fused-render/logs/<partition>/<date>-<pid>-<part>.calls.jsonl`
   — append-only JSONL under the branch-aware shell home, partitioned per app
   (CL-18). The root is `logs/`, which is NOT where `logs.py` writes: the app log
-  is disposable and lives in the system temp dir (D68), while this store is
-  durable and pruned by code (CL-10), so the two never share a directory despite
-  both being called logs in the UI.
+  has its own home and retention (DG-1, D1307; under D68 it lived in the system
+  temp dir), while this store is durable and pruned by code (CL-10), so the two
+  never share a directory despite both being called logs in the UI. On macOS
+  the app log is in `~/Library/Logs/fused-render/`; on Windows/Linux it is
+  `<home>/logs/app/` — a subdirectory beside the call partitions, but still its
+  own directory: the store's walks match only `.calls.jsonl` names, so nothing
+  in `app/` is ever read as a call record.
   One file per day per
   process (per-pid for the same reason `logs.py` is: two live servers must not
   interleave lines, and the reader merges the day back together, CL-12), rolled
@@ -2578,7 +2620,8 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   nothing — accepted: such a process is also adding nothing, and the next
   session that makes a single call clears the backlog.) D68 chose the temp dir
   for the app log precisely because "nothing prunes the directory"; this store
-  is durable instead, so the pruning is code.
+  is durable instead, so the pruning is code. (D1307 later gave the app log a
+  persistent home with its own boot-time prune, DG-1/DG-3.)
 - **CL-10** **Reads of the store are recorded like any other call; nothing
   *watches* a store file.** Everything that opens the store (`log_studio`,
   `code`, `duckdb`, `tree`) **is** logged: what a viewer costs to open a large
@@ -9503,7 +9546,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   own `generate_two_stage` builds real I2V conditioning at both stages for
   the ONE image it is given, and a multi-anchor surface is unverified on this
   app's hardware, not merely unimplemented. Path resolution — page-relative
-  to `base`, existence, is-a-file — runs through `_resolve_reference_image`
+  to `base`, existence, is-a-file — runs through `_resolve_reference_file`
   in `ai_runtime.py`, the same function `/api/ai/image`'s `image` calls,
   rather than a third hand-rolled copy of `/api/ai/transcribe`'s own `path`
   rule; the two routes' error text differs only in which bridge function it
@@ -10166,6 +10209,28 @@ an AI Models page that could say what was on disk but not what was *running*.
   worker reports every question whose sequence hit the ceiling as a D633-style
   entry in the reply's `warnings[]` (`{type: "other", message: "…state was cut to
   N tokens…"}`) — `usage.inputTokens` sitting at the ceiling is the other tell.
+- **AI-32** **`text-to-speech` capability and `fused.ai.speech({text, ...})` verb,
+  Qwen3-TTS through `mlx-audio` (D1306).** One LOCAL runner, `mlx-audio-tts`
+  (Apple Silicon, own venv). The Hub tag is format-gated like AI-31: a snapshot
+  is claimed only with `model_type: "qwen3_tts"` and a `speech_tokenizer/`
+  folder; a search hit needs the `qwen3_tts` tag on an `mlx-audio` card.
+  Each model has one voice mode from `tts_model_type`: `preset` (CustomVoice,
+  `voice` + optional `instruct`), `clone` (Base, `refAudio` + `refText`) or
+  `design` (VoiceDesign, `instruct`). `formats.speech_traits(config)` reads the
+  mode, the sorted voices and the non-dialect languages; `formats.speech_options`
+  checks the options against them and fills the default voice (the first
+  listed). The route and the worker both call these, so they cannot disagree.
+  `POST /api/ai/speech` follows the video route: closed options, local only,
+  `refAudio` resolved beside the page named by `base`, job-backed, output
+  `<home>/ai/speech/*.wav` (mono 16-bit, 24 kHz). The worker splits the text
+  itself, because mlx-audio makes preset, design and clone audio in one pass
+  capped at 4096 tokens (about 5.7 min): blank lines start a paragraph (0.5 s
+  pause), and sentences are packed into parts of at most 600 characters.
+  Progress is per part, from a hook on `qwen3_tts.tqdm`.
+  The catalog lists five mlx-community bf16 repos, smallest first, so the
+  default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
+  `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
+  the benchmark leave it out.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
@@ -10823,8 +10888,9 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   knows only the install root still cannot see the two places that most often
   hold the fault: `~/.fused-render` (settings, the template registry, the staged
   core templates) is named as a DIFFERENT place, since a reinstall replaces one
-  and never touches the other; the per-pid log is named as a glob (it lives in
-  the system temp dir, `fused_render/logs.py`); and the `raw` steps now say to
+  and never touches the other; the per-pid log is named as a glob (since D1307 it
+  lives in `~/Library/Logs/fused-render/fused-render-*.log` on macOS — it was
+  `"${TMPDIR:-/tmp}"/fused-render-*.log` — `fused_render/logs.py`); and the `raw` steps now say to
   check whether the server is running before concluding the app is broken —
   "Failed to fetch" at boot is far more often a dead process than a broken app.
   Pinned across both copies by `tests/test_trouble_parity.py`: a find command in
@@ -10996,6 +11062,23 @@ else: no editor, no Claude, no explorer chrome.
   Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
+- **AF-13** Shared `.fused` state per app id (port of Render App's lite PR
+  #32). Extracts are content-addressed (AF-6), so every re-export of an app
+  lands in a fresh dir and the state the app saved under `<extract>/.fused`
+  (D548, §47) used to stay behind. Now `open_app_file` makes
+  `<extract>/.fused` a symlink (a directory junction on Windows) to
+  `~/.fused-render/fused_data/<app_id>` for every file carrying a stable id
+  (D884): every extract of one app reads and writes one state dir, and
+  `app_fused_dir.ensure` scaffolds `data`/`cache`/`meta.json` through the
+  link on render exactly as before. **An update to the same app replaces the
+  app's files and keeps everything inside `.fused`** — the DL-8 contract. An
+  older extract that holds a real `.fused` dir is migrated on its next
+  non-preview open: its contents move into the shared dir when that is still
+  the bare scaffold, else the shared state wins and the local copy goes.
+  Files without an id keep local state, as before. Best-effort: a link that
+  cannot be made leaves the state local rather than failing the open.
+  `rmtree` of a damaged extract does not follow the link, so a rebuild never
+  touches the shared dir.
 
 ## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 
@@ -11986,3 +12069,278 @@ per-row fix.
   unrun on-demand row, since its findings would describe a folder that no
   longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
   findings real.
+
+## 49. App Python, Called Directly — Bots Run a Folder's `.py` Without the Page
+
+Goal: an app folder's `.py` files are the app's capability; the page is one UI
+over them. A bot (OpenBot's `py` action, a Claude-harness bot, any local
+script) can run one **without rendering the page**, with the page's own
+semantics, so a bot that builds an app can also drive it at the lowest level
+the app has. What a bot knows about those files is what the app's author
+wrote down in the app's `SKILL.md`, never something parsed out of the code.
+Design pages: https://claude.ai/artifact/YaEJWf5qDuj3jUN4gAr6XJ (runner),
+https://claude.ai/artifact/PDhNwAeVBVfuAvNyrxicMz (SKILL.md discovery).
+
+- **AP-1 One runner.** Execution is `POST /api/run` `{py, html, params}`
+  (§PY-6) — the identical call the page's `fused.runPython` makes, with an
+  absolute `py` (`resolve_py` never needed the page). Nothing bot-specific
+  lives in that handler: engine preference, the missing-module diagnosis, the
+  folder-busy gate, the call log, git-status invalidation and the
+  `{ok, result, error:{type,message,traceback}, stdout, resolved_py,
+  duration_ms}` envelope are what the bot sees because they are what the page
+  sees. The 60 s bound (`DEFAULT_TIMEOUT`) is the bot's bound; there is no
+  bot-only budget, since a file that only works with one would then fail in
+  the page. There is no pre-flight arg check: `_binding.bind_params` drops a
+  key `main` does not take (silently, as it does for the page) and a missing
+  required one comes back as the runner's `ParamError` envelope — the bot's
+  cue to re-read the skill.
+  **Rejected:** a synthesized manifest-less tool through the openfused
+  `fused app serve` runner inside the bot's worker (a second semantics —
+  requirements venv instead of the engine pref, 180 s, no call log — and a
+  bundled `fused` import an exported copy of the bot lacks); a wrapper
+  endpoint that would add only a name.
+- **AP-2 Discovery is the app's `SKILL.md`, read by the caller.** One file
+  at the app root beside `index.html` (so it ships in a `.fused` export and
+  a clone), in Claude Code skill shape: YAML frontmatter `name` +
+  `description` (one line: what the app does for a bot), optional
+  `approve: [file.py, …]`, then prose for the model with one fixed
+  convention — a `## <file>.py` heading per callable file. That heading is
+  the only thing a caller parses out of the body: a file is callable only
+  when it exists AND has a section, so the approval card always has the
+  author's own line to show. The caller reads the file off disk (same Mac);
+  the server has **no** discovery route. An app without `SKILL.md` has no
+  bot-callable Python — a bot uses its page. **Rejected:** the AST listing
+  (`GET /api/apps/python` over `pyinspect.py`, PR #1359), removed: it showed
+  a signature but not what a call means or changes, and an author could not
+  correct it; a structured per-file `params:` schema in frontmatter (the
+  same drift as the AST, in YAML); a `GET /api/apps/skill` route (an
+  `open()` behind HTTP). `templates/mcp/inspect_app.py` keeps its own AST
+  read for the MCP panel's tool curation — a different feature.
+- **AP-3 Daemon apps.** A §46 resident process is not reachable through
+  `/api/run`; its `SKILL.md` says so in prose and documents only the
+  `main()` files a bot can run.
+- **AP-4 Author contract** — the "App SKILL.md" section of
+  `skills/fused-render-authoring/SKILL.md` (the skill every builder task
+  already loads; no separate skill): per file a top-level sync annotated
+  `main(**params)` (`_binding.coerce` still coerces by annotation inside
+  `/api/run`), JSON-native return, no argv/stdin, ≤ 60 s (longer →
+  `fused.trackJob` or a daemon), secrets never in params; per file a
+  `SKILL.md` section with what it does, what it changes, args, return shape
+  and one example call. Every change to a `.py` updates its section in the
+  same edit.
+- **AP-5 Approval is the caller's.** The server runs what it is asked; the
+  gate lives in the bot: OpenBot runs a `py` call at once when the folder is
+  one of that bot's own builds and pauses for the user otherwise, showing the
+  first line of the file's `SKILL.md` section. Frontmatter `approve:` can
+  only **add** a pause (an own build's destructive file); nothing in a
+  `SKILL.md` can remove one, since the author of a foreign app is not the
+  user.
+
+## 50. Diagnostics — Telling a Slow Server From a Dead One (D1307)
+
+Goal: when the shell's red "fused-render isn't running" card appears, or a
+"Python quit unexpectedly" dialog does, the user can hand over one zip that
+says which of three things happened. **No platform self-restarts a dead
+server** — on macOS uvicorn runs on a daemon thread inside the AppKit process
+and nothing watches it; on Windows/Linux the desktop supervisor turns
+`SERVER_DIED` into a dialog and exits 1 — so a card that clears by itself is
+the banner's own down→reconnected cycle, never a restart. Every process in
+the bundle runs as `Contents/MacOS/python`, so the crash dialog is usually a
+child. The three causes the records must discriminate:
+
+- **(A) Slow server** — the probe arrived and was answered late.
+- **(B) Probe queued in the browser** — HTTP/1.1's 6-connections-per-origin
+  cap held it behind busy app requests; the server never saw it.
+- **(C) A child died** — an index worker, AI worker, engine daemon, claude
+  session host or similar.
+
+Nothing here leaves the machine on its own. Every record stays on the user's
+disk and leaves only inside a zip the user chooses to send (D421's posture).
+
+### 50.1 Log home and retention
+
+- **DG-1 Log home.** The app log's directory is `~/Library/Logs/fused-render/`
+  on macOS (so Console.app lists it) and `<home>/logs/app/` on Windows/Linux,
+  where the desktop supervisor sets `FUSED_RENDER_LOG_DIR` to that
+  subdirectory. `FUSED_RENDER_LOG_DIR` still overrides on every platform. The
+  home is persistent: the system temp dir (D68's default) is erased by the
+  reboot every reporter does before reporting. It holds the per-pid session
+  logs (DG-2), relaunch logs, `crash/` (DG-11), `outages.jsonl` (DG-9) and
+  `resources.jsonl` (DG-16). On Windows/Linux it sits beside the call-store
+  partitions but is not one of them (CL-7). **Rejected:** staying in
+  `$TMPDIR`; one path on every platform (Console.app visibility on macOS is
+  worth the split).
+- **DG-2 Session log.** One `fused-render-<pid>.log` per process (D68's
+  per-pid reasoning unchanged), `RotatingFileHandler` at **10 MB × 3 files** (the
+  current one + 2 backups; was 2 MB × 2), sized so one session holds a 24 h window: a visible tab
+  writes one health access line per 5 s, about 1.5 MB/day. The formatter adds
+  `[pid threadName]` to every line. The boot line carries the process's
+  `boot_id` (DG-7). Lines stay plain text — the reading recipe (DG-22) is
+  greps; a JSONL app log stays on the SV-3 backlog.
+- **DG-3 Retention.** `prune_log_home` runs at boot and keeps the newest 10
+  sessions within 150 MB total, oldest out first (both caps evict the oldest session; 150 MB holds at least two full 30 MB sessions, so the one that just crashed survives its own relaunch). This answers D68's reason for
+  using temp ("nothing prunes the directory").
+- **DG-4 uvicorn reaches the root logger.** uvicorn's default
+  `LOGGING_CONFIG` sets `propagate=False` on `uvicorn` and gives it its own
+  stderr handler, so ASGI tracebacks, bind errors and lifespan failures went
+  to a stderr nobody reads on a Finder launch (D68 claimed otherwise). Every
+  `uvicorn.Config` (`app.py`, `cli.py`, `lan.py` ×2) is passed
+  `log_config=logs.uvicorn_log_config()`: `uvicorn` and `uvicorn.error`
+  propagate to root; `uvicorn.access` stays silent, because
+  `server/common.py`'s middleware already writes one request line with its
+  duration (SV-3). **Rejected:** `dup2` of fd 2 onto the log file (fights the
+  handler's rename-and-reopen on rotation).
+- **DG-5 Reveal the directory.** The tray's "Open app logs" and the macOS
+  menu's "Show App Logs in Finder" reveal the log home, not the current pid's
+  file — the evidence is as often in an earlier session's file, the crash
+  files or the JSONL trails beside it.
+
+### 50.2 Health route and outage record
+
+- **DG-6 `GET /api/health`.** `async`, no dependencies; returns `{boot_id,
+  pid, started_at, uptime_s, version}`. It is what the shell's liveness
+  banner probes. `/api/config` is not a probe: it is sync, takes the update
+  manager's `RLock` and may fork the FDA probe, so under load it reports
+  "down" for the very reason it is slow. The shell still fetches
+  `/api/config` about every 60 s for `version`/`installed_version`/`dev`.
+  **Rejected:** new fields on `/api/config`; reusing `/api/desktop/ready`
+  (sync, and part of the supervisor-token handshake).
+- **DG-7 `boot_id`.** Minted once per process in `fused_render/health.py`,
+  stamped into the app log's boot line and into `server.json` (D472). A
+  different `boot_id` before and after an outage means a restart; the same
+  one means the server never went away.
+- **DG-8 Client classification.** Each failed probe is tagged `timeout`,
+  `refused`, `http-5xx`, `http-other` or `parse`. The card shows after **3**
+  consecutive failures (`FAIL_THRESHOLD`, was 2). After the first `timeout`
+  the shell shows an amber "slow" line, so a slow server reads as slow, not
+  as down.
+- **DG-9 Outage record.** On recovery the shell `POST`s `/api/health/outage`
+  with `{t_down, t_up, strikes, kinds, boot_id_before, boot_id_after,
+  visible, page, latencies_ms, recovered}`; the server appends it to
+  `<log home>/outages.jsonl`. **Rejected:** a `localStorage`-only trail (a
+  reporter cannot hand it over); a general telemetry endpoint (D421).
+- **DG-10 Partial record on unload.** `pagehide` during an open outage
+  flushes the record so far by `navigator.sendBeacon`. A beacon carries no
+  custom headers, so the route accepts a bare JSON body.
+
+### 50.3 Crash hooks and child exit reporting
+
+- **DG-11 `crashlog.install(kind)`.** Every long-lived Python process calls
+  it at startup. It opens `<log home>/crash/<kind>-<pid>.log` and keeps that
+  fd for `faulthandler.enable` (a native fault writes its stack there),
+  registers `faulthandler` on `SIGTERM` with `chain=True`, and routes
+  `sys.excepthook` and `threading.excepthook` to the root logger. The file
+  is created empty and removed on clean exit; the packaged app's
+  `quit_teardown` calls `crashlog.release()` itself, because `os._exit` skips
+  `atexit`. Children that cannot import the package by design (the
+  env-install worker, D152; the AI worker base, stdlib-only on the runner's
+  venv; the claude session host, the runpy child and the engine worker, all
+  run by path) instead call `faulthandler.enable()` on their own stderr, which
+  their parent already captures to a file — so their native stacks land in
+  that file rather than in `crash/`. **Rejected:** faulthandler on the rotating log (needs an fd that
+  rotation never swaps out); `PYTHONFAULTHANDLER=1` (writes to the inherited
+  stderr, which is `/dev/null` under Finder).
+- **DG-12 Reading a crash file.** **Non-empty = a native stack** (segfault,
+  abort, or a SIGTERM dump). **Empty at collection = the process did not exit
+  cleanly**: SIGKILL and jetsam are invisible to every handler, so the
+  leftover empty file is their only trace. Absent = clean exit.
+- **DG-13 Install sites.** The app (`app.main`, kind `app`), `cli serve`
+  (`server`), the index worker and watcher, `_child.py`, the AI
+  `worker_base`, `engine_worker`, the claude `session_host`, the env-install
+  worker and the desktop supervisor.
+- **DG-14 Parents record how a child died.** `crashlog.describe_exit(code)`
+  turns a return code into words (−9 → "killed by SIGKILL: … memory pressure
+  (jetsam) …", SIGSEGV, SIGABRT …); `report_child_exit(kind, pid, code,
+  log_path)` logs a WARNING with that text and the last 2000 characters of
+  the child's stderr file. Three sites that used to lose this:
+  `index/runner.py` keeps the `Popen` and polls `returncode` beside its 90 s
+  mtime check; `ai/supervisor.py`'s `_drop_gone` reads the code and tail
+  before deleting the worker's log; `engine_host.py` reports the dead daemon
+  before it respawns one. **Rejected:** a central child registry (the parent
+  already holds the `Popen`).
+- **DG-15 No child writes to `DEVNULL`.** The claude `session_host` and the
+  Swift Apple helper get stderr files, so DG-14 has a tail to read.
+
+### 50.4 Resource trail
+
+- **DG-16 `health.ResourceTrail`.** One JSON line every 20 s to
+  `<log home>/resources.jsonl`: server RSS and footprint, children's RSS
+  grouped by sysmon kind (`index`, `engine`, `model`, `claude`, …), host
+  memory total/used, swap used, load average, thread count. A ~24 h ring
+  (4400 lines). It runs whatever the Monitor pref says — that pref gates UI
+  only. Cost: one process-tree walk per 20 s. **Rejected:** asking reporters
+  to turn Monitor on (1 s cadence, 120 s of memory-only history); sampling
+  only once something is slow (the minute before is what matters).
+
+### 50.5 Diagnostics bundle
+
+- **DG-17 One builder, files only.** `diagnostics.build_bundle(since_s,
+  out_dir, *, reveal)` reads files and runs read-only OS commands; it needs
+  no running server.
+- **DG-18 Three callers.**
+  - Menu bar **"Save Diagnostics…"** — in-process, so it works while the
+    server thread is dead.
+  - Preferences → **Diagnostics** — `POST /api/diagnostics`, with a
+    `GET /api/diagnostics/plan` preview ("N files · M MB · K crash reports")
+    before the user commits (PF-5).
+  - CLI **`fused-render diagnose [--since 2h] [--out DIR]`**. The packaged
+    app puts no `fused-render` wrapper on PATH, so support instructions give
+    `/Applications/FusedRender.app/Contents/MacOS/python -m fused_render.cli diagnose`.
+
+  **Rejected:** a button in the red down card — it cannot reach a dead
+  server, and in the false-positive case the moment has passed by the time
+  anyone clicks.
+- **DG-19 Output, window, caps.**
+  `~/Desktop/fused-render-diagnostics-<timestamp>.zip` unless `--out` says
+  otherwise. Window = max(24 h, since boot), widened by `--since`.
+  Unbounded logs are tailed to 512 KB; the whole bundle is capped at 64 MB.
+  Paths inside files are kept as they are: they are evidence.
+- **DG-20 Layout.**
+
+  | Path in the zip | Contents |
+  |---|---|
+  | `manifest.json` | schema, versions, install method, platform, RAM, `boot_id`s, window, files collected and files skipped with the reason |
+  | `app/` | session logs and relaunch logs from the log home AND the legacy temp dir; `crash/`; `outages.jsonl`; `resources.jsonl` |
+  | `os/DiagnosticReports/` | `*.ips` in the window matching `FusedRender`, `python`, `fused-apple-ai` or `rclone` |
+  | `os/unified-log.txt` | `log show` for kernel `memorystatus:` (jetsam) lines, the memorystatus subsystem, the app's RunningBoard assertions (App Nap) and the Swift helper — NOT every line our processes emit (27 MB per 2 h of WebKit chatter, measured). **The one slow step**: a fixed ~15 s per hour of window, so the span is capped at 2 h, the timeout is 45 s and a timeout keeps the partial output (marked `truncated`). Opt-in from Preferences (checkbox, off by default) and `fused-render diagnose --no-system-log`; the menu-bar item always includes it, because the reporter's bundle is the one that must carry the memory-kill evidence. 8 MB cap |
+  | `os/memory.txt` | `sysctl hw.memsize vm.swapusage`, `memory_pressure`, `vm_stat` |
+  | `os/ps-tree.txt` | the process tree at collection time |
+  | `index/` | newest 5 index runs |
+  | `ai/` | AI worker logs |
+  | `engines/` | engine `daemon.log` tails |
+  | `envinstall/` | env-install logs |
+  | `claude/` | claude run `err.log` tails only |
+  | `calls/` | `*.calls.jsonl` in the window (§31) |
+  | `state/` | `server.json` minus its token; `current_apps.json`, `background_apps.json`, `registered_apps.json`; `claude-health.json`; `rcd.log` tail; `prefs.json` redacted |
+  | `desktop/` | `server-console.log` and `supervisor.log` tails (Windows/Linux) |
+
+- **DG-21 Never collected.** openfused secrets and credentials,
+  `rclone.conf`, `lan_tls/`, `claude-config/`, drafts, `held_answers`, and
+  claude `out.jsonl` (the conversation itself). `server.json` loses its
+  token and `prefs.json` is redacted before either enters the zip.
+- **DG-22 Reading a bundle.** For a red card at a reported time:
+  1. `app/outages.jsonl` — find the row at that time. `boot_id_before !=
+     boot_id_after` ⇒ the server restarted; step 4 says why.
+  2. Same `boot_id` ⇒ grep the session log for `GET /api/health` access
+     lines in that minute. Present and slow ⇒ **(A)**; absent ⇒ **(B)**, the
+     probe never arrived.
+  3. `app/resources.jsonl` — the two minutes before `t_down`: memory, swap,
+     load, which child kind grew.
+  4. `app/crash/` (DG-12), `os/DiagnosticReports/`, and child-exit WARNING
+     lines (DG-14) in the session log ⇒ **(C)**, and which child.
+  5. `state/current_apps.json` — which apps were live.
+
+### 50.6 Watchdog
+
+- **DG-23 The server thread is watched.** `app.watch_server_thread` checks
+  the uvicorn thread every 3 s once the server is ready. A dead thread ⇒ a
+  CRITICAL log line, an `outages.jsonl` event `server-thread-died`, and the
+  normal quit path, so the user relaunches into a known state instead of a
+  shell that can never reconnect. **Rejected:** re-running `server.run()`
+  in-process (app state after an uncaught exception on that thread is
+  unknown).
+
+**Deferred (not D1307):** index worker memory and `Pool` hangs; orphaned AI
+workers; the 6-connection cap itself and OpenBot's `HEAD` poll; App Nap; the
+~40 fork-path spawns; a JSONL app log (SV-3); pruning claude run dirs and
+capping template `daemon.log`.

@@ -15,7 +15,7 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
 
 import { TerminalDockView } from "@shell/TerminalDock";
 import { resetExclusiveSectionsForTests, useExclusiveSection } from "@platform/lib/exclusiveSection";
-import { resetTerminalDockForTests, toggleTerminalDock, useTerminalDockOpen } from "@shell/terminalDockStore";
+import { resetTerminalDockForTests, toggleTerminalDock, useTerminalDockOpen } from "@platform/lib/terminalDockStore";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];

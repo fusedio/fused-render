@@ -256,19 +256,21 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
       next.stage === state.stage &&
       next.requestedAt === state.requestedAt &&
       next.fails === state.fails &&
-      next.before === state.before
+      next.before === state.before &&
+      next.outage === state.outage &&
+      next.answered === state.answered
     ) {
       return;
     }
     const changed = next.stage !== state.stage || next.requestedAt !== state.requestedAt;
-    // THE RECORD DIES WITH THE FLOW. `back` and `gave-up` are both ENDINGS —
+    // THE RECORD DIES WITH THE FLOW. `back`, `gave-up` and `stuck` are all ENDINGS —
     // there is no longer a restart for another window to join — and a record
     // that outlived them would be adopted by the very page that reloads onto
     // the new version, putting a blocking dialog up to congratulate the user on
     // a server that has been fine for a minute. Note this is NOT
     // `restartInFlight`: `back` is still on screen (the reload is a beat away)
     // and is nonetheless the end of the story.
-    const over = (s: RestartState) => s.stage === "back" || s.stage === "gave-up";
+    const over = (s: RestartState) => s.stage === "back" || s.stage === "gave-up" || s.stage === "stuck";
     const ending = !over(state) && over(next);
     state = next;
     if (ending) write(null);

@@ -35,6 +35,9 @@
    pg-* stage/sidebar rules over that page's chrome. */
 @import "./styles/ai-playground.css";
 @import "./styles/mounts.css";
+/* The /monitor process monitor (shell/monitor) — after fields/buttons so its
+   compact toolbar controls override their 32px defaults by order. */
+@import "./styles/monitor.css";
 /* After mounts.css for the same reason mounts.css sits after preferences.css:
    the scheduled-messages page is another settings-family surface that only adds
    its own row layout over the .prefs-* / .field-* / .btn vocabulary above. */

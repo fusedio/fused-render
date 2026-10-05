@@ -62,6 +62,7 @@ VECTOR = (
 )
 TABLE = (".parquet", ".geoparquet", ".csv", ".tsv", ".xlsx", ".xls")
 PMTILES = (".pmtiles",)
+POINTCLOUD = (".las", ".laz")
 QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019"}
 
 
@@ -85,6 +86,8 @@ def kind(name: str) -> str:
         return "python"
     if lowered.endswith(PMTILES):
         return "pmtiles"
+    if lowered.endswith(POINTCLOUD) or re.search(r"(^|[/\\])ept\.json$", lowered):
+        return "pointcloud"
     if lowered.endswith(RASTER):
         return "raster"
     if lowered.endswith(VECTOR):

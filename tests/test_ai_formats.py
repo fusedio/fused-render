@@ -128,6 +128,10 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names={formats.LAYA_AGENT_CONFIG},
         dirnames={formats.LAYA_ENCODER_DIR}, config={}, torch_weights=False))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={"config.json", "model.safetensors"},
+        dirnames={formats.QWEN3_TTS_TOKENIZER_DIR},
+        config={"model_type": formats.QWEN3_TTS_MODEL_TYPE}, torch_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -569,6 +573,69 @@ def test_pick_gguf_file_excludes_auxiliary_weights_by_name():
     # auxiliary and NONE of them may be offered as a fallback.
     names.remove("m-Q4_K_M.gguf")
     assert formats.pick_gguf_file(names) is None
+
+
+def test_gguf_candidate_files_accepts_sibling_dicts_or_bare_names():
+    """Item 5: `hub_models._count_variants` reads `raw["siblings"]`, which is
+    a list of `{"rfilename": ...}` dicts — either shape must work with no
+    caller-side unwrapping."""
+    dicts = [{"rfilename": "m-Q4_K_M.gguf"}, {"rfilename": "m-Q8_0.gguf"}]
+    assert formats.gguf_candidate_files(dicts) == ["m-Q4_K_M.gguf", "m-Q8_0.gguf"]
+    names = ["m-Q4_K_M.gguf", "m-Q8_0.gguf"]
+    assert formats.gguf_candidate_files(names) == names
+
+
+def test_gguf_candidate_files_excludes_the_same_auxiliary_files_pick_gguf_file_does():
+    """`GGUF_AUXILIARY_RE` is shared with `pick_gguf_file` — a helper weight
+    can never count as a variant here while still being excluded from that
+    picker's own candidacy, or vice versa. (Split shards are handled
+    separately — see the collapsing test below — since a shard set IS a
+    real, downloadable-in-principle quantization for a variant count, even
+    though `pick_gguf_file` refuses it outright for a different reason: its
+    single-file download path cannot assemble one.)"""
+    names = [
+        "m-Q4_K_M.gguf", "m-mmproj-Q8_0.gguf", "m-draft-Q8_0.gguf",
+        "vision_f16_projector.gguf",
+    ]
+    assert formats.gguf_candidate_files(names) == ["m-Q4_K_M.gguf"]
+
+
+def test_gguf_candidate_files_collapses_a_shard_set_to_its_first_part():
+    """A multi-part shard set is ONE quantization, not one entry per shard —
+    the caller wants a variant count, not a file count."""
+    names = [
+        "m-Q8_0-00001-of-00003.gguf",
+        "m-Q8_0-00002-of-00003.gguf",
+        "m-Q8_0-00003-of-00003.gguf",
+        "m-Q4_K_M.gguf",
+    ]
+    assert formats.gguf_candidate_files(names) == [
+        "m-Q8_0-00001-of-00003.gguf", "m-Q4_K_M.gguf",
+    ]
+
+
+def test_gguf_candidate_files_ignores_subdirectory_entries():
+    names = ["BF16/m-BF16.gguf", "m-Q4_K_M.gguf"]
+    assert formats.gguf_candidate_files(names) == ["m-Q4_K_M.gguf"]
+
+
+def test_gguf_file_is_downloadable_refuses_a_shard_part_but_allows_a_whole_file():
+    """Item 3 (code review): `gguf_candidate_files` keeps shard part 1 to
+    COUNT a multi-part quant as one variant, but that single file is not
+    fetchable on its own — `gguf_file_is_downloadable` is the one-line test
+    every caller that turns a candidate into an offered download must run."""
+    assert formats.gguf_file_is_downloadable("m-Q8_0-00001-of-00003.gguf") is False
+    assert formats.gguf_file_is_downloadable("m-Q4_K_M.gguf") is True
+
+
+def test_gguf_repo_for_resolves_a_curated_key_and_passes_through_a_bare_repo():
+    """Item 1 (code review): `gguf_repo_for` is the one shared mapping both
+    `llama_text.download` and `ai_runtime._repo_gguf_siblings` must use so a
+    curated `GGUF_RECIPES` filename key and an uncurated bare repo id cannot
+    resolve to different answers in the two call sites."""
+    entry_id, recipe = next(iter(formats.GGUF_RECIPES.items()))
+    assert formats.gguf_repo_for(entry_id) == recipe["repo"]
+    assert formats.gguf_repo_for("some/uncurated-repo") == "some/uncurated-repo"
 
 
 def test_pick_gguf_file_ranks_unsloth_dynamic_quants_below_plain_quants():
@@ -1241,3 +1308,67 @@ def test_the_curated_row_survives_the_hint():
     discharge that, so the row must still be there."""
     assert ("mlx-community/nomicai-modernbert-embed-base-bf16"
             in formats.TEXT_EMBED_SCHEMES)
+
+
+def test_a_qwen3_tts_snapshot_needs_its_speech_tokenizer():
+    kwargs = dict(repo_id="x/y", names={"config.json", "model.safetensors"},
+                  config={"model_type": "qwen3_tts"}, torch_weights=True)
+    assert formats.loaders(dirnames={"speech_tokenizer"}, **kwargs) == ("mlx-audio-tts",)
+    assert "mlx-audio-tts" not in formats.loaders(dirnames=set(), **kwargs)
+
+
+def test_speech_traits_read_the_qwen3_tts_config():
+    config = {"model_type": "qwen3_tts", "tts_model_type": "voice_design",
+              "talker_config": {"spk_id": {"serena": 0, "aiden": 1},
+                                "codec_language_id": {"english": 1, "beijing_dialect": 2}}}
+    assert formats.speech_traits(config) == {
+        "mode": "design", "voices": ["aiden", "serena"], "languages": ["english"]}
+    assert formats.speech_traits({**config, "tts_model_type": "other"}) is None
+    assert formats.speech_traits({"model_type": "kokoro"}) is None
+
+
+PRESET = {"mode": "preset", "voices": ["aiden", "ryan"], "languages": ["english"]}
+
+
+@pytest.mark.parametrize("traits, options, fragment", [
+    (PRESET, {"refAudio": "/a.wav", "refText": "hi"}, "takes 'voice', 'instruct', not 'refAudio', 'refText'"),
+    (PRESET, {"voice": "nobody"}, "has no voice 'nobody'; it has aiden, ryan"),
+    (PRESET, {"language": "klingon"}, "has no language 'klingon'"),
+    ({"mode": "clone"}, {"voice": "ryan", "refAudio": "/a.wav", "refText": "hi"}, "not 'voice'"),
+    ({"mode": "clone"}, {"refAudio": "/a.wav"}, "needs 'refText'"),
+    ({"mode": "design"}, {"refText": "hi", "instruct": "warm"}, "not 'refText'"),
+    ({"mode": "design"}, {}, "needs 'instruct'"),
+])
+def test_speech_options_refuse(traits, options, fragment):
+    with pytest.raises(ValueError, match="org/tts") as error:
+        formats.speech_options("org/tts", traits, options)
+    assert fragment in str(error.value)
+
+
+@pytest.mark.parametrize("traits, options, resolved", [
+    (PRESET, {"voice": "Ryan", "instruct": "calm", "language": "English"},
+     {"voice": "ryan", "instruct": "calm", "language": "english"}),
+    (PRESET, {"voice": None}, {"voice": "aiden", "language": "auto"}),
+    ({"mode": "preset"}, {"voice": "anyone"}, {"voice": "anyone", "language": "auto"}),
+    ({"mode": "clone"}, {"refAudio": "/a.wav", "refText": "hi", "language": "auto"},
+     {"refAudio": "/a.wav", "refText": "hi", "language": "auto"}),
+    ({"mode": "design"}, {"instruct": "warm", "text": "x"}, {"instruct": "warm", "language": "auto"}),
+])
+def test_speech_options_resolve(traits, options, resolved):
+    assert formats.speech_options("org/tts", traits, options) == resolved
+
+
+@pytest.mark.parametrize("language", ["English", "english", "ENGLISH"])
+def test_speech_options_preserve_the_catalog_language(language):
+    traits = formats.speech_traits({
+        "model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+        "talker_config": {"codec_language_id": {"English": 1}},
+    })
+    assert formats.speech_options("org/tts", traits, {"language": language}) == {
+        "language": "English"}
+
+
+def test_speech_options_auto_bypasses_the_language_catalog():
+    assert formats.speech_options("org/tts", {**PRESET, "languages": ["English"]},
+                                  {"language": "AUTO"}) == {
+        "voice": "aiden", "language": "auto"}

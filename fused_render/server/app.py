@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import calls as shell_calls
+from fused_render import health
 from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
@@ -54,6 +55,7 @@ from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.capture import router as capture_router
 from fused_render.server.routers.terminal import router as terminal_router
 from fused_render.server.routers.config import router as config_router
+from fused_render.server.routers.health import router as health_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
@@ -64,6 +66,7 @@ from fused_render.server.routers.git_upstream import router as git_upstream_rout
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
+from fused_render.server.routers.system import router as system_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
@@ -75,6 +78,8 @@ from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
+from fused_render.server.routers.launcher import router as launcher_router
+from fused_render.server.routers.windows import router as windows_router
 from fused_render.server.routers.drafts import router as drafts_router
 from fused_render.server.routers.queue_events import router as queue_events_router
 from fused_render.server.routers.tasks import router as tasks_router
@@ -216,6 +221,10 @@ def write_server_json(port: int, host: str = "127.0.0.1") -> None:
             "shared": shared,
             "version": fused_render.__version__,
             "started": time.time(),
+            # Same id `/api/health` returns and the app log's boot line
+            # carries, so an outside reader can tell this server.json from a
+            # stale one a crashed predecessor left behind (SPEC §50).
+            "boot_id": health.boot_id(),
         }
         # Write-then-rename so a reader never observes a half-written file —
         # `resolve_origin()` may be polling this path from another process at
@@ -635,6 +644,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         supervisor.start_hub_metadata_refresh()
 
+    # Hub-catalog daily delta refresh (SPEC docs/HUB_CATALOG_SPEC.md item 4):
+    # a BUILT capability pool (`api_hub_search`'s `ensure_build_started` path)
+    # goes stale as new repos land on the Hub between builds; this widens
+    # each built pool by one `lastModified` delta per day, same background-
+    # thread shape as the two hooks immediately above.
+    @on_startup
+    async def _startup_ai_hub_catalog_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hub_catalog_refresh()
+
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.
@@ -659,6 +679,24 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     @on_shutdown
     async def _shutdown_server_json():
         remove_server_json()
+
+    # Resource trail (health.py, SPEC §50): one RSS/swap/load line per INTERVAL_S
+    # into resources.jsonl, so a diagnostics bundle shows what memory looked
+    # like in the hours before an outage. Its own daemon thread; a failure to
+    # start is a missing diagnostic, never a reason to refuse to serve.
+    @on_startup
+    async def _startup_resource_trail():
+        try:
+            health.start_resource_trail()
+        except Exception:  # noqa: BLE001 - never block startup on diagnostics
+            logger.exception("could not start the resource trail")
+
+    @on_shutdown
+    async def _shutdown_resource_trail():
+        try:
+            health.stop_resource_trail()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not stop the resource trail")
 
     @on_shutdown_always
     async def _shutdown_captures():
@@ -799,6 +837,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # Liveness probe, outage beacon and diagnostics bundle (routers/health.py,
+    # SPEC §50). Its own async router, not a field on /api/config: the probe
+    # must not queue behind the sync threadpool /api/config lives on.
+    app.include_router(health_router)
     # Native screen / microphone / still capture (routers/capture.py, SPEC §45):
     # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
     # than by the routes being absent — a page must be able to ask.
@@ -824,6 +866,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # dead child under the URLs the page holds (engine_host.py). The map
     # template's tile daemon is the first user.
     app.include_router(engines_router)
+    # Live CPU/memory of fused-render's own processes (routers/system.py,
+    # fused_render/sysmon): the status bar's System chip and the /monitor page.
+    app.include_router(system_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
@@ -865,6 +910,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The Current apps desk (fused_render/current_apps.py): GET the table,
     # DELETE one app (archiving its tasks). Fed by the tasks listing above.
     app.include_router(current_apps_router)
+    # The macOS launcher panel's search (fused_render/launcher.py): the desk,
+    # the workspace, linked and exported apps, ranked by a query.
+    app.include_router(launcher_router)
+    # An app clicked inside a macOS native window opens in its own window.
+    app.include_router(windows_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)

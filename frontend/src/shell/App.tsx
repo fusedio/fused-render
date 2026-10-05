@@ -9,6 +9,7 @@
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates|/mounts" -> settings pages
+//   "/monitor"               -> whole-machine process monitor (shell/monitor)
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
 // The active view is keyed by the nav epoch: every navigation remounts it,
@@ -23,8 +24,10 @@ import {
   fsPathFromLocation,
   isPanelPath,
   navHintIsDir,
+  navigateUrl,
 } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
+import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
   appIconUrl,
   getAppIcon,
@@ -52,15 +55,19 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import EditAppFileBoot from "@shell/EditAppFileBoot";
+import FetchAppFileBoot from "@shell/FetchAppFileBoot";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
+import SystemDock from "@shell/SystemDock";
+import { useMonitorFeature } from "@platform/lib/monitor-flag";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import TerminalDock from "@shell/TerminalDock";
@@ -109,6 +116,7 @@ const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
+const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 
 /** Params that belong to a PAGE rather than to a route — see `useNavEpoch`.
  *  Module-level so the array identity is stable across renders. */
@@ -754,6 +762,15 @@ export default function App({ config }: { config: Config }) {
   // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
   // pattern as Mounts.
   const isTasks = pathname === "/tasks";
+  // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
+  // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
+  // `monitor_enabled`, default off): off, the chip is not rendered and the
+  // route shows a one-line notice pointing at Preferences instead of the page.
+  // The route stays a sentinel either way — the flag is read async (`null`
+  // until the one prefs read lands), and a path that flipped from "file view"
+  // to "monitor" when the pref landed would flash a stat of ~/monitor first.
+  const monitorOn = useMonitorFeature();
+  const isMonitor = pathname === "/monitor";
   // The AI Models page (apps/ai_models/) — a PREFIX, not one path: its five
   // tabs are sub-paths beneath it (`/ai-models/local`, …), and the bare prefix
   // has already been rewritten to the default tab above. Asked through the
@@ -766,6 +783,11 @@ export default function App({ config }: { config: Config }) {
   const isExplorerHome = pathname === "/explorer";
   // The app's front door: search hero + the three recency strips.
   const isHome = pathname === "/home";
+  // A fresh page from either home starts on the default companion: drop the
+  // remembered sidebar tab (lib/side-tab-store). Open/closed and width are global.
+  useEffect(() => {
+    if (isHome || isExplorerHome) setSideTab(null);
+  }, [isHome, isExplorerHome]);
   const isClaudeConfig = pathname === "/claude-config";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is
@@ -797,6 +819,7 @@ export default function App({ config }: { config: Config }) {
     isTemplates ||
     isMounts ||
     isTasks ||
+    isMonitor ||
     isAiModels ||
     isApps ||
     appPagePath !== null ||
@@ -820,6 +843,8 @@ export default function App({ config }: { config: Config }) {
               ? "Mounts"
               : isTasks
                 ? "Tasks"
+                : isMonitor
+                ? "Monitor"
                 : isAiModels
                   ? "AI Models"
                   : isApps
@@ -946,6 +971,35 @@ export default function App({ config }: { config: Config }) {
         <Suspense fallback={<RouteFallback />}>
           <Scheduled key={epoch} scope={tasksScopeFromUrl()} />
         </Suspense>
+      </div>
+    );
+  } else if (isMonitor) {
+    // Whole-machine process monitor — chrome-free like Mounts; keyed on epoch
+    // so a re-navigation is a fresh read (its poll stops on unmount). Off
+    // (monitor-flag.ts), nothing polls: the notice is the whole page.
+    main = (
+      <div id="content" key={epoch}>
+        {monitorOn === null ? (
+          <RouteFallback />
+        ) : monitorOn ? (
+          <Suspense fallback={<RouteFallback />}>
+            <MonitorPage key={epoch} />
+          </Suspense>
+        ) : (
+          <div className="monitor-off deploy-muted">
+            The Monitor is off. Turn it on under{" "}
+            <a
+              href="/preferences"
+              onClick={(e) => {
+                e.preventDefault();
+                navigateUrl("/preferences");
+              }}
+            >
+              Preferences › Monitor
+            </a>
+            .
+          </div>
+        )}
       </div>
     );
   } else if (isCanvases) {
@@ -1090,6 +1144,7 @@ export default function App({ config }: { config: Config }) {
             say it the same way so the comment stays true regardless of how
             this branch's own condition might change later. */}
         {!IS_EMBED && <UpdateNotifier />}
+        {!IS_EMBED && <RestartOverlay />}
         {/* A fresh install routes Home to this wizard, and a Render App user's
             very first fused-render action can be its Edit button: the
             `?_edit_appfile=` hand-off must not die here unread. The boot
@@ -1097,6 +1152,7 @@ export default function App({ config }: { config: Config }) {
             itself next launch, `shouldAutoShow`); over an existing copy it
             navigates there first, so its modal never sits on the wizard. */}
         {!IS_EMBED && <EditAppFileBoot />}
+        {!IS_EMBED && <FetchAppFileBoot />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1146,6 +1202,7 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             terminalDock={!isWindows && <TerminalDock />}
+            system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}
             /* D586/D662: every terminal job is re-routed from Activity to
                Notifications, and this is the one place both sections are in
@@ -1188,10 +1245,15 @@ export default function App({ config }: { config: Config }) {
           notify() store, so a pane mounting its own instance can only
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
+      {!IS_EMBED && <RestartOverlay />}
       {/* Render App's Edit button hand-off (`?_edit_appfile=`, DL-7): clones
           the .fused into local/ or, over an existing copy, asks whether to
           overwrite it. Once, top document, same guard as UpdateNotifier. */}
       {!IS_EMBED && <EditAppFileBoot />}
+      {/* `fused-render://open?url=` hand-off (`?_fetch_appfile=`, DL-8):
+          downloads the hosted .fused into ~/.fused-render/downloads and opens
+          it. No confirm. Same mount rules as EditAppFileBoot. */}
+      {!IS_EMBED && <FetchAppFileBoot />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

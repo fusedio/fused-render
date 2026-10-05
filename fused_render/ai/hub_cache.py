@@ -666,6 +666,8 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         # thing, but a Laya repo mirrored without a card still deserves the
         # right label.
         return _ai_registry.DECISIONS, "its Laya decision-head config"
+    if formats.is_qwen3_tts_snapshot(config, dirnames):
+        return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
     return None
 
 
@@ -900,7 +902,13 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # this from overruling a card that was right: a genuine img2img repo with no
     # such evidence keeps its label, and so does a VLM whose label already
     # resolves to text generation.
-    if not _tasks.classify(meta.task).supported:
+    # D1235: `image-to-image` is checked by name, not only `.supported` — it
+    # became a SUPPORTED tag (tasks.py D1235) while still being the family
+    # label FLUX.2-klein ships under regardless of which conversion this
+    # snapshot actually is. Format evidence is still the more precise answer
+    # (mlx vs diffusers vs "genuinely nothing else known"), so it still gets
+    # first refusal even though the task itself is no longer unsupported.
+    if not _tasks.classify(meta.task).supported or meta.task == "image-to-image":
         found = _format_task(repo_id, names, dirnames, config)
         if found:
             meta.task, meta.task_source = found
@@ -1536,6 +1544,13 @@ def has_vision_tower(repo_id: str) -> bool:
     if not config:
         return False
     return _VISION_CONFIG in config or "image_token_id" in config
+
+
+def speech_traits(repo_id: str) -> dict | None:
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
 
 
 def has_cached_snapshot(repo_id: str) -> bool:

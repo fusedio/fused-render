@@ -5,7 +5,8 @@
 // stage's title row asks for them (D430, D431, reshaped). Each control is a
 // slider+number pair with a one-line hint, defaults baked in and a
 // per-control reset once a value moves.
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Select } from "@base-ui/react/select";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Card, CardContent, CardHeader, CardTitle } from "@platform/shadcn/ui/card";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
@@ -356,22 +357,32 @@ export function RailCheck({
   );
 }
 
-/** A native <select> in the Input's clothes. Native on purpose — the two- and
- *  three-option pickers in the panel don't earn a popover — and the UA keeps
- *  its own dropdown arrow, so no `appearance-none`. */
-export function RailSelect({
-  className,
-  ...props
-}: ComponentProps<"select">) {
+/** Render the menu in the app so it follows the active theme on every OS. */
+export function RailSelect({ value, onValueChange, options, ...props }: {
+  value: string;
+  onValueChange: (value: string) => void;
+  options: { value: string; label: string }[];
+  "aria-label": string;
+}) {
   return (
-    <select
-      data-slot="rail-select"
-      className={
-        "h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 " +
-        (className ?? "")
-      }
-      {...props}
-    />
+    <Select.Root value={value} onValueChange={(next) => { if (next !== null) onValueChange(next); }} items={options}>
+      <Select.Trigger data-slot="rail-select" className="pg-rail-select" {...props}>
+        <Select.Value /><Select.Icon />
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Positioner sideOffset={4} alignItemWithTrigger={false} className="pg-rail-select-positioner">
+          <Select.Popup className="pg-rail-select-popup">
+            <Select.List>
+              {options.map((option) => (
+                <Select.Item key={option.value} value={option.value} className="pg-rail-select-option">
+                  <Select.ItemText>{option.label}</Select.ItemText>
+                </Select.Item>
+              ))}
+            </Select.List>
+          </Select.Popup>
+        </Select.Positioner>
+      </Select.Portal>
+    </Select.Root>
   );
 }
 

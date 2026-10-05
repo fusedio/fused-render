@@ -31,7 +31,7 @@ import uvicorn
 
 from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
-from fused_render.logs import log_dir, log_path, setup_logging
+from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 from fused_render.server import (
     create_app, export_app_env, set_server_origin_env, write_server_json,
 )
@@ -369,9 +369,16 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     # And the discovery file for a process this server did NOT spawn (SPEC
     # PY-19) — a server child already has FUSED_RENDER_ORIGIN above.
     write_server_json(port, host="127.0.0.1")
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    # `log_config` routes uvicorn's own loggers (bind errors, "Exception in
+    # ASGI application", lifespan failures) to the app log instead of the
+    # default stderr handler with propagate=False — stderr is /dev/null under
+    # a Finder launch (SPEC §50, logs.uvicorn_log_config docstring).
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                            log_config=uvicorn_log_config())
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
+    # Named so a crashlog/threading.excepthook line and the D6 watchdog's
+    # "server thread died" line both say WHICH thread it was.
+    thread = threading.Thread(target=server.run, daemon=True, name="fused-server")
     thread.start()
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; the loopback bind above is not touched.
@@ -466,6 +473,23 @@ def hard_exit(code: int = 0, *, exit_process=os._exit,
 
 QUIT_SERVER_DRAIN_S = 2.0
 
+# Budget for the "children" rung below. The server's lifespan shutdown
+# handlers (engine_host.stop_all, ai supervisor.unload_all, the pty registry,
+# index_watch.stop, remove_server_json) are what kill every child the server
+# spawned — and on the packaged app they NEVER RUN: uvicorn's graceful shutdown
+# waits on open connections with no timeout, the shell's SSE/websocket
+# connections never close, so the 2s drain above always gives up and `os._exit`
+# then skips the lifespan entirely. Measured on the owner's machine
+# (2026-10-05): an engine worker 29h old and an MLX embed worker older than the
+# running app, both with ppid 1. Across an update that means OLD-version
+# workers survive into the new version's session. So the quit runs the same
+# killers itself, each on its own daemon thread, joined against this budget.
+# Each killer starts signalling at once but walks its own children in sequence
+# with confirmation waits (SIGKILL lands at 3 s), so the budget bounds how long
+# we wait for those confirmations, not whether the first signal is sent; a
+# straggler is reparented and dies on its own escalation or with the process.
+QUIT_CHILDREN_BUDGET_S = 5.0
+
 # Ceiling on the whole teardown, after which the app terminates regardless. It
 # has to exist: a wedged `umount -f` blocks in the kernel and cannot be
 # cancelled, and an app that can never be quit is worse than one that quits with
@@ -485,15 +509,113 @@ QUIT_DEADLINE_MARGIN_S = 2.0
 
 QUIT_HARD_DEADLINE_S = (
     QUIT_SERVER_DRAIN_S
+    + QUIT_CHILDREN_BUDGET_S
     + _QUIT_UNMOUNT_BUDGET_S
     + RCD_REAP_WORST_CASE_S
     + QUIT_DEADLINE_MARGIN_S
 )
 
 
+def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
+    """Kill every child process the server owns, in parallel, under `budget_s`.
+
+    The same work the server's lifespan shutdown does (server/app.py's
+    `on_shutdown` handlers), run here because the lifespan never gets to run on
+    the packaged app — see QUIT_CHILDREN_BUDGET_S. One daemon thread per
+    killer: each is sequential over its own children with multi-second
+    confirmation waits, and a wedged one must not hold the others back. Also
+    tells any live index worker to stop (it polls a `cancel` file; the runner
+    does not keep its Popen) and removes the discovery file a successor would
+    otherwise read with a dead pid in it.
+
+    Arms the spawn latches FIRST, before any killer runs: the server is still
+    answering requests while this runs (the drain above is bounded and the
+    shell's SSE connections never close), so an in-flight engine or AI route
+    could otherwise call `ensure`/`load` after the registries were emptied and
+    spawn a replacement that `os._exit` then orphans — the exact process this
+    rung exists to kill (bugbot, PR #1400)."""
+    def refuse_spawns():
+        from fused_render.ai import supervisor
+        from fused_render.server import engine_host
+
+        engine_host.refuse_new_children()
+        supervisor.refuse_new_workers()
+
+    def engines():
+        from fused_render.server import engine_host
+
+        engine_host.stop_all()
+
+    def ai_workers():
+        from fused_render.ai import supervisor
+
+        supervisor.unload_all()
+
+    def terminals():
+        from fused_render import pty_session
+
+        pty_session.REGISTRY.shutdown_all()
+
+    def index_runs():
+        from fused_render.index.config import load_config
+        from fused_render.index import runner
+        from fused_render.server import index_watch
+
+        index_watch.stop()
+        cfg = load_config()
+        for run in runner.list_runs(cfg).get("runs", []):
+            if run.get("running"):
+                runner.cancel(cfg, run["run_id"])
+
+    def discovery():
+        from fused_render.server.app import remove_server_json
+
+        remove_server_json()
+
+    try:
+        refuse_spawns()
+    except Exception:
+        logger.warning("quit: arming the spawn latches failed", exc_info=True)
+    threads = []
+    for name, step in (("engines", engines), ("ai", ai_workers),
+                       ("terminals", terminals), ("index", index_runs),
+                       ("discovery", discovery)):
+        def _run(step=step, name=name):
+            try:
+                step()
+            except Exception:
+                logger.warning("quit: stopping %s failed", name, exc_info=True)
+
+        t = threading.Thread(target=_run, daemon=True, name=f"quit-children-{name}")
+        t.start()
+        threads.append((name, t))
+    deadline = time.monotonic() + budget_s
+    for name, t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+        if t.is_alive():
+            logger.warning("quit: %s did not stop within %.1fs; leaving the rest "
+                           "to the process exit", name, budget_s)
+
+
+def _record_clean_exit() -> None:
+    """The last teardown rung (SPEC §50): one `quit` row in outages.jsonl, then
+    drop this process's crash file. `crashlog.release()` has to be called here
+    explicitly — quit ends in `os._exit`, which skips the `atexit` hook
+    `crashlog.install` registered — and a crash file left behind is exactly
+    the "did not exit cleanly" signal the diagnostics bundle reads, so a clean
+    quit that failed to release it would be reported as a crash."""
+    from fused_render import crashlog, health
+
+    try:
+        health.record_event("quit")
+    finally:
+        crashlog.release()
+
+
 def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DRAIN_S,
                   close_duckdb=None, unmount_mounts=None, stop_rcd=None,
-                  stop_captures=None) -> list[str]:
+                  stop_captures=None, stop_children=None,
+                  record_exit=None) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
 
     The order is the point, and each rung is a precondition of the next:
@@ -502,6 +624,10 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
          `drain_s`. A live /api/fs/raw read holds files open under a mount, which
          is a measured cause of a busy-mount unmount failure (see
          detach_mount/_quit_tile_daemons), so this comes before the unmounts.
+      1b. "children" — kill every child the server spawned (engines, AI
+         workers, terminal shells, the index worker). The lifespan handlers
+         that normally do this never run here (QUIT_CHILDREN_BUDGET_S), and
+         children hold files open under mounts too, so before the unmounts.
       2. "capture" — finalise every live native recording (SPEC §45). Here and
          not in an `atexit` handler because THIS FUNCTION IS THE ONLY THING THAT
          RUNS: quit ends in `os._exit` (see the DM-9 note above), which skips
@@ -515,6 +641,10 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
       4. "unmount" — detach every mount through the rc-unmount -> force-unmount
          ladder, BEFORE its NFS server is signalled.
       5. "rcd" — reap the daemon. Only now is it safe: nothing is mounted on it.
+      6. "exit-record" — record a `quit` event and release the crash file
+         (`_record_clean_exit`, SPEC §50). Last, so a teardown that wedges on
+         an earlier rung and gets cut off by the hard deadline leaves the
+         crash file in place — that quit was NOT clean.
 
     Every step is best-effort and independently guarded — a failure in one must
     not skip the ones after it (a mount store we cannot read must still let the
@@ -538,6 +668,12 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
             from fused_render import capture
 
             capture.stop_all()
+    if stop_children is None:
+        stop_children = _stop_children
+    if record_exit is None:
+        # Late-bound through the module so tests can patch the one function.
+        def record_exit():
+            _record_clean_exit()
 
     started = time.monotonic()
     if server is not None:
@@ -553,8 +689,9 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
                                    "continuing teardown", drain_s)
         except Exception:
             logger.warning("stopping the server on quit failed", exc_info=True)
-    for name, step in (("capture", stop_captures), ("duckdb", close_duckdb),
-                       ("unmount", unmount_mounts), ("rcd", stop_rcd)):
+    for name, step in (("children", stop_children), ("capture", stop_captures),
+                       ("duckdb", close_duckdb), ("unmount", unmount_mounts),
+                       ("rcd", stop_rcd), ("exit-record", record_exit)):
         steps.append(name)
         try:
             step()
@@ -638,7 +775,7 @@ def _quit_ready_event_locked(state: dict) -> threading.Event:
 
 
 def begin_quit(state: dict, *, terminate=None, start=None,
-               remove_pidfile=None, on_claim=None) -> bool:
+               remove_pidfile=None, on_claim=None, surface: str = "menu") -> bool:
     """Start THE teardown unless one is already running; True if this call
     started it.
 
@@ -677,9 +814,14 @@ def begin_quit(state: dict, *, terminate=None, start=None,
     with _quit_lock:
         ready = _quit_ready_event_locked(state)
         if state.get("quitting"):
-            logger.info("quit already in progress; joining it")
+            logger.info("quit already in progress; joining it (via %s)", surface)
             return False
         state["quitting"] = True
+    # THE press, timestamped. Until this line the log showed only how long the
+    # teardown took, never when it was asked for — so a field report of "quit
+    # took two minutes" could not be split into press-to-teardown (the restart
+    # dialog's own wait) and teardown-to-exit.
+    logger.info("quit requested via %s (pid %s)", surface, os.getpid())
     remove_pidfile()
     if on_claim is not None:
         try:
@@ -761,8 +903,8 @@ RELAUNCH_RETRY_AFTER_S = 5.0
 # The relauncher's overall deadline, COUNTED FROM ITS OWN START — which is the
 # press, not the pid's death: it is spawned by `begin_quit`'s `on_claim`, at the
 # very start of the teardown. That distinction is load-bearing. The teardown may
-# take up to QUIT_HARD_DEADLINE_S (34 s), so a deadline counted from the pid's
-# death could still be running 84 s after the press, long after the page gave up
+# take up to QUIT_HARD_DEADLINE_S (39 s), so a deadline counted from the pid's
+# death could still be running 89 s after the press, long after the page gave up
 # at RESTART_GIVE_UP_MS (60 s, frontend/src/platform/lib/restart-flow.ts) and
 # told the user the app is not running. Counted from the press it is under that
 # cap whatever the teardown does (bugbot, PR #1214).
@@ -1050,7 +1192,8 @@ def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None)
         # `on_claim` so it happens before anything can exit. The menu/popover
         # surfaces pass nothing and ignore the bool.
         return begin_quit(state, terminate=terminate, start=start,
-                          remove_pidfile=remove_pidfile, on_claim=on_claim)
+                          remove_pidfile=remove_pidfile, on_claim=on_claim,
+                          surface="relaunch" if on_claim is not None else "menu/popover")
 
     return _do_quit
 
@@ -1142,7 +1285,8 @@ def make_appkit_terminate_hook(state: dict, *, reply, start=None,
             # back: NSTerminateNow is what this branch meant before the hard exit.
             _exit()
             return NS_TERMINATE_NOW
-        begin_quit(state, start=start, remove_pidfile=remove_pidfile)
+        begin_quit(state, start=start, remove_pidfile=remove_pidfile,
+                   surface="appkit (Dock/⌘Q/logout)")
         threading.Thread(target=_exit_when_ready, args=(ready,), daemon=True,
                          name="quit-appkit-exit").start()
         return NS_TERMINATE_LATER
@@ -1179,10 +1323,78 @@ def install_terminate_hook(delegate_class, hook) -> bool:
     return True
 
 
+# D6: how often the watchdog looks at the uvicorn thread. Coarse on purpose —
+# the cost of a dead server is a menu bar that does nothing, and 3 s of that
+# is invisible next to the relaunch it triggers.
+SERVER_WATCHDOG_INTERVAL_S = 3.0
+
+
+def watch_server_thread(thread, is_quitting, on_dead, interval_s: float = SERVER_WATCHDOG_INTERVAL_S,
+                        sleep=time.sleep) -> bool:
+    """Block until `thread` dies or a quit starts (SPEC §50, D6).
+
+    The uvicorn server runs on a daemon thread inside the AppKit process
+    (`_start_server_thread`), and nothing watched it after readiness: if it
+    died — an uncaught exception escaping `server.run`, a lifespan crash — the
+    menu bar stayed up forever serving nothing, with no log line saying why.
+    This loop polls `thread.is_alive()` every `interval_s` while
+    `is_quitting()` is false; on a death it calls `on_dead()` exactly once and
+    returns True. A quit (which drains the thread on purpose) returns False
+    without calling it. `sleep` is injectable so tests run without waiting;
+    nothing here touches AppKit."""
+    while not is_quitting():
+        if not thread.is_alive():
+            # Re-check: quit_teardown joins the thread, so a quit that began
+            # between the two reads is a clean stop, not a death.
+            if is_quitting():
+                return False
+            on_dead()
+            return True
+        sleep(interval_s)
+    return False
+
+
+def _save_diagnostics_sync() -> str | None:
+    from fused_render import diagnostics
+
+    try:
+        path = diagnostics.build_bundle(reveal=True)
+    except Exception:
+        logger.exception("saving diagnostics failed")
+        return None
+    logger.info("diagnostics bundle saved to %s", path)
+    return path
+
+
+def save_diagnostics_async() -> threading.Thread:
+    """Build the diagnostics bundle (SPEC §50) off the calling thread and reveal
+    it in Finder. Off-thread because `build_bundle` shells out to `log show`
+    and can take up to a minute — every caller is a menu click on the AppKit
+    main thread. Shared by the status-item menu, the popover (menubar_pin) and
+    the Help menu (mac_window), which imports it lazily: importing this module
+    is safe anywhere since `rumps` is only imported inside `main()`."""
+    t = threading.Thread(target=_save_diagnostics_sync, daemon=True, name="save-diagnostics")
+    t.start()
+    return t
+
+
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
     setup_logging()  # first: everything after this can crash-report to the file
-    logger.info("app starting (pid %s)", os.getpid())
+    # Crash hooks (SPEC §50, D4): faulthandler on a dedicated crash file plus
+    # sys/threading excepthooks into the log. Guarded — a diagnostics aid must
+    # never be the reason the app fails to launch.
+    try:
+        from fused_render.crashlog import install as _install_crashlog
+
+        _install_crashlog("app")
+    except Exception:
+        logger.exception("crash log install failed")
+    from fused_render.health import boot_id
+
+    # The boot id joins this line to /api/health, server.json and
+    # outages.jsonl rows (health.py docstring, D1).
+    logger.info("app starting (pid %s, boot %s)", os.getpid(), boot_id())
 
     existing = find_running_server()
     if existing is not None:
@@ -1237,13 +1449,27 @@ def main() -> None:
         "quitting": False,   # a teardown is in flight; later Quits join it
         "quit_ready": threading.Event(),  # teardown done/deadline hit: die now
         "pin": None,         # menubar_pin.PinController, built after run loop start
+        "windows": None,     # mac_window.WindowManager, built after run loop start
+        "launcher": None,    # launcher_panel.LauncherController, after the windows
     }
+
+    def _open_target(target: str) -> None:
+        """Show ``target`` in a NEW window of this app (mac_window.py).
+        Callable from any thread. A browser tab only if the window manager
+        failed to build — the app is never left without a surface."""
+        manager = state["windows"]
+        if manager is None:
+            webbrowser.open(target)
+            return
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(manager.open, target)
 
     def open_file_view(fs_path: str) -> None:
         target = f"http://127.0.0.1:{port}" + view_url_path(fs_path)
         if state["ready"]:
             logger.info("opening file view: %s", target)
-            webbrowser.open(target)
+            _open_target(target)
         else:
             logger.info("queuing file view until server is ready: %s", target)
             state["pending"].append(target)
@@ -1325,7 +1551,7 @@ def main() -> None:
                 continue
             if state["ready"]:
                 logger.info("opening open-URLs target: %s", target)
-                webbrowser.open(target)
+                _open_target(target)
             else:
                 logger.info("queuing open-URLs target until server is ready: %s", target)
                 state["pending"].append(target)
@@ -1336,14 +1562,22 @@ def main() -> None:
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
     # user clicks the Dock icon (or double-clicks the app in Finder) while the
     # app is already running. rumps's delegate doesn't implement it, so without
-    # this patch a Dock click does nothing. Open the home tab; if the server is
-    # still booting, queue it on the same pending list the bootstrap flushes.
+    # this patch a Dock click does nothing. Bring the front window forward, or
+    # open a Home window if every window was closed (a browser tab only when
+    # the window manager failed to build); if the server is still booting,
+    # queue the home URL on the same pending list the bootstrap flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):
         logger.info("dock reopen event (server ready=%s)", state["ready"])
         if state["ready"]:
-            webbrowser.open(url)
-        else:
+            manager = state["windows"]
+            if manager is None:
+                webbrowser.open(url)
+            else:
+                from PyObjCTools import AppHelper
+
+                AppHelper.callAfter(manager.reopen)
+        elif url not in state["pending"]:
             state["pending"].append(url)
         return True
 
@@ -1369,9 +1603,34 @@ def main() -> None:
             lambda: NSApplication.sharedApplication()
             .replyToApplicationShouldTerminate_(should_terminate))
 
-    install_terminate_hook(
-        rumps.rumps.NSApp,
-        make_appkit_terminate_hook(state, reply=_reply_to_appkit))
+    def _close_windows() -> None:
+        """Close every native window — only from the main thread (AppKit):
+        every page unloads and every WKWebView deallocs before the teardown
+        drains the server they were talking to. `quit_teardown` itself runs
+        off the main thread (DM-9) and cannot drive AppKit, so this cannot be
+        a rung of it; it is the first step of BOTH quit entrances instead —
+        `_do_quit` (our menu's ⌘Q, the popover's Quit) and the AppKit hook
+        below (the Dock menu's Quit, logout/restart). The bootstrap-thread
+        abort has no windows to close."""
+        manager = state.get("windows")
+        if manager is None:
+            return
+        try:
+            from Foundation import NSThread
+
+            if NSThread.isMainThread():
+                manager.close_all()
+        except Exception:
+            logger.debug("closing windows on quit failed", exc_info=True)
+
+    _appkit_terminate = make_appkit_terminate_hook(state, reply=_reply_to_appkit)
+
+    def _appkit_terminate_with_windows() -> int:
+        # applicationShouldTerminate: arrives on the main thread.
+        _close_windows()
+        return _appkit_terminate()
+
+    install_terminate_hook(rumps.rumps.NSApp, _appkit_terminate_with_windows)
 
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
@@ -1391,6 +1650,34 @@ def main() -> None:
         _write_pidfile(port)
         state["ready"] = True
         logger.info("server ready on port %s", port)
+        # D6 watchdog (SPEC §50): nothing else observes the uvicorn thread
+        # after readiness. A death outside a quit becomes a logged, recorded
+        # quit — which the relaunch/Dock path can recover from — instead of a
+        # menu bar that silently serves nothing.
+        fired = threading.Event()
+
+        def _server_died() -> None:
+            if fired.is_set():  # once, even if something re-enters
+                return
+            fired.set()
+            logger.critical("server thread died unexpectedly (pid %s); quitting so "
+                            "the app can be relaunched", os.getpid())
+            try:
+                from fused_render import health
+
+                health.record_event("server-thread-died", port=port)
+            except Exception:
+                logger.warning("could not record server-thread-died", exc_info=True)
+            # Main thread: `_do_quit` closes the native windows first.
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(_do_quit)
+
+        threading.Thread(
+            target=watch_server_thread,
+            args=(server_thread, lambda: state["quitting"], _server_died),
+            daemon=True, name="fused-server-watchdog",
+        ).start()
         # Self-update checks (update/mac.py): a background loop that only
         # flips /api/config's `update` field — the shell shows the badge and
         # drives install from there. Never on the startup critical path.
@@ -1405,12 +1692,21 @@ def main() -> None:
             from PyObjCTools import AppHelper
 
             AppHelper.callAfter(state["pin"].server_ready)
+        if state["launcher"] is not None:
+            # The panel loads its page off the live server, and the global
+            # shortcuts bind now — Carbon and the page live on the main thread.
+            from PyObjCTools import AppHelper
+
+            launcher_ctl = state["launcher"]
+            AppHelper.callAfter(launcher_ctl.server_ready)
+            AppHelper.callAfter(launcher_ctl.bind_hotkey)
+            AppHelper.callAfter(launcher_ctl.bind_pinned)
         pending, state["pending"] = state["pending"], []
         for target in pending:
-            webbrowser.open(target)
-        # Home tab only when this launch wasn't a document double-click.
+            _open_target(target)
+        # Home window only when this launch wasn't a document double-click.
         if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
-            webbrowser.open(url)
+            _open_target(url)
 
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):
@@ -1423,7 +1719,8 @@ def main() -> None:
             # if the controller fails to construct (PV-8) — the app must never
             # be left unquittable.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = ["Open in browser", "Copy URL", "Open app logs", "Quit"]
+            self.menu = ["Open in browser", "Copy URL", "Open app logs",
+                         "Save Diagnostics…", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
@@ -1437,6 +1734,10 @@ def main() -> None:
         def open_logs(self, _sender):
             _open_logs()
 
+        @rumps.clicked("Save Diagnostics…")
+        def save_diagnostics(self, _sender):
+            save_diagnostics_async()
+
         @rumps.clicked("Quit")
         def quit(self, _sender):
             _do_quit()
@@ -1448,10 +1749,13 @@ def main() -> None:
         subprocess.run(["pbcopy"], input=url.encode(), check=False)
 
     def _open_logs():
-        # Reveal in Finder rather than opening the file: users are asked to
-        # zip/attach it, and Console.app (the .log default handler) confuses
-        # more than it helps.
-        subprocess.run(["open", "-R", log_path()], check=False)
+        # Open the log FOLDER in Finder, not `-R` on this pid's file (SPEC
+        # §50): after a crash and relaunch, the current pid's file is the new,
+        # nearly empty session. The folder shows the crashed session's log,
+        # the relaunch log, crash/, outages.jsonl and resources.jsonl side by
+        # side. Not Console.app (the .log default handler) — it confuses more
+        # than it helps.
+        subprocess.run(["open", log_dir()], check=False)
 
     def _terminate():
         # NOT rumps.quit_application() -> NSApplication.terminate: -> exit(),
@@ -1465,7 +1769,14 @@ def main() -> None:
 
     # Returns immediately — the AppKit run loop must not block here — and lets
     # quit_teardown do the blocking work off-thread under a hard deadline.
-    _do_quit = make_quit_action(state, terminate=_terminate)
+    _begin_quit_action = make_quit_action(state, terminate=_terminate)
+
+    def _do_quit(on_claim=None) -> bool:
+        # The windows first (`_close_windows`), then the ordered teardown.
+        # Same signature and return as `make_quit_action`'s: `begin_relaunch`
+        # passes `on_claim` and reads the claim bool.
+        _close_windows()
+        return _begin_quit_action(on_claim=on_claim)
 
     status_app = FusedRenderStatusApp()
 
@@ -1473,6 +1784,162 @@ def main() -> None:
         # One-shot, fired right after the run loop starts — the status item
         # (status_app._nsapp.nsstatusitem) exists only from this point on.
         timer.stop()
+        def _show_launcher() -> None:
+            ctl = state["launcher"]
+            if ctl is not None:
+                ctl.show()
+
+        # The windows (mac_window.py) need the AppKit run loop — the manager
+        # installs the main menu and sets the activation policy — so they
+        # are built here, on the first timer tick, and never at import time.
+        # ON BY DEFAULT (`native_windows_enabled`, shell/prefs.py, opt-out):
+        # with the preference off the app runs the way it used to, every
+        # surface a browser tab (`_open_target` and friends fall back on
+        # `state["windows"] is None`). The Preferences checkbox applies live
+        # through `window_policy.native_hooks["apply"]`: on builds the
+        # manager, off closes every window and drops it. Guarded either way:
+        # a manager that fails to build is the browser, never a dead app.
+        from PyObjCTools import AppHelper
+
+        from fused_render import window_policy
+        from fused_render.shell.prefs import native_windows_enabled
+
+        def _apply_windows(on: bool) -> None:
+            # Main thread. The manager is built on the first ON and kept for
+            # the life of the process: the main menu it installs targets it,
+            # so dropping the object would leave ⌘N and File → Open making
+            # windows through a manager nobody closes on quit. OFF is the
+            # manager's own mode (`WindowManager.enabled`): it closes its
+            # windows and every later open it is asked for goes to the
+            # browser. With no manager at all (never turned on, or it failed
+            # to build) every seam falls back to `webbrowser.open` on
+            # `state["windows"] is None`.
+            manager = state["windows"]
+            if manager is None:
+                if not on:
+                    return
+                try:
+                    from fused_render.mac_window import WindowManager
+
+                    manager = state["windows"] = WindowManager(
+                        port, quit=_do_quit, show_launcher=_show_launcher)
+                except Exception:
+                    logger.exception("windows unavailable; falling back to browser tabs")
+                    return
+            try:
+                manager.set_enabled(on)
+            except Exception:
+                logger.debug("applying the windows preference failed", exc_info=True)
+
+        _apply_windows(native_windows_enabled())
+        window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
+
+        def _open_app_window(fs_path: str) -> None:
+            # POST /api/windows/open: the shell, running inside one of our
+            # windows, was clicked on an app. Its own window, focused if
+            # already open (`WindowManager.focus_or_open_app`). The route
+            # answers before this runs; with no manager (the preference off
+            # since the page loaded) the click becomes a browser tab at the
+            # same address, never nothing.
+            manager = state["windows"]
+            if manager is None:
+                webbrowser.open(url.rstrip("/") + window_policy.app_window_path(fs_path))
+                return
+            manager.focus_or_open_app(fs_path)
+
+        window_policy.native_hooks["open_app"] = (
+            lambda fs_path: AppHelper.callAfter(_open_app_window, fs_path))
+
+        def _open_window(target: str) -> None:
+            # The popover's `window.open` / target=_blank (menubar_pin), main
+            # thread already. Classified FIRST, like a window's own policy:
+            # only this server's pages get a window of ours; an external link
+            # goes to the default browser, which is what the new window's
+            # policy would do anyway — after leaving a blank window behind.
+            manager = state["windows"]
+            if manager is None or window_policy.classify(target, port) != "app":
+                webbrowser.open(target)
+            else:
+                manager.open(target)
+
+        # The launcher (launcher_panel.py): a Spotlight-like panel on a
+        # global shortcut (⌥Space by default) that opens any known app. NOT
+        # behind the windows preference: with native windows on its pick
+        # focuses-or-opens a window, off it opens a browser tab at the same
+        # address (`window_policy.shell_path_for`). Guarded — no launcher is
+        # a lesser outcome than no app.
+        try:
+            from AppKit import NSApp
+
+            from fused_render import launcher as launcher_mod
+            from fused_render.launcher_panel import LauncherController
+
+            def _open_from_launcher(fs_path: str) -> None:
+                manager = state["windows"]
+                # `enabled`, not just a manager: it outlives the preference
+                # being switched off, and off must be the browser tab on the
+                # app page exactly as before — never the run window's embed.
+                if manager is None or not manager.enabled:
+                    webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
+                    return
+                # Dock semantics; the panel is non-activating, so bring
+                # this app forward or the window opens behind the caller.
+                # An app lands in its own run window, as a shell click does.
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.focus_or_open_app(fs_path)
+
+            def _home_from_launcher() -> None:
+                manager = state["windows"]
+                if manager is None:
+                    webbrowser.open(url)
+                    return
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.show_home()
+
+            def _open_keys() -> set[str]:
+                # Read live: the manager comes and goes with the preference.
+                manager = state["windows"]
+                return manager.open_keys() if manager is not None else set()
+
+            launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
+            state["launcher"] = launcher_ctl
+
+            # What the uvicorn thread may call (PUT /api/prefs, GET
+            # /api/launcher): rebinding hops to the main thread; the
+            # bound flags and the open-window set are plain attribute
+            # reads, safe from any thread.
+            def _rebind(spec) -> None:
+                if spec:
+                    AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
+                else:  # the row modifier changed; rebind those, tell the page
+                    AppHelper.callAfter(launcher_ctl.push_settings)
+
+            def _suspend(on: bool) -> None:
+                AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
+
+            launcher_mod.native_hooks.update({
+                "rebind": _rebind,
+                "suspend": _suspend,
+                "hotkey_bound": launcher_ctl.hotkey_bound,
+                "pinned_bound": launcher_ctl.pinned_bound,
+                "open_keys": _open_keys,
+            })
+            if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
+                # Dev only: SIGUSR2 toggles the launcher, so a script can
+                # screenshot it without Accessibility access to press the
+                # shortcut. Python signal handlers run only between
+                # bytecodes; an idle AppKit run loop executes none, so a
+                # no-op tick keeps the interpreter breathing.
+                import signal
+
+                signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
+                    launcher_ctl.toggle))
+                status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+                status_app.launcher_dev_tick.start()
+        except Exception:
+            logger.exception("launcher unavailable")
+            state["launcher"] = None
+
         try:
             # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
             # older [app] env; on failure the rumps menu stays attached and
@@ -1487,7 +1954,12 @@ def main() -> None:
                     "open_browser": _open_browser,
                     "copy_url": _copy_url,
                     "open_logs": _open_logs,
+                    "save_diagnostics": save_diagnostics_async,
                     "quit": _do_quit,
+                    "open_window": _open_window,
+                    # Present only when the launcher was built: the popover
+                    # shows "Search Apps…" off this key.
+                    **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
                 },
             )
         except Exception:

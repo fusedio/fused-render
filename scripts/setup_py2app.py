@@ -603,6 +603,17 @@ OPTIONS = {
             "FusedRender records the microphone when a page you opened asks it "
             "to — a voice note, or narration over a screen recording."
         ),
+        # The app's own windows are WKWebViews (mac_window.py) that GRANT a
+        # page of ours `getUserMedia` and `navigator.geolocation` the way a
+        # browser would after one Allow click; the OS then prompts with these
+        # strings. REQUIRED like the microphone one: an app that touches the
+        # camera or location without its usage string is killed, not asked.
+        "NSCameraUsageDescription": (
+            "FusedRender uses the camera when a page you opened asks for it."
+        ),
+        "NSLocationWhenInUseUsageDescription": (
+            "FusedRender uses your location when a page you opened asks for it."
+        ),
     },
 }
 

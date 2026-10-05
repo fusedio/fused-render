@@ -43,6 +43,9 @@
 // Template bindings live in the dedicated /view/_templates view.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  buildDiagnostics,
+  fetchDiagnosticsPlan,
+  fetchServerHealth,
   getConfig,
   getPrefs,
   putCallsEnabled,
@@ -53,9 +56,17 @@ import {
   hfLogout,
   putAppSharingEnabled,
   putCanvasesEnabled,
+  putLivePreviewsEnabled,
+  putMonitorEnabled,
+  putNativeWindowsEnabled,
+  putGitAutoSyncEnabled,
+  putAutoDownloadUpdates,
   putProjectQueueEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putLanEnabled,
+  putLauncherHotkey,
+  putLauncherRowModifier,
+  postLauncherSuspend,
   getLanPairToken,
   getLanDevices,
   revokeLanDevice,
@@ -64,10 +75,14 @@ import {
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
-import type { UpdateStatus } from "@platform/lib/api";
+import type { DiagnosticsPlan, DiagnosticsResult, UpdateStatus } from "@platform/lib/api";
+import { copyToClipboard } from "@platform/lib/clipboard";
+import { formatBytes } from "@platform/lib/sysmon";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
+import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
+import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
@@ -150,8 +165,24 @@ function AppearanceSection() {
 // in a while. The DECISION that follows an answer (download it? restart for
 // it?) is `UpdateNotifier`'s job now; this section only ever fires the check
 // and reports what it learned, never a download/restart button of its own.
-function UpdatesSection() {
+function UpdatesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const status = useUpdateStatus();
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoError, setAutoError] = useState<string | null>(null);
+  // Default OFF: absence (an older server) reads as off.
+  const autoDownload = prefs.update?.auto_download === true;
+  const toggleAutoDownload = async () => {
+    if (autoBusy) return;
+    setAutoBusy(true);
+    setAutoError(null);
+    try {
+      onChange(await putAutoDownloadUpdates(!autoDownload));
+    } catch (e) {
+      setAutoError((e as Error).message);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
   const [version, setVersion] = useState<string | null>(null);
   // This row's own phase — local, not the shared store: it is about THIS
   // press ("Checking…", then the answer for a few seconds), same split
@@ -276,6 +307,27 @@ function UpdatesSection() {
         <p className="deploy-muted">
           Updates aren&rsquo;t managed from inside the app on this build.
         </p>
+      )}
+      {hasUpdater && (
+        <>
+          <label className="prefs-radio">
+            <input
+              type="checkbox"
+              checked={autoDownload}
+              disabled={autoBusy}
+              onChange={toggleAutoDownload}
+            />
+            <span>
+              <b>Automatically download updates</b>
+              <span className="deploy-muted">
+                {" "}
+                When a new version is found it downloads in the background; you still
+                choose when to restart.
+              </span>
+            </span>
+          </label>
+          {autoError && <ErrorBanner>{autoError}</ErrorBanner>}
+        </>
       )}
     </section>
   );
@@ -423,6 +475,261 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
   );
 }
 
+// Thumbnails: whether the /apps cards and the explorer's bookmark, recent and
+// folder cards may render the live app in a scaled iframe — the body of a card
+// with no preview.png, and the hover swap on one that has it. OFF by default;
+// the checkbox is worded the way the reader thinks of it ("hide"), so checked
+// means the stored `live_previews_enabled` is not TRUE — the inversion lives
+// in this one component and the positive `enabled` flows everywhere else.
+// Same one-checkbox section shape and publish-after-PUT as App sharing above,
+// so a grid already mounted in a split swaps its iframes for stills and marks
+// the moment the checkbox settles. `?.enabled === true` because the key is
+// optional on the wire (an older server) and absence means off.
+function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.live_previews?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putLivePreviewsEnabled(!enabled);
+      onChange(next);
+      publishLivePreviewsEnabled(next.live_previews?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Thumbnails</h2>
+      <p className="deploy-muted">
+        With live previews on, app and bookmark cards show the live page in their thumbnail when
+        there is no <code>preview.png</code>, and swap it in on hover when there is one. Each live
+        thumbnail is a whole page booting in the background, so they are off by default.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={!enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Hide live previews in thumbnails</b> — show only authored stills; a card without one
+          gets a placeholder image, and hovering never loads the app.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Monitor: the status bar's System chip (this app's CPU and memory) and the
+// /monitor process page behind its "Open Monitor". Off by default, and this is
+// the only place it can be turned on. Same one-checkbox section shape and
+// publish-after-PUT as App sharing above, so the chip appears in the bar the
+// moment the checkbox settles. `?.enabled === true` because the key is optional
+// on the wire (an older server) and absence means off.
+function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.monitor?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putMonitorEnabled(!enabled);
+      onChange(next);
+      publishMonitorEnabled(next.monitor?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Monitor</h2>
+      <p className="deploy-muted">
+        A System chip in the status bar shows what fused-render and the processes it runs cost in
+        CPU and memory, with a Monitor page listing them live. Off by default.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable the process Monitor</b> — show the System chip and the Monitor page.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Diagnostics (SPEC §50): one button that zips logs, crash reports, memory
+// samples and the open-apps list to the Desktop, for a bug report. The plan
+// line (what the zip WOULD hold) is read on mount — cheap — so the reader
+// knows the size before pressing; the build itself can take up to a minute.
+// What it leaves OUT is stated up front because that is what decides whether
+// someone is willing to attach it to an issue.
+// WINDOW PRESETS, not a date picker. A reporter knows "a few minutes ago" or
+// "all day", never a clock time, and a wrong guess under-collects — so the
+// choices are the ones people actually say. The bulky collectors (calls
+// store, index runs, claude err logs, system log) honour the window; the
+// small join keys (session logs, crash files, outages, resources, state) are
+// always included regardless. `sinceS` is the absolute epoch the server
+// expects; "since app started" reads it off /api/health.
+type DiagnosticsWindow = "30m" | "2h" | "boot" | "24h";
+const DIAGNOSTICS_WINDOWS: { key: DiagnosticsWindow; label: string }[] = [
+  { key: "30m", label: "Last 30 minutes" },
+  { key: "2h", label: "Last 2 hours" },
+  { key: "boot", label: "Since the app started" },
+  { key: "24h", label: "Last 24 hours" },
+];
+
+function diagnosticsSince(win: DiagnosticsWindow, startedAt: number | null): number | undefined {
+  const now = Date.now() / 1000;
+  switch (win) {
+    case "30m":
+      return now - 30 * 60;
+    case "2h":
+      return now - 2 * 3600;
+    case "24h":
+      return now - 24 * 3600;
+    case "boot":
+      return startedAt ?? undefined;
+  }
+}
+
+function DiagnosticsSection() {
+  const [plan, setPlan] = useState<DiagnosticsPlan | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<DiagnosticsResult | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [win, setWin] = useState<DiagnosticsWindow>("2h");
+  // The macOS unified log is the ONE slow collector (15-45 s, a fixed scan
+  // cost per hour of window). Off here by default; the menu-bar item and
+  // the CLI keep it on, because a reporter's bundle is the one that has to
+  // carry the jetsam evidence.
+  const [systemLog, setSystemLog] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchServerHealth()
+      .then((h) => alive && setStartedAt(h.started_at))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    setPlan(null);
+    fetchDiagnosticsPlan(diagnosticsSince(win, startedAt))
+      .then((p) => alive && setPlan(p))
+      // The plan is a nicety: without it the button still works.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [win, startedAt]);
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    setCopied(false);
+    try {
+      setResult(
+        await buildDiagnostics({
+          since_s: diagnosticsSince(win, startedAt),
+          system_log: systemLog,
+        }),
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyPath = async () => {
+    if (result && (await copyToClipboard(result.path))) setCopied(true);
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Diagnostics</h2>
+      <p className="deploy-muted">
+        Logs, crash reports, memory samples and the list of open apps, zipped to your Desktop. No
+        chat transcripts, credentials or mount passwords.
+      </p>
+      <div className="prefs-radio-group" role="radiogroup" aria-label="Diagnostics window">
+        {DIAGNOSTICS_WINDOWS.map((w) => (
+          <label key={w.key} className="prefs-radio">
+            <input
+              type="radio"
+              name="diagnostics-window"
+              id={`diagnostics-window-${w.key}`}
+              checked={win === w.key}
+              disabled={busy || (w.key === "boot" && startedAt === null)}
+              onChange={() => setWin(w.key)}
+            />
+            <span>{w.label}</span>
+          </label>
+        ))}
+      </div>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          id="diagnostics-system-log"
+          checked={systemLog}
+          disabled={busy}
+          onChange={() => setSystemLog((v) => !v)}
+        />
+        <span>
+          <b>Include the macOS system log</b> — memory kills and App Nap events. Adds 15–45
+          seconds.
+        </span>
+      </label>
+      <p className="deploy-muted">
+        {plan
+          ? `${plan.files} ${plan.files === 1 ? "file" : "files"} · ${formatBytes(plan.bytes)} · ${plan.crash_reports} ${plan.crash_reports === 1 ? "crash report" : "crash reports"}`
+          : "Measuring…"}
+      </p>
+      <div className="prefs-actions">
+        <button type="button" className="btn btn-secondary" disabled={busy} onClick={save}>
+          {busy ? "Collecting…" : "Save diagnostics…"}
+        </button>
+        {busy && (
+          <span className="deploy-muted">
+            {systemLog ? "Reading the system log… 15–45 seconds" : "Collecting…"}
+          </span>
+        )}
+      </div>
+      {result && (
+        <div className="prefs-actions" style={{ marginTop: 8 }}>
+          <span className="deploy-muted">
+            Saved {formatBytes(result.bytes)} to{" "}
+            <code style={{ wordBreak: "break-all" }}>{result.path}</code>
+          </span>
+          <button type="button" className="btn btn-secondary" onClick={copyPath}>
+            {copied ? "Copied" : "Copy path"}
+          </button>
+        </div>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 // The project queue: one task in progress per folder. Off by default, and this
 // is the only place it turns on. Same one-checkbox section shape as the two
 // above.
@@ -487,6 +794,48 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
   );
 }
 
+// App git auto-sync (default ON, an opt-OUT): the app's own commits are pushed
+// to the remote and a behind repo is fast-forwarded when an app opens. Off is
+// the earlier behaviour: the Update card and the manual git flows only.
+function GitAutoSyncSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `!== false`: absence (an older server) reads as the default, ON.
+  const enabled = prefs.git?.auto_sync !== false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putGitAutoSyncEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Git sync</h2>
+      <p className="deploy-muted">
+        Push the commits the app makes itself (after a Claude turn, or when an app
+        is created, moved or deleted) and bring in newer commits when you open an
+        app. Only the default branch is synced, only by fast-forward, and nothing
+        is merged or forced. If it cannot, you get a notification.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Automatically pull and push app changes</b>
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 // A finished-task notification is scoped to sessions started from
 // fused-render's own Claude template (2026-09-18 fix — the reported bug: a
 // plain `claude` session typed by hand in a terminal, nothing to do with
@@ -544,6 +893,208 @@ function TaskNotifyTerminalSection({
 // turns on. Same one-checkbox section shape as Canvases above. While the
 // listener is up it shows the QR code a phone scans to pair (the ONLY way in —
 // no PIN, no approval dialog), and the devices that have, with revoke.
+// Native windows (macOS, fused_render/mac_window.py): the shell in the app's
+// own windows instead of browser tabs. On by default; this is the only place
+// it turns off, and it applies live — on, the next open is a window; off, every
+// window closes and opens go back to the browser. The launcher below is not
+// behind it. Rendered only where the running app can honour it
+// (`prefs.native_windows.available`).
+function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nw = prefs.native_windows;
+  if (!nw || !nw.available) return null;
+  const enabled = nw.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putNativeWindowsEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Native windows</h2>
+      <p className="deploy-muted">
+        Open Fused Render in its own macOS windows instead of browser tabs: a window per app, the
+        Dock icon, ⌘N and the View menu. On by default. Turning it off closes the open windows and
+        the app opens everything in your default browser instead.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Use native windows</b> instead of browser tabs.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Shortcuts: the macOS launcher (fused_render/launcher_panel.py) — the
+// global hotkey that drops the Search Apps panel, and the modifier that with
+// a digit opens the Nth recently opened app from anywhere. Rendered only when the server
+// says the launcher exists on this platform (`prefs.launcher.available`).
+// The hotkey is RECORDED, not typed: click the keycap, press the combination,
+// and the browser's `KeyboardEvent.code` becomes the spec — what maps to a
+// Carbon keycode without caring about the keyboard layout. The bind happens
+// on the app's main thread a tick after the PUT, so the response's `bound`
+// is the previous state; the section re-reads shortly after.
+const ROW_MODIFIERS: { spec: string; label: string; title: string }[] = [
+  { spec: "alt", label: "⌥", title: "Option" },
+  { spec: "cmd", label: "⌘", title: "Command" },
+  { spec: "ctrl", label: "⌃", title: "Control" },
+  { spec: "alt+cmd", label: "⌥⌘", title: "Option-Command" },
+  { spec: "ctrl+alt", label: "⌃⌥", title: "Control-Option" },
+];
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
+const REBIND_REREAD_MS = 400;
+
+function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const launcher = prefs.launcher;
+  const [recording, setRecording] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+
+  const reread = useCallback(() => {
+    // The app rebinds on its main thread after the PUT returned; pick up the
+    // real `bound` state once it has.
+    window.setTimeout(() => {
+      getPrefs().then(onChange).catch(() => undefined);
+    }, REBIND_REREAD_MS);
+  }, [onChange]);
+
+  useEffect(() => {
+    if (!recording) return;
+    // The live bindings are Carbon's, not the page's: with them up, the
+    // combination being recorded would open the panel or an app instead
+    // of arriving here. Suspended for the recording, restored on its end —
+    // whichever way it ends (a key, Esc, unmount).
+    postLauncherSuspend(true).catch(() => undefined);
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecording(false);
+        setHint(null);
+        return;
+      }
+      if (MODIFIER_KEYS.has(e.key)) return; // wait for the key itself
+      const mods: string[] = [];
+      if (e.ctrlKey) mods.push("ctrl");
+      if (e.altKey) mods.push("alt");
+      if (e.shiftKey) mods.push("shift");
+      if (e.metaKey) mods.push("cmd");
+      if (!mods.length) {
+        setHint("Add ⌥ ⌘ ⌃ or ⇧…");
+        return;
+      }
+      setRecording(false);
+      setHint(null);
+      setBusy(true);
+      setError(null);
+      putLauncherHotkey(mods.concat([e.code]).join("+"))
+        .then((next) => {
+          onChange(next);
+          reread();
+        })
+        .catch((err) => setError((err as Error).message))
+        .finally(() => setBusy(false));
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      postLauncherSuspend(false).catch(() => undefined);
+    };
+  }, [recording, onChange, reread]);
+
+  if (!launcher || !launcher.available) return null;
+
+  const setModifier = async (spec: string) => {
+    if (busy || spec === launcher.row_modifier) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putLauncherRowModifier(spec));
+      reread();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unbound = launcher.bound === false;
+  const rowsUnbound = launcher.pinned_bound === false;
+  return (
+    <section className="prefs-section">
+      <h2>Shortcuts</h2>
+      <p className="deploy-muted">
+        The launcher is a search panel over every app on this machine, on a global shortcut. It
+        opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and
+        the menu-bar item as Search Apps.
+      </p>
+      <div className="prefs-shortcuts">
+        <div className="prefs-shortcut-row">
+          <div className="prefs-shortcut-label">
+            <b>Open the search</b>
+            <span className={unbound ? "prefs-shortcut-warn" : undefined}>
+              {unbound
+                ? `Could not bind ${launcher.display} — another app may own it. Pick a different shortcut.`
+                : "Click the key, then press the new shortcut. Esc cancels."}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={"prefs-keycap" + (recording ? " rec" : "")}
+            disabled={busy}
+            onClick={() => {
+              setRecording(true);
+              setHint("Press keys…");
+            }}
+            title="Click, then press the new shortcut"
+          >
+            {recording ? hint ?? "Press keys…" : launcher.display || launcher.hotkey}
+          </button>
+        </div>
+        <div className="prefs-shortcut-row">
+          <div className="prefs-shortcut-label">
+            <b>Open the Nth app</b>
+            <span className={rowsUnbound ? "prefs-shortcut-warn" : undefined}>
+              {rowsUnbound
+                ? `Some of ${launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.`
+                : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
+            </span>
+          </div>
+          <div className="prefs-seg" role="radiogroup" aria-label="Row shortcut modifier">
+            {ROW_MODIFIERS.map((m) => (
+              <button
+                key={m.spec}
+                type="button"
+                title={m.title}
+                className={m.spec === launcher.row_modifier ? "on" : undefined}
+                disabled={busy}
+                onClick={() => void setModifier(m.spec)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   // What the click asked for, held until the PUT answers. Turning sharing on
   // binds the listener, issues a certificate and announces two mDNS names
@@ -1230,13 +1781,19 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
-                <UpdatesSection />
+                <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
+                <ShortcutsSection prefs={prefs} onChange={setPrefs} />
+                <UpdatesSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
                 <AppSharingSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
+                <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
+                <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
+                <MonitorSection prefs={prefs} onChange={setPrefs} />
+                <DiagnosticsSection />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

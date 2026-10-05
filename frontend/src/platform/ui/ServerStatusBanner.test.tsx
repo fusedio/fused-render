@@ -48,7 +48,13 @@ let probes = 0;
 // probe that succeeds, decides the served bundle moved, and portals a refresh
 // dialog into a `document.body` that suite never installed.
 const realFetch = globalThis.fetch;
+// /api/health is the liveness probe now (SPEC §50) and /api/config only the
+// version read that follows a healthy one — `checkNow()` forces that read, so
+// the counter below still counts one per wake.
 const stubFetch = (async (url: unknown, init?: { cache?: string }) => {
+  if (String(url).startsWith("/api/health")) {
+    return { ok: true, status: 200, json: async () => ({ boot_id: "boot-1" }) };
+  }
   if (String(url).startsWith("/api/config")) {
     if (init?.cache === "no-store") probes += 1;
     return { ok: true, json: async () => config };

@@ -2041,3 +2041,23 @@ test("focus alone opens the idle line — no click or key needed — and focus o
   );
   expect(cls()).toContain("is-idle");
 });
+
+test("a folded chat card says its model · effort top-right; an open one hides the line (Akshil, 2026-10-01)", () => {
+  const m = mount({ controls: { ...controls, model: "opus", effort: "max" } });
+  const form = () => m.root.findByType("form");
+  const meta = () =>
+    m.root.findAll((n) => n.props?.["data-testid"] === "composer-meta")[0];
+  expect(String(form().props.className)).toContain("is-idle");
+  expect(String(meta().props.className)).toBe("c-composer-meta");
+  expect(meta().props["aria-hidden"]).toBe(false);
+  // The model's LABEL, not its id — the same word the pill shows.
+  expect(meta().findAllByType("span").map((c) => c.children.join("")))
+    .toEqual(["Opus", "", "max"]);
+  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
+  expect(String(meta().props.className)).toContain("is-hidden");
+  expect(meta().props["aria-hidden"]).toBe(true);
+  // Nothing to say while the pills are still settling: no "— · —" flash.
+  const n = mount({ controls: { ...controls, model: "", ready: false } });
+  expect(String(n.root.findAll((x) => x.props?.["data-testid"] === "composer-meta")[0]
+    .props.className)).toContain("is-hidden");
+});

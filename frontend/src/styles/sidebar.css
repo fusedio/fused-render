@@ -1186,6 +1186,27 @@ a.bookmark-name::after {
   cursor: pointer;
 }
 
+/* Run, beside Copy — CommandLine.tsx renders this only where the status-bar
+   terminal drawer exists to send the command to (`canRunInTerminal()`), so
+   it never turns up as a lone Copy button's mismatched sibling. Accent-toned
+   rather than the muted Copy border: for a command the user is about to hand
+   to a real shell, Run is the affirmative action, the same tone
+   `.claude-health-action` uses for the button beside it. */
+.update-badge-run {
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-badge-run:hover {
+  filter: brightness(1.06);
+}
+
 /* Projects (D487, "Current apps" until 2026-08-26): the apps on the desk, above
    Bookmarks. Rows reuse .bookmark-row/.bookmark-name/.bookmark-actions for
    identical metrics; the hover cross archives every task under the app. Sizing

@@ -55,8 +55,20 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import _startonce, jobs
+from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
+from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
+from fused_render.ai import hub_catalog_builder
+# Follow-up review finding 3: `job_marker`, NOT `worker_base` — this module's
+# only reason to touch `worker_base` was `JOB_ERROR_MARKER` (see
+# `_download_failure_text` below), and `worker_base` starts a permanent
+# daemon thread at import time (`_GENERATE_TASKS = _start_generate_thread()`)
+# merely to be ready to serve a worker request. The supervisor is a process
+# that FORKS to spawn workers — a background thread alive here is exactly
+# the fork-after-thread SIGSEGV risk this codebase has hit before (see
+# MEMORY.md). `job_marker` holds the one constant both sides need, with no
+# import-time side effects of its own.
+from fused_render.ai.runners import job_marker
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +137,7 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
 VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
+SPEECH_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-speech:"
 #: And one row per GENERATION, same reasoning as `IMAGE_JOB_PREFIX`: two
 #: completions from the same resident model are two pieces of work with two
 #: answers, and a shared id would have the second overwrite the first's row
@@ -885,6 +898,51 @@ def _tail(path: str, limit: int = 2000) -> str:
         return ""
 
 
+def _download_failure_text(stderr: str) -> str:
+    """The message to put on a failed download-only job row, from that
+    worker's own stderr log tail.
+
+    `worker_base.serve`'s `--download-only` except-branch prints the full
+    traceback (for whoever reads the raw log file) and then, as its last
+    line, `worker_base.JOB_ERROR_MARKER` followed by the one sentence meant
+    for a person reading the JOB ROW, not the log — a deliberately-raised
+    `RuntimeError("some written sentence")` should reach the row AS that
+    sentence, bare, with no `"RuntimeError: "` prefix (finding 6 of the
+    follow-up review) — a non-`RuntimeError` exception (one nothing here
+    deliberately raised as a row-facing message) still gets its class name,
+    since a bare `str(e)` there is often unreadable alone. Splits on the
+    marker's LAST occurrence (there is only ever one write per failure, but
+    `str.rsplit` is the honest choice either way) and returns what follows
+    it, stripped. Falls back to the whole tail, stripped, when the marker is
+    absent entirely — a process that never reached that except branch (killed
+    by a signal, an import that failed before `serve()` even ran) still needs
+    SOME text on the row, and the old whole-blob behaviour is still better
+    than nothing for that case.
+    """
+    if job_marker.JOB_ERROR_MARKER in stderr:
+        return stderr.rsplit(job_marker.JOB_ERROR_MARKER, 1)[-1].strip()
+    return stderr.strip()
+
+
+#: Armed by the app's quit (app.py `_stop_children`) BEFORE `unload_all` runs.
+#: The quit kills workers while the server is still answering requests, so an
+#: in-flight AI route can `load` after `unload_all` emptied `_workers` and spawn
+#: a replacement that `os._exit` then orphans — holding gigabytes, with nothing
+#: left tracking it. Once armed, no worker or weights fetch is spawned again in
+#: this process. Not set by `unload_all` itself: tests unload and load again.
+_stopping = threading.Event()
+
+
+def refuse_new_workers() -> None:
+    """Quit path: no worker or fetch may be started from here on."""
+    _stopping.set()
+
+
+def _refuse_if_quitting() -> None:
+    if _stopping.is_set():
+        raise SupervisorError("fused-render is quitting; not starting a worker")
+
+
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     """Start worker.py and wait for it to publish its port.
 
@@ -893,6 +951,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     race, since anything this process reserves can be taken between the bind and
     the exec.
     """
+    _refuse_if_quitting()
     status = _status_path(worker)
     try:
         os.unlink(status)
@@ -1100,6 +1159,10 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
     """
     from fused_render import envinstall, projectenv
 
+    # Before the install, not only before the spawn: `envinstall` launches a
+    # DETACHED `uv sync` worker that setsid()s itself, lives in no registry the
+    # quit empties, and would keep pulling gigabytes after `os._exit`.
+    _refuse_if_quitting()
     if envinstall.is_installed(runner.folder):
         return envinstall.venv_python_for(runner.folder)
 
@@ -1335,7 +1398,8 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
 # ---------------------------------------------------------------- public façade
 
 
-def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
+def _fetch_only(runner: registry.Runner, model: str, job: str,
+                 *, file: str | None = None) -> None:
     """Download a model's weights and stop — no residency, no eviction.
 
     A separate path from `_bring_up` because it must NOT touch the worker table:
@@ -1344,6 +1408,14 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
     own worker does the fetching (`--download-only`) because what a model's
     files even ARE differs by backend — a GGUF single file for the image runner,
     a full snapshot for MLX.
+
+    `file` (item A) is passed to the worker subprocess as `--file` only when
+    given — an absent `file` means the argv this spawns is BYTE-IDENTICAL to
+    before this parameter existed, so a plain download's behaviour is
+    unchanged. The worker's own `worker_base.serve` only forwards it to
+    `download()` when that runner's `download` actually declares a `file`
+    parameter (see that function's docstring) — every other runner ignores it
+    with a debug log rather than erroring on an argument it has no use for.
     """
     # A token even though it serves nothing: the download-only worker still
     # REPORTS, and reporting is what the token authenticates.
@@ -1363,8 +1435,12 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         _report(job, detail="Fetching weights…")
         log = _log_path(stub)
         env = _child_env(stub.token, model)
+        argv = [python, runner.worker, "--model", model, "--job", job, "--download-only"]
+        if file:
+            argv += ["--file", file]
+        _refuse_if_quitting()
         proc = subprocess.Popen(
-            [python, runner.worker, "--model", model, "--job", job, "--download-only"],
+            argv,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
             env=env,
             **_spawn_kwargs(runner.folder, env),
@@ -1391,7 +1467,8 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
             if _cancel_requested(job):
                 raise SupervisorError("cancelled")
             stderr = _tail(log)
-            raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
+            raise SupervisorError(
+                _download_failure_text(stderr) or f"the download exited {proc.returncode}")
         # `tier=jobs.TRAIL` restated explicitly: `job` here is
         # `job_id_for(model)`, the same row a RESIDENT load of this model
         # reports through, and `Job.tier` sticks until a report says
@@ -1565,11 +1642,19 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     return {"jobId": job, "model": model, "state": worker.state}, worker
 
 
-def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
+def load(model: str, capability: str, *, weights_only: bool = False,
+         file: str | None = None) -> dict:
     """Make `model` resident for `capability`; returns `{jobId, model, state}`.
 
     `weights_only` downloads and stops — the AI Models page's "Download", which
     must not evict whatever is currently loaded.
+
+    `file` (item A, per-variant download) names a specific GGUF file to fetch
+    instead of whatever the runner's own picker would otherwise choose — only
+    meaningful with `weights_only=True`, and only actually consulted by a
+    runner whose `download` accepts it (`_fetch_only` passes it along
+    regardless; a runner that does not declare a `file` parameter on its own
+    `download` simply never receives it — see `_fetch_only`'s own docstring).
 
     Idempotent for the model already loading or loaded — a second call joins the
     first rather than starting a duplicate, which matters because two pages
@@ -1599,6 +1684,7 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             cancellable=True, unit="bytes", detail="Preparing…", done=None,
             total=None, tier=jobs.TRAIL, origin="Local models")
     threading.Thread(target=_fetch_only, args=(runner, model, job),
+                     kwargs={"file": file},
                      name=f"ai-fetch-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": "downloading"}
 
@@ -1615,7 +1701,7 @@ def image_job_id(uid: str) -> str:
 
 def _start_render(capability: str, model: str, request: dict, job: str,
                    generate, *, noun: str, thread_name: str, page: str = "",
-                   source: str = "") -> None:
+                   source: str = "", title: str | None = None) -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
@@ -1657,7 +1743,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     _runner_or_raise(capability)
     _require_build_tools()
 
-    title = str(request.get("prompt") or model).strip() or model
+    title = str(title or request.get("prompt") or model).strip() or model
     # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
     # JobRow draws after the title — never folded into `title` (that's the
     # prompt) or `detail` (that's the worker's progress ticks, which would
@@ -2361,6 +2447,82 @@ def start_hub_metadata_refresh() -> None:
         lambda: threading.Thread(target=run, name="ai-hub-metadata-refresh", daemon=True))
 
 
+#: One delta per BUILT hub-catalog pool per day (SPEC docs/HUB_CATALOG_SPEC.md,
+#: "Affected Flows"). A day, not `_HUB_METADATA_REFRESH_INTERVAL_S`'s 20
+#: minutes: the spec's own measured fact is "24h delta = ~166 rows / 1
+#: request" for the biggest pool (MLX text-generation), so a tighter tick
+#: would cost real Hub requests for no benefit — nothing in a capability's
+#: pool needs to be fresher than a day for a search's ranking to be useful.
+#: Unbuilt pools are never touched by this thread at all (`_hub_catalog_
+#: refresh_tick`'s own per-capability check) — this only ever WIDENS a pool
+#: that already exists, never builds one from scratch (that is `api_hub_
+#: search`'s `ensure_build_started`, on a cache miss).
+_HUB_CATALOG_REFRESH_INTERVAL_S = 24 * 60 * 60  # 1 day
+
+_hub_catalog_refresh_thread: threading.Thread | None = None
+
+
+def _hub_catalog_refresh_tick() -> None:
+    """One sweep of every BUILT capability pool's manifest entry, refreshing
+    whichever ones are due — split out for the same testability reason
+    `_hardware_refresh_tick`/`_hub_metadata_refresh_tick` are (a test drives
+    this directly, without ever starting the thread).
+
+    "Due" is read off the pool's own manifest entry (`entry["updated"]`, the
+    timestamp `hub_catalog.write_pool` stamps on every write, including a
+    delta's own write) rather than a separate per-capability clock this
+    module would have to keep in sync — the manifest is already the single
+    source of truth for when a pool last changed, on disk, shared across
+    however many processes point at this home dir. A capability with no
+    `"updated"` entry (should not happen for a built pool, but the same
+    defensive read `pool_exists`/`is_blocked` already apply) is treated as
+    due immediately, same as a stale one.
+
+    A capability's own `refresh_capability_pool_delta` call already no-ops
+    for a missing pool or an active 429 backoff, so this sweep does not need
+    to duplicate either check — it only adds the THIRD gate, "not due yet",
+    on top."""
+    cfg = hub_catalog.load_config()
+    manifest = hub_catalog.read_manifest(cfg)
+    now = time.time()
+    for capability, entry in manifest.get("capabilities", {}).items():
+        if not isinstance(entry, dict) or not entry.get("file"):
+            continue  # never built — the daily thread never builds one
+        if hub_catalog.is_blocked(cfg, capability):
+            continue
+        updated = entry.get("updated")
+        if isinstance(updated, (int, float)) and now - updated < _HUB_CATALOG_REFRESH_INTERVAL_S:
+            continue
+        try:
+            hub_catalog_builder.refresh_capability_pool_delta(cfg, capability)
+        except Exception:  # noqa: BLE001 - one capability's failure must not stop the sweep
+            logger.exception("hub-catalog refresh failed for %s", capability)
+
+
+def start_hub_catalog_refresh() -> None:
+    """Start the daily hub-catalog delta-refresh thread, once per process —
+    modeled directly on `start_hardware_refresh`/`start_hub_metadata_refresh`
+    above (idempotent module-level handle, one sweep fires immediately so a
+    pool built in a previous run is not stuck a full day behind, then the
+    thread sleeps and re-sweeps forever). A failed sweep is logged and never
+    kills the loop, same as its two siblings."""
+    global _hub_catalog_refresh_thread
+    if _hub_catalog_refresh_thread is not None and _hub_catalog_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hub_catalog_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hub-catalog refresh tick failed")
+            time.sleep(_HUB_CATALOG_REFRESH_INTERVAL_S)
+
+    _hub_catalog_refresh_thread = threading.Thread(
+        target=run, name="ai-hub-catalog-refresh", daemon=True)
+    _hub_catalog_refresh_thread.start()
+
+
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to
 #: clear `_draining` before giving up on it. Generous over the ~9s worst case
 #: (a 2s `/quit`, SIGTERM + 3s wait, SIGKILL + 3s wait, `proc.wait` + 1s) —
@@ -2450,12 +2612,35 @@ def _drop_gone(worker: Worker) -> None:
     Shared by `refresh_memory()` (the sidebar's poll, which decides with
     `_alive`) and `ready_worker()` (every generation request, which decides
     with the stricter `_exited`) so the two agree on what "gone" leaves behind.
+
+    The row also says HOW it went (SPEC §50, D5): "the model process is gone:
+    killed by SIGKILL: …" rather than the bare phrase, which is what turns a
+    memory kill and a native crash into two different bug reports. The bare
+    phrase stays the prefix — and the whole message when there is no real exit
+    code to read (no Popen attached, as in every test fixture and an adopted
+    process) — because callers and tests match on it. The death is logged once,
+    with the tail of the worker's stderr, by whichever caller actually removes
+    the slot; nothing on this path runs `_cleanup_files`, so that log is still
+    on disk to be read.
     """
     worker.state = "error"
     worker.error = "the model process is gone"
+    code = None
+    if worker.proc is not None:
+        try:
+            polled = worker.proc.poll()
+        except OSError:
+            polled = None
+        if isinstance(polled, int) and not isinstance(polled, bool):
+            code = polled
     with _lock:
-        if _workers.get(worker.capability) is worker:
+        owned = _workers.get(worker.capability) is worker
+        if owned:
             del _workers[worker.capability]
+    if code is not None:
+        desc = (report_child_exit("ai-worker", worker.pid, code, _log_path(worker))
+                if owned else describe_exit(code))
+        worker.error = f"the model process is gone: {desc}"
 
 
 def _exited(worker: Worker) -> bool:
@@ -2765,6 +2950,16 @@ def _wait_ready(model: str, capability: str, job: str,
         _report(job, **final)
 
 
+def speech_job_id(uid: str) -> str:
+    return SPEECH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
+    _start_render(registry.TEXT_TO_SPEECH, model, request, job, generate_speech,
+                  noun="speech clip", thread_name="ai-speech", page=page, source=source,
+                  title=request.get("text"))
+
+
 def video_job_id(uid: str) -> str:
     """The download-manager row for one render. See `image_job_id`."""
     return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
@@ -2835,6 +3030,11 @@ def generate_video(model: str, request: dict, job: str) -> dict:
     """
     return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
+
+
+def generate_speech(model: str, request: dict, job: str) -> dict:
+    return _generate_via_worker(registry.TEXT_TO_SPEECH, model, request, job,
+                                timeout=GENERATE_TIMEOUT_S, noun="speech")
 
 
 def _await_turn(job: str, title: str, model: str = "", page: str = "") -> None:

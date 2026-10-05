@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 
 import { marked } from "marked";
 
-import { renderMd, TABLE_WRAP_CLASS } from "./markdown";
+import { renderMd, shellRunText, TABLE_WRAP_CLASS } from "./markdown";
 
 /** Install this module's `marked.use()` config on the shared singleton. */
 renderMd("configure me");
@@ -95,4 +95,35 @@ test("an unclosed fence mid-stream is closed rather than swallowing the tail", (
   // sanitizer stage falls back to a `<pre>` of escaped text, and the point here
   // is only that the tail is still IN it rather than lost.
   expect(renderMd("before\n```js\nconst a = 1;")).toContain("const a = 1;");
+});
+
+// ── shellRunText: the fence "run" button's language/prompt logic ───────────
+
+test("a shell fence's run text is the block with trailing whitespace stripped, for bash/sh/shell/zsh", () => {
+  for (const lang of ["bash", "sh", "shell", "zsh"]) {
+    expect(shellRunText(lang, "cd foo\n./build.sh\n")).toBe("cd foo\n./build.sh");
+  }
+});
+
+test("a shell fence's run text matches its language case-insensitively", () => {
+  expect(shellRunText("Bash", "ls\n")).toBe("ls");
+  expect(shellRunText("Console", "$ ls\n")).toBe("ls");
+});
+
+test("a console fence keeps only the prompted lines, `$ ` stripped", () => {
+  const block = "$ npm install\nadded 3 packages\n$ npm run build\n";
+  expect(shellRunText("console", block)).toBe("npm install\nnpm run build");
+});
+
+test("a console fence with no `$ ` line at all is not runnable", () => {
+  expect(shellRunText("console", "added 3 packages\n")).toBeNull();
+});
+
+test("a non-shell language never gets a run text", () => {
+  expect(shellRunText("python", "print('hi')\n")).toBeNull();
+  expect(shellRunText(undefined, "some text\n")).toBeNull();
+});
+
+test("a blank or whitespace-only block is not runnable", () => {
+  expect(shellRunText("bash", "   \n")).toBeNull();
 });

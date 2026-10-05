@@ -2747,11 +2747,23 @@ def _start(file: str, message: str, session_id: str, model: str,
            # DIFFERENT flags — `--resume` continues a conversation, and
            # `--session-id` names a new one.
            "new_session_id": new_session_id}
-    proc = subprocess.Popen(
-        [sys.executable, _SESSION_HOST],
-        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, env=_spawn_env(),
-        **_DETACH)
+    # The HOST's own stderr goes to `host.err.log`, appended, 0600 — not
+    # DEVNULL (SPEC §50, D5). A host that crashed (an import error, a native
+    # fault its faulthandler prints) used to leave nothing anywhere, and the
+    # run just read as "claude exited unexpectedly". Its own file, not
+    # `err.log`: that one is the CLI's stderr, and `_poll` shows its tail to
+    # the user as the run's error text. The parent's copy of the fd is closed
+    # once the child has it.
+    host_err = os.open(os.path.join(run_dir, "host.err.log"),
+                       os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, _SESSION_HOST],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=host_err, env=_spawn_env(),
+            **_DETACH)
+    finally:
+        os.close(host_err)
     try:
         proc.stdin.write(json.dumps(req).encode("utf-8"))
     finally:
@@ -2897,6 +2909,34 @@ def _commit_turn(file: str, message: str) -> None:
             return  # nothing to commit (turn changed no files under this app)
         git("commit", "-q", "-m", subject, "--", spec)
     except Exception:
+        pass
+    finally:
+        # Whether the sweep committed or the turn already committed its own
+        # work (the app's CLAUDE.md asks for that), whatever the default
+        # branch is now ahead by should reach the remote.
+        _request_sync(app_dir)
+
+
+def _request_sync(app_dir: str) -> None:
+    """Ask the server to fast-forward and push `app_dir`'s repo, in ITS
+    background (POST /api/git-upstream, action "sync"). This template is a
+    standalone process and may not import fused_render (D166), so the server
+    owns the git engine; the call answers at once and the push never holds up
+    this poll. Best-effort: no server (a bare test), a refusal, a timeout —
+    all mean "no sync now"; the next trigger retries."""
+    origin = _origin()
+    if not origin:
+        return
+    try:
+        req = urllib.request.Request(
+            origin + "/api/git-upstream",
+            data=json.dumps({"action": "sync", "path": app_dir,
+                             "trigger": "claude-turn"}).encode("utf-8"),
+            headers={"X-Fused": "1", "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+    except Exception:  # noqa: BLE001 — see docstring
         pass
 
 
@@ -5217,6 +5257,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         errors="replace").read().strip()
         except FileNotFoundError:
             tail = ""
+        if not tail:
+            # The CLI said nothing — the HOST may have (SPEC §50: its own
+            # stderr lands in host.err.log instead of DEVNULL), e.g. a crash
+            # between spawn and the CLI's Popen.
+            try:
+                tail = open(os.path.join(run_dir, "host.err.log"), encoding="utf-8",
+                            errors="replace").read().strip()[-2000:]
+            except OSError:
+                tail = ""
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
 

@@ -42,7 +42,7 @@ import {
   pickRowFit,
   type RowFit,
 } from "./fit";
-import { PERMISSION_SHORT } from "./composer-defaults";
+import { MODEL_LABELS, PERMISSION_SHORT } from "./composer-defaults";
 import { ContextMeter } from "./ContextMeter";
 import { contextInput, warnLine } from "./context-window";
 import { EffortSelect } from "./EffortSelect";
@@ -1973,6 +1973,30 @@ export function ComposerCard({
           submit();
         }}
       >
+        {/* WHAT THE NEXT TURN RUNS WITH, READABLE WHILE THE CARD IS FOLDED
+            (Akshil, 2026-10-01): the pills live in the shelf, and the shelf is
+            gone while idle, so a folded card said nothing about model or
+            effort. One dim line hung off the card's top-right edge — INSIDE the
+            form, because the form is the one box whose top edge is the card's
+            (the chip tray and the context line are in-flow siblings above it)
+            and it is already `position: relative` for Send. It fades as the
+            shelf opens and the pills take over saying the same thing, and it
+            says nothing while the pills are still settling. */}
+        {variant === "chat" ? (
+          <div
+            className={
+              collapsed && controls.ready !== false && controls.model
+                ? "c-composer-meta"
+                : "c-composer-meta is-hidden"
+            }
+            aria-hidden={!collapsed}
+            data-testid="composer-meta"
+          >
+            <span>{MODEL_LABELS[controls.model] ?? controls.model}</span>
+            <span className="c-composer-meta-dot" aria-hidden="true" />
+            <span>{controls.effort}</span>
+          </div>
+        ) : null}
         <textarea
           ref={boxRef}
           rows={variant === "home" ? 2 : 1}

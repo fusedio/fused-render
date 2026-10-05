@@ -765,6 +765,10 @@ def test_pull_refuses_a_non_fast_forward_instead_of_merging(ops, wired):
     # Nothing was merged, nothing was rebased.
     assert git(root, "log", "-1", "--format=%s").strip() == "mine"
     assert git(root, "rev-list", "--count", "HEAD").strip() == "2"
+    # The refusal also carries the command and git's COMPLETE output, which the
+    # "Fix with AI" prompt quotes (the toast sentence above is only a summary).
+    assert got["command"].startswith("git pull --ff-only")
+    assert "fast-forward" in got["output"].lower()
 
 
 def test_a_repository_with_no_remote_refuses_the_network_ops(ops, repo):
@@ -2046,3 +2050,26 @@ def test_no_op_can_reach_a_history_rewriting_verb(ops):
     rest_of_file = body[:start] + body[end:]
     assert '"--hard"' in reset_fn, "the op meant to hold it does not"
     assert '"--hard"' not in rest_of_file, "found outside _reset"
+
+
+def test_refusal_output_is_per_call_not_shared_across_threads(ops, repo):
+    """A concurrent op in the same process must not donate its git command and
+    output to this thread's refusal (Fix with AI would quote the wrong git call)."""
+    import threading
+    other_ran, may_finish = threading.Event(), threading.Event()
+
+    def other():
+        ops._run(repo, "status")
+        other_ran.set()
+        may_finish.wait(5)
+
+    ops._run(repo, "rev-parse", "HEAD")
+    t = threading.Thread(target=other)
+    t.start()
+    other_ran.wait(5)
+    try:
+        refusal = ops._Refused("x", "boom", with_output=True)
+        assert refusal.payload["command"] == "git rev-parse HEAD"
+    finally:
+        may_finish.set()
+        t.join()

@@ -13,6 +13,9 @@ Three subcommands:
     subcommand of this CLI.
   * ``fused-render calls`` — read the app call log (calls.py) from a terminal.
     Reads the store directly off disk, so it works with no server running.
+  * ``fused-render diagnose`` — write the diagnostics zip (diagnostics.py, SPEC
+    §50) off disk. Needs no server either — the case it exists for is the
+    server that is down.
 
 Packing a renderable page into a portable bundle for hosted serving is a
 ``POST /api/export`` call on the running server (see server.py/export.py), not a
@@ -30,7 +33,7 @@ import urllib.request
 import webbrowser
 
 from fused_render._branch import branch_port, branch_ref
-from fused_render.logs import setup_logging
+from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 from fused_render.shell.seed import ensure_fused_dir, fused_dir
 
 logger = logging.getLogger("fused_render")
@@ -39,7 +42,7 @@ DEFAULT_PORT = branch_port()
 
 # Subcommand names; anything else as argv[1] falls through to the implicit `serve`
 # so the historical bare `fused-render --port 9000` invocation keeps working.
-_SUBCOMMANDS = ("serve", "open", "calls")
+_SUBCOMMANDS = ("serve", "open", "calls", "diagnose")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -114,6 +117,22 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="wait for new records to appear, then print and exit")
     calls.add_argument("--timeout", type=float, default=60.0,
                        help="seconds --follow waits before giving up (default: 60)")
+
+    diagnose = sub.add_parser(
+        "diagnose",
+        help="write a diagnostics zip (logs, outages, resource trail, crash reports)",
+        description="Collect fused-render's logs, outage record, resource trail "
+                    "and crash reports into one zip to attach to a bug report. "
+                    "Reads off disk; no server needs to be running.",
+    )
+    diagnose.add_argument("--since", default="",
+                          help="window: 30m / 2h / 1d (default: the last day, or "
+                               "since the current server booted if longer)")
+    diagnose.add_argument("--out", default=None, metavar="DIR",
+                          help="directory to write the zip into (default: ~/Desktop)")
+    diagnose.add_argument("--no-system-log", action="store_true",
+                          help="skip the macOS unified log (`log show`, the slow step: "
+                               "15-45 s; it is where jetsam memory kills show up)")
     return parser
 
 
@@ -161,6 +180,15 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     install_no_window_policy()
     log_file = setup_logging()
+    # Fatal-signal / uncaught-exception traces into the log home (crashlog.py,
+    # SPEC §50): a segfault in a native extension otherwise leaves nothing.
+    # Right after logging so the install itself is logged; never fatal.
+    try:
+        from fused_render.crashlog import install as _install_crashlog
+
+        _install_crashlog("server")
+    except Exception:  # noqa: BLE001 - a missing crash trace beats no server
+        logger.exception("could not install the crash log")
     # One-shot relocation of the workspace out of iCloud-synced ~/Documents
     # (D337). Strictly BEFORE onboarding: ensure_fused_dir creates ~/Fused, and
     # an existing destination is exactly what the migration refuses to move into.
@@ -220,6 +248,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     print(f"fused-render serving at {url}{branch_note}")
     print(f"start dir: {start_dir}")
     print(f"log file: {log_file}")
+    print(f"log dir: {log_dir()}")
     # Explicit startup marker in the log (the boot line already timestamps it,
     # but this records the bind + start dir a session is running with).
     logger.info("serving at %s%s (start dir %s)", url, branch_note, start_dir)
@@ -227,7 +256,11 @@ def _run_serve(args: argparse.Namespace) -> None:
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
-    server = uvicorn.Server(uvicorn.Config(app, host=_HOST, port=port))
+    # `log_config`: uvicorn's default dictConfig points its loggers at stderr
+    # (invisible in the packaged app) and would otherwise be the only record
+    # of a bind failure or a dying worker; this routes them into the log file.
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=_HOST, port=port, log_config=uvicorn_log_config()))
     app.state.uvicorn_server = server
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; this loopback bind is not touched.
@@ -678,6 +711,26 @@ def _run_calls(args: argparse.Namespace) -> None:
         print(f"\ncursor: {page['cursor']}   (pass to --since-cursor for only what is new)")
 
 
+def _run_diagnose(args: argparse.Namespace) -> None:
+    """Build the diagnostics zip and print its path.
+
+    Deliberately no `setup_logging()`: that would open a fresh session log in
+    the log home just to say "diagnose ran", and the bundle would then ship
+    that stray file instead of only the sessions worth reading.
+    """
+    since = _parse_age(args.since) if args.since else 0.0
+    since_s = time.time() - since if since else None
+    try:
+        from fused_render import diagnostics
+
+        path = diagnostics.build_bundle(since_s=since_s, out_dir=args.out,
+                                        system_log=not args.no_system_log)
+    except Exception as exc:  # noqa: BLE001 - a CLI says why, not a traceback
+        print(f"could not write diagnostics bundle: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    print(path)
+
+
 def main() -> None:
     parser = _build_parser()
 
@@ -694,6 +747,9 @@ def main() -> None:
         return
     if args.command == "open":
         _run_open(args)
+        return
+    if args.command == "diagnose":
+        _run_diagnose(args)
         return
     _run_serve(args)
 

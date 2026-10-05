@@ -37,12 +37,30 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import threading
 from types import ModuleType
 
 # Sentinel distinct from None, which is the legitimate "no backend on this
 # platform" answer we want to cache rather than re-probe on every focus event.
 _UNPROBED = object()
 _backend: object = _UNPROBED
+
+# Serialises every backend call. The OS clipboard is ONE shared object per
+# login session and the native APIs behind it are not thread-safe: on macOS,
+# two threads inside `-[NSPasteboard readObjectsForClasses:options:]` at once
+# race in `_updateTypeCacheIfNeeded` — one releases the type-cache array the
+# other is still appending to — and the process dies with EXC_BAD_ACCESS
+# (seen 2026-10-04, 0.6.0). The routes in server/routers/clipboard.py are sync
+# `def`s, so Starlette runs each request on its own threadpool thread, and the
+# frontend fires a read from EVERY open webview on focus/visibilitychange —
+# a wake from sleep with native app windows open is exactly N concurrent
+# reads. A write is three mutations (clear, write objects, set string), so a
+# read interleaving a write races too; one lock covers reads and writes.
+#
+# A lock rather than a hop to the AppKit main thread: `_darwin.py` must also
+# work on a source install with pyobjc but no `[NSApplication run]` loop,
+# where `AppHelper.callAfter` never fires and the request would hang forever.
+_lock = threading.Lock()
 
 
 def _load_backend() -> ModuleType | None:
@@ -120,7 +138,8 @@ def read_files() -> tuple[list[str], str, bool]:
     if backend is None:
         return [], "", False
     try:
-        raw = backend.read_files()
+        with _lock:
+            raw = backend.read_files()
     except Exception:
         # A clipboard read is never important enough to fail a request: a
         # transient "another app owns the clipboard" error on Windows or a
@@ -146,7 +165,8 @@ def write_files(paths: list[str]) -> tuple[str, bool]:
         # ever do — leave whatever is there alone.
         return "", True
     try:
-        backend.write_files(checked)
+        with _lock:
+            backend.write_files(checked)
     except Exception:
         return "", False
     return fingerprint(checked), True

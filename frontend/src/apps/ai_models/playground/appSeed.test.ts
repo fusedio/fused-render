@@ -144,3 +144,43 @@ describe("what every embeddings seed says regardless", () => {
     expect(detail).toContain("load the `fused-render-ai` skill");
   });
 });
+
+describe("the text-to-speech seed for a clone model", () => {
+  const seedSpeech = (search: string) => {
+    const saved = location.search;
+    (location as { search: string }).search = search;
+    try {
+      return buildAppAnnotation(
+        model({ id: "org/tts-base", voiceMode: "clone" }), "text-to-speech").detail;
+    } finally {
+      (location as { search: string }).search = saved;
+    }
+  };
+
+  it("names refAudio only together with refText", () => {
+    const detail = seedSpeech("?ref=%2Ftmp%2Fme.wav&reftext=Hello%20there");
+    expect(detail).toContain('refAudio: "/tmp/me.wav"');
+    expect(detail).toContain('refText: "Hello there"');
+  });
+
+  it("leaves both out when the clip words are missing", () => {
+    const detail = seedSpeech("?ref=%2Ftmp%2Fme.wav");
+    expect(detail).not.toContain("refAudio:");
+    expect(detail).not.toContain("refText:");
+  });
+});
+
+describe("speech voice settings in the app seed", () => {
+  it("preserves the edited voice description for design and omits it for cloning", () => {
+    const saved = location.search;
+    (location as { search: string }).search = "?instruct=A%20gentle%20storyteller";
+    try {
+      const design = buildAppAnnotation(model({ voiceMode: "design" }), "text-to-speech").detail;
+      const clone = buildAppAnnotation(model({ voiceMode: "clone" }), "text-to-speech").detail;
+      expect(design).toContain('instruct: "A gentle storyteller"');
+      expect(clone).not.toContain('instruct:');
+    } finally {
+      (location as { search: string }).search = saved;
+    }
+  });
+});

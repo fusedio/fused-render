@@ -135,11 +135,55 @@ class _ActionsTarget(NSObject):
     def openLogs_(self, _sender):
         self._controller._actions["open_logs"]()
 
+    def saveDiagnostics_(self, _sender):
+        # SPEC §50: `app.save_diagnostics_async` builds the bundle off the main
+        # thread. `.get`: an actions dict without the key (older callers,
+        # tests) must not turn a menu click into a pyobjc exception.
+        action = self._controller._actions.get("save_diagnostics")
+        if action is not None:
+            action()
+
     def quitApp_(self, _sender):
         self._controller._actions["quit"]()
 
     def showMore_(self, sender):
         self._controller._show_overflow_menu(sender)
+
+    def showLauncher_(self, _sender):
+        # The ⌥Space launcher panel (launcher_panel.py), for a user without
+        # the shortcut; resolved at click time — the launcher is built after
+        # the popover.
+        show = self._controller._actions.get("show_launcher")
+        if show is not None:
+            self._controller._popover.close()
+            show()
+
+
+class _PopoverUIDelegate(NSObject):
+    """The popover web view's `window.open` / `target=_blank`: a WINDOW of
+    this app (mac_window.py, through `actions["open_window"]`), not nothing —
+    which is what a WKWebView with no UI delegate does with them. Returns
+    None on purpose: the opener's `window.open` gets null, since the popover
+    has no live handle to hand back for a window in another process pool.
+    A plain NSObject subclass, not `protocols=`, for the reason
+    mac_window._WebDelegate records."""
+
+    def initWithController_(self, controller):
+        self = objc.super(_PopoverUIDelegate, self).init()
+        if self is None:
+            return None
+        self._controller = controller
+        return self
+
+    def webView_createWebViewWithConfiguration_forNavigationAction_windowFeatures_(
+            self, webview, configuration, action, features):
+        request = action.request()
+        url = str(request.URL().absoluteString()) if request and request.URL() else None
+        open_window = self._controller._actions.get("open_window")
+        if url and open_window is not None:
+            self._controller._popover.close()
+            open_window(url)
+        return None
 
 
 class _ResizeGrip(NSView):
@@ -234,6 +278,7 @@ class PinController:
         self._server_ready = False
         self._target = _ActionsTarget.alloc().initWithController_(self)
         self._popover_delegate = _PopoverDelegate.alloc().initWithController_(self)
+        self._ui_delegate = _PopoverUIDelegate.alloc().initWithController_(self)
         if self._pinned_path:
             logger.info("pinned view restored from pin.json: %s", self._pinned_path)
         self._build_popover()
@@ -380,6 +425,9 @@ class PinController:
             NSMakeRect(0, BAR_HEIGHT, width, total_height - BAR_HEIGHT), config
         )
         self._webview.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        # WebKit keeps only a WEAK reference to the delegate; the controller
+        # holds it (`self._ui_delegate`).
+        self._webview.setUIDelegate_(self._ui_delegate)
         container.addSubview_(self._webview)
 
         separator = NSBox.alloc().initWithFrame_(
@@ -469,7 +517,11 @@ class PinController:
         if self._pinned_path is not None:
             add("Change Pinned File…", b"pinFile:")
         menu.addItem_(NSMenuItem.separatorItem())
+        if self._actions.get("show_launcher") is not None:
+            add("Search Apps…", b"showLauncher:")
         add("Open app logs", b"openLogs:")
+        if self._actions.get("save_diagnostics") is not None:
+            add("Save Diagnostics…", b"saveDiagnostics:")
         add("Quit fused-render", b"quitApp:")
         menu.popUpMenuPositioningItem_atLocation_inView_(
             None, NSMakePoint(0, sender.bounds().size.height + 4), sender

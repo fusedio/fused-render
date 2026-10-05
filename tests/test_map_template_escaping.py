@@ -4,8 +4,10 @@ SECURITY.md's D3/D4 concession — no output sanitization in the render path —
 is about the CONTENT OF A FILE YOU CHOSE TO OPEN. It does not extend to
 strings that arrive incidentally and land in this template's own chrome:
 
-  * `?dir=` and `?open=`, read at boot, so a crafted link to the app's own
-    built-in template is reflected XSS with no click;
+  * `?dir=`, `?open=` and `?map=` (a whole map document), read at boot, so a
+    crafted link to the app's own built-in template is reflected XSS with no
+    click — and a `.fmap` file an agent or a stranger wrote carries the same
+    layer names and sources;
   * backend error text that echoes those params back (discover.py returns
     f"Not a directory: {base}"), rendered by the toast;
   * filenames, directory names and absolute paths from a listing — a shared
@@ -127,33 +129,15 @@ def _innerhtml_interpolations(src):
 # into HTML must go through esc().
 _SAFE = {
     # Inline SVG/icon constants defined in this template.
-    "CHEV", "DOTS", "KIND_ICON.dir", "L.visible ? EYE : EYEOFF",
-    "anyVisible ? EYE : EYEOFF",
-    # Literal class-name / CSS switches — both branches are string literals.
-    'L.visible ? "" : "off"', 'anyVisible ? "" : "off"',
-    'collapsed ? "" : "open"',
-    'd.status === "error" ? "var(--bad)" : "var(--warn)"',
-    # Numbers and number formatters.
-    "members.length", "m.pct || 0", "m.count.toLocaleString()",
-    "st.bands", "st.width", "st.height", "d.timing_ms",
-    "fmt(st.p2 ?? st.min)", "fmt(st.p98 ?? st.max)",
-    "c.lat.toFixed(4)", "c.lng.toFixed(4)", "map.getZoom().toFixed(1)",
-    "e.lngLat.lat.toFixed(4)", "e.lngLat.lng.toFixed(4)",
-    "(i * 0.045).toFixed(2)", "(i * 0.08).toFixed(2)",
-    "(i * 0.08 + 0.05).toFixed(2)", "42 - i * 6", "64 - i * 9", "w",
-    # Locally generated markup / derived styles, no external string in them.
-    "gutter", "lines", "swatchStyle(L)", "cmapGradient(s.colormap||'viridis')",
-    "cmapGradient(s.colormap||'gray')",
-    # The browser-read COG's contrast legend: both ends go through Number(),
-    # so neither can carry a string out of the file or the URL.
-    "Number(lo)", "Number(hi)",
-    "encodeURIComponent(q)",
-    # Backend enums and control labels: descriptor kinds and the literal
-    # strings the style dock passes to ctlShell ("Opacity", "Colormap", ...).
-    "m.phase", "st.dtype", "m.geometry_type || d.geometry_type || \"vector\"",
-    'preparing ? "tiles " + (L.mvt.pct || 0) + "%" : kindBadge(d)',
-    'm.count ? ` · ${m.count.toLocaleString()} features` : ""',
-    "label", 'valTxt||""',
+    "DOTS", "KIND_ICON[entry.kind] || KIND_ICON.other", "layer.visible ? EYE : EYEOFF",
+    # Literal class-name / label switches — every branch is a string literal.
+    'layer.visible ? "" : " off"', 'layer.visible ? "Hide" : "Show"',
+    'value ? " checked" : ""',
+    'filter ? "No matching files or folders." : "This folder is empty."',
+    'place.kind === "home" ? "⌂" : place.kind === "drive" ? "▣" : "◫"',
+    # Category legend colours come from the template's own PALETTE constant,
+    # never from the data (the category VALUE beside it goes through esc).
+    "i.color",
 }
 
 
@@ -175,13 +159,13 @@ def test_the_known_untrusted_sinks_go_through_esc():
     that reintroduces one is named in the failure rather than only counted."""
     src = _src()
     for needle in (
-        "name.textContent = entry.name",                     # directory listing
-        "row.title = entry.path",                            # file path attribute
-        '<span class="lc-nm" title="${esc(L.target)}">${esc(L.name)}</span>',
-        "${esc(d.message || (d.error && d.error.message)",   # backend error
-        '<b>${esc(title)}</b>',                              # toast title
-        '${esc(String(msg).slice(0,300))}',                  # toast message
-        '<div class="g1">${esc(name)}</div>',                # geocoder result
-        "${esc(path)}</div>",                                # code viewer path
+        'row.querySelector(".nm").textContent = entry.name',  # directory listing
+        "row.title = entry.path",                             # file path attribute
+        "nm.textContent = layer.name; nm.title = layer.source;",  # layer card
+        'return { cls: "bad", html: esc(r.message) };',        # load error text
+        "<b>${esc(title)}</b>",                               # toast title
+        "${esc(String(message).slice(0, 300))}",              # toast message
+        '<div class="g1">${esc(p.name || p.street || p.city || "Result")}</div>',  # geocoder
+        "body.firstChild.textContent = JSON.stringify(layerFacts(layer), null, 2);",  # code panel
     ):
         assert needle in src, f"map template no longer escapes: {needle}"

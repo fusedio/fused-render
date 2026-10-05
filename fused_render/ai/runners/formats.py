@@ -28,6 +28,7 @@ invite.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import struct
@@ -76,6 +77,63 @@ PARAKEET_WEIGHTS = "model.safetensors"
 #: "nemo" would offer a Load button for a speech SYNTHESIS repo and fail
 #: inside a library that never had a chance.
 NEMO_ASR_TARGET = "nemo.collections.asr.models."
+
+# ---------------------------------------------------------------- download scopes
+#
+# A Hub repo often publishes ONE set of weights in several formats, and a bare
+# `download_snapshot(model_id)` fetches every one of them — 2-3x the bytes the
+# engine reads. What each runner's `download()` passes to `download_snapshot` is
+# written here, once, next to the format checks that say what each engine opens.
+# (Stdlib-only, like the rest of this module: these are plain tuples of `fnmatch`
+# patterns, matched against the path relative to the repo root, where `*` crosses
+# `/` — see `worker_base.selects`.)
+#
+# **An IGNORE list where the engine's file set is open-ended, an ALLOW list only
+# where it is closed.** An MLX text/vision model reads arbitrary configs,
+# tokenizers, processors, chat templates and `trust_remote_code` modules, so
+# naming what it needs would drop something the next architecture wants. What it
+# can NEVER read is knowable, and that is what is listed.
+#
+# **Nothing here ignores a file that could be the only copy of weights the engine
+# can load.** `*.bin` is deliberately NOT a pattern: CTranslate2's weights ARE
+# `model.bin`, and ignoring a bare `.bin` anywhere would be one refactor away from
+# deleting them. The `.bin` patterns below are the PyTorch spellings by name.
+
+#: Formats no MLX engine (mlx-lm, mlx-vlm, mlx-embeddings, mflux, mlx-audio,
+#: ltx-2-mlx) ever opens — they glob `*.safetensors` (or `.npz`) and nothing
+#: else, so a repo whose only weights were one of these could not load here
+#: anyway and skipping them costs nothing. PyTorch pickles (`pytorch_model*.bin`,
+#: `*.pt`, `*.pth`, `training_args.bin`), Flax `.msgpack`, TF `.h5`/`.tflite`,
+#: Rust `.ot`, ONNX and OpenVINO exports, GGUF, and the `original/` folder Meta
+#: ships beside the HF files (a consolidated `.pth` plus a second copy of the
+#: tokenizer — the loaders read the root-level ones).
+MLX_IGNORE = (
+    "pytorch_model*.bin", "training_args.bin", "*.pt", "*.pth",
+    "*.msgpack", "*.h5", "*.tflite", "*.ot", "*.onnx", "*.onnx_data", "*.gguf",
+    "onnx/*", "openvino/*", "original/*",
+)
+
+#: faster-whisper's OWN `download_model` allow list, verbatim — the files
+#: `WhisperModel` opens, and a closed set. Includes `model.bin`, which is why this
+#: is an allow list and not `MLX_IGNORE`'s sibling: a Systran repo also carries
+#: `README.md` and, on some, a transformers-format copy of the same model.
+CT2_FILES = ("config.json", "preprocessor_config.json", CT2_WEIGHTS,
+             "tokenizer.json", "vocabulary.*")
+
+#: What `mlx_whisper.load_model` opens: `config.json` and one of the three weight
+#: spellings (see `MLX_WHISPER_WEIGHTS`). The tokenizer ships inside the package,
+#: so nothing else in the repo is read.
+MLX_WHISPER_FILES = ("config.json",) + MLX_WHISPER_WEIGHTS + (MLX_WHISPER_SHARED_WEIGHTS,)
+
+#: What a diffusers `from_pretrained` never opens in a repo that is not one of the
+#: curated recipes: other frameworks' copies of the same components. Torch weights
+#: (`.safetensors`, `.bin`, and `.fp16` variants) are all left alone — which of
+#: two torch spellings gets read depends on the listing, and a listing is not
+#: available to the offline cache check that has to reproduce this scope.
+DIFFUSERS_IGNORE = (
+    "*.msgpack", "*.h5", "*.tflite", "*.ot", "*.onnx", "*.onnx_data", "*.gguf",
+    "onnx/*", "openvino/*",
+)
 
 #: What an mflux-readable snapshot always has: component subfolders of MLX
 #: safetensors, rather than the single-file layout diffusers writes.
@@ -223,6 +281,18 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
 
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
+
+#: A diffusers MODULAR pipeline's own manifest — the layout `DiffusersPipeline.
+#: from_pretrained` reads via `ModularPipeline` when the repo has no single
+#: flat `model_index.json` at all (component-level sub-pipelines instead,
+#: e.g. `MiniMax_H3_sdnq_4bit_pruned`'s `transformer/`, `transformer_ref/`,
+#: `vae/`, `scheduler/` beside this file). First-class Diffusers evidence in
+#: its own right, not a weaker cousin of `DIFFUSERS_INDEX` above — a repo
+#: that ships ONLY this manifest is exactly as much a Diffusers pipeline as
+#: one that ships the flat index, and treating it as "no engine recognised"
+#: is the bug `hub_architecture.py` exists to fix (see its own module
+#: docstring for the MiniMax H3 repo this constant was added for).
+DIFFUSERS_MODULAR_INDEX = "modular_model_index.json"
 
 #: The `model_type`s of the DUAL ENCODERS the embedding runners read — one
 #: checkpoint holding a text tower and a vision tower that project into one
@@ -1038,6 +1108,26 @@ GGUF_RECIPES = {
 }
 
 
+def gguf_repo_for(model_id: str) -> str:
+    """The Hub repo id `model_id` actually names, resolving a curated
+    filename key (a `GGUF_RECIPES` key such as `"Qwen3.5-4B-Q4_K_M.gguf"`) to
+    its `repo`; any other `model_id` is already a bare repo id and is
+    returned unchanged.
+
+    Item 1 (code review): `llama_text.download`'s `file`-override branch
+    inlined exactly this `model_id in GGUF_RECIPES` check to find the repo a
+    curated key means, but the route that VALIDATES `file` before ever
+    calling `download`
+    (`ai_runtime._validate_download_file` -> `_repo_gguf_siblings`) passed
+    `model_id` to `huggingface_hub.list_repo_files` verbatim — a curated key
+    is never a real Hub repo id, so that lookup 400'd before `download` was
+    ever reached, and a curated key + a valid `file` could never actually
+    work end to end. Both call sites now share this one mapping so they
+    cannot drift apart again."""
+    recipe = GGUF_RECIPES.get(model_id)
+    return recipe["repo"] if recipe is not None else model_id
+
+
 # ---------------------------------------------------------------------------
 # Picking ONE GGUF file out of an arbitrary repo's own listing (D412).
 #
@@ -1257,6 +1347,64 @@ def pick_gguf_file(filenames) -> str | None:
     if len(candidates) == 1:
         return candidates[0]
     return None
+
+
+def gguf_candidate_files(siblings) -> list[str]:
+    """Root-level, non-auxiliary GGUF filenames out of a repo's own
+    `siblings` listing (dicts with `rfilename`, or bare filename strings —
+    either shape a caller's own `raw["siblings"]` might already be in), with
+    a multi-part shard set (`GGUF_SPLIT_RE`) COLLAPSED to its first part —
+    one entry per distinct WEIGHT VARIANT the repo ships, not one per file
+    on disk.
+
+    Item 5 (SPEC AI-19 round 2): `hub_models._count_variants` used to
+    exclude helper files with its own narrower `("mmproj", "vision")`
+    substring list, so a `mtp-`/`draft-`/`projector`-named auxiliary file
+    `pick_gguf_file` already knows to refuse could still inflate a repo's
+    variant count by one, AND a sharded quant (`-00001-of-00005.gguf`)
+    counted once per shard rather than once per quantization. Reusing
+    `pick_gguf_file`'s own `GGUF_SPLIT_RE`/`GGUF_AUXILIARY_RE` here means
+    the two can never quietly disagree about what counts as a real,
+    downloadable quantization again — one filter, two callers.
+    """
+    names = []
+    for entry in siblings or []:
+        name = entry.get("rfilename") if isinstance(entry, dict) else entry
+        if isinstance(name, str):
+            names.append(name)
+    candidates: list[str] = []
+    seen_shard_bases: set[str] = set()
+    for name in names:
+        if "/" in name or not name.lower().endswith(GGUF_EXTENSION):
+            continue
+        if GGUF_AUXILIARY_RE.search(name):
+            continue
+        split_match = GGUF_SPLIT_RE.search(name)
+        if split_match:
+            base = name[:split_match.start()]
+            if base in seen_shard_bases:
+                continue
+            seen_shard_bases.add(base)
+        candidates.append(name)
+    return candidates
+
+
+def gguf_file_is_downloadable(filename: str) -> bool:
+    """Whether `filename` (one entry out of `gguf_candidate_files`) names a
+    file a per-variant download can actually fetch and use on its own.
+
+    `gguf_candidate_files` deliberately keeps ONE entry — shard part 1 —
+    per multi-part `-00001-of-0000N.gguf` set, because that is correct for
+    COUNTING distinct weight variants a repo ships. But shard part 1 alone
+    is not a servable model: `pick_gguf_file` itself refuses every shard
+    (`GGUF_SPLIT_RE`), so a download of just that file leaves a runner
+    unable to load anything. This is the one-line test every caller that
+    turns a candidate into an offered Download action must run first —
+    `hub_models._model_row`'s `variants` array, and `ai_runtime.
+    _validate_download_file`'s server-side gate — so the two can never
+    quietly disagree about which files are actually fetchable.
+    """
+    return not GGUF_SPLIT_RE.search(filename)
 
 
 def gguf_quant_token(filename: str) -> str | None:
@@ -1503,6 +1651,7 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # card tag, so the claim settles the modality as surely as a
             # `weights.npz` does.
             "laya-mlx",
+            "mlx-audio-tts",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -1684,6 +1833,69 @@ def is_laya_snapshot(names, dirnames) -> bool:
     return LAYA_AGENT_CONFIG in names and LAYA_ENCODER_DIR in dirnames
 
 
+QWEN3_TTS_MODEL_TYPE = "qwen3_tts"
+QWEN3_TTS_TOKENIZER_DIR = "speech_tokenizer"
+SPEECH_VOICE_MODES = {"custom_voice": "preset", "base": "clone", "voice_design": "design"}
+SPEECH_OPTIONS = ("voice", "instruct", "refAudio", "refText", "language")
+_SPEECH_MODE_RULES = {
+    "preset": ("speaks with preset voices", {"voice", "instruct"}, set()),
+    "clone": ("clones a voice from a sample", {"refAudio", "refText"}, {"refAudio", "refText"}),
+    "design": ("makes a voice from a description", {"instruct"}, {"instruct"}),
+}
+
+
+def is_qwen3_tts_snapshot(config: dict, dirnames) -> bool:
+    return (config.get("model_type") == QWEN3_TTS_MODEL_TYPE
+            and QWEN3_TTS_TOKENIZER_DIR in dirnames)
+
+
+def speech_traits(config: dict) -> dict | None:
+    if config.get("model_type") != QWEN3_TTS_MODEL_TYPE:
+        return None
+    mode = SPEECH_VOICE_MODES.get(config.get("tts_model_type", "base"))
+    talker = config.get("talker_config")
+    if mode is None or not isinstance(talker, dict):
+        return None
+    return {
+        "mode": mode,
+        "voices": sorted(map(str, talker.get("spk_id") or {})),
+        "languages": sorted(str(name) for name in talker.get("codec_language_id") or {}
+                            if "dialect" not in str(name)),
+    }
+
+
+def _option_names(keys) -> str:
+    return ", ".join(f"'{key}'" for key in SPEECH_OPTIONS if key in keys)
+
+
+def speech_options(model_id: str, traits: dict, options: dict) -> dict:
+    what, allowed, required = _SPEECH_MODE_RULES[traits["mode"]]
+    resolved = {key: options[key] for key in SPEECH_OPTIONS if options.get(key)}
+    given = set(resolved) - {"language"}
+    if given - allowed:
+        raise ValueError(f"{model_id} {what}; it takes {_option_names(allowed)}, "
+                         f"not {_option_names(given - allowed)}")
+    if required - given:
+        raise ValueError(f"{model_id} {what}; it needs {_option_names(required - given)}")
+    voices = traits.get("voices") or []
+    if traits["mode"] == "preset" and voices:
+        wanted = str(resolved.get("voice", voices[0]))
+        match = next((v for v in voices if v.lower() == wanted.lower()), None)
+        if match is None:
+            raise ValueError(f"{model_id} has no voice {wanted!r}; it has {', '.join(voices)}")
+        resolved["voice"] = match
+    language = str(resolved.get("language", "auto")).lower()
+    languages = traits.get("languages") or []
+    if language != "auto" and languages:
+        match = next((name for name in languages if name.lower() == language), None)
+        if match is None:
+            raise ValueError(f"{model_id} has no language {language!r}; "
+                             f"use 'auto' or {', '.join(languages)}")
+        language = match
+    resolved["language"] = language
+    return resolved
+
+
 def has_ltx_split_layout(names) -> bool:
     """Is this an mlx-forge split conversion of LTX-2.3 — `ltx_video`'s own
     curated layout? `names` is the snapshot's TOP-LEVEL FILES (`loaders`'s
@@ -1701,6 +1913,41 @@ def has_ltx_split_layout(names) -> bool:
         return False
     return any(name.startswith("transformer-") and name.endswith(".safetensors")
                for name in names)
+
+
+def resolve_versioned_name(names, stem: str) -> str | None:
+    """Mirrors `ltx_pipelines_mlx/_base.py::_resolve_safetensors`'s own
+    rule — prefer a versioned `{stem}-*.safetensors`, alphabetically latest;
+    else the plain `{stem}.safetensors` — against a Hub file LISTING rather
+    than a local directory, so a caller (`ltx_video/worker.py::download`) can
+    ask for the one file the loader will actually open instead of every name
+    that could conceivably match. Returns `None` when neither form is
+    present in `names`.
+
+    Moved here from `ltx_video/worker.py` (item 2, D1287+) so `hub_loadable`
+    can judge the same repo-shape rule the worker downloads against, without
+    either copy drifting from the other — the worker runs in its own venv
+    and cannot import `hub_loadable`, but both already import this module.
+    """
+    versioned = sorted(name for name in names
+                       if fnmatch.fnmatch(name, f"{stem}-*.safetensors"))
+    if versioned:
+        return versioned[-1]
+    plain = f"{stem}.safetensors"
+    return plain if plain in names else None
+
+
+def distilled_transformer_filename(names) -> str | None:
+    """The one transformer file `DistilledPipeline.load()` would actually
+    open: `transformer.safetensors` if present (no curated repo ships this
+    name today, but upstream tries it FIRST), else the versioned-preferred
+    `transformer-distilled*` — `resolve_versioned_name`'s own rule. `None`
+    when the repo has neither, which both `ltx_video/worker.py::download`
+    (a download-time refusal) and `hub_loadable` (a search-time "won't run
+    here" chip) treat as "this repo is not ltx-2-mlx's curated layout"."""
+    if "transformer.safetensors" in names:
+        return "transformer.safetensors"
+    return resolve_versioned_name(names, "transformer-distilled")
 
 
 def missing_mflux_components(snapshot_dir: str) -> list[str]:
@@ -1803,6 +2050,9 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # `config` requirement there — Laya keeps its encoder config under
         # `encoder/`, not at the root — but the return states the intent
         # rather than leaning on that accident.)
+        return tuple(found)
+    if is_qwen3_tts_snapshot(config, dirnames):
+        found.append("mlx-audio-tts")
         return tuple(found)
     if has_ltx_split_layout(names):
         found.append("ltx-video")
