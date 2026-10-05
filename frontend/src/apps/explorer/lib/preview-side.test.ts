@@ -990,4 +990,11 @@ describe("Preview records the remembered tab only on an explicit pick", () => {
     // the toggle reopen passes no tab
     expect(src).toContain("else if (sideTarget) setSide(sideTarget);");
   });
+
+  it("App Doctor's Open Git is an explicit request for Git, so it is remembered", async () => {
+    const pv = await Bun.file(new URL("../Preview.tsx", import.meta.url).pathname).text();
+    const ls = await Bun.file(new URL("../Listing.tsx", import.meta.url).pathname).text();
+    expect(pv).toContain('applySide("git", "git")');
+    expect(ls).toContain('setSide({ open: true, mode: "git" }, "git")');
+  });
 });

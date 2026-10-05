@@ -987,7 +987,9 @@ export default function Listing({
     // pane owns no `_side` of its own to write (see `applySide` above), so
     // there `onOpenGit` is left `undefined` and the row falls back to
     // navigating instead.
-    onOpenGit: paneEnabled ? () => setSide({ open: true, mode: "git" }) : undefined,
+    onOpenGit: paneEnabled
+      ? () => setSide({ open: true, mode: "git" }, "git")
+      : undefined,
     // Open in embed — this listing under the chrome-free embed prefix, in a new
     // tab, `_mode=_listing` stamped so the embed shows the LISTING rather than
     // hopping to the folder's app entry (the same stamp the file preview's row

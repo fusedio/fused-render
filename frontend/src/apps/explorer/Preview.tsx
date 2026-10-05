@@ -2194,7 +2194,7 @@ function TemplatePreview({
     // has no sidebar of its own (see `applySide`'s definition above), so
     // there `onOpenGit` is left `undefined` and the row falls back to
     // navigating instead.
-    onOpenGit: splitCapable ? () => applySide("git") : undefined,
+    onOpenGit: splitCapable ? () => applySide("git", "git") : undefined,
   });
 
   // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's
