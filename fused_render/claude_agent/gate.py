@@ -41,7 +41,8 @@ def _queue_target(params: dict) -> str:
     return project_queue.queue_key(target) or ""
 
 
-def _file_owner(params: dict, result: dict, body: dict | None = None) -> None:
+def _file_owner(params: dict, result: dict, body: dict | None = None,
+                late: bool = False) -> None:
     """Record who owns the folder the moment a `start` or a `send` actually
     spawns — a REFILE, never a claim (Bugbot, PR #1194).
 
@@ -125,6 +126,21 @@ def _file_owner(params: dict, result: dict, body: dict | None = None) -> None:
         # missing or already-spent token (an admitted send, or one that lost
         # the placeholder in the meantime) is a no-op — `started`'s own
         # guard is the backstop either way.
+        if late:
+            # A START THAT LANDED AFTER ITS 504 (D1308). The router already gave
+            # the folder back, and the user's retry may since have filed a REAL
+            # owner of its own. `started` would overwrite that owner (it only
+            # guards a live placeholder), handing the folder to the run the
+            # user gave up on. So a late start files only into a folder that is
+            # free or still held by a placeholder. Nothing is lost by skipping:
+            # the run exists in the runs dir and the Tasks page lists it.
+            current = manager.owner(key) or {}
+            task = str(current.get("task") or "")
+            if (task and not task.startswith(queue_manager.PLACEHOLDER_PREFIX)
+                    and task not in (run_id, session_id)):
+                logger.debug("late start for %s not filed: folder owned by %s",
+                             session_id or run_id, task)
+                return
         admit_token = str((body or {}).get("_queue_admit_token") or "")
         if admit_token:
             manager.consume_claim(key, admit_token)

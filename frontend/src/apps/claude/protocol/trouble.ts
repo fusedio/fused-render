@@ -45,6 +45,16 @@ export function isUnknownRun(error: string | null | undefined): boolean {
 // first of TROUBLE_STEPS.raw's own instructions (T:13584).
 const NETWORK = /failed to fetch|networkerror|load failed|network request failed|err_connection/i;
 
+/** A THROWN failure that never reached the server — `fetch` rejecting on a
+ *  dropped socket, a sleep/wake, a server mid-restart. The poll loop treats one
+ *  as transient (it retries before showing a card); the classifier below files
+ *  it as `network`. Same pattern for both, so the two can never disagree. */
+export function isNetworkFailure(err: unknown): boolean {
+  if (err instanceof AgentError) return false;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return NETWORK.test(message);
+}
+
 /** The chat kind for a message the platform classifier calls `raw`. */
 function rawKind(message: string, fromAgent: boolean): TroubleKind {
   if (NETWORK.test(message)) return "network";

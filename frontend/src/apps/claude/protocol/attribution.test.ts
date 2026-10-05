@@ -46,14 +46,11 @@ afterEach(() => {
 
 // ---- the builder ----------------------------------------------------------
 
-test("runHeaders spells the four exactly as calls.py reads them", () => {
-  expect(
-    runHeaders({ page: "/w/p/.claude/template.html", target: "/w/p", callId: "c1", supersedes: "c0" }),
-  ).toEqual({
+test("runHeaders spells the three exactly as calls.py reads them", () => {
+  expect(runHeaders({ page: "/w/p/.claude/template.html", target: "/w/p", callId: "c1" })).toEqual({
     "X-Fused-Page": encodeURIComponent("/w/p/.claude/template.html"),
     "X-Fused-Target": encodeURIComponent("/w/p"),
     "X-Fused-Call": "c1",
-    "X-Fused-Supersedes": "c0",
   });
 });
 

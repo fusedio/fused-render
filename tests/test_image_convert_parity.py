@@ -108,6 +108,46 @@ def test_the_two_ladders_share_all_four_numbers(agent):
     assert mod.SHOT_PNG_MAX_BYTES == image_convert.PNG_MAX_BYTES == 4 * 1024 * 1024
     assert mod.SHOT_JPEG_QUALITY == image_convert.JPEG_QUALITY == (90, 80, 70, 60)
     assert mod.SHOT_SIPS_TIMEOUT == image_convert.SIPS_TIMEOUT == 20
+    assert mod.SHOT_MAX_DECODE_PIXELS == image_convert.MAX_DECODE_PIXELS == 80_000_000
+
+
+def test_a_wide_jpeg_is_drafted_at_decode_by_both(agent, tmp_path, monkeypatch):
+    """The DCT-scaled decode (`draft`) both ladders do before thumbnailing: a
+    JPEG far past the edge decodes at a fraction of its size and still comes
+    back at the edge, with the source size reported as the original's — and
+    the two agree byte for byte."""
+    Image = _pillow()
+    got, shared = _both(
+        agent, tmp_path, monkeypatch, "20261005-wide.jpg",
+        lambda p: Image.new("RGB", (6600, 400), (30, 90, 160)).save(
+            str(p), format="JPEG", quality=90))
+    assert (got["source_w"], got["source_h"]) == (6600, 400)
+    assert max(got["width"], got["height"]) == image_convert.PNG_EDGE
+    _assert_same(got, shared)
+    # And the decode really was reduced: half size, not the full 6600 px.
+    src = str(tmp_path / "shots" / "20261005-wide.jpg")
+    for opener in (agent._open_bounded, image_convert.open_bounded):
+        img, source = opener(Image, src)
+        assert source == (6600, 400)
+        assert img.size == (3300, 200), img.size
+
+
+def test_both_refuse_a_picture_past_the_decode_ceiling(agent, tmp_path, monkeypatch):
+    """Over the ceiling is an `{error}` from both, decided on the header size
+    before a pixel is decoded. The ceiling is shrunk rather than fed a 90 MP
+    fixture, as the byte budget is above."""
+    Image = _pillow()
+    monkeypatch.setattr(agent, "SHOT_MAX_DECODE_PIXELS", 1000)
+    monkeypatch.setattr(image_convert, "MAX_DECODE_PIXELS", 1000)
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    monkeypatch.setattr(agent, "SHOTS", str(shots))
+    src = shots / "20261005-big.png"
+    Image.new("RGB", (40, 30), (1, 2, 3)).save(str(src), format="PNG")
+    got = agent.main(action="image_to_png", path=str(src))
+    shared = image_convert.transcode(str(src), str(tmp_path / "out"))
+    assert "too large" in got.get("error", ""), got
+    assert "too large" in shared.get("error", ""), shared
 
 
 def test_a_small_png_comes_out_of_both_identically(agent, tmp_path, monkeypatch):

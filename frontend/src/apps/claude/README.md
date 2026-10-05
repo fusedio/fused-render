@@ -38,7 +38,7 @@ into `platform/` instead.
 - `feature-flag.ts` — `project_queue_enabled` (`prefs.queue.enabled`), `useProjectQueueEnabled()`.
   (Its native-chat half went with the `native_chat_enabled` pref.)
 - `ChatMount.tsx` — the one mount every embed site calls: `<ClaudeChat/>` behind a `lazy` boundary, a load failure shown as an error card. Mounted at all 6 sites (00-shell-infra §1): the tasks cards wall and its popup (`shell/TaskCards.tsx`), the explorer file sidebar (`apps/explorer/Preview.tsx` → `PreviewSidebar`'s `chat` slot), the folder listing pane (`ListingPreviewPane.tsx`), the canvases workspace (`apps/canvases/CanvasWorkspace.tsx`) and the explorer content pane (`_mode=claude`).
-- `ChatPlaceholder.tsx` — the skeleton every chat wait shows (`CHAT_FRAME_FALLBACK_MS`, `CHAT_FRAME_FADE_MS`).
+- `ChatPlaceholder.tsx` — the skeleton every chat wait shows (`ChatFramePlaceholder`; styles in `styles/chat-frame.css`).
 - `ClaudeChat.tsx` — root `.chat-root`, layout variants (split / chat-only / compact / peek / narrow), boot.
 - `protocol/` — pure TS, bun-tested, no React:
   - `types.ts` every `agent.py` action's request/response (04-core-chat §B/§C).

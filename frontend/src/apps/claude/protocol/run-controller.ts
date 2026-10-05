@@ -41,7 +41,7 @@ import { chatDraftKey } from "@platform/lib/drafts";
 import { queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
-import { runAgent } from "./agent";
+import { AgentError, runAgent } from "./agent";
 import type {
   AdoptOptions,
   AssistantTurn,
@@ -62,7 +62,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
-import { isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
+import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
   AppStateResponse,
@@ -95,6 +95,56 @@ import type { Receipt } from "../shots/types";
 
 /** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
+
+/**
+ * HOW MANY CONSECUTIVE TRANSIENT POLL FAILURES a live view rides out before it
+ * gives up and shows the trouble card. One failed poll is not a failed run: the
+ * run lives in the server, and the next poll replays the whole turn anyway.
+ *
+ * Two kinds, two budgets, because they cost very different amounts of time:
+ *
+ *   * NETWORK (`fetch` rejected: dropped socket, sleep/wake, a server mid-
+ *     restart) fails fast, so a lap is ~`POLL_MS`. 15 laps ≈ 6 s — enough for
+ *     a blip; a real restart loses the in-process run anyway and the next good
+ *     poll answers `unknown run_id`, which has its own card.
+ *   * TIMEOUT (504, `AgentError.type === "Timeout"`) has ALREADY waited out the
+ *     server's `poll` budget (60 s, `claude_agent/pool.py` BUDGETS_S) before
+ *     it reaches us. One is a slow lap worth riding out; 3 in a row ≈ 3 min of
+ *     a poll that cannot answer, which is a wedged server, not a slow lap, and
+ *     the reader should know. Kept at 3 rather than scaled to the budget: the
+ *     wait between cards is the budget's job, the count only says "repeatedly".
+ *
+ * Any good poll resets the count. Anything else thrown keeps today's road: the
+ * card, at once.
+ */
+export const POLL_NETWORK_RETRIES = 15;
+export const POLL_TIMEOUT_RETRIES = 3;
+
+/**
+ * A `send` THAT TIMED OUT (504) IS NOT A SEND THAT FAILED. The router's budget
+ * expired, but the handler thread keeps running (`claude_agent/pool.py`: "A
+ * TIMEOUT DOES NOT STOP THE WORK"), so the message may still land in the live
+ * host a moment later. Falling through to `start` — or handing the words back
+ * for the reader to send again — would then run the same message twice: a
+ * second run, a double-counted turn, the line duplicated in the transcript.
+ *
+ * So a timed-out send re-asks whether the host is still live, this many times
+ * this far apart (≈1.4 s of waiting), and ADOPTS it if so. Nothing live after
+ * that is the Timeout itself, shown as trouble — never a fresh `start`.
+ */
+export const SEND_TIMEOUT_PROBES = 3;
+export const SEND_TIMEOUT_PROBE_MS = 700;
+
+/** The server's 504, as `agent.ts` throws it. */
+function isTimeout(err: unknown): err is AgentError {
+  return err instanceof AgentError && err.type === "Timeout";
+}
+
+/** The retry budget for a thrown poll, or `0` when it is not transient. */
+function transientPollBudget(err: unknown): number {
+  if (err instanceof AgentError) return err.type === "Timeout" ? POLL_TIMEOUT_RETRIES : 0;
+  return isNetworkFailure(err) ? POLL_NETWORK_RETRIES : 0;
+}
 /** T:11911 — `params.permission || DEFAULT_PERMISSION`. */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 /** T:16130 — a follow-up waits this long for `sendMessage`'s own `start` to
@@ -1142,6 +1192,33 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- the poll loop (T:16204-16428) -------------------------------------
 
+  /**
+   * After a `send` 504 (see `SEND_TIMEOUT_PROBES`): the run id of the host
+   * still live for `sessionId`, or `""` when none answers within the probes.
+   * `want`, when given, must be the id that answers — a follow-up only counts
+   * as delivered into the run it was sent to. With no session to ask about,
+   * the only witness is this page's own loop: the run is live while it is
+   * still the active one.
+   */
+  async function liveAfterSendTimeout(sessionId: string, want?: string): Promise<string> {
+    for (let i = 0; i < SEND_TIMEOUT_PROBES; i++) {
+      if (i) await sleep(SEND_TIMEOUT_PROBE_MS);
+      if (disposed) return "";
+      if (!sessionId) {
+        if (want && activeRun === want) return want;
+        continue;
+      }
+      try {
+        const res = (await run("live_host", { file: FILE || "", session_id: sessionId })) as RunIdResponse;
+        const id = res && res.run_id ? String(res.run_id) : "";
+        if (id && (!want || id === want)) return id;
+      } catch {
+        // A probe that cannot reach the server is one more "not yet".
+      }
+    }
+    return "";
+  }
+
   async function pollLoop(
     runId: string,
     gen: number,
@@ -1290,16 +1367,33 @@ export function createChatController(deps: ControllerDeps): ChatController {
      */
     let adoptFirstSeam = !!opts.ownTurn;
     let tick = 0;
+    /** Consecutive transient poll failures (see `POLL_NETWORK_RETRIES`). */
+    let transient = 0;
 
     try {
       for (;;) {
-        const data = (await run(
-          "poll",
-          { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
-          // The controller's own lifetime: `dispose` aborts, so an unmounted
-          // chat's last poll does not run to completion on its own.
-          { ...(life ? { signal: life.signal } : {}) },
-        )) as PollResponse | { error: string; done: true };
+        let data: PollResponse | { error: string; done: true };
+        try {
+          data = (await run(
+            "poll",
+            { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
+            // The controller's own lifetime: `dispose` aborts, so an unmounted
+            // chat's last poll does not run to completion on its own.
+            { ...(life ? { signal: life.signal } : {}) },
+          )) as PollResponse | { error: string; done: true };
+        } catch (err) {
+          // A 504 or a fetch that never left the machine says nothing about
+          // the RUN — ride it out for a bounded number of laps, keeping the
+          // bubble, before the outer catch draws the card. A disposed or
+          // superseded loop never retries: its abort is not a failure.
+          if (disposed || logGen !== gen || ++transient > transientPollBudget(err)) throw err;
+          await sleep(POLL_MS);
+          // `dispose` during the wait (it aborts `life`, which this sleep does
+          // not take): leave quietly, exactly like the reader-left check below.
+          if (disposed || logGen !== gen || life?.signal.aborted) break;
+          continue;
+        }
+        transient = 0;
         // The reader left; the run continues without this page.
         if (logGen !== gen || disposed) break;
 
@@ -1877,6 +1971,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
         if (live && live.run_id) {
           let sent: SendResponse | null = null;
+          let sendErr: unknown = null;
           try {
             sent = (await run(
               "send",
@@ -1893,13 +1988,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
               },
             )) as SendResponse;
-          } catch {
+          } catch (err) {
             sent = null;
+            sendErr = err;
           }
           // Falsy on a network failure, `{error}` on a dead host, `{respawn}`
           // when the live session cannot honor this message as-is — every one of
           // those means "start fresh", same as no host at all (T:16644-16652).
           if (sent && "sent" in sent && sent.sent) runId = live.run_id;
+          else if (isTimeout(sendErr)) {
+            // …EXCEPT A 504, which may still land (`SEND_TIMEOUT_PROBES`). A
+            // host still live is adopted as this turn's run; none is the
+            // Timeout itself — thrown to the catch below, which rolls the
+            // bubble back and shows it. Never a second `start`.
+            runId = await liveAfterSendTimeout(sessionId);
+            if (!runId) throw sendErr;
+          }
         }
       }
       if (!runId) {
@@ -2214,6 +2318,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
       entry.landed = true;
       followupSeq++;
     } catch (err) {
+      // A 504 MAY STILL LAND (`SEND_TIMEOUT_PROBES`), so it does not hand the
+      // words back for a second send that would say them twice. A run still
+      // live is taken as having it: the bubble and the queue entry stay, and
+      // the bump below splits the streaming reply around it, exactly as for a
+      // confirmed send. `landed` stays false — nothing CONFIRMED the inbox has
+      // it, which is what `stopRun`'s hand-back rule reads.
+      if (isTimeout(err)) {
+        const alive = await liveAfterSendTimeout(deps.params.get("session_id") || "", runId);
+        if (logGen !== gen) return;
+        if (alive) {
+          followupSeq++;
+          return;
+        }
+        giveBack();
+        reportTrouble(troubleFromError(err));
+        return;
+      }
       // Same guard, same reason as the two roads above: a `send` that rejects
       // after the reader has left must not repaint a transcript it no longer
       // describes.

@@ -57,7 +57,7 @@ def stub(monkeypatch):
 
     monkeypatch.setattr(gate, "_folder_busy", lambda params, body=None: "")
     monkeypatch.setattr(gate, "_file_owner",
-                        lambda params, envelope, body=None:
+                        lambda params, envelope, body=None, late=False:
                         seen["file_owner"].append(envelope))
     seen["install"] = install
     return seen
@@ -154,7 +154,11 @@ def test_a_handler_past_its_budget_is_a_504(client, stub, monkeypatch):
 
 
 def test_the_per_action_budgets_match_the_contract():
-    assert pool.budget("poll") == 20
+    # 60, not 20: the poll that sees a turn end runs `_commit_turn` (three git
+    # calls on 30 s timeouts + a 3 s self-HTTP), and a shorter budget 504s
+    # exactly the poll carrying the finished reply.
+    assert pool.budget("poll") == 60
+    assert "poll" not in pool.BUDGETS_S
     for action in ("live_run", "live_host", "defaults", "terminal_command",
                    "sessions", "history"):
         assert pool.budget(action) == 30, action
@@ -197,8 +201,136 @@ def test_the_owner_sees_the_handlers_result_on_success(client, stub):
     stub["install"](lambda action="", file="": {"run_id": "r-1", "session_id": "s-1"})
     r = _post(client, {"action": "start", "file": "/w/a.html"})
     assert r.status_code == 200
-    assert stub["file_owner"] == [
-        {"ok": True, "result": {"run_id": "r-1", "session_id": "s-1"}}]
+    [env] = stub["file_owner"]
+    assert env["ok"] is True
+    assert env["result"] == {"run_id": "r-1", "session_id": "s-1"}
+
+
+def test_the_envelope_carries_the_handlers_own_duration(client, stub, monkeypatch):
+    """`duration_ms` is what `calls.enrich_run` files as `run_ms` — the number
+    `/api/run`'s child used to report for every chat call."""
+    def main(action="", file=""):
+        time.sleep(0.05)
+        return {"ok": 1}
+    stub["install"](main)
+    seen = []
+    monkeypatch.setattr(calls, "enrich_run",
+                        lambda call, **kw: seen.append(kw["result"]))
+    r = _post(client, {"action": "poll"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": 1}, "duration_ms never reaches the body"
+    [env] = seen
+    assert env["duration_ms"] >= 40, env
+
+    def boom(action="", file=""):
+        raise RuntimeError("x")
+    stub["install"](boom)
+    seen.clear()
+    r = _post(client, {"action": "poll"})
+    assert r.status_code == 500
+    assert isinstance(seen[0]["duration_ms"], float)
+
+
+def test_a_start_past_its_budget_frees_the_folder_now_and_files_late(
+        client, stub, monkeypatch):
+    """The 504 goes out while `_start` is still running. The `admit:`
+    placeholder is dropped at once, so the user's retry is not refused by a
+    folder held for a run that may never exist; the late `_start` still files
+    its owner when it lands."""
+    import threading
+
+    release = threading.Event()
+    landed = threading.Event()
+
+    def main(action="", file=""):
+        release.wait(10)
+        return {"run_id": "r-late", "session_id": "s-late"}
+    stub["install"](main)
+    monkeypatch.setattr(pool, "budget", lambda action: 0.05)
+    monkeypatch.setattr(gate, "_queue_target", lambda params: "/w")
+    dropped = []
+    monkeypatch.setattr(gate, "_drop_placeholder",
+                        lambda key, body=None: dropped.append(key))
+    filed = stub["file_owner"]
+    lates = []
+    monkeypatch.setattr(gate, "_file_owner",
+                        lambda params, envelope, body=None, late=False:
+                        (filed.append(envelope), lates.append(late), landed.set()))
+    r = _post(client, {"action": "start", "file": "/w/a.html"})
+    assert r.status_code == 504
+    assert dropped == ["/w"], "the placeholder goes back with the 504"
+    assert filed == [], "the run has not landed yet"
+    release.set()
+    assert landed.wait(10)
+    assert filed[0]["ok"] is True
+    assert filed[0]["result"]["run_id"] == "r-late"
+    assert lates == [True], "a late start is filed as late"
+
+
+class _FakeQueue:
+    """The two queue_manager calls `_file_owner` makes, on one folder."""
+
+    def __init__(self, owner=None):
+        self.owners = {"/w": owner} if owner else {}
+        self.started_calls = []
+
+    def owner(self, key):
+        return self.owners.get(key)
+
+    def consume_claim(self, key, token):
+        pass
+
+    def started(self, key, task, run_id, session_id):
+        self.started_calls.append(task)
+        self.owners[key] = {"task": task, "run_id": run_id}
+
+
+@pytest.mark.parametrize("current, files", [
+    ({"task": "s-B", "run_id": "r-B"}, False),   # the retry's real run owns it
+    ({"task": "admit:tok"}, True),                # still a placeholder
+    (None, True),                                 # free
+])
+def test_a_late_start_never_takes_the_folder_from_a_real_owner(
+        monkeypatch, current, files):
+    """Run A's start 504'd, the user retried, run B was filed as the folder's
+    owner — then A lands. Filing A would hand the folder back to the run the
+    user gave up on, so it is skipped (A is still in the runs dir and listed in
+    Tasks). Into a free folder or one a placeholder holds, A files as before."""
+    from fused_render import queue_manager
+
+    fake = _FakeQueue(dict(current) if current else None)
+    monkeypatch.setattr(queue_manager, "get", lambda: fake)
+    monkeypatch.setattr(gate, "_queue_target", lambda params: "/w")
+    envelope = {"ok": True, "result": {"run_id": "r-A", "session_id": "s-A"}}
+    gate._file_owner({"action": "start", "file": "/w/a.html"}, envelope, {},
+                     late=True)
+    if files:
+        assert fake.started_calls == ["s-A"]
+        assert fake.owners["/w"]["task"] == "s-A"
+    else:
+        assert fake.started_calls == []
+        assert fake.owners["/w"]["task"] == "s-B", "owner stays B"
+    # Not late (the ordinary path): unchanged — `started` decides.
+    fake2 = _FakeQueue({"task": "s-B", "run_id": "r-B"})
+    monkeypatch.setattr(queue_manager, "get", lambda: fake2)
+    gate._file_owner({"action": "start", "file": "/w/a.html"}, envelope, {})
+    assert fake2.started_calls == ["s-A"]
+
+
+def test_a_send_past_its_budget_drops_nothing(client, stub, monkeypatch):
+    import threading
+
+    release = threading.Event()
+    stub["install"](lambda action="", file="": release.wait(10) and {"sent": True})
+    monkeypatch.setattr(pool, "budget", lambda action: 0.05)
+    monkeypatch.setattr(gate, "_queue_target", lambda params: "/w")
+    dropped = []
+    monkeypatch.setattr(gate, "_drop_placeholder",
+                        lambda key, body=None: dropped.append(key))
+    r = _post(client, {"action": "send", "file": "/w/a.html"})
+    release.set()
+    assert r.status_code == 504
+    assert dropped == []
 
 
 # ---------------------------------------------------- the call log attribution
@@ -255,6 +387,18 @@ def test_app_entry_resolves_a_folders_page(client, tmp_path):
     assert r.json() == {"entry": str(tmp_path / "index.html")}
     r = client.post("/api/claude/app-entry", json={"dir": str(tmp_path / "nope")},
                     headers=FUSED)
+    assert r.json() == {"entry": None}
+
+
+@pytest.mark.parametrize("body", [{}, {"dir": ""}, {"dir": "   "}])
+def test_app_entry_for_no_folder_is_none_not_the_servers_cwd(client, tmp_path,
+                                                            monkeypatch, body):
+    """abspath("") is the cwd. A cwd that happens to hold a tagged page must
+    not become the pane of a chat that named no folder."""
+    (tmp_path / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
+    monkeypatch.chdir(tmp_path)
+    r = client.post("/api/claude/app-entry", json=body, headers=FUSED)
+    assert r.status_code == 200
     assert r.json() == {"entry": None}
 
 

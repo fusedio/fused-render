@@ -109,11 +109,31 @@ def test_the_host_detaches_itself_before_reading_its_request(monkeypatch):
         buffer = _Buf()
 
     monkeypatch.setattr(host.os, "setsid", lambda: order.append("setsid"))
+    # Recorded, never run: a real closerange(3, ...) here would close pytest's
+    # own descriptors.
+    monkeypatch.setattr(host.os, "closerange",
+                        lambda lo, hi: order.append(("closerange", lo)))
     monkeypatch.setattr(host.sys, "stdin", _Stdin())
     monkeypatch.setattr(host, "_enable_faulthandler", lambda: None)
     with pytest.raises(_Stop):
         host.main()
-    assert order == ["setsid", "stdin"]
+    # The inherited server fds go right after the detach and before anything
+    # else the host does (D1308): spawned with close_fds=False, it holds every
+    # non-CLOEXEC fd the server had, and the CLI it spawns would inherit them.
+    assert order == ["setsid", ("closerange", 3), "stdin"]
+
+
+@posix_only
+def test_the_inherited_fd_sweep_is_capped(monkeypatch):
+    """RLIM_INFINITY or -1 from sysconf must not become a closerange over
+    billions of descriptors."""
+    host = _load("session_host")
+    seen = []
+    monkeypatch.setattr(host.os, "closerange", lambda lo, hi: seen.append((lo, hi)))
+    for reported in (-1, 2 ** 62, 1024):
+        monkeypatch.setattr(host.os, "sysconf", lambda name, v=reported: v)
+        host._close_inherited_fds()
+    assert seen == [(3, host._FD_CLOSE_CAP), (3, host._FD_CLOSE_CAP), (3, 1024)]
 
 
 @posix_only
@@ -136,6 +156,7 @@ def test_a_host_that_is_already_a_session_leader_carries_on(monkeypatch):
         raise PermissionError(1, "Operation not permitted")
 
     monkeypatch.setattr(host.os, "setsid", eperm)
+    monkeypatch.setattr(host.os, "closerange", lambda lo, hi: None)
     monkeypatch.setattr(host.sys, "stdin", _Stdin())
     monkeypatch.setattr(host, "_enable_faulthandler", lambda: None)
     with pytest.raises(_Stop):

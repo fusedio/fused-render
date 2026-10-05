@@ -1,5 +1,6 @@
-"""runPython target for claude/template.html's Artifacts section: the pages
-Claude PUBLISHED while working on this target.
+"""The native chat's Artifacts section, run IN the server through
+`POST /api/claude/artifacts` (D1308): the pages Claude PUBLISHED while working
+on this target.
 
 An artifact is the one thing a chat produces that outlives the chat and does not
 live on disk — a hosted page on claude.ai. The transcript records it and then

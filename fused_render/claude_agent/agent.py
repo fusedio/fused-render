@@ -1,4 +1,7 @@
-"""runPython target for claude/template.html: chat with the Claude Code
+"""The native chat's backend, run IN the server (D1308): `main()` is what
+`POST /api/claude/agent` dispatches to on one module instance
+(`claude_agent.agent_module()`), and `session_host.py` loads this same file by
+path in its own child. Chat with the Claude Code
 CLI about the target — a FOLDER (an app folder, or any other) or a file. This is
 the only chat backend: it began as a fork of the plain chat template's agent
 (the split view was the fork), kept every improvement that fork gained, and
@@ -1250,6 +1253,44 @@ def _sips_to_png(path: str) -> str | None:
     return None
 
 
+#: The most pixels this ladder will DECODE (D1308). It runs inside the server
+#: now, not a throwaway child, so a decoded picture is server RSS: Pillow's own
+#: `MAX_IMAGE_PIXELS` (~89 MP) only WARNS up to twice that, and a 170 MP TIFF
+#: is ~0.5 GB of RGB before the first resize. Measured on the size actually
+#: decoded, so a big JPEG that `draft()` shrinks at decode time still converts.
+SHOT_MAX_DECODE_PIXELS = 80_000_000
+
+
+class _TooLarge(Exception):
+    """A picture over `SHOT_MAX_DECODE_PIXELS`, refused before a pixel is decoded."""
+
+
+def _open_bounded(Image, src: str):
+    """`Image.open(src)` + `load()`, bounded: returns `(img, (w, h))`, the size
+    being the SOURCE's, before any draft.
+
+    `draft()` first: for a JPEG it asks libjpeg to decode at 1/2, 1/4 or 1/8
+    scale (DCT scaling, nearly free), toward twice the fitted size, which is
+    the target and reducing gap `Image.thumbnail` itself picks on an unloaded
+    image, so the LANCZOS pass after it still has headroom. Every other format
+    ignores it. Then the pixel ceiling on what will actually be decoded.
+    Mirrored in the other ladder (test_image_convert_parity pins the bytes)."""
+    img = Image.open(src)
+    source = img.size
+    w, h = source
+    if w and h and max(w, h) > SHOT_PNG_EDGE:
+        r = SHOT_PNG_EDGE / max(w, h)
+        try:
+            img.draft(None, (max(1, round(w * r)) * 2, max(1, round(h * r)) * 2))
+        except Exception:
+            pass
+    dw, dh = img.size
+    if dw * dh > SHOT_MAX_DECODE_PIXELS:
+        raise _TooLarge("%dx%d is too large to convert" % (w, h))
+    img.load()
+    return img, source
+
+
 def _image_to_png(path: str) -> dict:
     """Transcode one picture in the shots directory into a PNG (or JPEG) beside
     it, and hand the page the copy's path and size.
@@ -1298,16 +1339,23 @@ def _image_to_png(path: str) -> dict:
         tmp = None
         try:
             try:
-                img = Image.open(path)
-                img.load()
+                img, source = _open_bounded(Image, path)
+            except _TooLarge as big:
+                return {"error": str(big)}
+            except Image.DecompressionBombError as big:
+                # Over twice Pillow's own limit: refused at open. Not a format
+                # problem, so the OS decoder below would only make a bigger file.
+                return {"error": str(big)}
             except Exception as first:
                 # HEIC without pillow-heif lands here, which is the common case
                 # rather than the exotic one — hence the OS decoder below.
                 tmp = _sips_to_png(path)
                 if tmp is None:
                     return {"error": "could not decode: %s" % first}
-                img = Image.open(tmp)
-                img.load()
+                try:
+                    img, source = _open_bounded(Image, tmp)
+                except (_TooLarge, Image.DecompressionBombError) as big:
+                    return {"error": str(big)}
             # A multi-frame TIFF (a fax, a scanned stack) or an animated GIF has
             # one frame the user means by "the picture", and it is the first.
             try:
@@ -1315,7 +1363,7 @@ def _image_to_png(path: str) -> dict:
                     img.seek(0)
             except Exception:
                 pass
-            source_w, source_h = img.size
+            source_w, source_h = source
             if not source_w or not source_h:
                 return {"error": "the picture has no pixels"}
             # Alpha is kept where it exists (a diagram with a transparent
@@ -2788,17 +2836,28 @@ def _start(file: str, message: str, session_id: str, model: str,
             **_HOST_SPAWN)
     finally:
         os.close(host_err)
-    try:
-        proc.stdin.write(json.dumps(req).encode("utf-8"))
-    finally:
-        proc.stdin.close()
     # The host is now a child of THIS (long-lived) process rather than of a
     # 60 s executor subprocess that exited and left it to init. Nobody else
     # waits on it, so without a waiter every finished host would sit as a
     # zombie until the server exits. One daemon thread per host, parked in
-    # wait(): the cheapest reaper, and it dies with the host.
+    # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
+    # the request is written (D1308): a host that dies before reading stdin
+    # makes that write raise, and a reaper started after it would never run.
     threading.Thread(target=proc.wait, name=f"claude-host-wait-{run_id}",
                      daemon=True).start()
+    try:
+        proc.stdin.write(json.dumps(req).encode("utf-8"))
+    except (BrokenPipeError, OSError) as exc:
+        # The host is already gone (an import error, a signal) — there is no
+        # session and never will be. Answer the way every other refusal here
+        # does, an `{"error"}` the composer shows, not an exception the router
+        # would turn into a 500.
+        return {"error": f"the chat's session host exited before it started: {exc}"}
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
     # WHAT THIS CHAT RUNS WITH — the app's own answer to "which model is this
     # conversation on?", which every surface reads first (`_defaults`). Here
     # rather than only in the composer because this is the one point every send
@@ -2898,13 +2957,19 @@ def _commit_turn(file: str, message: str) -> None:
     subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
         if subject else "Claude turn"
 
+    # ABSOLUTE argv[0] or nothing: close_fds=False alone does NOT reach
+    # posix_spawn — CPython forks unless os.path.dirname(executable) is truthy,
+    # and a fork with libproj resident dies with SIGSEGV before exec (rc -11,
+    # silently; D1308). So no git on PATH is the no-git case — skip the sweep —
+    # never a bare "git" that would take the fork path.
+    import shutil
+    git_bin = shutil.which("git")
+    if not git_bin or not os.path.isabs(git_bin):
+        return
+
     def git(*args):
-        # ABSOLUTE argv[0]: close_fds=False alone does NOT reach posix_spawn —
-        # CPython forks unless os.path.dirname(executable) is truthy, and a fork
-        # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
-        import shutil
         return subprocess.run(
-            [shutil.which("git") or "git", "-C", repo_dir, "-c", "user.name=Fused",
+            [git_bin, "-C", repo_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
@@ -6861,7 +6926,19 @@ def _kill_tree(run_dir: str) -> None:
                        creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         try:
-            os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
+            os.killpg(pid, signal.SIGTERM)  # the CLI's setsid -> pid is pgid
+        except ProcessLookupError:
+            # No group by that id: the pid file still names the HOST (the CLI
+            # has not spawned to overwrite it), and the host has not reached
+            # its own setsid() yet, so it is no group's leader (D1308 — it is
+            # spawned posix_spawn-style into the server's group and detaches
+            # itself). Signal the process instead; the host also checks the
+            # `cancelled` marker `_cancel` wrote first, for the case where
+            # even this lands too early.
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
         except OSError:
             pass
 

@@ -111,7 +111,6 @@ export interface SidebarEntry {
 export default function PreviewSidebar({
   entries,
   active,
-  frameKey = active,
   src,
   onSelect,
   onClose,
@@ -123,9 +122,6 @@ export default function PreviewSidebar({
   // The one being shown — always one of the SELECTABLE entries, never a disabled
   // placeholder (Preview resolves `_side` against the short list; lib/preview-side).
   active: string;
-  // What keys the iframe below, defaulting to `active` (an ordinary mode
-  // switch is already the right moment for a fresh document).
-  frameKey?: string;
   // Its /render URL, or null while its gate is still resolving. For the chat
   // there is no URL: any non-null answer (Preview.tsx sends "") means its gate
   // has resolved and `chat` may show.
@@ -353,7 +349,9 @@ export default function PreviewSidebar({
             chat
           ) : (
             <iframe
-              key={frameKey}
+              // Keyed on the mode: a switch is the right moment for a fresh
+              // document.
+              key={active}
               className="preview-side-frame"
               src={src}
               title={modeTitle(active)}

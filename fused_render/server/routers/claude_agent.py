@@ -30,7 +30,7 @@ did through `/api/run`.
 Per request, in `/api/run`'s order: X-Fused guard (D3); allowlist; bind;
 `gate._folder_busy` for start/send (a refusal is a 200 `{"error": ...}`, the
 string the composer shows verbatim, with nothing else run — as before); the
-handler on `pool.POOL` under its `pool.budget`; `gate._file_owner`;
+handler on `pool.pool_for(action)` under its `pool.budget`; `gate._file_owner`;
 `git_status.invalidate_status_cache()`; the call-log enrich. A handler's own
 `{"error": ...}` is a 200 like any answer. An exception is a 500 and a blown
 budget a 504, both shaped like `/api/run`'s error object so the page's
@@ -45,6 +45,7 @@ import importlib.util
 import logging
 import os
 import threading
+import time
 import traceback
 from types import ModuleType
 
@@ -118,7 +119,12 @@ def _app_entry() -> ModuleType:
 def _app_entry_main(dir: str = "") -> dict:
     """What `templates/claude/app.py::main` answered: the html file the chat's
     left pane renders for a project folder, by the shell's "Open as app" rule
-    (D301), shared with the `app` template through `entry_html`."""
+    (D301), shared with the `app` template through `entry_html`.
+
+    A blank `dir` is "no folder", not the server's cwd — which is what
+    `abspath("")` would quietly turn it into (D1308)."""
+    if not isinstance(dir, str) or not dir.strip():
+        return {"entry": None}
     return {"entry": _app_entry().entry_html(dir)}
 
 
@@ -142,27 +148,55 @@ def _envelope_of(fut) -> dict:
     return {"ok": True, "result": fut.result()}
 
 
-async def _run(label: str, budget: float, fn, kwargs: dict):
-    """Run `fn(**kwargs)` on the agent pool under `budget` seconds.
+async def _run(label: str, budget: float, fn, kwargs: dict,
+               executor=None, on_cancel=None):
+    """Run `fn(**kwargs)` on `executor` (default `pool.POOL`) under `budget`
+    seconds.
 
     Returns `(envelope, status, cfut)`: status 200 with `{"ok": True,
     "result": ...}`, 500 with the exception's error object, or 504 when the
     budget expired — in which case `cfut` is the still-running (or cancelled
-    before it started) work, for a caller that has to act when it lands."""
-    cfut = pool.POOL.submit(fn, **kwargs)
+    before it started) work, for a caller that has to act when it lands.
+
+    If the REQUEST is cancelled while waiting (the client went away, the
+    server is shutting down), `on_cancel(cfut)` runs before the
+    CancelledError propagates: the work may still land, and a start/send
+    caller must still file what it did (D1308; see the 504 branch of
+    `api_claude_agent`)."""
+    # THE HANDLER'S OWN TIME, measured on the worker thread around the call
+    # alone, as `duration_ms` on the envelope — the field `calls.enrich_run`
+    # files as `run_ms`, which `/api/run`'s child used to report. Queue wait
+    # is excluded on purpose: the call log's `server_ms` already includes it,
+    # and the gap between the two is what shows a saturated pool.
+    timing: dict = {}
+
+    def timed():
+        t0 = time.perf_counter()
+        try:
+            return fn(**kwargs)
+        finally:
+            timing["ms"] = (time.perf_counter() - t0) * 1000.0
+
+    cfut = (executor or pool.POOL).submit(timed)
     try:
         result = await asyncio.wait_for(asyncio.wrap_future(cfut), budget)
+    except asyncio.CancelledError:
+        if on_cancel is not None:
+            on_cancel(cfut)
+        raise
     except TimeoutError:
         # The thread keeps running until the handler returns (pool.py says
-        # why that is accepted); only the caller stops waiting.
+        # why that is accepted); only the caller stops waiting. No
+        # duration_ms: the handler has not finished, so there is none yet.
         logger.warning("claude agent: %s exceeded %s s", label, budget)
         return ({"ok": False, "error": {
             "type": "Timeout", "message": f"{label} exceeded {budget:g} s"}},
             504, cfut)
     except Exception as exc:  # noqa: BLE001 — a handler bug is a 500, not a crash
         logger.exception("claude agent: %s failed", label)
-        return {"ok": False, "error": _error_obj(exc)}, 500, cfut
-    return {"ok": True, "result": result}, 200, cfut
+        return ({"ok": False, "error": _error_obj(exc),
+                 "duration_ms": timing.get("ms")}, 500, cfut)
+    return {"ok": True, "result": result, "duration_ms": timing.get("ms")}, 200, cfut
 
 
 def _respond(envelope: dict, status: int) -> Response:
@@ -219,19 +253,45 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
         return Response(content=dumps_result({"error": refused}),
                         media_type="application/json")
 
-    envelope, status, cfut = await _run(action, pool.budget(action),
-                                        agent.main, bound)
+    # THE START MAY STILL LAND. A `_start` that blew its budget — or whose
+    # request was cancelled under it (the client hung up mid-send, D1308) — is
+    # running on in its pool thread and may yet spawn a host; filing it as
+    # failed NOW would drop the placeholder its gate minted and leave that run
+    # owning nothing, and filing nothing at all would leak the `admit:`
+    # placeholder for good. So the filing waits for the work: whenever it
+    # finishes (or at once, if it was cancelled before it began),
+    # `_file_owner` sees the real outcome — a run to file, or an error to
+    # release the claim for.
+    def _late(fut, params=params, body=body):
+        # `late` for a start: a retry may own the folder by now, and a late
+        # run must not take it back (see `gate._file_owner`). A send is filed
+        # as before — it is the folder's own session continuing.
+        gate._file_owner(params, _envelope_of(fut), body,
+                         late=(action == "start"))
+        git_status.invalidate_status_cache()
+
+    def _on_cancel(fut):
+        fut.add_done_callback(_late)
+
+    envelope, status, cfut = await _run(
+        action, pool.budget(action), agent.main, bound,
+        executor=pool.pool_for(action),
+        on_cancel=_on_cancel if action in ("start", "send") else None)
     if status == 504 and action in ("start", "send"):
-        # THE START MAY STILL LAND. A `_start` that blew its budget is running
-        # on in its pool thread and may yet spawn a host; filing it as failed
-        # NOW would drop the placeholder its gate minted and leave that run
-        # owning nothing. So the filing waits for the work: whenever it
-        # finishes (or at once, if it was cancelled before it began),
-        # `_file_owner` sees the real outcome — a run to file, or an error to
-        # release the claim for.
-        def _late(fut, params=params, body=body):
-            gate._file_owner(params, _envelope_of(fut), body)
-            git_status.invalidate_status_cache()
+        if action == "start":
+            # THE FOLDER GOES BACK NOW, not when the late `_start` lands. The
+            # page shows the Timeout and the user retries — and a placeholder
+            # still holding the folder would refuse that retry as "another
+            # task is running" for a run that may never exist. Released here;
+            # the late filing below still runs, and `_file_owner` then files
+            # `started` for a `_start` that did spawn (`started` guards
+            # against overwriting a retry that has since claimed the folder),
+            # while its own drop is a no-op on a token already released.
+            # Only `start`: a timed-out `send` minted no placeholder of its own
+            # to give back (D1308).
+            key = gate._queue_target(params)
+            if key:
+                gate._drop_placeholder(key, body)
         cfut.add_done_callback(_late)
     else:
         # THE FOLDER'S OWNER IS FILED HERE, at the one place a chat's turn is

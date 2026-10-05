@@ -8907,13 +8907,6 @@ describe("the Cards view's frame", () => {
     expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards-scroll) {\n  flex: 1 1 auto;\n}");
     expect(block(CARDS_CSS, ".schedule-page .schedule-main > .task-cards-scroll")).toContain("container-type: size");
     expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
-    // The chat inside is drawn at 3/4 and laid out at 4/3, so the product is
-    // exactly the body — no clipping, no gap, readable at a third of the width.
-    const frame = block(CARDS_CSS, ".task-card-frame");
-    expect(frame).toContain("transform: scale(0.75)");
-    expect(frame).toContain("width: 133.3334%");
-    expect(frame).toContain("height: 133.3334%");
-    expect(frame).toContain("transform-origin: 0 0");
     // The full title rides the app's own hint (hints.ts), like a List row's,
     // not a native `title` that arrives a second later — and where the line
     // is the newest message, the hint is that message's own full text.

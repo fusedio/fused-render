@@ -274,8 +274,13 @@ def _run_calls(args: argparse.Namespace) -> None:
     # at all there — not even the page the caller was standing on. --entrypoint
     # is a substring filter, so a bare fragment ("sine.py", no drive) is left
     # alone by canonical_fs_path and keeps working.
+    # A page id with a scheme (`fused-render://claude`, the native chat's
+    # X-Fused-Page, D1308) is not a path: abspath would glue it onto the cwd
+    # and it would match nothing, so it is passed through as written.
     filters = {
-        "page": canonical_fs_path(os.path.abspath(os.path.expanduser(args.page))) if args.page else None,
+        "page": (args.page if "://" in args.page else
+                 canonical_fs_path(os.path.abspath(os.path.expanduser(args.page))))
+        if args.page else None,
         "entrypoint": canonical_fs_path(args.entrypoint) if args.entrypoint else None,
         "since": (time.time() - since) if since else None,
         "failed": args.failed,

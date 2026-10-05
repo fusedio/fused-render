@@ -137,16 +137,15 @@ export default function ListingPreviewPane({
   // longer needs to).
   const sideEntry = side === "preview" ? null : sideEntries[side];
   if (sideEntry && sideEntry.path !== null) {
+    // The framed companions' URL (git, mcp — the chat is native and has none).
     // `_noopen=1`, not `_preview=1` (D622): the git companion is fully
     // interactive, so it must not carry the display-only stamp `runtime.js`'s
     // `IS_THUMBNAIL` reads off `_preview`, which would silently disable
     // `fused.daemon.*` for every app it frames. `_noopen=1` says only the one
     // thing this call site wants: don't record this render as an app open.
     // `withNoFocus` keeps the keyboard on the listing.
-    const src = withNoFocus(
-      `/render?path=${encodeURIComponent(sideEntry.path)}` +
-        `&_file=${encodeURIComponent(folder)}&_noopen=1`,
-    );
+    const frameSrc = (path: string) =>
+      withNoFocus(`/render?path=${encodeURIComponent(path)}&_file=${encodeURIComponent(folder)}&_noopen=1`);
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}
@@ -171,7 +170,7 @@ export default function ListingPreviewPane({
             {...(initialAsk ? { initialAsk } : {})}
           />
         ) : (
-          <iframe className="pane-frame" src={src} title={modeTitle(side)} />
+          <iframe className="pane-frame" src={frameSrc(sideEntry.path)} title={modeTitle(side)} />
         )}
       </div>
     );

@@ -6,8 +6,17 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { describe, expect, test } from "bun:test";
 
-const { PERM_CARD_MAX, createChatController, runEnding, stopAllowed, trimPermCards } =
-  await import("./run-controller");
+const {
+  PERM_CARD_MAX,
+  POLL_NETWORK_RETRIES,
+  POLL_TIMEOUT_RETRIES,
+  SEND_TIMEOUT_PROBES,
+  createChatController,
+  runEnding,
+  stopAllowed,
+  trimPermCards,
+} = await import("./run-controller");
+const { AgentError } = await import("./agent");
 const { createMemoryParamsStore } = await import("../params/store");
 const { MARKER_VIEW } = await import("./wire");
 
@@ -493,6 +502,75 @@ describe("start → poll → done", () => {
     }
   });
 
+  // ---- a `send` that timed out (504) MAY STILL LAND -------------------------
+  //
+  // The server's budget expired but its handler thread keeps running, so the
+  // message can reach the live host late. Falling through to `start` with the
+  // same message (and the same queue claim) ran it twice.
+
+  const sendTimeout = () => new AgentError({ type: "Timeout", message: "send timed out after 60s" });
+
+  test("a send that 504s into a host STILL LIVE adopts it — no second `start`", async () => {
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller, agent } = makeController(
+      {
+        live_host: () => ({ run_id: "live-1" }),
+        send: () => Promise.reject(sendTimeout()),
+        poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        start: () => {
+          throw new Error("start must not be called after a timed-out send");
+        },
+      },
+      params,
+    );
+    await controller.sendMessage("again", { queueClaim: "q-1" });
+    expect(agent.of("start").length).toBe(0);
+    // The first probe, then one re-probe that found the host.
+    expect(agent.of("live_host").length).toBe(2);
+    expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "live-1" });
+    expect(controller.getState().trouble).toBeNull();
+    expect(users(controller).map((t) => t.text)).toEqual(["again"]);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["ok"]);
+  });
+
+  test("a send that 504s with NOTHING live after the probes is the Timeout — no `start`", async () => {
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller, agent, returned } = makeController(
+      {
+        live_host: (_f, n) => (n === 0 ? { run_id: "live-1" } : { run_id: "" }),
+        send: () => Promise.reject(sendTimeout()),
+        start: () => {
+          throw new Error("start must not be called after a timed-out send");
+        },
+      },
+      params,
+    );
+    await controller.sendMessage("again");
+    expect(agent.of("start").length).toBe(0);
+    expect(agent.of("live_host").length).toBe(1 + SEND_TIMEOUT_PROBES);
+    expect(controller.getState().trouble?.message).toBe("send timed out after 60s");
+    // The turn never launched: the bubble goes and the words come back.
+    expect(users(controller)).toEqual([]);
+    expect(returned).toEqual([{ text: "again" }]);
+  });
+
+  test("a send that throws anything ELSE still falls through to `start`", async () => {
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller, agent } = makeController(
+      {
+        live_host: () => ({ run_id: "live-1" }),
+        send: () => Promise.reject(new AgentError({ type: "RuntimeError", message: "host died" })),
+        start: () => ({ run_id: "r2" }),
+        poll: () => poll({ done: true }),
+      },
+      params,
+    );
+    await controller.sendMessage("again");
+    expect(agent.of("start").length).toBe(1);
+    expect(agent.of("live_host").length).toBe(1);
+    expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "r2" });
+  });
+
   // ---- the draft this send spends (`draft_key`, PR #1118 round 5) ----------
   //
   // A chat with no session has been drafting — and carrying its TASK number —
@@ -742,6 +820,91 @@ describe("follow-ups (T:16024, D687)", () => {
     controller = made.controller;
     await controller.sendMessage("go");
     expect(mid).toEqual(["again", "again"]);
+  });
+
+  // A follow-up `send` that 504s may still land too (`SEND_TIMEOUT_PROBES`):
+  // handing the words back would have the reader say them twice.
+  const followTimeout = () => new AgentError({ type: "Timeout", message: "send timed out after 60s" });
+
+  test("a follow-up that 504s into a run STILL LIVE keeps its bubble — no hand-back", async () => {
+    let controller!: ChatController;
+    let mid: string[] = [];
+    const made = makeController(
+      {
+        // The opening send's own probe finds nothing (so it starts r1); the
+        // re-probe after the follow-up's 504 finds r1 alive.
+        live_host: (_f, n) => (n === 0 ? { run_id: "" } : { run_id: "r1" }),
+        start: () => ({ run_id: "r1" }),
+        send: () => Promise.reject(followTimeout()),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this");
+            mid = controller.getState().queued;
+            return poll({ segments: [text("working")] });
+          }
+          return poll({ done: true, segments: [text("working")] });
+        },
+      },
+      createMemoryParamsStore({ session_id: "s1" }),
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("start").length).toBe(1);
+    expect(made.returned).toEqual([]);
+    expect(mid).toEqual(["and this"]);
+    expect(users(controller).map((t) => t.text)).toEqual(["go", "and this"]);
+    expect(controller.getState().trouble).toBeNull();
+  });
+
+  test("a follow-up that 504s with nothing live is handed back as the Timeout", async () => {
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        live_host: () => ({ run_id: "" }),
+        start: () => ({ run_id: "r1" }),
+        send: () => Promise.reject(followTimeout()),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this");
+            return poll({ segments: [text("working")] });
+          }
+          return poll({ done: true, segments: [text("working")] });
+        },
+      },
+      createMemoryParamsStore({ session_id: "s1" }),
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("start").length).toBe(1);
+    // The opening probe plus the follow-up's full set of re-probes.
+    expect(made.agent.of("live_host").length).toBe(1 + SEND_TIMEOUT_PROBES);
+    expect(made.returned).toEqual([{ text: "and this" }]);
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    expect(controller.getState().trouble?.message).toBe("send timed out after 60s");
+  });
+
+  test("a follow-up whose send throws anything else is handed back at once, unprobed", async () => {
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        live_host: () => ({ run_id: "" }),
+        start: () => ({ run_id: "r1" }),
+        send: () => Promise.reject(new Error("Failed to fetch")),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this");
+            return poll({ segments: [text("working")] });
+          }
+          return poll({ done: true, segments: [text("working")] });
+        },
+      },
+      createMemoryParamsStore({ session_id: "s1" }),
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("live_host").length).toBe(1);
+    expect(made.returned).toEqual([{ text: "and this" }]);
+    expect(controller.getState().trouble?.message).toBe("Could not send: Failed to fetch");
   });
 
   // QA round 3a, defect 1. Native's `start` body is pinned FIELD FOR FIELD
@@ -2717,6 +2880,108 @@ describe("poll refusals and throws", () => {
     expect(params.get("run")).toBe("r1");
     expect(controller.getState().trouble).toMatchObject({ kind: "network" });
     expect(controller.getState().status).toBe("idle");
+  });
+
+  // ---- transient poll failures (504 / network) ------------------------------
+
+  const timeout = () => new AgentError({ type: "Timeout", message: "poll timed out after 20s" });
+
+  test("a 504 poll is ridden out: the next good poll carries the turn on", async () => {
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ segments: [text("half")], text: "half" })
+          : n === 1
+            ? Promise.reject(timeout())
+            : poll({ done: true, segments: [text("half and whole")], text: "half and whole" }),
+    });
+    await controller.sendMessage("go");
+    expect(agent.of("poll").length).toBe(3);
+    expect(controller.getState().trouble).toBeNull();
+    expect(assistants(controller).map((t) => t.text)).toEqual(["half and whole"]);
+    expect(controller.getState().status).toBe("idle");
+  });
+
+  test("a network blip is ridden out the same way, and a good poll resets the count", async () => {
+    // Two bursts, each exactly the budget, split by a good poll: the count is
+    // CONSECUTIVE failures, so neither burst reaches the card.
+    const burst = POLL_NETWORK_RETRIES;
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n >= 1 && n <= burst) return Promise.reject(new Error("Failed to fetch"));
+        if (n === burst + 1) return poll({ segments: [text("mid")], text: "mid" });
+        if (n >= burst + 2 && n <= 2 * burst + 1) return Promise.reject(new TypeError("Load failed"));
+        if (n > 2 * burst + 1) return poll({ done: true, segments: [text("done")], text: "done" });
+        return poll({ segments: [text("start")], text: "start" });
+      },
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().trouble).toBeNull();
+    expect(assistants(controller).map((t) => t.text)).toEqual(["done"]);
+  });
+
+  test("consecutive 504s past the budget surface the trouble card", async () => {
+    const { controller, agent, params } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => (n === 0 ? poll({ segments: [text("half")] }) : Promise.reject(timeout())),
+    });
+    await controller.sendMessage("go");
+    // One good poll, the budget's worth of retries, and the one that gives up.
+    expect(agent.of("poll").length).toBe(1 + POLL_TIMEOUT_RETRIES + 1);
+    expect(controller.getState().trouble?.message).toBe("poll timed out after 20s");
+    expect(assistants(controller).length).toBe(0);
+    // Same as any thrown poll: `?run=` stays so a reload re-attaches.
+    expect(params.get("run")).toBe("r1");
+    expect(controller.getState().status).toBe("idle");
+  });
+
+  test("a non-transient throw still draws the card on the first failure", async () => {
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ segments: [text("half")] })
+          : Promise.reject(new AgentError({ type: "RuntimeError", message: "agent.py raised" })),
+    });
+    await controller.sendMessage("go");
+    expect(agent.of("poll").length).toBe(2);
+    expect(controller.getState().trouble?.message).toBe("agent.py raised");
+  });
+
+  test("dispose during the retry wait exits cleanly: no card, no further poll", async () => {
+    let release!: () => void;
+    let waiting!: () => void;
+    const parked = new Promise<void>((r) => (waiting = r));
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => (n === 0 ? poll({ segments: [text("half")] }) : Promise.reject(timeout())),
+    });
+    let sleeps = 0;
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      // The first sleep is the steady lap after poll 0; the second is the
+      // retry wait after the 504 — park there until the test disposes.
+      sleep: () => {
+        if (++sleeps < 2) return Promise.resolve();
+        waiting();
+        return new Promise<void>((r) => (release = r));
+      },
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      hasPane: () => true,
+    });
+    const sent = controller.sendMessage("go");
+    await parked;
+    const before = agent.of("poll").length;
+    controller.dispose();
+    release();
+    await sent;
+    expect(agent.of("poll").length).toBe(before);
+    expect(controller.getState().trouble).toBeNull();
   });
 
   test("an error the user did not ask for drops the reply and is reported", async () => {

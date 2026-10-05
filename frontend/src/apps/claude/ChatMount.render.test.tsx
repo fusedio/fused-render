@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { lazy, Suspense } from "react";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
-const { ChatMount, ChatChunkBoundary, useHostIds } = await import("./ChatMount");
+const { ChatMount, ChatChunkBoundary, isChunkLoadError, useHostIds } = await import("./ChatMount");
 const { createMemoryParamsStore } = await import("./params/store");
 // The native branch is a `lazy` chunk, so an `act` that does not AWAIT pins the
 // Suspense fallback and nothing else. Resolving the module once, here, makes
@@ -92,7 +92,9 @@ test("a chunk that fails to load is an error card with a reload, not a blank she
   // The deploy case `__BUILD_VERSION__` exists for: a tab open across a deploy
   // asks for a hashed chunk that is gone. Without a boundary that throw unmounts
   // React to the root and the reader loses the whole shell.
-  const Gone = lazy(() => Promise.reject(new Error("chunk 404")));
+  const Gone = lazy(() =>
+    Promise.reject(new TypeError("Failed to fetch dynamically imported module: /assets/ClaudeChat-abc123.js")),
+  );
   const quiet = console.error;
   console.error = () => {};
   let r!: ReturnType<typeof create>;
@@ -116,7 +118,43 @@ test("a chunk that fails to load is an error card with a reload, not a blank she
   expect(classes(r)).toContain("chat-mount-failed");
   // It says what happened, verbatim, and offers the one fix.
   const text = JSON.stringify(r.toJSON());
-  expect(text).toContain("chunk 404");
+  expect(text).toContain("Failed to fetch dynamically imported module");
+  expect(text).toContain("older copy of the app");
+  expect(text).toContain("Reload the page");
+});
+
+test("only a chunk-load message reads as deploy skew", () => {
+  expect(isChunkLoadError("Failed to fetch dynamically imported module: /x.js")).toBe(true);
+  expect(isChunkLoadError("Importing a module script failed.")).toBe(true);
+  expect(isChunkLoadError("ChunkLoadError: Loading chunk 7 failed.")).toBe(true);
+  expect(isChunkLoadError("Cannot read properties of undefined (reading 'map')")).toBe(false);
+});
+
+test("any OTHER render throw is a generic error card, not the deploy-skew copy", async () => {
+  function Broken(): never {
+    throw new Error("Cannot read properties of undefined (reading 'map')");
+  }
+  const quiet = console.error;
+  console.error = () => {};
+  let r!: ReturnType<typeof create>;
+  try {
+    await act(async () => {
+      r = create(
+        <ChatChunkBoundary>
+          <Broken />
+        </ChatChunkBoundary>,
+      );
+    });
+  } finally {
+    console.error = quiet;
+  }
+  mounted.push(r);
+  expect(classes(r)).toContain("chat-mount-failed");
+  const text = JSON.stringify(r.toJSON());
+  expect(text).toContain("The chat hit an error");
+  expect(text).toContain("reading 'map'");
+  expect(text).not.toContain("older copy of the app");
+  // Reload is still the one recovery, and it is offered.
   expect(text).toContain("Reload the page");
 });
 

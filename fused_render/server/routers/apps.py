@@ -1278,8 +1278,8 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
 
 
 # How long the create call waits for the task's spawn to report a run id.
-# spawn_helper's own timeout is 60s; a spawn ordinarily returns in a second or
-# two. Past this the response goes out without a run id and the page lands on
+# spawn_helper is an in-process `_start` call with no timeout of its own
+# (D1308); a spawn ordinarily returns in well under a second. Past this the response goes out without a run id and the page lands on
 # the file with the pane open on its sessions list, where the run turns up.
 _SENT_WAIT_S = 20.0
 

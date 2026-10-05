@@ -2,6 +2,7 @@ import codecs
 import json
 import os
 import stat as stat_mod
+import sys
 import time
 from fused_render.core_templates import ensure_core_templates
 from fused_render.shell import storage
@@ -86,8 +87,10 @@ def _resolve_name(name):
     so both keep working unchanged, and the shell gets a truthy `path`. Order
     is user template.html, user native, core template.html, core native — so
     within one folder the html wins, and a user folder (either form) still
-    shadows core. `/render` refuses a native template (404 "served by the
-    shell"); see `is_native_template_path`.
+    shadows a core PAGE template. A core NATIVE template is the exception:
+    nothing shadows it, and a stale user template.html of the same name is
+    ignored with a warning (D1308). `/render` refuses a native template (404
+    "served by the shell"); see `is_native_template_path`.
     """
     # The name is joined into a filesystem path, so it must be one plain
     # segment — a stray "../x" must not stat arbitrary locations. Correctness
@@ -108,6 +111,21 @@ def _resolve_name(name):
             "for shell sentinel modes (SPEC PT-12); the only referenceable "
             "sentinel is '_render'"
         )
+    # A CORE NATIVE TEMPLATE CANNOT BE SHADOWED (D1308). The one there is
+    # (`claude`) used to be an iframe page, so a user who once forked it has a
+    # stale `~/.fused-render/templates/claude/template.html` — and letting that
+    # win would resurrect the retired page under a hand-typed /render URL and
+    # hand its folder's condition.py and icon to the mount gate. The shell
+    # renders the mode; a user copy has nothing left to override.
+    core_marker = os.path.join(TEMPLATES_DIR, name, NATIVE_MARKER)
+    if _native_folder(os.path.join(TEMPLATES_DIR, name)):
+        stale = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
+        if stale not in _WARNED_STALE and os.path.isfile(stale):
+            _WARNED_STALE.add(stale)
+            logger.warning(
+                "ignoring %s: %r is rendered by the shell now (D1308); "
+                "delete that file to silence this", stale, name)
+        return core_marker, None
     for base in (USER_TEMPLATES_DIR, TEMPLATES_DIR):
         folder = os.path.join(base, name)
         html = os.path.join(folder, "template.html")
@@ -122,6 +140,10 @@ def _resolve_name(name):
 # Marker file naming a shell-implemented ("native") template folder (PT-6
 # amendment): present instead of template.html.
 NATIVE_MARKER = "native"
+
+# Stale user template.html paths already warned about by `_resolve_name` —
+# once per process, not once per /api/templates call.
+_WARNED_STALE: set[str] = set()
 
 
 def _is_native(template_path) -> bool:
@@ -139,15 +161,27 @@ def is_native_template_path(path) -> bool:
     """True when `path` is a native template folder, or its `native` marker,
     directly under a template root (user, staged core, or the packaged tree).
     /render uses it to refuse such paths: there is no page to serve. The
-    root prefix test is pure string work, so a mount path is never stat'd."""
+    realpath costs an lstat per component, no more than /render's own read
+    of the same path is about to."""
     if not isinstance(path, str) or not path:
         return False
-    p = os.path.abspath(path).rstrip(os.sep)
-    folder = os.path.dirname(p) if os.path.basename(p) == NATIVE_MARKER else p
+    # realpath + case-folding on BOTH sides (D1308): a symlinked spelling of
+    # the folder, or a differently-cased one on a case-insensitive volume (the
+    # macOS default), is the same folder and must be refused the same way.
+    # `normcase` folds on Windows only — on macOS it is the identity — so
+    # darwin lowers explicitly. On a case-sensitive APFS volume that can only
+    # widen the root match; `_native_folder` stats the real, unfolded path.
+    def fold(x):
+        x = os.path.normcase(x)
+        return x.lower() if sys.platform == "darwin" else x
+
+    p = os.path.realpath(path).rstrip(os.sep)
+    folder = (os.path.dirname(p)
+              if fold(os.path.basename(p)) == NATIVE_MARKER else p)
     from fused_render.core_templates import PACKAGE_TEMPLATES_DIR
     bases = (USER_TEMPLATES_DIR, TEMPLATES_DIR, PACKAGE_TEMPLATES_DIR)
-    roots = {os.path.abspath(r) for r in bases} | {os.path.realpath(r) for r in bases}
-    if os.path.dirname(folder) not in roots:
+    roots = {fold(os.path.realpath(r)) for r in bases}
+    if fold(os.path.dirname(folder)) not in roots:
         return False
     return _native_folder(folder)
 

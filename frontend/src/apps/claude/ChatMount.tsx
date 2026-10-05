@@ -35,7 +35,23 @@ const ClaudeChat = lazy(() => import("./ClaudeChat"));
  * So the box says what happened and offers the one thing that fixes it — a
  * reload fetches the current build's chunk. Plain platform UI, never anything
  * from the chunk that just failed to load.
+ *
+ * It also catches every OTHER render-time throw from inside the chat (a bug,
+ * not a deploy). Those must not wear the deploy-skew copy — "older copy of the
+ * app" sends the reader hunting for an update that does not exist — so only a
+ * message that LOOKS like a chunk load (`isChunkLoadError`) gets it; the rest
+ * get a plain "the chat hit an error" card with the message. Reload is still
+ * the only recovery the boundary has for either, and the copy says so.
  */
+/** The messages a failed dynamic import rejects with: Chromium, WebKit, and
+ *  webpack/vite-style chunk loaders' own names for it. */
+const CHUNK_LOAD = /Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk/i;
+
+/** Did this render-time throw come from the chat's chunk failing to load? */
+export function isChunkLoadError(message: string): boolean {
+  return CHUNK_LOAD.test(message);
+}
+
 export class ChatChunkBoundary extends Component<
   { children: ReactNode },
   { error: string | null }
@@ -45,10 +61,11 @@ export class ChatChunkBoundary extends Component<
     return { error: error instanceof Error ? error.message : String(error) };
   }
   componentDidCatch(error: unknown) {
-    console.error("chat chunk failed to load", error);
+    console.error("chat failed to render", error);
   }
   render() {
     if (this.state.error === null) return <>{this.props.children}</>;
+    const chunk = isChunkLoadError(this.state.error);
     return (
       // Inline, not chat.css: that sheet ships in the chunk that failed.
       <div
@@ -64,18 +81,33 @@ export class ChatChunkBoundary extends Component<
           boxSizing: "border-box",
         }}
       >
-        <TroubleCard
-          what="loading the chat"
-          error={this.state.error || "the chat's code did not load"}
-          title="The chat didn't load"
-          explain={
-            "This window is running an older copy of the app than the one on " +
-            "disk, or the app went away while it loaded. Reloading the page " +
-            "fetches the current one."
-          }
-          onRetry={() => location.reload()}
-          retryLabel="Reload the page"
-        />
+        {chunk ? (
+          <TroubleCard
+            what="loading the chat"
+            error={this.state.error}
+            title="The chat didn't load"
+            explain={
+              "This window is running an older copy of the app than the one on " +
+              "disk, or the app went away while it loaded. Reloading the page " +
+              "fetches the current one."
+            }
+            onRetry={() => location.reload()}
+            retryLabel="Reload the page"
+          />
+        ) : (
+          <TroubleCard
+            what="using the chat"
+            error={this.state.error || "the chat failed to render"}
+            title="The chat hit an error"
+            explain={
+              "Something inside the chat broke while it was drawing. Reloading " +
+              "the page is the only way to bring it back. The conversation " +
+              "itself is saved on disk and is not lost."
+            }
+            onRetry={() => location.reload()}
+            retryLabel="Reload the page"
+          />
+        )}
       </div>
     );
   }

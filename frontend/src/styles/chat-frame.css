@@ -33,12 +33,11 @@
   z-index: 1;
   overflow: hidden;
   background: var(--bg);
-  transition: opacity 160ms ease;
 }
 
-/* The transcript column, in the template's own measurements (#log: 720px max,
-   centred, 24/20/12 padding) so the two skeletons sit in the same place and the
-   crossfade moves nothing. */
+/* The transcript column, in the chat's own measurements (720px max, centred,
+   24/20/12 padding) so the skeleton sits where the transcript will and the swap
+   moves nothing. */
 .chat-frame-skel {
   max-width: 720px;
   margin: 0 auto;
@@ -90,12 +89,4 @@
 .chat-frame-skel-lines .skel-bar {
   height: 11px;
   border-radius: 4px;
-}
-
-/* Reduced motion: reduced-motion.css already collapses every transition to
-   nothing, and this states the intent at the rule that has it. */
-@media (prefers-reduced-motion: reduce) {
-  .chat-frame-placeholder {
-    transition: none;
-  }
 }

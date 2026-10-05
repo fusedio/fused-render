@@ -1085,13 +1085,9 @@ export interface RunAttribution {
   target?: string | null;
   /** `X-Fused-Call`: this call's correlation id. */
   callId?: string;
-  /** `X-Fused-Supersedes`: comma-separated ids this call abandoned to be made.
-   *  Rides the SUPERSEDING request, because that leaves in the same task as the
-   *  abort — so the mark lands before the abandoned call's record is written. */
-  supersedes?: string;
 }
 
-/** The four headers, built from an attribution. Exported for the test that pins
+/** The three headers, built from an attribution. Exported for the test that pins
  *  the exact set — the names are a contract with `calls.py`, which reads them
  *  lower-cased. */
 export function runHeaders(attr: RunAttribution | undefined): Record<string, string> {
@@ -1099,7 +1095,6 @@ export function runHeaders(attr: RunAttribution | undefined): Record<string, str
   const out: Record<string, string> = { "X-Fused-Page": encodeURIComponent(attr.page) };
   if (attr.target) out["X-Fused-Target"] = encodeURIComponent(attr.target);
   if (attr.callId) out["X-Fused-Call"] = attr.callId;
-  if (attr.supersedes) out["X-Fused-Supersedes"] = attr.supersedes;
   return out;
 }
 

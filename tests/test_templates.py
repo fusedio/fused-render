@@ -125,17 +125,57 @@ def test_only_a_native_template_carries_the_native_flag():
     assert all("native" not in e for m, e in by_mode.items() if m != "claude")
 
 
-def test_a_user_native_folder_resolves_and_a_page_beside_it_wins(user_dir):
+def test_a_user_native_folder_resolves_on_its_own(user_dir):
     folder = user_dir.path / "mine"
     folder.mkdir()
     (folder / "native").write_text("shell-rendered\n")
     path, err = server._resolve_name("mine")
     assert err is None and server._is_native(path)
-    # Within one folder template.html wins over the marker.
+    assert path == str(folder / "native")
+    # For a name core does not ship natively, within one folder the page still
+    # wins over the marker.
     (folder / "template.html").write_text("<html></html>")
     path, err = server._resolve_name("mine")
-    assert err is None and path.endswith("template.html")
-    assert not server._is_native(path)
+    assert err is None and path == str(folder / "template.html")
+
+
+def test_a_stale_user_page_cannot_shadow_a_core_native_template(user_dir, caplog,
+                                                                monkeypatch):
+    """A user who forked the old iframe chat still has
+    `~/.fused-render/templates/claude/template.html`. Letting it win would
+    resurrect the retired page under /render and hand its folder's gate and
+    icon to the mode (D1308), so the core marker wins and the stale file is
+    named in a warning, once."""
+    import logging
+
+    monkeypatch.setattr(server, "_WARNED_STALE", set())
+    core, _ = server._resolve_name("claude")
+    stale = user_dir.path / "claude" / "template.html"
+    stale.parent.mkdir()
+    stale.write_text("<html>old chat</html>")
+    with caplog.at_level(logging.WARNING, logger=server.logger.name):
+        first, err = server._resolve_name("claude")
+        second, _ = server._resolve_name("claude")
+    assert err is None
+    assert first == second == core and server._is_native(first)
+    warned = [r for r in caplog.records if str(stale) in r.getMessage()]
+    assert len(warned) == 1, "warned once per process, not once per call"
+
+
+def test_render_refuses_a_native_folder_by_any_spelling(tmp_path):
+    """A symlink to the native folder, or (on a case-insensitive volume) a
+    differently-cased path to it, is the same folder: refused the same way."""
+    path, _ = server._resolve_name("claude")
+    folder = os.path.dirname(path)
+    link = tmp_path / "chat-link"
+    link.symlink_to(folder, target_is_directory=True)
+    assert server.is_native_template_path(str(link))
+    assert server.is_native_template_path(str(link / "native"))
+    upper = os.path.join(os.path.dirname(folder), "CLAUDE")
+    if os.path.isdir(upper) and os.path.samefile(upper, folder):
+        # Case-insensitive volume (the macOS default) — the same folder.
+        assert server.is_native_template_path(upper)
+        assert server.is_native_template_path(os.path.join(upper, "NATIVE"))
 
 
 def test_render_refuses_a_native_template():
