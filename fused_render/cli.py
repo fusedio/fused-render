@@ -275,7 +275,7 @@ def _run_calls(args: argparse.Namespace) -> None:
     # is a substring filter, so a bare fragment ("sine.py", no drive) is left
     # alone by canonical_fs_path and keeps working.
     # A page id with a scheme (`fused-render://claude`, the native chat's
-    # X-Fused-Page, D1308) is not a path: abspath would glue it onto the cwd
+    # X-Fused-Page, D1309) is not a path: abspath would glue it onto the cwd
     # and it would match nothing, so it is passed through as written.
     filters = {
         "page": (args.page if "://" in args.page else

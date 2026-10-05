@@ -1224,6 +1224,32 @@ export function createChatController(deps: ControllerDeps): ChatController {
     return "";
   }
 
+  /**
+   * After a `start` 504 of type `"Timeout"` (Bugbot, PR #1409): the handler
+   * RAN and may still spawn its host, so handing the words back for a resend
+   * would start a SECOND host (or be refused as folder-busy). Same posture as
+   * `liveAfterSendTimeout`, but asked through `live_run`, because a fresh chat
+   * has no session id yet — and even a resume's start may mint a NEW one the
+   * page never received. With no session, the probe asks for the file as a
+   * whole and takes the newest live run there; the folder gate makes that
+   * this start's run in practice. A run this frame already streamed is never
+   * it. `""` after the probes: nothing live, the Timeout stands.
+   */
+  async function liveAfterStartTimeout(sessionId: string): Promise<string> {
+    for (let i = 0; i < SEND_TIMEOUT_PROBES; i++) {
+      if (i) await sleep(SEND_TIMEOUT_PROBE_MS);
+      if (disposed) return "";
+      try {
+        const res = (await run("live_run", { file: FILE || "", session_id: sessionId || "" })) as RunIdResponse;
+        const id = res && res.run_id ? String(res.run_id) : "";
+        if (id && !shownRuns.has(id)) return id;
+      } catch {
+        // A probe that cannot reach the server is one more "not yet".
+      }
+    }
+    return "";
+  }
+
   async function pollLoop(
     runId: string,
     gen: number,
@@ -2016,69 +2042,86 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
       }
       if (!runId) {
-        const res = (await run(
-          "start",
-          {
-            file: FILE || "",
-            message: outgoing,
-            session_id: sessionId,
-            model: curModel(),
-            effort: curEffort(),
-            permission_mode: opts.permission || curPermission(),
-            // WHETHER THERE IS A PANE IS THIS PAGE'S ANSWER TO GIVE, and it is
-            // sent on every turn (T:16609-16618, agent.py `_has_pane`).
-            has_pane: hasPane(),
-            // Granted for the SESSION, not the turn (Task 6): the process this
-            // starts stays up across every follow-up it sends (T:16657-16668).
-            read_dirs: JSON.stringify(opts.readDirs || []),
-            // THE DRAFT THIS SEND SPENDS, and only when there is no session to
-            // send into — which is exactly the send that CREATES one. A chat
-            // that had been drafting (and carrying its TASK number) under
-            // `new:<file>` hands that number to the session this start mints.
-            // Nothing here can tell afterwards which id that was, so the run is
-            // tagged on the way out and the server reads the tag back off
-            // `meta.json` (`routers/tasks.py::_settle_new_chats`; four earlier
-            // rounds of asking the page instead are in `platform/lib/drafts.ts`).
-            // Omitted on a send into an existing session: that send creates
-            // nothing, and a tag it could not spend would be a claim on a draft
-            // still being typed.
-            //
-            // NO PAGE WRITES `new:<file>` ANY MORE (Akshil, 2026-09-16): a
-            // never-sent chat's Save and its Schedule mint a `draft:<id>` task
-            // draft apiece, because one record per folder meant the second draft
-            // replaced the first. The tag is kept because the shape is still
-            // READ everywhere it was — records written by older builds are still
-            // on disk, still listed, still on their 14-day TTL — and a send that
-            // settles one of those is the only thing that can hand its number
-            // on. It costs one short string on a send that has nothing to spend.
-            ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
-            // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
-            // proof this send is the one already counted, so the server gate
-            // only looks rather than claiming a second time.
-            ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
-          },
-        )) as StartResponse;
-        // `StartResponse` is `{run_id, session_id?}` | `{error}`; agent.py
-        // answers exactly one (agent.py:2452, plus main()'s own guards
-        // 5188-5191).
-        const failed = (res as { error?: string }).error;
-        if (failed) throw new Error(failed);
-        runId = (res as { run_id: string }).run_id;
-        // THE SERVER NAMED THE SESSION AT SPAWN, so the url param, the state and
-        // the running mark all land HERE — at the send — instead of on the first
-        // poll two to four seconds later, which is the whole "status in under a
-        // second" of this change. The poll still reports the same id and
-        // `noteSessionId` is a no-op the second time, so an older server that
-        // omits this simply takes the old road.
-        //
-        // GUARDED LIKE THE RUN PARAM BELOW (`logGen === gen`): the id names the
-        // conversation THIS send started, and if the reader left for another
-        // chat while `start` was in flight, writing it to the url and the
-        // state would drag them back into a session they navigated away from
-        // (Bugbot). The run continues server-side and `resumeRun` can
-        // re-attach; the landing simply gains nothing.
-        const named = (res as { session_id?: string }).session_id;
-        if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
+        let res: StartResponse | null = null;
+        try {
+          res = (await run(
+            "start",
+            {
+              file: FILE || "",
+              message: outgoing,
+              session_id: sessionId,
+              model: curModel(),
+              effort: curEffort(),
+              permission_mode: opts.permission || curPermission(),
+              // WHETHER THERE IS A PANE IS THIS PAGE'S ANSWER TO GIVE, and it is
+              // sent on every turn (T:16609-16618, agent.py `_has_pane`).
+              has_pane: hasPane(),
+              // Granted for the SESSION, not the turn (Task 6): the process this
+              // starts stays up across every follow-up it sends (T:16657-16668).
+              read_dirs: JSON.stringify(opts.readDirs || []),
+              // THE DRAFT THIS SEND SPENDS, and only when there is no session to
+              // send into — which is exactly the send that CREATES one. A chat
+              // that had been drafting (and carrying its TASK number) under
+              // `new:<file>` hands that number to the session this start mints.
+              // Nothing here can tell afterwards which id that was, so the run is
+              // tagged on the way out and the server reads the tag back off
+              // `meta.json` (`routers/tasks.py::_settle_new_chats`; four earlier
+              // rounds of asking the page instead are in `platform/lib/drafts.ts`).
+              // Omitted on a send into an existing session: that send creates
+              // nothing, and a tag it could not spend would be a claim on a draft
+              // still being typed.
+              //
+              // NO PAGE WRITES `new:<file>` ANY MORE (Akshil, 2026-09-16): a
+              // never-sent chat's Save and its Schedule mint a `draft:<id>` task
+              // draft apiece, because one record per folder meant the second draft
+              // replaced the first. The tag is kept because the shape is still
+              // READ everywhere it was — records written by older builds are still
+              // on disk, still listed, still on their 14-day TTL — and a send that
+              // settles one of those is the only thing that can hand its number
+              // on. It costs one short string on a send that has nothing to spend.
+              ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
+              // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
+              // proof this send is the one already counted, so the server gate
+              // only looks rather than claiming a second time.
+              ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+            },
+          )) as StartResponse;
+        } catch (startErr) {
+          // A START THAT RAN AND OVERRAN ITS BUDGET (`"Timeout"`, Bugbot PR
+          // #1409) may still spawn its host — handing the words back now
+          // would let the resend spawn a second one. So, like a timed-out
+          // send, ask what is live and ADOPT it as this turn's run (the
+          // bubble stays, no second start). Nothing live: the Timeout is
+          // thrown on to the ordinary hand-back + trouble. `"NotRun"` (the
+          // job never left the queue) and every other failure skip the
+          // probe — that start provably launched nothing.
+          if (!isTimeout(startErr)) throw startErr;
+          runId = await liveAfterStartTimeout(sessionId);
+          if (!runId) throw startErr;
+        }
+        if (res) {
+          // `StartResponse` is `{run_id, session_id?}` | `{error}`; agent.py
+          // answers exactly one (agent.py:2452, plus main()'s own guards
+          // 5188-5191).
+          const failed = (res as { error?: string }).error;
+          if (failed) throw new Error(failed);
+          runId = (res as { run_id: string }).run_id;
+          // THE SERVER NAMED THE SESSION AT SPAWN, so the url param, the state and
+          // the running mark all land HERE — at the send — instead of on the first
+          // poll two to four seconds later, which is the whole "status in under a
+          // second" of this change. The poll still reports the same id and
+          // `noteSessionId` is a no-op the second time, so an older server that
+          // omits this simply takes the old road.
+          //
+          // GUARDED LIKE THE RUN PARAM BELOW (`logGen === gen`): the id names the
+          // conversation THIS send started, and if the reader left for another
+          // chat while `start` was in flight, writing it to the url and the
+          // state would drag them back into a session they navigated away from
+          // (Bugbot). The run continues server-side and `resumeRun` can
+          // re-attach; the landing simply gains nothing.
+          const named = (res as { session_id?: string }).session_id;
+          if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
+        }
       }
       started = true;
       // A run id is in-flight bookkeeping — never a place the reader navigated

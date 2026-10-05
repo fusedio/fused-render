@@ -36,7 +36,7 @@ mean a coverage bootstrap in the spawn path for one template helper; the number
 is not a gate, so it is left honest-but-understated rather than gamed with
 tests written for the metric.
 
-D1308: the page half of this file (source pins and node probes over the
+D1309: the page half of this file (source pins and node probes over the
 retired iframe chat page, templates/claude/template.html) went with that
 page; the native chat under frontend/src/apps/claude owns it now. What
 stays is the backend half.

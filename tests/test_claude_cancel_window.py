@@ -1,5 +1,5 @@
 """The in-server chat backend's edges that only exist because it runs IN the
-server now (D1308).
+server now (D1309).
 
 `_start` spawns the session host posix_spawn-style into the SERVER's process
 group, and the host only detaches itself (`os.setsid()`) once its interpreter

@@ -1,5 +1,5 @@
 """The native chat's Artifacts section, run IN the server through
-`POST /api/claude/artifacts` (D1308): the pages Claude PUBLISHED while working
+`POST /api/claude/artifacts` (D1309): the pages Claude PUBLISHED while working
 on this target.
 
 An artifact is the one thing a chat produces that outlives the chat and does not

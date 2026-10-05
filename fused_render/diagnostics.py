@@ -620,7 +620,7 @@ def _run(argv: list[str], timeout: float = CMD_TIMEOUT_S) -> str:
     """One command's output as a text section; failure is described inline."""
     head = "$ " + " ".join(argv) + "\n"
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, errors="replace",
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=timeout, check=False)
     except FileNotFoundError:
         return head + "(not found)\n"
@@ -656,7 +656,7 @@ def _ps_text() -> str | None:
         return None
     try:
         r = subprocess.run(["ps", "-axo", "pid,ppid,user,%cpu,%mem,rss,lstart,command"],
-                           capture_output=True, text=True, errors="replace",
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=CMD_TIMEOUT_S, check=False)
     except (OSError, subprocess.SubprocessError) as e:
         return f"ps failed: {e}\n"
@@ -779,7 +779,7 @@ def _machine() -> dict:
     if sys.platform == "darwin":
         try:
             r = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
-                               text=True, timeout=CMD_TIMEOUT_S, check=False)
+                               text=True, encoding="utf-8", errors="replace", timeout=CMD_TIMEOUT_S, check=False)
             ram = int(r.stdout.strip())
         except (OSError, ValueError, subprocess.SubprocessError):
             pass

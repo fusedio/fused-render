@@ -2,7 +2,7 @@
 
 THE Claude chat. It began as a React port of the iframe chat page
 `fused_render/templates/claude/template.html` (`T` below — the line cites in
-this folder still point into it) and replaced it: since D1308 that page,
+this folder still point into it) and replaced it: since D1309 that page,
 its `vendor/` and `app.py` are deleted, there is no flag, and every surface
 that offers mode `claude` mounts this. `templates/claude/` keeps only
 `condition.py` (the gate), `icon.svg` and a `native` marker so the registry

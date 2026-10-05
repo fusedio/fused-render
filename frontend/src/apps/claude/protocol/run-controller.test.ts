@@ -590,6 +590,63 @@ describe("start → poll → done", () => {
     expect(controller.getState().trouble).toBeNull();
   });
 
+  // ---- a `start` that timed out (504 `Timeout`) MAY STILL SPAWN (Bugbot #1409)
+  //
+  // The handler ran and overran its budget, so its host may come up a moment
+  // later. Handing the words back let the resend spawn a second host; instead
+  // the page asks `live_run` (file alone when the start's session never came
+  // back) and adopts what is live.
+
+  const startTimeout = () => new AgentError({ type: "Timeout", message: "start timed out after 60s" });
+
+  test("a fresh chat's start that 504s into a run STILL LIVE adopts it — one `start`", async () => {
+    const { controller, agent, returned } = makeController({
+      start: () => Promise.reject(startTimeout()),
+      live_run: (_f, n) => (n === 0 ? { run_id: "" } : { run_id: "late-1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    await controller.sendMessage("hi");
+    expect(agent.of("start").length).toBe(1);
+    const probes = agent.of("live_run");
+    expect(probes.length).toBeGreaterThanOrEqual(2);
+    // No session came back, so the probe asks for the file as a whole.
+    expect(probes[0].fields).toMatchObject({ session_id: "" });
+    expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "late-1" });
+    expect(controller.getState().trouble).toBeNull();
+    // The bubble stays; nothing is handed back for a resend.
+    expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["ok"]);
+    expect(returned).toEqual([]);
+  });
+
+  test("a start that 504s with NOTHING live after the probes is the Timeout — one `start`", async () => {
+    const { controller, agent, returned } = makeController({
+      start: () => Promise.reject(startTimeout()),
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.sendMessage("hi");
+    expect(agent.of("start").length).toBe(1);
+    expect(agent.of("live_run").length).toBe(SEND_TIMEOUT_PROBES);
+    expect(agent.of("poll").length).toBe(0);
+    expect(controller.getState().trouble?.message).toBe("start timed out after 60s");
+    expect(users(controller)).toEqual([]);
+    expect(returned).toEqual([{ text: "hi" }]);
+  });
+
+  test("a start the server says NEVER RAN (504 `NotRun`) is handed back, unprobed", async () => {
+    const { controller, agent, returned } = makeController({
+      start: () => Promise.reject(new AgentError({ type: "NotRun", message: "cancelled while queued" })),
+      live_run: () => ({ run_id: "someone-else" }),
+    });
+    await controller.sendMessage("hi");
+    expect(agent.of("start").length).toBe(1);
+    expect(agent.of("live_run").length).toBe(0);
+    expect(agent.of("poll").length).toBe(0);
+    expect(controller.getState().trouble?.message).toBe("cancelled while queued");
+    expect(users(controller)).toEqual([]);
+    expect(returned).toEqual([{ text: "hi" }]);
+  });
+
   // ---- the draft this send spends (`draft_key`, PR #1118 round 5) ----------
   //
   // A chat with no session has been drafting — and carrying its TASK number —

@@ -45,7 +45,7 @@ def render(
     # A native template (PT-6 amendment, e.g. `claude`) is implemented by the
     # shell: its folder holds a `native` marker instead of a page. Neither the
     # marker nor the folder is ever served as html, nor anything in a user's
-    # stale fork of that name (D1308). Checked first so the
+    # stale fork of that name (D1309). Checked first so the
     # folder form never falls into the index.html redirect below.
     from fused_render.server import templates as _server_templates
     if _server_templates.is_native_template_path(path):

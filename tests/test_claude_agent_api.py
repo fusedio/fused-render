@@ -295,8 +295,13 @@ class _FakeQueue:
     ({"task": "admit:other", "run_id": "r-B", "claims": ["other-tok"]}, False),
     # A's OWN placeholder: its admit token is still among the claims.
     ({"task": "admit:mine", "run_id": "r-X", "claims": ["mine-tok"]}, True),
-    # A placeholder (or any owner) with no run filed yet.
-    ({"task": "admit:tok"}, True),
+    # Somebody else's placeholder with no run filed yet and none of A's
+    # tokens (A's own admit placeholder was dropped when its start timed out).
+    ({"task": "admit:tok"}, False),
+    # ANOTHER session's tokenless `claim_took` reservation: task s-B, no run.
+    ({"task": "s-B", "run_id": ""}, False),
+    # A's OWN session reservation: task s-A, no run yet.
+    ({"task": "s-A", "run_id": ""}, True),
     # This very run.
     ({"task": "s-A", "run_id": "r-A"}, True),
     # Free.
@@ -307,9 +312,10 @@ def test_a_late_start_never_takes_the_folder_from_a_real_owner(
     """Run A's start 504'd, the user retried, run B was filed as the folder's
     owner — then A lands. Filing A would hand the folder back to the run the
     user gave up on, so it is skipped (A is still in the runs dir and listed in
-    Tasks). It files only into a free folder, its own placeholder, or an owner
-    with no run yet / this run — never by NAME, since a same-session retry
-    carries A's own session id."""
+    Tasks). It files only into a free folder, its own placeholder, this run,
+    or a run-less reservation under A's OWN name — never by name once a run
+    is filed (a same-session retry carries A's session id), and never into
+    another session's run-less reservation (Bugbot, PR #1409)."""
     from fused_render import queue_manager
 
     fake = _FakeQueue(dict(current) if current else None)

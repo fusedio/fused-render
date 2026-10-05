@@ -1,4 +1,4 @@
-"""The native chat's backend, run IN the server (D1308): `main()` is what
+"""The native chat's backend, run IN the server (D1309): `main()` is what
 `POST /api/claude/agent` dispatches to on one module instance
 (`claude_agent.agent_module()`), and `session_host.py` loads this same file by
 path in its own child. Chat with the Claude Code
@@ -1253,7 +1253,7 @@ def _sips_to_png(path: str) -> str | None:
     return None
 
 
-#: The most pixels this ladder will DECODE (D1308). It runs inside the server
+#: The most pixels this ladder will DECODE (D1309). It runs inside the server
 #: now, not a throwaway child, so a decoded picture is server RSS: Pillow's own
 #: `MAX_IMAGE_PIXELS` (~89 MP) only WARNS up to twice that, and a 170 MP TIFF
 #: is ~0.5 GB of RGB before the first resize. Measured on the size actually
@@ -2841,7 +2841,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # waits on it, so without a waiter every finished host would sit as a
     # zombie until the server exits. One daemon thread per host, parked in
     # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
-    # the request is written (D1308): a host that dies before reading stdin
+    # the request is written (D1309): a host that dies before reading stdin
     # makes that write raise, and a reaper started after it would never run.
     threading.Thread(target=proc.wait, name=f"claude-host-wait-{run_id}",
                      daemon=True).start()
@@ -2960,7 +2960,7 @@ def _commit_turn(file: str, message: str) -> None:
     # ABSOLUTE argv[0] or nothing: close_fds=False alone does NOT reach
     # posix_spawn — CPython forks unless os.path.dirname(executable) is truthy,
     # and a fork with libproj resident dies with SIGSEGV before exec (rc -11,
-    # silently; D1308). So no git on PATH is the no-git case — skip the sweep —
+    # silently; D1309). So no git on PATH is the no-git case — skip the sweep —
     # never a bare "git" that would take the fork path.
     import shutil
     git_bin = shutil.which("git")
@@ -6930,7 +6930,7 @@ def _kill_tree(run_dir: str) -> None:
         except ProcessLookupError:
             # No group by that id: the pid file still names the HOST (the CLI
             # has not spawned to overwrite it), and the host has not reached
-            # its own setsid() yet, so it is no group's leader (D1308 — it is
+            # its own setsid() yet, so it is no group's leader (D1309 — it is
             # spawned posix_spawn-style into the server's group and detaches
             # itself). Signal the process instead; the host also checks the
             # `cancelled` marker `_cancel` wrote first, for the case where

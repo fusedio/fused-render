@@ -144,7 +144,7 @@ def test_a_stale_user_page_cannot_shadow_a_core_native_template(user_dir, caplog
     """A user who forked the old iframe chat still has
     `~/.fused-render/templates/claude/template.html`. Letting it win would
     resurrect the retired page under /render and hand its folder's gate and
-    icon to the mode (D1308), so the core marker wins and the stale file is
+    icon to the mode (D1309), so the core marker wins and the stale file is
     named in a warning, once."""
     import logging
 

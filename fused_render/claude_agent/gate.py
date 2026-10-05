@@ -127,21 +127,31 @@ def _file_owner(params: dict, result: dict, body: dict | None = None,
         # the placeholder in the meantime) is a no-op — `started`'s own
         # guard is the backstop either way.
         if late:
-            # A START THAT LANDED AFTER ITS 504 (D1308). The router already gave
+            # A START THAT LANDED AFTER ITS 504 (D1309). The router already gave
             # the folder back, and the user's retry may since have filed a REAL
             # owner of its own. `started` would overwrite that owner (it only
             # guards a live placeholder), handing the folder to the run the
             # user gave up on. So a late start files only into a folder that
             # is free, held by ITS OWN placeholder (its admit token still among
-            # the claims), or owned by no run yet / by this very run. Not by
-            # name: a retry in the SAME conversation is task S just like A
-            # was, and is still somebody else's run. Nothing is lost by
+            # the claims), owned by this very run, or reserved with no run
+            # yet UNDER A'S OWN NAME. Not by name alone: a retry in the SAME
+            # conversation is task S just like A was, and once it has a run
+            # it is somebody else's. And not "any owner with no run": a
+            # tokenless `claim_took` reservation for ANOTHER session has
+            # exactly that shape (task = its session, run "") and is that
+            # session's folder (Bugbot, PR #1409). Nothing is lost by
             # skipping: the run exists in the runs dir and Tasks lists it.
             current = manager.owner(key)
             admit_token = str((body or {}).get("_queue_admit_token") or "")
+            own_names = {n for n in (run_id, session_id,
+                                     str(params.get("session_id") or ""),
+                                     str(params.get("run_id") or "")) if n}
+            current_run = str(current.get("run_id") or "") if current else ""
             if current is not None and not (
                     (admit_token and admit_token in (current.get("claims") or []))
-                    or str(current.get("run_id") or "") in ("", run_id)):
+                    or (run_id and current_run == run_id)
+                    or (not current_run
+                        and str(current.get("task") or "") in own_names)):
                 logger.debug("late start for %s not filed: folder owned by %s",
                              run_id or session_id,
                              current.get("run_id") or current.get("task"))
@@ -194,7 +204,7 @@ def _drop_placeholder(key: str, body: dict | None) -> None:
 def _drop_admitted_placeholder(key: str, params: dict, body: dict | None) -> None:
     """Release the `admit:` placeholder `/api/tasks/queue/admit` minted for
     this request's `queue_claim`, if `_folder_busy` spent that token on it and
-    it still holds the folder — the start it was minted for timed out (D1308).
+    it still holds the folder — the start it was minted for timed out (D1309).
     `_drop_placeholder` covers the placeholder the gate minted ITSELF; this is
     the other one, which leaves no token on `body`."""
     token = str((body or {}).get("queue_claim") or params.get("queue_claim") or "")

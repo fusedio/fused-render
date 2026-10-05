@@ -1275,7 +1275,7 @@ class QueueManager:
             # job.
             if owner is not None:
                 owner["consumed"] = True
-                # WHICH token was spent, beside the bare mark (D1308): a start
+                # WHICH token was spent, beside the bare mark (D1309): a start
                 # that 504'd has to give back the placeholder its own admission
                 # minted, and `consumed` alone cannot say whose spend it was.
                 # Transient like the mark (`_owner_rec` never loads it).
@@ -1287,7 +1287,7 @@ class QueueManager:
     def release_spent_placeholder(self, folder: str, token: str) -> bool:
         """Free `folder` when its owner is still the `admit:` placeholder whose
         claim `token` was spent on — the admission of a `start` that then
-        timed out (D1308). Without this the placeholder holds the folder until
+        timed out (D1309). Without this the placeholder holds the folder until
         `PLACEHOLDER_TTL` against the user's own retry. True when released;
         False for anything else (a real owner, a different admission's
         placeholder, an unspent token), which is left exactly as it is."""

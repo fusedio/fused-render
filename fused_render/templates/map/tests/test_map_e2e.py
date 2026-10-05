@@ -200,6 +200,106 @@ def test_netcdf_is_converted_to_zarr_and_time_steps_through_the_selector(page, d
     assert p.js("return fm.getDocument().layers[0].options.selector.time;") == 2
 
 
+def _clouds(d):
+    """A LAS 1.2 in longitude/latitude (the browser reads it whole, as is) and
+    a LAS 1.4 in UTM (the browser reader refuses 1.4; Python rewrites it)."""
+    laspy = pytest.importorskip("laspy")
+    from pyproj import CRS, Transformer
+    rng = np.random.default_rng(2)
+    for name, fmt, version in (("plain.las", 3, "1.2"), ("modern.las", 6, "1.4")):
+        header = laspy.LasHeader(point_format=fmt, version=version)
+        x, y = rng.uniform(500000, 500800, 20000), rng.uniform(5000000, 5000800, 20000)
+        if version == "1.2":
+            header.scales, header.offsets = [1e-7, 1e-7, 0.01], [15, 45, 0]
+            x, y = Transformer.from_crs(32633, 4326, always_xy=True).transform(x, y)
+        else:
+            header.scales, header.offsets = [0.01] * 3, [500000, 5000000, 0]
+            header.add_crs(CRS.from_epsg(32633))
+        cloud = laspy.LasData(header)
+        cloud.x, cloud.y, cloud.z = x, y, rng.uniform(100, 160, x.size)
+        cloud.classification = np.where(cloud.z > 130, 5, 2).astype(np.uint8)
+        cloud.write(str(d / name))
+
+
+def test_point_clouds_load_in_the_browser_and_las_14_through_python(page, data):
+    _clouds(data)
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/plain.las', id: 'plain'});"
+         "fm.execute({op: 'add_layer', source: arg + '/modern.las', id: 'modern'});", str(data))
+    facts = by_id(p.idle())
+    for key in ("plain", "modern"):
+        f = facts[key]
+        assert f["status"] == "ready" and f["loaded_as"] == "pointcloud", f
+        assert f["points"] == 20000 and f["has_classification"]
+        west, south, east, north = f["bounds"]
+        assert 14.99 < west < east < 15.02 and 45.1 < south < north < 45.2
+        assert f["classes"] == [2, 5]
+    assert facts["plain"]["note"] == "" and "Python" in facts["modern"]["note"]
+    p.js("fm.execute({op: 'update_layer', id: 'plain', style: {color_scheme: 'classification', "
+         "hidden_classes: [5], point_size: 4, clim: [100, 120]}});")
+    f = p.js("return fm.describeLayer('plain');")
+    assert f["color_scheme"] == "classification" and f["style"]["hidden_classes"] == [5]
+    # The class list in the style panel follows the document.
+    p.js("fm.select('plain');")
+    p.page.locator("#btn-style").click()
+    p.page.wait_for_selector(".pc-classes .chk")
+    assert p.page.locator(".pc-classes input:checked").count() == 1
+
+
+def test_a_point_cloud_without_a_crs_takes_one_from_the_style_panel(page, data):
+    laspy = pytest.importorskip("laspy")
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.offsets = [500000, 5000000, 0]
+    cloud = laspy.LasData(header, points=laspy.ScaleAwarePointRecord.zeros(200, header=header))
+    cloud.x, cloud.y = np.linspace(500000, 500100, 200), np.linspace(5000000, 5000100, 200)
+    cloud.z = np.linspace(10, 20, 200)
+    cloud.write(str(data / "bare.las"))
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/bare.las', id: 'bare'});", str(data))
+    f = by_id(p.idle())["bare"]
+    assert f["status"] == "error" and "coordinate system" in f["message"]
+    p.js("fm.select('bare');")
+    p.page.locator("#btn-style").click()
+    p.page.locator("#sp-body input[type=text]").fill("EPSG:32633")
+    p.page.locator("#sp-body input[type=text]").dispatch_event("change")
+    p.page.wait_for_function("() => fusedMap.describeLayer('bare').status === 'ready'", timeout=120000)
+    assert p.js("return fm.getDocument().layers[0].options.crs;") == "EPSG:32633"
+
+
+def test_zarr_stores_place_themselves_and_every_slice_dimension_gets_a_control(page, data):
+    lat, lon = np.arange(89.5, -90, -1.0), np.arange(0.5, 360, 1.0)
+    cube = np.broadcast_to(np.cos(np.radians(lat))[None, None, :, None] * 30, (2, 3, 180, 360)).astype("float32")
+    xr.Dataset({"t": (("time", "depth", "lat", "lon"), cube)},
+               coords={"time": np.array(["2024-01-01", "2024-02-01"], dtype="datetime64[ns]"),
+                       "depth": [0, 10, 50], "lat": lat, "lon": lon}) \
+        .to_zarr(data / "v3.zarr", zarr_format=3, consolidated=False, mode="w")
+    from pyproj import CRS
+    x, y = np.arange(500050, 510000, 100.0), np.arange(5009950, 5000000, -100.0)
+    xr.Dataset({"elev": (("band", "y", "x"), np.zeros((2, y.size, x.size), "float32") + [[[1.0]], [[50.0]]],
+                         {"grid_mapping": "spatial_ref"})},
+               coords={"band": ["low", "high"], "x": x, "y": y,
+                       "spatial_ref": ((), 0, {"crs_wkt": CRS.from_epsg(32633).to_wkt()})}) \
+        .to_zarr(data / "utm.zarr", zarr_format=2, consolidated=True, mode="w")
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/v3.zarr', id: 'cube'});"
+         "fm.execute({op: 'add_layer', source: arg + '/utm.zarr', id: 'utm'});", str(data))
+    facts = by_id(p.idle())
+    cube, utm = facts["cube"], facts["utm"]
+    assert cube["status"] == "ready" and utm["status"] == "ready", (cube, utm)
+    assert cube["bounds"] == [-180, -90, 180, 90]
+    west, south, east, north = utm["bounds"]
+    assert 14.99 < west < east < 15.2 and 45.1 < south < north < 45.3
+    assert next(d for d in utm["dims"] if d["name"] == "band")["labels"] == ["low", "high"]
+    # A labelled dimension moves the automatic colour range with it.
+    assert utm["auto_clim"][1] < 10
+    p.js("fm.execute({op: 'update_layer', id: 'utm', options: {selector: {band: 1}}});")
+    p.page.wait_for_function("() => fusedMap.describeLayer('utm').auto_clim[0] > 10", timeout=30000)
+    p.js("fm.select('cube');")
+    p.page.locator("#btn-style").click()
+    p.page.wait_for_selector(".md-dim")
+    assert p.page.locator(".md-dim").count() == 2  # time and depth; lat/lon are the map
+
+
 def test_document_order_is_the_drawing_order_across_engines(page, data):
     p = page()
     p.js("fm.execute({op: 'add_layer', source: arg + '/small.geojson', id: 'v'});"
