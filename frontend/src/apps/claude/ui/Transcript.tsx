@@ -112,7 +112,7 @@ export interface TranscriptProps {
    *  it scrolls with the conversation — Claude Code prints its `※ recap:` as
    *  the last line of the transcript, and so does this. */
   recap?: ReactNode;
-  /** The chat's working directory (ClaudeChat's `agentDir`), threaded down to
+  /** The chat's working folder (ClaudeChat `chatWorkdir`), threaded down to
    *  every `Turn` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first instead of running wherever the terminal drawer happens to
    *  be. */

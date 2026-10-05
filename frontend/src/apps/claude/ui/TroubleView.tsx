@@ -43,12 +43,6 @@ const SAID: Partial<Record<TroubleKind, { title: string; explain: string }>> = {
       "Claude Code is installed, but running it failed. The message below is " +
       "what it printed on the way out.",
   },
-  "needs-install": {
-    title: "This app hasn't finished installing",
-    explain:
-      "The chat needs a piece of the app that is still being set up. Nothing " +
-      "is broken — try again once the install finishes.",
-  },
   engine: {
     title: "The app's engine didn't answer",
     explain:

@@ -1,4 +1,7 @@
-"""runPython target for claude/template.html: chat with the Claude Code
+"""The native chat's backend, run IN the server (D1310): `main()` is what
+`POST /api/claude/agent` dispatches to on one module instance
+(`claude_agent.agent_module()`), and `session_host.py` loads this same file by
+path in its own child. Chat with the Claude Code
 CLI about the target — a FOLDER (an app folder, or any other) or a file. This is
 the only chat backend: it began as a fork of the plain chat template's agent
 (the split view was the fork), kept every improvement that fork gained, and
@@ -81,14 +84,19 @@ import urllib.parse
 import urllib.request
 import uuid
 
-# The fused engine execs this script without setting __file__; it puts the
-# script's own directory first on sys.path, so rebuild __file__ from it. Under
-# the built-in executor __file__ is already set, so this is a no-op.
-if "__file__" not in globals():
-    __file__ = os.path.join(sys.path[0], "agent.py")
-
+# This module lives in the `fused_render.claude_agent` package and is imported
+# in-process by the server (one instance, `fused_render.claude_agent.agent_module`).
+# It is ALSO loaded by file path from processes that cannot import the package
+# by design — `session_host.py` (a child run by path) and the test suite — so it
+# keeps the sibling-import-by-path idiom for `templates/shared` and never
+# imports `fused_render` itself. The shared helpers sit beside the templates:
+# `<package>/templates/shared`, one level above this folder.
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+_SHARED = os.path.join(os.path.dirname(HERE), "templates", "shared")
+# Guarded insert: the same interpreter may load this file more than once (the
+# package import plus a by-path load in a test), and sys.path must not grow.
+if _SHARED not in sys.path:
+    sys.path.insert(0, _SHARED)
 from appenv import canvases_root as _canvases_root
 from appenv import fused_cli_dir as _fused_cli_dir
 from appenv import origin as _origin
@@ -1228,10 +1236,12 @@ def _sips_to_png(path: str) -> str | None:
     except OSError:
         return None
     try:
+        # close_fds=False + absolute argv[0]: this runs INSIDE the server now,
+        # where any fork() dies in PROJ's atfork handler (see `_HOST_SPAWN`).
         proc = subprocess.run(
             ["/usr/bin/sips", "-s", "format", "png", path, "--out", tmp],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=SHOT_SIPS_TIMEOUT, check=False)
+            timeout=SHOT_SIPS_TIMEOUT, check=False, close_fds=False)
         if proc.returncode == 0 and os.path.getsize(tmp) > 0:
             return tmp
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -1241,6 +1251,44 @@ def _sips_to_png(path: str) -> str | None:
     except OSError:
         pass
     return None
+
+
+#: The most pixels this ladder will DECODE (D1310). It runs inside the server
+#: now, not a throwaway child, so a decoded picture is server RSS: Pillow's own
+#: `MAX_IMAGE_PIXELS` (~89 MP) only WARNS up to twice that, and a 170 MP TIFF
+#: is ~0.5 GB of RGB before the first resize. Measured on the size actually
+#: decoded, so a big JPEG that `draft()` shrinks at decode time still converts.
+SHOT_MAX_DECODE_PIXELS = 80_000_000
+
+
+class _TooLarge(Exception):
+    """A picture over `SHOT_MAX_DECODE_PIXELS`, refused before a pixel is decoded."""
+
+
+def _open_bounded(Image, src: str):
+    """`Image.open(src)` + `load()`, bounded: returns `(img, (w, h))`, the size
+    being the SOURCE's, before any draft.
+
+    `draft()` first: for a JPEG it asks libjpeg to decode at 1/2, 1/4 or 1/8
+    scale (DCT scaling, nearly free), toward twice the fitted size, which is
+    the target and reducing gap `Image.thumbnail` itself picks on an unloaded
+    image, so the LANCZOS pass after it still has headroom. Every other format
+    ignores it. Then the pixel ceiling on what will actually be decoded.
+    Mirrored in the other ladder (test_image_convert_parity pins the bytes)."""
+    img = Image.open(src)
+    source = img.size
+    w, h = source
+    if w and h and max(w, h) > SHOT_PNG_EDGE:
+        r = SHOT_PNG_EDGE / max(w, h)
+        try:
+            img.draft(None, (max(1, round(w * r)) * 2, max(1, round(h * r)) * 2))
+        except Exception:
+            pass
+    dw, dh = img.size
+    if dw * dh > SHOT_MAX_DECODE_PIXELS:
+        raise _TooLarge("%dx%d is too large to convert" % (w, h))
+    img.load()
+    return img, source
 
 
 def _image_to_png(path: str) -> dict:
@@ -1291,16 +1339,23 @@ def _image_to_png(path: str) -> dict:
         tmp = None
         try:
             try:
-                img = Image.open(path)
-                img.load()
+                img, source = _open_bounded(Image, path)
+            except _TooLarge as big:
+                return {"error": str(big)}
+            except Image.DecompressionBombError as big:
+                # Over twice Pillow's own limit: refused at open. Not a format
+                # problem, so the OS decoder below would only make a bigger file.
+                return {"error": str(big)}
             except Exception as first:
                 # HEIC without pillow-heif lands here, which is the common case
                 # rather than the exotic one — hence the OS decoder below.
                 tmp = _sips_to_png(path)
                 if tmp is None:
                     return {"error": "could not decode: %s" % first}
-                img = Image.open(tmp)
-                img.load()
+                try:
+                    img, source = _open_bounded(Image, tmp)
+                except (_TooLarge, Image.DecompressionBombError) as big:
+                    return {"error": str(big)}
             # A multi-frame TIFF (a fax, a scanned stack) or an animated GIF has
             # one frame the user means by "the picture", and it is the first.
             try:
@@ -1308,7 +1363,7 @@ def _image_to_png(path: str) -> dict:
                     img.seek(0)
             except Exception:
                 pass
-            source_w, source_h = img.size
+            source_w, source_h = source
             if not source_w or not source_h:
                 return {"error": "the picture has no pixels"}
             # Alpha is kept where it exists (a diagram with a transparent
@@ -2298,6 +2353,23 @@ _DETACH = (
     if os.name == "nt" else {"start_new_session": True}
 )
 
+# How `_start` launches the session host FROM THE SERVER PROCESS. `_DETACH`
+# above is for the CLI spawn inside session_host.py (its own process, where a
+# fork is harmless, and `_cancel`'s killpg needs the CLI as a group leader).
+# The server itself must never fork: libproj is resident with a live proj.db
+# SQLite handle, and fork() runs PROJ's pthread_atfork child handler, which
+# closes that handle and SIGSEGVs the child before exec (test_worker_forksafe,
+# claude_spawn's old SESSION_HELPER note). CPython reaches posix_spawn only
+# with close_fds=False, cwd=None, no start_new_session, no preexec_fn and an
+# absolute argv[0] — exactly these kwargs. The host then detaches ITSELF with
+# os.setsid() as its first act, so it still outlives a server restart and
+# never shares the server's session. Windows has no fork; the detach flags
+# stay.
+_HOST_SPAWN = (
+    {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    if os.name == "nt" else {"close_fds": False}
+)
+
 
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
@@ -2761,13 +2833,31 @@ def _start(file: str, message: str, session_id: str, model: str,
             [sys.executable, _SESSION_HOST],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=host_err, env=_spawn_env(),
-            **_DETACH)
+            **_HOST_SPAWN)
     finally:
         os.close(host_err)
+    # The host is now a child of THIS (long-lived) process rather than of a
+    # 60 s executor subprocess that exited and left it to init. Nobody else
+    # waits on it, so without a waiter every finished host would sit as a
+    # zombie until the server exits. One daemon thread per host, parked in
+    # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
+    # the request is written (D1310): a host that dies before reading stdin
+    # makes that write raise, and a reaper started after it would never run.
+    threading.Thread(target=proc.wait, name=f"claude-host-wait-{run_id}",
+                     daemon=True).start()
     try:
         proc.stdin.write(json.dumps(req).encode("utf-8"))
+    except (BrokenPipeError, OSError) as exc:
+        # The host is already gone (an import error, a signal) — there is no
+        # session and never will be. Answer the way every other refusal here
+        # does, an `{"error"}` the composer shows, not an exception the router
+        # would turn into a 500.
+        return {"error": f"the chat's session host exited before it started: {exc}"}
     finally:
-        proc.stdin.close()
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
     # WHAT THIS CHAT RUNS WITH — the app's own answer to "which model is this
     # conversation on?", which every surface reads first (`_defaults`). Here
     # rather than only in the composer because this is the one point every send
@@ -2867,13 +2957,19 @@ def _commit_turn(file: str, message: str) -> None:
     subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
         if subject else "Claude turn"
 
+    # ABSOLUTE argv[0] or nothing: close_fds=False alone does NOT reach
+    # posix_spawn — CPython forks unless os.path.dirname(executable) is truthy,
+    # and a fork with libproj resident dies with SIGSEGV before exec (rc -11,
+    # silently; D1310). So no git on PATH is the no-git case — skip the sweep —
+    # never a bare "git" that would take the fork path.
+    import shutil
+    git_bin = shutil.which("git")
+    if not git_bin or not os.path.isabs(git_bin):
+        return
+
     def git(*args):
-        # ABSOLUTE argv[0]: close_fds=False alone does NOT reach posix_spawn —
-        # CPython forks unless os.path.dirname(executable) is truthy, and a fork
-        # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
-        import shutil
         return subprocess.run(
-            [shutil.which("git") or "git", "-C", repo_dir, "-c", "user.name=Fused",
+            [git_bin, "-C", repo_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
@@ -3596,15 +3692,20 @@ _echo_cache: dict = {}
 # run_dir -> the newest `inbox/done/` name PROVEN fully echoed. Once that is the
 # newest name there is, nothing is waiting and nothing needs reading at all.
 _echoed_done: dict = {}
+# One module instance now serves every poller in the server (two windows on one
+# run poll concurrently on pool threads), so the two dicts are guarded. The
+# values are immutable tuples; the lock covers the dict operations only.
+_ECHO_LOCK = threading.Lock()
 
 
 def _remember_capped(cache: dict, key: str, value) -> None:
     """Store, with a ceiling: a full cache is emptied rather than aged, because
     the entry worth keeping is the run being polled right now and it is about to
     be written again."""
-    if len(cache) >= _ECHO_CACHE_MAX and key not in cache:
-        cache.clear()
-    cache[key] = value
+    with _ECHO_LOCK:
+        if len(cache) >= _ECHO_CACHE_MAX and key not in cache:
+            cache.clear()
+        cache[key] = value
 
 
 def _echo_texts(run_dir: str) -> tuple:
@@ -6825,7 +6926,19 @@ def _kill_tree(run_dir: str) -> None:
                        creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         try:
-            os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
+            os.killpg(pid, signal.SIGTERM)  # the CLI's setsid -> pid is pgid
+        except ProcessLookupError:
+            # No group by that id: the pid file still names the HOST (the CLI
+            # has not spawned to overwrite it), and the host has not reached
+            # its own setsid() yet, so it is no group's leader (D1310 — it is
+            # spawned posix_spawn-style into the server's group and detaches
+            # itself). Signal the process instead; the host also checks the
+            # `cancelled` marker `_cancel` wrote first, for the case where
+            # even this lands too early.
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
         except OSError:
             pass
 

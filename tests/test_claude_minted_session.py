@@ -24,14 +24,14 @@ import re
 
 import pytest
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
+AGENT_DIR = os.path.join("fused_render", "claude_agent")
 
 _UUID4 = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 
 def _load(name):
-    path = os.path.join(TEMPLATE_DIR, name + ".py")
+    path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("claude_mint_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -53,6 +53,10 @@ class _HostProc:
     the same `_claude_argv` call `session_host.main()` makes."""
 
     pid = 4242
+
+    def wait(self, timeout=None):
+        # `_start` parks a daemon reaper thread in wait() on the host.
+        return 0
 
     class _Stdin:
         def __init__(self, seen):

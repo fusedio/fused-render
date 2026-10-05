@@ -26,7 +26,7 @@ let answer: Artifact[] = [];
 /** Set to make the read REJECT — the index is the one call that leaves the
  *  machine, so a failure is ordinary rather than exceptional. */
 let reject: Error | null = null;
-const read = (_dir: string, file: string | null) => {
+const read = (file: string | null) => {
   reads.push(file ?? "");
   return reject ? Promise.reject(reject) : Promise.resolve(answer);
 };
@@ -44,7 +44,7 @@ async function mount(file: string | null) {
   let out: Artifact[] | null = null;
   const seen: Array<Artifact[] | null> = [];
   function Probe() {
-    out = useArtifacts("/tpl", file, read as never);
+    out = useArtifacts(file, read as never);
     seen.push(out);
     return null;
   }

@@ -17,7 +17,7 @@
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChatMount, canvasChatSrc } from "@apps/claude";
+import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -320,27 +320,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     };
   }, [dragging]);
 
-  // Right pane: the Claude chat over the local clone, framed DIRECTLY via
-  // /render — the same construction the explorer sidebar uses (Preview.tsx
-  // sideSrcFor) and for the same reason `chat_only=1` rides along: the
-  // template's own left preview would be a second canvas beside the live
-  // workbench. Direct rather than through /explorer/embed because the
-  // annotate-target contract is parent-scoped: the template looks for
-  // `data-fused-annotate-target` in `window.parent.document`, and only a
-  // sibling iframe (the workbench, marked below) satisfies that — one frame
-  // deeper and the mark is invisible to it.
-  //
-  // The `run` param does NOT ride this src: the template reads it through
-  // fused.params, i.e. off THIS page's URL (it sets no param boundary), so a
-  // fix run is handed over by writing `run` there — see the effect below.
-  // The URL shape lives in `apps/claude/legacy-src.ts` with the other five and
-  // the byte-for-byte parity test that pins all six.
-  const editorSrc = dir && chatTpl ? canvasChatSrc(chatTpl, dir) : null;
+  // Right pane: the Claude chat over the local clone, chat-only — the chat's
+  // own left preview would be a second canvas beside the live workbench. Shown
+  // once the clone exists and the registry says a chat serves it.
+  const chatHere = !!(dir && chatTpl);
 
-  // Hand a fresh fix run to the chat: `run` goes on this page's own URL (where
-  // fused.params reads it — the template adopts the session and then clears
-  // the param itself), and the iframe's key remount below makes the template
-  // boot and see it.
+  // Hand a fresh fix run to the chat: `run` goes on this page's own URL (the
+  // chat's "url" params store reads it — the chat adopts the session and then
+  // clears the param itself), and the key remount below makes the chat boot
+  // and see it.
   useEffect(() => {
     if (!fixRunId) return;
     const url = new URL(window.location.href);
@@ -540,42 +528,22 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             pointerEvents: dragging ? "none" : "auto",
           }}
         >
-          {editorSrc && dir ? (
+          {chatHere && dir ? (
             // key forces a REMOUNT when a fix run starts: the run id is read at
             // BOOT (the chat adopts the session and clears the param), so an
             // already-running chat has to be rebooted to see it — the "have to
             // reload the page to see the fix session" bug.
             //
-            // NO PARAM BOUNDARY here, flag on or off: `run` and `session_id`
-            // live on the `/canvases/<name>` URL, which is why `paramsSource` is
-            // "url" and why the effect above writes `run` there. It is also
-            // handed over directly as `runId`, so the native mount does not
-            // depend on that write having landed first.
+            // `run` and `session_id` live on the `/canvases/<name>` URL, which is
+            // why `paramsSource` is "url" and why the effect above writes `run`
+            // there. It is also handed over directly as `runId`, so the mount
+            // does not depend on that write having landed first.
             //
-            // The annotate target is the SIBLING workbench iframe, which the
-            // template used to find through `window.parent.document`; natively
-            // the host hands the element over. The mark stays on that iframe for
-            // PR3 to read (below).
+            // The annotate target is the SIBLING workbench iframe; the host
+            // hands the element over. The mark stays on that iframe for PR3 to
+            // read (below).
             <ChatMount
               key={fixRunId ?? "chat"}
-              legacySrc={editorSrc}
-              legacy={
-                <iframe
-                  src={editorSrc}
-                  /* The chat's tab-capture screenshots (template annXO branch,
-                     D355) call getDisplayMedia from inside this frame, and
-                     display capture is gated by Permissions Policy — whether a
-                     same-origin iframe inherits it without an explicit allow
-                     varies by browser, so it is granted here rather than hoped
-                     for. Handed over as the flag-off element precisely BECAUSE
-                     of attributes like this one: rebuilding them from props
-                     would be a worse guarantee than the node itself. */
-                  allow="display-capture"
-                  title={`Edit: ${name}`}
-                  style={{ width: "100%", height: "100%", border: 0 }}
-                />
-              }
-              title={`Edit: ${name}`}
               file={dir}
               chatOnly
               paramsSource="url"

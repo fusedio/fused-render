@@ -34,12 +34,12 @@ from fastapi.testclient import TestClient
 from fused_render import project_queue, queue_manager, tasks_store, tasks_watch
 from fused_render.server import create_app
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
+AGENT_DIR = os.path.join("fused_render", "claude_agent")
 HEADERS = {"X-Fused": "1"}
 
 
 def _load(name):
-    path = os.path.join(TEMPLATE_DIR, name + ".py")
+    path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("queue_events_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

@@ -32,11 +32,11 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="claude session host doe
 
 from _claude_stub_cli import write_stub_cli
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
+AGENT_DIR = os.path.join("fused_render", "claude_agent")
 
 
 def _load_agent():
-    path = os.path.join(TEMPLATE_DIR, "agent.py")
+    path = os.path.join(AGENT_DIR, "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -53,7 +53,7 @@ def agent(tmp_path, monkeypatch):
 
 
 def _load_host():
-    path = os.path.join(TEMPLATE_DIR, "session_host.py")
+    path = os.path.join(AGENT_DIR, "session_host.py")
     spec = importlib.util.spec_from_file_location("claude_session_host", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -350,6 +350,10 @@ def test_start_never_clobbers_a_pid_the_host_already_wrote(agent, monkeypatch,
 
     class _FakeProc:
         pid = 424242  # the HOST's own pid, distinct from the "CLI" pid below
+
+        def wait(self, timeout=None):
+            # `_start` parks a daemon reaper thread in wait() on the host.
+            return 0
         stdin = _FakeStdin()
 
     def fake_popen(cmd, **kwargs):

@@ -32,7 +32,6 @@ export interface SnapRowProps {
   version: SnapshotVersion;
   /** The whole timeline, for `position` — which row is what is on disk now. */
   timeline: SnapshotsTimeline;
-  agentDir: string;
   file: string;
   open: boolean;
   onToggle(): void;
@@ -45,7 +44,6 @@ export interface SnapRowProps {
 export function SnapRow({
   version,
   timeline,
-  agentDir,
   file,
   open,
   onToggle,
@@ -102,7 +100,6 @@ export function SnapRow({
       {open ? (
         <SnapBody
           version={version}
-          agentDir={agentDir}
           file={file}
           onReverted={onReverted}
         />
@@ -113,12 +110,10 @@ export function SnapRow({
 
 function SnapBody({
   version,
-  agentDir,
   file,
   onReverted,
 }: {
   version: SnapshotVersion;
-  agentDir: string;
   file: string;
   onReverted(timeline: SnapshotsTimeline | null, note: string): void;
 }) {
@@ -131,7 +126,7 @@ function SnapBody({
     setReading(true);
     setPlan(null);
     setError("");
-    void snapshotPlan(agentDir, file, version.id)
+    void snapshotPlan(file, version.id)
       .then((out) => {
         if (!live) return;
         setReading(false);
@@ -151,7 +146,7 @@ function SnapBody({
     return () => {
       live = false;
     };
-  }, [agentDir, file, version.id]);
+  }, [file, version.id]);
 
   return (
     <div className="c-snap-body">
@@ -168,7 +163,6 @@ function SnapBody({
           <SnapDiff plan={plan} />
           <SnapAction
             plan={plan}
-            agentDir={agentDir}
             file={file}
             onReverted={onReverted}
           />
@@ -226,12 +220,10 @@ function diffClass(ln: string): string {
  *  write destroys the only copy (T:18964-19000). */
 function SnapAction({
   plan,
-  agentDir,
   file,
   onReverted,
 }: {
   plan: SnapshotPlanOk;
-  agentDir: string;
   file: string;
   onReverted(timeline: SnapshotsTimeline | null, note: string): void;
 }) {
@@ -251,7 +243,7 @@ function SnapAction({
     setBusy(true);
     setError("");
     try {
-      const out = await snapshotRevert(agentDir, file, plan);
+      const out = await snapshotRevert(file, plan);
       if ("error" in out && out.error) throw new Error(out.error);
       const ok = "ok" in out && out.ok ? out : null;
       onReverted(

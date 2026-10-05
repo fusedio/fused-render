@@ -236,7 +236,7 @@ def _claude_seconds(data: dict) -> float | None:
 # owns the union now, and this name stays as the module-local alias every
 # function and test below already reads.
 #
-# The claude chat template (templates/claude/agent.py) still keeps its own copy.
+# The claude chat template (claude_agent/agent.py) still keeps its own copy.
 # That is deliberate duplication, not a missing import: a template is standalone
 # user-forkable code and may not import the app (D166). It is pinned to this
 # list by tests/test_claude_health.py rather than left to drift.

@@ -148,12 +148,20 @@ export interface StatResult {
 // `error` string, else `HTTP <status>`), so callers that only read `.message`
 // are unaffected; the extra `.status` lets client-side humanizers (lib/
 // fs-actions friendlyFsError) branch on e.g. 404 without re-parsing the text.
+//
+// `.body` is the parsed response itself, for the caller whose server sends a
+// STRUCTURED error — `/api/claude/agent`'s 500/504 `{error: {type, message,
+// traceback}}` (apps/claude/protocol/agent.ts). An object `error` would
+// otherwise reach `.message` as "[object Object]" with its fields gone.
 export interface HttpError extends Error {
   status?: number;
+  body?: unknown;
 }
-function httpError(data: { error?: string } | null, status: number): HttpError {
-  const err = new Error((data && data.error) || `HTTP ${status}`) as HttpError;
+function httpError(data: { error?: unknown } | null, status: number): HttpError {
+  const said = data && typeof data.error === "string" ? data.error : "";
+  const err = new Error(said || `HTTP ${status}`) as HttpError;
   err.status = status;
+  err.body = data;
   return err;
 }
 
@@ -1077,13 +1085,9 @@ export interface RunAttribution {
   target?: string | null;
   /** `X-Fused-Call`: this call's correlation id. */
   callId?: string;
-  /** `X-Fused-Supersedes`: comma-separated ids this call abandoned to be made.
-   *  Rides the SUPERSEDING request, because that leaves in the same task as the
-   *  abort — so the mark lands before the abandoned call's record is written. */
-  supersedes?: string;
 }
 
-/** The four headers, built from an attribution. Exported for the test that pins
+/** The three headers, built from an attribution. Exported for the test that pins
  *  the exact set — the names are a contract with `calls.py`, which reads them
  *  lower-cased. */
 export function runHeaders(attr: RunAttribution | undefined): Record<string, string> {
@@ -1091,7 +1095,6 @@ export function runHeaders(attr: RunAttribution | undefined): Record<string, str
   const out: Record<string, string> = { "X-Fused-Page": encodeURIComponent(attr.page) };
   if (attr.target) out["X-Fused-Target"] = encodeURIComponent(attr.target);
   if (attr.callId) out["X-Fused-Call"] = attr.callId;
-  if (attr.supersedes) out["X-Fused-Supersedes"] = attr.supersedes;
   return out;
 }
 
@@ -1265,18 +1268,6 @@ export interface Prefs {
   // an older server answers without it, and the reader (monitor-flag.ts)
   // treats absence as off.
   monitor?: { enabled: boolean };
-  // Whether chat embeds render the native React chat (default ON) instead of the
-  // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
-  // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
-  // switch cannot win then, so the UI disables itself and says so
-  // (shell/prefs.py `native_chat_enabled`, same shape as `engine.forced_by`).
-  //
-  // OPTIONAL, because the readers treat it as optional: `feature-flag.ts` reads
-  // `p.chat?.native`, and an older server (or a test fixture built before this
-  // field existed) answers without it. A required field here would only make
-  // every `Prefs` literal in the suites over-constrained while the runtime read
-  // stayed defensive anyway.
-  chat?: { native: boolean; forced_by?: string | null };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1587,10 +1578,6 @@ export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
-}
-
-export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal

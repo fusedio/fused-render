@@ -153,7 +153,6 @@ export type TroubleKind =
    *  template draws real copy for (T:13548 TROUBLE_SAID.limit). Renders through
    *  `platform/ui/TroubleCard.tsx` like `login` / `cli-missing`. */
   | "limit"
-  | "needs-install"
   | "engine"
   | "unknown-run"
   | "network"
@@ -584,7 +583,6 @@ export interface ChatController {
 /** Deps the controller needs from its host; keeps it testable without DOM. */
 export interface ControllerDeps {
   file: string | null;
-  agentDir: string;
   params: import("../params/store").ParamsStore;
   /** For the working-line clock and tests. MONOTONIC as far as this file is
    *  concerned: every reader of it measures a DURATION (elapsed run time, a
@@ -610,8 +608,8 @@ export interface ControllerDeps {
   run?: typeof import("./agent").runAgent;
   /** ADDED (owner E2E R1, F5): the transcript restore, as its own road. The
    *  host passes `protocol/history.ts`'s `fetchHistory` — the in-process
-   *  `/api/claude-sessions/history` route, with `/api/run` behind it — so a
-   *  chat opens without waiting on a Python subprocess. Absent (tests), the
+   *  `/api/claude-sessions/history` route — so a chat opens without waiting
+   *  on the agent pool. Absent (tests), the
    *  loop asks `run("history")` as before. */
   history?: (
     file: string,
