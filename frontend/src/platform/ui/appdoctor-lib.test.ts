@@ -28,6 +28,7 @@ const lib = await import("./appdoctor-lib");
 const {
   effectiveSeverity,
   failingCount,
+  fixButtonLabel,
   findingWhere,
   gitRowFetchPending,
   groupBySection,
@@ -469,4 +470,14 @@ test("gitRowFetchPending is true only when a real repo's remote count has not la
   expect(gitRowFetchPending([check("git", "skip", { gitRoot: null })])).toBe(false);
   // No git row in the report at all (should never happen, but must not throw).
   expect(gitRowFetchPending([check("readme", "pass")])).toBe(false);
+});
+
+test("the fix button counts issues without info rows, and calls an info-only report suggestions", () => {
+  const info = check("i", "fail", { severity: "info" });
+  const warn = check("w", "fail", { severity: "warning" });
+  expect(fixButtonLabel([warn, info, check("p", "pass")])).toBe("Fix 1 issue");
+  expect(fixButtonLabel([warn, warn, info])).toBe("Fix 2 issues");
+  expect(fixButtonLabel([info])).toBe("Fix 1 suggestion");
+  expect(fixButtonLabel([info, info])).toBe("Fix 2 suggestions");
+  expect(fixButtonLabel([check("p", "pass")])).toBe("Nothing to fix");
 });

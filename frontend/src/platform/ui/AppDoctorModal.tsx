@@ -114,7 +114,7 @@ import {
   gitRowFetchPending,
   groupBySection,
   rowActionLabel,
-  failingCount,
+  fixButtonLabel,
   readinessCount,
   readinessSentence,
   reviewNote,
@@ -922,10 +922,8 @@ function AppDoctorFixAllButton({ report, busy, liveTask, checkLive, fixAll, foll
     >
       {busy
         ? "Creating task…"
-        : report && failingCount(report.checks) > 0
-          ? "Fix " +
-            failingCount(report.checks) +
-            (failingCount(report.checks) === 1 ? " issue" : " issues")
+        : report
+          ? fixButtonLabel(report.checks)
           : "Nothing to fix"}
     </Button>
   );

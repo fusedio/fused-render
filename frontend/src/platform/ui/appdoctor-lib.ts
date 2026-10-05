@@ -306,6 +306,18 @@ export function failingCount(checks: AppCheck[]): number {
   return checks.filter((c) => c.state === "fail").length;
 }
 
+/** The footer button's label. Info rows are suggestions, not issues (the
+ *  header dot and `severityDotLabel` agree): the count excludes them, and a
+ *  report whose only failing rows are info reads "Fix N suggestion(s)". */
+export function fixButtonLabel(checks: AppCheck[]): string {
+  const failing = checks.filter((c) => c.state === "fail");
+  if (failing.length === 0) return "Nothing to fix";
+  const issues = failing.filter((c) => effectiveSeverity(c) !== "info").length;
+  if (issues > 0) return `Fix ${issues} ${issues === 1 ? "issue" : "issues"}`;
+  const n = failing.length;
+  return `Fix ${n} ${n === 1 ? "suggestion" : "suggestions"}`;
+}
+
 // --------------------------------------------------------------- git row
 
 /** The consolidated `git` row draws up to THREE simultaneous actions
