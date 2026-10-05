@@ -73,6 +73,9 @@ export interface TurnProps {
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
   cwd?: string | null;
+  /** The user turn's stamp this reply answers (epoch seconds), for the `show
+   *  more` hover's "Worked for" — threaded to `SegmentView`. */
+  startedAt?: number | null;
 }
 
 /** MEMOIZED. Every 400 ms poll replaces `state.turns`, but a SETTLED turn's own
@@ -94,6 +97,7 @@ export const Turn = memo(function Turn({
   pendingCard,
   onPullPending,
   cwd,
+  startedAt = null,
 }: TurnProps) {
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
@@ -352,6 +356,7 @@ export const Turn = memo(function Turn({
               cardsAfter={cardsAfter ?? null}
               live={!!turn.streaming}
               cwd={cwd}
+              startedAt={startedAt}
             >
               {children}
             </SegmentView>

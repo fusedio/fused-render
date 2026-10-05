@@ -1641,6 +1641,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
               text: "",
               streaming: true,
               followup: slot,
+              // The LAST slice is the one this poll's echo opened; an earlier
+              // slice in the same window was opened by an older echo the
+              // payload no longer names, and reads its user row instead.
+              ...(j === breaks.length && typeof poll.turn_ts === "number" && poll.turn_ts > 0
+                ? { startedAt: poll.turn_ts }
+                : {}),
             });
           }
           // A REPLY THE PAYLOAD HAS CLOSED OFF WITH A SEAM IS FINISHED, and

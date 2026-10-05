@@ -220,11 +220,24 @@ export interface AgentRequests {
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
 
-export interface TextSegment {
+/** WHEN a segment began — the transcript row's `timestamp` as epoch SECONDS
+ *  (agent.py `_row_ts`). Absent where the row carried no clock: the live
+ *  stream's delta rows never do, the persisted transcript always does. The
+ *  page turns a run's stamps into "Worked for 2m 10s · 3m ago" on `show more`
+ *  (ui/run-when.ts). */
+export interface SegmentClock {
+  ts?: number;
+  /** WHEN it ended (epoch seconds): a tool's `tool_result` row, or the
+   *  finalized row that closes a streamed text (agent.py). With `ts`, how
+   *  long it ran; the LAST `ended` in a reply is where the turn's "Worked
+   *  for" is measured to. Absent while running or where the row had no clock. */
+  ended?: number;
+}
+export interface TextSegment extends SegmentClock {
   kind: "text";
   text: string;
 }
-export interface ThinkingSegment {
+export interface ThinkingSegment extends SegmentClock {
   kind: "thinking";
   /** Never all-whitespace — those are dropped (agent.py:3486-3487). */
   text: string;
@@ -235,7 +248,7 @@ export interface ToolImage {
   /** base64 (agent.py:3207-3208). */
   data: string;
 }
-export interface ToolSegment {
+export interface ToolSegment extends SegmentClock {
   kind: "tool";
   /** tool_use id, "" when the block had none. */
   id: string;
@@ -247,7 +260,7 @@ export interface ToolSegment {
   output: string | null;
   images: ToolImage[];
 }
-export interface NoticeSegment {
+export interface NoticeSegment extends SegmentClock {
   kind: "notice";
   text: string;
   /** From the row, may be "". */
@@ -511,6 +524,14 @@ export interface PollResponse {
    * loop falls back to treating the payload as one turn.
    */
   turn_breaks?: TurnBreak[];
+  /**
+   * WHEN THE CLI OPENED THE REPLY this payload is answering — the last echoed
+   * user row's stamp, epoch seconds (agent.py `_turn_ts`). The `show more`
+   * hover measures "Worked for" from it, so a live turn and the same turn
+   * restored from the transcript say the same number. Null while the echo is
+   * outstanding; absent from an older agent.py.
+   */
+  turn_ts?: number | null;
   /**
    * FOLLOW-UPS THE LIVE RUN HAS TAKEN AND THE MODEL HAS NOT ANSWERED YET —
    * the CLI's undrained inbox, in the order they were typed (agent.py `_poll`).

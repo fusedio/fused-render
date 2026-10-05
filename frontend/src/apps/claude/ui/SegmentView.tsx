@@ -23,6 +23,7 @@ import { cardKey, runKey, useCardOpens } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
 import { NoticeView } from "./NoticeView";
 import { RunTrigger } from "./RunTrigger";
+import { runWhenWords } from "./run-when";
 import { ThinkingView } from "./ThinkingView";
 import { ToolChip } from "./ToolChip";
 
@@ -63,6 +64,10 @@ export interface SegmentViewProps {
   /** The chat's working directory, threaded down to `MarkdownView`/`ToolChip`
    *  so a shell fence's or a Bash chip's "run" button `cd`'s there first. */
   cwd?: string | null;
+  /** WHEN THE USER'S MESSAGE WENT (epoch seconds) — the turn this reply
+   *  answers, for the `show more` hover's "Worked for" (ui/run-when.ts):
+   *  Claude's figure runs from the message to the end of the reply. */
+  startedAt?: number | null;
 }
 
 /** MEMOIZED for the same reason `Turn` is, and this is where it pays: a settled
@@ -76,6 +81,7 @@ export const SegmentView = memo(function SegmentView({
   cardsAfter,
   live = false,
   cwd,
+  startedAt = null,
 }: SegmentViewProps) {
   const seqRef = useRef<number | null>(null);
   if (seqRef.current === null) seqRef.current = ++segSeq;
@@ -134,6 +140,12 @@ export const SegmentView = memo(function SegmentView({
     }
     return keys;
   }, [rows, seats, seq]);
+  // HOW LONG THE TURN TOOK (ui/run-when.ts): every trigger in this reply
+  // wears the same words, because the number is the turn's — the user's
+  // message to the end of the reply, Claude's own figure — not one run's.
+  // A settled turn's segment array is the same object across polls, so this
+  // is one pass per change.
+  const when = useMemo(() => runWhenWords(segments, startedAt), [segments, startedAt]);
   const nodes: React.ReactNode[] = [];
   rows.forEach((row, r) => {
     if (isRun(row)) {
@@ -146,7 +158,7 @@ export const SegmentView = memo(function SegmentView({
       if (bare.has(r))
         nodes.push(
           <div key={"bare:" + key} className="seg-block is-bare has-trigger">
-            <RunTrigger open={isRunOpen(key)} onToggle={() => toggleRun(key)} />
+            <RunTrigger open={isRunOpen(key)} onToggle={() => toggleRun(key)} when={when} />
           </div>,
         );
       if (!isRunOpen(key)) return;
@@ -194,7 +206,7 @@ export const SegmentView = memo(function SegmentView({
     const held = seats.get(r);
     const seated = held ? (runKeys.get(held[0]!) ?? null) : null;
     const trigger = seated ? (
-      <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} />
+      <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} when={when} />
     ) : null;
     // A LEADING run — one seated here from ABOVE (its row is before this one)
     // — sits on the FIRST SENTENCE of this prose, not its last line (Akshil,

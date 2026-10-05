@@ -4295,7 +4295,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
     def tail(kind):
         return segments[-1] if segments and segments[-1]["kind"] == kind else None
 
-    def grow(kind, chunk, separator=""):
+    def grow(kind, chunk, separator="", ts=None):
         """Append `chunk` to the trailing `kind` segment, opening one if the
         tail is something else.
 
@@ -4319,13 +4319,23 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         hard_break = False
         if seg is None:
             seg = {"kind": kind, "text": []}
+            # WHEN IT BEGAN (`ts`, epoch seconds), off the row that opened it —
+            # the persisted transcript stamps every row, the live stream only
+            # the finalized ones, so the key is simply absent where there is
+            # no clock. The page turns a run's stamps into "14:02 · 3m ago ·
+            # took 2m 10s" on the `show more` word (Akshil, 2026-10-04: "I am
+            # trying to get a sense of how long the job took").
+            if ts is not None:
+                seg["ts"] = ts
             segments.append(seg)
         if separator:
             seg["text"].append(separator)
         seg["text"].append(chunk)
 
-    def settle(seg, payload):
+    def settle(seg, payload, ended=None):
         seg["status"], seg["output"], seg["images"] = payload
+        if ended is not None:
+            seg["ended"] = ended
 
     for row in rows:
         if not isinstance(row, dict):
@@ -4344,7 +4354,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 delta = ev.get("delta") or {}
                 if delta.get("type") == "text_delta":
                     grow("text", str(delta.get("text", "")),
-                         "\n\n" if pending_sep else "")
+                         "\n\n" if pending_sep else "", _row_ts(row))
                     any_text, pending_sep = True, False
                 elif delta.get("type") == "thinking_delta":
                     # Only a chunk that actually carries text opens a segment:
@@ -4355,7 +4365,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                     # unfolded to nothing at all.
                     chunk = _thinking_delta_text(row)
                     if chunk:
-                        grow("thinking", chunk)
+                        grow("thinking", chunk, ts=_row_ts(row))
             elif et == "message_stop":
                 # A tool-using turn is several assistant messages; without a
                 # break their texts concatenate mid-word ("orange.After").
@@ -4373,17 +4383,31 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                         continue
                     chunk = str(block.get("thinking") or "")
                     if chunk.strip():
-                        grow("thinking", chunk)
+                        grow("thinking", chunk, ts=_row_ts(row))
             # Text blocks next, joined the way `_history` joins them, so a
             # restored turn's `text` and its segments say the same thing. Safe
             # against block order because a real message is text-then-tools.
+            has_text = any(isinstance(b, dict) and b.get("type") == "text"
+                           and str(b.get("text") or "").strip() for b in content)
             if not streamed:
                 whole = "\n".join(b.get("text", "") for b in content
                                   if isinstance(b, dict) and b.get("type") == "text")
                 if whole.strip():
                     grow("text", whole,
-                         "\n\n" if any_text and tail("text") is not None else "")
+                         "\n\n" if any_text and tail("text") is not None else "",
+                         _row_ts(row))
                     any_text = True
+            elif has_text and tail("text") is not None:
+                # WHEN THE STREAMED TEXT FINISHED (`ended`). The deltas that
+                # built this segment carry no clock; the finalized row that
+                # repeats them is written when the message completes, so its
+                # stamp is the segment's end — the one the page measures a
+                # turn's "Worked for" to (ui/run-when.ts). Checked against
+                # the CLI's own `duration_ms` on real runs (2026-10-05): user
+                # row → last stamped row agrees to well under a second.
+                ended = _row_ts(row)
+                if ended is not None:
+                    tail("text")["ended"] = ended
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
@@ -4428,11 +4452,14 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 seg = {"kind": "tool", "id": tool_id, "name": name,
                        "input": tool_input if isinstance(tool_input, dict) else {},
                        "status": "running", "output": None, "images": []}
+                ts = _row_ts(row)
+                if ts is not None:
+                    seg["ts"] = ts
                 segments.append(seg)
                 if tool_id:
                     by_tool_id[tool_id] = seg
                     if tool_id in orphans:
-                        settle(seg, orphans.pop(tool_id))
+                        settle(seg, *orphans.pop(tool_id))
         elif t == "system" and row.get("subtype") == "task_notification":
             # The harness waking the run because a background shell it started
             # has finished or been stopped (D415). It is not the model speaking
@@ -4448,13 +4475,19 @@ def _segments_from_rows(rows: list, shape: tuple = (),
             # so a restored conversation and a streaming one show the same chip.
             note = str(row.get("summary") or "").strip()
             if note:
-                segments.append({"kind": "notice", "text": [note],
-                                 "status": str(row.get("status") or "")})
+                seg = {"kind": "notice", "text": [note],
+                       "status": str(row.get("status") or "")}
+                if _row_ts(row) is not None:
+                    seg["ts"] = _row_ts(row)
+                segments.append(seg)
         elif t == "user" and isinstance(content, str):
             note = _task_notification(content)
             if note:
-                segments.append({"kind": "notice", "text": [note["summary"]],
-                                 "status": note["status"]})
+                seg = {"kind": "notice", "text": [note["summary"]],
+                       "status": note["status"]}
+                if _row_ts(row) is not None:
+                    seg["ts"] = _row_ts(row)
+                segments.append(seg)
         elif t == "result" and not row.get("parent_tool_use_id"):
             # See `hard_break`. Nothing is emitted for a `result` row itself.
             hard_break = True
@@ -4468,11 +4501,14 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 output, images = _tool_result_payload(block)
                 payload = ("error" if block.get("is_error") else "ok",
                            output, images)
+                # WHEN IT ANSWERED (`ended`): with `ts` on the call, the pair
+                # is how long the tool ran.
+                ended = _row_ts(row)
                 seg = by_tool_id.get(tool_id)
                 if seg is not None:
-                    settle(seg, payload)
+                    settle(seg, payload, ended)
                 elif tool_id:
-                    orphans[tool_id] = payload
+                    orphans[tool_id] = (payload, ended)
     # Finalize: the parts lists collapse to the plain `text` string the schema
     # promises. Tool segments have no `text` at all and are left alone.
     out = []
@@ -4619,6 +4655,27 @@ def _is_api_error_row(row: dict) -> bool:
     modern CLI. `apiErrorStatus` alone is not enough either — the network cases
     have no status at all."""
     return isinstance(row, dict) and row.get("isApiErrorMessage") is True
+
+
+def _turn_ts(rows: list):
+    """WHEN THE CLI OPENED THE REPLY THIS WINDOW ANSWERS — the stamp of the
+    LAST echoed user row (`_starts_new_turn`) in it, epoch seconds, or None.
+
+    The page's `show more` hover measures "Worked for" from this instant
+    (ui/run-when.ts), the same instant the CLI's own `duration_ms` counts
+    from. The page's optimistic bubble is stamped at the SEND — a few seconds
+    earlier, across the spawn and the hooks — and a hover measured from there
+    said 40 s live and 37 s after a reload for one and the same turn
+    (cmux-ux-tester, 2026-10-05). The LAST echo, because a window that holds
+    several absorbed replies is sliced by the page and only its last slice is
+    still being answered; the earlier ones are settled and read their own
+    user rows once restored."""
+    for row in reversed(rows):
+        if not isinstance(row, dict) or row.get("isSidechain"):
+            continue
+        if _starts_new_turn(row):
+            return _row_ts(row)
+    return None
 
 
 def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
@@ -5596,6 +5653,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # into.
             "turn_breaks": [] if echo_pending
             else _absorbed_turn_breaks(parsed, app_reads),
+            # WHEN THE CLI OPENED THE REPLY (`_turn_ts`): the hover's
+            # "Worked for" starts here, live and restored alike. Null until
+            # the echo lands, which is the same moment the payload stops
+            # being blanked.
+            "turn_ts": None if echo_pending else _turn_ts(parsed),
             # WHERE THIS WINDOW STARTS, as a byte offset into out.jsonl (the
             # cursor `_read_current_turn` settled on). The page keeps one
             # bubble per reply in the window and has to notice when the cursor
