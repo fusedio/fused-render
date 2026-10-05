@@ -1127,9 +1127,10 @@ function TemplatePreview({
   // folder (lib/preview-side's header has the whole argument, and why the old
   // absent-means-closed rule had to go); `_side=off` is how a shut sidebar says so.
   //
-  // Nothing about it is persisted anywhere. It rides the URL, so it survives the
-  // shell's pushState navigation within this file, and a refresh — or an open of a
-  // different file, which starts from a bare URL — lands on the default again.
+  // The request itself is not persisted: it rides the URL. What survives a hop or
+  // a refresh is held by the shared stores — the open/closed flag
+  // (`lib/side-hidden-store`, persisted) and the last selected tab
+  // (`lib/side-tab-store`, memory only) — and applies only where the URL is silent.
   const [sideReq, setSideReq] = useState<SideRequest>(() =>
     parseSide(location.search, getSideHidden())
   );
@@ -1138,12 +1139,12 @@ function TemplatePreview({
   // `_side` — as opposed to an explicit `_side=off`, which needs none of this
   // (see the reconcile effect below). Tracked separately from `sideReq` itself
   // because the reconcile effect must not write this particular closed state
-  // into the URL: the flag is documented memory-only (no storage, cleared by a
-  // refresh), and a `_side=off` written on its behalf would defeat both halves
-  // of that promise — a refresh no longer reopens the panel because the URL,
-  // not just the module variable, now says shut, and a link copied from the
-  // address bar for this file carries a close nobody clicked (exactly what
-  // `platform/lib/session-params.ts` strips `_side` to prevent for recents).
+  // into the URL: the flag lives in the store (persisted across reloads), and a
+  // `_side=off` written on its behalf would make the URL, not just the store,
+  // say shut — a link copied from the address bar for this file would carry a
+  // close nobody clicked (exactly what `platform/lib/session-params.ts` strips
+  // `_side` to prevent for recents), and an explicit `off` could no longer be
+  // told from the stored preference.
   // `parseSide(location.search)` here (hidden defaulted false) is what the URL
   // ALONE would have resolved to; it differs from `sideReq.open` only in this
   // one case, since an explicit `_side` — off or a mode — resolves the same way
