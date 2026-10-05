@@ -29,6 +29,20 @@ def _isolated_store(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _jobs_in_process(monkeypatch):
+    """Pool jobs normally run in a child process (`_run_pool_job`), which would
+    not see this file's `httpx.get`/runner monkeypatches. Run them in-process
+    here; the real-subprocess lifecycle is covered in
+    `test_ai_hub_catalog_child.py`."""
+    def run(cfg, capability, mode, formats, page_counter=None):
+        if mode == "build":
+            return builder.build_capability_pool(cfg, capability)
+        return builder._refresh_delta_inprocess(cfg, capability)
+
+    monkeypatch.setattr(builder, "_run_pool_job", run)
+
+
+@pytest.fixture(autouse=True)
 def _fail_on_leaked_build_threads():
     """Guard against the exact hazard that starved the Windows CI runner:
     a test that calls `ensure_build_started` (a REAL `threading.Thread`, not
