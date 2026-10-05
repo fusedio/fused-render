@@ -1732,6 +1732,11 @@ def _repo_signature(repo_dir: str) -> tuple:
     writes do not touch a directory's mtime. That is a download in flight, whose
     bytes the job row reports live and far better than a cache walk ever could, and
     `_CACHED_MODELS_TTL` is what bounds it.
+
+    Each `snapshots/<commit>/` is in the signature too: a file linked into or
+    removed from a revision bumps THAT directory's mtime and not `snapshots/`,
+    so without it a pruned or newly landed snapshot entry sat behind the TTL —
+    a "downloaded" badge over a revision that had just lost a file.
     """
     out = []
     for name in ("", "blobs", "snapshots", "refs"):
@@ -1739,6 +1744,9 @@ def _repo_signature(repo_dir: str) -> tuple:
             out.append(os.stat(os.path.join(repo_dir, name)).st_mtime_ns)
         except OSError:
             out.append(None)
+    out.append(tuple(sorted(
+        (e.name, _entry_mtime(e))
+        for e in _snapshot_dirs(os.path.join(repo_dir, "snapshots")))))
     return tuple(out)
 
 

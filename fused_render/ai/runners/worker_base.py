@@ -3549,8 +3549,24 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
 #
 # A cache with no record — every machine that already holds models when this ships
 # — takes the networked path exactly as before and gains one on the way out, so the
-# next bring-up is the fast one. No migration step, and no cache is ever served on
-# the strength of a record this app did not write.
+# next bring-up is the fast one. No migration step.
+#
+# **One record this app did NOT write is accepted, and only one: hf's own
+# `trees/<commit>.json`.** huggingface_hub ≥ 1.x caches the repo's FULL tree
+# listing (`list_repo_tree(recursive=True, revision=<commit>)`, fetched before
+# any pattern is applied, so it is never the scoped subset) as a side effect of
+# every `snapshot_download`, and its `_raise_if_incomplete_snapshot` verifies
+# `local_files_only` answers against it. That is the same shape as our record —
+# a list of names the SERVER said exist at that commit, not a list of what
+# happened to land — so it is read under the same two rules: filtered to the
+# scope being asked for, and every selected name present and settled. It
+# closes the gap that put "Download" on the Playground's first Run of a model
+# the badge called downloaded: a repo pulled by `hf`, by faster-whisper's own
+# loader, or by our `snapshot_download` fallback has a tree and no record, and
+# used to re-list at the Hub on every bring-up — a job row reading
+# "Downloading…" over a complete snapshot, or a real re-download when `main`
+# had moved since. A repo with neither (an older hf, a transformers pull) still
+# takes the networked path, as before.
 #
 # **Two further rules the first cut got wrong, both about not doing MORE than
 # looking.** (1) A repo the cache has never held must not reach a hub download
@@ -3935,17 +3951,27 @@ def _has_fetch_record(folder):
     """Whether this repo folder holds ANY fetch record.
 
     Asked BEFORE hf is consulted, so a cache filled before this existed — or by
-    somebody else's tooling — costs one `scandir` and no hub call at all on its way
-    to the networked path. The per-commit lookup still has to happen afterwards;
-    this only avoids asking hf to resolve a snapshot whose completeness nothing
-    here could vouch for anyway.
+    tooling that writes neither — costs two `scandir`s and no hub call at all on
+    its way to the networked path. The per-commit lookup still has to happen
+    afterwards; this only avoids asking hf to resolve a snapshot whose
+    completeness nothing here could vouch for anyway.
+
+    "Any fetch record" is ours OR hf's own tree listing (`trees/<commit>.json`,
+    see the section note above): `_recorded_files` reads both, so the gate in
+    front of it has to admit both or the tree is never consulted.
     """
     prefix = _FETCH_RECORD.split("%s")[0]
     try:
         with os.scandir(folder) as entries:
-            return any(entry.name.startswith(prefix)
-                       and not entry.name.endswith(_RECORD_TEMP)
-                       for entry in entries)
+            if any(entry.name.startswith(prefix)
+                   and not entry.name.endswith(_RECORD_TEMP)
+                   for entry in entries):
+                return True
+    except OSError:
+        return False
+    try:
+        with os.scandir(os.path.join(folder, _TREES_DIR)) as entries:
+            return any(entry.name.endswith(".json") for entry in entries)
     except OSError:
         return False
 
@@ -3958,9 +3984,56 @@ def _recorded_files(folder, commit, allow, ignore):
     the same thing to the caller (take the networked path), and none of them is
     worth a warning: no record is the normal state of every cache filled before
     this existed.
+
+    Two sources, in order: our own `.fused-fetch-<commit>.json`, then hf's
+    `trees/<commit>.json` (`_tree_files`). The tree is tried whenever ours did
+    not answer — absent, OR present for a scope this request cannot be narrowed
+    from — because the tree is always the unscoped whole and so always
+    narrowable. Both end in the same `_all_present` check at the caller, which
+    is what keeps a tree hf wrote before a cancelled fetch from serving half a
+    snapshot.
     """
     if not folder or not commit:
         return None
+    return (_own_record_files(folder, commit, allow, ignore)
+            or _tree_files(folder, commit, allow, ignore))
+
+
+#: hf's own per-commit tree listing lives here, beside `blobs/` and `snapshots/`.
+_TREES_DIR = "trees"
+
+#: The one `format_version` of `trees/<commit>.json` this reads. hf bumps it when
+#: the shape changes; an unknown version is "not knowing", never a guess.
+_TREE_FORMAT_VERSION = 1
+
+
+def _tree_files(folder, commit, allow, ignore):
+    """The names hf's cached tree listing says exist at `commit`, narrowed to
+    this scope, or None.
+
+    `files` in that JSON is `{name: {size, blob_id, …}}` for EVERY file in the
+    repo at that commit — written from `list_repo_tree(recursive=True)` before
+    any pattern is applied — so it is the server's list, filtered here with the
+    same `selects` the fetch itself uses. Never a list of what landed.
+    """
+    try:
+        with open(os.path.join(folder, _TREES_DIR, commit + ".json"),
+                  encoding="utf-8") as handle:
+            tree = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(tree, dict) or tree.get("format_version") != _TREE_FORMAT_VERSION:
+        return None
+    files = tree.get("files")
+    if not isinstance(files, dict) or not files:
+        return None
+    chosen = [name for name in sorted(files)
+              if isinstance(name, str) and selects(name, allow=allow, ignore=ignore)]
+    return chosen or None
+
+
+def _own_record_files(folder, commit, allow, ignore):
+    """`_recorded_files`' first source: this app's own fetch record."""
     try:
         with open(os.path.join(folder, _FETCH_RECORD % commit),
                   encoding="utf-8") as handle:
@@ -4024,8 +4097,9 @@ def _cached_path(model_id, resolve, allow=None, ignore=None):
     The answer is verified against this app's OWN record of what it fetched (see
     the note above this section): the record has to be for the commit hf resolved,
     at the scope being asked for, and every name in it has to be present and
-    settled. A repo with no record is never served, which is what makes "nothing
-    would be downloaded" a fact rather than an inference.
+    settled. A repo with no record — ours or hf's own tree listing, see
+    `_recorded_files` — is never served, which is what makes "nothing would be
+    downloaded" a fact rather than an inference.
 
     The commit comes from the resolved path's own basename — hf's cache puts a
     snapshot at `snapshots/<commit>` — and if that ever stops being true the lookup

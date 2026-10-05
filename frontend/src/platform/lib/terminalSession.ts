@@ -22,6 +22,7 @@
 // WebSocket with no renderer involved. `platform/ui/TerminalView.tsx` is the
 // thin xterm.js wrapper that owns one of these.
 import { mutateJson, postJson } from "@platform/lib/api";
+import { terminalSizeHint, type GridSize } from "@platform/ui/terminalSizeHint";
 
 export type TerminalStatus = "connecting" | "open" | "closed";
 
@@ -75,10 +76,21 @@ export function terminalStreamUrl(id: string): string {
   return `${proto}${location.host}/api/terminal/${encodeURIComponent(id)}/stream`;
 }
 
+/** The POST /api/terminal body: `cwd` and, when known, the size the pty
+ * should start at (the server sets it before the shell starts, so zsh draws
+ * its first prompt for the right width). Omitted keys keep the server's
+ * defaults. */
+export function createTerminalBody(cwd?: string, size?: GridSize | null): Record<string, unknown> {
+  return { ...(cwd ? { cwd } : {}), ...(size ? { rows: size.rows, cols: size.cols } : {}) };
+}
+
 /** POST /api/terminal — create a new pty session and return its id. Attach
- * to it with `new TerminalSession({ id, ... })`. */
-export function createTerminalSession(cwd?: string): Promise<string> {
-  return postJson<{ id: string }>("/api/terminal", cwd ? { cwd } : {}).then((r) => r.id);
+ * to it with `new TerminalSession({ id, ... })`. Sends a size guess
+ * (terminalSizeHint.ts) so the pty is not born 0x0. */
+export async function createTerminalSession(cwd?: string): Promise<string> {
+  const size = await terminalSizeHint();
+  const r = await postJson<{ id: string }>("/api/terminal", createTerminalBody(cwd, size));
+  return r.id;
 }
 
 /** DELETE /api/terminal/{id} — kill a pty session server-side. Used for a

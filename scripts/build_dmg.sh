@@ -1007,7 +1007,7 @@ fi
 #         product call (the NFS handle-cache and rcd-auth tests pin 1.74's
 #         behaviour), so it is exempted here and printed, not fixed.
 #         At runtime mounts/rcd.py rclone_bin() reads this same minos from the
-#         binary's Mach-O header and skips the bundle on an older Mac (D1319),
+#         binary's Mach-O header and skips the bundle on an older Mac (D1321),
 #         so a macOS 14 Mac falls back to a PATH rclone or a clear "needs
 #         macOS 15" message instead of a dyld launch error.
 # ---------------------------------------------------------------------------
