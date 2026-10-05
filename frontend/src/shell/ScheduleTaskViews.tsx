@@ -25,6 +25,8 @@
 // styles/tasks.css.
 import {
   Fragment,
+  memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -1556,7 +1558,11 @@ export function TaskFilterControls({
 
 function useReadSet() {
   const [read, setRead] = useState<Set<string>>(() => new Set());
-  const clear = (taskKey: string, m: TaskMessage) => {
+  // ONE IDENTITY EACH, FOR THE LIFE OF THE LIST (2026-10-05). Every row is
+  // handed these and the row is memoised on its props (`TaskRow`); they only
+  // ever spend `setRead`, which React keeps stable, so a fresh closure per
+  // render would re-render seven hundred rows to tell them nothing.
+  const clear = useCallback((taskKey: string, m: TaskMessage) => {
     if (!m.unread) return;
     setRead((cur) => markRead(cur, taskKey, m.message_id));
     // Fire and forget as far as the NAVIGATION goes — the click is leaving the
@@ -1568,7 +1574,7 @@ function useReadSet() {
     void markTaskMessageRead(taskKey, m.message_id).catch(() => {
       setRead((cur) => unmarkRead(cur, taskKey, m.message_id));
     });
-  };
+  }, []);
   // The whole task, on the row's own button and on any gesture that opens the
   // thread. Two halves, both from tasks-lib.markAllRead: a concrete id for every
   // message this component HOLDS, and one observation-stamped sentinel for the
@@ -1577,33 +1583,32 @@ function useReadSet() {
   // `held` is tasks-lib.heldMessages, never the listing window on its own: after
   // Show more the thread on screen is all 89, and ids off the three the listing
   // carried would zero the count over 86 dots that nothing could take back.
-  const clearAll = (task: Task, held?: TaskMessage[]) => {
+  const clearAll = useCallback((task: Task, held?: TaskMessage[]) => {
     setRead((cur) => markAllRead(cur, task, held));
-  };
+  }, []);
   // The other direction of the same seam: a thread that has only just ARRIVED,
   // under a mark that is still standing. Show more's reply is a read of the value
   // the press overrode, so its `unread` flags are pre-mark — and nothing refetches
   // them. tasks-lib.carryMarkToHeld decides whether the mark still covers them.
-  const carryAll = (task: Task, held: TaskMessage[]) => {
+  const carryAll = useCallback((task: Task, held: TaskMessage[]) => {
     setRead((cur) => carryMarkToHeld(cur, task, held));
-  };
+  }, []);
   // ...and the way back, which is the half that was missing. `held` is the list
   // the press wrote its concrete ids from, captured BEFORE the request went out:
   // a poll can replace the thread while the write is in flight, and a rollback
   // has to remove what was actually written.
-  const restoreAll = (taskKey: string, held: TaskMessage[]) => {
+  const restoreAll = useCallback((taskKey: string, held: TaskMessage[]) => {
     setRead((cur) => unmarkAllRead(cur, taskKey, held));
-  };
+  }, []);
   // The server's own answer to the mark, spent through the one rule that reads
   // it (tasks-lib.settleMarkAllRead): a non-zero count means the press did not
   // clear the row after all.
-  const settleAll = (
-    taskKey: string,
-    held: TaskMessage[],
-    answer: { unread: number },
-  ) => {
-    setRead((cur) => settleMarkAllRead(cur, taskKey, held, answer));
-  };
+  const settleAll = useCallback(
+    (taskKey: string, held: TaskMessage[], answer: { unread: number }) => {
+      setRead((cur) => settleMarkAllRead(cur, taskKey, held, answer));
+    },
+    [],
+  );
   return { read, clear, clearAll, carryAll, restoreAll, settleAll };
 }
 
@@ -1905,6 +1910,52 @@ function writeListMemory(memory: ListMemory): void {
   }
 }
 
+/**
+ * ONE FUNCTION FOR THE LIFE OF THE COMPONENT, CALLING THE LATEST ONE (2026-10-05,
+ * macOS 14 native windows).
+ *
+ * `TaskRow` is memoised on its props, and most of what the List hands a row is
+ * a closure over the List's own state — `toggle` reads `expanded` and `loaded`,
+ * `select` writes the memory, the page's handlers come down from Scheduled,
+ * which re-renders on every listing publish. A fresh closure per render is a
+ * changed prop on every row, and seven hundred rows re-rendering to receive a
+ * function that does the same thing is the exact cost the memo is there to
+ * remove. So the row is handed a function whose identity never changes and
+ * whose body is whatever the LAST COMMITTED render's closure is: the ref is
+ * rewritten on every commit, and the stable shell reads it at call time.
+ *
+ * NOT for anything read during render — a row deciding what to draw from the
+ * callback's identity would never see it change. Every caller here spends
+ * these on events only.
+ */
+function useStable<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const latest = useRef(fn);
+  // Written in a layout effect, not during render: the listing arrives as a
+  // transition now, and a transition render can be thrown away before it
+  // commits — a ref written mid-render would then point at a closure over
+  // state the page never adopted. The commit is the first moment the closure
+  // is true, and it is before any event can fire.
+  useLayoutEffect(() => {
+    latest.current = fn;
+  });
+  return useCallback((...args: A) => latest.current(...args), []);
+}
+
+/** `useStable` for an OPTIONAL handler, keeping its absence: the row reads
+ *  presence as meaning (`onEditEntry` present = the row can edit; `onPickProject`
+ *  present = the chip is a control), so a shell standing in for `undefined`
+ *  would turn every inert row into a control that does nothing. */
+function useStableOpt<A extends unknown[], R>(
+  fn: ((...args: A) => R) | undefined,
+): ((...args: A) => R) | undefined {
+  const latest = useRef(fn);
+  useLayoutEffect(() => {
+    latest.current = fn;
+  });
+  const stable = useCallback((...args: A) => latest.current!(...args), []);
+  return fn ? stable : undefined;
+}
+
 export function TaskList({
   tasks,
   home = "",
@@ -2173,6 +2224,20 @@ export function TaskList({
     }
   };
 
+  // The rows' handles — see `useStable` above for why these and not the
+  // closures themselves. `select`, `toggle` and `showMore` are the List's own
+  // and close over its state; the rest are the page's, passed through.
+  const selectRow = useStable(select);
+  const toggleRow = useStable(toggle);
+  const retryRow = useStable((task: Task) => void showMore(task));
+  const editEntry = useStableOpt(onEditEntry);
+  const openDraft = useStableOpt(onOpenDraft);
+  const openBoundDraft = useStableOpt(onOpenBoundDraft);
+  const reloadRows = useStableOpt(onReload);
+  const queued = useStableOpt(onQueued);
+  const pickProject = useStableOpt(onPickProject);
+  const pickDraft = useStableOpt(onPickDraft);
+
   // A row restored from memory was never TOGGLED, so nothing went and got the
   // rest of its thread — it would sit there showing the listing's three messages
   // with no button left to ask for the other twenty-three. Same trip the chevron
@@ -2407,8 +2472,19 @@ export function TaskList({
           where a list has no frame and five headers are five interruptions in
           the one column a person is scanning. The order already says what they
           said. */}
+      {/* `TaskRow` IS `TaskNode` BEHIND `memo` (2026-10-05): a listing publish
+          hands this list a new `rows` array every twenty seconds and on every
+          change-feed delta, and before this every row re-rendered for it —
+          60–80 ms on Safari 17's engine with 700 rows, under the pointer. Now
+          a row renders when ITS props move: its task object (tasksPulse keeps
+          the held object for a row a full read did not change, and a delta
+          never touches the rest), its open/selected/peeked bits, its fetched
+          thread. Every function below is identity-stable for the life of the
+          List (`useStable`, `useReadSet`); the one prop that still moves for
+          every row at once is `read`, on a read action, which is rare and
+          wanted. */}
       {rows.map((task, ix) => (
-        <TaskNode
+        <TaskRow
           key={rowKeys[ix]}
           task={task}
           home={home}
@@ -2418,20 +2494,20 @@ export function TaskList({
           peekOn={peekOn}
           peeked={peeked === task.key}
           selected={selected === task.key}
-          onSelect={() => select(task.key)}
-          onToggle={() => toggle(task)}
-          onRetry={() => void showMore(task)}
+          onSelect={selectRow}
+          onToggle={toggleRow}
+          onRetry={retryRow}
           loaded={loaded[task.key]}
           loading={!!loading[task.key]}
           error={errors[task.key]}
-          onEditEntry={onEditEntry}
-          onOpenDraft={onOpenDraft}
-          onOpenBoundDraft={onOpenBoundDraft}
-          onReload={onReload}
-          onQueued={onQueued}
-          onPickProject={onPickProject}
+          onEditEntry={editEntry}
+          onOpenDraft={openDraft}
+          onOpenBoundDraft={openBoundDraft}
+          onReload={reloadRows}
+          onQueued={queued}
+          onPickProject={pickProject}
           pinned={pinnedProjects.includes(task.project)}
-          onPickDraft={onPickDraft}
+          onPickDraft={pickDraft}
           draftOn={draftOn}
           read={read}
           onRead={clear}
@@ -2530,6 +2606,12 @@ export function TaskRowItem({
 const NO_READ: Set<string> = new Set<string>();
 const NO_OP = () => {};
 
+/** The List's row: `TaskNode` rendered only when its own props move. See the
+ *  note at the List's `rows.map` for what that buys and what still re-renders
+ *  every row. `TaskRowItem` above spends `TaskNode` bare — a borrowed list is
+ *  short and its host's closures are its host's business. */
+const TaskRow = memo(TaskNode);
+
 function TaskNode({
   task,
   home,
@@ -2619,14 +2701,14 @@ function TaskNode({
   /** Say that this row is now that one. Spent by every gesture that LEAVES the
    * page — the row's press and a message row's — and by nothing else: expanding
    * a task is reading it in place, not going anywhere. */
-  onSelect: () => void;
-  onToggle: () => void;
+  onSelect: (taskKey: string) => void;
+  onToggle: (task: Task) => void;
   loaded?: TaskMessage[];
   loading: boolean;
   /** Fetch this task's thread again after a failure. The SAME call the disclosure
    * makes — not a second path to the same endpoint, because two ways in are two
    * ways to disagree about the guards. */
-  onRetry: () => void;
+  onRetry: (task: Task) => void;
   error?: string;
   onEditEntry?: (entryId: string) => void;
   /** See TaskList's own prop: the draft row's press. */
@@ -3076,13 +3158,13 @@ function TaskNode({
     // page's Tasks tab, the flag off), and then this is the navigation it has
     // always been.
     if (openPeek(task.key, { anchor: m.anchor || null })) {
-      onSelect();
+      onSelect(task.key);
       return;
     }
     // Leaving the page, so this is the row to come back to — the thread row
     // belongs to this task, and the task's row is what is still on screen when
     // the reader returns.
-    onSelect();
+    onSelect(task.key);
     navigateUrl(to);
   };
 
@@ -3130,7 +3212,7 @@ function TaskNode({
     // trip the reader never took would make the highlight mean nothing. Every
     // way of opening this task's conversation goes through this one function
     // (the row's press, the Open chat button), so every one of them marks.
-    onSelect();
+    onSelect(task.key);
     performOpen(
       task,
       intent,
@@ -3426,7 +3508,7 @@ function TaskNode({
             title={open ? "Collapse messages" : "Expand messages"}
             onClick={(e) => {
               e.stopPropagation();
-              onToggle();
+              onToggle(task);
             }}
           >
             <span className={"tasks-caret-glyph" + (open ? " is-open" : "")} aria-hidden>
@@ -4492,7 +4574,7 @@ function TaskNode({
                 type="button"
                 className="tasks-retry"
                 disabled={loading}
-                onClick={onRetry}
+                onClick={() => onRetry(task)}
               >
                 Retry
               </button>

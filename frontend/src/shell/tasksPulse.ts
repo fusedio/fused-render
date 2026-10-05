@@ -313,6 +313,43 @@ export function readListing(): Task[] | null {
   return listing;
 }
 
+/**
+ * THE 20 s FLOOR READ, WITH THE ROWS IT DID NOT CHANGE KEPT (2026-10-05, macOS
+ * 14 native windows).
+ *
+ * A full listing is a fresh object per row, and the List's rows are memoised
+ * on the row object (`ScheduleTaskViews` `TaskRow`): a fresh object for a task
+ * that has not moved is a re-render of a row that has nothing to redraw —
+ * seven hundred of them, every twenty seconds, which on Safari 17's engine is
+ * the pause the memo exists to remove. Deltas already keep what they did not
+ * touch (tasks-lib.mergeTaskChanges folds into the held rows); this gives the
+ * full read the same manners. A row whose JSON reads the same as the one held
+ * under its key IS the held row; anything else — new key, any changed field,
+ * a different field order — is the server's fresh object, which is exactly
+ * what every reader got before this.
+ *
+ * `JSON.stringify` of 700 rows with three messages each is single-digit
+ * milliseconds, once per floor read, off the render path.
+ */
+export function reuseUnchangedRows(held: Task[] | null, next: Task[]): Task[] {
+  if (!held || held.length === 0 || next.length === 0) return next;
+  const prior = new Map<string, Task>();
+  for (const t of held) prior.set(t.key, t);
+  let reused = false;
+  const rows = next.map((t) => {
+    const was = prior.get(t.key);
+    if (!was || was === t) return t;
+    try {
+      if (JSON.stringify(was) !== JSON.stringify(t)) return t;
+    } catch {
+      return t;
+    }
+    reused = true;
+    return was;
+  });
+  return reused ? rows : next;
+}
+
 /** A poll that FAILED is news about the listing too: what is remembered may
  *  describe a server that has since gone away, and a remount seeding from it
  *  would paint rows over a page that then says "Tasks could not be loaded".
@@ -663,7 +700,7 @@ function startFeed(env: ListingEnv) {
       if (stopped || seat !== mine) return;
       // The catch-up has landed (or this read superseded it): deltas count again.
       catchingUp = false;
-      const rows = (Array.isArray(res?.tasks) ? res.tasks : []).filter(
+      const fresh = (Array.isArray(res?.tasks) ? res.tasks : []).filter(
         (t): t is Task => !!t && !!t.key,
       );
       // A full listing that left before a delta landed is OLDER than what is on
@@ -674,6 +711,9 @@ function startFeed(env: ListingEnv) {
         listingGen = res.generation;
       }
       listingFailed = false;
+      // Same object for a row the read did not change, so the memoised rows
+      // below it stand still (`reuseUnchangedRows`).
+      const rows = reuseUnchangedRows(readListing(), fresh);
       rememberListing(rows);
       publishTasks(rows);
       emitListing({ rows, failed: false, delta: null });
