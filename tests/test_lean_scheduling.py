@@ -342,6 +342,36 @@ def test_tasks_watch_sees_another_processs_schedule_edit(tmp_path, monkeypatch):
         tasks_watch.reset()
 
 
+def test_a_watcher_heartbeat_alone_does_not_bump_a_full_reload(tmp_path, monkeypatch):
+    """The 30 s `watcher_at` heartbeat rewrites the schedule store for as long
+    as a turn runs. It carries no news for a page, so it must not send every
+    process's long-poll a full reload; a real edit still must."""
+    from fused_render import schedule, schedule_wake, tasks_store, tasks_watch
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(tmp_path / "home" / "claude-sessions"))
+    monkeypatch.setattr(tasks_store, "PROJECTS_DIR", str(tmp_path / "projects"))
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(schedule_wake, "sync", lambda due: False)
+    tasks_watch.reset()
+    schedule._write([{
+        "id": "E1", "state": schedule.SENT, "turn": "", "run_id": "r",
+        "target": "/tmp", "message": "m", "due": "2020-01-01T00:00:00+00:00",
+        "session_id": "", "error": "", "watcher_pid": 1,
+        "watcher_at": "2026-01-01T00:00:00+00:00"}])
+    try:
+        tasks_watch.tick()  # baseline
+        before = tasks_watch.generation()
+        schedule._update("E1", watcher_at="2026-01-01T00:00:30+00:00")
+        tasks_watch.tick()
+        assert tasks_watch.generation() == before, "a heartbeat bumped a full reload"
+        schedule._update("E1", error="boom")
+        tasks_watch.tick()
+        assert tasks_watch.generation() == before + 1, "a real edit must still bump"
+    finally:
+        tasks_watch.reset()
+
+
 def test_tasks_watch_sees_another_processs_queue_index_edit(tmp_path, monkeypatch):
     from fused_render import queue_manager, tasks_store, tasks_watch
 

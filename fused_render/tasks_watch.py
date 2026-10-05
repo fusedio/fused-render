@@ -1068,11 +1068,43 @@ def _store_paths() -> list[str]:
             os.path.join(tasks_store.STATE_DIR, queue_manager.INDEX_FILE)]
 
 
+#: Per-path content signature of the stores whose file also changes for reasons
+#: that carry no news (see `_content_signature`); None when it could not be read.
+_store_sigs: dict[str, str | None] = {}
+
+
+def _content_signature(path: str) -> str | None:
+    """A digest of the schedule store with the `watcher_at` heartbeat left out.
+
+    The watching process rewrites that one field every 30 s for as long as a
+    turn runs, which moves the file's mtime without telling a page anything;
+    treating it as an edit sent every process's long-poll a full reload twice
+    a minute. None means "could not tell" and the caller falls back to calling
+    the stat change real."""
+    import hashlib
+    import json
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        rows = data.get("entries") if isinstance(data, dict) else None
+        if isinstance(rows, list):
+            data = {**data, "entries": [
+                {k: v for k, v in e.items() if k != "watcher_at"}
+                if isinstance(e, dict) else e for e in rows]}
+        blob = json.dumps(data, sort_keys=True, default=str)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
 def _read_store_files() -> bool:
     """Did any shared store change on disk since the last pass? Both are
     replaced atomically, so a change always shows as a new mtime or size. The
     edit cannot be named row by row from here, so the caller announces a full
-    reload."""
+    reload. The schedule store's heartbeat-only rewrites do not count."""
+    from fused_render import schedule
+
     changed = False
     for path in _store_paths():
         try:
@@ -1081,7 +1113,15 @@ def _read_store_files() -> bool:
         except OSError:
             stamp = None
         if path in _store_stamps and _store_stamps[path] != stamp:
-            changed = True
+            if path == schedule.store_path() and stamp is not None:
+                sig = _content_signature(path)
+                if sig is None or sig != _store_sigs.get(path):
+                    changed = True
+                _store_sigs[path] = sig
+            else:
+                changed = True
+        elif path == schedule.store_path() and path not in _store_sigs and stamp is not None:
+            _store_sigs[path] = _content_signature(path)
         _store_stamps[path] = stamp
     return changed
 
@@ -1190,3 +1230,4 @@ def reset() -> None:
     _tr_sizes.clear()
     _perm_stamps.clear()
     _store_stamps.clear()
+    _store_sigs.clear()
