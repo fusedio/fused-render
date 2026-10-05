@@ -74,6 +74,7 @@ class _Target:
         # cwd + sys.path so relative data paths and sibling imports in user code
         # resolve next to the .py, as _child.py does. Set once on first load.
         if self._module is None:
+            os.environ["FUSED_RENDER_PAGE"] = self.path  # D891
             os.chdir(module_dir)
             if module_dir not in sys.path:
                 sys.path.insert(0, module_dir)

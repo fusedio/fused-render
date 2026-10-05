@@ -985,6 +985,8 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
         # `import fused_ai` (and `appenv`) under this engine too.
         f"_fused_sys.path.append({_shared_templates_dir()!r})\n"
         f"__file__ = {script_path!r}\n"
+        # D891: same as `_child.py` — spawned workers inherit the page.
+        f"_fused_os.environ['FUSED_RENDER_PAGE'] = {script_path!r}\n"
         f'__name__ = "__fused_module__"\n'
         f"exec(compile({user_code!r}, {script_path!r}, 'exec'), globals())\n"
     )

@@ -1358,3 +1358,16 @@ def test_a_late_tick_on_a_dismissed_job_never_returns_a_blank_group():
     jobs.dismiss("sys:ai-image:late")
     res = jobs.upsert({"id": "sys:ai-image:late", "done": 1}, server=True)
     assert res["group"] == "sys:ai-image"
+
+
+def test_a_detached_worker_report_with_the_page_header_keeps_page_and_origin(client, tmp_path):
+    """D891: a worker (no token) sends X-Fused-Page from FUSED_RENDER_PAGE;
+    page + origin derive as for a page report, and a later header-less tick
+    keeps the stored page."""
+    page = str(tmp_path / "hf-insights" / "jobs.py")
+    h = {"X-Fused": "1", "X-Fused-Page": page}
+    client.post("/api/jobs", json={"id": "w1", "title": "convert", "state": "running"}, headers=h)
+    client.post("/api/jobs", json={"id": "w1", "state": "done"}, headers={"X-Fused": "1"})
+    job = [j for j in listing(client) if j["id"] == "w1"][0]
+    assert job["page"] == page
+    assert job["origin"] == "jobs"  # no project: filename stem
