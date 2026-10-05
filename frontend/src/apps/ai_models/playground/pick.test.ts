@@ -151,5 +151,52 @@ test("a capability whose whole shortlist is filtered out is skipped, not selecte
 
 test("nothing offered anywhere is null, not a crash", () => {
   expect(pickPlaygroundModel([], null, null)).toBe(null);
-  expect(pickPlaygroundModel([row("text-generation", [model("huge")])], "huge", null)).toBe(null);
+  expect(pickPlaygroundModel([row("embedding", [model("huge")])], "huge", null)).toBe(null);
+});
+
+// One pick per use case (SPEC AI-28b): text generation only.
+test("text generation adds the first curated row of each use case, downloaded or not", () => {
+  const offered = playgroundModels(
+    row("text-generation", [
+      model("w", { recommended: true, useCases: ["writing"] }),
+      model("c1", { useCases: ["coding", "writing"] }),
+      model("c2", { useCases: ["coding"] }),
+      model("r1", { useCases: ["reasoning"] }),
+      model("r2", { useCases: ["reasoning"] }),
+      model("hub", { source: "cached", useCases: ["coding"] }),
+    ]),
+  );
+  expect(offered.map((m) => m.id)).toEqual(["w", "c1", "r1"]);
+});
+
+test("a use-case pick that is also downloaded or recommended is not duplicated", () => {
+  const offered = playgroundModels(
+    row("text-generation", [
+      model("w", { useCases: ["writing"] }),
+      model("c1", { downloaded: true, useCases: ["coding"] }),
+      model("r1", { recommended: true, useCases: ["reasoning"] }),
+    ]),
+  );
+  expect(offered.map((m) => m.id)).toEqual(["w", "c1", "r1"]);
+});
+
+test("a downloaded model does not stop the first curated row of its use case being picked", () => {
+  const offered = playgroundModels(
+    row("text-generation", [
+      model("c1", { useCases: ["coding"] }),
+      model("c2", { downloaded: true, useCases: ["coding"] }),
+    ]),
+  );
+  expect(offered.map((m) => m.id)).toEqual(["c1", "c2"]);
+});
+
+test("other capabilities get no per-use-case picks", () => {
+  const offered = playgroundModels(
+    row("embedding", [
+      model("a", { recommended: true }),
+      model("b", { useCases: ["coding"] }),
+      model("c", { useCases: ["reasoning"] }),
+    ]),
+  );
+  expect(offered.map((m) => m.id)).toEqual(["a"]);
 });

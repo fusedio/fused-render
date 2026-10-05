@@ -10076,6 +10076,24 @@ an AI Models page that could say what was on disk but not what was *running*.
   evidence for an uncached repo whose id alone says nothing. `registry.py`
   stays dependency-light: neither function reads a filesystem or the
   network itself, taking whatever evidence the caller already has instead.
+- **AI-28b** **Text models are grouped by use case (`writing`, `coding`,
+  `reasoning`); categorization only.** Curated text rows in `catalog.py` carry a
+  hand-written `useCases` list; `registry.use_cases` is the name heuristic for
+  any other text model (Hub search rows, cached repos). `describe_catalog` and
+  the Hub search row expose `useCases: string[]` (`[]` off text generation).
+  `Qwen3-Coder-30B-A3B` is a plain curated row tagged `coding` on `mlx-text`
+  and `llamacpp-text` (the curated text lists may hold six rows). Frontend:
+  `apps/ai_models/lib/useCases.ts` holds the ids, labels and order, `useCaseOf`
+  (a row's first known use case, else writing) and `groupByUseCase`; the Models
+  text pane and the Playground sidebar draw one section per use case (Writing &
+  chat, Coding, Deep reasoning; empty ones hidden), rows in their existing
+  order, the Playground's as top-level sections like Image generation. A model
+  sits in the section of its first use case, so each curated text list keeps at
+  least one row leading with each id (the recommended all-round row leads
+  `writing`, the larger generalists lead `reasoning`). For text generation
+  only, the Playground also offers the first curated row (`source ===
+  "curated"`, catalog order) of each use case even when not downloaded
+  (`playground/pick.ts`), so Coding and Deep reasoning appear without a download.
 - **AI-29** **Path-hardening audit of the download paths** (`runners/
   worker_base.py`, `runners/mirror.py`, and items 13/14's own additions)
   **(D533).** Findings:

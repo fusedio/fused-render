@@ -3158,6 +3158,23 @@ def test_a_gpu_less_machines_tail_keeps_a_strict_ordering():
     assert displayed[0] == displayed[1] == displayed[2] == 0.0
 
 
+# -- use cases on search rows (SPEC AI-28b) ---------------------------
+
+
+def test_text_search_rows_carry_a_heuristic_use_case(client, hub_cache, monkeypatch):
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/Foo-Coder-7B", tags=["code"]),
+        _hit("org/Bar-R1-Distill-8B"),
+        _hit("Qwen/Qwen3-8B"),
+        _hit("org/plain-chat-7B"),
+    ]))
+    rows = {r["id"]: r for r in _search(client).json()["models"]}
+    assert rows["org/Foo-Coder-7B"]["useCases"] == ["coding"]
+    assert rows["org/Bar-R1-Distill-8B"]["useCases"] == ["reasoning"]
+    assert rows["org/plain-chat-7B"]["useCases"] == ["writing"]
+
+
 # ---- D1245/D1246: per-axis breakdown for the row-level tooltip -----------
 
 

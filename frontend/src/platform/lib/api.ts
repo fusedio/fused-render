@@ -5239,6 +5239,11 @@ export interface AiCatalogModel {
    *  client, a test literal, or an older cached response shape does not have
    *  to carry it. */
   tags?: string[];
+  /** Which end-user use cases this text model suits (SPEC AI-28b): any of
+   *  `"writing"`, `"coding"`, `"reasoning"`. Curated by hand on a curated row,
+   *  a name heuristic (`registry.use_cases`) on a cached one; `[]` on every
+   *  non-text capability. Optional for an older payload. */
+  useCases?: string[];
   voiceMode?: "preset" | "clone" | "design";
   voices?: string[];
   languages?: string[];

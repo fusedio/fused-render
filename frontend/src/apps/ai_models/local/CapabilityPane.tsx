@@ -13,6 +13,7 @@ import { useState } from "react";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { capabilityMeta, PARTS_ICON } from "@apps/ai_models/lib/capabilityMeta";
 import { formatSize } from "@platform/lib/format";
+import { groupByUseCase, type UseCaseId } from "@apps/ai_models/lib/useCases";
 import { ModelRow, type ModelRowHandlers, type ModelRowModel, type ModelRowProgress } from "@apps/ai_models/local/ModelRow";
 
 function pluralModel(n: number): string {
@@ -28,6 +29,10 @@ export interface CapabilityPaneProps {
   lastUsedId: string | null;
   /** Curated models not yet downloaded, in the catalog's order. */
   recommended: ModelRowModel[];
+  /** The text pane only (SPEC AI-28b): which use case a row belongs to. When
+   *  given, the pane is drawn as one section per use case (empty ones hidden),
+   *  each holding its rows from `have` then `recommended`, in their order. */
+  useCaseOf?: (row: ModelRowModel) => UseCaseId;
   /** The id of a `recommended` row a download is in flight for, or null. */
   downloadingId: string | null;
   downloadProgress: ModelRowProgress | null;
@@ -56,6 +61,7 @@ export function CapabilityPane({
   have,
   lastUsedId,
   recommended,
+  useCaseOf,
   downloadingId,
   downloadProgress,
   openInfoId,
@@ -137,6 +143,58 @@ export function CapabilityPane({
   const shown = expanded ? rest : rest.slice(0, 2);
   const moreCount = rest.length - 2;
 
+  const doorRow = (
+    <p className="hubdoor" data-part="pane.door">
+      <button type="button" className="btn-link" data-adv="1" onClick={() => onOpenSearch(capabilityKey)}>
+        Search Hugging Face for more {meta.searchNoun} →
+      </button>
+      <span className="why">Thousands of community uploads, ranked by what this Mac can run. Not curated by us.</span>
+    </p>
+  );
+
+  if (useCaseOf) {
+    const haveGroups = groupByUseCase(have, useCaseOf);
+    const recGroups = groupByUseCase(recommended, useCaseOf);
+    const sections = groupByUseCase([...have, ...recommended], useCaseOf).map((g) => g.useCase);
+    return (
+      <div className="tp-pane" data-part="pane">
+        {head}
+        {sections.map((useCase) => {
+          const mine = haveGroups.find((g) => g.useCase.id === useCase.id)?.items ?? [];
+          const suggested = recGroups.find((g) => g.useCase.id === useCase.id)?.items ?? [];
+          return (
+            <div className="tp-group" data-part={`pane.usecase.${useCase.id}`} key={useCase.id}>
+              <h5>{useCase.label}</h5>
+              {mine.map((m) => (
+                <ModelRow
+                  key={m.id}
+                  model={m}
+                  paneLabel={paneLabel}
+                  opts={{ last: m.id === lastUsedId, info: openInfoId === m.id }}
+                  handlers={handlers}
+                />
+              ))}
+              {suggested.map((m) => (
+                <ModelRow
+                  key={m.id}
+                  model={m}
+                  paneLabel={paneLabel}
+                  opts={
+                    m.id === downloadingId
+                      ? { downloading: true, progress: downloadProgress ?? undefined }
+                      : { info: openInfoId === m.id }
+                  }
+                  handlers={handlers}
+                />
+              ))}
+            </div>
+          );
+        })}
+        {doorRow}
+      </div>
+    );
+  }
+
   return (
     <div className="tp-pane" data-part="pane">
       {head}
@@ -185,12 +243,7 @@ export function CapabilityPane({
           )}
         </div>
       )}
-      <p className="hubdoor" data-part="pane.door">
-        <button type="button" className="btn-link" data-adv="1" onClick={() => onOpenSearch(capabilityKey)}>
-          Search Hugging Face for more {meta.searchNoun} →
-        </button>
-        <span className="why">Thousands of community uploads, ranked by what this Mac can run. Not curated by us.</span>
-      </p>
+      {doorRow}
     </div>
   );
 }

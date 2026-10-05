@@ -2136,6 +2136,7 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
         "gemma-4-E4B-it-Q4_K_M.gguf": 5.0,
         "LFM2.5-8B-A1B-Q4_K_M.gguf": 5.2,
         "Qwen3.8-27B-UD-Q3_K_XL.gguf": 13.1,
+        "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": 18.6,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
@@ -2199,12 +2200,16 @@ def test_every_suggestion_list_offers_between_two_and_five_models():
     a list is what ONE machine sees, and a total would let a one-row engine
     hide behind a well-stocked one.
     """
+    # SIX, not five, for the two TEXT lists only (SPEC AI-28b): the use-case
+    # sections need a code-tuned row (Qwen3-Coder-30B-A3B) and no existing row
+    # was worth cutting for it.
     for code, entries in catalog.SUGGESTIONS.items():
-        assert 2 <= len(entries) <= 5, (
+        cap = 6 if code in ("mlx-text", "llamacpp-text") else 5
+        assert 2 <= len(entries) <= cap, (
             f"{code} suggests {len(entries)} models "
             f"({[e['id'] for e in entries]}); every engine's list carries two "
-            "to five — one row leaves a reader nowhere to go, six stops being "
-            "read")
+            f"to {cap} — one row leaves a reader nowhere to go, more stops "
+            "being read")
 
 
 def test_recommended_is_written_opt_in_and_never_as_a_false():
@@ -12129,6 +12134,40 @@ def test_neither_spawn_site_forgets_the_model(monkeypatch):
         assert ast.unparse(call.args[1]) in ("worker.model", "model"), (
             f"_child_env at line {call.lineno} passes "
             f"{ast.unparse(call.args[1])!r} as the model")
+
+
+# -- use cases on the text rows (SPEC AI-28b) ------------------------
+
+
+def _text_row(client, monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    return next(row for row in rows if row["capability"] == registry.TEXT_GENERATION)
+
+
+def test_text_entries_carry_use_cases(client, hub, monkeypatch):
+    models = _text_row(client, monkeypatch)["models"]
+    assert models and all(isinstance(m["useCases"], list) and m["useCases"] for m in models)
+    coder = next(m for m in models if m["id"] == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit")
+    assert coder["useCases"] == ["coding"]
+
+
+def test_a_cached_text_repo_gets_a_heuristic_use_case(client, hub, monkeypatch):
+    _cached_repo(hub, "org/tiny-coder-7b", files=("model.safetensors",),
+                 config={"model_type": "llama"})
+    models = _text_row(client, monkeypatch)["models"]
+    cached = next(m for m in models if m["id"] == "org/tiny-coder-7b")
+    assert cached["useCases"] == ["coding"]
+
+
+def test_non_text_entries_have_no_use_cases(client, hub, monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    for row in client.get("/api/ai/catalog").json()["capabilities"]:
+        if row["capability"] == registry.TEXT_GENERATION:
+            continue
+        assert all(m["useCases"] == [] for m in row["models"])
 
 
 # -- item A: per-variant download's `file` threading through the supervisor -----

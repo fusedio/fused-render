@@ -157,6 +157,13 @@ TEXT_TO_SPEECH = "text-to-speech"
 TOOL_USE_TAG = "tool-use"
 VISION_TAG = "vision"
 
+#: The three end-user USE CASES a text-generation entry can belong to (SPEC
+#: AI-28b). Tags/fields on an entry, never capability rows — see the note
+#: above. A model may belong to several; curated entries say so by hand
+#: (`catalog.SUGGESTIONS[...]["useCases"]`), everything else gets exactly one
+#: from `use_cases`' heuristic.
+USE_CASES: tuple[str, ...] = ("writing", "coding", "reasoning")
+
 #: A KNOWN-FAMILY allowlist for tool-use support, not a regex reverse-
 #: engineered over an arbitrary repo id — the comparative study this build
 #: derives from (llmfit) keys tool-use off exactly these families, and this
@@ -207,6 +214,31 @@ def supports_tool_use(repo_id: str, *, model_type: str | None = None,
     haystack = _tag_haystack(repo_id, model_type, architecture)
     return any(all(token in haystack for token in family)
               for family in TOOL_USE_FAMILIES)
+
+
+# Heuristic evidence for `use_cases`. Letter-bounded so `decode`/`barcode`
+# do not read as code and `r10` does not read as R1; `code` may be followed
+# by letters (`coder`, `codellama`, `codestral`, `starcoder`).
+_CODING_RE = re.compile(r"(?<![a-z])(?:star|deepseek-)?cod(?:e|er|ing)")
+_REASONING_RE = re.compile(r"(?<![a-z0-9])r1(?![a-z0-9])|reason|(?<![a-z])qwq|thinking")
+
+
+def use_cases(repo_id: str, *, pipeline_tag: str | None = None,
+              hub_tags: tuple[str, ...] | list[str] = ()) -> tuple[str, ...]:
+    """The ONE use case a NON-curated text model gets, llmfit-style: coding
+    for coder/code/starcoder ids (or a `code` Hub tag), reasoning for
+    r1/reason/qwq/thinking ids, else writing. Coding wins a tie.
+
+    A guess, and it will sometimes be wrong — curated entries never go
+    through it. Dependency-light like `capability_tags`: the caller hands over
+    whatever evidence it holds (the Hub search row's `pipeline_tag`/`tags`)."""
+    tag_text = " ".join(t for t in hub_tags if isinstance(t, str))
+    haystack = _tag_haystack(repo_id, pipeline_tag, tag_text).replace("|", " ")
+    if _CODING_RE.search(haystack):
+        return ("coding",)
+    if _REASONING_RE.search(haystack):
+        return ("reasoning",)
+    return ("writing",)
 
 
 def capability_tags(repo_id: str, *, model_type: str | None = None,

@@ -52,6 +52,7 @@ import {
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { activeFitLevel, activeParamsBand, activeSort, type ResultSort } from "@apps/ai_models/lib/hubSearchView";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
+import { useCaseOf, type UseCaseId } from "@apps/ai_models/lib/useCases";
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import {
   deleteAiModels,
@@ -480,6 +481,19 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   const downloadProgress = downloadingId ? progressFor(jobByModel.get(downloadingId)) : null;
   const offReason = section?.runner && !section.runner.available ? section.runner.reason : null;
 
+  // The text pane is drawn as one section per use case (SPEC AI-28b). A row
+  // is looked up by its own id and, for a disk row, by repo — a GGUF suggestion
+  // is keyed by filename but its repo is what lands on disk.
+  const textUseCases = new Map<string, UseCaseId>();
+  if (selected === "text-generation") {
+    for (const m of catalog?.find((c) => c.capability === "text-generation")?.models ?? []) {
+      const id = useCaseOf(m);
+      textUseCases.set(m.id, id);
+      if (m.repo && !textUseCases.has(m.repo)) textUseCases.set(m.repo, id);
+    }
+  }
+  const rowUseCase = (row: ModelRowModel): UseCaseId => textUseCases.get(row.id) ?? useCaseOf({});
+
   const parts: EngineFilePart[] = grouped.components.repos.map((r) => ({
     id: r.id,
     name: r.component?.file ?? repoName(r.id),
@@ -549,6 +563,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
                 have={have}
                 lastUsedId={lastUsedId}
                 recommended={recommended}
+                useCaseOf={selected === "text-generation" && !offReason ? rowUseCase : undefined}
                 downloadingId={downloadingId}
                 downloadProgress={downloadProgress}
                 openInfoId={openInfoId}

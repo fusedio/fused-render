@@ -1150,6 +1150,15 @@ def _catalog_with_downloads() -> list[dict]:
             # tag restates the same fact `acceptsImage` already gates on for
             # this capability.
             entry["tags"] = _capability_tags(row["capability"], entry["id"])
+            # Use cases (SPEC AI-28b): text generation only. A curated entry
+            # carries its own hand-written `useCases` (already on `entry` via
+            # the `dict(entry, ...)` above); everything else — a cached repo
+            # the user found themselves — gets `registry.use_cases`' heuristic.
+            is_text = row["capability"] == registry.TEXT_GENERATION
+            if is_text and not entry.get("useCases"):
+                entry["useCases"] = list(registry.use_cases(entry["id"]))
+            elif not is_text:
+                entry["useCases"] = []
             # The embeddings pair (SPEC §40): whether this entry may be handed
             # image PATHS, and which retrieval prompt scheme its texts get.
             # Computed per entry on BOTH halves for `acceptsImage`'s reason — a

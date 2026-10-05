@@ -118,6 +118,26 @@ const FALLBACK: ReactNode = (
   </svg>
 );
 
+// Text use cases: the section headers of the Playground's text models. Writing
+// keeps the chat glyph; the others are drawn in the same grammar as the rest.
+const USE_CASE_ICONS: Record<string, ReactNode> = {
+  coding: (
+    <svg {...base}>
+      <path d="m8 7-5 5 5 5M16 7l5 5-5 5M13.5 5l-3 14" />
+    </svg>
+  ),
+  reasoning: (
+    <svg {...base}>
+      <path d="M9 18h6M10 21h4" />
+      <path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3Z" />
+    </svg>
+  ),
+};
+
+export function useCaseIcon(useCaseId: string): ReactNode {
+  return USE_CASE_ICONS[useCaseId] ?? ICONS["text-generation"];
+}
+
 export function capabilityIcon(capability: string): ReactNode {
   return ICONS[capability] ?? FALLBACK;
 }

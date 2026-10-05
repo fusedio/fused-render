@@ -87,3 +87,48 @@ def test_the_capability_constants_are_unchanged():
     assert registry.EMBEDDINGS == "embeddings"
     assert registry.VIDEO_GENERATION == "text-to-video"
     assert registry.DECISIONS == "text-classification"
+
+
+# -- use cases (SPEC AI-28b) --------------------------------
+# A USE CASE is a tag-shaped fact about a text-generation entry, not a sixth
+# capability: `writing` / `coding` / `reasoning`. Curated entries carry theirs
+# by hand; everything else (Hub search hits, cached repos) gets a heuristic
+# over the repo id plus the Hub pipeline tag, llmfit-style.
+
+
+def test_use_cases_are_the_three_documented_ones():
+    assert registry.USE_CASES == ("writing", "coding", "reasoning")
+
+
+def test_use_case_coding_from_the_repo_id():
+    for rid in ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "bigcode/starcoder2-15b",
+                "deepseek-ai/deepseek-coder-6.7b-instruct", "codellama/CodeLlama-7b-hf",
+                "mistralai/Codestral-22B-v0.1", "org/some-code-model"):
+        assert registry.use_cases(rid) == ("coding",), rid
+
+
+def test_use_case_reasoning_from_the_repo_id():
+    for rid in ("deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", "Qwen/QwQ-32B",
+                "org/Foo-Reasoning-8B", "Qwen/Qwen3-4B-Thinking-2507"):
+        assert registry.use_cases(rid) == ("reasoning",), rid
+
+
+def test_use_case_defaults_to_writing():
+    assert registry.use_cases("mistralai/Mistral-7B-Instruct-v0.3") == ("writing",)
+    assert registry.use_cases("org/some-random-checkpoint") == ("writing",)
+
+
+def test_use_case_does_not_match_inside_unrelated_words():
+    # `decode`, `barcode` and `r10`/`mr1x` must not read as code / R1.
+    assert registry.use_cases("org/decoder-chat-7b") == ("writing",)
+    assert registry.use_cases("org/barcode-chat") == ("writing",)
+    assert registry.use_cases("org/Mistral-R10-chat") == ("writing",)
+
+
+def test_use_case_takes_hub_tags_as_evidence():
+    assert registry.use_cases("org/plain-name", hub_tags=("code",)) == ("coding",)
+    assert registry.use_cases("org/plain-name", pipeline_tag="text-generation") == ("writing",)
+
+
+def test_use_case_coding_beats_reasoning():
+    assert registry.use_cases("org/Coder-R1-7B") == ("coding",)

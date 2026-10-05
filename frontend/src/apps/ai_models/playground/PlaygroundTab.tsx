@@ -39,10 +39,11 @@ import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { buildAppAnnotation, modelName } from "./appSeed";
-import { capabilityIcon, unsupportedIcon } from "@apps/ai_models/lib/capabilityIcons";
+import { capabilityIcon, unsupportedIcon, useCaseIcon } from "@apps/ai_models/lib/capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
+import { groupByUseCase, useCaseOf, type UseCase } from "@apps/ai_models/lib/useCases";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { activeJobByModel, cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
 import {
@@ -325,6 +326,24 @@ export default function PlaygroundTab() {
     return [...capabilities].sort((a, b) => rank(a.capability) - rank(b.capability));
   }, [capabilities]);
 
+  // The sidebar's sections. Text generation is not one section but one per use
+  // case (Writing & chat, Coding, Deep reasoning, SPEC AI-28b), each a peer of
+  // Image generation and the rest, holding the same rows in the same order. A
+  // text row with nothing to group (unavailable, or nothing offered) stays a
+  // single section so its reason or "nothing to try" line still has a place.
+  const sections = useMemo<Array<{ row: (typeof railRows)[number]; useCase: UseCase | null }>>(
+    () =>
+      railRows.flatMap((row): Array<{ row: typeof row; useCase: UseCase | null }> => {
+        if (row.capability !== "text-generation" || !row.available) return [{ row, useCase: null }];
+        const groups = groupByUseCase(playgroundModels(row), useCaseOf);
+        return groups.length
+          ? groups.map((g) => ({ row, useCase: g.useCase }))
+          : [{ row, useCase: null }];
+      }),
+    [railRows],
+  );
+  const firstTextSection = sections.find((s) => s.useCase)?.useCase ?? null;
+
   // The selection lives in the URL. An unknown or absent id falls back to the
   // TOP SECTION's default silently (PT-9's posture: a stale link opens the
   // page, not an error) — and the fallback is `default`, never models[0], which
@@ -521,7 +540,7 @@ export default function PlaygroundTab() {
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
-        {railRows.map((row) => {
+        {sections.map(({ row, useCase }) => {
           // The catalog's curated half, in its own smallest-first order — but
           // the RECOMMENDED subset of it (D425), because this tab is where
           // someone types a sentence rather than shops for a download: see
@@ -533,7 +552,9 @@ export default function PlaygroundTab() {
           // still playable but sit apart under their own quiet caption — they
           // have no curator, and mixed in they read as recommendations nobody
           // made.
-          const offered = playgroundModels(row);
+          const offered = playgroundModels(row).filter(
+            (m) => !useCase || useCaseOf(m) === useCase.id,
+          );
           const curated = offered.filter((m) => m.source === "curated");
           // The apple tier's ids (D700) draw AFTER the curation and before the
           // uncurated downloads: recommended like the curation, but system-
@@ -644,10 +665,12 @@ export default function PlaygroundTab() {
             );
           };
           return (
-            <details key={row.capability} className="pg-group" open>
+            <details key={useCase ? `${row.capability}:${useCase.id}` : row.capability} className="pg-group" open>
               <summary className="pg-group-head">
-                <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
-                <span className="pg-group-title">{groupLabel(row.capability)}</span>
+                <span className="pg-group-icon">
+                  {useCase ? useCaseIcon(useCase.id) : capabilityIcon(row.capability)}
+                </span>
+                <span className="pg-group-title">{useCase ? useCase.label : groupLabel(row.capability)}</span>
               </summary>
               {!row.available && (
                 // Visible with its reason, never hidden: an absent group and a
@@ -678,7 +701,7 @@ export default function PlaygroundTab() {
               {row.available && system.map(draw)}
               {row.available && cached.map(draw)}
               {appleNote &&
-                (row.capability === "text-generation" ||
+                ((row.capability === "text-generation" && (!useCase || useCase === firstTextSection)) ||
                   (row.capability === "automatic-speech-recognition" &&
                     apple?.speechAvailable === false)) && (
                   // Where the apple row WOULD be, when it is not: the reason,
