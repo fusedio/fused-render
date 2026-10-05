@@ -136,7 +136,7 @@ _EXPECTED_META = {
     "entry": ("essentials", "critical", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
-    "readme": ("essentials", "warning", "fact"),
+    "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     "git": ("sharing", "warning", "fact"),
@@ -154,9 +154,8 @@ def test_every_check_carries_the_exact_table(workspace):
 
 
 def test_no_checklist_row_is_ever_suggested():
-    """The checklist has two severities, not three — a suggestion row got no
-    tint, no rail, and no urgency in the dialog, so nobody ever acted on it.
-    `suggested` is a CI-floor-only tier (see `_STRUCTURE_META` in
+    """`suggested` is not a checklist severity (`info` is the quiet tier — a
+    failing info row never affects `ok` or the header dot). `suggested` is a CI-floor-only tier (see `_STRUCTURE_META` in
     `skills/fused-render-app-doctor/ci/app_check.py`); it must never appear
     in `_CHECK_META` or `SEVERITIES`."""
     assert "suggested" not in app_doctor.SEVERITIES
@@ -178,16 +177,39 @@ def test_the_report_carries_the_ordering_the_modal_reads(workspace):
     d = _app(workspace)
     report = app_doctor.report(str(d))
     assert report["sections"] == ["essentials", "sharing"]
-    assert report["severities"] == ["critical", "warning"]
+    assert report["severities"] == ["critical", "warning", "info"]
 
 
 def test_ok_is_false_on_a_failing_warning_row(workspace):
-    """readme and preview are both severity "warning" — a warning row worth
-    the checklist at all is worth turning the app "not ok"."""
-    d = _app(workspace, readme=False, preview=False)
+    """preview is severity "warning" — a warning row worth the checklist at
+    all is worth turning the app "not ok"."""
+    d = _app(workspace, preview=False)
     report = app_doctor.report(str(d))
-    assert _state(report, "readme") == "fail"
     assert _state(report, "preview") == "fail"
+    assert report["ok"] is False
+
+
+def test_a_missing_readme_is_info_and_does_not_make_the_app_not_ok(workspace):
+    d = _app(workspace, readme=False)
+    report = app_doctor.report(str(d))
+    row = _rows(report)["readme"]
+    assert (row["state"], row["severity"]) == ("fail", "info")
+    assert report["ok"] is True
+
+
+def test_pyproject_severity_is_per_outcome(workspace):
+    """Absent (in an app that has Python) is info; present-but-invalid stays
+    a warning and turns the app not ok."""
+    d = _app(workspace, pyproject=False)
+    (d / "serve.py").write_text("print('hi')\n")
+    report = app_doctor.report(str(d))
+    row = _rows(report)["pyproject"]
+    assert (row["state"], row["severity"]) == ("fail", "info")
+    assert report["ok"] is True
+    (d / "pyproject.toml").write_text("[project\nbroken\n")
+    report = app_doctor.report(str(d))
+    row = _rows(report)["pyproject"]
+    assert (row["state"], row["severity"]) == ("fail", "warning")
     assert report["ok"] is False
 
 
@@ -224,7 +246,7 @@ def test_a_missing_pyproject_fails_its_row_and_the_report(workspace):
     (d / "serve.py").write_text("print('hi')\n")
     report = app_doctor.report(str(d))
     assert _state(report, "pyproject") == "fail"
-    assert report["ok"] is False
+    assert report["ok"] is True  # missing pyproject is info severity
 
 
 def test_an_app_with_no_python_skips_the_pyproject_row(workspace):

@@ -104,7 +104,7 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     "entry": ("essentials", "critical", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
-    "readme": ("essentials", "warning", "fact"),
+    "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     # The one MODEL-BACKED row (app_doctor_ai.py): on demand, cached on the
@@ -127,8 +127,10 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
 CHECK_ORDER = tuple(_CHECK_META.keys())
 SECTIONS = ("essentials", "sharing")
 # Worst first — the header button's "worst severity found" and the modal's
-# chip colouring both rank against this order.
-SEVERITIES = ("critical", "warning")
+# chip colouring both rank against this order. `info` is the quiet tier: a
+# failing info row is worth showing but never turns `ok` false (see
+# `report`) or the header dot yellow.
+SEVERITIES = ("critical", "warning", "info")
 
 
 def _meta(cid: str) -> tuple[str, str, str]:
@@ -153,8 +155,11 @@ ON_DEMAND = frozenset({"cross-browser"})
 
 
 def _check(cid: str, label: str, state: str, detail: str,
-           findings: list | None = None) -> dict:
-    section, severity, kind = _meta(cid)
+           findings: list | None = None, *, severity: str | None = None) -> dict:
+    """`severity` overrides the table's default for ONE outcome — e.g. a
+    missing pyproject.toml is info while an invalid one stays a warning."""
+    section, table_severity, kind = _meta(cid)
+    severity = severity or table_severity
     return {
         "id": cid,
         "section": section,
@@ -649,6 +654,7 @@ def _pyproject_check(app_dir: str) -> dict:
             "pyproject", label, FAIL,
             "no pyproject.toml — without it this app's dependencies are "
             "implicit and unreproducible for whoever you share it with",
+            severity="info",
         )
     ok, reason = _parses(path, "toml")
     return _check("pyproject", label, PASS if ok else FAIL,
