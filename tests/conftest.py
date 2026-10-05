@@ -340,6 +340,38 @@ def _no_share_rules_warm_guard_across_tests():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_fused_credentials(tmp_path_factory, monkeypatch):
+    """The suite starts signed OUT of Fused, whatever the machine holds.
+
+    `share_app._logged_in()` is a presence check on `~/.fused/credentials`. On
+    a signed-in developer machine every full `create_app` startup then kicked
+    the real share-rules warm (`_startup_warm_share_rules`), which spawns a
+    `_fused_share_app.py` shim subprocess that outlives pytest (daemon thread
+    + `subprocess.run`): ten orphaned shims per test_tasks_watch run. Tests
+    that need a signed-in state set FUSED_RENDER_FUSED_CREDENTIALS themselves
+    (a later monkeypatch wins over this one)."""
+    monkeypatch.setenv(
+        "FUSED_RENDER_FUSED_CREDENTIALS",
+        str(tmp_path_factory.getbasetemp() / "no-fused-credentials"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_share_shim(monkeypatch):
+    """No test may spawn the real `_fused_share_app.py` shim by accident.
+
+    Tests that sign in on purpose (test_share_file_*) reach the lazy
+    `_cached_rules()` warm, whose `subprocess.run` shim then outlives pytest as
+    an orphan (it hangs on the network). A test that drives the shim stubs
+    `share_app._run_shim` itself (a later monkeypatch wins over this one)."""
+    from fused_render import share_app
+
+    def _refuse(request, timeout):
+        return None, share_app._error("the real share shim is disabled under pytest", 502)
+
+    monkeypatch.setattr(share_app, "_run_shim", _refuse)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_appenv_contract_vars():
     """Every test starts with the contract vars UNSET and cannot leak them.
 

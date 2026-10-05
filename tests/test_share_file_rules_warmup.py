@@ -291,3 +291,12 @@ def test_warmup_retries_after_the_warm_itself_raises(tmp_path, monkeypatch):
     assert thread2 is not None
     thread2.join(timeout=5)
     assert called == [1]
+
+
+def test_suite_starts_signed_out_even_on_a_signed_in_machine():
+    """A developer machine has real `~/.fused/credentials`; with them visible,
+    every full `create_app` startup in an unrelated test kicked the real
+    share-rules warm, which spawned a `_fused_share_app.py` shim that
+    outlived pytest (10 per test_tasks_watch run). The conftest default must
+    hide them; a test that wants to be signed in sets the env var itself."""
+    assert share_app_mod._logged_in() is False
