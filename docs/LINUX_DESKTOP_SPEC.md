@@ -142,7 +142,9 @@ line in, one out; `ping`, `open`, `set_enabled`, `quit`). Callers:
 The server only installs hooks when the supervisor put
 `FUSED_RENDER_WINDOW_HOST_SOCKET` in its environment, so `fused-render serve`,
 macOS and Windows behave exactly as before. Preferences reports
-`native_windows.available` on Linux only while the host answers a ping.
+`native_windows.available` on Linux while the host answers a ping, or while
+the supervisor says one could run here (`FUSED_RENDER_WINDOW_HOST_LAUNCHABLE`)
+even though the preference being off left none running to ping.
 
 **Fallback matrix.** Every row ends in `xdg-open` browser tabs, logged once to
 `logs/supervisor.log` (and `logs/window-host.log` for the host's own reason):

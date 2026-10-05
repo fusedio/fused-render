@@ -9,6 +9,7 @@ run. Where no backend exists for the running OS (e.g. darwin) the import raises
 at module load; we skip rather than ERROR at collection, matching the sibling
 convention in tests/test_supervisor_linux_instance.py.
 """
+import os
 import queue
 import threading
 import time
@@ -620,6 +621,19 @@ def test_activation_token_reads_xdg_then_desktop_startup_id(monkeypatch):
     assert core._activation_token() == "new-token"
 
 
+def test_activation_token_is_single_use(monkeypatch):
+    """Single-use tokens: the first read must pop both env vars so a second
+    open in the same process (a later tray click, file open, or forwarded
+    deep link) can't resend one the first open already spent, and so a
+    process spawned afterward doesn't inherit it either."""
+    monkeypatch.setenv("XDG_ACTIVATION_TOKEN", "xdg-token")
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "legacy-id")
+    assert core._activation_token() == "xdg-token"
+    assert "XDG_ACTIVATION_TOKEN" not in os.environ
+    assert "DESKTOP_STARTUP_ID" not in os.environ
+    assert core._activation_token() is None
+
+
 def test_maybe_start_window_host_skips_a_host_when_the_preference_is_off(tmp_path, monkeypatch):
     import json
 
@@ -631,6 +645,9 @@ def test_maybe_start_window_host_skips_a_host_when_the_preference_is_off(tmp_pat
             pass
 
     (tmp_path / "prefs.json").write_text(json.dumps({"native_windows_enabled": False}))
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(preference_enabled=lambda state: False),
+                        raising=False)
     started = []
     monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
     core._maybe_start_window_host(_P(), 9000)
@@ -757,6 +774,9 @@ def test_maybe_start_window_host_resets_a_stale_failure_before_starting(
             pass
 
     (tmp_path / "prefs.json").write_text(json.dumps({"native_windows_enabled": True}))
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(preference_enabled=lambda state: True),
+                        raising=False)
     core._host_start_failed = True
     started = []
     monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))

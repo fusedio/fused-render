@@ -161,6 +161,15 @@ def test_usable_is_false_when_the_host_is_gone(sock):
     assert window_policy.native_hooks["usable"]() is False
 
 
+@needs_unix
+def test_usable_is_true_when_launchable_even_with_no_host_running(sock):
+    """The preference-off-after-restart case: nothing answers the ping, but
+    the supervisor says a host could run here, so the switch stays usable."""
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock, ipc.ENV_LAUNCHABLE: "1"},
+                           platform="linux")
+    assert window_policy.native_hooks["usable"]() is True
+
+
 # ---- Preferences "available" ------------------------------------------------
 
 def test_prefs_available_with_a_live_host():

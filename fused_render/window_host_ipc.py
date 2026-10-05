@@ -40,6 +40,13 @@ from pathlib import Path
 #: platform are untouched.
 ENV_SOCKET = "FUSED_RENDER_WINDOW_HOST_SOCKET"
 
+#: The supervisor sets this (to "1") when a host's dependencies and display are
+#: present, regardless of whether the preference that would start it is on.
+#: The server's `usable` hook trusts this over a failed ping, so a Preferences
+#: page restarted with the pref off still shows the switch instead of hiding
+#: it because nothing answers.
+ENV_LAUNCHABLE = "FUSED_RENDER_WINDOW_HOST_LAUNCHABLE"
+
 SOCKET_NAME = "window-host.sock"
 MAX_LINE = 64 * 1024
 _CLIENT_DEADLINE_S = 5.0

@@ -241,6 +241,27 @@ def test_server_socket_env_only_when_a_host_is_wanted(paths, monkeypatch):
     assert windows.server_environment(paths) == {}
 
 
+def test_server_env_adds_launchable_when_the_toolkit_is_present(paths, monkeypatch):
+    monkeypatch.setattr(windows, "_toolkit_present", lambda: True)
+    assert windows.server_environment(paths) == {
+        ipc.ENV_SOCKET: str(ipc.socket_path(paths.runtime)),
+        ipc.ENV_LAUNCHABLE: "1"}
+
+
+def test_launchable_follows_wanted_and_the_toolkit_check(paths, monkeypatch):
+    monkeypatch.setattr(windows, "_toolkit_present", lambda: True)
+    assert windows.launchable() is True
+    monkeypatch.delenv("WAYLAND_DISPLAY")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    assert windows.launchable() is False
+
+
+def test_toolkit_present_is_false_without_pygobject():
+    # No gi in this test environment, so the real dependency check runs and
+    # reports exactly what `load_toolkit` would also find missing.
+    assert windows._toolkit_present() is False
+
+
 def _timeout_error():
     error = ipc.HostUnavailable("timed out")
     error.__cause__ = TimeoutError("timed out")

@@ -598,8 +598,16 @@ def _activation_token() -> str | None:
     already-running primary's perspective has no such token available here —
     `instance.py`'s wire frame carries only the command, not the sending
     process's environment — so a forwarded open omits it, same as before
-    activation tokens existed."""
-    return os.environ.get("XDG_ACTIVATION_TOKEN") or os.environ.get("DESKTOP_STARTUP_ID") or None
+    activation tokens existed.
+
+    Popped, not merely read: both are single-use, so a second open in the
+    same process (a later tray click, file open, or forwarded deep link)
+    must not resend the one the first open already spent, and a process this
+    one spawns afterward (the window host included) must not inherit it
+    either."""
+    xdg_token = os.environ.pop("XDG_ACTIVATION_TOKEN", None)
+    startup_id = os.environ.pop("DESKTOP_STARTUP_ID", None)
+    return xdg_token or startup_id or None
 
 
 def _open_browser(url: str, activation_token: str | None = None) -> None:

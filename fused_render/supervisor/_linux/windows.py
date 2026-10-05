@@ -5,7 +5,11 @@ browser): the host being absent, declining, crashed or never startable all
 collapse into False, so the app always has a way to show its UI. The reason is
 logged once per session, never per click.
 
-Stdlib only; no GTK is imported here — the host is a separate process.
+Stdlib only; GTK itself is never loaded here — the host is a separate
+process. `launchable()` probes for the GTK/WebKit2 typelibs through `gi`
+(PyGObject's loader), which is enough to answer "could a host run here" from
+a typelib lookup alone, without opening a display connection or touching
+`gi.repository`.
 """
 from __future__ import annotations
 
@@ -58,12 +62,44 @@ def wanted() -> bool:
     return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
 
 
+def _toolkit_present() -> bool:
+    """Whether GTK 3 / WebKit2 4.1 are importable — the same dependency
+    `window_host.py`'s `load_toolkit` needs, checked by typelib lookup alone
+    (`gi.require_version`, no `gi.repository` import) so it stays cheap
+    enough to call from this long-running process instead of the host's
+    own, which also opens a display connection."""
+    try:
+        import gi
+    except ImportError:
+        return False
+    try:
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("WebKit2", "4.1")
+    except ValueError:
+        return False
+    return True
+
+
+def launchable() -> bool:
+    """Whether a host could run here at all — `wanted()`'s environment check
+    plus the toolkit dependency — independent of whether one is running right
+    now. The server reports this (`server_environment`, below) so its
+    Preferences section can stay up, and the switch stay flippable, across a
+    restart with the preference off and no host to ping."""
+    return wanted() and _toolkit_present()
+
+
 def server_environment(paths: DesktopPaths) -> dict[str, str]:
-    """Env for the SERVER process: where to reach the host. Empty when no
-    host will run, so the server installs no hooks and behaves as before."""
+    """Env for the SERVER process: where to reach the host, and whether one
+    could run here at all. Empty when no host will run, so the server
+    installs no hooks and behaves as before."""
     if not wanted():
         return {}
-    return {ipc.ENV_SOCKET: str(ipc.socket_path(paths.runtime))}
+    env = {ipc.ENV_SOCKET: str(ipc.socket_path(paths.runtime))}
+    if _toolkit_present():
+        env[ipc.ENV_LAUNCHABLE] = "1"
+    return env
 
 
 class WindowHost:
