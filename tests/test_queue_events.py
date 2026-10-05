@@ -37,6 +37,14 @@ from fused_render.server import create_app
 AGENT_DIR = os.path.join("fused_render", "claude_agent")
 HEADERS = {"X-Fused": "1"}
 
+#: The real `ensure_duties_waiter`, captured at import — before the autouse
+#: `_no_duties_waiter_thread` fixture (conftest.py) replaces it with a no-op
+#: for every test in this module. The two tests below that are ABOUT
+#: `_startup_queue_manager`'s resume behavior grab it from here rather than
+#: from `queue_manager.ensure_duties_waiter` at test-body time, which would
+#: already be the patched no-op.
+_REAL_ENSURE_DUTIES_WAITER = queue_manager.ensure_duties_waiter
+
 
 def _load(name):
     path = os.path.join(AGENT_DIR, name + ".py")
@@ -879,6 +887,8 @@ def test_startup_resumes_the_lines_when_the_flag_is_on(tmp_path, flag, monkeypat
     happens to arrive first. On a daemon thread, because resuming can spawn
     several Claude processes and must not hold up the first page paint."""
     flag(True)
+    monkeypatch.setattr(queue_manager, "ensure_duties_waiter",
+                        _REAL_ENSURE_DUTIES_WAITER)
     app = create_app(start_dir=str(tmp_path))
     reconciled = []
 
@@ -898,6 +908,8 @@ def test_startup_resumes_the_lines_when_the_flag_is_on(tmp_path, flag, monkeypat
 def test_a_queue_that_cannot_resume_does_not_take_the_server_down(tmp_path, flag,
                                                                   monkeypatch):
     flag(True)
+    monkeypatch.setattr(queue_manager, "ensure_duties_waiter",
+                        _REAL_ENSURE_DUTIES_WAITER)
     app = create_app(start_dir=str(tmp_path))
 
     def boom():

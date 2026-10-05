@@ -132,6 +132,11 @@ def test_publish_calls_the_shim_with_the_resolved_viewer_token(client, tmp_path,
     captured = {}
 
     def fake_run_shim(request, timeout):
+        # `_cached_rules` kicks a background `rules` warm-up on an empty cache
+        # (a lean server's first read), and that thread reaches this stub too;
+        # only the publish request is the one under test.
+        if request.get("action") != "publish":
+            return {"rules": []}, None
         captured["request"] = request
         return {"url": "https://udf.fused.ai/tok/demo.html", "canvas_id": "c1",
                 "canvas_name": "demo_abc123", "share_token": "tok", "slug": "demo_abc123",

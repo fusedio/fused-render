@@ -54,7 +54,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from fused_render import jobs
+from fused_render import _startonce, jobs
 from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
@@ -757,6 +757,50 @@ def _mirror_ok(model: str) -> str:
         return ""
 
 
+def _await_hardware_cache() -> hw_detect.HardwareInfo | None:
+    """Waits briefly and boundedly for an in-flight hardware probe to land,
+    for `_child_env`'s budget computation at spawn time.
+
+    `hw_detect.cached_hardware()` kicks the background refresh thread awake
+    on a cold cache (`hw_detect._probe_once_if_missing`) but stays a
+    synchronous read itself — it answers `None` immediately rather than
+    waiting for that thread. That is the right contract for the
+    verdict/estimate paths `fit.py`/`speed.py` sit on, which must never
+    block, but wrong for a spawn: spawn is already a slow path (it is
+    already paying for a worker process to come up), and whatever budget
+    `_child_env` bakes into `FUSED_AI_MEMORY_BUDGET_BYTES` now outlives the
+    worker's entire life — a cold cache caught here would otherwise commit
+    a worker to the no-GPU-known budget forever, with nothing left to
+    correct it.
+
+    Bounded by `hw_detect._PROBE_WAIT_S`, NOT `_PROBE_TIMEOUT_S`: the latter
+    caps ONE vendor-tool spawn, while the probe runs several in sequence, so
+    a single per-tool timeout would expire while a slow first tool is still
+    running and bake a no-GPU budget into the worker for its whole life.
+    A warm cache returns on the first read, no sleep at all; a cache that
+    is still cold after the bound answers `None`, exactly what an unawaited
+    read would have answered — a bound, not a guarantee that a reading
+    exists."""
+    hardware = hw_detect.cached_hardware()
+    if hardware is not None:
+        return hardware
+    deadline = time.monotonic() + hw_detect._PROBE_WAIT_S
+    while time.monotonic() < deadline:
+        # Read the flag BEFORE the cache: a probe that finished in between
+        # still gets its (successful) write picked up by the read below.
+        finished = _hardware_first_probe_done.is_set()
+        time.sleep(0.05)
+        hardware = hw_detect.cached_hardware()
+        if hardware is not None:
+            return hardware
+        if finished:
+            # The first probe ended (failed, or no vendor tools) and left the
+            # cache empty; nothing more is coming, so do not stall the spawn
+            # for the rest of the bound — proceed with the no-GPU budget.
+            return None
+    return None
+
+
 def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     """Environment for a worker process.
 
@@ -801,7 +845,11 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     the computation answers `None` (RAM itself unreadable), for the same
     "this environment is a copy of the server's" reason `FUSED_MODEL_
     MIRROR_OK` is: a stale or operator-set value must not silently outlive
-    the fresh computation that is supposed to produce it.
+    the fresh computation that is supposed to produce it. `_await_hardware_
+    cache()` waits briefly and boundedly for a cold hardware cache to land
+    before this computation runs, so a wrong-for-the-machine budget is not
+    baked in and carried for the worker's whole life just because this
+    happened to be the first spawn since the process started.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
@@ -814,7 +862,7 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
-    budget = fit.available_budget_bytes()
+    budget = fit.available_budget_bytes(hardware=_await_hardware_cache())
     if budget is not None:
         env["FUSED_AI_MEMORY_BUDGET_BYTES"] = str(int(budget))
     else:
@@ -1499,6 +1547,14 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     runner = _runner_or_raise(capability)
     _require_build_tools()
 
+    # A worker is about to become resident (joined below, or spawned fresh) —
+    # either way something now needs reaping once it idles out. `start_reaper`
+    # is idempotent (a module-level thread handle), so calling it on every
+    # load is just as correct as calling it once at process startup, and is
+    # the only thing that starts it at all in lean mode, which skips the
+    # `@on_startup` hooks that would otherwise have done it.
+    start_reaper()
+
     job = job_id_for(model)
     with _lock:
         current = _workers.get(capability)
@@ -2082,7 +2138,7 @@ def evict_stale_engines() -> list[str]:
 #: length to fire.
 _REAPER_TICK_S = 30.0
 
-_reaper_thread: threading.Thread | None = None
+_reaper_starter = _startonce.StartOnceThread()
 
 
 #: Margin added to a call's own request timeout before a still-positive
@@ -2246,21 +2302,17 @@ def reap_idle(now: float) -> list[str]:
 def start_reaper() -> None:
     """Start the idle-reaper thread, once per process.
 
-    Idempotent via a module-level handle rather than a lock-guarded flag: the
-    startup hook that calls this (server/app.py) can run more than once across
-    the test suite's many `create_app` calls in one process, and a second
-    thread ticking the same table is pure waste, not a correctness bug — but
-    a waste that compounds by one thread per app instance created in a long
-    test session.
+    Idempotent via `_reaper_starter` (a `StartOnceThread`) rather than a
+    lock-guarded flag: the startup hook that calls this (server/app.py) can
+    run more than once across the test suite's many `create_app` calls in
+    one process, and a second thread ticking the same table is pure waste,
+    not a correctness bug — but a waste that compounds by one thread per
+    app instance created in a long test session.
 
     The body is `sleep` then `reap_idle(time.monotonic())` — no wall clock, so
     a laptop that sleeps mid-tick loses no window (Key decisions: the whole
     feature is built on the monotonic clock never advancing across a suspend).
     """
-    global _reaper_thread
-    if _reaper_thread is not None and _reaper_thread.is_alive():
-        return
-
     def run() -> None:
         while True:
             time.sleep(_REAPER_TICK_S)
@@ -2269,8 +2321,8 @@ def start_reaper() -> None:
             except Exception:  # noqa: BLE001 - a tick must never kill the loop
                 logger.exception("idle-reaper tick failed")
 
-    _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
-    _reaper_thread.start()
+    _reaper_starter.ensure(
+        lambda: threading.Thread(target=run, name="ai-idle-reaper", daemon=True))
 
 
 #: How often the background hardware-detection thread re-probes once it has
@@ -2285,7 +2337,12 @@ def start_reaper() -> None:
 #: real subprocess spawn (50-500ms) that has no business running often.
 _HARDWARE_REFRESH_INTERVAL_S = 6 * 60 * 60  # 6 hours
 
-_hardware_refresh_thread: threading.Thread | None = None
+_hardware_refresh_starter = _startonce.StartOnceThread()
+
+
+#: Set once the refresh thread's FIRST probe has ended, success or failure —
+#: lets `_await_hardware_cache` stop waiting on a cache that will stay empty.
+_hardware_first_probe_done = threading.Event()
 
 
 def _hardware_refresh_tick() -> None:
@@ -2309,10 +2366,11 @@ def start_hardware_refresh() -> None:
     silently take their "no hardware known" branch forever. This is that
     something.
 
-    Idempotent via a module-level handle, for the identical reason
-    `start_reaper` is: the startup hook that calls this (`server/app.py`)
-    can run more than once across the test suite's many `create_app` calls
-    in one process.
+    Idempotent via `_hardware_refresh_starter` (a `StartOnceThread`), for
+    the identical reason `start_reaper` is: this can run more than once
+    across the test suite's many `create_app` calls in one process, and
+    now also from `hw_detect.cached_hardware()`'s own cache-miss path, the
+    actual place every reader's first call to it now goes through.
 
     **One probe fires immediately**, unlike the reaper's sleep-then-tick
     shape — a fit verdict on the very first catalog request after server
@@ -2322,21 +2380,21 @@ def start_hardware_refresh() -> None:
     past `hw_detect._PROBE_TIMEOUT_S`, an `OSError` writing the cache) is
     logged and never kills the loop — the next tick tries again.
     """
-    global _hardware_refresh_thread
-    if _hardware_refresh_thread is not None and _hardware_refresh_thread.is_alive():
-        return
-
     def run() -> None:
         while True:
             try:
                 _hardware_refresh_tick()
             except Exception:  # noqa: BLE001 - a tick must never kill the loop
                 logger.exception("hardware-refresh tick failed")
+            finally:
+                _hardware_first_probe_done.set()
             time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
 
-    _hardware_refresh_thread = threading.Thread(
-        target=run, name="ai-hardware-refresh", daemon=True)
-    _hardware_refresh_thread.start()
+    def make() -> threading.Thread:
+        _hardware_first_probe_done.clear()
+        return threading.Thread(target=run, name="ai-hardware-refresh", daemon=True)
+
+    _hardware_refresh_starter.ensure(make)
 
 
 #: How often the background Hub-metadata-warming thread re-sweeps the
@@ -2352,7 +2410,7 @@ def start_hardware_refresh() -> None:
 #: of the curated list is a rare event on the wire, not a busy loop.
 _HUB_METADATA_REFRESH_INTERVAL_S = 20 * 60  # 20 minutes
 
-_hub_metadata_refresh_thread: threading.Thread | None = None
+_hub_metadata_refresh_starter = _startonce.StartOnceThread()
 
 
 def _hub_metadata_refresh_tick() -> None:
@@ -2388,17 +2446,14 @@ def start_hub_metadata_refresh() -> None:
     of exactly the split `hw_detect.py` already drew for the identical
     reason: `get()` is a synchronous `urllib` GET with an 8-second timeout,
     and `describe_catalog` backs a route the picker polls. This mirrors
-    `start_hardware_refresh`'s shape exactly — idempotent via a module-level
-    thread handle, one sweep fires immediately so the first catalog request
-    after startup already has warm entries rather than waiting a full
-    interval, then the thread sleeps and re-sweeps forever. `ai_runtime.py`
-    now calls `hub_metadata.cached()` only, which is a plain disk read and
-    never touches the network — this thread is the only writer.
+    `start_hardware_refresh`'s shape exactly — idempotent via
+    `_hub_metadata_refresh_starter` (a `StartOnceThread`), one sweep fires
+    immediately so the first catalog request after startup already has
+    warm entries rather than waiting a full interval, then the thread
+    sleeps and re-sweeps forever. `ai_runtime.py` now calls
+    `hub_metadata.cached()` only, which is a plain disk read and never
+    touches the network — this thread is the only writer.
     """
-    global _hub_metadata_refresh_thread
-    if _hub_metadata_refresh_thread is not None and _hub_metadata_refresh_thread.is_alive():
-        return
-
     def run() -> None:
         while True:
             try:
@@ -2407,9 +2462,8 @@ def start_hub_metadata_refresh() -> None:
                 logger.exception("hub-metadata refresh tick failed")
             time.sleep(_HUB_METADATA_REFRESH_INTERVAL_S)
 
-    _hub_metadata_refresh_thread = threading.Thread(
-        target=run, name="ai-hub-metadata-refresh", daemon=True)
-    _hub_metadata_refresh_thread.start()
+    _hub_metadata_refresh_starter.ensure(
+        lambda: threading.Thread(target=run, name="ai-hub-metadata-refresh", daemon=True))
 
 
 #: One delta per BUILT hub-catalog pool per day (SPEC docs/HUB_CATALOG_SPEC.md,

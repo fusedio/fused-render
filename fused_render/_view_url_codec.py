@@ -102,6 +102,12 @@ def view_url(port: int, fs_path: str | None) -> str:
     return f"http://127.0.0.1:{port}" + view_url_path(fs_path)
 
 
+def embed_url(port: int, fs_path: str) -> str:
+    """Full local URL form of `embed_url_path` (host/port prefixed) — what
+    `fused-render open` points the browser at."""
+    return f"http://127.0.0.1:{port}" + embed_url_path(fs_path)
+
+
 # A launch argument is a URL (not a filesystem path) when it is a
 # `fused-render:` deep link, a `file:` URI, or any `<scheme>://…`. A Windows
 # drive path ('C:\\…') is deliberately NOT a URL: it has no '://' and neither
