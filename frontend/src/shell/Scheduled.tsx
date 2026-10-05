@@ -49,7 +49,15 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   getConfig,
@@ -339,8 +347,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // `onQueued`, and a new one on every listing would be a new prop on every row
   // a second. What the press needs is the latest listing, and that is what a ref
   // read at press time is.
+  // Written on COMMIT, not during render (Bugbot, #1384): the listing lands as
+  // a transition now, and a transition render can be thrown away before it
+  // commits — a ref written mid-render would then hold rows the page never
+  // painted, and a Skip pressed in that window would reorder a line nobody
+  // was looking at. The layout effect runs on every commit, before any event
+  // can fire, so a press always reads the rows AS PAINTED.
   const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
+  useLayoutEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
   const noteQueued = useCallback((override: QueueOverride) => {
     setQueueOverrides((cur) => skipLine(cur, tasksRef.current, override));
   }, []);
@@ -793,21 +809,34 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   useEffect(
     () =>
       subscribeListing((ev) => {
-        setTasks(ev.rows);
-        setTasksFailed(ev.failed);
-        setTasksLoaded(true);
-        // THE SERVER HAS SPOKEN about every key it named, so every claim about
-        // one of them is over — right or wrong (tasks-lib.expireQueueOverrides).
-        // A full listing speaks about every key it holds; a delta about exactly
-        // the rows and `gone` keys it carries — which is the fast half of the
-        // same rule, since every queue verb rings the watcher and the delta it
-        // rings usually lands within milliseconds of the press that made the
-        // claim. A FAILED read has said nothing, and retires nothing.
-        if (ev.failed) return;
-        const spoken = ev.delta
-          ? [...ev.delta.rows.map((t) => t.key), ...ev.delta.gone]
-          : ev.rows.map((t) => t.key);
-        setQueueOverrides((cur) => expireQueueOverrides(cur, spoken));
+        // A TRANSITION, the whole listing at once (2026-10-03, macOS 14 native
+        // windows). Every publish — the 20 s floor read, every change-feed
+        // delta — hands this page a fresh `rows` array, and the rows are not
+        // memoised, so each one re-renders the entire list. That is fine at
+        // 40 ms in Chromium; on Safari 17's engine with 700 rows it is a
+        // 60–80 ms pause on fast hardware and several hundred on a 2017 Mac,
+        // landing every twenty seconds under the pointer. Marked as a
+        // transition, React renders it in slices and lets hover, scroll and
+        // typing through between them. The four writes travel together so the
+        // skeleton, the failure line and the queue claims never disagree with
+        // the rows for a frame.
+        startTransition(() => {
+          setTasks(ev.rows);
+          setTasksFailed(ev.failed);
+          setTasksLoaded(true);
+          // THE SERVER HAS SPOKEN about every key it named, so every claim about
+          // one of them is over — right or wrong (tasks-lib.expireQueueOverrides).
+          // A full listing speaks about every key it holds; a delta about exactly
+          // the rows and `gone` keys it carries — which is the fast half of the
+          // same rule, since every queue verb rings the watcher and the delta it
+          // rings usually lands within milliseconds of the press that made the
+          // claim. A FAILED read has said nothing, and retires nothing.
+          if (ev.failed) return;
+          const spoken = ev.delta
+            ? [...ev.delta.rows.map((t) => t.key), ...ev.delta.gone]
+            : ev.rows.map((t) => t.key);
+          setQueueOverrides((cur) => expireQueueOverrides(cur, spoken));
+        });
       }),
     [],
   );

@@ -133,6 +133,34 @@
   border-top: 1px solid var(--border);
 }
 
+/* A ROW OUT OF THE BAND (ScheduleTaskViews `FoldedNode`, 2026-10-05): the
+   node's box at the height its row measured, holding the title as muted text
+   so find-in-page still reaches it. `content-box`, because the measured
+   height is the row's `clientHeight` and the hairline above is added back by
+   the rule above, exactly as it is on the real node. The minimum is the
+   stylesheet's own closed-row height, for a placeholder nothing has measured
+   yet; a real measurement replaces it inline. The text sits where the title
+   starts — past the gutter, the ring and the id's seat — so a reveal does not
+   read as the words jumping sideways. */
+.tasks-node.is-folded {
+  box-sizing: content-box;
+  min-height: calc(16px + 2 * var(--tasks-row-pad-y));
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  padding-left: calc(var(--tasks-msg-ring-x) + 62px);
+  padding-right: var(--tasks-row-pad);
+  font-size: 13px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+.tasks-fold-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* -- The rail's geometry --------------------------------------------------------
    TWO columns down the node, one ring slot apart, and every indent on the page is
    derived from the first of them.
