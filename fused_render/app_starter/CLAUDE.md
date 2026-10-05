@@ -6,6 +6,8 @@ Page runs inside explorer, which injects `fused` bridge: `fused.params` (URL-syn
 
 Before non-trivial changes, invoke **`fused-render-authoring`** skill — full contract for `.html` views + `.py` data files: bridge, params wiring, file IO, `.fused/data` vs `.fused/cache` rules, theming, debugging blank views / traceback overlays.
 
+**Build order — html first, hard rule.** First file you write is `index.html`, rendering stub data: user is watching the app pane, a `.py` is invisible until wired. No `.py` until that renders; then write `main()` and swap stub → `fused.runPython`. Detail: authoring skill's "Build order" section.
+
 ## `.fused/`
 
 Hidden `.fused/` at app root, created for you: `data/` = state app owns, can't rebuild; `cache/` = derived bytes, deletable anytime; `meta.json` = where app was set up (mismatched `app_dir` → folder moved/copied → distrust absolute-path keys).
