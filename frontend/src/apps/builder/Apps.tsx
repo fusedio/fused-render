@@ -221,9 +221,18 @@ export default function Apps({ config }: { config: Config }) {
   // behind it is rebuilt and the reader keeps their place; a filter change
   // asks for the first page. A failed fetch keeps whatever grid is drawn —
   // the error is its own state, not a phase that blanks the cards.
+  //
+  // "Is this a refetch" is "did `nonce` change since this effect last ran",
+  // held in a ref — NOT `nonce > 0`. After the first create or sync that
+  // test would stay true for every later chip click and search keystroke,
+  // and each would carry `fresh=1` and put the workspace walk back into the
+  // request path, which is exactly what the server's snapshot exists to
+  // remove.
+  const seenNonce = useRef(nonce);
   useEffect(() => {
     const ctl = new AbortController();
-    const refetch = nonce > 0;
+    const refetch = nonce !== seenNonce.current;
+    seenNonce.current = nonce;
     const limit = refetch
       ? Math.max(PAGE_SIZE, firstPages.get(filterKey)?.apps.length ?? 0)
       : PAGE_SIZE;

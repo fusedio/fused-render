@@ -133,6 +133,11 @@ def _discovery_rows(fresh: bool) -> list[dict]:
 
     root = fused_dir()
     now = time.monotonic()
+    # The lock covers the BUILD, not just the swap: a second request arriving
+    # mid-build waits and then reads the finished snapshot rather than walking
+    # again beside it. A `fresh` request that arrives mid-build rebuilds once
+    # more after the first build lands — one extra walk on the create path,
+    # which is the price of never answering a create with the pre-create rows.
     with _snapshot_lock:
         if (not fresh and _snapshot is not None and _snapshot[0] == root
                 and now - _snapshot[1] < SNAPSHOT_TTL_S):
@@ -182,7 +187,9 @@ def _paged_apps(offset: int, limit: int, tag: str | None, category: str | None,
     q = q.strip().lower()
     shown = [r for r in rows if _matches(r, tag, category, q)]
     shown.sort(key=lambda a: (-_app_recency(a), a["name"].casefold()))
-    page = [dict(app_listing.hydrate_app(dict(r))) for r in shown[offset:offset + limit]]
+    # Copy, then hydrate: the snapshot's rows are shared between requests and
+    # `hydrate_app` fills its row in place.
+    page = [app_listing.hydrate_app(dict(r)) for r in shown[offset:offset + limit]]
     return {
         "apps": page,
         "offset": offset,
