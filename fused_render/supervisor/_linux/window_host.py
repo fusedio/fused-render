@@ -2,10 +2,14 @@
 app's windows, the counterpart of macOS's `mac_window.WindowManager`.
 
 Run as ``python -I -m fused_render.supervisor._linux.window_host --port N
---socket PATH --state DIR [--disabled]`` by the supervisor (`windows.py`),
-after the server is ready. It listens on a unix socket (`window_host_ipc`) for
-``open`` / ``set_enabled`` / ``quit``; the supervisor's own open path and the
-server's ``POST /api/windows/open`` / prefs hook all go through it.
+--socket PATH --state DIR`` by the supervisor (`windows.py`), after the server
+is ready. It listens on a unix socket (`window_host_ipc`) for ``open`` /
+``set_enabled`` / ``quit``; the supervisor's own open path and the server's
+``POST /api/windows/open`` / prefs hook all go through it. Its enabled state at
+startup comes from `native_windows_enabled` in prefs.json, read once the
+socket is listening (see `main`'s `on_listening`) rather than passed on the
+command line, so a preference PUT that races the host's startup is never
+lost.
 
 Why a separate process: GTK wants the main thread of a process that owns a
 display connection, the supervisor's main thread is its event loop, and a
@@ -556,7 +560,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--socket", required=True)
     parser.add_argument("--state", required=True)
-    parser.add_argument("--disabled", action="store_true")
     args = parser.parse_args(argv)
 
     def log(message: str) -> None:
@@ -579,9 +582,21 @@ def main(argv: list[str] | None = None) -> int:
 
     holder: dict = {}
     backend = GtkBackend(tk, lambda: holder["host"], Path(args.state), log)
-    holder["host"] = Host(args.port, backend, enabled=not args.disabled)
+    state_dir = Path(args.state)
+
+    def on_listening() -> None:
+        # Reads `native_windows_enabled` from prefs.json only once the socket
+        # is listening: a PUT that landed earlier is already on disk (prefs.py
+        # writes before it calls `apply`), and the backlog holds any `open` /
+        # `set_enabled` that arrives while this read is in flight, so nothing
+        # is dispatched against a Host that does not exist yet.
+        from fused_render.supervisor._linux.windows import preference_enabled
+
+        holder["host"] = Host(args.port, backend, enabled=preference_enabled(state_dir))
+
     stop = threading.Event()
-    window_host_ipc.serve(args.socket, holder["host"].dispatch, stop, log)
+    window_host_ipc.serve(args.socket, lambda command: holder["host"].dispatch(command),
+                          stop, log, on_listening=on_listening)
     # SIGTERM is how the supervisor's Job.close() stops this process after
     # (or instead of, if the `quit` IPC command never got through) asking
     # nicely; without a handler it would drop whatever `quit` didn't already

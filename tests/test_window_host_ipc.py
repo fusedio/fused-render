@@ -222,6 +222,58 @@ def test_serve_still_stops_on_a_real_listener_error(sock_path):
     assert not thread.is_alive()
 
 
+def test_on_listening_runs_before_any_dispatch(sock_path):
+    # A connection attempted while `on_listening` is still running must queue
+    # in the backlog, not reach the handler before that callback finishes —
+    # the window_host reads its enabled state there, and no command may be
+    # dispatched against a Host that does not exist yet. `serve()` itself
+    # calls `on_listening` synchronously before returning, so the call to
+    # `serve()` has to be made from its own thread for this test to observe
+    # the gate.
+    order = []
+    gate = threading.Event()
+    stop = threading.Event()
+    started = {}
+
+    def on_listening():
+        order.append("on_listening-start")
+        gate.wait(3)
+        order.append("on_listening-end")
+
+    def handler(cmd):
+        order.append("dispatch")
+        return {"ok": True}
+
+    def start_serving():
+        started["thread"] = ipc.serve(sock_path, handler, stop, on_listening=on_listening)
+
+    starter = threading.Thread(target=start_serving)
+    starter.start()
+    try:
+        deadline = time.monotonic() + 3
+        while not os.path.exists(sock_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        client_result = {}
+
+        def client():
+            client_result["reply"] = ipc.request(sock_path, {"cmd": "ping"}, timeout=3)
+
+        client_thread = threading.Thread(target=client)
+        client_thread.start()
+        time.sleep(0.2)  # the connection queues in the backlog while the gate holds
+        assert order == ["on_listening-start"]
+        gate.set()
+        starter.join(timeout=3)
+        client_thread.join(timeout=3)
+        assert client_result["reply"] == {"ok": True}
+        assert order == ["on_listening-start", "on_listening-end", "dispatch"]
+    finally:
+        stop.set()
+        if started.get("thread") is not None:
+            started["thread"].join(timeout=3)
+
+
 def test_serve_replaces_a_stale_socket_file(sock_path):
     s = socket.socket(socket.AF_UNIX)
     s.bind(sock_path)

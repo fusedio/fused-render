@@ -98,7 +98,6 @@ def test_spawn_command_follows_repo_conventions(paths):
     assert args[args.index("--port") + 1] == "8123"
     assert args[args.index("--socket") + 1] == str(ipc.socket_path(paths.runtime))
     assert args[args.index("--state") + 1] == str(paths.state)
-    assert "--disabled" not in args
     assert out == paths.logs / "window-host.log"
 
 
@@ -117,7 +116,11 @@ def test_start_then_open_goes_to_the_host(paths):
 
 
 @needs_unix
-def test_preference_off_starts_the_host_disabled(paths):
+def test_start_does_not_tell_the_host_the_preference_on_the_command_line(paths):
+    """The preference is no longer threaded through argv at all — the host
+    reads it from prefs.json itself once its socket is listening
+    (`window_host.main`'s `on_listening`), so a PUT that races the host's
+    startup is never lost."""
     (paths.state / "prefs.json").write_text(json.dumps({"native_windows_enabled": False}))
     host = make(paths)
     stop = threading.Event()
@@ -126,7 +129,8 @@ def test_preference_off_starts_the_host_disabled(paths):
         host.start()
     finally:
         stop.set()
-    assert "--disabled" in FakeJob.instances[0].spawned[0][1]
+    args = FakeJob.instances[0].spawned[0][1]
+    assert not any("disabled" in arg for arg in args)
 
 
 @needs_unix

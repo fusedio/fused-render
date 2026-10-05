@@ -117,7 +117,7 @@ def ping(path, timeout: float = 0.3) -> bool:
         return False
 
 
-def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
+def serve(path, handler, stop: threading.Event, log=None, on_listening=None) -> threading.Thread:
     """Listen on ``path`` until ``stop`` is set, answering each connection with
     ``handler(command_dict) -> reply_dict`` on a thread per connection, so a
     ``ping`` gets through while an ``open`` or ``set_enabled`` waits on the GTK
@@ -125,7 +125,15 @@ def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
     window go through ``backend.run_on_main``. A handler that raises, or a client that sends junk or stalls, yields an
     ``ok: false`` reply for that client only — never a dead accept loop. The
     socket is created 0600 (the runtime dir is 0700 already; this is belt and
-    braces)."""
+    braces).
+
+    ``on_listening``, if given, is called synchronously in THIS (the caller's)
+    thread after ``listener.listen()`` but before the accept-loop thread
+    starts — so a caller that reads its own state (e.g. a preference from
+    disk) there is guaranteed to finish before any connection is accepted and
+    dispatched to ``handler``. A connection that arrives while it runs simply
+    queues in the listen backlog; nothing is dropped, and no command jumps
+    ahead of that read."""
     path = os.fspath(path)
     try:
         os.unlink(path)  # a crashed predecessor's leftover; bind would EADDRINUSE
@@ -136,6 +144,8 @@ def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
     os.chmod(path, 0o600)
     listener.listen(8)
     listener.setblocking(False)
+    if on_listening is not None:
+        on_listening()
 
     def loop() -> None:
         warned_transient = False

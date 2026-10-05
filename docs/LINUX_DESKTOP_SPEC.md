@@ -131,9 +131,13 @@ windows** preference), decision D1311.
 (GTK3 + WebKit2 4.1 through PyGObject), is spawned by the supervisor once, *after*
 the server is ready, in its own `Job` so it dies with the supervisor. It starts
 whenever the platform can run one at all (a display plus the toolkit typelibs),
-regardless of the `native_windows_enabled` preference — the preference only
-sets the host's initial enabled state at spawn (`--disabled`) and is applied
-live afterwards. It listens on `$XDG_RUNTIME_DIR/fused-render/window-host.sock`
+regardless of the `native_windows_enabled` preference — the host reads that
+preference from prefs.json itself, once its socket is listening, for its
+initial enabled state, and the preference is applied live afterwards. A
+preference PUT writes prefs.json before it calls `apply`, so a write that
+races the host's startup is already on disk by the time the host reads it;
+nothing is lost, and no command dispatches before that read. It listens on
+`$XDG_RUNTIME_DIR/fused-render/window-host.sock`
 (`window_host_ipc.py`: one JSON line in, one out; `ping`, `open`, `set_enabled`,
 `quit`). Callers:
 

@@ -662,8 +662,8 @@ def test_start_window_host_at_launch_starts_regardless_of_the_preference(
         tmp_path, monkeypatch):
     """The host is started whenever the platform can run one at all — the
     `native_windows_enabled` preference never gates the launch-time start; it
-    only decides the host's initial `enabled` state (`WindowHost.start`'s
-    `--disabled` argument) and is toggled live afterwards."""
+    only decides the host's initial `enabled` state (the host reads it from
+    prefs.json itself once listening) and is toggled live afterwards."""
     import json
 
     class _P:

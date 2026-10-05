@@ -635,9 +635,9 @@ def _start_window_host_at_launch(paths: DesktopPaths, port: int) -> None:
     """Called once from `run()`, right after the server is ready: records
     `paths`/`port` for `_resolve_window_host` to wait on, and starts the host
     whenever the platform can run one at all, regardless of the
-    `native_windows_enabled` preference — the host itself is told the current
-    preference at spawn (`WindowHost.start`'s `--disabled` argument) and the
-    preference PUT toggles it live afterwards (`apply` -> `set_enabled`)."""
+    `native_windows_enabled` preference — the host reads the preference from
+    prefs.json itself once its socket is listening, and the preference PUT
+    toggles it live afterwards (`apply` -> `set_enabled`)."""
     global _host_paths, _host_port
     _host_paths, _host_port = paths, port
     module = getattr(_backend, "windows", None)

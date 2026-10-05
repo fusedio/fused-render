@@ -41,7 +41,9 @@ _QUIT_EXIT_WAIT_S = 2.0
 
 def preference_enabled(state_dir: Path) -> bool:
     """`native_windows_enabled` from prefs.json (default ON, opt-out), read
-    without importing the server's prefs module (it pulls in fastapi)."""
+    without importing the server's prefs module (it pulls in fastapi). Also
+    the host's own read of its startup `enabled` state (`window_host.py`'s
+    `on_listening`), once its socket is listening."""
     try:
         data = json.loads((Path(state_dir) / "prefs.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -134,8 +136,6 @@ class WindowHost:
                      "--port", str(self._port),
                      "--socket", str(self.socket),
                      "--state", str(self._paths.state)]
-        if not preference_enabled(self._paths.state):
-            arguments.append("--disabled")
         job = self._job_factory()
         self._job = job
         try:
