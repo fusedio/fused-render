@@ -54,7 +54,51 @@ def sched_cancel(ids_file):
         assert schedule.cancel(entry_id), entry_id
 
 
-COMMANDS = {"lockrmw": lockrmw, "sched_create": sched_create,
+def lean_serve(start_dir, marker_dir):
+    """A lean `fused-render open` process, minus the socket: build the real
+    lean app and run its real lifespan (so whatever lean starts at startup
+    starts here), with the scheduler body replaced by a marker file so the test
+    can see WHO became leader. The lease, the waiter thread and the takeover are
+    all real. Never makes a request. Runs until killed."""
+    import asyncio
+
+    from fused_render import schedule, schedule_wake
+
+    schedule_wake.sync = lambda due: False
+
+    def fake_start():
+        with open(os.path.join(marker_dir, f"leader-{os.getpid()}"), "w") as f:
+            f.write("1")
+
+    schedule.start = fake_start
+
+    from fused_render.server.app import create_app
+
+    app = create_app(start_dir=start_dir, lean=True)
+
+    async def main():
+        async with app.router.lifespan_context(app):
+            print("ready", flush=True)
+            await asyncio.sleep(600)
+
+    asyncio.run(main())
+
+
+def stage_core(go_file):
+    """Wait for the starting gun, stage the core templates, and then keep
+    checking the staged dir stays complete — a second process wiping the live
+    dir mid-swap is exactly what this catches."""
+    from fused_render import core_templates
+
+    while not os.path.exists(go_file):
+        time.sleep(0.001)
+    core = core_templates.ensure_core_templates()
+    for _ in range(100):
+        assert os.path.isdir(os.path.join(core, "vendor")), "core templates vanished"
+        time.sleep(0.01)
+
+
+COMMANDS = {"stage_core": stage_core, "lean_serve": lean_serve, "lockrmw": lockrmw, "sched_create": sched_create,
             "sched_cancel": sched_cancel,
             "sched_hold_watch": sched_hold_watch}
 

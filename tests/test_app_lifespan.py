@@ -197,6 +197,10 @@ def test_create_app_registers_nothing_on_the_deprecated_path():
 #: `on_startup_always` in app.py.
 EXPECTED_STARTUP_LEAN = [
     "_startup_pooled_client",
+    # Task scheduling must work in lean apps, and the machine-duties lease only
+    # hands over promptly if every live process is parked on it from startup.
+    "_startup_queue_manager",
+    "_startup_tasks_watch",
 ]
 
 #: The shutdown handlers registered even in `lean` — anything that can start

@@ -227,3 +227,79 @@ def test_a_watch_refreshes_its_heartbeat_on_the_stored_entry(sched_home, monkeyp
     schedule._beats.clear()
     schedule._heartbeat("E1")
     assert _entry()["watcher_at"] > "2020-01-01T00:00:01"
+
+
+# ------------------------------------------------------------------ H3/H4
+
+
+def _markers(marker_dir):
+    return sorted(n for n in os.listdir(marker_dir) if n.startswith("leader-"))
+
+
+def _until(cond, timeout=20.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        value = cond()
+        if value:
+            return value
+        time.sleep(0.05)
+    return cond()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="kills a process by signal")
+def test_simultaneous_lean_processes_elect_one_leader_and_hand_over_without_a_request(tmp_path):
+    """Several `fused-render open` processes launched at once, none ever asked
+    for /api/tasks: exactly one runs the scheduler, and when it is killed
+    another takes over at once — which only works if EVERY lean process parked
+    a waiter on the lease at startup."""
+    marker_dir = tmp_path / "markers"
+    marker_dir.mkdir()
+    start_dir = tmp_path / "proj"
+    start_dir.mkdir()
+    env = dict(os.environ, FUSED_RENDER_HOME=str(tmp_path / "home"),
+               CLAUDE_CONFIG_DIR=str(tmp_path / "claude"))
+    procs = [subprocess.Popen(
+        [sys.executable, CHILD, "lean_serve", str(start_dir), str(marker_dir)],
+        env=env, stdout=subprocess.PIPE, text=True) for _ in range(5)]
+    try:
+        for p in procs:
+            assert p.stdout.readline().strip() == "ready"
+        first = _until(lambda: _markers(marker_dir))
+        assert len(first) == 1, f"expected exactly one leader, got {first}"
+        import time
+        time.sleep(1.0)
+        assert _markers(marker_dir) == first, "a second process ran the scheduler"
+
+        leader_pid = int(first[0].split("-")[1])
+        leader = next(p for p in procs if p.pid == leader_pid)
+        leader.kill()
+        leader.wait()
+        both = _until(lambda: len(_markers(marker_dir)) >= 2 and _markers(marker_dir))
+        assert both and len(both) == 2, f"no takeover after the leader died: {both}"
+        time.sleep(1.0)
+        assert len(_markers(marker_dir)) == 2, "more than one successor"
+    finally:
+        for p in procs:
+            p.kill()
+            p.wait()
+
+
+# -------------------------------------------- simultaneous first launch
+
+
+def test_simultaneous_first_launches_do_not_wipe_each_others_core_templates(tmp_path):
+    """Several lean processes started at once against a fresh home all stage
+    the packaged templates. Each used to wipe the live core dir before swapping
+    its own copy in, so a process that had already finished staging (and was
+    building its app on top of it) lost `vendor/` under its feet."""
+    go = tmp_path / "go"
+    env = dict(os.environ, FUSED_RENDER_HOME=str(tmp_path / "home"))
+    env.pop("FUSED_RENDER_CORE_TEMPLATES", None)
+    procs = [subprocess.Popen([sys.executable, CHILD, "stage_core", str(go)], env=env)
+             for _ in range(6)]
+    import time
+    time.sleep(1.5)  # let every child finish importing and reach the gate
+    go.write_text("go")
+    _wait_all(procs)

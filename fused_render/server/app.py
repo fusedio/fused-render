@@ -562,7 +562,16 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # PUMPS, which SPAWNS; see `queue_manager.peek`). Resuming runs on a daemon
     # thread like `_startup_tasks_warm`: it can spawn several Claude processes
     # and must not hold up the first page paint.
-    @on_startup
+    #
+    # `on_startup_always`, NOT `on_startup`: a lean `fused-render open` process
+    # must park its waiter at startup too. Scheduled messages, queued tasks and
+    # fused.tasks have to work in lean apps, and the lease only hands over
+    # promptly if EVERY live process is already blocked on it — a lean process
+    # that waited for its first /api/tasks* hit (the pre-fix behaviour; the
+    # `/api/schedule*` routes and `schedule.create` never started it at all)
+    # would leave the machine with no scheduler after the leader exited. Cost
+    # per lean process: one daemon thread blocked in flock.
+    @on_startup_always
     async def _startup_queue_manager():
         from fused_render import queue_manager
         from fused_render.server.routers import tasks as tasks_router_mod
@@ -580,7 +589,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # A startup event for the same reason as `_startup_queue_manager`: it is a
     # thread for the life of the process that reads the user's real ~/.claude,
     # and tests build apps without lifespan.
-    @on_startup
+    #
+    # Always (lean too) for the same reason: it is the thing that lets a lean
+    # page's long-poll hear about edits made by ANOTHER process's scheduler.
+    @on_startup_always
     async def _startup_tasks_watch():
         from fused_render import tasks_watch
 
