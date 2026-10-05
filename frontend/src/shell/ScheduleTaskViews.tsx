@@ -2340,12 +2340,9 @@ export function TaskList({
   // painted that viewport as placeholders until the observer's first report.
   // So the seed is centred on the row the saved offset lands on, by estimate;
   // the observer corrects it within a frame.
-  const seedFrom = useRef(
-    Math.max(
-      0,
-      Math.floor((memory.current.scroll || 0) / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE,
-    ),
-  );
+  const seedRow = (scroll: number) =>
+    Math.max(0, Math.floor(scroll / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE);
+  const seedFrom = useRef(seedRow(memory.current.scroll || 0));
   // The registry both the observer and the focus tracking read: which node
   // element is which task, and back.
   const nodesByEl = useRef(new Map<Element, string>());
@@ -2385,6 +2382,12 @@ export function TaskList({
     if (!root || typeof IntersectionObserver === "undefined") return;
     const obs = new IntersectionObserver(
       (entries) => {
+        // THE FIRST REPORT ALWAYS RENDERS (Bugbot, #1384): `observed` is a
+        // ref, so flipping it is invisible to React, and a report that
+        // happens to match the set already held would bail out of
+        // `setRevealed` and leave the seed paint on screen for good. A fresh
+        // Set the first time, whatever it holds.
+        const first = !observed.current;
         observed.current = true;
         const came: string[] = [];
         const went: string[] = [];
@@ -2405,9 +2408,9 @@ export function TaskList({
             went.push(key);
           }
         }
-        if (!came.length && !went.length) return;
+        if (!first && !came.length && !went.length) return;
         setRevealed((cur) => {
-          let next: Set<string> | null = null;
+          let next: Set<string> | null = first ? new Set(cur) : null;
           for (const key of came) {
             if (cur.has(key)) continue;
             next ??= new Set(cur);
@@ -2429,8 +2432,13 @@ export function TaskList({
       obs.disconnect();
       io.current = null;
       // The scroller is going; when it comes back (a stale empty, see
-      // `staleEmptied`) the seed applies again until the new observer speaks.
+      // `staleEmptied`, or a filter that emptied and refilled) the seed
+      // applies again until the new observer speaks — re-centred on the
+      // offset the restore will pay, and over a cleared set, so the new
+      // observer's report is news and not a repeat (Bugbot, #1384).
       observed.current = false;
+      seedFrom.current = seedRow(memory.current.scroll || 0);
+      setRevealed(new Set());
     };
     // The scroller mounts with the first rows and unmounts with the last
     // (`hasRows`, declared below this hook), and the observer follows it.
