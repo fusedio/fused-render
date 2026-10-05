@@ -16,6 +16,7 @@
 // playable whether or not a curator ever marked it; hiding a model somebody
 // already spent 8GB fetching would be the one unforgivable outcome here.
 import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
+import { USE_CASES, useCaseOf } from "@apps/ai_models/lib/useCases";
 
 /** The rows this tab draws for one capability: recommended, or on this disk.
  *
@@ -30,7 +31,18 @@ import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
  *  filter, never a sort.
  */
 export function playgroundModels(row: AiCatalogCapability): AiCatalogModel[] {
-  return row.models.filter((m) => m.recommended || m.downloaded || m.loaded);
+  // One pick per use case (SPEC AI-28b), text generation only: the first
+  // CURATED row (`source === "curated"`, catalog order) of each use case is
+  // offered even when not downloaded, so Coding and Deep reasoning sections
+  // exist on a machine whose recommended rows are all writing models.
+  const picks = new Set<string>();
+  if (row.capability === "text-generation") {
+    for (const u of USE_CASES) {
+      const first = row.models.find((m) => m.source === "curated" && useCaseOf(m) === u.id);
+      if (first) picks.add(first.id);
+    }
+  }
+  return row.models.filter((m) => m.recommended || m.downloaded || m.loaded || picks.has(m.id));
 }
 
 /** Which model the tab is on: the URL's `?model=`, else a fallback.

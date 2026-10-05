@@ -10082,7 +10082,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   order, the Playground's as top-level sections like Image generation. A model
   sits in the section of its first use case, so each curated text list keeps at
   least one row leading with each id (the recommended all-round row leads
-  `writing`, the larger generalists lead `reasoning`).
+  `writing`, the larger generalists lead `reasoning`). For text generation
+  only, the Playground also offers the first curated row (`source ===
+  "curated"`, catalog order) of each use case even when not downloaded
+  (`playground/pick.ts`), so Coding and Deep reasoning appear without a download.
 - **AI-29** **Path-hardening audit of the download paths** (`runners/
   worker_base.py`, `runners/mirror.py`, and items 13/14's own additions)
   **(D533).** Findings:
