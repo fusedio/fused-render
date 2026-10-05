@@ -35,11 +35,12 @@ export const STATE_LABEL: Record<AppCheckState, string> = {
 // hardcoded ordering. The server sends the same order in `report.severities`;
 // this copy is the one the two header entry points and the modal actually
 // call against, so it exists regardless of whether a report has loaded yet.
-export const SEVERITY_ORDER: readonly Severity[] = ["critical", "warning"];
+export const SEVERITY_ORDER: readonly Severity[] = ["critical", "warning", "info"];
 
 export const SEVERITY_LABEL: Record<Severity, string> = {
   critical: "Critical",
   warning: "Warning",
+  info: "Info",
 };
 
 /** A row's severity for the purposes of ANY reduction across rows (the
@@ -65,6 +66,8 @@ export function worstSeverity(checks: AppCheck[]): Severity | null {
   for (const c of checks) {
     if (c.state !== "fail") continue;
     const sev = effectiveSeverity(c);
+    // `info` is the quiet tier: shown in the dialog, never a header signal.
+    if (sev === "info") continue;
     if (worst === null || SEVERITY_ORDER.indexOf(sev) < SEVERITY_ORDER.indexOf(worst)) {
       worst = sev;
     }
@@ -80,10 +83,16 @@ export function severityDotLabel(checks: AppCheck[] | null): string {
   if (checks === null) return "App Doctor: not checked yet";
   const failing = checks.filter((c) => c.state === "fail");
   if (failing.length === 0) return "App Doctor: nothing to fix";
-  const counts = SEVERITY_ORDER.map((sev) => ({
-    sev,
-    n: failing.filter((c) => effectiveSeverity(c) === sev).length,
-  })).filter((x) => x.n > 0);
+  const counts = SEVERITY_ORDER.filter((sev) => sev !== "info")
+    .map((sev) => ({
+      sev,
+      n: failing.filter((c) => effectiveSeverity(c) === sev).length,
+    }))
+    .filter((x) => x.n > 0);
+  if (counts.length === 0) {
+    const n = failing.length;
+    return `App Doctor: ${n} suggestion${n === 1 ? "" : "s"}`;
+  }
   return (
     "App Doctor: " + counts.map((x) => `${x.n} ${severityNoun(x.sev, x.n)}`).join(", ")
   );
@@ -118,10 +127,13 @@ export function groupBySection(
  *  since this is also a cross-row comparison), then the rows nothing is
  *  known about yet, then the rows the doctor gave up on, then passes. */
 function attentionTier(check: AppCheck): number {
-  if (check.state === "fail") return effectiveSeverity(check) === "critical" ? 0 : 1;
-  if (check.state === "unrun") return 2;
-  if (check.state === "skip") return 3;
-  return 4;
+  if (check.state === "fail") {
+    const sev = effectiveSeverity(check);
+    return sev === "critical" ? 0 : sev === "warning" ? 1 : 2;
+  }
+  if (check.state === "unrun") return 3;
+  if (check.state === "skip") return 4;
+  return 5;
 }
 
 /** Worst-first within a group of rows: failing (critical before warning),

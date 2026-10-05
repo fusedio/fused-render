@@ -213,6 +213,37 @@ test("worstSeverity is null when nothing failed", () => {
   expect(worstSeverity([check("a", "pass"), check("b", "skip")])).toBeNull();
 });
 
+test("a failing info row never counts toward worstSeverity (header dot stays neutral)", () => {
+  expect(worstSeverity([check("a", "fail", { severity: "info" })])).toBeNull();
+  expect(
+    worstSeverity([
+      check("a", "fail", { severity: "info" }),
+      check("b", "fail", { severity: "warning" }),
+    ]),
+  ).toBe("warning");
+});
+
+test("severityDotLabel names info-only failures as suggestions, not warnings", () => {
+  expect(severityDotLabel([check("a", "fail", { severity: "info" })])).toBe(
+    "App Doctor: 1 suggestion",
+  );
+  expect(
+    severityDotLabel([
+      check("a", "fail", { severity: "info" }),
+      check("b", "fail", { severity: "warning" }),
+    ]),
+  ).toBe("App Doctor: 1 warning");
+});
+
+test("sortByAttention puts a failing info row after warnings and before unrun rows", () => {
+  const sorted = sortByAttention([
+    check("u", "unrun"),
+    check("i", "fail", { severity: "info" }),
+    check("w", "fail", { severity: "warning" }),
+  ]).map((c) => c.id);
+  expect(sorted).toEqual(["w", "i", "u"]);
+});
+
 test("worstSeverity picks the worst FAILING severity, ignoring passes and skips", () => {
   const checks = [
     check("a", "fail", { severity: "warning" }),
