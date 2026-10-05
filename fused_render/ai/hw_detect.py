@@ -82,6 +82,13 @@ logger = logging.getLogger(__name__)
 #: so a wedged driver stalls the background refresh for seconds, not forever.
 _PROBE_TIMEOUT_S = 3.0
 
+#: How long a caller that NEEDS a reading (a worker spawn baking a memory
+#: budget for the worker's whole life) waits for an in-flight probe to land.
+#: `_PROBE_TIMEOUT_S` is per vendor-tool spawn, and `detect_hardware` runs
+#: several in sequence (nvidia, amd, windows, sysctl), so the whole probe can
+#: legitimately outlast one per-tool timeout; this spans a handful of them.
+_PROBE_WAIT_S = 5 * _PROBE_TIMEOUT_S
+
 #: `Win32_VideoController.AdapterRAM` is a `uint32`. Anything at or above
 #: 4 GiB minus a little slack reads as "this is the capped value, not the
 #: card's real size" — a handful of real sub-4GB cards report numbers close
@@ -749,9 +756,10 @@ def _from_json(data: dict) -> HardwareInfo | None:
 
 
 def _probe_once_if_missing() -> None:
-    """The cache-miss seam `cached_hardware()` calls so SOMETHING kicks the
-    background probe awake instead of every reader silently taking the
-    no-GPU-known branch forever — the same gap route-level callers used to
+    """The seam `cached_hardware()` calls on EVERY read (hit or miss) so
+    SOMETHING keeps the background probe running instead of every reader
+    silently taking the no-GPU-known branch forever, or, on a warm cache,
+    never re-detecting hardware that changed mid-session — the same gap route-level callers used to
     paper over by calling `supervisor.start_hardware_refresh()` themselves
     right before a `cached_hardware()` read, which missed any caller
     reaching this module some other way (worker spawn, a lean process's
@@ -760,7 +768,7 @@ def _probe_once_if_missing() -> None:
     Deferred import: `supervisor` imports `hw_detect`/`fit`, so importing it
     at module level here would be a cycle. `start_hardware_refresh()` is
     itself idempotent (a module-level thread handle), so calling it on
-    every miss costs nothing once the thread is already running, and it
+    every read costs nothing once the thread is already running, and it
     only ever STARTS the background thread — it never runs the probe on
     this (the caller's) thread — so `cached_hardware()` stays a pure,
     synchronous read as far as its caller is concerned."""
@@ -779,8 +787,9 @@ def cached_hardware() -> HardwareInfo | None:
     the same "no measurement yet" contract `footprints.read` and
     `bench_store.read` already give their own callers.
 
-    A miss also kicks the background hardware-refresh thread awake
-    (`_probe_once_if_missing`) so the cache stops being permanently cold —
+    Every read also ensures the background hardware-refresh thread is
+    running (`_probe_once_if_missing`, idempotent) so the cache neither stays
+    permanently cold nor goes stale for the life of the process —
     this function still never runs the probe itself, only starts the
     background one, so it keeps its synchronous, side-effect-free-to-the-
     caller contract; the return value is unaffected and still answers
@@ -792,8 +801,10 @@ def cached_hardware() -> HardwareInfo | None:
     """
     data = storage.read_json(_path())
     info = _from_json(data) if isinstance(data, dict) else None
-    if info is None:
-        _probe_once_if_missing()
+    # Hit or miss: a warm cache must still get the 6-hour refresh thread
+    # running in THIS process, or a long-lived `serve` that started on a warm
+    # cache never re-detects an eGPU plugged in mid-session.
+    _probe_once_if_missing()
     return info
 
 

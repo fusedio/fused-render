@@ -773,9 +773,10 @@ def _await_hardware_cache() -> hw_detect.HardwareInfo | None:
     a worker to the no-GPU-known budget forever, with nothing left to
     correct it.
 
-    Bounded by `hw_detect._PROBE_TIMEOUT_S` (not a separate constant): that
-    is the same ceiling the probe itself is built never to exceed, so
-    waiting any longer than it could only mean the probe already gave up.
+    Bounded by `hw_detect._PROBE_WAIT_S`, NOT `_PROBE_TIMEOUT_S`: the latter
+    caps ONE vendor-tool spawn, while the probe runs several in sequence, so
+    a single per-tool timeout would expire while a slow first tool is still
+    running and bake a no-GPU budget into the worker for its whole life.
     A warm cache returns on the first read, no sleep at all; a cache that
     is still cold after the bound answers `None`, exactly what an unawaited
     read would have answered — a bound, not a guarantee that a reading
@@ -783,7 +784,7 @@ def _await_hardware_cache() -> hw_detect.HardwareInfo | None:
     hardware = hw_detect.cached_hardware()
     if hardware is not None:
         return hardware
-    deadline = time.monotonic() + hw_detect._PROBE_TIMEOUT_S
+    deadline = time.monotonic() + hw_detect._PROBE_WAIT_S
     while time.monotonic() < deadline:
         time.sleep(0.05)
         hardware = hw_detect.cached_hardware()

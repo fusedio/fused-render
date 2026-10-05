@@ -545,11 +545,13 @@ def test_cached_hardware_starts_the_background_refresh_on_a_miss(monkeypatch):
     assert calls == [1]
 
 
-def test_cached_hardware_does_not_start_a_refresh_once_the_cache_is_warm(monkeypatch):
-    """A hit must not pay for even the idempotency check inside
-    `start_hardware_refresh()` — the whole point of the lazy-start seam is
-    that a warm cache costs nothing beyond the one disk read this function
-    already did."""
+def test_cached_hardware_starts_the_refresh_even_when_the_cache_is_warm(monkeypatch):
+    """A warm cache must STILL ensure the 6-hour refresh thread runs in this
+    process. Starting it only on a miss meant that after the first successful
+    probe every later process (a long-lived `serve` included) found a warm
+    cache, never started the thread, and so never re-detected an eGPU plugged
+    in mid-session. `start_hardware_refresh()` is idempotent and cheap, so
+    every read ensures it."""
     gpus = [hw_detect.GpuDevice(name="RTX 4090", vram_gb=24.0)]
     monkeypatch.setattr(hw_detect, "detect_hardware", lambda ram_gb=None: hw_detect.HardwareInfo(
         gpus=gpus, total_vram_gb=24.0, bandwidth_gb_s=1008.0, detected_at=time.time()))
@@ -558,7 +560,7 @@ def test_cached_hardware_does_not_start_a_refresh_once_the_cache_is_warm(monkeyp
     calls = []
     monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: calls.append(1))
     assert hw_detect.cached_hardware() is not None
-    assert calls == []
+    assert calls == [1]
 
 
 def test_cached_hardware_starts_the_background_refresh_on_a_corrupt_cache(tmp_path, monkeypatch):

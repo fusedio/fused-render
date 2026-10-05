@@ -18,7 +18,7 @@ shape `supervisor._start_resident` already draws for `start_reaper`.
 the one caller that cannot settle for `cached_hardware()`'s own
 immediate-`None`-on-a-miss contract: a worker spawn bakes whatever budget
 it computes into `FUSED_AI_MEMORY_BUDGET_BYTES` for that worker's entire
-life, so it waits briefly and boundedly (`hw_detect._PROBE_TIMEOUT_S`) for
+life, so it waits briefly and boundedly (`hw_detect._PROBE_WAIT_S`) for
 an in-flight probe to land before giving up.
 
 Like the reaper (see `tests/conftest.py::_no_ai_idle_reaper_thread`'s own
@@ -222,7 +222,7 @@ def test_await_hardware_cache_polls_until_the_probe_lands(monkeypatch):
         return sentinel if len(calls) >= 3 else None
 
     monkeypatch.setattr(hw_detect, "cached_hardware", _cached_hardware)
-    monkeypatch.setattr(hw_detect, "_PROBE_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(hw_detect, "_PROBE_WAIT_S", 5.0)
     monkeypatch.setattr(supervisor.time, "sleep", lambda _s: None)
     assert supervisor._await_hardware_cache() is sentinel
     assert len(calls) == 3
@@ -232,18 +232,25 @@ def test_await_hardware_cache_gives_up_after_the_bound(monkeypatch):
     """A probe that never lands (hung, or simply slower than the bound)
     must not hang the spawn path forever — `_await_hardware_cache` answers
     `None`, exactly what an unawaited `cached_hardware()` read would have
-    answered, once `hw_detect._PROBE_TIMEOUT_S` has elapsed."""
+    answered, once `hw_detect._PROBE_WAIT_S` has elapsed."""
     monkeypatch.setattr(hw_detect, "cached_hardware", lambda: None)
-    monkeypatch.setattr(hw_detect, "_PROBE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(hw_detect, "_PROBE_WAIT_S", 0.05)
     assert supervisor._await_hardware_cache() is None
 
 
-def test_await_hardware_cache_is_bounded_by_the_probes_own_timeout_constant(monkeypatch):
-    """The bound is `hw_detect._PROBE_TIMEOUT_S` itself, read at call time —
-    not a second, independently-tunable constant that could drift out of
-    sync with it."""
+def test_probe_wait_covers_several_sequential_tool_spawns():
+    """`_PROBE_TIMEOUT_S` caps ONE vendor-tool spawn; `detect_hardware` runs
+    nvidia, amd, windows and sysctl probes one after another. A spawn-time
+    wait of a single per-tool timeout expires while a slow first tool is
+    still running, baking a no-GPU budget into the worker for its whole
+    life. The wait must span several sequential spawns."""
+    assert hw_detect._PROBE_WAIT_S >= 3 * hw_detect._PROBE_TIMEOUT_S
+
+
+def test_await_hardware_cache_is_bounded_by_the_probe_wait_constant(monkeypatch):
+    """The bound is `hw_detect._PROBE_WAIT_S`, read at call time."""
     monkeypatch.setattr(hw_detect, "cached_hardware", lambda: None)
-    monkeypatch.setattr(hw_detect, "_PROBE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(hw_detect, "_PROBE_WAIT_S", 0.05)
     deadlines = []
     real_monotonic = supervisor.time.monotonic
 

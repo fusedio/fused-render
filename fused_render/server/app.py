@@ -626,9 +626,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # per-request verdict path, which is why `fit.py`/`speed.py` only ever
     # read `hw_detect.cached_hardware()`. No startup hook for it — like the
     # idle reaper above, `hw_detect.cached_hardware()` itself calls
-    # `supervisor.start_hardware_refresh()` the moment ANY reader (a route
+    # `supervisor.start_hardware_refresh()` on EVERY read by ANY reader (a route
     # handler, or `_child_env`'s budget computation at worker-spawn time)
-    # first hits a cold cache, idempotently, which starts it in `lean` mode
+    # hits the cache, idempotently, which starts it in `lean` mode
     # too (where a startup hook would have been skipped) and never starts
     # it at all on a process that never touches an AI route.
 
