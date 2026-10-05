@@ -4,7 +4,6 @@ tab, and how the Preferences state reports `available`."""
 import os
 import shutil
 import socket
-import sys
 import tempfile
 import threading
 
@@ -135,6 +134,16 @@ def test_apply_and_open_app_use_the_shared_caller_timeout(sock, host, tmp_path, 
 
 
 @needs_unix
+def test_apply_reports_false_when_the_host_refuses(sock, host, caplog):
+    _, reply = host
+    reply["set_enabled"] = {"ok": False, "reason": "locked"}
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    with caplog.at_level("WARNING"):
+        assert window_policy.native_hooks["apply"](True) is False
+    assert "locked" in caplog.text
+
+
+@needs_unix
 def test_apply_never_raises_when_the_host_is_gone(sock):
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
     window_policy.native_hooks["apply"](False)  # must not raise: the pref still stores
@@ -154,10 +163,9 @@ def test_usable_is_false_when_the_host_is_gone(sock):
 
 # ---- Preferences "available" ------------------------------------------------
 
-def test_prefs_available_on_linux_only_with_a_live_host(monkeypatch):
+def test_prefs_available_with_a_live_host():
     from fused_render.shell import prefs
 
-    monkeypatch.setattr(sys, "platform", "linux")
     assert prefs._native_windows_state()["available"] is False
     window_policy.native_hooks["usable"] = lambda: True
     window_policy.native_hooks["apply"] = lambda on: None
@@ -166,21 +174,27 @@ def test_prefs_available_on_linux_only_with_a_live_host(monkeypatch):
     assert prefs._native_windows_state()["available"] is False
 
 
-def test_prefs_available_is_unchanged_on_macos(monkeypatch):
+def test_prefs_available_with_apply_and_no_usable_hook():
     from fused_render.shell import prefs
 
-    monkeypatch.setattr(sys, "platform", "darwin")
     assert prefs._native_windows_state()["available"] is False
     window_policy.native_hooks["apply"] = lambda on: None
     assert prefs._native_windows_state()["available"] is True
 
 
-def test_prefs_unavailable_on_windows_even_with_a_stray_hook(monkeypatch):
+def test_prefs_available_needs_apply_specifically(monkeypatch):
+    """`available` is one formula everywhere — `"apply" in hooks and
+    usable()` — not a platform branch: a `usable` hook with no `apply`
+    (impossible in practice, since every installer sets both together) still
+    reads as unavailable, and win32's backend never sets either, so its
+    `native_hooks` stays `{}` and this formula reads False there too without
+    needing to ask `sys.platform` at all."""
     from fused_render.shell import prefs
 
-    monkeypatch.setattr(sys, "platform", "win32")
-    window_policy.native_hooks.update({"apply": lambda on: None, "usable": lambda: True})
+    window_policy.native_hooks["usable"] = lambda: True
     assert prefs._native_windows_state()["available"] is False
+    window_policy.native_hooks["apply"] = lambda on: None
+    assert prefs._native_windows_state()["available"] is True
 
 
 def test_install_is_a_noop_without_af_unix(monkeypatch):

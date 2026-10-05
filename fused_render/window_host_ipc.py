@@ -9,9 +9,15 @@ OS with AF_UNIX.
 One request per connection: a single JSON line in, a single JSON line out.
 
     {"cmd": "ping"}                          -> {"ok": true}
-    {"cmd": "open", "url": "..."}            -> {"ok": true} | {"ok": false, "reason": "..."}
+    {"cmd": "open", "url": "...",
+     "activation_token": "..."}              -> {"ok": true} | {"ok": false, "reason": "..."}
     {"cmd": "set_enabled", "on": true}       -> {"ok": true}
     {"cmd": "quit"}                          -> {"ok": true}
+
+``activation_token`` is optional (an XDG activation token / startup id the
+supervisor forwards from its own environment, e.g. a launcher or deep-link
+activation); its absence is the old behavior — the window still opens, just
+without a request to be raised ahead of focus-stealing prevention.
 
 ``ok: false`` is an answer, not an error: the host is up but declines (windows
 switched off, nothing to show), and the caller falls back to a browser tab. A
@@ -20,6 +26,7 @@ the same way. Either way the app is never left with no way to show its UI.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import select
@@ -42,6 +49,20 @@ _SELECT_TICK_S = 0.25
 #: host's main-thread budget (`window_host._MAIN_DEADLINE_S`) so a caller never
 #: gives up before the host has answered.
 CALLER_TIMEOUT_S = 5.0
+
+#: accept() errno values that mean "this one connection attempt failed, the
+#: listener is still fine" (an exhausted fd/memory limit, a client that reset
+#: before accept() completed, a caught signal) — never the reason to stop
+#: answering the rest of the session.
+_TRANSIENT_ACCEPT_ERRNOS = frozenset({
+    errno.EMFILE, errno.ENFILE, errno.ECONNABORTED, errno.EINTR,
+    errno.ENOBUFS, errno.ENOMEM,
+})
+_TRANSIENT_ACCEPT_BACKOFF_S = 0.1
+
+
+def _is_transient_accept_error(error: OSError) -> bool:
+    return error.errno in _TRANSIENT_ACCEPT_ERRNOS
 
 
 class HostUnavailable(OSError):
@@ -110,6 +131,7 @@ def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
     listener.setblocking(False)
 
     def loop() -> None:
+        warned_transient = False
         try:
             while not stop.is_set():
                 ready, _, _ = select.select([listener], [], [], _SELECT_TICK_S)
@@ -119,8 +141,14 @@ def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
                     client, _addr = listener.accept()
                 except (BlockingIOError, InterruptedError):
                     continue
-                except OSError:
-                    break
+                except OSError as error:
+                    if not _is_transient_accept_error(error):
+                        break  # the listener itself is gone (EBADF/EINVAL)
+                    if not warned_transient and log is not None:
+                        warned_transient = True
+                        log(f"window host accept() failed, retrying: {error}")
+                    time.sleep(_TRANSIENT_ACCEPT_BACKOFF_S)
+                    continue
                 threading.Thread(target=_serve_and_close, args=(client, handler, log),
                                  daemon=True, name="fused-render-window-host-client").start()
         finally:

@@ -47,20 +47,19 @@ after `/tree/` is taken as the ref — single-segment refs only, same assumption
 most tooling makes.
 """
 import logging
-import ntpath
 import os
 import posixpath
 import re
 import shutil
 import stat
 import subprocess
-from pathlib import PureWindowsPath
 from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render._view_url_codec import normpath_for_shape
 from fused_render._view_url_codec import view_url_path as _view_url_path
 
 from fused_render.shell.seed import fused_dir
@@ -219,16 +218,7 @@ def app_file_path_from(src: str) -> str | None:
         raise DeeplinkError(f"file link needs an absolute path: {path or '(empty)'}")
     if not path.lower().endswith(".fused"):
         raise DeeplinkError(f"file link must name a .fused app file: {path}")
-    return canonical_fs_path(_shape_normpath(path))
-
-
-def _shape_normpath(path: str) -> str:
-    """`normpath` picked by the path's shape, not the host OS (as in
-    `server/dirpicker._normpath_for_shape`): the link may name a POSIX or a
-    Windows path whichever platform this server runs on."""
-    if PureWindowsPath(path).drive:
-        return ntpath.normpath(path)
-    return posixpath.normpath(path)
+    return canonical_fs_path(normpath_for_shape(path))
 
 
 def file_payload_from(src: str) -> str | None:

@@ -6,6 +6,7 @@ GTK/WebKitGTK adapter that only runs on a Linux desktop. The fake backend here
 exposes exactly the methods the adapter implements; nothing GTK is imported.
 """
 import json
+import signal
 import sys
 
 import pytest
@@ -22,10 +23,12 @@ class FakeBackend:
     def __init__(self):
         self.urls = {}
         self.presented = []
+        self.presented_tokens = []
         self.closed = []
         self.external = []
         self.created = 0
         self.quit_called = False
+        self.frames_saved = []
 
     def run_on_main(self, fn):
         return fn()
@@ -36,8 +39,12 @@ class FakeBackend:
         self.urls[handle] = url
         return handle
 
-    def present(self, handle):
+    def present(self, handle, activation_token=None):
         self.presented.append(handle)
+        self.presented_tokens.append(activation_token)
+
+    def save_frame(self, handle):
+        self.frames_saved.append(handle)
 
     def close(self, handle):
         self.closed.append(handle)
@@ -192,6 +199,29 @@ def test_quit_asks_the_backend_to_quit(host):
     assert b.quit_called
 
 
+def test_quit_saves_every_open_window_before_quitting(host):
+    h, b = host
+    h.dispatch({"cmd": "open", "url": BASE + "/"})
+    h.dispatch({"cmd": "open", "url": BASE + "/apps/home/me/app"})
+    h.dispatch({"cmd": "quit"})
+    assert sorted(b.frames_saved) == [1, 2]
+    assert b.quit_called
+
+
+def test_open_forwards_an_activation_token_to_present(host):
+    h, b = host
+    h.dispatch({"cmd": "open", "url": BASE + "/", "activation_token": "tok-1"})
+    assert b.presented_tokens == ["tok-1"]
+    h.dispatch({"cmd": "open", "url": BASE + "/"})  # no token: absence is old behavior
+    assert b.presented_tokens == ["tok-1", None]
+
+
+def test_open_rejects_a_non_string_activation_token(host):
+    h, _ = host
+    r = h.dispatch({"cmd": "open", "url": BASE + "/", "activation_token": 5})
+    assert r["ok"] is False
+
+
 def test_unknown_command(host):
     h, _ = host
     assert h.dispatch({"cmd": "frobnicate"})["ok"] is False
@@ -224,6 +254,23 @@ def test_dispatch_runs_window_work_on_the_main_thread():
 ])
 def test_map_navigation(url, nav, button, ctrl, expected):
     assert wh.map_navigation(url, PORT, nav, button=button, ctrl=ctrl) == expected
+
+
+@pytest.mark.parametrize("nav,user_gesture,expected", [
+    ("BACK_FORWARD", True, "allow"),       # Alt+Left inside an external iframe: left in place
+    ("RELOAD", True, "allow"),             # F5/Ctrl+R on an external iframe: never yanked out
+    ("FORM_RESUBMITTED", True, "allow"),
+    ("OTHER", True, "allow"),
+    ("LINK_CLICKED", False, "allow"),      # no user gesture: not confident enough to hand off
+    ("FORM_SUBMITTED", False, "allow"),
+    ("LINK_CLICKED", True, "open_external"),
+    ("FORM_SUBMITTED", True, "open_external"),
+])
+def test_map_navigation_external_handoff_needs_a_confident_user_gesture(nav, user_gesture, expected):
+    # WebKit2 4.1 gives decide-policy no is_main_frame for NAVIGATION_ACTION,
+    # so only a user-gesture link click or form submission is treated as
+    # confident enough to pull the whole window out to the browser.
+    assert wh.map_navigation("https://example.com/x", PORT, nav, user_gesture=user_gesture) == expected
 
 
 def test_new_window_request_for_app_url_opens_a_window_external_goes_out():
@@ -344,6 +391,41 @@ def test_timed_out_main_thread_request_never_runs_later(monkeypatch):
     assert ran == []
 
 
+def test_run_on_main_times_out_even_once_the_fn_has_started(monkeypatch):
+    """The wait is bounded start-to-finish, not just until the main loop picks
+    the call up: a fn already running when the deadline passes must not make
+    the caller wait for it, and its eventual, unobserved completion must not
+    raise anywhere."""
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    def idle_add(fn):
+        def runner():
+            time.sleep(0.2)  # "starts" well after the deadline below fires
+            fn()
+        threading.Thread(target=runner, daemon=True).start()
+
+    tk = SimpleNamespace(GLib=SimpleNamespace(idle_add=idle_add))
+    backend = wh.GtkBackend.__new__(wh.GtkBackend)
+    backend.tk = tk
+    monkeypatch.setattr(wh, "_MAIN_DEADLINE_S", 0.05)
+
+    errors = []
+
+    def ipc_thread():
+        try:
+            backend.run_on_main(lambda: (time.sleep(0.3), "late")[-1])
+        except TimeoutError as error:
+            errors.append(error)
+
+    t = threading.Thread(target=ipc_thread)
+    t.start()
+    t.join(5)
+    assert len(errors) == 1
+    time.sleep(0.5)  # the late fn finishes for real; must not crash the thread
+
+
 def test_host_deadline_is_shorter_than_every_client_timeout():
     from fused_render import window_host_ipc as ipc
     from fused_render.supervisor._linux import windows
@@ -400,3 +482,176 @@ def test_xdg_open_runs_detached_so_host_teardown_cannot_kill_it(monkeypatch):
     monkeypatch.setattr(ui.subprocess, "Popen", fake_popen)
     ui.open_url("https://example.com")
     assert captured.get("start_new_session") is True
+
+
+# ---- app identity / activation token / SIGTERM -----------------------------
+
+def test_on_sigterm_quits_the_host():
+    saved = []
+
+    class FakeHost:
+        def quit(self):
+            saved.append(True)
+
+    assert wh._on_sigterm(FakeHost()) is False  # GLib.SOURCE_REMOVE
+    assert saved == [True]
+
+
+def test_main_sets_app_identity_and_a_sigterm_handler_before_serving(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    calls = []
+
+    class FakeGLib:
+        PRIORITY_DEFAULT = 0
+
+        @staticmethod
+        def set_prgname(name):
+            calls.append(("prgname", name))
+
+        @staticmethod
+        def set_application_name(name):
+            calls.append(("app_name", name))
+
+        @staticmethod
+        def unix_signal_add(priority, sig, fn):
+            calls.append(("signal", sig))
+            return 1
+
+    class FakeWindowClass:
+        @staticmethod
+        def set_default_icon_name(name):
+            calls.append(("icon", name))
+
+    class FakeGtk:
+        Window = FakeWindowClass
+
+        @staticmethod
+        def main():
+            calls.append(("main",))
+
+    fake_tk = SimpleNamespace(Gtk=FakeGtk, GLib=FakeGLib,
+                             Gdk=SimpleNamespace(), WebKit2=SimpleNamespace())
+    monkeypatch.setattr(wh, "load_toolkit", lambda: fake_tk)
+    monkeypatch.setattr(wh, "GtkBackend",
+                        lambda *a, **k: SimpleNamespace(run_on_main=lambda fn: fn(), quit=lambda: None))
+
+    code = wh.main(["--port", "1", "--socket", str(tmp_path / "s"), "--state", str(tmp_path)])
+    assert code == 0
+    assert ("prgname", "fused-render") in calls
+    assert ("app_name", "FusedRender") in calls
+    assert ("icon", "fused-render") in calls
+    assert ("signal", signal.SIGTERM) in calls
+    assert ("main",) in calls
+    # identity is set before GtkBackend/Host (and so any window) exist
+    assert calls.index(("prgname", "fused-render")) < calls.index(("main",))
+
+
+def test_present_with_activation_token_sets_startup_id_then_present():
+    from types import SimpleNamespace
+
+    calls = []
+
+    class FakeWindow:
+        def show_all(self):
+            calls.append("show_all")
+
+        def set_startup_id(self, token):
+            calls.append(("startup_id", token))
+
+        def present(self):
+            calls.append("present")
+
+        def present_with_time(self, t):
+            calls.append(("present_with_time", t))
+
+    backend = wh.GtkBackend.__new__(wh.GtkBackend)
+    backend.tk = SimpleNamespace(Gdk=SimpleNamespace(CURRENT_TIME=0))
+    win = wh._Win(FakeWindow(), None, "frame")
+    backend.present(win, "tok-xyz")
+    assert calls == ["show_all", ("startup_id", "tok-xyz"), "present"]
+
+
+def test_present_without_a_token_uses_present_with_time():
+    from types import SimpleNamespace
+
+    calls = []
+
+    class FakeWindow:
+        def show_all(self):
+            calls.append("show_all")
+
+        def present_with_time(self, t):
+            calls.append(("present_with_time", t))
+
+    backend = wh.GtkBackend.__new__(wh.GtkBackend)
+    backend.tk = SimpleNamespace(Gdk=SimpleNamespace(CURRENT_TIME=0))
+    win = wh._Win(FakeWindow(), None, "frame")
+    backend.present(win, None)
+    assert calls == ["show_all", ("present_with_time", 0)]
+
+
+def test_new_window_enables_media_stream_and_webrtc_when_available(tmp_path):
+    from types import SimpleNamespace
+
+    class FakeSettings:
+        def __init__(self):
+            self.calls = []
+
+        def set_user_agent_with_application_details(self, *a):
+            self.calls.append("ua")
+
+        def set_enable_developer_extras(self, v):
+            self.calls.append("dev")
+
+        def set_enable_media_stream(self, v):
+            self.calls.append(("media_stream", v))
+
+        def set_enable_webrtc(self, v):
+            self.calls.append(("webrtc", v))
+
+    class FakeView:
+        def __init__(self):
+            self.settings = FakeSettings()
+
+        def get_settings(self):
+            return self.settings
+
+        def connect(self, *a):
+            pass
+
+        def load_uri(self, url):
+            pass
+
+    class FakeWebView:
+        @staticmethod
+        def new_with_context(ctx):
+            return FakeView()
+
+    class FakeWindow:
+        def set_title(self, t):
+            pass
+
+        def set_default_size(self, *a):
+            pass
+
+        def move(self, *a):
+            pass
+
+        def add(self, view):
+            pass
+
+        def connect(self, *a):
+            pass
+
+    backend = wh.GtkBackend.__new__(wh.GtkBackend)
+    backend.tk = SimpleNamespace(
+        Gtk=SimpleNamespace(Window=FakeWindow),
+        WebKit2=SimpleNamespace(WebView=FakeWebView),
+    )
+    backend._frames = wh.FrameStore(tmp_path / "frames.json")
+    backend._version = "0.0.0"
+    backend._context = None
+    win = backend.new_window("http://x/", "frame")
+    assert ("media_stream", True) in win.view.settings.calls
+    assert ("webrtc", True) in win.view.settings.calls

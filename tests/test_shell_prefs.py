@@ -218,6 +218,49 @@ def test_put_rejects_empty_body(tmp_path, monkeypatch):
     assert client.put("/api/prefs", json={"nope": 1}, headers=FUSED).status_code == 400
 
 
+# -- native_windows_enabled -------------------------------------------------------
+
+
+def test_native_windows_enabled_saves_with_no_hook_installed(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED).json()
+    assert body["native_windows"]["enabled"] is False
+    assert json.loads((home / "prefs.json").read_text())["native_windows_enabled"] is False
+
+
+def test_native_windows_enabled_rejects_the_put_when_the_host_refuses(tmp_path, monkeypatch):
+    """`apply` reachable and explicitly refusing the value (e.g. the host is
+    mid-shutdown) must not be recorded as a clean switch — the live state and
+    prefs.json would then disagree for as long as that host keeps running —
+    so the PUT fails and nothing is written."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    window_policy.native_hooks["apply"] = lambda on: False
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 409
+        assert not (home / "prefs.json").exists()
+    finally:
+        window_policy.native_hooks.clear()
+
+
+def test_native_windows_enabled_saves_when_the_host_is_unreachable(tmp_path, monkeypatch):
+    """A host that isn't reachable at all (not started yet, lazy-start
+    design) is not a failure — it reads this same preference for itself at
+    its own startup, so the write still lands."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    window_policy.native_hooks["apply"] = lambda on: True
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 200
+        assert json.loads((home / "prefs.json").read_text())["native_windows_enabled"] is False
+    finally:
+        window_policy.native_hooks.clear()
+
+
 # -- indexing_enabled -------------------------------------------------------------
 
 

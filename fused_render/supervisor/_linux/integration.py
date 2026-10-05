@@ -56,6 +56,7 @@ Icon={icon}
 Categories=Development;Science;
 Terminal=false
 MimeType={mimetype}
+StartupWMClass=fused-render
 """
 
 

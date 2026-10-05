@@ -1,6 +1,7 @@
 """The unix-socket protocol between the Linux supervisor / server and the
 native-window host (window_host_ipc.py). Pure stdlib sockets, so it runs on
 every OS that has AF_UNIX (macOS included) — no GTK involved."""
+import errno
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -157,6 +159,67 @@ def test_a_slow_request_does_not_block_a_concurrent_ping(sock_path):
     finally:
         stop.set()
         thread.join(timeout=3)
+
+
+@pytest.mark.parametrize("code,transient", [
+    (errno.EMFILE, True), (errno.ENFILE, True), (errno.ECONNABORTED, True),
+    (errno.EINTR, True), (errno.ENOBUFS, True), (errno.ENOMEM, True),
+    (errno.EBADF, False), (errno.EINVAL, False),
+])
+def test_transient_accept_error_classification(code, transient):
+    assert ipc._is_transient_accept_error(OSError(code, "x")) is transient
+
+
+def test_serve_survives_transient_accept_errors(sock_path):
+    # A momentary EMFILE/ECONNABORTED/... on accept() must not end the accept
+    # loop: the listener is still fine, only that one connection attempt
+    # failed.
+    original_accept = socket.socket.accept
+    state = {"n": 0}
+
+    def flaky_accept(self, *a, **kw):
+        if state["n"] < 2:
+            state["n"] += 1
+            raise OSError(errno.ECONNABORTED, "flaky")
+        return original_accept(self, *a, **kw)
+
+    stop = threading.Event()
+    logged = []
+    with mock.patch.object(socket.socket, "accept", flaky_accept):
+        thread = ipc.serve(sock_path, lambda c: {"ok": True}, stop, logged.append)
+        try:
+            deadline = time.monotonic() + 3
+            while not ipc.ping(sock_path, timeout=0.5) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert ipc.ping(sock_path)
+        finally:
+            stop.set()
+            thread.join(timeout=3)
+    assert state["n"] == 2
+    assert len(logged) == 1  # logged once, not once per failure
+
+
+def test_serve_still_stops_on_a_real_listener_error(sock_path):
+    # EBADF/EINVAL means the listener itself is gone; the loop must still
+    # exit (never spin forever) and not be mistaken for a transient failure.
+    def dead_accept(self, *a, **kw):
+        raise OSError(errno.EBADF, "listener closed")
+
+    stop = threading.Event()
+    with mock.patch.object(socket.socket, "accept", dead_accept):
+        thread = ipc.serve(sock_path, lambda c: {"ok": True}, stop)
+        deadline = time.monotonic() + 3
+        while not os.path.exists(sock_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        try:  # a pending connection makes the listener fd "ready" so the
+            # mocked accept() above actually runs.
+            with socket.socket(socket.AF_UNIX) as c:
+                c.settimeout(1)
+                c.connect(sock_path)
+        except OSError:
+            pass
+        thread.join(timeout=3)
+    assert not thread.is_alive()
 
 
 def test_serve_replaces_a_stale_socket_file(sock_path):

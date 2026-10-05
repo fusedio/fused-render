@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import threading
 from pathlib import Path
@@ -49,24 +50,44 @@ class ToolkitUnavailable(RuntimeError):
 # Pure logic
 # ---------------------------------------------------------------------------
 
-# Navigation types that are the *main frame* going somewhere on the user's
-# behalf. WebKit2 4.1's NavigationAction has no is_main_frame, so this stands in
-# for it: a sub-frame load (a map's tile iframe, an embed) arrives as OTHER and
-# is left to the page, exactly like `navigation_action(is_main_frame=False)`.
-# A same-frame `location.assign` (the update dialog's Restart) also arrives as
-# OTHER, so OTHER counts as main-frame too when the URL needs launch services
-# (`fused-render://relaunch`, `mailto:`) — the one case where leaving it to the
-# page hangs the window instead of just doing nothing.
+# Navigation types that are the *main frame* going somewhere, for our own
+# origin and for routing a scheme WebKit cannot load itself (OTHER, see
+# below) to launch services. WebKit2 4.1's NavigationAction has no
+# is_main_frame, so a sub-frame load (a map's tile iframe, an embed) of one
+# of these types is indistinguishable from the main frame going there — a
+# false positive here is harmless: our own origin allows either way, and
+# OTHER only matters for schemes WebKit cannot route itself. A same-frame
+# `location.assign` (the update dialog's Restart) also arrives as OTHER, so
+# OTHER counts as main-frame too when the URL needs launch services
+# (`fused-render://relaunch`, `mailto:`) — the one case where leaving it to
+# the page hangs the window instead of just doing nothing.
 _MAIN_FRAME_NAV = {"LINK_CLICKED", "FORM_SUBMITTED", "FORM_RESUBMITTED",
                    "BACK_FORWARD", "RELOAD"}
 
+# For an EXTERNAL target the same false positive is not harmless: calling a
+# sub-frame's BACK_FORWARD/RELOAD "main frame" would yank the whole window to
+# the browser over an iframe restoring its own history, or a map tile
+# reloading. With no main-frame signal to fall back on, only a user-gesture
+# link click or form submission is confident enough to hand off to the
+# browser; anything else (BACK_FORWARD, RELOAD, a scripted navigation) is
+# left to the page, so a foreign iframe keeps loading in place. The residual
+# gap: a genuine user click on a link to an external site *inside* an
+# external iframe still gets handed to the browser, same as a top-level
+# click — WebKit2 4.1 gives us no way to tell those apart.
+_EXTERNAL_HANDOFF_NAV = {"LINK_CLICKED", "FORM_SUBMITTED"}
+
 
 def map_navigation(url: str | None, port: int, nav_type: str, *,
-                   button: int = 0, ctrl: bool = False) -> str:
+                   button: int = 0, ctrl: bool = False,
+                   user_gesture: bool = True) -> str:
     """allow | new_window | open_external for a navigation inside a window.
-    ``nav_type`` is WebKitNavigationType's nick upper-cased (``LINK_CLICKED``)."""
-    is_main_frame = (nav_type in _MAIN_FRAME_NAV
-                     or window_policy.needs_launch_services(url))
+    ``nav_type`` is WebKitNavigationType's nick upper-cased (``LINK_CLICKED``).
+    ``user_gesture`` is WebKitNavigationAction's ``is_user_gesture()``."""
+    if window_policy.classify(url, port) == "external":
+        is_main_frame = user_gesture and nav_type in _EXTERNAL_HANDOFF_NAV
+    else:
+        is_main_frame = (nav_type in _MAIN_FRAME_NAV
+                         or window_policy.needs_launch_services(url))
     return window_policy.navigation_action(
         url, port,
         is_main_frame=is_main_frame,
@@ -154,7 +175,10 @@ class Host:
             url = command.get("url")
             if not isinstance(url, str):
                 return {"ok": False, "reason": "'url' must be a string"}
-            return self.backend.run_on_main(lambda: self.open_url(url))
+            token = command.get("activation_token")
+            if token is not None and not isinstance(token, str):
+                return {"ok": False, "reason": "'activation_token' must be a string"}
+            return self.backend.run_on_main(lambda: self.open_url(url, token))
         if cmd == "set_enabled":
             on = command.get("on")
             if not isinstance(on, bool):
@@ -162,12 +186,12 @@ class Host:
             self.backend.run_on_main(lambda: self.set_enabled(on))
             return {"ok": True}
         if cmd == "quit":
-            self.backend.run_on_main(self.backend.quit)
+            self.backend.run_on_main(self.quit)
             return {"ok": True}
         return {"ok": False, "reason": f"unknown command {cmd!r}"}
 
     # -- main thread --
-    def open_url(self, url: str) -> dict:
+    def open_url(self, url: str, activation_token: str | None = None) -> dict:
         kind = window_policy.classify(url, self.port)
         if kind == "other":
             return {"ok": False, "reason": "unsupported url"}
@@ -176,18 +200,18 @@ class Host:
         if kind == "external":
             self.backend.open_external(url)
             return {"ok": True}
-        self.focus_or_open(url)
+        self.focus_or_open(url, activation_token)
         return {"ok": True}
 
-    def focus_or_open(self, url: str):
+    def focus_or_open(self, url: str, activation_token: str | None = None):
         existing = self._find(url)
         if existing is not None:
-            self.backend.present(existing)
+            self.backend.present(existing, activation_token)
             return existing
         key, view = window_policy.window_key_of(url), window_policy.window_view_of(url)
         handle = self.backend.new_window(url, window_policy.frame_autosave_name(key, view))
         self._windows.append(handle)
-        self.backend.present(handle)
+        self.backend.present(handle, activation_token)
         return handle
 
     def _find(self, url: str):
@@ -208,6 +232,16 @@ class Host:
     def window_closed(self, handle) -> None:
         if handle in self._windows:
             self._windows.remove(handle)
+
+    def quit(self) -> None:
+        """Every open window's frame, saved before the process actually
+        exits. Both ways the supervisor stops the host — the `quit` command
+        (dispatch, above) and `main`'s SIGTERM handler — land here, since a
+        bare `Gtk.main_quit()` (or killpg's SIGTERM with no handler) drops
+        whatever a user-close or set_enabled(False) hasn't already saved."""
+        for handle in list(self._windows):
+            self.backend.save_frame(handle)
+        self.backend.quit()
 
     def set_enabled(self, on: bool) -> None:
         self.enabled = on
@@ -302,13 +336,12 @@ class GtkBackend:
             return fn()
         done, box = threading.Event(), {}
         lock = threading.Lock()
-        state = {"started": False, "cancelled": False}
+        state = {"cancelled": False}
 
         def run():
             with lock:
                 if state["cancelled"]:
                     return False  # the caller already gave up and fell back
-                state["started"] = True
             try:
                 box["value"] = fn()
             except BaseException as error:  # noqa: BLE001 - re-raised on the caller
@@ -317,12 +350,15 @@ class GtkBackend:
             return False  # GLib.SOURCE_REMOVE
 
         self.tk.GLib.idle_add(run)
+        # Bounded start-to-finish, not just start: a fn already running on the
+        # main thread when the deadline passes must not make the caller (and
+        # so its CALLER_TIMEOUT_S) wait for it. `run` still finishes on the
+        # main thread when it gets there — cancelled only stops it starting —
+        # and box/done are just left unread; no crash, no second reply.
         if not done.wait(_MAIN_DEADLINE_S):
             with lock:
-                if not state["started"]:
-                    state["cancelled"] = True
-                    raise TimeoutError("GTK main loop did not respond")
-            done.wait()  # already running on the main thread: it will finish
+                state["cancelled"] = True
+            raise TimeoutError("GTK main loop did not respond")
         if "error" in box:
             raise box["error"]
         return box.get("value")
@@ -337,6 +373,13 @@ class GtkBackend:
         settings = view.get_settings()
         settings.set_user_agent_with_application_details("FusedRender", self._version)
         settings.set_enable_developer_extras(True)
+        # getUserMedia/getDisplayMedia need both on; hasattr guards an older
+        # system WebKitGTK that predates one of them. `_on_permission` is the
+        # gate that actually allows the resulting prompt, app-origin only.
+        if hasattr(settings, "set_enable_media_stream"):
+            settings.set_enable_media_stream(True)
+        if hasattr(settings, "set_enable_webrtc"):
+            settings.set_enable_webrtc(True)
         window = Gtk.Window()
         window.set_title("FusedRender")
         size = self._frames.get(frame_name)
@@ -351,18 +394,24 @@ class GtkBackend:
         view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or "FusedRender"))
         view.connect("permission-request", self._on_permission)
         view.connect("web-process-terminated", self._on_web_process_terminated)
-        window.connect("delete-event", lambda _w, _e: self._save_frame(win) and False)
+        window.connect("delete-event", lambda _w, _e: self.save_frame(win) and False)
         window.connect("destroy", lambda _w: self._host().window_closed(win))
         window.connect("key-press-event", lambda _w, e: self._on_key(win, e))
         view.load_uri(url)
         return win
 
-    def present(self, win: _Win) -> None:
+    def present(self, win: _Win, activation_token: str | None = None) -> None:
         win.window.show_all()
-        win.window.present()
+        if activation_token:
+            # GTK3's Wayland backend treats a startup id that looks like an
+            # xdg-activation token as one; present() then raises using it.
+            win.window.set_startup_id(activation_token)
+            win.window.present()
+        else:
+            win.window.present_with_time(self.tk.Gdk.CURRENT_TIME)
 
     def close(self, win: _Win) -> None:
-        self._save_frame(win)
+        self.save_frame(win)
         win.window.destroy()
 
     def current_url(self, win: _Win):
@@ -382,7 +431,9 @@ class GtkBackend:
         threading.Thread(target=worker, daemon=True,
                          name="fused-render-window-host-open-external").start()
 
-    def _save_frame(self, win: _Win) -> bool:
+    def save_frame(self, win: _Win) -> bool:
+        """Called from a window's own close (`delete-event`) and from
+        `Host.quit` for every window still open when the process quits."""
         try:
             w, h = win.window.get_size()
             x, y = win.window.get_position()
@@ -422,7 +473,8 @@ class GtkBackend:
                 nick = action.get_navigation_type().value_nick.upper().replace("-", "_")
                 ctrl = bool(action.get_modifiers() & self.tk.Gdk.ModifierType.CONTROL_MASK)
                 verdict = map_navigation(url, host.port, nick,
-                                         button=action.get_mouse_button(), ctrl=ctrl)
+                                         button=action.get_mouse_button(), ctrl=ctrl,
+                                         user_gesture=action.is_user_gesture())
             if verdict == "allow":
                 decision.use()
             else:
@@ -454,6 +506,11 @@ class GtkBackend:
         return None
 
     def _on_permission(self, view, request) -> bool:
+        # One gate for every WebKitPermissionRequest kind WebKit asks about —
+        # camera/mic (UserMediaPermissionRequest, also display capture),
+        # geolocation, notifications: app-origin pages get the answer a
+        # browser gives after the user's already clicked Allow once; nothing
+        # else (a third-party iframe) does.
         parts = urlsplit(view.get_uri() or "")
         try:
             port = parts.port
@@ -511,16 +568,38 @@ def main(argv: list[str] | None = None) -> int:
         log(str(error))
         return EXIT_UNAVAILABLE
 
+    # App identity, before the first window: "fused-render" matches the
+    # .desktop basename (integration.py's _DESKTOP_NAME / StartupWMClass) and
+    # the icon name it installs under the hicolor theme (its _ICON_STEM), so
+    # the compositor/taskbar group and icon this process under the same
+    # identity the installed .desktop entry advertises.
+    tk.GLib.set_prgname("fused-render")
+    tk.GLib.set_application_name("FusedRender")
+    tk.Gtk.Window.set_default_icon_name("fused-render")
+
     holder: dict = {}
     backend = GtkBackend(tk, lambda: holder["host"], Path(args.state), log)
     holder["host"] = Host(args.port, backend, enabled=not args.disabled)
     stop = threading.Event()
     window_host_ipc.serve(args.socket, holder["host"].dispatch, stop, log)
+    # SIGTERM is how the supervisor's Job.close() stops this process after
+    # (or instead of, if the `quit` IPC command never got through) asking
+    # nicely; without a handler it would drop whatever `quit` didn't already
+    # save. unix_signal_add runs the callback on the GLib main loop itself
+    # (a plain `signal.signal` handler would starve behind the C poll()),
+    # so `host.quit()` needs no run_on_main marshalling here.
+    tk.GLib.unix_signal_add(tk.GLib.PRIORITY_DEFAULT, signal.SIGTERM,
+                            lambda: _on_sigterm(holder["host"]))
     try:
         tk.Gtk.main()
     finally:
         stop.set()
     return 0
+
+
+def _on_sigterm(host: Host) -> bool:
+    host.quit()
+    return False  # GLib.SOURCE_REMOVE: a quitting process needs it once
 
 
 if __name__ == "__main__":

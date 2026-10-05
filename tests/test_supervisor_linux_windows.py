@@ -240,3 +240,67 @@ def test_server_socket_env_only_when_a_host_is_wanted(paths, monkeypatch):
     monkeypatch.delenv("WAYLAND_DISPLAY")
     monkeypatch.delenv("DISPLAY", raising=False)
     assert make(paths).server_environment() == {}
+
+
+def _timeout_error():
+    error = ipc.HostUnavailable("timed out")
+    error.__cause__ = TimeoutError("timed out")
+    return error
+
+
+def test_a_lone_timeout_with_the_process_alive_falls_back_without_killing_the_host(paths, monkeypatch):
+    """The slow-first-open scenario: the host answered a ping fine moments
+    earlier and its process is still running, but the first WebKitGTK view
+    on a cold cache outruns the caller's open-timeout budget. That degrades
+    to a browser tab for this one open; the host stays up for the next
+    one."""
+    host = make(paths)
+    host.available = True
+    host._job = FakeJob()
+    host._process = FakeProcess(exited=False)
+    monkeypatch.setattr(ipc, "request", lambda *a, **k: (_ for _ in ()).throw(_timeout_error()))
+    assert host.open("http://127.0.0.1:8123/") is False
+    assert host.available is True
+    assert host._job is not None and not host._job.closed
+
+
+def test_three_consecutive_timeouts_give_up_on_the_host(paths, monkeypatch):
+    host = make(paths)
+    host.available = True
+    host._job = FakeJob()
+    host._process = FakeProcess(exited=False)
+    monkeypatch.setattr(ipc, "request", lambda *a, **k: (_ for _ in ()).throw(_timeout_error()))
+    assert host.open("u") is False
+    assert host.open("u") is False
+    assert host.available is True  # still just transient so far
+    assert host.open("u") is False
+    assert host.available is False  # third in a row gives up
+    assert host._job is None
+
+
+def test_a_timeout_after_the_process_exited_gives_up_immediately(paths, monkeypatch):
+    host = make(paths)
+    host.available = True
+    host._job = FakeJob()
+    host._process = FakeProcess(exited=True)
+    monkeypatch.setattr(ipc, "request", lambda *a, **k: (_ for _ in ()).throw(_timeout_error()))
+    assert host.open("u") is False
+    assert host.available is False
+    assert host._job is None
+
+
+def test_a_connection_refused_gives_up_immediately_even_with_the_process_alive(paths, monkeypatch):
+    host = make(paths)
+    host.available = True
+    host._job = FakeJob()
+    host._process = FakeProcess(exited=False)
+
+    def refused(*a, **k):
+        error = ipc.HostUnavailable("refused")
+        error.__cause__ = ConnectionRefusedError()
+        raise error
+
+    monkeypatch.setattr(ipc, "request", refused)
+    assert host.open("u") is False
+    assert host.available is False
+    assert host._job is None

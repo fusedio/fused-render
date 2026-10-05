@@ -764,20 +764,17 @@ def _prefs_response() -> dict:
 
 
 def _native_windows_state() -> dict:
-    import sys
-
     from fused_render import window_policy
 
     hooks = window_policy.native_hooks
-    if sys.platform == "darwin":
-        available = "apply" in hooks
-    elif sys.platform.startswith("linux"):
-        # The window host is a separate process that can be absent or have
-        # died; ask it, rather than trusting that the hooks were installed.
-        usable = hooks.get("usable")
-        available = "apply" in hooks and callable(usable) and bool(usable())
-    else:
-        available = False
+    # One hook contract, not a platform if/elif/else: `apply` installed at all
+    # is necessary (macOS's app.py and Linux's linux_windows.install both set
+    # it; win32 never does, so hooks stays {} there and this is False). Linux
+    # additionally installs `usable` — the window host is a separate process
+    # that can be absent or have died, so it is asked rather than trusted —
+    # while macOS's windows live in-process and installs no such hook; the
+    # default `lambda: True` keeps that platform's behavior exactly as before.
+    available = "apply" in hooks and hooks.get("usable", lambda: True)()
     return {"enabled": native_windows_enabled(), "available": available}
 
 
@@ -927,15 +924,24 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         value = body.get("native_windows_enabled")
         if not isinstance(value, bool):
             return JSONResponse({"error": "'native_windows_enabled' must be a boolean"}, status_code=400)
-        prefs["native_windows_enabled"] = value
-        changed = True
-        # Applied live: the app builds (or closes) its windows on the main
-        # thread a tick after this returns. No hook = nothing to apply.
+        # Applied live BEFORE the write: the app builds (or closes) its
+        # windows on the main thread a tick after this returns. No hook =
+        # nothing to apply, and the preference just stores. A host that IS
+        # reachable but refuses (`apply` -> False) must not be saved as a
+        # clean switch — prefs.json and the live host would then disagree for
+        # as long as that host keeps running — so the write is skipped and
+        # the PUT fails instead (the page's existing error banner for this
+        # toggle covers it; an unreachable host is not this case, see `apply`).
         from fused_render import window_policy
 
         apply_windows = window_policy.native_hooks.get("apply")
-        if apply_windows is not None:
-            apply_windows(value)
+        if apply_windows is not None and not apply_windows(value):
+            return JSONResponse(
+                {"error": "the window host refused the native-windows preference; try again"},
+                status_code=409,
+            )
+        prefs["native_windows_enabled"] = value
+        changed = True
     if "native_chat_enabled" in body:
         value = body.get("native_chat_enabled")
         if not isinstance(value, bool):

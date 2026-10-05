@@ -38,11 +38,26 @@ def install(port: int, environ=None, platform: str | None = None) -> bool:
     if not platform.startswith("linux") or not sock:
         return False
 
-    def apply(on: bool) -> None:
+    def apply(on: bool) -> bool:
+        """True unless the host is reachable and explicitly refused ``on``
+        (the one case prefs.py must not record as a clean switch — the live
+        state and prefs.json would then disagree for as long as that host
+        keeps running). A host that is not reachable at all is not a
+        failure: the host may not have started yet (the lazy-start design,
+        core.py), and it reads this same preference for itself at its own
+        startup, so the write still lands."""
         try:
-            ipc.request(sock, {"cmd": "set_enabled", "on": bool(on)}, timeout=ipc.CALLER_TIMEOUT_S)
+            reply = ipc.request(sock, {"cmd": "set_enabled", "on": bool(on)},
+                                 timeout=ipc.CALLER_TIMEOUT_S)
         except ipc.HostUnavailable as error:
-            logger.info("window host did not take the windows preference: %s", error)
+            logger.info("window host not reachable for the windows preference "
+                        "(applies once it starts): %s", error)
+            return True
+        if not reply.get("ok"):
+            logger.warning("window host refused the windows preference: %s",
+                           reply.get("reason"))
+            return False
+        return True
 
     def open_app(fs_path: str) -> None:
         url = f"http://127.0.0.1:{port}" + window_policy.app_window_path(fs_path)
