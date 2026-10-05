@@ -2334,15 +2334,6 @@ export function TaskList({
   // added to stop it blinking.
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set());
   const observed = useRef(false);
-  // WHERE THE SEED STARTS (Bugbot, #1384): the scroll memory is paid in a
-  // layout effect, before the first paint, so a return visit paints the SAVED
-  // viewport — and a seed that only knew about the top of the list would have
-  // painted that viewport as placeholders until the observer's first report.
-  // So the seed is centred on the row the saved offset lands on, by estimate;
-  // the observer corrects it within a frame.
-  const seedRow = (scroll: number) =>
-    Math.max(0, Math.floor(scroll / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE);
-  const seedFrom = useRef(seedRow(memory.current.scroll || 0));
   // The registry both the observer and the focus tracking read: which node
   // element is which task, and back.
   const nodesByEl = useRef(new Map<Element, string>());
@@ -2437,7 +2428,6 @@ export function TaskList({
       // offset the restore will pay, and over a cleared set, so the new
       // observer's report is news and not a repeat (Bugbot, #1384).
       observed.current = false;
-      seedFrom.current = seedRow(memory.current.scroll || 0);
       setRevealed(new Set());
     };
     // The scroller mounts with the first rows and unmounts with the last
@@ -2605,6 +2595,25 @@ export function TaskList({
     remember({ ...memory.current, scroll: 0 });
   }, [hasRows, stale]);
 
+  // WHERE THE SEED STARTS (Bugbot, #1384, twice). The scroll memory is paid
+  // in a layout effect, before the first paint, so a return visit paints the
+  // SAVED viewport — and a seed that only knew about the top of the list
+  // would have painted that viewport as placeholders until the observer's
+  // first report. So the seed is centred on the row the restore is about to
+  // land on, by estimate, and the observer corrects it within a frame.
+  //
+  // DERIVED HERE, AT RENDER, FROM WHAT THE RESTORE WILL ACTUALLY PAY — never
+  // stored: a seed computed in the observer's teardown read the memory
+  // before the empty-list effect below zeroed it, and a filter that emptied
+  // and refilled remounted at the top with the seed still down the list.
+  // `owed` is the offset the layout effect pays on this very commit; a stale
+  // empty re-arms it from memory in that same effect (`staleEmptied`), so the
+  // memory stands in for it here; anything else lands at the top.
+  const seedScroll = owed.current ?? (staleEmptied.current ? memory.current.scroll || 0 : 0);
+  const seedFrom = observed.current
+    ? 0
+    : Math.max(0, Math.floor(seedScroll / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE);
+
   if (!hasRows) {
     return <p className="schedule-tv-empty">{emptyLabel}</p>;
   }
@@ -2684,7 +2693,7 @@ export function TaskList({
           folded={
             (observed.current
               ? !revealed.has(rowKeys[ix] ?? task.key)
-              : ix < seedFrom.current || ix >= seedFrom.current + REVEAL_SEED)
+              : ix < seedFrom || ix >= seedFrom + REVEAL_SEED)
             && !expanded.has(task.key)
             && peeked !== task.key
             && selected !== task.key
