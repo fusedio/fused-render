@@ -115,7 +115,7 @@ export interface Job {
   // while its `origin` stays "Scheduler"). "" when no producer named one —
   // JobRow renders no caption at all for it, never an empty placeholder.
   origin: string;
-  // The app folder the reporting page belongs to (D891, `jobs.py`'s
+  // The app folder the reporting page belongs to (D1316, `jobs.py`'s
   // `app_for_page`) — what finished rows group by and what a page-less row
   // opens. Optional: absent on an older server's snapshot.
   app?: string;
@@ -450,7 +450,7 @@ export function groupJobs(jobs: readonly Job[]): JobGroup[] {
   return order;
 }
 
-/** Where clicking a job's row goes (D891): its page, unless that is a `.py`
+/** Where clicking a job's row goes (D1316): its page, unless that is a `.py`
  *  (a detached worker reports its own script) or empty — then the app folder.
  *  "" when nothing is known. */
 export function jobDestination(job: Job): string {
@@ -458,7 +458,7 @@ export function jobDestination(job: Job): string {
   return job.app || "";
 }
 
-/** The notifications dock's grouping (D591/D891): finished jobs of one app
+/** The notifications dock's grouping (D591/D1316): finished jobs of one app
  *  fold into ONE group however far apart they ran or whatever `group` each
  *  reporter chose; a job with no app falls back to `groupJobs`'s burst rule.
  *  Order follows each group's first member. Popup code keeps `groupJobs`. */

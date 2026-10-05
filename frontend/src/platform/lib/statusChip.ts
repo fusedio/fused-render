@@ -24,7 +24,7 @@ import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 export const HOVER_OPEN_MS = 120;
 export const HOVER_CLOSE_MS = 200;
 
-// D891: ask a mounted chip to open (pinned) from anywhere — a notification row
+// D1316: ask a mounted chip to open (pinned) from anywhere — a notification row
 // with no destination of its own uses it to open the Activity panel.
 const openRequests = new Set<(key: SectionKey) => void>();
 export function requestOpenSection(key: SectionKey): void {

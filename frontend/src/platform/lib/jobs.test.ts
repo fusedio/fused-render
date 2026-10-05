@@ -1185,7 +1185,7 @@ test("popupTick: a group failure already popped by groupPopupTick does not re-po
   expect(p1.seen.has("sys:g:a:900")).toBe(true);
 });
 
-// D891: the notifications dock folds finished rows by APP, any time; the
+// D1316: the notifications dock folds finished rows by APP, any time; the
 // burst-gap `groupJobs` (popup path) is untouched.
 test("groupTerminalByApp folds one app's finished jobs regardless of group and time gap", () => {
   const A = "/apps/hf";

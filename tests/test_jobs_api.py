@@ -1361,7 +1361,7 @@ def test_a_late_tick_on_a_dismissed_job_never_returns_a_blank_group():
 
 
 def test_a_detached_worker_report_with_the_page_header_keeps_page_and_origin(client, tmp_path):
-    """D891: a worker (no token) sends X-Fused-Page from FUSED_RENDER_PAGE;
+    """D1316: a worker (no token) sends X-Fused-Page from FUSED_RENDER_PAGE;
     page + origin derive as for a page report, and a later header-less tick
     keeps the stored page."""
     page = str(tmp_path / "hf-insights" / "jobs.py")
@@ -1374,7 +1374,7 @@ def test_a_detached_worker_report_with_the_page_header_keeps_page_and_origin(cli
 
 
 def test_a_job_carries_its_app_folder_derived_from_the_page(client, tmp_path):
-    """D891: `app` = the project root of the reporting page (else the page's
+    """D1316: `app` = the project root of the reporting page (else the page's
     own folder); a shell route or no page means no app. Never from the body."""
     app = tmp_path / "myapp"
     app.mkdir()

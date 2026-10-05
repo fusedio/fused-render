@@ -487,7 +487,7 @@ function MessageRowView({
       navAction={notification.action}
       extraAction={notification.extraAction}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
-      // D891: every row is clickable — no page opens the Activity panel.
+      // D1316: every row is clickable — no page opens the Activity panel.
       rowClick={
         notification.page
           ? {
@@ -808,7 +808,7 @@ function GroupJobRow({
   // as `title` just below), for the same reason: nothing in §3 names which
   // member's destination a folded row should open, and the oldest member is
   // the one least likely to still be mid-rename/mid-retry.
-  // D891: the first member that has a real destination (page, else app
+  // D1316: the first member that has a real destination (page, else app
   // folder); none -> the click opens the Activity panel instead.
   const openPage = members.map(jobDestination).find(Boolean) ?? "";
   const title = members[0]?.title ?? group.group;
@@ -1052,7 +1052,7 @@ export function RepoUpdatesCardView({
   // composition already applies for popup suppression. `groupEffectiveTier`
   // is the group-level version of the same promotion `effectiveTier` does
   // per job: one attention-effective member promotes the WHOLE group.
-  // D891: finished rows fold by APP, any time (popup path keeps `groupJobs`).
+  // D1316: finished rows fold by APP, any time (popup path keeps `groupJobs`).
   const terminalGroups = groupTerminalByApp(terminal);
   const terminalAttentionGroups = terminalGroups.filter(
     (g) => groupEffectiveTier(g.jobs) === "attention",

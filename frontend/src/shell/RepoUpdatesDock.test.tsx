@@ -1872,7 +1872,7 @@ test("a message with both an action and an extraAction renders both buttons", ()
   expect(opened).toBe(true);
 });
 
-// D891: every row is clickable — a message with no page opens Activity.
+// D1316: every row is clickable — a message with no page opens Activity.
 test("a message with no page still draws a row-open marker (opens Activity)", () => {
   const tree = renderView({ rows: [], messages: [message({ title: "Could not save" })] });
   expect(findAll(tree, "dl-row-open")).toHaveLength(1);
@@ -1883,7 +1883,7 @@ test("a message's title carries a full-text tooltip", () => {
   expect(findAll(tree, "dl-title")[0].props.title).toBe("A very long title");
 });
 
-// D891: finished jobs of one app fold into ONE row however far apart they ran
+// D1316: finished jobs of one app fold into ONE row however far apart they ran
 // or whatever `group` each reporter chose, and the row is clickable.
 test("finished jobs of one app fold into one clickable row despite distinct groups and a wide time gap", () => {
   const a = doneJob({ id: "hfi-1", group: "hfi-1", app: "/apps/hf", page: "/apps/hf/jobs.py", origin: "hf", started_at: 1 });

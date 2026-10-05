@@ -54,7 +54,7 @@ def test_a_same_named_user_module_still_wins_over_the_shared_copy(tmp_path):
 
 
 def test_a_user_py_sees_its_own_path_as_fused_render_page(tmp_path):
-    """D891: a detached worker the script spawns inherits this and sends
+    """D1316: a detached worker the script spawns inherits this and sends
     it as `X-Fused-Page`, so its job rows group by app and click through."""
     script = tmp_path / "reports_page.py"
     script.write_text("import os\n\ndef main():\n    return os.environ.get('FUSED_RENDER_PAGE')\n")

@@ -945,7 +945,7 @@
   margin-bottom: 5px;
 }
 
-/* D891 REVERSES THE WRAP BELOW: every title is now ONE line with an ellipsis
+/* D1316 REVERSES THE WRAP BELOW: every title is now ONE line with an ellipsis
    (a 2-line client-message title cost row height); the rest of this comment
    is D596's history. THE TITLE WRAPS INSTEAD OF COMPETING (D596, user: "we have a ton of free
    space in the jobs card. why are we truncating stuff instead of placing things

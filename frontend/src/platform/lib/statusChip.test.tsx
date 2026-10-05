@@ -125,7 +125,7 @@ test("hovering a second chip closes a pinned first one — one panel at a time",
   renderer.unmount();
 });
 
-// D891: a notification row with nowhere else to go opens the Activity panel.
+// D1316: a notification row with nowhere else to go opens the Activity panel.
 test("requestOpenSection pins the matching chip and leaves the others alone", async () => {
   const activity = harness("activity");
   const models = harness("models");

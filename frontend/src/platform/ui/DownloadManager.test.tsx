@@ -650,7 +650,7 @@ describe("the row uses LINES, not a shrink ladder (D596)", () => {
   // `.dl-model` 999, `.dl-title` 1 — is RETIRED, so the tests that pinned it
   // are replaced rather than retuned.
 
-  // D891 (user: a client-message title wrapped to 2 lines): D596's two-line
+  // D1316 (user: a client-message title wrapped to 2 lines): D596's two-line
   // wrap is reversed — every `.dl-title` is ONE line with an ellipsis.
   it("keeps the title on one ellipsised line", () => {
     const rule = block(CSS, ".dl-title");

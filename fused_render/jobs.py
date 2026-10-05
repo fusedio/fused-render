@@ -326,7 +326,7 @@ def origin_for_page(page: str, *, default: str = "") -> str:
 
 
 def app_for_page(page: str) -> str:
-    """The app folder a report from *page* belongs to (D891): its project root,
+    """The app folder a report from *page* belongs to (D1316): its project root,
     else the page's own folder. "" for a shell route or a non-absolute value —
     there is no folder to name."""
     if not page or page in _ORIGIN_BY_ROUTE or not os.path.isabs(page):
@@ -448,7 +448,7 @@ class Job:
     # when no producer named one — a caption with nothing to say renders no
     # element at all, never a placeholder (DownloadManager.tsx's `JobRow`).
     origin: str = ""
-    # The APP FOLDER the reporting page belongs to (D891), derived server-side
+    # The APP FOLDER the reporting page belongs to (D1316), derived server-side
     # from `page` (`app_for_page`), never from the body. The client groups
     # finished rows by it and opens it for a row with no page of its own.
     app: str = ""

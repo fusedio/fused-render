@@ -472,7 +472,7 @@ test("a cancelled job's row navigates AND dismisses itself too", async () => {
   expect(dismissCalls).toBe(1);
 });
 
-// D891: EVERY terminal row is clickable. No page -> the app folder; no app
+// D1316: EVERY terminal row is clickable. No page -> the app folder; no app
 // either -> the Activity panel.
 test("a terminal job with no page but a known app opens the app folder", () => {
   const root = renderRow({ ...BASE, state: "done", page: "", app: "/apps/hf" });

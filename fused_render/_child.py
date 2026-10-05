@@ -78,7 +78,7 @@ def run():
     out = {"ok": False}
     try:
         module_dir = os.path.dirname(path)
-        # D891: children (a detached worker) inherit the calling page so
+        # D1316: children (a detached worker) inherit the calling page so
         # their /api/jobs reports can send it as X-Fused-Page.
         os.environ["FUSED_RENDER_PAGE"] = path
         os.chdir(module_dir)  # relative data paths in user code resolve next to the .py

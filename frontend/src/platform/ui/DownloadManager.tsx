@@ -634,7 +634,7 @@ export function JobRow({
   // done, error or cancelled, fs path or shell route alike: going to look IS
   // the acknowledgement, so the row has done its job the moment it's opened.
   //
-  // D891: EVERY terminal row is clickable — `jobDestination` (page, else the
+  // D1316: EVERY terminal row is clickable — `jobDestination` (page, else the
   // app folder); with neither, the click opens the Activity panel and keeps
   // the row (there was nothing to go and look at).
   const canOpen = isTerminal(job);
