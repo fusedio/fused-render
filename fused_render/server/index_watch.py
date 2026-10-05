@@ -380,6 +380,11 @@ def _real_open_source(root: str, stop_event):
 
 _stop_event: threading.Event | None = None
 _threads: list = []
+#: True from `create_app`'s startup `start()` until its shutdown `stop()`.
+#: `pause()` / `resume()` (the indexing-preference toggle) run only inside
+#: that window, so a `PUT /api/prefs` against a test app that never ran
+#: lifespan — and so never started a watcher — cannot start one either.
+_armed = False
 
 
 def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
@@ -437,8 +442,9 @@ def start() -> None:
     good roots' threads (with `_stop_event` still `None`, `stop()` would
     return immediately and never reach them) nor stops the rest from
     starting."""
-    global _stop_event, _threads
+    global _stop_event, _threads, _armed
 
+    _armed = True
     if _stop_event is not None:
         return
 
@@ -472,6 +478,13 @@ def stop() -> None:
     """Signal every watcher thread to stop. Does not join — the threads are
     daemons and a clean generator end (§ `_run_one_watch`'s docstring) is
     fast, but shutdown must not block on it."""
+    global _armed
+
+    _armed = False
+    _signal_stop()
+
+
+def _signal_stop() -> None:
     global _stop_event, _threads
 
     if _stop_event is None:
@@ -479,3 +492,28 @@ def stop() -> None:
     _stop_event.set()
     _stop_event = None
     _threads = []
+
+
+def pause() -> None:
+    """The indexing preference was turned off: end every open watch NOW.
+
+    `WatchLoop.run` only consults the gate between watch attempts; an attempt
+    already inside `_run_one_watch` keeps its watcher process, FSEvents stream
+    and pipe thread alive until the server restarts, decoding and filtering
+    every filesystem event only for `note_index_folders` to drop the result at
+    the gate. Setting the stop event is what the open watch actually listens
+    to (`_process_source`), so this is the one way to close it before
+    shutdown. `_armed` is left as is: the preference pausing the watcher is
+    not the server stopping it, and `resume()` needs to know the difference."""
+    _signal_stop()
+
+
+def resume() -> None:
+    """The indexing preference was turned on: start watching again, if the
+    server had the watcher running in the first place. A no-op when it
+    didn't (`_armed` False), and idempotent when it still does (`start()`'s
+    own early return). Call it AFTER the preference is written: the new
+    thread's first gate poll reads prefs.json, and reading the old value
+    there costs a full `GATE_POLL_S` before the watch opens."""
+    if _armed:
+        start()

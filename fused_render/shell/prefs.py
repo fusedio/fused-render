@@ -1065,6 +1065,21 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         from fused_render import launcher
 
         launcher.notify_settings_changed(launcher_rebind)
+    if "indexing_enabled" in body:
+        # AFTER the write, for the same reason as `lan_enabled` below: the
+        # watcher threads read the gate from the stored preference, so a
+        # resume before the write would see "off" on its first poll and
+        # sleep a full GATE_POLL_S before opening. Off pauses the live
+        # watcher (server/index_watch.py) — `cancel_all_scans` above only
+        # stops scan workers, and a watch already open does not re-check
+        # the gate until it ends. Lazy import: index_watch imports the index
+        # router, which imports this module.
+        from fused_render.server import index_watch
+
+        if prefs["indexing_enabled"]:
+            index_watch.resume()
+        else:
+            index_watch.pause()
     if "lan_enabled" in body:
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's
