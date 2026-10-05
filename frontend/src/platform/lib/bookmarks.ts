@@ -270,9 +270,10 @@ function mutate(transform: (items: BookmarkItem[]) => BookmarkItem[] | null): Pr
 }
 
 // Id of the bookmark most recently added in this shell, for the sidebar to
-// scroll the new row into view (a new bookmark lands at the end of the
-// top-level list, which is often below the fold). Consume-once via
-// takeLastAddedBookmarkId so an unrelated later re-render can't scroll again.
+// scroll the new row into view (a new bookmark lands at the TOP of the
+// top-level list, which is above the fold once the reader has scrolled the
+// section). Consume-once via takeLastAddedBookmarkId so an unrelated later
+// re-render can't scroll again.
 let lastAddedId: string | null = null;
 
 export function takeLastAddedBookmarkId(): string | null {
@@ -285,7 +286,11 @@ export async function addBookmark(name: string, url: string): Promise<void> {
   const item: Bookmark = { id: crypto.randomUUID(), name, url, created_at: Date.now() };
   await mutate((items) => {
     item.name = uniqueNameIn(items, name); // dedupe against the same snapshot we push into
-    items.push(item);
+    // NEWEST FIRST (Akshil, 2026-10-04): the bookmark just made is the one the
+    // reader is about to use, so it opens the list rather than closing it —
+    // appended, it sat under every folder and older row, below the fold on a
+    // tree of any size. Folders and older bookmarks keep their relative order.
+    items.unshift(item);
     return items;
   });
   // Only after the write commits — a failed PUT rejects above and leaves no

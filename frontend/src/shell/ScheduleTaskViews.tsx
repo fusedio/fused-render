@@ -3535,7 +3535,7 @@ function TaskNode({
             <button
               type="button"
               className={"tasks-act tasks-act--" + file.kind}
-              title={file.title}
+              data-hint={file.title}
               aria-label={file.label}
               disabled={acting}
               onClick={(e) => {
@@ -5850,7 +5850,7 @@ function TaskCard({
             <button
               type="button"
               className={"tasks-act tasks-card-act tasks-act--" + file.kind}
-              title={file.title}
+              data-hint={file.title}
               aria-label={`${file.label} ${shortTaskId(task.task_id)}`}
               disabled={busy}
               onClick={() => void refile(file)}

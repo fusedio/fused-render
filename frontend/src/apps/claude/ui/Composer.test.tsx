@@ -1983,38 +1983,15 @@ test("a host that states no `ready` at all is stating a settled pair", () => {
   expect(modelPill(c).sel.props.disabled).toBe(false);
 });
 
-test("the idle line opens under the pointer and folds when it leaves; touch is ignored (Akshil, 2026-09-21)", () => {
+test("the pointer alone never opens the idle line (Akshil, 2026-10-05: hover-expand removed)", () => {
   const m = mount();
   const form = () => m.root.findByType("form");
   const cls = () => String(form().props.className);
   expect(cls()).toContain("is-idle");
-  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
-  expect(cls()).not.toContain("is-idle");
-  const doc = { querySelector: () => null };
-  const leave = (over: Record<string, unknown>) =>
-    act(() =>
-      form().props.onPointerLeave({
-        pointerType: "mouse",
-        relatedTarget: null,
-        currentTarget: { ownerDocument: doc },
-        ...over,
-      }),
-    );
-  leave({});
-  expect(cls()).toContain("is-idle");
-  // A pill's menu is portaled to the body: the pointer moving into it, or into
-  // the gap under the pill while it is up, is not a leave (Bugbot, #1298).
-  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
-  leave({ relatedTarget: { closest: (sel: string) => (sel.includes("popover") ? {} : null) } });
-  expect(cls()).not.toContain("is-idle");
-  leave({ currentTarget: { ownerDocument: { querySelector: () => ({}) } } });
-  expect(cls()).not.toContain("is-idle");
-  leave({});
-  expect(cls()).toContain("is-idle");
-  // A finger has no hover: a tap's pointerenter must not stick the card open.
-  act(() => form().props.onPointerEnter({ pointerType: "touch" }));
-  expect(cls()).toContain("is-idle");
-  // The landing card never folds, hovered or not.
+  // No hover handlers at all: nothing for a passing pointer to trip.
+  expect(form().props.onPointerEnter).toBeUndefined();
+  expect(form().props.onPointerLeave).toBeUndefined();
+  // The landing card never folds.
   const home = mount({ variant: "home" });
   expect(String(home.root.findByType("form").props.className)).not.toContain("is-idle");
 });
@@ -2053,7 +2030,8 @@ test("a folded chat card says its model · effort top-right; an open one hides t
   // The model's LABEL, not its id — the same word the pill shows.
   expect(meta().findAllByType("span").map((c) => c.children.join("")))
     .toEqual(["Opus", "", "max"]);
-  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
+  // Opened by focus (the pointer no longer opens it, 2026-10-05).
+  act(() => form().props.onFocus({ target: { closest: () => null } }));
   expect(String(meta().props.className)).toContain("is-hidden");
   expect(meta().props["aria-hidden"]).toBe(true);
   // Nothing to say while the pills are still settling: no "— · —" flash.

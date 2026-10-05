@@ -564,8 +564,7 @@ export function ComposerCard({
    * it is not active, even if there is text inside").
    *
    * The chat's composer is ONE LINE — the box and Send — whenever the reader's
-   * attention is elsewhere, and the full card while they are in it or their
-   * pointer is over it (`hovered`, below). "In it"
+   * attention is elsewhere, and the full card while they are in it. "In it"
    * is FOCUS inside the form (`within`, from the form's own focus/blur) —
    * however it got there. There used to be a second guard, a pointer or key
    * on the card (`gestured`), so that `autoFocus` on arrival did not open the
@@ -593,62 +592,13 @@ export function ComposerCard({
     setWithin(true);
   }, []);
   /**
-   * …OR THE READER'S POINTER IS OVER IT (Akshil, 2026-09-21: "show it in
-   * expanded state if the input inside it is focused or if I hover on it").
-   * A mouse or pen resting on the folded line opens the card, and leaving it
-   * folds the card back unless the reader is in it by focus. Touch is left
-   * out: a finger has no hover, and the `pointerenter` a tap fires would
-   * stick the card open with nothing to clear it. Hover is not focus — it
-   * never sets `within`, so the outside-press listener below and the blur
-   * fold stay exactly as they are.
+   * …AND NOT THE POINTER. A mouse resting on the folded line used to open the
+   * card (2026-09-21) — removed (Akshil, 2026-10-05: "when we hover over
+   * composer we show it in expanded view, let's remove that change"). Focus
+   * is the one thing that opens it; the pointer passing over the line on its
+   * way to the transcript left a card bouncing open and shut.
    */
-  const [hovered, setHovered] = useState(false);
-  const onFormPointerEnter = useCallback((ev: React.PointerEvent<HTMLFormElement>) => {
-    if (ev.pointerType === "touch") return;
-    setHovered(true);
-  }, []);
-  /**
-   * …AND A MENU THE CARD OPENED IS STILL THE CARD (Bugbot on d2aaf34a): the
-   * pills cancel focus on pointerdown (`PillSelect`), so a pick from a
-   * hover-opened card never makes it `active`, and their menus are portaled
-   * to the body — the pointer moving into one is a `pointerleave` that would
-   * fold the card under its own open menu. Same two reads `onFormBlur` uses:
-   * the pointer went into a popup, or it went nowhere (the gap between pill
-   * and menu) while a popup is up. The effect below is the other half: once
-   * the pointer lands on anything that is neither the card nor a popup, the
-   * hover is over — which is also how a hover kept alive through a menu ends
-   * after the menu has closed with the pointer somewhere else.
-   */
-  const onFormPointerLeave = useCallback((ev: React.PointerEvent<HTMLFormElement>) => {
-    if (ev.pointerType === "touch") return;
-    const next = ev.relatedTarget as Element | null;
-    if (next?.closest?.(POPUP_SURFACE)) return;
-    if (!next && ev.currentTarget.ownerDocument.querySelector(POPUP_SURFACE)) return;
-    setHovered(false);
-  }, []);
   const formRef = useRef<HTMLFormElement | null>(null);
-  useEffect(() => {
-    if (!hovered) return;
-    const form = formRef.current;
-    if (!form) return;
-    const doc = form.ownerDocument;
-    // `pointerover` for a pointer that moves; `pointerdown` for one that does
-    // not (Bugbot on 1e33e75): a pick closes a menu under a still pointer, and
-    // nothing fires until it moves — a press anywhere that is not the card or a
-    // popup ends the hover just as it ends the focus (the outside-press
-    // listener below), so a click on the transcript folds a hover-opened card.
-    const onDocPointer = (ev: PointerEvent) => {
-      const t = ev.target as Element | null;
-      if (!t || form.contains(t) || t.closest?.(POPUP_SURFACE)) return;
-      setHovered(false);
-    };
-    doc.addEventListener("pointerover", onDocPointer, true);
-    doc.addEventListener("pointerdown", onDocPointer, true);
-    return () => {
-      doc.removeEventListener("pointerover", onDocPointer, true);
-      doc.removeEventListener("pointerdown", onDocPointer, true);
-    };
-  }, [hovered]);
   /**
    * …AND A PRESS OUTSIDE FOLDS IT EVEN WHEN FOCUS DOES NOT MOVE (Akshil,
    * 2026-09-16: in the Explorer's side panel "it becomes active, doesn't
@@ -1931,7 +1881,7 @@ export function ComposerCard({
   );
 
   const count = queued?.length ?? 0;
-  const collapsed = variant === "chat" && !active && !hovered && !blocked;
+  const collapsed = variant === "chat" && !active && !blocked;
 
   return (
     <>
@@ -1957,8 +1907,6 @@ export function ComposerCard({
         className={collapsed ? "c-composer is-idle" : "c-composer"}
         // FOCUS opens the card — a click in it, a Tab into it, or `autoFocus`
         // on arrival — and focus leaving it folds the card back (`onFormBlur`).
-        onPointerEnter={variant === "chat" ? onFormPointerEnter : undefined}
-        onPointerLeave={variant === "chat" ? onFormPointerLeave : undefined}
         onFocus={variant === "chat" ? onFormFocus : undefined}
         onBlur={variant === "chat" ? onFormBlur : undefined}
         onSubmit={(ev) => {
