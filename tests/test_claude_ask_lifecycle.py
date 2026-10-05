@@ -21,7 +21,7 @@ sidebar/pane is ALREADY on claude, where nothing about the mode or the
 folder/file changes to force a remount — is closed by an explicit instance
 bump folded into the remount key.
 
-D1309 retired the iframe chat page, and with it the PULL at that page's boot
+D1310 retired the iframe chat page, and with it the PULL at that page's boot
 (`window._fusedClaudeAskTake`, runtime.js `pullClaudeAsk`). The host-side state
 and the shared take primitive survive: each host now takes the pending ask
 itself, once per `claudeAskInstance`, and hands it to the native chat it mounts

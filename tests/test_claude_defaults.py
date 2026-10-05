@@ -16,7 +16,7 @@ selector tells the user nothing, and neither does a neighbour's model.
 A chat that names a session is a different question and is answered from that
 conversation alone (tests/test_claude_sessions_merged.py).
 
-D1309: the page half of this file (source pins and node probes over the
+D1310: the page half of this file (source pins and node probes over the
 retired iframe chat page, templates/claude/template.html) went with that
 page; the native chat under frontend/src/apps/claude owns it now. What
 stays is the backend half.

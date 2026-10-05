@@ -27,6 +27,7 @@ import {
   navigateUrl,
 } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
+import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
   appIconUrl,
   getAppIcon,
@@ -785,6 +786,11 @@ export default function App({ config }: { config: Config }) {
   const isExplorerHome = pathname === "/explorer";
   // The app's front door: search hero + the three recency strips.
   const isHome = pathname === "/home";
+  // A fresh page from either home starts on the default companion: drop the
+  // remembered sidebar tab (lib/side-tab-store). Open/closed and width are global.
+  useEffect(() => {
+    if (isHome || isExplorerHome) setSideTab(null);
+  }, [isHome, isExplorerHome]);
   const isClaudeConfig = pathname === "/claude-config";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is

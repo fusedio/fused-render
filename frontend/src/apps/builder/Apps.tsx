@@ -47,6 +47,18 @@ type Loaded<T> =
 // cost the walk twice — see /api/apps/home.
 const FAST_ROW = 12;
 
+// How many cards the grid draws per window. The catalog is fetched whole (the
+// chips, the count and the empty state all speak for the entire workspace, and
+// the fetch is the cheap half — see the fetch effect), but DRAWING it whole is
+// not cheap: every card is a DOM subtree, a preview.png request and two
+// IntersectionObserver entries, and the near-viewport gate in AppPreviewCard
+// only spares the iframe. A workspace in the hundreds paid all of that on
+// first paint for rows nobody had scrolled to. So the grid shows a window of
+// the filtered list and grows it as the reader nears the bottom (the sentinel
+// below) or asks for more. 24 is six rows at the layout's usual four columns:
+// well past a tall viewport, so the first window never looks like a fold.
+const PAGE_SIZE = 24;
+
 // The last exhaustive catalog this tab fetched, kept at MODULE scope so it
 // outlives the page's unmount. Revisiting /apps is a common move (open an app,
 // come back) and a full grid drawn instantly from the previous answer, then
@@ -289,6 +301,73 @@ export default function Apps({ config }: { config: Config }) {
       ),
     [cards, tag, category, q],
   );
+  // The window over `shown` — see PAGE_SIZE. It belongs to ONE filter: a new
+  // chip or query is a new list and its first page is the right place to
+  // land, so the stored limit carries the filter it was grown under and is
+  // discarded the render the filter changes. That reset happens DURING
+  // render (React re-renders before committing) rather than in an effect: an
+  // effect runs after paint, and a reader who had grown the window to a
+  // hundred cards would get one committed frame of a hundred cards of the NEW
+  // list — the mounts, image requests and observers this window exists to
+  // avoid — before the collapse. `nonce` is deliberately not in the key: a
+  // refetch after create/sync keeps the reader's place.
+  const filterKey = `${tag ?? ""}\u0000${category ?? ""}\u0000${q}`;
+  // A new list starts at its top. The scroller (`.apps-page`) keeps its
+  // scrollTop across the collapse to a first page, and a reader who typed a
+  // query from deep in a grown grid would otherwise be left clamped to the
+  // new list's bottom — first cards off screen, sentinel already in view and
+  // asking for more. Clamp to the toolbar's top rather than zero: a reader
+  // already above it (hero in view) is not moved, one below it comes back to
+  // the row they just used. Not on mount: a deep link or a back/forward
+  // restore arrives with the scroll position it should keep.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const firstFilter = useRef(true);
+  useEffect(() => {
+    if (firstFilter.current) {
+      firstFilter.current = false;
+      return;
+    }
+    const bar = toolbarRef.current;
+    const scroller = bar?.closest(".apps-page");
+    if (!bar || !(scroller instanceof HTMLElement)) return;
+    const barTop =
+      bar.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    if (scroller.scrollTop > barTop) scroller.scrollTop = barTop;
+  }, [filterKey]);
+  const [win, setWin] = useState({ key: filterKey, limit: PAGE_SIZE });
+  if (win.key !== filterKey) setWin({ key: filterKey, limit: PAGE_SIZE });
+  const limit = win.key === filterKey ? win.limit : PAGE_SIZE;
+  const windowed = useMemo(() => shown.slice(0, limit), [shown, limit]);
+  // Only the exhaustive catalog has a fold: the partial row is twelve cards
+  // at most and is replaced wholesale when the catalog lands.
+  const hasMore = apps.status === "ok" && shown.length > windowed.length;
+  const showMore = () => setWin((w) => ({ ...w, limit: w.limit + PAGE_SIZE }));
+  // Auto-extend: a sentinel after the grid, observed inside the page's own
+  // scroller (the same root useNearViewport uses, since this page owns its
+  // vertical scroll), with a generous lookahead so the next window is in the
+  // DOM before the reader reaches the last row.
+  //
+  // Re-observed on every `limit`, not just on `hasMore`. An observer reports
+  // CHANGES of intersection, and after one extend on a wide or tall viewport
+  // the sentinel can still sit inside the lookahead zone — eight columns put
+  // a whole window in three rows — so nothing would fire again and the
+  // auto-load would stall with the pill as the only way on. A fresh
+  // `observe()` always delivers its initial state, which is what makes this
+  // keep going until the sentinel is pushed clear or `hasMore` flips.
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!hasMore || !el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting))
+          setWin((w) => ({ ...w, limit: w.limit + PAGE_SIZE }));
+      },
+      { root: el.closest(".apps-page"), rootMargin: "600px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, limit]);
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
 
@@ -308,7 +387,7 @@ export default function Apps({ config }: { config: Config }) {
         <ClaudeHealthStrip />
         <FdaStrip />
 
-        <div className="apps-toolbar">
+        <div className="apps-toolbar" ref={toolbarRef}>
           {/* Facet selector: which chip set filters the grid. Switching facets
               resets the filter to All — a selection from the old facet would
               otherwise keep narrowing the grid invisibly under the new chips. */}
@@ -397,16 +476,30 @@ export default function Apps({ config }: { config: Config }) {
                 </div>
               )
             ) : (
-              <div className="apps-cards">
-                {shown.map((app) => (
-                  <AppPreviewCard
-                    key={app.path}
-                    app={app}
-                    onContextMenu={openCardMenu}
-                    badge={runningPaths.has(app.path) ? "running" : undefined}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="apps-cards">
+                  {windowed.map((app) => (
+                    <AppPreviewCard
+                      key={app.path}
+                      app={app}
+                      onContextMenu={openCardMenu}
+                      badge={runningPaths.has(app.path) ? "running" : undefined}
+                    />
+                  ))}
+                </div>
+                {hasMore && (
+                  <>
+                    <div ref={sentinelRef} className="apps-more-sentinel" aria-hidden="true" />
+                    {/* The explorer home's fold pill (`.fhb-more`, preferences.css),
+                        for the reader who scrolls with the keyboard or whose
+                        observer never fires. The count is what is LEFT, so it
+                        reads as progress rather than as a filter. */}
+                    <button type="button" className="fhb-more" onClick={showMore}>
+                      Show more ({shown.length - windowed.length} remaining)
+                    </button>
+                  </>
+                )}
+              </>
             )}
           </>
         )}

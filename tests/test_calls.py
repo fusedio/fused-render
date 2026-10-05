@@ -1823,7 +1823,7 @@ def test_a_cursor_outside_the_filter_still_stops_the_walk(store):
 
 
 def test_a_page_id_with_a_scheme_is_matched_as_written(store, monkeypatch, capsys):
-    """`--page fused-render://claude` (the native chat's X-Fused-Page, D1309) is
+    """`--page fused-render://claude` (the native chat's X-Fused-Page, D1310) is
     an id, not a path: abspath would glue it to the cwd and match nothing."""
     from fused_render import calls as call_log
 

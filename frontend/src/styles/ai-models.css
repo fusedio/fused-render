@@ -3242,6 +3242,13 @@ button.am-bench-model:focus-visible {
   flex-direction: column;
 }
 
+/* This pane is a bounded-height scroller: let it scroll rather than squash
+   children. Without this, overflow:hidden children like the pool-build card
+   shrink to nothing once the hit list overflows. */
+.tp-pane[data-part="adv"] > * {
+  flex-shrink: 0;
+}
+
 .tp-head {
   display: flex;
   align-items: flex-start;

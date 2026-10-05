@@ -24,7 +24,7 @@ cd frontend && npx vite build      # or: scripts/dev.sh, which watches
 
 The chat renders its trouble cards through the shell's own module
 (`frontend/src/platform/lib/trouble.ts`), so the build above covers it. (Until
-D1309 the chat was an iframe page, `fused_render/templates/claude/template.html`,
+D1310 the chat was an iframe page, `fused_render/templates/claude/template.html`,
 with its own copy of the card, staged into `~/.fused-render/.core-templates/`
 and only restaged when a process started — that page and its copy are gone.)
 Templates in general are still staged that way: the gate is content-addressed

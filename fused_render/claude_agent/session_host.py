@@ -318,7 +318,7 @@ _FD_CLOSE_CAP = 65536
 
 
 def _close_inherited_fds() -> None:
-    """Close every descriptor above stdio this host inherited (D1309).
+    """Close every descriptor above stdio this host inherited (D1310).
 
     `_start` spawns the host with `close_fds=False` — the only form CPython
     takes posix_spawn for, and the server must never fork (PROJ's atfork
@@ -358,7 +358,7 @@ def main() -> None:
     _close_inherited_fds()
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     run_dir = req["run_dir"]
-    # A STOP THAT LANDED BEFORE setsid() (D1309). Until the line above ran,
+    # A STOP THAT LANDED BEFORE setsid() (D1310). Until the line above ran,
     # this process sat in the SERVER's process group, so `_cancel`'s killpg on
     # our pid (not yet a group leader) missed us and `_kill_tree`'s fallback
     # kill may have too, if it raced interpreter startup. `_cancel` drops a

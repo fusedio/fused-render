@@ -18,7 +18,7 @@ row the CLI already writes to out.jsonl (captured from real runs, 2026-08-28):
 Fixtures are shared with test_claude_stream.py by shape, not import: one file
 per concern keeps each self-contained.
 
-D1309: the page half of this file (source pins and node probes over the
+D1310: the page half of this file (source pins and node probes over the
 retired iframe chat page, templates/claude/template.html) went with that
 page; the native chat under frontend/src/apps/claude owns it now. What
 stays is the backend half.

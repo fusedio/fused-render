@@ -122,7 +122,7 @@ def _app_entry_main(dir: str = "") -> dict:
     (D301), shared with the `app` template through `entry_html`.
 
     A blank `dir` is "no folder", not the server's cwd — which is what
-    `abspath("")` would quietly turn it into (D1309)."""
+    `abspath("")` would quietly turn it into (D1310)."""
     if not isinstance(dir, str) or not dir.strip():
         return {"entry": None}
     return {"entry": _app_entry().entry_html(dir)}
@@ -161,7 +161,7 @@ async def _run(label: str, budget: float, fn, kwargs: dict,
     If the REQUEST is cancelled while waiting (the client went away, the
     server is shutting down), `on_cancel(cfut)` runs before the
     CancelledError propagates: the work may still land, and a start/send
-    caller must still file what it did (D1309; see the 504 branch of
+    caller must still file what it did (D1310; see the 504 branch of
     `api_claude_agent`)."""
     # THE HANDLER'S OWN TIME, measured on the worker thread around the call
     # alone, as `duration_ms` on the envelope — the field `calls.enrich_run`
@@ -186,7 +186,7 @@ async def _run(label: str, budget: float, fn, kwargs: dict,
         raise
     except TimeoutError:
         if cfut.cancelled() or cfut.cancel():
-            # NEVER RAN (D1309). The whole budget went on waiting for a pool
+            # NEVER RAN (D1310). The whole budget went on waiting for a pool
             # worker — the clock starts at submit — and the job is now
             # cancelled, so the handler ran zero times and nothing will land
             # later. A different answer from "Timeout" on purpose: the caller
@@ -267,7 +267,7 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
                         media_type="application/json")
 
     # THE START MAY STILL LAND. A `_start` that blew its budget — or whose
-    # request was cancelled under it (the client hung up mid-send, D1309) — is
+    # request was cancelled under it (the client hung up mid-send, D1310) — is
     # running on in its pool thread and may yet spawn a host; filing it as
     # failed NOW would drop the placeholder its gate minted and leave that run
     # owning nothing, and filing nothing at all would leak the `admit:`
@@ -311,7 +311,7 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
             # against overwriting a retry that has since claimed the folder),
             # while its own drop is a no-op on a token already released.
             # Only `start`: a timed-out `send` minted no placeholder of its own
-            # to give back (D1309).
+            # to give back (D1310).
             key = gate._queue_target(params)
             if key:
                 gate._drop_placeholder(key, body)

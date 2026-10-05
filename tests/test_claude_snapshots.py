@@ -22,7 +22,7 @@ And the panel is INTERACTIVE: a row can be gone back to. That half is
 (SPEC §34, D194) — the plan chooses and describes, the write only applies an id
 the plan already handed out.
 
-D1309: the page half of this file (source pins and node probes over the
+D1310: the page half of this file (source pins and node probes over the
 retired iframe chat page, templates/claude/template.html) went with that
 page; the native chat under frontend/src/apps/claude owns it now. What
 stays is the backend half.

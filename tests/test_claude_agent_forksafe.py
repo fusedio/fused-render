@@ -118,7 +118,7 @@ def test_the_host_detaches_itself_before_reading_its_request(monkeypatch):
     with pytest.raises(_Stop):
         host.main()
     # The inherited server fds go right after the detach and before anything
-    # else the host does (D1309): spawned with close_fds=False, it holds every
+    # else the host does (D1310): spawned with close_fds=False, it holds every
     # non-CLOEXEC fd the server had, and the CLI it spawns would inherit them.
     assert order == ["setsid", ("closerange", 3), "stdin"]
 

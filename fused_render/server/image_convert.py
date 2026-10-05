@@ -162,7 +162,7 @@ def sips_to_png(path: str, out_dir: str | None = None) -> str | None:
     return None
 
 
-#: The most pixels this ladder will DECODE (D1309). It runs inside the server
+#: The most pixels this ladder will DECODE (D1310). It runs inside the server
 #: now, not a throwaway child, so a decoded picture is server RSS: Pillow's own
 #: `MAX_IMAGE_PIXELS` (~89 MP) only WARNS up to twice that, and a 170 MP TIFF
 #: is ~0.5 GB of RGB before the first resize. Measured on the size actually

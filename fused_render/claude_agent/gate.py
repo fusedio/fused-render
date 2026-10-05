@@ -127,7 +127,7 @@ def _file_owner(params: dict, result: dict, body: dict | None = None,
         # the placeholder in the meantime) is a no-op — `started`'s own
         # guard is the backstop either way.
         if late:
-            # A START THAT LANDED AFTER ITS 504 (D1309). The router already gave
+            # A START THAT LANDED AFTER ITS 504 (D1310). The router already gave
             # the folder back, and the user's retry may since have filed a REAL
             # owner of its own. `started` would overwrite that owner (it only
             # guards a live placeholder), handing the folder to the run the
@@ -204,7 +204,7 @@ def _drop_placeholder(key: str, body: dict | None) -> None:
 def _drop_admitted_placeholder(key: str, params: dict, body: dict | None) -> None:
     """Release the `admit:` placeholder `/api/tasks/queue/admit` minted for
     this request's `queue_claim`, if `_folder_busy` spent that token on it and
-    it still holds the folder — the start it was minted for timed out (D1309).
+    it still holds the folder — the start it was minted for timed out (D1310).
     `_drop_placeholder` covers the placeholder the gate minted ITSELF; this is
     the other one, which leaves no token on `body`."""
     token = str((body or {}).get("queue_claim") or params.get("queue_claim") or "")

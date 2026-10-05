@@ -20,7 +20,7 @@ The agent module is exec'd standalone, the way the fused engine execs it and the
 way every other agent test here loads it (a template may not import
 fused_render — SPEC PY-15 / D166).
 
-D1309: the page half of this file (source pins and node probes over the
+D1310: the page half of this file (source pins and node probes over the
 retired iframe chat page, templates/claude/template.html) went with that
 page; the native chat under frontend/src/apps/claude owns it now. What
 stays is the backend half.

@@ -89,7 +89,7 @@ def _resolve_name(name):
     within one folder the html wins, and a user folder (either form) still
     shadows a core PAGE template. A core NATIVE template is the exception:
     nothing shadows it, and a stale user template.html of the same name is
-    ignored with a warning (D1309). `/render` refuses a native template (404
+    ignored with a warning (D1310). `/render` refuses a native template (404
     "served by the shell") — and anything inside such a stale user fork, so
     the ignored page cannot be served by hand either; see
     `is_native_template_path`.
@@ -113,7 +113,7 @@ def _resolve_name(name):
             "for shell sentinel modes (SPEC PT-12); the only referenceable "
             "sentinel is '_render'"
         )
-    # A CORE NATIVE TEMPLATE CANNOT BE SHADOWED (D1309). The one there is
+    # A CORE NATIVE TEMPLATE CANNOT BE SHADOWED (D1310). The one there is
     # (`claude`) used to be an iframe page, so a user who once forked it has a
     # stale `~/.fused-render/templates/claude/template.html` — and letting that
     # win would resurrect the retired page under a hand-typed /render URL and
@@ -125,7 +125,7 @@ def _resolve_name(name):
         if stale not in _WARNED_STALE and os.path.isfile(stale):
             _WARNED_STALE.add(stale)
             logger.warning(
-                "ignoring %s: %r is rendered by the shell now (D1309); "
+                "ignoring %s: %r is rendered by the shell now (D1310); "
                 "delete that file to silence this", stale, name)
         return core_marker, None
     for base in (USER_TEMPLATES_DIR, TEMPLATES_DIR):
@@ -170,7 +170,7 @@ def is_native_template_path(path) -> bool:
     of the same path is about to."""
     if not isinstance(path, str) or not path:
         return False
-    # realpath + case-folding on BOTH sides (D1309): a symlinked spelling of
+    # realpath + case-folding on BOTH sides (D1310): a symlinked spelling of
     # the folder, or a differently-cased one on a case-insensitive volume (the
     # macOS default), is the same folder and must be refused the same way.
     # `normcase` folds on Windows only — on macOS it is the identity — so
@@ -181,7 +181,7 @@ def is_native_template_path(path) -> bool:
         return x.lower() if sys.platform == "darwin" else x
 
     p = os.path.realpath(path).rstrip(os.sep)
-    # A USER fork of a core-native name, at any depth (D1309): `_resolve_name`
+    # A USER fork of a core-native name, at any depth (D1310): `_resolve_name`
     # never resolves it, so nothing in it is a template any more — and a
     # hand-typed `/render?path=~/.fused-render/templates/claude/template.html`
     # would otherwise still serve the retired iframe page off disk.

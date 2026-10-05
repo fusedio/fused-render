@@ -23,7 +23,7 @@ and answers 504 when it expires. `/api/run` gave every call the executor's
 only costs the caller a held connection). `poll` keeps the full 60 s although
 it is the hot path: the poll that sees a turn end runs `_commit_turn` — up to
 three git calls on a 30 s timeout each plus a 3 s self-HTTP — and a shorter
-budget would 504 exactly the poll carrying the finished reply (D1309).
+budget would 504 exactly the poll carrying the finished reply (D1310).
 
 THE CLOCK STARTS AT SUBMIT. `wait_for` wraps the pool future, so time spent
 QUEUED for a worker counts against the budget as much as time running. With
@@ -45,7 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="claude-agent")
 
-#: THE CONTROL LANE (D1309). Stop, Allow/Deny and the app-state answer are a
+#: THE CONTROL LANE (D1310). Stop, Allow/Deny and the app-state answer are a
 #: user waiting on a button, or a CLI parked on a reply; they must never queue
 #: behind polls. The router's budget counts QUEUE time as well as run time
 #: (`wait_for` starts the clock at submit), so with the main pool saturated by

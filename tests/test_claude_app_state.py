@@ -31,7 +31,7 @@ app's first inline script runs before the frame's `load` and its logging is
 genuinely missed), real iframe navigation, and what a real page outlines. Those
 need a browser.
 
-D1309: the page half of this file (source pins and node probes over the
+D1310: the page half of this file (source pins and node probes over the
 retired iframe chat page, templates/claude/template.html) went with that
 page; the native chat under frontend/src/apps/claude owns it now. What
 stays is the backend half.
