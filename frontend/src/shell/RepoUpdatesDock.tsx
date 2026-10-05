@@ -48,7 +48,7 @@ import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
-import { navigate, navigateToJobPage, navigateUrl } from "@platform/lib/router";
+import { navigate, navigateToJobPage, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { requestOpenSection, useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 import type { ChipTone } from "@platform/ui/StatusChip";
@@ -95,7 +95,9 @@ import {
 import { loadDismissed, saveDismissed } from "./dismiss-store";
 import {
   repoActionLabel,
+  failuresForApp,
   newPulls,
+  pullsForApp,
   pullPopupTitle,
   repoDismissSignature,
   repoFixPrompt,
@@ -159,7 +161,13 @@ type MutationResult = {
   output?: string;
 };
 
-function useRepoUpdates() {
+// `scope`, set only by a native app window (NativeAppSyncNotices): keep just
+// the failures and pull popups of the repo that window's app lives in, and skip
+// the LAN-pairing poll (not that window's business). The dock passes nothing.
+export function useRepoUpdates(scope?: { forApp: string | null }) {
+  const forApp = scope ? scope.forApp : undefined;
+  const forAppRef = useRef(forApp);
+  forAppRef.current = forApp;
   const [repos, setRepos] = useState<RepoStatus[]>([]);
   // LAN pairings ride the same poll (third row kind, after D586's failures):
   // a device pairing is a notification, and this card is the notification
@@ -199,7 +207,7 @@ function useRepoUpdates() {
           }>("/api/git-upstream"),
           // Its failure must not take the repo rows down with it (and vice
           // versa): each source degrades alone.
-          getLanPairings().catch(() => null),
+          forAppRef.current === undefined ? getLanPairings().catch(() => null) : null,
         ]);
         // Superseded responses are DROPPED, not painted: a fresher read is
         // already in flight, and letting an older one land after it would
@@ -207,8 +215,16 @@ function useRepoUpdates() {
         // `useJobs` carries its own epoch).
         if (!disposed && mine === generation) {
           setRepos(data.repos || []);
-          setSyncFailures(data.sync_failures || []);
-          const pulls = data.pulls || [];
+          const scoped = forAppRef.current;
+          setSyncFailures(
+            scoped === undefined
+              ? data.sync_failures || []
+              : failuresForApp(data.sync_failures || [], scoped),
+          );
+          const pulls =
+            scoped === undefined
+              ? data.pulls || []
+              : pullsForApp(data.pulls || [], scoped);
           if (announcedPulls.current === null) {
             announcedPulls.current = new Set(pulls.map((p) => p.id));
           } else {
@@ -306,16 +322,22 @@ function PairingRowView({
 // view / Sign in where the user must act in the git view, Fix with Claude (the
 // overview-then-confirm prompt, with the action, command and git's complete
 // output).
-function SyncFailureRowView({
+export function SyncFailureRowView({
   failure,
   onGone,
   onOpen,
   age,
   unseen,
+  leaveTo,
 }: {
   failure: SyncFailure;
   onGone: (id: string) => void;
   onOpen?: () => void;
+  /** A native app window cannot SPA-navigate to the explorer (it is a
+   *  chrome-free embed for life): given this, "Fix with Claude" and "Open git
+   *  view" hand the destination url to it instead of calling `navigate`. The
+   *  dismiss/stage happens first; the caller does the page change. */
+  leaveTo?: (url: string) => void;
   age?: string;
   unseen?: boolean;
 }) {
@@ -353,14 +375,24 @@ function SyncFailureRowView({
       setBusy(false);
     }
   };
-  const fixWithClaude = () => {
+  const fixWithClaude = async () => {
     stageClaudeAsk(failure.root, syncFixPrompt(failure));
+    if (leaveTo) {
+      // The page is about to be replaced: let the dismiss land first.
+      await dismiss();
+      leaveTo(viewUrlForFsPath(failure.root));
+      return;
+    }
     navigate(failure.root, { isDir: true });
     void dismiss();
   };
   // Open git view / Sign in: the same hop the row body makes (the git side
   // pane, where the sign-in panel lives). Neither retries nor dismisses.
   const openGit = () => {
+    if (leaveTo) {
+      leaveTo(repoGitHref(failure.root));
+      return;
+    }
     navigateUrl(repoGitHref(failure.root), { isDir: true });
     onOpen?.();
   };

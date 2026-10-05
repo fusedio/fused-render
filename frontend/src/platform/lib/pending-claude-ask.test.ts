@@ -166,3 +166,24 @@ describe("staging while already mounted at the target path (finding 17b)", () =>
     }
   });
 });
+
+describe("persistence across a full page load", () => {
+  test("a staged ask is mirrored to sessionStorage and cleared on take", () => {
+    const store = new Map<string, string>();
+    const g = globalThis as unknown as { sessionStorage?: unknown };
+    const prev = g.sessionStorage;
+    g.sessionStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+    try {
+      stageClaudeAsk("/Users/me/repo", "fix it");
+      expect(store.size).toBe(1);
+      expect(takePendingClaudeAsk("/Users/me/repo")).toBe("fix it");
+      expect(store.size).toBe(0);
+    } finally {
+      g.sessionStorage = prev;
+    }
+  });
+});

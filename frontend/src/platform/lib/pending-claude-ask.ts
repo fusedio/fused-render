@@ -52,7 +52,33 @@
 // ask a second life.
 const PENDING_TTL_MS = 60_000;
 
-let pending: { path: string; prompt: string; stagedAt: number } | null = null;
+type Pending = { path: string; prompt: string; stagedAt: number };
+let pending: Pending | null = null;
+
+// SURVIVES A FULL PAGE LOAD, via sessionStorage (this tab only, same TTL): a
+// native app window is a chrome-free embed that can only reach the explorer by
+// loading it (RepoUpdates' native overlay), which would otherwise drop the ask
+// the instant the module reloaded. Every access is guarded — storage can be
+// absent (bun) or throw (blocked) — and the in-memory slot stays the source of
+// truth within a page.
+const STORE_KEY = "fused-render:pending-claude-ask";
+function persist(value: Pending | null): void {
+  try {
+    if (value) sessionStorage.setItem(STORE_KEY, JSON.stringify(value));
+    else sessionStorage.removeItem(STORE_KEY);
+  } catch {
+    /* no storage: the ask lives for this page only */
+  }
+}
+function hydrate(): Pending | null {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(STORE_KEY) || "null");
+    if (v && typeof v.path === "string" && typeof v.prompt === "string" && typeof v.stagedAt === "number") return v;
+  } catch {
+    /* absent or unreadable */
+  }
+  return null;
+}
 
 // A stage NOTIFIES, on top of writing `pending` (Bugbot finding 17b, code
 // review 2026-08-27). Both consumers of this module — Listing.tsx and
@@ -87,14 +113,17 @@ export function pendingClaudeAskVersion(): number {
 
 export function stageClaudeAsk(path: string, prompt: string): void {
   pending = { path, prompt, stagedAt: Date.now() };
+  persist(pending);
   stagedVersion += 1;
   for (const listener of listeners) listener();
 }
 
 function liveOrExpired(): { path: string; prompt: string } | null {
+  if (!pending) pending = hydrate();
   if (!pending) return null;
   if (Date.now() - pending.stagedAt > PENDING_TTL_MS) {
     pending = null;
+    persist(null);
     return null;
   }
   return pending;
@@ -112,6 +141,7 @@ export function takePendingClaudeAsk(path: string): string | null {
   const current = liveOrExpired();
   if (!current || current.path !== path) return null;
   pending = null;
+  persist(null);
   return current.prompt;
 }
 

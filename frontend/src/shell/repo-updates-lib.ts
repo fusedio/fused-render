@@ -306,3 +306,26 @@ export function syncFailureActions(reason: string): SyncFailureAction[] {
           : ["retry", "fix"];
   return ids.map((id) => ({ id, label: ACTION_LABELS[id] }));
 }
+
+// ---- a native app window's own-repo filter ----
+//
+// An app's native window (chrome-free embed) has no status bar, so the shell's
+// notification surface is not there. It shows ONLY what concerns the repo its
+// own app lives in; everything else stays in the main window's dock.
+
+/** Is `appPath` (the window's entry file or app folder) the repo root or below it? */
+export function appPathInRepo(appPath: string | null, root: string): boolean {
+  if (!appPath) return false;
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const a = norm(appPath);
+  const r = norm(root);
+  return a === r || a.startsWith(r + "/");
+}
+
+export function failuresForApp(failures: SyncFailure[], appPath: string | null): SyncFailure[] {
+  return failures.filter((f) => appPathInRepo(appPath, f.root));
+}
+
+export function pullsForApp(pulls: SyncPull[], appPath: string | null): SyncPull[] {
+  return pulls.filter((p) => appPathInRepo(appPath, p.root));
+}

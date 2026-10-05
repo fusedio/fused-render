@@ -49,6 +49,28 @@
    card this slot used to wrap is gone — SPEC-toasts-become-notifications.md
    — but the slot itself, and this collapse mechanics, are still what
    `JobPopupCard.tsx`/`MessagePopupCard.tsx` both ride below.) */
+/* Sync-failure rows in a native app window (shell/NativeAppSyncNotices.tsx):
+   a top-right column, clear of the bottom-right popup column, with the same
+   floating surface `.toast-slot > .dl-row` gives a lone row. Tokens only. */
+.native-sync-host {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(300px, calc(100vw - 24px));
+}
+
+.native-sync-host > .dl-row {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+}
+
 .toast-slot {
   display: grid;
   grid-template-rows: 1fr;
