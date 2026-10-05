@@ -4594,16 +4594,20 @@ def _listing(at_least: int | None = None) -> tuple[list[dict], int]:
     the watcher's — a client that long-polls `/api/tasks/changes` from it will
     be told about anything the snapshot had not seen.
 
-    Without it: a fresh build — and STILL the generation read before that
-    build, never the watcher's after it. The first requests of a process land
-    here while `warm` is in flight (the builder is raised only once it ends),
-    wait on its build, and must not stamp rows built seconds ago with a
-    generation the watcher has since moved past (bugbot, PR #1405)."""
+    Without it: a fresh build of the caller's OWN, under the build lock — and
+    the generation read before that build, never the watcher's after it
+    (bugbot, PR #1405: the first requests of a process land here while `warm`
+    is in flight, and rows stamped with a generation the watcher has since
+    moved past make a client skip those changes). Not shared with a build
+    already in flight: that build may have started against state this caller
+    has since seen reset (a test's fixture, with the previous test's warm
+    thread still reading), and the lock makes the wait cost the same."""
     with _SNAP_COND:
         serving = _builder_on
     if not serving:
-        snap = _rebuild_snapshot()
-        return snap.rows, snap.generation
+        gen = tasks_watch.generation()
+        with _BUILD_LOCK:
+            return _build_task_rows(), gen
     want = tasks_watch.generation() if at_least is None else at_least
     snap = _await_snapshot(want, SNAPSHOT_CATCHUP_SEC)
     if snap is None:
