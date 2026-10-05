@@ -650,14 +650,14 @@ describe("the row uses LINES, not a shrink ladder (D596)", () => {
   // `.dl-model` 999, `.dl-title` 1 — is RETIRED, so the tests that pinned it
   // are replaced rather than retuned.
 
-  it("wraps the title to two clamped lines instead of ellipsising it on one", () => {
+  // D1316 (user: a client-message title wrapped to 2 lines): D596's two-line
+  // wrap is reversed — every `.dl-title` is ONE line with an ellipsis.
+  it("keeps the title on one ellipsised line", () => {
     const rule = block(CSS, ".dl-title");
-    expect(rule).toContain("-webkit-line-clamp: 2;");
-    expect(rule).toContain("overflow-wrap: anywhere;");
-    // The one-line treatment is what produced `Downloa…` and `F…`.
-    expect(rule).not.toContain("white-space: nowrap;");
-    // ...and the floor that stops a narrow panel mincing it survives (D577).
-    expect(rule).toContain("min-width: 15ch;");
+    expect(rule).toContain("white-space: nowrap;");
+    expect(rule).toContain("text-overflow: ellipsis;");
+    expect(rule).toContain("min-width: 0;");
+    expect(rule).not.toContain("-webkit-line-clamp");
   });
 
   it("leaves the model suffix with no shrink factor at all — it is off the head line", () => {

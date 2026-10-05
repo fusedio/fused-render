@@ -1957,3 +1957,11 @@ def test_a_script_under_the_fused_engine_can_import_fused_ai(tmp_path):
     pattern above) and prove `import fused_ai` actually resolves."""
     g = _run_wrapped(tmp_path, "import fused_ai\nresult = callable(fused_ai.text)\n", {})
     assert g["result"] is True
+
+
+def test_build_code_exports_fused_render_page_for_children(tmp_path, monkeypatch):
+    """Same env the built-in `_child.py` sets: spawned workers inherit it."""
+    monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)
+    g = _run_wrapped(tmp_path, "import os\nresult = os.environ.get('FUSED_RENDER_PAGE')\n", {})
+    assert g["result"] == str(tmp_path / "page" / "target.py")
+    monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)

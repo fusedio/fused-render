@@ -472,9 +472,24 @@ test("a cancelled job's row navigates AND dismisses itself too", async () => {
   expect(dismissCalls).toBe(1);
 });
 
-test("a terminal job with no page at all draws no rowClick — nothing to open", () => {
+// D1316: EVERY terminal row is clickable. No page -> the app folder; no app
+// either -> the Activity panel.
+test("a terminal job with no page but a known app opens the app folder", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "", app: "/apps/hf" });
+  const row = findAll(root, "dl-row")[0];
+  expect(findAll(root, "dl-row-open")).toHaveLength(1);
+  expect(pushedUrl((row.props as { onClick: () => void }).onClick)).toContain("/apps/hf");
+});
+
+test("a worker's .py page is not a destination — the app folder is", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "/apps/hf/jobs.py", app: "/apps/hf" });
+  const row = findAll(root, "dl-row")[0];
+  expect(pushedUrl((row.props as { onClick: () => void }).onClick)).not.toContain("jobs.py");
+});
+
+test("a terminal job with nowhere to go still draws a rowClick (opens Activity)", () => {
   const root = renderRow({ ...BASE, state: "done", page: "" });
-  expect(findAll(root, "dl-row-open")).toHaveLength(0);
+  expect(findAll(root, "dl-row-open")).toHaveLength(1);
 });
 
 test("a RUNNING job never opens on click, even when it names a page — only a terminal row does", () => {
