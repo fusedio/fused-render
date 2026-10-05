@@ -222,26 +222,86 @@ def load_state(filename: str) -> dict:
         return {}
 
 
+# How long the Windows `locked_path` loop sleeps between `LK_NBLCK` tries. Much
+# shorter than `_LEASE_RETRY_INTERVAL`: a critical section held under
+# `locked_path` is a read-modify-write of one small json file, not a role held
+# for the life of a process, so a rival is normally gone within milliseconds.
+_LOCK_RETRY_INTERVAL = 0.02
+
+
+def _open_lockfile(path: str):
+    """Open (creating if needed, NEVER truncating) the sibling lock file at
+    `path`, ready for either platform's locking call, seeked to 0. Shared by
+    the lease functions and `locked_path` so the one-byte stamp `msvcrt`
+    needs and the "do not truncate a byte a rival holds locked" rule
+    (94c742931) are written once."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    handle = open(path, "a+")
+    if fcntl is None and msvcrt is not None:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            try:
+                handle.write("\0")
+                handle.flush()
+            except OSError:
+                pass
+    handle.seek(0)
+    return handle
+
+
+@contextlib.contextmanager
+def locked_path(lock_path: str):
+    """Hold the lock file at `lock_path` exclusively, across processes, for an
+    arbitrary critical section — blocking until it is free. NOT REENTRANT
+    (`flock` is per open file description, and the Windows byte lock is per
+    handle): taking it twice in one process, on one thread or two, waits on
+    yourself. A caller that nests must keep its own depth guard — see
+    `schedule._store_lock`.
+
+    POSIX: `flock(LOCK_EX)`. Windows: `msvcrt.locking` byte 0 with a
+    hand-rolled `LK_NBLCK` retry loop (`LK_LOCK` gives up after ~10 tries, so
+    it is not a blocking wait). Neither available: yields unlocked, the
+    posture this module always had on such a build."""
+    handle = _open_lockfile(lock_path)
+    held = False
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            held = True
+        elif msvcrt is not None:
+            while True:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    held = True
+                    break
+                except OSError:
+                    time.sleep(_LOCK_RETRY_INTERVAL)
+        yield
+    finally:
+        if held and fcntl is None and msvcrt is not None:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), getattr(msvcrt, "LK_UNLCK", 0), 1)
+            except OSError:
+                pass
+        # Closing the handle drops the flock on POSIX.
+        handle.close()
+
+
 @contextlib.contextmanager
 def locked(filename: str):
-    """Hold `filename`'s sibling `.lock` exclusively for an arbitrary
-    caller-defined critical section — the same lock `_update` takes for its
-    own read-modify-write, exposed here for a caller (`queue_manager`) whose
-    critical section is more than one `mutate(data)` call: it needs to
-    RE-READ the store, run its own decision logic against the fresh read,
-    and write back, all under one hold, which `_update`'s single-callback
-    shape cannot express.
+    """Hold `filename`'s sibling `.lock` (in STATE_DIR) exclusively for an
+    arbitrary caller-defined critical section — the same lock `_update` takes
+    for its own read-modify-write, exposed here for a caller
+    (`queue_manager`) whose critical section is more than one `mutate(data)`
+    call: it needs to RE-READ the store, run its own decision logic against
+    the fresh read, and write back, all under one hold, which `_update`'s
+    single-callback shape cannot express.
 
-    POSIX-only (`fcntl`): on Windows `fcntl` is None and this yields without
-    locking anything, the same posture `_update` already has there. This
-    does not add cross-process correctness on Windows beyond what `_update`
-    already provided — it exists to keep every writer on the same code
-    path, not to add a primitive this module doesn't have."""
-    os.makedirs(STATE_DIR, exist_ok=True)
-    path = os.path.join(STATE_DIR, filename)
-    with open(path + ".lock", "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+    Cross-process on POSIX (`flock`) and Windows (`msvcrt`); see
+    `locked_path`. Not reentrant."""
+    with locked_path(os.path.join(STATE_DIR, filename) + ".lock"):
         yield
 
 
@@ -305,19 +365,7 @@ def _open_lease_file(name: str):
 
     Always returns the handle seeked to 0: both locking calls lock starting
     from the current/given position, and every caller expects position 0."""
-    os.makedirs(STATE_DIR, exist_ok=True)
-    path = os.path.join(STATE_DIR, name)
-    handle = open(path, "a+")
-    if fcntl is None and msvcrt is not None:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            try:
-                handle.write("\0")
-                handle.flush()
-            except OSError:
-                pass
-    handle.seek(0)
-    return handle
+    return _open_lockfile(os.path.join(STATE_DIR, name))
 
 
 def acquire_lease_blocking(name: str) -> None:
