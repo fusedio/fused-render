@@ -46,7 +46,7 @@ def test_path_fallback_when_no_override_no_bundle(monkeypatch):
     assert mounts_mod.rclone_bin() == "/usr/local/bin/rclone"
 
 
-# -- macOS version gate on the bundled binary (D1318) ------------------------
+# -- macOS version gate on the bundled binary (D1319) ------------------------
 #
 # The upstream osx-arm64 rclone carries LC_BUILD_VERSION minos 15.0, which dyld
 # refuses on macOS 14 and older. rclone_bin() reads the minimum from the Mach-O
