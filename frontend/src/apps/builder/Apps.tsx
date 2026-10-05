@@ -273,6 +273,9 @@ export default function Apps({ config }: { config: Config }) {
     const ctl = new AbortController();
     const refetch = nonce !== seenNonce.current;
     seenNonce.current = nonce;
+    // The server clamps `limit` to 200 (routers/apps.py api_apps): a grid
+    // grown past that comes back as 200 with `hasMore` still true — one page
+    // shorter, never wrong. Not worth a second request to avoid.
     const limit = Math.max(PAGE_SIZE, firstPages.get(filterKey)?.apps.length ?? 0);
     getAppsPage({ offset: 0, limit, tag, category, q, fresh: refetch }, ctl.signal).then(
       (res) => {
@@ -320,6 +323,7 @@ export default function Apps({ config }: { config: Config }) {
         if (ctl.signal.aborted) return; // the page-1 effect replaced this list
         moreCtl.current = null;
         setLoadingMore(false);
+        setError(null); // a Retry that succeeded clears the banner its failure raised
         const cur = firstPages.get(key);
         if (!cur || cur.apps.length !== res.offset) return;
         const grown = { ...res, offset: 0, apps: [...cur.apps, ...res.apps] };
