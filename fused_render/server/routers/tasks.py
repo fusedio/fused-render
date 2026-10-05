@@ -4594,11 +4594,16 @@ def _listing(at_least: int | None = None) -> tuple[list[dict], int]:
     the watcher's — a client that long-polls `/api/tasks/changes` from it will
     be told about anything the snapshot had not seen.
 
-    Without it: a fresh build, and the watcher's generation."""
+    Without it: a fresh build — and STILL the generation read before that
+    build, never the watcher's after it. The first requests of a process land
+    here while `warm` is in flight (the builder is raised only once it ends),
+    wait on its build, and must not stamp rows built seconds ago with a
+    generation the watcher has since moved past (bugbot, PR #1405)."""
     with _SNAP_COND:
         serving = _builder_on
     if not serving:
-        return _rebuild_snapshot().rows, tasks_watch.generation()
+        snap = _rebuild_snapshot()
+        return snap.rows, snap.generation
     want = tasks_watch.generation() if at_least is None else at_least
     snap = _await_snapshot(want, SNAPSHOT_CATCHUP_SEC)
     if snap is None:
@@ -4623,8 +4628,9 @@ def _narrowed(only: frozenset | set, at_least: int | None = None) -> tuple[list[
     with _SNAP_COND:
         serving = _builder_on
     if not serving:
+        gen = tasks_watch.generation()  # before the build, as `_listing`
         with _BUILD_LOCK:
-            return _build_task_rows(only), tasks_watch.generation()
+            return _build_task_rows(only), gen
     rows, have = _listing(at_least)
     return [row for row in rows if row.get("key") in only], have
 
