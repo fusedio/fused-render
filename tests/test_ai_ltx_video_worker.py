@@ -425,7 +425,8 @@ def test_download_also_fetches_the_gemma_text_encoder_UNPATTERNED(monkeypatch, b
     # where a phase names neither — unlike a bare `download_snapshot(GEMMA)`
     # call, which passed nothing. Still nothing EXCLUDED: `None` on both.
     assert base.downloads[ids.index(GEMMA)][1] == {
-        "allow_patterns": None, "ignore_patterns": None}
+        "allow_patterns": None,
+        "ignore_patterns": list(formats.MLX_IGNORE)}
 
 
 def test_download_is_not_best_effort_on_a_gemma_failure(monkeypatch, base):
