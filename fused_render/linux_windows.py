@@ -46,9 +46,9 @@ def install(port: int, environ=None, platform: str | None = None) -> bool:
         (the one case prefs.py must not record as a clean switch — the live
         state and prefs.json would then disagree for as long as that host
         keeps running). A host that is not reachable at all is not a
-        failure: the host may not have started yet (the lazy-start design,
-        core.py), and it reads this same preference for itself at its own
-        startup, so the write still lands."""
+        failure: the host starts in the background from `run()` and may not
+        be up yet, and it reads this same preference for its own initial
+        state at startup, so the write still lands."""
         try:
             reply = ipc.request(sock, {"cmd": "set_enabled", "on": bool(on)},
                                  timeout=ipc.CALLER_TIMEOUT_S)

@@ -523,18 +523,18 @@ def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(m
 
 @pytest.fixture(autouse=True)
 def _reset_host_globals():
-    """`_host_paths`/`_host_port`/`_host_starting`/`_host_start_failed`/
-    `_host_stopping` are module-level state a lazy start writes to outside of
+    """`_host_paths`/`_host_port`/`_host_starting`/`_host_stopping` are
+    module-level state the background host start writes to outside of
     `run()` — reset around every test in this file so one test's host-start
     attempt can't leak into the next."""
     yield
     core._host_paths = None
     core._host_port = None
     core._host_starting = False
-    core._host_start_failed = False
     core._host_stopping = False
     core._host_attempt_done.set()
     core._window_host = None
+    core._activation = None
 
 
 class _FakeHost:
@@ -620,30 +620,50 @@ def test_open_browser_forwards_the_activation_token(monkeypatch):
     assert tokens == ["xdg-token-1"]
 
 
-def test_activation_token_reads_xdg_then_desktop_startup_id(monkeypatch):
+def test_activation_token_prefers_xdg_over_desktop_startup_id(monkeypatch):
     monkeypatch.delenv("XDG_ACTIVATION_TOKEN", raising=False)
     monkeypatch.delenv("DESKTOP_STARTUP_ID", raising=False)
+    core._claim_activation_token()
     assert core._activation_token() is None
     monkeypatch.setenv("DESKTOP_STARTUP_ID", "legacy-id")
+    core._claim_activation_token()
     assert core._activation_token() == "legacy-id"
     monkeypatch.setenv("XDG_ACTIVATION_TOKEN", "new-token")
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "legacy-id")
+    core._claim_activation_token()
     assert core._activation_token() == "new-token"
 
 
-def test_activation_token_is_single_use(monkeypatch):
-    """Single-use tokens: the first read must pop both env vars so a second
-    open in the same process (a later tray click, file open, or forwarded
-    deep link) can't resend one the first open already spent, and so a
-    process spawned afterward doesn't inherit it either."""
+def test_activation_token_leaves_the_environment_and_is_spent_once(monkeypatch):
+    """Claimed before anything is spawned, so no child inherits it; the
+    first open spends it and later opens send none."""
     monkeypatch.setenv("XDG_ACTIVATION_TOKEN", "xdg-token")
     monkeypatch.setenv("DESKTOP_STARTUP_ID", "legacy-id")
-    assert core._activation_token() == "xdg-token"
+    core._claim_activation_token()
     assert "XDG_ACTIVATION_TOKEN" not in os.environ
     assert "DESKTOP_STARTUP_ID" not in os.environ
+    assert core._activation_token() == "xdg-token"
     assert core._activation_token() is None
 
 
-def test_maybe_start_window_host_skips_a_host_when_the_preference_is_off(tmp_path, monkeypatch):
+def test_run_claims_the_activation_token_before_anything_else(monkeypatch):
+    order = []
+    monkeypatch.setattr(core, "_claim_activation_token", lambda: order.append("claim"))
+    def stop(cmd):
+        order.append("next")
+        raise SystemExit
+    monkeypatch.setattr(core, "_absolute_command", stop)
+    with pytest.raises(SystemExit):
+        core.run(object())
+    assert order == ["claim", "next"]
+
+
+def test_start_window_host_at_launch_starts_regardless_of_the_preference(
+        tmp_path, monkeypatch):
+    """The host is started whenever the platform can run one at all — the
+    `native_windows_enabled` preference never gates the launch-time start; it
+    only decides the host's initial `enabled` state (`WindowHost.start`'s
+    `--disabled` argument) and is toggled live afterwards."""
     import json
 
     class _P:
@@ -655,16 +675,37 @@ def test_maybe_start_window_host_skips_a_host_when_the_preference_is_off(tmp_pat
 
     (tmp_path / "prefs.json").write_text(json.dumps({"native_windows_enabled": False}))
     monkeypatch.setattr(core._backend, "windows",
-                        types.SimpleNamespace(preference_enabled=lambda state: False),
+                        types.SimpleNamespace(launchable=lambda: True),
                         raising=False)
     started = []
     monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
-    core._maybe_start_window_host(_P(), 9000)
+    core._start_window_host_at_launch(_P(), 9000)
+    assert len(started) == 1 and started[0][1] == 9000
+    assert core._host_paths is not None and core._host_port == 9000
+
+
+def test_start_window_host_at_launch_skips_when_the_platform_cannot_run_one(
+        tmp_path, monkeypatch):
+    class _P:
+        state = tmp_path
+        logs = tmp_path
+
+        def log(self, message):
+            pass
+
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(launchable=lambda: False),
+                        raising=False)
+    started = []
+    monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
+    core._start_window_host_at_launch(_P(), 9000)
     assert started == []
     assert core._host_paths is not None and core._host_port == 9000
 
 
-def test_resolve_window_host_lazily_starts_when_the_preference_flips_on(tmp_path, monkeypatch):
+def test_resolve_window_host_never_starts_a_host(tmp_path, monkeypatch):
+    """`_resolve_window_host` only waits on a start already in flight — the
+    only start is the one `run()` kicks off at launch."""
     class _P:
         state = tmp_path
         logs = tmp_path
@@ -673,124 +714,51 @@ def test_resolve_window_host_lazily_starts_when_the_preference_flips_on(tmp_path
             pass
 
     core._host_paths, core._host_port = _P(), 9000
-
-    def fake_start(paths, port):
-        core._host_starting = True
-        core._host_attempt_done.clear()
-
-        def finish():
-            core._window_host = _FakeHost(True)
-            core._host_starting = False
-            core._host_attempt_done.set()
-
-        threading.Timer(0.05, finish).start()
-
     monkeypatch.setattr(core._backend, "windows",
-                        types.SimpleNamespace(preference_enabled=lambda state: True),
+                        types.SimpleNamespace(launchable=lambda: True),
                         raising=False)
-    monkeypatch.setattr(core, "_start_window_host", fake_start)
+    started = []
+    monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
+    assert core._resolve_window_host() is None
+    assert started == []
+
+
+def test_resolve_window_host_waits_for_the_launch_time_start(monkeypatch):
+    class _P:
+        logs = None
+
+        def log(self, message):
+            pass
+
+    core._host_paths, core._host_port = _P(), 9000
+    core._host_starting = True
+    core._host_attempt_done.clear()
+
+    def finish():
+        core._window_host = _FakeHost(True)
+        core._host_starting = False
+        core._host_attempt_done.set()
+
+    threading.Timer(0.05, finish).start()
     result = core._resolve_window_host()
     assert result is not None and result.shows is True
 
 
-def test_resolve_window_host_falls_back_without_waiting_forever(tmp_path, monkeypatch):
+def test_resolve_window_host_falls_back_without_waiting_forever(monkeypatch):
     """A host that never finishes starting (bounded by `_HOST_WAIT_S`) must
     not hang `_open_browser` — the caller falls back to a browser tab for
     this one open."""
     class _P:
-        state = tmp_path
-        logs = tmp_path
+        logs = None
 
         def log(self, message):
             pass
 
     core._host_paths, core._host_port = _P(), 9000
     monkeypatch.setattr(core, "_HOST_WAIT_S", 0.05)
-
-    def fake_start(paths, port):
-        core._host_starting = True
-        core._host_attempt_done.clear()  # never set again within the test
-
-    monkeypatch.setattr(core, "_start_window_host", fake_start)
+    core._host_starting = True
+    core._host_attempt_done.clear()  # never set again within the test
     assert core._resolve_window_host() is None
-
-
-def test_resolve_window_host_remembers_a_failed_start_and_stops_retrying(tmp_path, monkeypatch):
-    """Once a start has concluded with no host to show for it, later opens
-    must not re-spawn one — each re-spawn would also make the open wait out
-    `_HOST_WAIT_S` again for nothing."""
-    class _P:
-        state = tmp_path
-        logs = tmp_path
-
-        def log(self, message):
-            pass
-
-    core._host_paths, core._host_port = _P(), 9000
-    monkeypatch.setattr(core._backend, "windows",
-                        types.SimpleNamespace(preference_enabled=lambda state: True),
-                        raising=False)
-    attempts = []
-
-    def fake_start(paths, port):
-        attempts.append(1)
-        core._host_start_failed = True  # what a failed worker concludes with
-
-    monkeypatch.setattr(core, "_start_window_host", fake_start)
-    assert core._resolve_window_host() is None
-    assert core._resolve_window_host() is None
-    assert core._resolve_window_host() is None
-    assert attempts == [1]
-
-
-def test_resolve_window_host_clears_the_failure_once_the_preference_goes_off(
-        tmp_path, monkeypatch):
-    """Turning the preference off and back on is a deliberate user action and
-    must get a fresh attempt, even after an earlier failure this session."""
-    class _P:
-        state = tmp_path
-        logs = tmp_path
-
-        def log(self, message):
-            pass
-
-    core._host_paths, core._host_port = _P(), 9000
-    core._host_start_failed = True
-    enabled = [False]
-    monkeypatch.setattr(core._backend, "windows",
-                        types.SimpleNamespace(preference_enabled=lambda state: enabled[0]),
-                        raising=False)
-    attempts = []
-    monkeypatch.setattr(core, "_start_window_host", lambda *a: attempts.append(1))
-
-    assert core._resolve_window_host() is None  # pref off: clears the stale failure
-    assert core._host_start_failed is False
-
-    enabled[0] = True
-    assert core._resolve_window_host() is None
-    assert attempts == [1]  # fresh attempt allowed
-
-
-def test_maybe_start_window_host_resets_a_stale_failure_before_starting(
-        tmp_path, monkeypatch):
-    import json
-
-    class _P:
-        state = tmp_path
-        logs = tmp_path
-
-        def log(self, message):
-            pass
-
-    (tmp_path / "prefs.json").write_text(json.dumps({"native_windows_enabled": True}))
-    monkeypatch.setattr(core._backend, "windows",
-                        types.SimpleNamespace(preference_enabled=lambda state: True),
-                        raising=False)
-    core._host_start_failed = True
-    started = []
-    monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
-    core._maybe_start_window_host(_P(), 9000)
-    assert started and core._host_start_failed is False
 
 
 def test_start_window_host_does_nothing_once_stopping(monkeypatch):

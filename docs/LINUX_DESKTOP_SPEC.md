@@ -128,10 +128,14 @@ with focus-or-open, external links to the default browser, the **Native
 windows** preference), decision D1311.
 
 **Design.** A separate process, `fused_render/supervisor/_linux/window_host.py`
-(GTK3 + WebKit2 4.1 through PyGObject), is spawned by the supervisor *after* the
-server is ready, in its own `Job` so it dies with the supervisor. It listens on
-`$XDG_RUNTIME_DIR/fused-render/window-host.sock` (`window_host_ipc.py`: one JSON
-line in, one out; `ping`, `open`, `set_enabled`, `quit`). Callers:
+(GTK3 + WebKit2 4.1 through PyGObject), is spawned by the supervisor once, *after*
+the server is ready, in its own `Job` so it dies with the supervisor. It starts
+whenever the platform can run one at all (a display plus the toolkit typelibs),
+regardless of the `native_windows_enabled` preference — the preference only
+sets the host's initial enabled state at spawn (`--disabled`) and is applied
+live afterwards. It listens on `$XDG_RUNTIME_DIR/fused-render/window-host.sock`
+(`window_host_ipc.py`: one JSON line in, one out; `ping`, `open`, `set_enabled`,
+`quit`). Callers:
 
 | Caller | Path |
 |---|---|

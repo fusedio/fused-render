@@ -36,20 +36,18 @@ startup = _backend.startup
 ui = _backend.ui
 
 # Optional backend hook (Linux): the native-window host. None elsewhere, and on
-# Linux until a start has succeeded — `_open_browser` then uses the browser,
-# exactly as before native windows existed.
+# Linux until the launch-time start succeeds — `_open_browser` then uses the
+# browser.
 _window_host = None
+_activation: str | None = None  # see _claim_activation_token
 
-# `paths`/`port` for a lazy/background host start, set once by `run()` before
+# `paths`/`port` for the background host start, set once by `run()` before
 # anything can call `_open_browser`. A test driving `_open_browser` directly
 # (no `run()`) leaves `_host_paths` None, which keeps the old no-host
 # behaviour — never a reason to try spawning a real host.
 _host_paths: DesktopPaths | None = None
 _host_port: int | None = None
 _host_starting = False  # guarded by _host_start_lock: a background start is in flight
-#: A start ended with no host: later opens go straight to the browser until
-#: the preference is seen OFF, which allows one fresh attempt.
-_host_start_failed = False  # guarded by _host_start_lock
 #: Shutdown has begun: no new start, and a start that finishes now stops its
 #: own host instead of publishing it.
 _host_stopping = False  # guarded by _host_start_lock
@@ -62,8 +60,8 @@ _host_attempt_done = threading.Event()
 _host_attempt_done.set()
 _host_start_lock = threading.Lock()
 #: How long `_open_browser` waits on a host that is still starting (spawned
-#: at launch, or just kicked off lazily by this same call) before falling
-#: back to a browser tab for THIS open. The host keeps starting either way.
+#: at launch) before falling back to a browser tab for THIS open. The host
+#: keeps starting either way.
 _HOST_WAIT_S = 3.0
 
 update = getattr(_backend, "update", None)  # optional hook (Windows only)
@@ -96,6 +94,7 @@ class _ExitReason(Enum):
 
 
 def run(initial: protocol.Command) -> None:
+    _claim_activation_token()
     initial = _absolute_command(initial)
     names = instance.InstanceNames.current_user()
     inst = instance.acquire(names)
@@ -143,7 +142,7 @@ def run(initial: protocol.Command) -> None:
     _spawn_desktop_integration(paths)
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
-    _maybe_start_window_host(paths, port)
+    _start_window_host_at_launch(paths, port)
 
     # Dispatched off-thread like every other open: a hung Path.exists()/
     # os.startfile (disconnected UNC path) must not stall run() before the
@@ -589,25 +588,24 @@ def _view_url(port: int, path: Path) -> str:
     return view_url(port, fs_path)
 
 
-def _activation_token() -> str | None:
-    """`XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID` from THIS process's own
-    environment — the real launch token when this process IS the one the
-    desktop just activated (a direct launch, a .desktop activation, or a
-    second-instance invocation that raced the election and became the
-    primary). A command forwarded over the single-instance pipe from an
-    already-running primary's perspective has no such token available here —
-    `instance.py`'s wire frame carries only the command, not the sending
-    process's environment — so a forwarded open omits it, same as before
-    activation tokens existed.
-
-    Popped, not merely read: both are single-use, so a second open in the
-    same process (a later tray click, file open, or forwarded deep link)
-    must not resend the one the first open already spent, and a process this
-    one spawns afterward (the window host included) must not inherit it
-    either."""
+def _claim_activation_token() -> None:
+    """Move this process's launch token (`XDG_ACTIVATION_TOKEN`, else
+    `DESKTOP_STARTUP_ID`) out of the environment. `run()` calls it before
+    anything is spawned: the token is single-use, so neither the server nor
+    the window host may inherit it. A command forwarded from a secondary
+    instance carries no token (`instance.py`'s wire frame holds only the
+    command), so its open sends none."""
+    global _activation
     xdg_token = os.environ.pop("XDG_ACTIVATION_TOKEN", None)
     startup_id = os.environ.pop("DESKTOP_STARTUP_ID", None)
-    return xdg_token or startup_id or None
+    _activation = xdg_token or startup_id or None
+
+
+def _activation_token() -> str | None:
+    """The launch token for the first open that asks; None after that."""
+    global _activation
+    token, _activation = _activation, None
+    return token
 
 
 def _open_browser(url: str, activation_token: str | None = None) -> None:
@@ -620,49 +618,30 @@ def _open_browser(url: str, activation_token: str | None = None) -> None:
 
 
 def _resolve_window_host():
-    """Bridges a host that is still starting — or hasn't been asked to start
-    at all yet — with an open that arrives before `_window_host` is set.
-    `_host_paths` is None only when a caller drives `_open_browser` without
-    going through `run()`; that open goes straight to the browser. Once a
-    start has failed (`_host_start_failed`) every later open skips straight
-    to the browser too, instead of re-spawning a host that already failed and
-    making the open wait out `_HOST_WAIT_S` again for nothing."""
+    """Bridges a host that is still starting with an open that arrives before
+    `_window_host` is set. `_host_paths` is None only when a caller drives
+    `_open_browser` without going through `run()`; that open goes straight to
+    the browser. Never starts a host itself — the only start is the one
+    `run()` kicks off at launch (`_start_window_host_at_launch`); this just
+    waits out that start, bounded by `_HOST_WAIT_S`, for an open that got here
+    first."""
     if _host_paths is None:
         return None
-    module = getattr(_backend, "windows", None)
-    if module is None:
-        return None
-    if not module.preference_enabled(_host_paths.state):
-        _reset_host_start_failed()
-        return None  # pref is off: nothing starts until it flips back on
-    if _window_host is None and not _host_starting:
-        if _host_start_failed:
-            return None  # already failed this session: straight to the browser
-        _start_window_host(_host_paths, _host_port)
     _host_attempt_done.wait(_HOST_WAIT_S)
     return _window_host
 
 
-def _reset_host_start_failed() -> None:
-    global _host_start_failed
-    with _host_start_lock:
-        _host_start_failed = False
-
-
-def _maybe_start_window_host(paths: DesktopPaths, port: int) -> None:
+def _start_window_host_at_launch(paths: DesktopPaths, port: int) -> None:
     """Called once from `run()`, right after the server is ready: records
-    `paths`/`port` for any later lazy start, and kicks one off now only when
-    the preference is already on — off means nothing is spawned until the
-    first enabled open (`_resolve_window_host`) or a Preferences PUT flips it
-    back on and the next open follows (same lazy path; no separate signal is
-    needed, since every real open already goes through `_open_browser`). Also
-    the preference-flip-on path: resets `_host_start_failed` so a host that
-    failed earlier gets one fresh attempt."""
+    `paths`/`port` for `_resolve_window_host` to wait on, and starts the host
+    whenever the platform can run one at all, regardless of the
+    `native_windows_enabled` preference — the host itself is told the current
+    preference at spawn (`WindowHost.start`'s `--disabled` argument) and the
+    preference PUT toggles it live afterwards (`apply` -> `set_enabled`)."""
     global _host_paths, _host_port
     _host_paths, _host_port = paths, port
     module = getattr(_backend, "windows", None)
-    if module is not None and module.preference_enabled(paths.state):
-        _reset_host_start_failed()
+    if module is not None and module.launchable():
         _start_window_host(paths, port)
 
 
@@ -672,10 +651,9 @@ def _start_window_host(paths: DesktopPaths, port: int) -> None:
     waits out past `_HOST_WAIT_S`. Idempotent: a second call while one start
     is already in flight, after `_window_host` is already set, or once a
     shutdown is underway (`_host_stopping`), is a no-op. Any failure
-    (construction or `start()`) leaves `_window_host` unset, sets
-    `_host_start_failed`, and every open keeps going to the browser for the
-    rest of the session, exactly as before native windows existed."""
-    global _host_starting, _host_start_failed
+    (construction or `start()`) leaves `_window_host` unset for the rest of
+    the session; there is no retry."""
+    global _host_starting
     module = getattr(_backend, "windows", None)
     if module is None:
         return
@@ -686,13 +664,12 @@ def _start_window_host(paths: DesktopPaths, port: int) -> None:
             host = module.WindowHost(paths, port)
         except Exception as error:  # noqa: BLE001 - windows are an enhancement
             paths.log(f"native windows unavailable, using browser tabs: {error}")
-            _host_start_failed = True
             return
         _host_starting = True
         _host_attempt_done.clear()
 
     def worker():
-        global _window_host, _host_starting, _host_start_failed
+        global _window_host, _host_starting
         started_host = None
         try:
             if host.start():
@@ -703,9 +680,7 @@ def _start_window_host(paths: DesktopPaths, port: int) -> None:
             with _host_start_lock:
                 _host_starting = False
                 orphan = started_host if _host_stopping else None
-                if started_host is None:
-                    _host_start_failed = True
-                elif orphan is None:
+                if started_host is not None and orphan is None:
                     _window_host = started_host
             _host_attempt_done.set()
             if orphan is not None:
