@@ -489,6 +489,21 @@ describe("activePaneSide with a remembered tab", () => {
     expect(activePaneSide([], null, "git")).toBe(PANE_SIDE_FALLBACK);
   });
 
+  test("a remembered git whose probe is still out is undecided, not the default", () => {
+    const pending = { claude: entry("claude"), git: null, gitPending: true };
+    // no remembered tab: claude opens as before
+    expect(paneSideList(pending)).toEqual(["claude"]);
+    // remembered git pending: hold the skeleton (empty list), no default in between
+    expect(paneSideList(pending, "git")).toEqual([]);
+    // becomes ready: the remembered tab, never claude first
+    expect(activePaneSide(paneSideList(ALL, "git"), null, "git")).toBe("git");
+    // becomes unavailable: the default
+    expect(paneSideList(CLAUDE_ONLY, "git")).toEqual(["claude"]);
+    expect(activePaneSide(paneSideList(CLAUDE_ONLY, "git"), null, "git")).toBe("claude");
+    // a remembered claude pending is already a wait (the leader rule)
+    expect(paneSideList({ ...ALL, claude: null, claudePending: true }, "claude")).toEqual([]);
+  });
+
   test("no memory is the old behaviour", () => {
     expect(activePaneSide(paneSideList(ALL), null, null)).toBe("claude");
   });

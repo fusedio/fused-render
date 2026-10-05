@@ -6301,7 +6301,10 @@ pane, one shared set of stores) splits its memory like this:
   (`lib/preview-side.ts`) and `activePaneSide` (`listing/pane-side.ts`) use it
   if that companion is ready on the current subject (`SideSplit.ready`: settled,
   not pending, not a disabled row; for the pane, present in the offered list,
-  which is empty while undecided); otherwise the existing default applies and the
+  which is empty while undecided); a remembered tab that is offered but still
+  PENDING resolves to "not yet" (file: `null`, folder pane: undecided skeleton)
+  rather than the default, so the column never swaps when its verdict lands;
+  otherwise (known unavailable) the existing default applies and the
   memory is kept for a subject that does offer it. Explicit `_side=<mode>` wins.
   The URL spelling rule is unchanged and still measured against the file's real
   default: a remembered non-default tab is written once as `_side=<mode>` by

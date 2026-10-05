@@ -191,9 +191,11 @@ export interface SideSplit {
   // explicit `_side`: neither a pending borrowed placeholder nor an own gated
   // companion whose verdict is still in flight — the same `unresolved` test
   // `defaultSide` applies to the leader. This is the list the REMEMBERED TAB
-  // (`lib/side-tab-store.ts`) is checked against: a verdict only ever removes a
-  // companion, so a ready one never gets displaced later, and a pending one is
-  // never opened on the memory's say-so (empty when the surface cannot split).
+  // (`lib/side-tab-store.ts`) is checked against: a ready one opens; one that is
+  // in `all` but not here is PENDING, which `resolveSide` answers with "not yet"
+  // rather than the default (empty when the surface cannot split). A ready pick
+  // can still lose its companion to a later verdict, which is the one movement
+  // allowed.
   ready: string[];
   // A companion is known to exist AND there is a content pane to put it beside.
   on: boolean;
@@ -413,10 +415,20 @@ export function parseSide(search: string, hidden = false): SideRequest {
 // null — an absent `_side`), the last tab the user explicitly picked this document
 // leads over `defaultSide`, provided it is `ready` on this file. Not merely
 // listed: a pending entry is never opened by the memory (the same rule that keeps
-// `defaultSide` from opening one), so it cannot put an empty column on screen or
-// swap columns when a verdict lands. A named mode — including one that cannot be
-// honoured and so lands on the default — never consults it: an explicit `_side`
-// wins, and so does the file's own answer to a denial.
+// `defaultSide` from opening one), so it cannot put an empty column on screen.
+//
+// **A PENDING REMEMBERED TAB IS "NOT YET", NOT A FALLBACK.** Falling back to the
+// default while the remembered companion's probe/gate is still out would open the
+// column on the default and then SWAP it to the remembered tab when the verdict
+// lands (a verdict can allow it as well as deny it). So while the remembered mode
+// is offered but unresolved this returns null — the posture `defaultSide` takes for
+// a pending leader — and the reconcile leaves `_side` alone meanwhile. Only a
+// remembered mode this file does not offer at all (or that a verdict has removed)
+// falls to the default.
+//
+// A named mode — including one that cannot be honoured and so lands on the
+// default — never consults the memory: an explicit `_side` wins, and so does the
+// file's own answer to a denial.
 export function resolveSide(
   req: SideRequest,
   split: SideSplit,
@@ -424,7 +436,9 @@ export function resolveSide(
 ): string | null {
   if (!split.offered || !req.open) return null;
   if (req.mode && split.all.some((e) => e.mode === req.mode)) return req.mode;
-  if (!req.mode && remembered && split.ready.includes(remembered)) return remembered;
+  if (!req.mode && remembered && split.all.some((e) => e.mode === remembered)) {
+    return split.ready.includes(remembered) ? remembered : null;
+  }
   return split.defaultSide;
 }
 

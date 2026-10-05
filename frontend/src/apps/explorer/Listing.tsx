@@ -1027,17 +1027,22 @@ export default function Listing({
   };
   folderMenuRef.current = buildFolderMenu;
 
-  const paneSides = paneSideList(sideEntries);
+  // The remembered tab is consulted only where this surface OWNS the pane: a
+  // snapshot/panel pane never writes it (`applySide`), so reading it there would
+  // pin the pane to a tab its own clicks cannot change.
+  const rememberedTab = () => (paneEnabled ? getSideTab() : null);
+  // Only where `_side` names no mode does the memory lead, so only there may it
+  // hold the pane undecided while the remembered companion's probe is out.
+  const paneSides = paneSideList(
+    sideEntries,
+    sideState.mode === null ? rememberedTab() : null
+  );
   // UNDECIDED — this folder's companion probes have not answered yet (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
   // skeleton: resolving a side here would put the pill on `preview` while a chat
   // rendered under it regardless, and would then remount — and respawn
   // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
-  // The remembered tab is consulted only where this surface OWNS the pane: a
-  // snapshot/panel pane never writes it (`applySide`), so reading it there would
-  // pin the pane to a tab its own clicks cannot change.
-  const rememberedTab = () => (paneEnabled ? getSideTab() : null);
   const paneSide = activePaneSide(paneSides, sideState.mode, rememberedTab());
   // The two facts `setSide`'s guard above needs, written on every render (see
   // its own comment for why they are refs and not values).

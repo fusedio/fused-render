@@ -908,18 +908,49 @@ describe("resolveSide with a remembered tab", () => {
     expect(resolveSide(parseSide(""), sideSplit(file([claude], "no")), "git")).toBe("claude");
   });
 
-  it("a PENDING borrowed git is not opened by the memory", () => {
+  it("a PENDING borrowed git is not opened by the memory, and the default does not stand in", () => {
     const s = sideSplit(file([claude], "pending"));
-    expect(resolveSide(parseSide(""), s, "git")).toBe("claude");
+    expect(s.defaultSide).toBe("claude");
+    // "not yet" (the posture defaultSide takes for a pending leader), not claude:
+    // claude would be swapped for git when the probe lands.
+    expect(resolveSide(parseSide(""), s, "git")).toBe(null);
+  });
+
+  it("pending -> ready opens the remembered tab with no default in between; pending -> denied lands on the default", () => {
+    const seen = (b: "pending" | "yes" | "no") =>
+      resolveSide(parseSide(""), sideSplit(file([claude], b)), "git");
+    expect([seen("pending"), seen("yes")]).toEqual([null, "git"]);
+    expect([seen("pending"), seen("no")]).toEqual([null, "claude"]);
+  });
+
+  it("while the remembered tab is pending the reconcile leaves _side alone", () => {
+    const s = sideSplit(file([claude], "pending"));
+    const active = resolveSide(parseSide(""), s, "git");
+    expect(
+      reconcileSideSearch("", {
+        splitCapable: true,
+        offered: s.offered,
+        open: true,
+        activeSide: active,
+        defaultSide: s.defaultSide,
+      })
+    ).toBe(null);
   });
 
   it("a gated claude still in flight is not opened by the memory", () => {
     const s = sideSplit({ ...file([gatedClaude], "yes"), conditionsPending: true });
-    // git is settled and remembered: it opens (and is not displaced later, since
-    // a verdict only ever removes companions).
+    // git is settled and remembered: it opens.
     expect(resolveSide(parseSide(""), s, "git")).toBe("git");
     // the memory is claude, which is unresolved: nothing opens yet.
     expect(resolveSide(parseSide(""), s, "claude")).toBe(null);
+    // ...and once the gate answers, the remembered claude opens.
+    expect(
+      resolveSide(
+        parseSide(""),
+        sideSplit({ ...file([gatedClaude], "yes"), conditionsPending: false }),
+        "claude"
+      )
+    ).toBe("claude");
   });
 
   it("a shut sidebar stays shut whatever is remembered", () => {
