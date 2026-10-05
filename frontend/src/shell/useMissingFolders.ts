@@ -127,7 +127,14 @@ export function useMissingFolders(
     // of 434 stats answering over ~1 s becomes three or four renders, not 434
     // and not one that waits for the straggler.
     const gone: string[] = [];
-    let blipped = false;
+    // ONE RETRY TIMER PER BATCH, ARMED ON THE FIRST BLIP — not when the batch
+    // settles (Bugbot, #1384). `getJson` has no timeout, so a stat of a cold
+    // mount can hang for as long as it likes; a retry that waited for
+    // `allSettled` would wait behind it, and every other blipped folder with
+    // it. Armed here, the retry fires a poll's time after the first blip no
+    // matter what the straggler does; the effect it re-runs asks only the
+    // folders `settled` no longer holds, so the hung one is left alone.
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let flush: ReturnType<typeof setTimeout> | null = null;
     const write = () => {
       flush = null;
@@ -148,7 +155,11 @@ export function useMissingFolders(
       } else {
         // Not an answer about the folder; ask again in a poll's time.
         settled.current.delete(dir);
-        blipped = true;
+        if (retryTimer === null) {
+          retryTimer = setTimeout(() => {
+            if (alive.current) setRetry((n) => n + 1);
+          }, RETRY_MS);
+        }
       }
     };
     void Promise.allSettled(
@@ -163,13 +174,6 @@ export function useMissingFolders(
     ).then(() => {
       if (flush !== null) clearTimeout(flush);
       write();
-      // One timer for the batch, not one per blipped folder: each bump re-runs
-      // this effect over everything `settled` no longer holds.
-      if (blipped && alive.current) {
-        setTimeout(() => {
-          if (alive.current) setRetry((n) => n + 1);
-        }, RETRY_MS);
-      }
     });
   }, [key, retry]);
   return missing;

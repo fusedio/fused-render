@@ -49,7 +49,15 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   getConfig,
@@ -339,8 +347,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // `onQueued`, and a new one on every listing would be a new prop on every row
   // a second. What the press needs is the latest listing, and that is what a ref
   // read at press time is.
+  // Written on COMMIT, not during render (Bugbot, #1384): the listing lands as
+  // a transition now, and a transition render can be thrown away before it
+  // commits — a ref written mid-render would then hold rows the page never
+  // painted, and a Skip pressed in that window would reorder a line nobody
+  // was looking at. The layout effect runs on every commit, before any event
+  // can fire, so a press always reads the rows AS PAINTED.
   const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
+  useLayoutEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
   const noteQueued = useCallback((override: QueueOverride) => {
     setQueueOverrides((cur) => skipLine(cur, tasksRef.current, override));
   }, []);
