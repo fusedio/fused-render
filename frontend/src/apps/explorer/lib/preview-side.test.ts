@@ -1022,6 +1022,8 @@ describe("Preview records the remembered tab only on an explicit pick", () => {
     const pv = await Bun.file(new URL("../Preview.tsx", import.meta.url).pathname).text();
     const ls = await Bun.file(new URL("../Listing.tsx", import.meta.url).pathname).text();
     expect(pv).toContain('applySide("git", "git")');
+    // Open With -> Git is an explicit pick too, so it passes the tab.
+    expect(pv).toContain("else if (sideOn && isSidebarMode(m)) setSide(m, m);");
     expect(ls).toContain('setSide({ open: true, mode: "git" }, "git")');
   });
 });

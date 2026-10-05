@@ -2142,7 +2142,7 @@ function TemplatePreview({
   // through to the content pane as any unsplit surface would take it.
   const openMode = (m: string) => {
     if (m === "mcp" && mcpSrc) setMcpOpen(true);
-    else if (sideOn && isSidebarMode(m)) setSide(m);
+    else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
