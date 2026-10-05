@@ -3959,3 +3959,81 @@ def test_the_flag_off_says_nothing_to_the_queue_on_delete(
     assert _post(client, "/api/tasks/delete",
                  {"key": "sess-a"}).status_code == 200
     assert _kinds(manager, "remove") == []
+
+
+# ---------------------------------------------- the switch and the per-task opt-out
+#
+# Akshil, 2026-10-04: "add option for turn on and off queue in the Task API".
+# Two doors: `GET`/`POST /api/tasks/queue` is the one preference the flag IS,
+# and `create({queue: false})` is the flag-off behaviour for one task — the
+# promise `/api/tasks/queue/force` makes to a waiting message, made at birth.
+
+
+def test_the_queue_switch_is_read_and_written_through_the_task_api(client, home):
+    assert client.get("/api/tasks/queue").json() == {"enabled": False}
+    r = client.post("/api/tasks/queue", json={"enabled": True},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200 and r.json() == {"enabled": True}
+    # The REAL pref moved — the same file Preferences reads.
+    path = home / ".fused-render" / "prefs.json"
+    assert json.loads(path.read_text())["project_queue_enabled"] is True
+    assert project_queue.enabled() is True
+    assert client.get("/api/tasks/queue").json() == {"enabled": True}
+    r = client.post("/api/tasks/queue", json={"enabled": False},
+                    headers={"X-Fused": "1"})
+    assert r.json() == {"enabled": False}
+    assert project_queue.enabled() is False
+
+
+def test_the_queue_switch_write_is_guarded_and_typed(client):
+    assert client.post("/api/tasks/queue", json={"enabled": True}).status_code == 403
+    r = client.post("/api/tasks/queue", json={"enabled": "yes"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 400
+    assert project_queue.enabled() is False
+
+
+def test_create_with_queue_false_marks_the_task_forced_before_dispatch(
+        client, flag, tmp_path, monkeypatch):
+    """The mark lands BEFORE `run_now`, under the pending key and the entry id,
+    so the admission the spawn asks answers `run: true` even on a busy folder."""
+    flag(True)
+    seen = {}
+
+    def run_now(entry_id):
+        seen["forced_at_dispatch"] = queue_manager.get().is_forced(
+            tasks_store.pending_key(entry_id), entry_id)
+        return {"ok": True}
+    monkeypatch.setattr(schedule, "run_now", run_now)
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": False},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert seen["forced_at_dispatch"] is True
+    assert queue_manager.get().is_forced(body["key"]) is True
+    assert queue_manager.get().is_forced(body["entry_id"]) is True
+
+
+def test_create_without_queue_false_is_not_forced(client, flag, tmp_path, monkeypatch):
+    flag(True)
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    for body in ({"prompt": "go", "target": str(folder)},
+                 {"prompt": "go", "target": str(folder), "queue": True}):
+        r = client.post("/api/tasks/create", json=body, headers={"X-Fused": "1"})
+        assert r.status_code == 200, r.text
+        assert queue_manager.get().is_forced(r.json()["key"]) is False
+
+
+def test_create_refuses_a_queue_that_is_not_a_boolean(client, tmp_path):
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": "no"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 400
+    assert "queue" in r.json()["error"]

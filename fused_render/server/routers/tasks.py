@@ -7643,12 +7643,56 @@ def api_tasks_ui(view: str = Query("list"), task: str = Query(""),
     return {"url": "/tasks?" + urlencode(params)}
 
 
+@router.get("/api/tasks/queue")
+def api_queue_read():
+    """THE PROJECT QUEUE'S SWITCH, read from the Task API — `{"enabled": bool}`.
+
+    One folder, one task in progress, everything else waits (`shell/prefs.py`
+    `project_queue_enabled`). The same fact `/api/prefs` carries under
+    `queue.enabled`; answered here so a page that drives tasks does not have to
+    read the whole preferences record to learn whether `send` can come back
+    `{queued: true}` (Akshil, 2026-10-04)."""
+    return {"enabled": project_queue.enabled()}
+
+
+@router.post("/api/tasks/queue")
+def api_queue_write(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None)):
+    """Turn the project queue on or off — `{"enabled": bool}` -> the same.
+
+    Writes the ONE preference `/api/prefs` writes for `project_queue_enabled`,
+    through the same writer, so the Preferences page and this door never
+    disagree. Off, every path behaves as it did before the queue existed: chat
+    sends spawn, run-now runs, no row ever reads `queued`. Tasks already
+    standing in a line are left to the manager's own reconcile, which empties
+    on the next listing with the flag off. Guarded like every other write."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return _error("enabled: expected true or false", status=400)
+    shell_prefs.write_pref("project_queue_enabled", enabled)
+    return {"enabled": project_queue.enabled()}
+
+
 @router.post("/api/tasks/create")
 def api_task_create(body: dict = Body(...),
                     x_fused: str | None = Header(default=None),
                     x_fused_page: str | None = Header(default=None)):
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
-    permission_mode?, due?}` -> `{entry_id, key}`.
+    permission_mode?, due?, queue?}` -> `{entry_id, key}`.
+
+    `queue: false` — THIS TASK NEVER STANDS IN THE PROJECT QUEUE (Akshil,
+    2026-10-04: "add option for turn on and off queue in the Task API"). It is
+    the flag-off behaviour for one task, the same promise `/api/tasks/queue/force`
+    makes to a waiting message: the conversation is marked forced under every
+    name it will answer to BEFORE anything is dispatched, so the admission
+    answers `run: true`, its sends pass the gate, and `reconcile` keeps it out
+    of every line — beside whatever owns the folder, never interrupting it.
+    Omitted or `true`, the task takes its place in the line exactly as before;
+    with the project queue off there is no line and the field changes nothing.
+    The switch itself is `GET`/`POST /api/tasks/queue`.
 
     `target` defaults to the calling page's app entry html (`_page_scope`).
     Stored with `origin: "page"` and, with no `due`, sent at once
@@ -7683,6 +7727,9 @@ def api_task_create(body: dict = Body(...),
     when, immediate, refusal = _page_due(body.get("due"))
     if refusal is not None:
         return refusal
+    queue = body.get("queue", True)
+    if not isinstance(queue, bool):
+        return _error("queue: expected true or false", status=400)
     try:
         entry = schedule.create(
             resolved, prompt, when, immediate=immediate,
@@ -7691,13 +7738,17 @@ def api_task_create(body: dict = Body(...),
     except ValueError as exc:
         return _error(str(exc), status=400)
     entry_id = str(entry.get("id") or "")
+    key = tasks_store.pending_key(entry_id)
+    if not queue:
+        # Marked under the key the row answers to NOW; `learn_forced` carries
+        # the mark onto the session id the run mints (queue_manager).
+        queue_manager.get().mark_forced(key, entry_id)
     if immediate:
         try:
             schedule.run_now(entry_id)
         except Exception:  # noqa: BLE001 — the loop still has the entry
             logger.debug("page task %s: run_now failed; the tick sends it",
                          entry_id, exc_info=True)
-    key = tasks_store.pending_key(entry_id)
     tasks_watch.notify({key})
     # `target` is the path the entry was STORED with (`resolve_target` took
     # `~` and a relative path and made them absolute), and `under` the folder

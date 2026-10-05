@@ -5877,6 +5877,9 @@
       if (spec.model) body.model = spec.model;
       if (spec.effort) body.effort = spec.effort;
       if (spec.permissionMode) body.permission_mode = spec.permissionMode;
+      // `queue: false` — this task never stands in the project queue (runs
+      // beside whatever owns the folder). Only an explicit false travels.
+      if (spec.queue === false) body.queue = false;
       if (spec.due !== undefined && spec.due !== null) {
         body.due = spec.due instanceof Date ? spec.due.toISOString() : spec.due;
       }
@@ -6088,10 +6091,25 @@
     });
   }
 
+  // The project queue's own switch: fused.tasks.queue() -> boolean,
+  // fused.tasks.setQueue(on) -> boolean (as stored).
+  function tasksQueue() {
+    return Promise.resolve()
+      .then(() => taskFetch("GET", "/api/tasks/queue"))
+      .then((d) => !!(d && d.enabled));
+  }
+  function tasksSetQueue(on) {
+    return Promise.resolve()
+      .then(() => taskFetch("POST", "/api/tasks/queue", { enabled: !!on }))
+      .then((d) => !!(d && d.enabled));
+  }
+
   const tasks = {
     list: tasksList,
     get: tasksGet,
     create: tasksCreate,
+    queue: tasksQueue,
+    setQueue: tasksSetQueue,
     ui: tasksUi,
     send: tasksSend,
     cancel: tasksCancel,
