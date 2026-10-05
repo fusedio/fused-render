@@ -136,12 +136,30 @@ rm -rf "$PYTHON_ROOT/bin/ty" \
 
 find "$PYTHON_ROOT" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
+# --- system libraries must NOT ride along ------------------------------------
+# Native windows use the user's own WebKitGTK/GTK through PyGObject (compiled
+# against the build machine's headers, linked to the user's libgirepository at
+# run time). Bundling any of these would pin one distro's GTK stack onto every
+# other and balloon the payload; so fail the build if a wheel ever drags them in.
+# glib/gobject only warn: an unrelated wheel may legitimately vendor its own.
+BUNDLED_GUI_LIBS="$(find "$PYTHON_ROOT" -type f \( -name 'libgtk*' -o -name 'libgdk*' \
+    -o -name 'libwebkit*' -o -name 'libjavascriptcoregtk*' -o -name 'libgirepository*' \
+    -o -name 'libgstreamer*' \) 2>/dev/null || true)"
+if [ -n "$BUNDLED_GUI_LIBS" ]; then
+    echo "system GUI libraries were bundled; they must come from the host:" >&2
+    echo "$BUNDLED_GUI_LIBS" >&2
+    exit 1
+fi
+if [ -n "$(find "$PYTHON_ROOT" -type f \( -name 'libglib-2*' -o -name 'libgobject-2*' \) 2>/dev/null || true)" ]; then
+    echo "warning: a wheel vendors glib/gobject; native windows still use the system copy" >&2
+fi
+
 # --- smoke tests (drop the pywin32 imports; add supervisor + tray) -----------
 log "Smoke tests"
 # The Linux tray is StatusNotifierItem over D-Bus (dbus-fast), which imports
 # without a display — so no headless-backend workaround is needed here.
 "$BUNDLE_PYTHON" -I -c \
-    "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, fused_render.supervisor._linux.tree, fused_render.supervisor._linux.instance, fused_render.supervisor._linux.tray, dbus_fast; print('bundle imports ok')"
+    "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, fused_render.supervisor._linux.tree, fused_render.supervisor._linux.instance, fused_render.supervisor._linux.tray, fused_render.supervisor._linux.windows, fused_render.supervisor._linux.window_host, dbus_fast, gi; print('bundle imports ok')"
 "$PYTHON_ROOT/bin/uv" --version
 "$PYTHON_ROOT/bin/rclone" version
 SMOKE_REQUEST="$(mktemp)"

@@ -121,6 +121,89 @@ Decision section below.
 - **fusermount3 host-side.** rclone ships in the payload; `fusermount3` is
   setuid and cannot. A host without FUSE gets the existing mount-error surface.
 
+## Native app windows (WebKitGTK window host)
+
+Linux gets the same native windows macOS has (home window, one window per app
+with focus-or-open, external links to the default browser, the **Native
+windows** preference), decision D1314.
+
+**Design.** A separate process, `fused_render/supervisor/_linux/window_host.py`
+(GTK3 + WebKit2 4.1 through PyGObject), is spawned by the supervisor once, *after*
+the server is ready, in its own `Job` so it dies with the supervisor. It starts
+whenever the platform can run one at all (a display plus the toolkit typelibs),
+regardless of the `native_windows_enabled` preference — the host reads that
+preference from prefs.json itself, once its socket is listening, for its
+initial enabled state, and the preference is applied live afterwards. A
+preference PUT writes prefs.json before it calls `apply`, so a write that
+races the host's startup is already on disk by the time the host reads it;
+nothing is lost, and no command dispatches before that read. It listens on
+`$XDG_RUNTIME_DIR/fused-render/window-host.sock`
+(`window_host_ipc.py`: one JSON line in, one out; `ping`, `open`, `set_enabled`,
+`quit`). Callers:
+
+| Caller | Path |
+|---|---|
+| Supervisor open / OPEN_HOME / tray | `core._open_browser` asks the host, else `xdg-open` |
+| Shell inside a window clicking an app | `POST /api/windows/open` -> `window_policy.native_hooks["open_app"]` (`linux_windows.py`) -> host, else a browser tab |
+| Preference toggle | `native_hooks["apply"]` -> `set_enabled`; off closes every window and the host declines opens |
+
+The server only installs hooks when the supervisor put
+`FUSED_RENDER_WINDOW_HOST_SOCKET` in its environment, so `fused-render serve`,
+macOS and Windows behave exactly as before. Preferences reports
+`native_windows.available` on Linux while the host answers a ping, or while
+the supervisor says one could run here (`FUSED_RENDER_WINDOW_HOST_LAUNCHABLE`)
+even though the preference being off left none running to ping.
+
+**Fallback matrix.** Every row ends in `xdg-open` browser tabs, logged once to
+`logs/supervisor.log` (and `logs/window-host.log` for the host's own reason):
+
+| Condition | Result |
+|---|---|
+| PyGObject not installed | host exits with code 3, tabs |
+| `gir1.2-webkit2-4.1` / `webkit2gtk-4.1` missing | same |
+| No `WAYLAND_DISPLAY` / `DISPLAY` | host is not started, tabs |
+| `FUSED_RENDER_NO_NATIVE_WINDOWS=1` | host is not started, tabs |
+| Host crashes or stops answering | tabs for the rest of the session (no respawn) |
+| Preference off | host declines `open`, tabs |
+
+**Dependencies.** WebKitGTK and GTK are the *system's*, never bundled. The
+`[linux-desktop]` extra adds `PyGObject>=3.48,<3.51` (Linux marker). It has no
+manylinux wheel, so it compiles from the sdist at install/build time against
+`libgirepository1.0-dev` and `libcairo2-dev` (CI and release jobs install them)
+and links the user's `libgirepository-1.0` at run time. 3.51+ needs
+girepository-2.0 (glib >= 2.80), which Ubuntu 22.04 lacks. The AppImage build
+fails if a GTK/WebKit/girepository/GStreamer library lands in the bundle.
+Per-distro runtime packages: Debian/Ubuntu `gir1.2-webkit2-4.1`
+(+ `libgirepository1.0-1` and GTK3 via `python3-gi`-style installs), Arch
+(Omarchy) `webkit2gtk-4.1`, Fedora `webkit2gtk4.1`.
+
+**Known limitations.**
+
+- **Omarchy / no-GStreamer WebKitGTK:** Omarchy's `webkit2gtk-4.1` ships without
+  GStreamer plugins, so HTML5 audio/video aborts the web process. The host
+  handles `web-process-terminated` with a "page stopped unexpectedly" view and a
+  Reload link; media pages do not play in a native window on such a system
+  (install the GStreamer plugin packages, or turn the preference off).
+- Sub-frame vs main-frame cannot be told apart on WebKit2 4.1 navigation
+  actions. For a target that needs `xdg-open` (a launch-service scheme, or
+  external **http(s)**) the host only hands off on a user-gesture link click
+  or form submission; anything else (a script-driven `location.href`, a
+  sub-frame's own back/forward or reload) is left to the page — so a user
+  clicking a genuine external link *inside* a third-party iframe still opens
+  the browser, same as a top-level click, and a script-driven external
+  `location.href` navigates the window in place rather than opening the
+  browser. A script-driven navigation to a launch-service scheme
+  (`fused-render:`, `mailto:`, ...) is still always handed to `xdg-open`,
+  regardless of frame — WebKit cannot load those itself either way.
+- `window.open("")` blank popups are blocked.
+- Wayland ignores window positioning; only size is restored.
+
+**To verify on a real Linux desktop (not CI, not macOS):** a window opens and
+renders the shell; second open of the same app focuses it; external link opens
+the default browser; toggling the preference closes/re-enables windows; killing
+the host mid-session degrades to tabs; behaviour on Ubuntu 24.04, Omarchy and a
+machine with no WebKitGTK; the AppImage build and its `import gi` smoke in CI.
+
 ## Tree-kill mechanism — measurement & decision
 
 Two candidates, both implemented thin behind `_linux/tree.py`, selected by

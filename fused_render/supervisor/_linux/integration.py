@@ -55,6 +55,7 @@ Exec={exec_line}
 Icon={icon}
 Categories=Development;Science;
 Terminal=false
+StartupWMClass=fused-render
 MimeType={mimetype}
 """
 

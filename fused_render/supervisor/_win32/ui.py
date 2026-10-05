@@ -172,8 +172,8 @@ def open_uri(uri: str) -> None:
     os.startfile(uri)
 
 
-def open_url(url: str) -> None:
-    os.startfile(url)
+def open_url(url: str, activation_token: str | None = None) -> None:
+    os.startfile(url)  # Windows has no activation-token handoff
 
 
 def open_default_apps() -> None:

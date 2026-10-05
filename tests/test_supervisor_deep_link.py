@@ -23,7 +23,7 @@ DEEPLINK = "fused-render://open?git=https://github.com/fusedio/udfs/tree/main/pu
 @pytest.fixture
 def opened(monkeypatch):
     urls: list[str] = []
-    monkeypatch.setattr(core, "_open_browser", urls.append)
+    monkeypatch.setattr(core, "_open_browser", lambda url, *_: urls.append(url))
     return urls
 
 

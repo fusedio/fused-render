@@ -729,10 +729,18 @@ jobs:
       # runs against the bundled .desktop file during the AppImage build smoke.
       # (No rclone install here: every test file below monkeypatches or never
       # execs rclone, and the build script downloads its own pinned binary.)
-      - name: Install desktop-file-utils
+      #
+      # libgirepository1.0-dev + libcairo2-dev + pkg-config + gcc are BUILD-time
+      # only: PyGObject (the [linux-desktop] extra, for the native windows) has
+      # no manylinux wheel and compiles from its sdist against these headers.
+      # Nothing from them is copied into the AppImage — WebKitGTK, GTK and
+      # libgirepository stay the user's own system libraries (the script asserts
+      # that), and a machine without them just opens browser tabs.
+      - name: Install desktop-file-utils and the PyGObject build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y desktop-file-utils
+          sudo apt-get install -y desktop-file-utils \
+            libgirepository1.0-dev libcairo2-dev pkg-config gcc
 
       - name: Install fused-render (dev + linux-desktop extras)
         run: pip install -e ".[dev,linux-desktop]"
@@ -758,6 +766,11 @@ jobs:
           tests/test_supervisor_linux_instance.py
           tests/test_supervisor_linux_paths.py
           tests/test_supervisor_linux_tray.py
+          tests/test_supervisor_linux_windows.py
+          tests/test_window_host_ipc.py
+          tests/test_window_host_logic.py
+          tests/test_linux_windows_hooks.py
+          tests/test_native_window_deps.py
           tests/test_supervisor_tray.py
           tests/test_file_associations.py
           tests/test_mounts_rclone_bin.py

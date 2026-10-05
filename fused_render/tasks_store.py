@@ -101,10 +101,12 @@ two lines.
 """
 from __future__ import annotations
 
+import contextlib
 import glob
 import json
 import os
 import re
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -117,6 +119,12 @@ try:
     # directory (and locking convention) this shares.
 except ImportError:  # pragma: no cover
     fcntl = None
+
+try:
+    import msvcrt  # Windows only — the counterpart to `fcntl` above, used by
+    # the lease functions further down for real cross-process locking there.
+except ImportError:  # pragma: no cover
+    msvcrt = None
 
 # CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
 # duplication) as server/routers/claude_sessions.py and claude_artifacts.py.
@@ -214,6 +222,89 @@ def load_state(filename: str) -> dict:
         return {}
 
 
+# How long the Windows `locked_path` loop sleeps between `LK_NBLCK` tries. Much
+# shorter than `_LEASE_RETRY_INTERVAL`: a critical section held under
+# `locked_path` is a read-modify-write of one small json file, not a role held
+# for the life of a process, so a rival is normally gone within milliseconds.
+_LOCK_RETRY_INTERVAL = 0.02
+
+
+def _open_lockfile(path: str):
+    """Open (creating if needed, NEVER truncating) the sibling lock file at
+    `path`, ready for either platform's locking call, seeked to 0. Shared by
+    the lease functions and `locked_path` so the one-byte stamp `msvcrt`
+    needs and the "do not truncate a byte a rival holds locked" rule
+    (94c742931) are written once."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    handle = open(path, "a+")
+    if fcntl is None and msvcrt is not None:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            try:
+                handle.write("\0")
+                handle.flush()
+            except OSError:
+                pass
+    handle.seek(0)
+    return handle
+
+
+@contextlib.contextmanager
+def locked_path(lock_path: str):
+    """Hold the lock file at `lock_path` exclusively, across processes, for an
+    arbitrary critical section — blocking until it is free. NOT REENTRANT
+    (`flock` is per open file description, and the Windows byte lock is per
+    handle): taking it twice in one process, on one thread or two, waits on
+    yourself. A caller that nests must keep its own depth guard — see
+    `schedule._store_lock`.
+
+    POSIX: `flock(LOCK_EX)`. Windows: `msvcrt.locking` byte 0 with a
+    hand-rolled `LK_NBLCK` retry loop (`LK_LOCK` gives up after ~10 tries, so
+    it is not a blocking wait). Neither available: yields unlocked, the
+    posture this module always had on such a build."""
+    handle = _open_lockfile(lock_path)
+    held = False
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            held = True
+        elif msvcrt is not None:
+            while True:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    held = True
+                    break
+                except OSError:
+                    time.sleep(_LOCK_RETRY_INTERVAL)
+        yield
+    finally:
+        if held and fcntl is None and msvcrt is not None:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), getattr(msvcrt, "LK_UNLCK", 0), 1)
+            except OSError:
+                pass
+        # Closing the handle drops the flock on POSIX.
+        handle.close()
+
+
+@contextlib.contextmanager
+def locked(filename: str):
+    """Hold `filename`'s sibling `.lock` (in STATE_DIR) exclusively for an
+    arbitrary caller-defined critical section — the same lock `_update` takes
+    for its own read-modify-write, exposed here for a caller
+    (`queue_manager`) whose critical section is more than one `mutate(data)`
+    call: it needs to RE-READ the store, run its own decision logic against
+    the fresh read, and write back, all under one hold, which `_update`'s
+    single-callback shape cannot express.
+
+    Cross-process on POSIX (`flock`) and Windows (`msvcrt`); see
+    `locked_path`. Not reentrant."""
+    with locked_path(os.path.join(STATE_DIR, filename) + ".lock"):
+        yield
+
+
 def _update(filename: str, mutate):
     """Read-modify-write one store under an exclusive lock; return whatever
     `mutate` returns.
@@ -224,17 +315,131 @@ def _update(filename: str, mutate):
     against one server, and FastAPI serves sync routes from a threadpool), and
     without the read inside the lock the second writer would persist a snapshot
     taken before the first one's change and drop it."""
-    os.makedirs(STATE_DIR, exist_ok=True)
     path = os.path.join(STATE_DIR, filename)
-    with open(path + ".lock", "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+    with locked(filename):
         data = load_state(filename)
         result, changed = mutate(data)
         if changed:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
     return result
+
+
+# Open lease handles this process currently holds, keyed by lease file name.
+# The handle itself — not a bool — is what's kept: closing or dropping it is
+# what would release the flock, so staying open for the rest of the process's
+# life IS the lease, and the OS already does the "release on crash" part for
+# free the moment the process exits.
+_lease_handles: dict[str, object] = {}
+_lease_lock = threading.Lock()
+
+
+# How long `acquire_lease_blocking`'s Windows loop sleeps between `LK_NBLCK`
+# retries — `LK_LOCK` itself gives up after ~10 tries over about a second, so
+# it cannot stand in for a true blocking wait; this is the interval of the
+# hand-rolled loop that replaces it. A module constant so a test can read or
+# shorten it without reaching past `time.sleep`.
+_LEASE_RETRY_INTERVAL = 0.5
+
+
+def _open_lease_file(name: str):
+    """Open (creating if needed) `name`'s lease file in STATE_DIR, ready for
+    either platform's locking call, WITHOUT EVER TRUNCATING IT. On the
+    simulated/real Windows path the file needs at least one byte in it
+    before `msvcrt.locking` can lock anything — a zero-length lock is a
+    silent no-op there — so a still-empty file gets one byte stamped;
+    POSIX's `flock` locks the whole file regardless of its length, so the
+    stamp is harmless there too.
+
+    Non-truncating (`"a+"`) on purpose: a rival process can already hold
+    `msvcrt.locking` on byte 0 by the time this runs, and real Windows
+    raises `PermissionError` for any access to a byte another process has
+    locked. The old truncating `"w"` open wrote that byte on EVERY call —
+    including a second process's — which raised outside any try/except and
+    outside `acquire_lease_blocking`'s retry loop, killing the waiter thread
+    that calls this. Stamping only once, when the file is still empty, means
+    every call after the first winner's never touches byte 0 at all; and the
+    stamp attempt itself tolerates losing that race, since the point is
+    "at least one process has stamped this, ever", not that THIS call must
+    be the one that does it.
+
+    Always returns the handle seeked to 0: both locking calls lock starting
+    from the current/given position, and every caller expects position 0."""
+    return _open_lockfile(os.path.join(STATE_DIR, name))
+
+
+def acquire_lease_blocking(name: str) -> None:
+    """Claim `name`'s lease file exclusively, waiting as long as it takes,
+    and keep holding it for the rest of this process's life — no release
+    call exists, because an orderly release isn't the point: the OS drops
+    the lock the instant this process exits or crashes, which is what lets
+    some other process (or this one, later) retry and win the role (B2's
+    "holder-less case retried later"). Returns once this process holds the
+    lease (or returns immediately if it already did — idempotent: calling
+    it again for a lease this process already holds returns without
+    touching the filesystem again).
+
+    This BLOCKS THE CALLING THREAD, potentially for a long time — call it
+    from a thread you can afford to park (a background worker, never a
+    request-handling thread).
+
+    POSIX (`fcntl`): a plain `flock(LOCK_EX)`, no `LOCK_NB` — the kernel
+    parks this thread until the lock is free, which is a true indefinite
+    wait.
+
+    Windows (`msvcrt`): there is no equivalent primitive. `LK_LOCK` looks
+    like the blocking mode but isn't one — per Windows/CPython's own
+    documented behavior it retries roughly 10 times over about a second and
+    then raises, same as a failed `LK_NBLCK`. So this hand-rolls the wait:
+    loop `LK_NBLCK`, and on `OSError` sleep `_LEASE_RETRY_INTERVAL` and try
+    again, until it succeeds.
+
+    Neither primitive available (a build of Python missing both, which is
+    not a real platform either of us ships to): falls back to claiming the
+    lease unconditionally, no cross-process guarantee.
+
+    `_lease_lock` is held only around the bookkeeping (the idempotence check
+    and registering the winning handle), never across the actual wait —
+    different lease NAMES are unrelated, and holding the lock across a
+    long block would freeze every other name's `acquire_lease_blocking`
+    call in this process for the whole wait."""
+    with _lease_lock:
+        if name in _lease_handles:
+            return
+    if fcntl is None and msvcrt is None:
+        with _lease_lock:
+            if name not in _lease_handles:
+                _lease_handles[name] = _open_lease_file(name)
+        return
+    handle = _open_lease_file(name)
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    else:
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except OSError:
+                time.sleep(_LEASE_RETRY_INTERVAL)
+    with _lease_lock:
+        if name in _lease_handles:
+            handle.close()
+            return
+        _lease_handles[name] = handle
+
+
+def reset_leases_for_tests() -> None:
+    """Test-only escape hatch: release every lease this process holds, so a
+    test can simulate losing/giving up a role (or simply not leak a held
+    lease into the next test's `tmp_path`-scoped `STATE_DIR`) without exiting
+    the interpreter — the only way a lease is ever released for real in
+    production, where `acquire_lease_blocking` is deliberately
+    one-directional."""
+    with _lease_lock:
+        handles = list(_lease_handles.values())
+        _lease_handles.clear()
+    for handle in handles:
+        handle.close()
 
 
 # --------------------------------------------------------------- task numbers

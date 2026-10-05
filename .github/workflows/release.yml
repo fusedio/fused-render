@@ -358,10 +358,18 @@ jobs:
       # runs against the bundled .desktop file — same prerequisite the CI smoke
       # installs. node (the wheel build's hatch hook runs npm) is preinstalled
       # on ubuntu-latest; uv provides the relocatable CPython the script bundles.
-      - name: Install desktop-file-utils
+      #
+      # libgirepository1.0-dev + libcairo2-dev + pkg-config + gcc are BUILD-time
+      # only: PyGObject (the [linux-desktop] extra, for the native windows) has
+      # no manylinux wheel and compiles from its sdist against these headers.
+      # Nothing from them is copied into the AppImage — WebKitGTK, GTK and
+      # libgirepository stay the user's own system libraries (the script asserts
+      # that), and a machine without them just opens browser tabs.
+      - name: Install desktop-file-utils and the PyGObject build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y desktop-file-utils
+          sudo apt-get install -y desktop-file-utils \
+            libgirepository1.0-dev libcairo2-dev pkg-config gcc
 
       - name: Build the AppImage
         run: bash scripts/build_linux_appimage.sh

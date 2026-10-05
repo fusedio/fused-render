@@ -1291,3 +1291,162 @@ def test_a_file_whose_only_line_never_ends_is_still_read(tmp_path):
     path = tmp_path / "q.jsonl"
     path.write_text(json.dumps(_user_row(_AFTER)))  # no trailing newline
     assert tasks_store.user_row_after(str(path), _AT) is True
+
+
+# ------------------------------------------------------------- lease (B2)
+
+
+def test_acquire_lease_blocking_creates_the_lease_file(state_dir):
+    tasks_store.acquire_lease_blocking("duties")
+    assert os.path.exists(os.path.join(state_dir, "duties"))
+
+
+def test_a_lease_released_by_reset_can_be_won_again(state_dir):
+    tasks_store.acquire_lease_blocking("duties")
+    tasks_store.reset_leases_for_tests()
+    tasks_store.acquire_lease_blocking("duties")
+    assert "duties" in tasks_store._lease_handles
+
+
+class _FakeMsvcrt:
+    """Stands in for the real `msvcrt` module on this POSIX dev machine, so
+    the Windows branch of the lease functions can be exercised without a
+    Windows box: `locking` raises `OSError` exactly as the real one does when
+    a rival already holds the byte, `rival_holds` is how a test flips that."""
+
+    LK_NBLCK = 1
+    LK_LOCK = 2
+
+    def __init__(self, fail_times=0):
+        self.rival_holds = fail_times > 0
+        self._remaining_failures = fail_times
+        self.calls = 0
+
+    def locking(self, fd, mode, nbytes):
+        self.calls += 1
+        if self.rival_holds:
+            if self._remaining_failures > 0:
+                self._remaining_failures -= 1
+                if self._remaining_failures == 0:
+                    self.rival_holds = False
+            raise OSError("simulated rival holds the lock")
+
+
+def test_open_lease_file_does_not_crash_when_a_simulated_windows_rival_holds_the_stamped_byte(
+        state_dir, monkeypatch):
+    """Finding 4 repro. A prior winner already stamped the lease file's first
+    byte, and a rival process holds `msvcrt.locking` on it (real `msvcrt`
+    can't be exercised on this POSIX dev machine, so this fakes the
+    `PermissionError` real Windows raises for an access to a byte another
+    process has locked — same simulated-Windows posture as the tests
+    around this one).
+
+    `_open_lease_file`'s old implementation opened in truncating `"w"` mode
+    unconditionally, which means it tried to write byte 0 — the locked byte
+    — on EVERY call, including this second process's. That raised
+    `PermissionError` outside any try/except and outside the retry loop in
+    `acquire_lease_blocking`, so the waiter thread that calls it would just
+    die instead of retrying. Called here as a genuinely separate open of the
+    same path (not through the module's cached `_lease_handles`, which would
+    short-circuit before ever reaching this code — see
+    `test_acquire_lease_blocking_waits_for_a_real_rival_to_release`'s own
+    comment on why the suite uses a real second handle for this kind of
+    test), it must not raise."""
+    path = os.path.join(state_dir, "duties")
+    with open(path, "w") as f:
+        f.write("\0")  # a prior winner's stamp
+
+    real_open = open
+
+    def fake_open(p, mode="r", *a, **kw):
+        if p == path and mode == "w":
+            raise PermissionError("simulated: a rival holds byte 0 locked")
+        return real_open(p, mode, *a, **kw)
+
+    monkeypatch.setattr(tasks_store, "open", fake_open, raising=False)
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    monkeypatch.setattr(tasks_store, "msvcrt", _FakeMsvcrt())
+
+    handle = tasks_store._open_lease_file("duties")
+    try:
+        assert handle.tell() == 0
+    finally:
+        handle.close()
+
+
+def test_acquire_lease_blocking_retries_instead_of_crashing_when_a_simulated_windows_rival_holds_the_stamped_byte(
+        state_dir, monkeypatch):
+    """The waiter thread `acquire_lease_blocking` runs on in production
+    (`queue_manager`'s duties waiter) must survive the same contention as
+    the test above without dying silently: `_open_lease_file` must not raise
+    just because a rival holds the byte this call was not even trying to
+    test, and the `msvcrt.locking` retry loop then does the actual waiting —
+    looping past a few simulated failures and succeeding once the rival lets
+    go, the same pattern `test_acquire_lease_blocking_on_simulated_windows_waits_then_wins`
+    exercises for the locking call itself."""
+    path = os.path.join(state_dir, "duties")
+    with open(path, "w") as f:
+        f.write("\0")
+
+    real_open = open
+
+    def fake_open(p, mode="r", *a, **kw):
+        if p == path and mode == "w":
+            raise PermissionError("simulated: a rival holds byte 0 locked")
+        return real_open(p, mode, *a, **kw)
+
+    monkeypatch.setattr(tasks_store, "open", fake_open, raising=False)
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    fake = _FakeMsvcrt(fail_times=3)
+    monkeypatch.setattr(tasks_store, "msvcrt", fake)
+    monkeypatch.setattr(tasks_store.time, "sleep", lambda _seconds: None)
+
+    tasks_store.acquire_lease_blocking("duties")
+    assert "duties" in tasks_store._lease_handles
+    assert fake.calls >= 4  # 3 simulated failures, then the winning call
+
+
+def test_acquire_lease_blocking_on_simulated_windows_waits_then_wins(
+        state_dir, monkeypatch):
+    """`LK_LOCK` gives up after ~10 tries, so the real implementation has to
+    loop `LK_NBLCK` itself with a sleep between attempts (per the module's
+    docstring) — this drives that loop past a few simulated failures and
+    checks it keeps retrying rather than raising."""
+    fake = _FakeMsvcrt(fail_times=3)
+    monkeypatch.setattr(tasks_store, "fcntl", None)
+    monkeypatch.setattr(tasks_store, "msvcrt", fake)
+    monkeypatch.setattr(tasks_store.time, "sleep", lambda _seconds: None)
+    tasks_store.acquire_lease_blocking("duties")
+    assert "duties" in tasks_store._lease_handles
+    assert fake.calls >= 4  # 3 failures, then the winning call
+
+
+def test_acquire_lease_blocking_is_idempotent_for_the_same_holder(state_dir):
+    tasks_store.acquire_lease_blocking("duties")
+    tasks_store.acquire_lease_blocking("duties")  # must not re-block/re-touch
+
+
+def test_acquire_lease_blocking_waits_for_a_real_rival_to_release(state_dir):
+    """A second, independent flock on the same file — a real second open file
+    description, the only thing that exercises an actual block — stands in
+    for a rival process; `acquire_lease_blocking` on a background thread
+    must sit there until it lets go, then return promptly once it does."""
+    from tests import _lease_rival
+
+    path = os.path.join(state_dir, "duties")
+    rival = _lease_rival.hold(path)
+
+    done = threading.Event()
+
+    def _acquire():
+        tasks_store.acquire_lease_blocking("duties")
+        done.set()
+
+    t = threading.Thread(target=_acquire)
+    t.start()
+    try:
+        assert not done.wait(timeout=0.3)  # still blocked: rival holds it
+        rival.close()  # releases the flock
+        assert done.wait(timeout=2)  # now it can proceed
+    finally:
+        t.join(timeout=2)
