@@ -325,6 +325,20 @@ def origin_for_page(page: str, *, default: str = "") -> str:
     return stem or default
 
 
+def app_for_page(page: str) -> str:
+    """The app folder a report from *page* belongs to (D891): its project root,
+    else the page's own folder. "" for a shell route or a non-absolute value —
+    there is no folder to name."""
+    if not page or page in _ORIGIN_BY_ROUTE or not os.path.isabs(page):
+        return ""
+    from fused_render import projectenv
+
+    root = projectenv.project_root_for(page)
+    if root and os.path.isdir(root):
+        return root
+    return os.path.dirname(page.rstrip("/\\"))
+
+
 # Dismissed ids, bounded. A reporter that keeps posting after its job finished
 # would otherwise resurrect the row the user just closed, and "it came back"
 # reads as a bug in the app rather than as a late report.
@@ -434,6 +448,10 @@ class Job:
     # when no producer named one — a caption with nothing to say renders no
     # element at all, never a placeholder (DownloadManager.tsx's `JobRow`).
     origin: str = ""
+    # The APP FOLDER the reporting page belongs to (D891), derived server-side
+    # from `page` (`app_for_page`), never from the body. The client groups
+    # finished rows by it and opens it for a row with no page of its own.
+    app: str = ""
     # OWNER_PAGE or OWNER_SERVER — see SERVER_ID_PREFIX. Not settable from a
     # report body: it follows from the id, so a page cannot claim to be the
     # server by saying so.
@@ -821,6 +839,7 @@ def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None =
             job.origin = _text(origin, ORIGIN_MAX)
         if page:
             job.page = _page_text(page)
+            job.app = app_for_page(job.page)
         if not source:
             # Ambient fallback (SPEC-quiet-notifications.md bug 2): a producer
             # that has no real `page` of its own (the AI Models Playground,

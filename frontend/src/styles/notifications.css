@@ -945,7 +945,9 @@
   margin-bottom: 5px;
 }
 
-/* THE TITLE WRAPS INSTEAD OF COMPETING (D596, user: "we have a ton of free
+/* D891 REVERSES THE WRAP BELOW: every title is now ONE line with an ellipsis
+   (a 2-line client-message title cost row height); the rest of this comment
+   is D596's history. THE TITLE WRAPS INSTEAD OF COMPETING (D596, user: "we have a ton of free
    space in the jobs card. why are we truncating stuff instead of placing things
    elsewhere?"). This element is no longer part of a shrink LADDER, because
    there is nothing left on the head line for it to lose a fight with:
@@ -965,12 +967,10 @@
    whose absence produced `Downloa…`. */
 .dl-title {
   flex: 1 1 auto;
-  min-width: 15ch;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  min-width: 0;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-weight: 600;
 }
 

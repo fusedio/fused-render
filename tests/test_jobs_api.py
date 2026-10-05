@@ -1371,3 +1371,23 @@ def test_a_detached_worker_report_with_the_page_header_keeps_page_and_origin(cli
     job = [j for j in listing(client) if j["id"] == "w1"][0]
     assert job["page"] == page
     assert job["origin"] == "jobs"  # no project: filename stem
+
+
+def test_a_job_carries_its_app_folder_derived_from_the_page(client, tmp_path):
+    """D891: `app` = the project root of the reporting page (else the page's
+    own folder); a shell route or no page means no app. Never from the body."""
+    app = tmp_path / "myapp"
+    app.mkdir()
+    (app / "pyproject.toml").write_text("[project]\nname='myapp'\n")
+    sub = app / "sub"
+    sub.mkdir()
+    h = {"X-Fused": "1"}
+    client.post("/api/jobs", json={"id": "a1", "title": "t", "app": "/evil"},
+                headers={**h, "X-Fused-Page": str(sub / "x.py")})
+    client.post("/api/jobs", json={"id": "a2", "title": "t"},
+                headers={**h, "X-Fused-Page": str(tmp_path / "loose" / "x.html")})
+    client.post("/api/jobs", json={"id": "a3", "title": "t"},
+                headers={**h, "X-Fused-Page": "/ai-models/local"})
+    client.post("/api/jobs", json={"id": "a4", "title": "t"}, headers=h)
+    by = {j["id"]: j["app"] for j in listing(client)}
+    assert by == {"a1": str(app), "a2": str(tmp_path / "loose"), "a3": "", "a4": ""}
