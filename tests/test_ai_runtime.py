@@ -10448,16 +10448,61 @@ def test_a_malformed_images_list_says_why(client, images, expected):
     assert expected in response.json()["error"]["message"]
 
 
-def test_images_are_refused_for_claude_rather_than_dropped(client):
-    """The same rule `history` and `raw` are refused for: silently dropping a
-    picture would answer as if it had never been attached, which reads as the
-    model ignoring what was sent rather than the API declining to send it."""
+def test_images_ride_the_claude_stdin_message_as_base64_blocks(client, monkeypatch, tmp_path):
+    """The Claude CLI has no attachment flag, but its stream-json stdin
+    message is a full API user message, so a picture travels as an `image`
+    block with a base64 source, BEFORE the text — never through argv."""
+    import asyncio
+    import base64
+    from fused_render.server import ai as ai_mod
+    png = tmp_path / "photo.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\nfakebytes")
+    captured = {}
+
+    async def fake_drive(proc, prompt, timeout, on_delta=None, image_blocks=None):
+        captured["prompt"] = prompt
+        captured["blocks"] = image_blocks
+        return {"type": "result", "result": "a photo", "is_error": False,
+                "usage": {}, "modelUsage": {}}
+
+    class FakeSession:
+        lock = asyncio.Lock()
+
+        async def configure(self, model, system_prompt, effort):
+            return object()
+
+        async def _discard(self):
+            pass
+
+    monkeypatch.setattr(ai_mod, "_ai_drive", fake_drive)
+    monkeypatch.setattr(ai_mod, "_AI_SESSION", FakeSession())
+    monkeypatch.setattr(ai_mod, "_claude_bin", lambda: "/usr/bin/claude")
     response = client.post("/api/ai", json={
         "prompt": "what is this?",
-        "images": ["/Users/x/photo.png"],
+        "images": [str(png)],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    assert captured["prompt"] == "what is this?"
+    assert captured["blocks"] == [{"type": "image", "source": {
+        "type": "base64", "media_type": "image/png",
+        "data": base64.b64encode(png.read_bytes()).decode("ascii")}}]
+
+
+def test_a_missing_or_foreign_image_is_refused_for_claude_by_name(client, tmp_path):
+    """A file the API would refuse is a 400 naming it, before any hop."""
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "images": ["/Users/x/nope.png"],
     }, headers={"X-Fused": "1"})
     assert response.status_code == 400
-    assert "local model" in response.json()["error"]["message"]
+    assert "nope.png" in response.json()["error"]["message"]
+    heic = tmp_path / "a.heic"
+    heic.write_bytes(b"x")
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "images": [str(heic)],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "a.heic" in response.json()["error"]["message"]
+    assert "PNG" in response.json()["error"]["message"]
 
 
 def test_raw_and_images_together_are_refused(client):
