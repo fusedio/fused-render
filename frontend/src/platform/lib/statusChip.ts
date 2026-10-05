@@ -24,6 +24,13 @@ import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 export const HOVER_OPEN_MS = 120;
 export const HOVER_CLOSE_MS = 200;
 
+// D891: ask a mounted chip to open (pinned) from anywhere — a notification row
+// with no destination of its own uses it to open the Activity panel.
+const openRequests = new Set<(key: SectionKey) => void>();
+export function requestOpenSection(key: SectionKey): void {
+  for (const fn of [...openRequests]) fn(key);
+}
+
 export interface StatusChipTimings {
   openMs?: number;
   closeMs?: number;
@@ -69,6 +76,16 @@ export function useStatusChip(
     setPinned(false);
     setHovered(false);
   }, []);
+
+  useEffect(() => {
+    const fn = (k: SectionKey) => {
+      if (k === key) setPinned(true);
+    };
+    openRequests.add(fn);
+    return () => {
+      openRequests.delete(fn);
+    };
+  }, [key]);
 
   useExclusiveSection(key, open, close);
   useDismissOnOutside(hostRef, open, close);

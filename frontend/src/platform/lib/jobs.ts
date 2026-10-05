@@ -115,6 +115,10 @@ export interface Job {
   // while its `origin` stays "Scheduler"). "" when no producer named one —
   // JobRow renders no caption at all for it, never an empty placeholder.
   origin: string;
+  // The app folder the reporting page belongs to (D891, `jobs.py`'s
+  // `app_for_page`) — what finished rows group by and what a page-less row
+  // opens. Optional: absent on an older server's snapshot.
+  app?: string;
   owner: JobOwner;
   cancellable: boolean;
   cancel_requested: boolean;
@@ -444,6 +448,41 @@ export function groupJobs(jobs: readonly Job[]): JobGroup[] {
     g.jobs.push(j);
   }
   return order;
+}
+
+/** Where clicking a job's row goes (D891): its page, unless that is a `.py`
+ *  (a detached worker reports its own script) or empty — then the app folder.
+ *  "" when nothing is known. */
+export function jobDestination(job: Job): string {
+  if (job.page && !/\.py$/i.test(job.page)) return job.page;
+  return job.app || "";
+}
+
+/** The notifications dock's grouping (D591/D891): finished jobs of one app
+ *  fold into ONE group however far apart they ran or whatever `group` each
+ *  reporter chose; a job with no app falls back to `groupJobs`'s burst rule.
+ *  Order follows each group's first member. Popup code keeps `groupJobs`. */
+export function groupTerminalByApp(jobs: readonly Job[]): JobGroup[] {
+  const byApp = new Map<string, Job[]>();
+  const rest: Job[] = [];
+  for (const j of jobs) {
+    if (!j.app) {
+      rest.push(j);
+      continue;
+    }
+    let arr = byApp.get(j.app);
+    if (!arr) byApp.set(j.app, (arr = []));
+    arr.push(j);
+  }
+  const at = new Map(jobs.map((j, i) => [j.id, i] as const));
+  const out: JobGroup[] = [...byApp].map(([app, members]) => ({
+    page: jobDestination(members[0]),
+    group: app,
+    key: `app:${app}#${members.length}`,
+    jobs: members,
+  }));
+  out.push(...groupJobs(rest));
+  return out.sort((a, b) => (at.get(a.jobs[0].id) ?? 0) - (at.get(b.jobs[0].id) ?? 0));
 }
 
 /** A group is fully terminal only once EVERY member is — one member still

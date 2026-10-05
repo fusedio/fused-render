@@ -49,7 +49,7 @@ import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate, navigateToJobPage, navigateUrl } from "@platform/lib/router";
-import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
+import { requestOpenSection, useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 import type { ChipTone } from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
@@ -64,7 +64,8 @@ import {
   dismissJob,
   effectiveTier,
   groupEffectiveTier,
-  groupJobs,
+  groupTerminalByApp,
+  jobDestination,
   jobsAfterClear,
 } from "@platform/lib/jobs";
 import type { Job, JobGroup } from "@platform/lib/jobs";
@@ -464,6 +465,7 @@ function MessageRowView({
         </>
       }
       age={age}
+      titleTooltip={notification.title}
       secondary={notification.detail}
       // `.dl-origin` — who raised this row (`labelForSource(source)`,
       // notifications.ts), the exact caption `JobRow` already draws from
@@ -485,6 +487,7 @@ function MessageRowView({
       navAction={notification.action}
       extraAction={notification.extraAction}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
+      // D891: every row is clickable — no page opens the Activity panel.
       rowClick={
         notification.page
           ? {
@@ -494,7 +497,7 @@ function MessageRowView({
               },
               title: `Open ${notification.title}`,
             }
-          : undefined
+          : { onClick: () => requestOpenSection("activity"), title: "Open Activity" }
       }
     />
   );
@@ -805,7 +808,9 @@ function GroupJobRow({
   // as `title` just below), for the same reason: nothing in §3 names which
   // member's destination a folded row should open, and the oldest member is
   // the one least likely to still be mid-rename/mid-retry.
-  const openPage = members[0]?.page ?? "";
+  // D891: the first member that has a real destination (page, else app
+  // folder); none -> the click opens the Activity panel instead.
+  const openPage = members.map(jobDestination).find(Boolean) ?? "";
   const title = members[0]?.title ?? group.group;
   const failedCount = members.filter((m) => effectiveTier(m) === "attention").length;
   const doneCount = members.length - failedCount;
@@ -842,10 +847,11 @@ function GroupJobRow({
       }
       age={age}
       titleMode="id"
+      titleTooltip={title}
       // Same "oldest member represents the row" call `title`/`openPage`
       // already make above — a folded group is one row, so it draws one
       // origin, not one per member.
-      caption={members[0]?.origin || undefined}
+      caption={members.find((m) => m.origin)?.origin || undefined}
       secondary={`${doneCount} of ${members.length} done`}
       onDismiss={{
         onClick: dismissAll,
@@ -866,7 +872,10 @@ function GroupJobRow({
       // throw away every sibling's own state, not just the one they clicked
       // to see — a group's ✕ already dismisses everything explicitly, and a
       // click's only job here is to go look.
-      rowClick={openPage ? { onClick: () => navigateToJobPage(openPage), title: `Open ${title}` } : undefined}
+      rowClick={{
+        onClick: () => (openPage ? navigateToJobPage(openPage) : requestOpenSection("activity")),
+        title: `Open ${title}`,
+      }}
     />
   );
 }
@@ -1043,7 +1052,8 @@ export function RepoUpdatesCardView({
   // composition already applies for popup suppression. `groupEffectiveTier`
   // is the group-level version of the same promotion `effectiveTier` does
   // per job: one attention-effective member promotes the WHOLE group.
-  const terminalGroups = groupJobs(terminal);
+  // D891: finished rows fold by APP, any time (popup path keeps `groupJobs`).
+  const terminalGroups = groupTerminalByApp(terminal);
   const terminalAttentionGroups = terminalGroups.filter(
     (g) => groupEffectiveTier(g.jobs) === "attention",
   );

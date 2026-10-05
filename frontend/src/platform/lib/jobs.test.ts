@@ -20,6 +20,8 @@ const {
   GROUP_GAP_MS,
   groupEffectiveTier,
   groupJobs,
+  groupTerminalByApp,
+  jobDestination,
   groupPopupTick,
   isGroupTerminal,
   jobAmount,
@@ -1181,4 +1183,27 @@ test("popupTick: a group failure already popped by groupPopupTick does not re-po
   expect(p1.popped).toBeNull();
   // It is now recorded, so any later tick behaves normally too.
   expect(p1.seen.has("sys:g:a:900")).toBe(true);
+});
+
+// D891: the notifications dock folds finished rows by APP, any time; the
+// burst-gap `groupJobs` (popup path) is untouched.
+test("groupTerminalByApp folds one app's finished jobs regardless of group and time gap", () => {
+  const A = "/apps/hf";
+  const jobs = [
+    job({ id: "a", app: A, page: "/apps/hf/jobs.py", group: "a", state: "done", started_at: 1 }),
+    job({ id: "b", app: A, page: "/apps/hf/jobs.py", group: "b", state: "done", started_at: 1e6 }),
+    job({ id: "c", app: "/apps/other", group: "c", state: "done" }),
+    job({ id: "d", app: "", page: "", source: "", group: "d", state: "done" }),
+  ];
+  const groups = groupTerminalByApp(jobs);
+  expect(groups.map((g) => g.jobs.map((j) => j.id))).toEqual([["a", "b"], ["c"], ["d"]]);
+  expect(groupJobs(jobs.slice(0, 2))).toHaveLength(2); // burst rule unchanged
+});
+
+test("jobDestination: a real page wins, a .py page or no page falls back to the app folder", () => {
+  expect(jobDestination(job({ page: "/apps/hf/index.html", app: "/apps/hf" }))).toBe("/apps/hf/index.html");
+  expect(jobDestination(job({ page: "/apps/hf/jobs.py", app: "/apps/hf" }))).toBe("/apps/hf");
+  expect(jobDestination(job({ page: "", app: "/apps/hf" }))).toBe("/apps/hf");
+  expect(jobDestination(job({ page: "/ai-models/local", app: "" }))).toBe("/ai-models/local");
+  expect(jobDestination(job({ page: "", app: "" }))).toBe("");
 });

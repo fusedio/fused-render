@@ -74,11 +74,12 @@
 // reporting page reads on its next tick and acts on. The row therefore says
 // "Cancelling…" until the work actually stops, rather than lying about it.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useStatusChip } from "@platform/lib/statusChip";
+import { requestOpenSection, useStatusChip } from "@platform/lib/statusChip";
 import { navigateToJobPage, isJobPageRoute } from "@platform/lib/router";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
 import {
+  jobDestination,
   jobTypeLabel,
   aggregateProgress,
   cancelJob,
@@ -632,9 +633,18 @@ export function JobRow({
   // OPENING A ROW ALWAYS DISMISSES IT, reusing the exact `dismiss()` above —
   // done, error or cancelled, fs path or shell route alike: going to look IS
   // the acknowledgement, so the row has done its job the moment it's opened.
-  const canOpen = isTerminal(job) && !!job.page;
+  //
+  // D891: EVERY terminal row is clickable — `jobDestination` (page, else the
+  // app folder); with neither, the click opens the Activity panel and keeps
+  // the row (there was nothing to go and look at).
+  const canOpen = isTerminal(job);
+  const destination = jobDestination(job);
   const open = () => {
-    navigateToJobPage(job.page);
+    if (!destination) {
+      requestOpenSection("activity");
+      return;
+    }
+    navigateToJobPage(destination);
     void dismiss();
   };
 
