@@ -240,6 +240,12 @@ export default function Apps({ config }: { config: Config }) {
   }));
   if (loaded.key !== filterKey) {
     setLoaded({ key: filterKey, page: firstPages.get(filterKey) ?? null });
+    // The error belonged to the old list. Cleared here, in the same render,
+    // rather than in the effect after paint: the skeleton is gated on
+    // `!error`, so an uncached filter after a failure would otherwise show the
+    // old banner over a blank grid for one frame — or, if the new request
+    // also fails, until the reader moves on.
+    setError(null);
   }
   const page = loaded.key === filterKey ? loaded.page : (firstPages.get(filterKey) ?? null);
 
@@ -365,8 +371,13 @@ export default function Apps({ config }: { config: Config }) {
     );
     io.observe(el);
     return () => io.disconnect();
+    // `filterKey` too: a filter switch unmounts the grid (page goes null, then
+    // the cached page paints) and the sentinel that comes back is a NEW
+    // element. Two filters whose cached pages have the same length — both
+    // first pages, typically — leave every other dep unchanged, and the
+    // observer would stay on the detached node until the pill was clicked.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMore guards itself through moreCtl
-  }, [hasMore, shownCount, moreFailed]);
+  }, [hasMore, shownCount, moreFailed, filterKey]);
 
   const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1));
   const runningPaths = useRunningBackgroundApps();
