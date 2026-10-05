@@ -2807,7 +2807,7 @@ export function migrateApp(
 
 export type AppCheckState = "pass" | "fail" | "skip" | "unrun";
 export type AppCheckSection = "essentials" | "sharing";
-export type Severity = "critical" | "warning";
+export type Severity = "critical" | "warning" | "info";
 export type AppCheckKind = "fact" | "candidate";
 
 export interface AppCheckFinding {

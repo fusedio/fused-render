@@ -104,7 +104,7 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     "entry": ("essentials", "critical", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
-    "readme": ("essentials", "warning", "fact"),
+    "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     # The one MODEL-BACKED row (app_doctor_ai.py): on demand, cached on the
@@ -127,8 +127,10 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
 CHECK_ORDER = tuple(_CHECK_META.keys())
 SECTIONS = ("essentials", "sharing")
 # Worst first — the header button's "worst severity found" and the modal's
-# chip colouring both rank against this order.
-SEVERITIES = ("critical", "warning")
+# chip colouring both rank against this order. `info` is the quiet tier: a
+# failing info row is worth showing but never turns `ok` false (see
+# `report`) or the header dot yellow.
+SEVERITIES = ("critical", "warning", "info")
 
 
 def _meta(cid: str) -> tuple[str, str, str]:
@@ -153,8 +155,11 @@ ON_DEMAND = frozenset({"cross-browser"})
 
 
 def _check(cid: str, label: str, state: str, detail: str,
-           findings: list | None = None) -> dict:
-    section, severity, kind = _meta(cid)
+           findings: list | None = None, *, severity: str | None = None) -> dict:
+    """`severity` overrides the table's default for ONE outcome — e.g. a
+    missing pyproject.toml is info while an invalid one stays a warning."""
+    section, table_severity, kind = _meta(cid)
+    severity = severity or table_severity
     return {
         "id": cid,
         "section": section,
@@ -258,7 +263,35 @@ def _generated_paths(app_dir: str) -> list[str]:
         return True
 
     recurse(app_dir, "")
-    return out
+    return _drop_gitignored(app_dir, out)
+
+
+def _drop_gitignored(app_dir: str, paths: list[str]) -> list[str]:
+    """`paths` minus what git ignores — the row's own advice offers
+    "gitignore them" as a fix, so an ignored cache is not a finding. One
+    batched `git check-ignore` from the repo toplevel (server/gitignore.py is
+    the authority: nested/ancestor `.gitignore`, `.git/info/exclude`, the
+    global excludesfile). Outside a repo, on a mount, or when git cannot
+    answer, nothing is dropped — the behaviour before this existed."""
+    if not paths:
+        return paths
+    from fused_render.server.gitignore import _git_ignored, _repo_toplevel
+    from fused_render.shell import mounts as shell_mounts
+
+    try:
+        if shell_mounts.is_mount_backed(app_dir):
+            return paths
+        top = _repo_toplevel(app_dir)
+        if top is None:
+            return paths
+        rel = os.path.relpath(os.path.realpath(app_dir), os.path.realpath(top))
+    except (OSError, ValueError):
+        return paths
+    if rel.startswith(".."):
+        return paths
+    prefix = "" if rel == "." else rel.replace(os.sep, "/") + "/"
+    ignored = _git_ignored(top, [prefix + p for p in paths])
+    return [p for p in paths if prefix + p not in ignored]
 
 
 # ------------------------------------------------------------------ git state
@@ -580,6 +613,32 @@ def _optional_file_check(app_dir: str, cid: str, name: str, kind: str, label: st
                  f"{name} parses" if ok else f"{name}: {reason}")
 
 
+def _has_python(app_dir: str) -> bool:
+    """Whether the app tree holds any `.py` of its own. Bounded like
+    `_generated_paths`; an exhausted budget answers True (assume Python — the
+    conservative read for a row that asks for a declaration)."""
+    seen = 0
+    stack = [app_dir]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > _MAX_ENTRIES:
+                return True
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in _SKIP_DIRS:
+                        stack.append(entry.path)
+                elif entry.name.endswith(".py"):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def _pyproject_check(app_dir: str) -> dict:
     # NOT `_optional_file_check` — icon keeps that skip-when-absent shape,
     # but a folder's dependencies live only here (D230), so absence is a
@@ -588,10 +647,14 @@ def _pyproject_check(app_dir: str) -> dict:
     label = "pyproject.toml is valid TOML"
     path = os.path.join(app_dir, "pyproject.toml")
     if not os.path.isfile(path):
+        if not _has_python(app_dir):
+            return _check("pyproject", label, SKIP,
+                          "no Python in this app — nothing to declare")
         return _check(
             "pyproject", label, FAIL,
             "no pyproject.toml — without it this app's dependencies are "
             "implicit and unreproducible for whoever you share it with",
+            severity="info",
         )
     ok, reason = _parses(path, "toml")
     return _check("pyproject", label, PASS if ok else FAIL,
@@ -698,25 +761,62 @@ def _repo_health_check(app_dir: str) -> dict:
     # function's docstring).
     behind_target = "origin" if on_default else (default_branch or "the default branch")
 
+    # AUTO-SYNC TAKES OVER push and pull. With the pref on (default) and the
+    # repo on its default branch — the only branch auto-sync acts on — unpushed
+    # commits and "behind origin" resolve themselves, so they are not a
+    # finding; a STANDING auto-sync failure for this repo (it tried and could
+    # not) is, and names why. Uncommitted paths stay a FAIL: nothing
+    # auto-commits edits made outside Claude.
+    auto = (root is not None and on_default is True
+            and git_upstream.auto_sync_enabled())
+    sync_fail = None
+    if auto:
+        for rec in git_upstream.sync_failures():
+            if _same_path(rec.get("root"), root):
+                sync_fail = rec
+                break
+    push_fail = p_state == FAIL and not auto
+    behind_fail = bool(behind) and not auto
+
     failing_bits = []
     if g_state == FAIL:
         failing_bits.append(
             f"{len(g_pending)} uncommitted path{'' if len(g_pending) == 1 else 's'}")
-    if p_state == FAIL:
+    if push_fail:
         failing_bits.append(
             f"{len(p_subjects)} unpushed commit{'' if len(p_subjects) == 1 else 's'}")
-    if behind:
+    if behind_fail:
         failing_bits.append(
             f"{behind} commit{'' if behind == 1 else 's'} behind {behind_target}")
+    if sync_fail is not None:
+        failing_bits.append(
+            f"automatic sync is failing: {sync_fail.get('title') or 'git reported an error'}")
+
+    auto_bits = []
+    if auto and p_state == FAIL:
+        auto_bits.append(
+            f"{len(p_subjects)} unpushed commit{'' if len(p_subjects) == 1 else 's'}"
+            " — they will be pushed automatically")
+    if auto and behind:
+        auto_bits.append(
+            f"{behind} commit{'' if behind == 1 else 's'} behind {behind_target}"
+            " — this will be updated automatically")
 
     if failing_bits:
         state = FAIL
-        detail = ", ".join(failing_bits) + " — " + _repo_health_advice(
-            commit=g_state == FAIL, push=p_state == FAIL, behind=behind,
-            can_pull=can_pull, on_default=on_default, clean=clean,
-            default_branch=(cached.get("default_branch") if cached is not None
-                             else None),
-        )
+        advice_bits = [g_state == FAIL, push_fail, behind if behind_fail else 0]
+        if any(advice_bits):
+            detail = ", ".join(failing_bits) + " — " + _repo_health_advice(
+                commit=g_state == FAIL, push=push_fail,
+                behind=behind if behind_fail else 0,
+                can_pull=can_pull, on_default=on_default, clean=clean,
+                default_branch=(cached.get("default_branch") if cached is not None
+                                 else None),
+            )
+        else:
+            detail = ", ".join(failing_bits) + " — open the git panel to resolve it"
+        if sync_fail is not None and auto_bits:
+            detail += "; " + "; ".join(auto_bits)
     elif p_skip_reason == _SKIP_NO_UPSTREAM:
         # `behind`/`ahead` may still be a confirmed number here (git_upstream
         # compares HEAD against the DEFAULT branch's origin ref regardless of
@@ -728,6 +828,9 @@ def _repo_health_check(app_dir: str) -> dict:
         # regressed it — B2 in FIXES-round-1.md).
         state = SKIP
         detail = "no upstream remote configured for this folder — nothing to compare against"
+    elif auto_bits:
+        state = PASS
+        detail = "the working tree is clean; " + "; ".join(auto_bits)
     elif behind is not None:
         state = PASS
         detail = f"the working tree is clean, nothing to push, and up to date with {behind_target}"
@@ -753,6 +856,15 @@ def _repo_health_check(app_dir: str) -> dict:
     row["onDefault"] = on_default
     row["clean"] = clean
     return row
+
+
+def _same_path(a, b) -> bool:
+    if not a or not b:
+        return False
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return a == b
 
 
 def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,

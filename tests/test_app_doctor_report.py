@@ -76,6 +76,10 @@ def _clean_git_upstream_state(monkeypatch):
     check."""
     monkeypatch.setattr(git_upstream, "_checked", {})
     monkeypatch.setattr(git_upstream, "_state", {})
+    monkeypatch.setattr(git_upstream, "_sync_failures", {})
+    # The pre-auto-sync rules (unpushed / behind FAIL the row) are what these
+    # tests pin; the auto-sync variants opt back in with `_auto_sync(True)`.
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
 
 PAGE = ('<html><head><meta name="fused-app" />'
         '<meta name="fused-api-version" content="{v}" /></head><body>hi</body></html>')
@@ -132,7 +136,7 @@ _EXPECTED_META = {
     "entry": ("essentials", "critical", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
-    "readme": ("essentials", "warning", "fact"),
+    "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     "git": ("sharing", "warning", "fact"),
@@ -150,9 +154,8 @@ def test_every_check_carries_the_exact_table(workspace):
 
 
 def test_no_checklist_row_is_ever_suggested():
-    """The checklist has two severities, not three — a suggestion row got no
-    tint, no rail, and no urgency in the dialog, so nobody ever acted on it.
-    `suggested` is a CI-floor-only tier (see `_STRUCTURE_META` in
+    """`suggested` is not a checklist severity (`info` is the quiet tier — a
+    failing info row never affects `ok` or the header dot). `suggested` is a CI-floor-only tier (see `_STRUCTURE_META` in
     `skills/fused-render-app-doctor/ci/app_check.py`); it must never appear
     in `_CHECK_META` or `SEVERITIES`."""
     assert "suggested" not in app_doctor.SEVERITIES
@@ -174,16 +177,39 @@ def test_the_report_carries_the_ordering_the_modal_reads(workspace):
     d = _app(workspace)
     report = app_doctor.report(str(d))
     assert report["sections"] == ["essentials", "sharing"]
-    assert report["severities"] == ["critical", "warning"]
+    assert report["severities"] == ["critical", "warning", "info"]
 
 
 def test_ok_is_false_on_a_failing_warning_row(workspace):
-    """readme and preview are both severity "warning" — a warning row worth
-    the checklist at all is worth turning the app "not ok"."""
-    d = _app(workspace, readme=False, preview=False)
+    """preview is severity "warning" — a warning row worth the checklist at
+    all is worth turning the app "not ok"."""
+    d = _app(workspace, preview=False)
     report = app_doctor.report(str(d))
-    assert _state(report, "readme") == "fail"
     assert _state(report, "preview") == "fail"
+    assert report["ok"] is False
+
+
+def test_a_missing_readme_is_info_and_does_not_make_the_app_not_ok(workspace):
+    d = _app(workspace, readme=False)
+    report = app_doctor.report(str(d))
+    row = _rows(report)["readme"]
+    assert (row["state"], row["severity"]) == ("fail", "info")
+    assert report["ok"] is True
+
+
+def test_pyproject_severity_is_per_outcome(workspace):
+    """Absent (in an app that has Python) is info; present-but-invalid stays
+    a warning and turns the app not ok."""
+    d = _app(workspace, pyproject=False)
+    (d / "serve.py").write_text("print('hi')\n")
+    report = app_doctor.report(str(d))
+    row = _rows(report)["pyproject"]
+    assert (row["state"], row["severity"]) == ("fail", "info")
+    assert report["ok"] is True
+    (d / "pyproject.toml").write_text("[project\nbroken\n")
+    report = app_doctor.report(str(d))
+    row = _rows(report)["pyproject"]
+    assert (row["state"], row["severity"]) == ("fail", "warning")
     assert report["ok"] is False
 
 
@@ -217,9 +243,28 @@ def test_a_missing_pyproject_fails_its_row_and_the_report(workspace):
     """pyproject.toml is now required — absent, not just unparseable, is a
     FAIL, unlike icon (see the contrast test below)."""
     d = _app(workspace, pyproject=False)
+    (d / "serve.py").write_text("print('hi')\n")
     report = app_doctor.report(str(d))
     assert _state(report, "pyproject") == "fail"
-    assert report["ok"] is False
+    assert report["ok"] is True  # missing pyproject is info severity
+
+
+def test_an_app_with_no_python_skips_the_pyproject_row(workspace):
+    """Nothing to declare: a pure-HTML app has no dependencies to pin. Python
+    under `.venv`/`node_modules`/`.fused` is not the app's own."""
+    d = _app(workspace, pyproject=False)
+    (d / ".venv").mkdir()
+    (d / ".venv" / "site.py").write_text("x = 1\n")
+    (d / "node_modules").mkdir()
+    (d / "node_modules" / "gen.py").write_text("x = 1\n")
+    report = app_doctor.report(str(d))
+    row = _rows(report)["pyproject"]
+    assert row["state"] == "skip"
+    assert "no Python" in row["detail"]
+    assert report["ok"] is True
+    # A broken pyproject still fails even with no .py around.
+    (d / "pyproject.toml").write_text("[project\nbroken\n")
+    assert _state(app_doctor.report(str(d)), "pyproject") == "fail"
 
 
 def test_a_missing_icon_still_skips_its_row(workspace):
@@ -289,6 +334,33 @@ def test_generated_state_outside_dot_fused_is_a_finding_and_inside_it_is_not(wor
     found = {f["path"] for f in row["findings"]}
     # The cache dir is reported as ITSELF, not once per file inside it.
     assert found == {"__pycache__/", "notes.log"}
+
+
+def _git_init(d):
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+
+
+def test_generated_row_honors_gitignore_inside_a_repo(workspace):
+    """The row's advice says "...or gitignore them" — a path git ignores
+    (root .gitignore, info/exclude, a nested .gitignore) must not count,
+    while an un-ignored sibling still fails."""
+    d = _app(workspace)
+    _git_init(d)
+    (d / ".gitignore").write_text("__pycache__/\n")
+    (d / ".git" / "info" / "exclude").write_text("*.db\n")
+    (d / "__pycache__").mkdir()
+    (d / "__pycache__" / "a.pyc").write_bytes(b"\x00")
+    (d / "x.db").write_bytes(b"\x00")
+    (d / "sub").mkdir()
+    (d / "sub" / ".gitignore").write_text("*.log\n")
+    (d / "sub" / "run.log").write_text("1\n")
+    row = _rows(app_doctor.report(str(d)))["generated"]
+    assert row["state"] == "pass"
+    # un-ignored still fails
+    (d / "notes.log").write_text("1\n")
+    row = _rows(app_doctor.report(str(d)))["generated"]
+    assert row["state"] == "fail"
+    assert {f["path"] for f in row["findings"]} == {"notes.log"}
 
 
 def test_missing_readme_and_thumbnail_each_fail_their_own_row(workspace):
@@ -775,6 +847,102 @@ def test_pull_is_not_offered_over_a_dirty_tree_and_the_row_says_why(workspace):
         "1 uncommitted path, 1 commit behind origin — "
         "commit or stash your changes to pull so what you share matches what you tested"
     )
+
+
+def _repo_with_remote(workspace):
+    d = _app(workspace)
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+    return d, repo, remote
+
+
+def _commit_here(repo, name="more.txt", sub=None):
+    (repo / sub / name if sub else repo / name).write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "local")
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_makes_unpushed_commits_pass_the_git_row(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _commit_here(repo, sub="demo")
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "pass"
+    assert "pushed automatically" in row["detail"]
+    assert "1 unpushed commit" in row["detail"]
+    assert row["gitRoot"] and row["clean"] is True
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_makes_behind_origin_pass_the_git_row(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, remote = _repo_with_remote(workspace)
+    other = workspace.parent / "other-clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True,
+                   capture_output=True, close_fds=False)
+    _commit_here(other, "elsewhere.txt")
+    _git(other, "push", "-q")
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "pass"
+    assert row["behind"] == 1
+    assert "automatically" in row["detail"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_does_not_excuse_uncommitted_paths(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    (d / "wip.txt").write_text("x\n")
+    _warm(d)
+    assert _state(app_doctor.report(str(d)), "git") == "fail"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_standing_auto_sync_failure_fails_the_git_row(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _commit_here(repo, sub="demo")
+    _warm(d)
+    git_upstream._record_failure(
+        git_upstream.repo_root(str(d)), "rejected", action="push",
+        command="git push", output="rejected", push=True)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert "the push was rejected" in row["detail"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_is_ignored_off_the_default_branch(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _git(repo, "push", "-q", "-u", "origin", "feature")
+    _commit_here(repo, sub="demo")
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["onDefault"] is False
+    assert row["state"] == "fail"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_is_not_assumed_when_the_default_branch_answer_is_unknown(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _commit_here(repo, sub="demo")
+    # no _warm: the background fetch has not landed, so on_default is None
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["onDefault"] is None
+    assert row["state"] == "fail"
 
 
 def test_repo_health_advice_names_only_what_actually_failed_no_git_needed():
@@ -1328,6 +1496,7 @@ def test_a_missing_pyproject_produces_a_fix_prompt(workspace):
     in `doctor_prompt_all`'s blocks — mirrors how `readme`/`preview` are
     covered."""
     d = _app(workspace, pyproject=False)
+    (d / "serve.py").write_text("print('hi')\n")
     row = _rows(app_doctor.report(str(d)))["pyproject"]
     assert row["state"] == "fail"
     prompt = app_doctor.doctor_prompt(str(d / "index.html"), "pyproject",

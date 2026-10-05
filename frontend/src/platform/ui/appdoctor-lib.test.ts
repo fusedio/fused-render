@@ -28,6 +28,7 @@ const lib = await import("./appdoctor-lib");
 const {
   effectiveSeverity,
   failingCount,
+  fixButtonLabel,
   findingWhere,
   gitRowFetchPending,
   groupBySection,
@@ -213,6 +214,37 @@ test("worstSeverity is null when nothing failed", () => {
   expect(worstSeverity([check("a", "pass"), check("b", "skip")])).toBeNull();
 });
 
+test("a failing info row never counts toward worstSeverity (header dot stays neutral)", () => {
+  expect(worstSeverity([check("a", "fail", { severity: "info" })])).toBeNull();
+  expect(
+    worstSeverity([
+      check("a", "fail", { severity: "info" }),
+      check("b", "fail", { severity: "warning" }),
+    ]),
+  ).toBe("warning");
+});
+
+test("severityDotLabel names info-only failures as suggestions, not warnings", () => {
+  expect(severityDotLabel([check("a", "fail", { severity: "info" })])).toBe(
+    "App Doctor: 1 suggestion",
+  );
+  expect(
+    severityDotLabel([
+      check("a", "fail", { severity: "info" }),
+      check("b", "fail", { severity: "warning" }),
+    ]),
+  ).toBe("App Doctor: 1 warning");
+});
+
+test("sortByAttention puts a failing info row after warnings and before unrun rows", () => {
+  const sorted = sortByAttention([
+    check("u", "unrun"),
+    check("i", "fail", { severity: "info" }),
+    check("w", "fail", { severity: "warning" }),
+  ]).map((c) => c.id);
+  expect(sorted).toEqual(["w", "i", "u"]);
+});
+
 test("worstSeverity picks the worst FAILING severity, ignoring passes and skips", () => {
   const checks = [
     check("a", "fail", { severity: "warning" }),
@@ -392,6 +424,10 @@ test("showsPullAction is true only for the git row with a confirmed nonzero behi
   expect(
     showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
   ).toBe(true);
+  // Behind but the row passes (auto-sync will fast-forward it): no button.
+  expect(
+    showsPullAction(check("git", "pass", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(false);
   // Confirmed up to date — 0 is a real answer, not "unknown".
   expect(
     showsPullAction(check("git", "pass", { behind: 0, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
@@ -434,4 +470,14 @@ test("gitRowFetchPending is true only when a real repo's remote count has not la
   expect(gitRowFetchPending([check("git", "skip", { gitRoot: null })])).toBe(false);
   // No git row in the report at all (should never happen, but must not throw).
   expect(gitRowFetchPending([check("readme", "pass")])).toBe(false);
+});
+
+test("the fix button counts issues without info rows, and calls an info-only report suggestions", () => {
+  const info = check("i", "fail", { severity: "info" });
+  const warn = check("w", "fail", { severity: "warning" });
+  expect(fixButtonLabel([warn, info, check("p", "pass")])).toBe("Fix 1 issue");
+  expect(fixButtonLabel([warn, warn, info])).toBe("Fix 2 issues");
+  expect(fixButtonLabel([info])).toBe("Fix 1 suggestion");
+  expect(fixButtonLabel([info, info])).toBe("Fix 2 suggestions");
+  expect(fixButtonLabel([check("p", "pass")])).toBe("Nothing to fix");
 });
