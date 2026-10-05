@@ -301,42 +301,51 @@ export default function Apps({ config }: { config: Config }) {
       ),
     [cards, tag, category, q],
   );
-  // The window over `shown` — see PAGE_SIZE. Reset whenever the FILTER
-  // changes (a new chip or query is a new list, and its first page is the
-  // right place to land), never on `nonce`: a refetch after create/sync keeps
-  // the reader's place. Clamped at render rather than stored clamped, so a
-  // list that grows under a refetch simply shows more of what was already
-  // admitted.
-  const [limit, setLimit] = useState(PAGE_SIZE);
-  useEffect(() => {
-    setLimit(PAGE_SIZE);
-  }, [tag, category, q]);
+  // The window over `shown` — see PAGE_SIZE. It belongs to ONE filter: a new
+  // chip or query is a new list and its first page is the right place to
+  // land, so the stored limit carries the filter it was grown under and is
+  // discarded the render the filter changes. That reset happens DURING
+  // render (React re-renders before committing) rather than in an effect: an
+  // effect runs after paint, and a reader who had grown the window to a
+  // hundred cards would get one committed frame of a hundred cards of the NEW
+  // list — the mounts, image requests and observers this window exists to
+  // avoid — before the collapse. `nonce` is deliberately not in the key: a
+  // refetch after create/sync keeps the reader's place.
+  const filterKey = `${tag ?? ""}\u0000${category ?? ""}\u0000${q}`;
+  const [win, setWin] = useState({ key: filterKey, limit: PAGE_SIZE });
+  if (win.key !== filterKey) setWin({ key: filterKey, limit: PAGE_SIZE });
+  const limit = win.key === filterKey ? win.limit : PAGE_SIZE;
   const windowed = useMemo(() => shown.slice(0, limit), [shown, limit]);
   // Only the exhaustive catalog has a fold: the partial row is twelve cards
   // at most and is replaced wholesale when the catalog lands.
   const hasMore = apps.status === "ok" && shown.length > windowed.length;
-  const showMore = () => setLimit((l) => l + PAGE_SIZE);
+  const showMore = () => setWin((w) => ({ ...w, limit: w.limit + PAGE_SIZE }));
   // Auto-extend: a sentinel after the grid, observed inside the page's own
   // scroller (the same root useNearViewport uses, since this page owns its
   // vertical scroll), with a generous lookahead so the next window is in the
-  // DOM before the reader reaches the last row. Keyed on `hasMore` because the
-  // sentinel is only mounted while there is more: its element comes and goes
-  // with that flag. A viewport taller than one window fires again on the next
-  // frame until the sentinel is pushed off screen, which is the intended
-  // behaviour, not a loop — it stops the moment `hasMore` flips.
+  // DOM before the reader reaches the last row.
+  //
+  // Re-observed on every `limit`, not just on `hasMore`. An observer reports
+  // CHANGES of intersection, and after one extend on a wide or tall viewport
+  // the sentinel can still sit inside the lookahead zone — eight columns put
+  // a whole window in three rows — so nothing would fire again and the
+  // auto-load would stall with the pill as the only way on. A fresh
+  // `observe()` always delivers its initial state, which is what makes this
+  // keep going until the sentinel is pushed clear or `hasMore` flips.
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = sentinelRef.current;
     if (!hasMore || !el) return;
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) showMore();
+        if (entries.some((e) => e.isIntersecting))
+          setWin((w) => ({ ...w, limit: w.limit + PAGE_SIZE }));
       },
       { root: el.closest(".apps-page"), rootMargin: "600px 0px" },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [hasMore]);
+  }, [hasMore, limit]);
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
 
