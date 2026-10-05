@@ -327,3 +327,27 @@ def test_popen_kwargs_are_fork_safe(registry, tmp_path, monkeypatch):
 
     interpreter = captured["args"][0][0]
     assert os.path.isabs(interpreter)
+
+
+def test_initial_size_is_set_before_the_child_starts(registry, tmp_path, monkeypatch):
+    # The child reads its window size on its very first instruction, so a
+    # size applied after spawn (resize()) is too late for zsh's PROMPT_SP.
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "stty size; sleep 1"]))
+    session = registry.create(rows=33, cols=117)
+    assert _wait_until(lambda: b"33 117" in bytes(session.scrollback()))
+
+
+def test_no_initial_size_keeps_the_zero_size(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "stty size; sleep 1"]))
+    session = registry.create()
+    assert _wait_until(lambda: b"0 0" in bytes(session.scrollback()))
+
+
+@pytest.mark.parametrize("rows,cols", [(0, 80), (24, 0), (70000, 80), (24, -1)])
+def test_invalid_initial_size_is_ignored(registry, tmp_path, monkeypatch, rows, cols):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "stty size; sleep 1"]))
+    session = registry.create(rows=rows, cols=cols)
+    assert _wait_until(lambda: b"0 0" in bytes(session.scrollback()))

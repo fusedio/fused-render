@@ -62,8 +62,11 @@ def api_terminal_create(body: dict = Body(default={}),
     if guard is not None:
         return guard
     cwd = (body or {}).get("cwd") or None
+    # Optional fitted terminal size; invalid/missing keeps the old no-ioctl path.
+    size = pty_session.valid_winsize((body or {}).get("rows"), (body or {}).get("cols"))
+    rows, cols = size if size is not None else (None, None)
     try:
-        session = pty_session.REGISTRY.create(cwd=cwd)
+        session = pty_session.REGISTRY.create(cwd=cwd, rows=rows, cols=cols)
     except pty_session.SessionLimitError as e:
         return _error(str(e), status=409)
     except RuntimeError as e:

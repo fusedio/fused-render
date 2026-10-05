@@ -60,11 +60,49 @@ class SessionLimitError(RuntimeError):
     """Raised by `PtySessionRegistry.create` at the live-session cap."""
 
 
+def valid_winsize(rows: object, cols: object) -> Optional[tuple[int, int]]:
+    """`(rows, cols)` if both are real ints in the unsigned 16-bit range the
+    kernel's winsize takes (1..65535), else None. Bools and floats are
+    rejected so a JSON `true`/`24.5` never turns into a size."""
+    for v in (rows, cols):
+        if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 65535:
+            return None
+    return int(rows), int(cols)  # type: ignore[arg-type]
+
+
+def _set_winsize(fd: int, rows: int, cols: int) -> None:
+    """TIOCSWINSZ on `fd`; an unrepresentable size or a failed ioctl is a no-op."""
+    # fcntl/termios imported here, not at module scope: both are
+    # POSIX-only and would raise ImportError on Windows the moment
+    # ANYTHING imports this module — including `server/app.py`'s
+    # unconditional `from ...routers.terminal import router`, which
+    # would then take the whole app down before `resolve_profile()`'s
+    # `os.name == "nt"` guard ever got a chance to degrade gracefully
+    # (see `_pty_exec_helper.py` and `_env_install_worker.py`'s own
+    # local `import fcntl` for the same reason). No live session is ever
+    # constructed on Windows, so this function is simply never reached there.
+    import fcntl
+    import termios
+    try:
+        packed = struct.pack("HHHH", rows, cols, 0, 0)
+    except struct.error:
+        # Out of range for "HHHH" (an unsigned 16-bit int per field) —
+        # the route already clamps/ignores this, but a caller that skips
+        # that check (a test, a future direct caller) gets a no-op instead
+        # of an unhandled exception.
+        return
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+    except OSError:
+        pass
+
+
 class PtySession:
     """One pty-backed shell: the master fd, its child process, a bounded
     scrollback ring, and the subscribers currently streaming its output."""
 
-    def __init__(self, sid: str, profile: TerminalProfile):
+    def __init__(self, sid: str, profile: TerminalProfile,
+                 rows: Optional[int] = None, cols: Optional[int] = None):
         self.id = sid
         self.profile = profile
         self.alive = True
@@ -77,6 +115,14 @@ class PtySession:
         master_fd, slave_fd = os.openpty()
         self.master_fd = master_fd
         try:
+            # The size must be on the pty BEFORE the child starts: zsh reads
+            # it once to draw its first prompt's PROMPT_SP padding, and a
+            # 0x0 pty makes it assume 80 columns and leave a stray inverse
+            # `%`. Done here, in the parent, on the fd — never via
+            # preexec_fn — so the Popen below stays on posix_spawn.
+            size = valid_winsize(rows, cols)
+            if size is not None:
+                _set_winsize(master_fd, *size)
             try:
                 # See module docstring: close_fds=False, absolute interpreter
                 # path, no cwd=, no start_new_session=True, no preexec_fn.
@@ -193,29 +239,7 @@ class PtySession:
     def resize(self, rows: int, cols: int) -> None:
         if not self.alive:
             return
-        # fcntl/termios imported here, not at module scope: both are
-        # POSIX-only and would raise ImportError on Windows the moment
-        # ANYTHING imports this module — including `server/app.py`'s
-        # unconditional `from ...routers.terminal import router`, which
-        # would then take the whole app down before `resolve_profile()`'s
-        # `os.name == "nt"` guard ever got a chance to degrade gracefully
-        # (see `_pty_exec_helper.py` and `_env_install_worker.py`'s own
-        # local `import fcntl` for the same reason). No live session is ever
-        # constructed on Windows, so this line is simply never reached there.
-        import fcntl
-        import termios
-        try:
-            packed = struct.pack("HHHH", rows, cols, 0, 0)
-        except struct.error:
-            # Out of range for "HHHH" (an unsigned 16-bit int per field) —
-            # the route above already clamps/ignores this, but a caller that
-            # skips that check (a test, a future direct caller) gets a no-op
-            # instead of an unhandled exception out of this method.
-            return
-        try:
-            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, packed)
-        except OSError:
-            pass
+        _set_winsize(self.master_fd, rows, cols)
 
     def scrollback(self) -> bytes:
         with self._lock:
@@ -318,7 +342,9 @@ class PtySessionRegistry:
         self._lock = threading.RLock()
         self._sessions: dict[str, PtySession] = {}
 
-    def create(self, cwd: Optional[str] = None) -> PtySession:
+    def create(self, cwd: Optional[str] = None,
+               rows: Optional[int] = None,
+               cols: Optional[int] = None) -> PtySession:
         with self._lock:
             self._reap_dead_locked()
             live = sum(1 for s in self._sessions.values() if s.alive)
@@ -329,7 +355,7 @@ class PtySessionRegistry:
             if profile is None:
                 raise RuntimeError("terminal is not supported on this platform")
             sid = uuid.uuid4().hex
-            session = PtySession(sid, profile)
+            session = PtySession(sid, profile, rows=rows, cols=cols)
             self._sessions[sid] = session
             return session
 
