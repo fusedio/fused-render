@@ -155,8 +155,13 @@ export function useMissingFolders(
       } else {
         // Not an answer about the folder; ask again in a poll's time.
         settled.current.delete(dir);
+        // …and cleared when it fires, so a blip that lands AFTER the timer
+        // has gone off (a stat slower than RETRY_MS) arms the next one
+        // rather than finding a spent timer and never being asked again
+        // (Bugbot, #1384).
         if (retryTimer === null) {
           retryTimer = setTimeout(() => {
+            retryTimer = null;
             if (alive.current) setRetry((n) => n + 1);
           }, RETRY_MS);
         }
