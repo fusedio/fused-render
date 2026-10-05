@@ -123,6 +123,8 @@ _EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind", "provider"})
 #: fields and the two shared ones; the verb has no tunables (zero output
 #: tokens — every answer is a calibrated probability, nothing to sample).
 _DECIDE_WIRE_KEYS = frozenset({"state", "questions", "model", "provider"})
+_SPEECH_WIRE_KEYS = frozenset(
+    {"text", "model", "provider", "voice", "instruct", "refAudio", "refText", "language"})
 
 
 class ServerNotRunning(Exception):
@@ -692,6 +694,33 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
                    "prompt", "previewPath")})
 
 
+def speech(text: str, model: str | None = None, voice: str | None = None,
+           instruct: str | None = None, ref_audio: str | None = None,
+           ref_text: str | None = None, language: str | None = None,
+           provider: str | None = None, wait: bool = True, on_progress=None,
+           timeout: float | None = None) -> dict:
+    body: dict = {"text": text}
+    for key, value in (
+        ("model", model), ("voice", voice), ("instruct", instruct),
+        ("refText", ref_text), ("language", language), ("provider", provider),
+    ):
+        if value is not None:
+            body[key] = value
+    if ref_audio is not None:
+        body["refAudio"] = os.path.abspath(os.path.expanduser(ref_audio))
+    reply = _post_json("/api/ai/speech", body)
+    if not wait:
+        return reply
+    job = _wait_job(_require_job_id(reply, "/api/ai/speech"),
+                    on_progress=on_progress, timeout=timeout)
+    _raise_for_terminal_job(job)
+    return _frame(
+        {"audio": [{"path": reply.get("path"), "mediaType": "audio/wav"}]},
+        reply, usage={"audioGenerated": 1},
+        metadata={k: reply.get(k) for k in
+                  ("text", "language", "voice", "instruct", "refAudio", "refText")})
+
+
 # ------------------------------------------------------------------- embed
 
 
@@ -874,6 +903,7 @@ class _Ai:
     stream = staticmethod(stream)
     transcribe = staticmethod(transcribe)
     image = staticmethod(image)
+    speech = staticmethod(speech)
     embed = staticmethod(embed)
     decide = staticmethod(decide)
     models = models

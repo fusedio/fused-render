@@ -43,6 +43,9 @@
 // Template bindings live in the dedicated /view/_templates view.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  buildDiagnostics,
+  fetchDiagnosticsPlan,
+  fetchServerHealth,
   getConfig,
   getPrefs,
   putCallsEnabled,
@@ -72,7 +75,9 @@ import {
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
-import type { UpdateStatus } from "@platform/lib/api";
+import type { DiagnosticsPlan, DiagnosticsResult, UpdateStatus } from "@platform/lib/api";
+import { copyToClipboard } from "@platform/lib/clipboard";
+import { formatBytes } from "@platform/lib/sysmon";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
@@ -559,6 +564,167 @@ function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           <b>Enable the process Monitor</b> — show the System chip and the Monitor page.
         </span>
       </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Diagnostics (SPEC §50): one button that zips logs, crash reports, memory
+// samples and the open-apps list to the Desktop, for a bug report. The plan
+// line (what the zip WOULD hold) is read on mount — cheap — so the reader
+// knows the size before pressing; the build itself can take up to a minute.
+// What it leaves OUT is stated up front because that is what decides whether
+// someone is willing to attach it to an issue.
+// WINDOW PRESETS, not a date picker. A reporter knows "a few minutes ago" or
+// "all day", never a clock time, and a wrong guess under-collects — so the
+// choices are the ones people actually say. The bulky collectors (calls
+// store, index runs, claude err logs, system log) honour the window; the
+// small join keys (session logs, crash files, outages, resources, state) are
+// always included regardless. `sinceS` is the absolute epoch the server
+// expects; "since app started" reads it off /api/health.
+type DiagnosticsWindow = "30m" | "2h" | "boot" | "24h";
+const DIAGNOSTICS_WINDOWS: { key: DiagnosticsWindow; label: string }[] = [
+  { key: "30m", label: "Last 30 minutes" },
+  { key: "2h", label: "Last 2 hours" },
+  { key: "boot", label: "Since the app started" },
+  { key: "24h", label: "Last 24 hours" },
+];
+
+function diagnosticsSince(win: DiagnosticsWindow, startedAt: number | null): number | undefined {
+  const now = Date.now() / 1000;
+  switch (win) {
+    case "30m":
+      return now - 30 * 60;
+    case "2h":
+      return now - 2 * 3600;
+    case "24h":
+      return now - 24 * 3600;
+    case "boot":
+      return startedAt ?? undefined;
+  }
+}
+
+function DiagnosticsSection() {
+  const [plan, setPlan] = useState<DiagnosticsPlan | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<DiagnosticsResult | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [win, setWin] = useState<DiagnosticsWindow>("2h");
+  // The macOS unified log is the ONE slow collector (15-45 s, a fixed scan
+  // cost per hour of window). Off here by default; the menu-bar item and
+  // the CLI keep it on, because a reporter's bundle is the one that has to
+  // carry the jetsam evidence.
+  const [systemLog, setSystemLog] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchServerHealth()
+      .then((h) => alive && setStartedAt(h.started_at))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    setPlan(null);
+    fetchDiagnosticsPlan(diagnosticsSince(win, startedAt))
+      .then((p) => alive && setPlan(p))
+      // The plan is a nicety: without it the button still works.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [win, startedAt]);
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    setCopied(false);
+    try {
+      setResult(
+        await buildDiagnostics({
+          since_s: diagnosticsSince(win, startedAt),
+          system_log: systemLog,
+        }),
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyPath = async () => {
+    if (result && (await copyToClipboard(result.path))) setCopied(true);
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Diagnostics</h2>
+      <p className="deploy-muted">
+        Logs, crash reports, memory samples and the list of open apps, zipped to your Desktop. No
+        chat transcripts, credentials or mount passwords.
+      </p>
+      <div className="prefs-radio-group" role="radiogroup" aria-label="Diagnostics window">
+        {DIAGNOSTICS_WINDOWS.map((w) => (
+          <label key={w.key} className="prefs-radio">
+            <input
+              type="radio"
+              name="diagnostics-window"
+              id={`diagnostics-window-${w.key}`}
+              checked={win === w.key}
+              disabled={busy || (w.key === "boot" && startedAt === null)}
+              onChange={() => setWin(w.key)}
+            />
+            <span>{w.label}</span>
+          </label>
+        ))}
+      </div>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          id="diagnostics-system-log"
+          checked={systemLog}
+          disabled={busy}
+          onChange={() => setSystemLog((v) => !v)}
+        />
+        <span>
+          <b>Include the macOS system log</b> — memory kills and App Nap events. Adds 15–45
+          seconds.
+        </span>
+      </label>
+      <p className="deploy-muted">
+        {plan
+          ? `${plan.files} ${plan.files === 1 ? "file" : "files"} · ${formatBytes(plan.bytes)} · ${plan.crash_reports} ${plan.crash_reports === 1 ? "crash report" : "crash reports"}`
+          : "Measuring…"}
+      </p>
+      <div className="prefs-actions">
+        <button type="button" className="btn btn-secondary" disabled={busy} onClick={save}>
+          {busy ? "Collecting…" : "Save diagnostics…"}
+        </button>
+        {busy && (
+          <span className="deploy-muted">
+            {systemLog ? "Reading the system log… 15–45 seconds" : "Collecting…"}
+          </span>
+        )}
+      </div>
+      {result && (
+        <div className="prefs-actions" style={{ marginTop: 8 }}>
+          <span className="deploy-muted">
+            Saved {formatBytes(result.bytes)} to{" "}
+            <code style={{ wordBreak: "break-all" }}>{result.path}</code>
+          </span>
+          <button type="button" className="btn btn-secondary" onClick={copyPath}>
+            {copied ? "Copied" : "Copy path"}
+          </button>
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -1628,6 +1794,7 @@ export default function Preferences() {
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
                 <MonitorSection prefs={prefs} onChange={setPrefs} />
+                <DiagnosticsSection />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

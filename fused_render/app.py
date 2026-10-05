@@ -31,7 +31,7 @@ import uvicorn
 
 from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
-from fused_render.logs import log_dir, log_path, setup_logging
+from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 from fused_render.server import (
     create_app, export_app_env, set_server_origin_env, write_server_json,
 )
@@ -369,9 +369,16 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     # And the discovery file for a process this server did NOT spawn (SPEC
     # PY-19) — a server child already has FUSED_RENDER_ORIGIN above.
     write_server_json(port, host="127.0.0.1")
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    # `log_config` routes uvicorn's own loggers (bind errors, "Exception in
+    # ASGI application", lifespan failures) to the app log instead of the
+    # default stderr handler with propagate=False — stderr is /dev/null under
+    # a Finder launch (SPEC §50, logs.uvicorn_log_config docstring).
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                            log_config=uvicorn_log_config())
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
+    # Named so a crashlog/threading.excepthook line and the D6 watchdog's
+    # "server thread died" line both say WHICH thread it was.
+    thread = threading.Thread(target=server.run, daemon=True, name="fused-server")
     thread.start()
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; the loopback bind above is not touched.
@@ -466,6 +473,23 @@ def hard_exit(code: int = 0, *, exit_process=os._exit,
 
 QUIT_SERVER_DRAIN_S = 2.0
 
+# Budget for the "children" rung below. The server's lifespan shutdown
+# handlers (engine_host.stop_all, ai supervisor.unload_all, the pty registry,
+# index_watch.stop, remove_server_json) are what kill every child the server
+# spawned — and on the packaged app they NEVER RUN: uvicorn's graceful shutdown
+# waits on open connections with no timeout, the shell's SSE/websocket
+# connections never close, so the 2s drain above always gives up and `os._exit`
+# then skips the lifespan entirely. Measured on the owner's machine
+# (2026-10-05): an engine worker 29h old and an MLX embed worker older than the
+# running app, both with ppid 1. Across an update that means OLD-version
+# workers survive into the new version's session. So the quit runs the same
+# killers itself, each on its own daemon thread, joined against this budget.
+# Each killer starts signalling at once but walks its own children in sequence
+# with confirmation waits (SIGKILL lands at 3 s), so the budget bounds how long
+# we wait for those confirmations, not whether the first signal is sent; a
+# straggler is reparented and dies on its own escalation or with the process.
+QUIT_CHILDREN_BUDGET_S = 5.0
+
 # Ceiling on the whole teardown, after which the app terminates regardless. It
 # has to exist: a wedged `umount -f` blocks in the kernel and cannot be
 # cancelled, and an app that can never be quit is worse than one that quits with
@@ -485,15 +509,113 @@ QUIT_DEADLINE_MARGIN_S = 2.0
 
 QUIT_HARD_DEADLINE_S = (
     QUIT_SERVER_DRAIN_S
+    + QUIT_CHILDREN_BUDGET_S
     + _QUIT_UNMOUNT_BUDGET_S
     + RCD_REAP_WORST_CASE_S
     + QUIT_DEADLINE_MARGIN_S
 )
 
 
+def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
+    """Kill every child process the server owns, in parallel, under `budget_s`.
+
+    The same work the server's lifespan shutdown does (server/app.py's
+    `on_shutdown` handlers), run here because the lifespan never gets to run on
+    the packaged app — see QUIT_CHILDREN_BUDGET_S. One daemon thread per
+    killer: each is sequential over its own children with multi-second
+    confirmation waits, and a wedged one must not hold the others back. Also
+    tells any live index worker to stop (it polls a `cancel` file; the runner
+    does not keep its Popen) and removes the discovery file a successor would
+    otherwise read with a dead pid in it.
+
+    Arms the spawn latches FIRST, before any killer runs: the server is still
+    answering requests while this runs (the drain above is bounded and the
+    shell's SSE connections never close), so an in-flight engine or AI route
+    could otherwise call `ensure`/`load` after the registries were emptied and
+    spawn a replacement that `os._exit` then orphans — the exact process this
+    rung exists to kill (bugbot, PR #1400)."""
+    def refuse_spawns():
+        from fused_render.ai import supervisor
+        from fused_render.server import engine_host
+
+        engine_host.refuse_new_children()
+        supervisor.refuse_new_workers()
+
+    def engines():
+        from fused_render.server import engine_host
+
+        engine_host.stop_all()
+
+    def ai_workers():
+        from fused_render.ai import supervisor
+
+        supervisor.unload_all()
+
+    def terminals():
+        from fused_render import pty_session
+
+        pty_session.REGISTRY.shutdown_all()
+
+    def index_runs():
+        from fused_render.index.config import load_config
+        from fused_render.index import runner
+        from fused_render.server import index_watch
+
+        index_watch.stop()
+        cfg = load_config()
+        for run in runner.list_runs(cfg).get("runs", []):
+            if run.get("running"):
+                runner.cancel(cfg, run["run_id"])
+
+    def discovery():
+        from fused_render.server.app import remove_server_json
+
+        remove_server_json()
+
+    try:
+        refuse_spawns()
+    except Exception:
+        logger.warning("quit: arming the spawn latches failed", exc_info=True)
+    threads = []
+    for name, step in (("engines", engines), ("ai", ai_workers),
+                       ("terminals", terminals), ("index", index_runs),
+                       ("discovery", discovery)):
+        def _run(step=step, name=name):
+            try:
+                step()
+            except Exception:
+                logger.warning("quit: stopping %s failed", name, exc_info=True)
+
+        t = threading.Thread(target=_run, daemon=True, name=f"quit-children-{name}")
+        t.start()
+        threads.append((name, t))
+    deadline = time.monotonic() + budget_s
+    for name, t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+        if t.is_alive():
+            logger.warning("quit: %s did not stop within %.1fs; leaving the rest "
+                           "to the process exit", name, budget_s)
+
+
+def _record_clean_exit() -> None:
+    """The last teardown rung (SPEC §50): one `quit` row in outages.jsonl, then
+    drop this process's crash file. `crashlog.release()` has to be called here
+    explicitly — quit ends in `os._exit`, which skips the `atexit` hook
+    `crashlog.install` registered — and a crash file left behind is exactly
+    the "did not exit cleanly" signal the diagnostics bundle reads, so a clean
+    quit that failed to release it would be reported as a crash."""
+    from fused_render import crashlog, health
+
+    try:
+        health.record_event("quit")
+    finally:
+        crashlog.release()
+
+
 def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DRAIN_S,
                   close_duckdb=None, unmount_mounts=None, stop_rcd=None,
-                  stop_captures=None) -> list[str]:
+                  stop_captures=None, stop_children=None,
+                  record_exit=None) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
 
     The order is the point, and each rung is a precondition of the next:
@@ -502,6 +624,10 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
          `drain_s`. A live /api/fs/raw read holds files open under a mount, which
          is a measured cause of a busy-mount unmount failure (see
          detach_mount/_quit_tile_daemons), so this comes before the unmounts.
+      1b. "children" — kill every child the server spawned (engines, AI
+         workers, terminal shells, the index worker). The lifespan handlers
+         that normally do this never run here (QUIT_CHILDREN_BUDGET_S), and
+         children hold files open under mounts too, so before the unmounts.
       2. "capture" — finalise every live native recording (SPEC §45). Here and
          not in an `atexit` handler because THIS FUNCTION IS THE ONLY THING THAT
          RUNS: quit ends in `os._exit` (see the DM-9 note above), which skips
@@ -515,6 +641,10 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
       4. "unmount" — detach every mount through the rc-unmount -> force-unmount
          ladder, BEFORE its NFS server is signalled.
       5. "rcd" — reap the daemon. Only now is it safe: nothing is mounted on it.
+      6. "exit-record" — record a `quit` event and release the crash file
+         (`_record_clean_exit`, SPEC §50). Last, so a teardown that wedges on
+         an earlier rung and gets cut off by the hard deadline leaves the
+         crash file in place — that quit was NOT clean.
 
     Every step is best-effort and independently guarded — a failure in one must
     not skip the ones after it (a mount store we cannot read must still let the
@@ -538,6 +668,12 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
             from fused_render import capture
 
             capture.stop_all()
+    if stop_children is None:
+        stop_children = _stop_children
+    if record_exit is None:
+        # Late-bound through the module so tests can patch the one function.
+        def record_exit():
+            _record_clean_exit()
 
     started = time.monotonic()
     if server is not None:
@@ -553,8 +689,9 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
                                    "continuing teardown", drain_s)
         except Exception:
             logger.warning("stopping the server on quit failed", exc_info=True)
-    for name, step in (("capture", stop_captures), ("duckdb", close_duckdb),
-                       ("unmount", unmount_mounts), ("rcd", stop_rcd)):
+    for name, step in (("children", stop_children), ("capture", stop_captures),
+                       ("duckdb", close_duckdb), ("unmount", unmount_mounts),
+                       ("rcd", stop_rcd), ("exit-record", record_exit)):
         steps.append(name)
         try:
             step()
@@ -638,7 +775,7 @@ def _quit_ready_event_locked(state: dict) -> threading.Event:
 
 
 def begin_quit(state: dict, *, terminate=None, start=None,
-               remove_pidfile=None, on_claim=None) -> bool:
+               remove_pidfile=None, on_claim=None, surface: str = "menu") -> bool:
     """Start THE teardown unless one is already running; True if this call
     started it.
 
@@ -677,9 +814,14 @@ def begin_quit(state: dict, *, terminate=None, start=None,
     with _quit_lock:
         ready = _quit_ready_event_locked(state)
         if state.get("quitting"):
-            logger.info("quit already in progress; joining it")
+            logger.info("quit already in progress; joining it (via %s)", surface)
             return False
         state["quitting"] = True
+    # THE press, timestamped. Until this line the log showed only how long the
+    # teardown took, never when it was asked for — so a field report of "quit
+    # took two minutes" could not be split into press-to-teardown (the restart
+    # dialog's own wait) and teardown-to-exit.
+    logger.info("quit requested via %s (pid %s)", surface, os.getpid())
     remove_pidfile()
     if on_claim is not None:
         try:
@@ -761,8 +903,8 @@ RELAUNCH_RETRY_AFTER_S = 5.0
 # The relauncher's overall deadline, COUNTED FROM ITS OWN START — which is the
 # press, not the pid's death: it is spawned by `begin_quit`'s `on_claim`, at the
 # very start of the teardown. That distinction is load-bearing. The teardown may
-# take up to QUIT_HARD_DEADLINE_S (34 s), so a deadline counted from the pid's
-# death could still be running 84 s after the press, long after the page gave up
+# take up to QUIT_HARD_DEADLINE_S (39 s), so a deadline counted from the pid's
+# death could still be running 89 s after the press, long after the page gave up
 # at RESTART_GIVE_UP_MS (60 s, frontend/src/platform/lib/restart-flow.ts) and
 # told the user the app is not running. Counted from the press it is under that
 # cap whatever the teardown does (bugbot, PR #1214).
@@ -1050,7 +1192,8 @@ def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None)
         # `on_claim` so it happens before anything can exit. The menu/popover
         # surfaces pass nothing and ignore the bool.
         return begin_quit(state, terminate=terminate, start=start,
-                          remove_pidfile=remove_pidfile, on_claim=on_claim)
+                          remove_pidfile=remove_pidfile, on_claim=on_claim,
+                          surface="relaunch" if on_claim is not None else "menu/popover")
 
     return _do_quit
 
@@ -1142,7 +1285,8 @@ def make_appkit_terminate_hook(state: dict, *, reply, start=None,
             # back: NSTerminateNow is what this branch meant before the hard exit.
             _exit()
             return NS_TERMINATE_NOW
-        begin_quit(state, start=start, remove_pidfile=remove_pidfile)
+        begin_quit(state, start=start, remove_pidfile=remove_pidfile,
+                   surface="appkit (Dock/⌘Q/logout)")
         threading.Thread(target=_exit_when_ready, args=(ready,), daemon=True,
                          name="quit-appkit-exit").start()
         return NS_TERMINATE_LATER
@@ -1179,10 +1323,78 @@ def install_terminate_hook(delegate_class, hook) -> bool:
     return True
 
 
+# D6: how often the watchdog looks at the uvicorn thread. Coarse on purpose —
+# the cost of a dead server is a menu bar that does nothing, and 3 s of that
+# is invisible next to the relaunch it triggers.
+SERVER_WATCHDOG_INTERVAL_S = 3.0
+
+
+def watch_server_thread(thread, is_quitting, on_dead, interval_s: float = SERVER_WATCHDOG_INTERVAL_S,
+                        sleep=time.sleep) -> bool:
+    """Block until `thread` dies or a quit starts (SPEC §50, D6).
+
+    The uvicorn server runs on a daemon thread inside the AppKit process
+    (`_start_server_thread`), and nothing watched it after readiness: if it
+    died — an uncaught exception escaping `server.run`, a lifespan crash — the
+    menu bar stayed up forever serving nothing, with no log line saying why.
+    This loop polls `thread.is_alive()` every `interval_s` while
+    `is_quitting()` is false; on a death it calls `on_dead()` exactly once and
+    returns True. A quit (which drains the thread on purpose) returns False
+    without calling it. `sleep` is injectable so tests run without waiting;
+    nothing here touches AppKit."""
+    while not is_quitting():
+        if not thread.is_alive():
+            # Re-check: quit_teardown joins the thread, so a quit that began
+            # between the two reads is a clean stop, not a death.
+            if is_quitting():
+                return False
+            on_dead()
+            return True
+        sleep(interval_s)
+    return False
+
+
+def _save_diagnostics_sync() -> str | None:
+    from fused_render import diagnostics
+
+    try:
+        path = diagnostics.build_bundle(reveal=True)
+    except Exception:
+        logger.exception("saving diagnostics failed")
+        return None
+    logger.info("diagnostics bundle saved to %s", path)
+    return path
+
+
+def save_diagnostics_async() -> threading.Thread:
+    """Build the diagnostics bundle (SPEC §50) off the calling thread and reveal
+    it in Finder. Off-thread because `build_bundle` shells out to `log show`
+    and can take up to a minute — every caller is a menu click on the AppKit
+    main thread. Shared by the status-item menu, the popover (menubar_pin) and
+    the Help menu (mac_window), which imports it lazily: importing this module
+    is safe anywhere since `rumps` is only imported inside `main()`."""
+    t = threading.Thread(target=_save_diagnostics_sync, daemon=True, name="save-diagnostics")
+    t.start()
+    return t
+
+
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
     setup_logging()  # first: everything after this can crash-report to the file
-    logger.info("app starting (pid %s)", os.getpid())
+    # Crash hooks (SPEC §50, D4): faulthandler on a dedicated crash file plus
+    # sys/threading excepthooks into the log. Guarded — a diagnostics aid must
+    # never be the reason the app fails to launch.
+    try:
+        from fused_render.crashlog import install as _install_crashlog
+
+        _install_crashlog("app")
+    except Exception:
+        logger.exception("crash log install failed")
+    from fused_render.health import boot_id
+
+    # The boot id joins this line to /api/health, server.json and
+    # outages.jsonl rows (health.py docstring, D1).
+    logger.info("app starting (pid %s, boot %s)", os.getpid(), boot_id())
 
     existing = find_running_server()
     if existing is not None:
@@ -1438,6 +1650,34 @@ def main() -> None:
         _write_pidfile(port)
         state["ready"] = True
         logger.info("server ready on port %s", port)
+        # D6 watchdog (SPEC §50): nothing else observes the uvicorn thread
+        # after readiness. A death outside a quit becomes a logged, recorded
+        # quit — which the relaunch/Dock path can recover from — instead of a
+        # menu bar that silently serves nothing.
+        fired = threading.Event()
+
+        def _server_died() -> None:
+            if fired.is_set():  # once, even if something re-enters
+                return
+            fired.set()
+            logger.critical("server thread died unexpectedly (pid %s); quitting so "
+                            "the app can be relaunched", os.getpid())
+            try:
+                from fused_render import health
+
+                health.record_event("server-thread-died", port=port)
+            except Exception:
+                logger.warning("could not record server-thread-died", exc_info=True)
+            # Main thread: `_do_quit` closes the native windows first.
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(_do_quit)
+
+        threading.Thread(
+            target=watch_server_thread,
+            args=(server_thread, lambda: state["quitting"], _server_died),
+            daemon=True, name="fused-server-watchdog",
+        ).start()
         # Self-update checks (update/mac.py): a background loop that only
         # flips /api/config's `update` field — the shell shows the badge and
         # drives install from there. Never on the startup critical path.
@@ -1479,7 +1719,8 @@ def main() -> None:
             # if the controller fails to construct (PV-8) — the app must never
             # be left unquittable.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = ["Open in browser", "Copy URL", "Open app logs", "Quit"]
+            self.menu = ["Open in browser", "Copy URL", "Open app logs",
+                         "Save Diagnostics…", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
@@ -1493,6 +1734,10 @@ def main() -> None:
         def open_logs(self, _sender):
             _open_logs()
 
+        @rumps.clicked("Save Diagnostics…")
+        def save_diagnostics(self, _sender):
+            save_diagnostics_async()
+
         @rumps.clicked("Quit")
         def quit(self, _sender):
             _do_quit()
@@ -1504,10 +1749,13 @@ def main() -> None:
         subprocess.run(["pbcopy"], input=url.encode(), check=False)
 
     def _open_logs():
-        # Reveal in Finder rather than opening the file: users are asked to
-        # zip/attach it, and Console.app (the .log default handler) confuses
-        # more than it helps.
-        subprocess.run(["open", "-R", log_path()], check=False)
+        # Open the log FOLDER in Finder, not `-R` on this pid's file (SPEC
+        # §50): after a crash and relaunch, the current pid's file is the new,
+        # nearly empty session. The folder shows the crashed session's log,
+        # the relaunch log, crash/, outages.jsonl and resources.jsonl side by
+        # side. Not Console.app (the .log default handler) — it confuses more
+        # than it helps.
+        subprocess.run(["open", log_dir()], check=False)
 
     def _terminate():
         # NOT rumps.quit_application() -> NSApplication.terminate: -> exit(),
@@ -1706,6 +1954,7 @@ def main() -> None:
                     "open_browser": _open_browser,
                     "copy_url": _copy_url,
                     "open_logs": _open_logs,
+                    "save_diagnostics": save_diagnostics_async,
                     "quit": _do_quit,
                     "open_window": _open_window,
                     # Present only when the launcher was built: the popover

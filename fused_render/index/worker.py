@@ -121,4 +121,16 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # Crash hooks first (SPEC §50, D4): a scan walks into duckdb and pyarrow,
+    # and a native fault there used to leave only an empty worker.log and a
+    # run the 90 s heartbeat eventually called "died". Here rather than in
+    # main(), which tests call in-process — the hooks are process-wide and
+    # belong to the spawned worker only. Guarded: a scan must never fail to
+    # start over diagnostics.
+    try:
+        from fused_render.crashlog import install as _install_crashlog
+
+        _install_crashlog("index-worker")
+    except Exception:  # noqa: BLE001
+        pass
     raise SystemExit(main())

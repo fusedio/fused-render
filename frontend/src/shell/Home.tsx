@@ -273,6 +273,13 @@ const MEDIA_GLYPHS = {
       <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
     </svg>
   ),
+  voice: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 9.5h3l4-3.5v12l-4-3.5H4z" />
+      <path d="M15 9.5a3.5 3.5 0 0 1 0 5" />
+      <path d="M17.5 7a7 7 0 0 1 0 10" />
+    </svg>
+  ),
   meaning: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="10.5" cy="10.5" r="7" />
@@ -312,6 +319,7 @@ const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
   "text-to-image": ["chat", "image"],
   "text-to-video": ["chat", "video"],
   "automatic-speech-recognition": ["speech", "chat"],
+  "text-to-speech": ["chat", "voice"],
   embeddings: ["chat", "meaning"],
   "text-classification": ["chat", "decision"],
 };
@@ -323,6 +331,7 @@ const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
   "text-to-image": "image",
   "text-to-video": "video",
   "automatic-speech-recognition": "speech",
+  "text-to-speech": "voice",
   embeddings: "meaning",
   "text-classification": "decision",
 };

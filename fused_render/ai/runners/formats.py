@@ -1594,6 +1594,7 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # card tag, so the claim settles the modality as surely as a
             # `weights.npz` does.
             "laya-mlx",
+            "mlx-audio-tts",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -1775,6 +1776,69 @@ def is_laya_snapshot(names, dirnames) -> bool:
     return LAYA_AGENT_CONFIG in names and LAYA_ENCODER_DIR in dirnames
 
 
+QWEN3_TTS_MODEL_TYPE = "qwen3_tts"
+QWEN3_TTS_TOKENIZER_DIR = "speech_tokenizer"
+SPEECH_VOICE_MODES = {"custom_voice": "preset", "base": "clone", "voice_design": "design"}
+SPEECH_OPTIONS = ("voice", "instruct", "refAudio", "refText", "language")
+_SPEECH_MODE_RULES = {
+    "preset": ("speaks with preset voices", {"voice", "instruct"}, set()),
+    "clone": ("clones a voice from a sample", {"refAudio", "refText"}, {"refAudio", "refText"}),
+    "design": ("makes a voice from a description", {"instruct"}, {"instruct"}),
+}
+
+
+def is_qwen3_tts_snapshot(config: dict, dirnames) -> bool:
+    return (config.get("model_type") == QWEN3_TTS_MODEL_TYPE
+            and QWEN3_TTS_TOKENIZER_DIR in dirnames)
+
+
+def speech_traits(config: dict) -> dict | None:
+    if config.get("model_type") != QWEN3_TTS_MODEL_TYPE:
+        return None
+    mode = SPEECH_VOICE_MODES.get(config.get("tts_model_type", "base"))
+    talker = config.get("talker_config")
+    if mode is None or not isinstance(talker, dict):
+        return None
+    return {
+        "mode": mode,
+        "voices": sorted(map(str, talker.get("spk_id") or {})),
+        "languages": sorted(str(name) for name in talker.get("codec_language_id") or {}
+                            if "dialect" not in str(name)),
+    }
+
+
+def _option_names(keys) -> str:
+    return ", ".join(f"'{key}'" for key in SPEECH_OPTIONS if key in keys)
+
+
+def speech_options(model_id: str, traits: dict, options: dict) -> dict:
+    what, allowed, required = _SPEECH_MODE_RULES[traits["mode"]]
+    resolved = {key: options[key] for key in SPEECH_OPTIONS if options.get(key)}
+    given = set(resolved) - {"language"}
+    if given - allowed:
+        raise ValueError(f"{model_id} {what}; it takes {_option_names(allowed)}, "
+                         f"not {_option_names(given - allowed)}")
+    if required - given:
+        raise ValueError(f"{model_id} {what}; it needs {_option_names(required - given)}")
+    voices = traits.get("voices") or []
+    if traits["mode"] == "preset" and voices:
+        wanted = str(resolved.get("voice", voices[0]))
+        match = next((v for v in voices if v.lower() == wanted.lower()), None)
+        if match is None:
+            raise ValueError(f"{model_id} has no voice {wanted!r}; it has {', '.join(voices)}")
+        resolved["voice"] = match
+    language = str(resolved.get("language", "auto")).lower()
+    languages = traits.get("languages") or []
+    if language != "auto" and languages:
+        match = next((name for name in languages if name.lower() == language), None)
+        if match is None:
+            raise ValueError(f"{model_id} has no language {language!r}; "
+                             f"use 'auto' or {', '.join(languages)}")
+        language = match
+    resolved["language"] = language
+    return resolved
+
+
 def has_ltx_split_layout(names) -> bool:
     """Is this an mlx-forge split conversion of LTX-2.3 — `ltx_video`'s own
     curated layout? `names` is the snapshot's TOP-LEVEL FILES (`loaders`'s
@@ -1929,6 +1993,9 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # `config` requirement there — Laya keeps its encoder config under
         # `encoder/`, not at the root — but the return states the intent
         # rather than leaning on that accident.)
+        return tuple(found)
+    if is_qwen3_tts_snapshot(config, dirnames):
+        found.append("mlx-audio-tts")
         return tuple(found)
     if has_ltx_split_layout(names):
         found.append("ltx-video")

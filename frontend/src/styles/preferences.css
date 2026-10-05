@@ -1712,3 +1712,12 @@
     align-items: flex-start;
   }
 }
+
+/* Diagnostics window presets (SPEC §50): four radios on one wrapping row,
+   each the same .prefs-radio as the section's checkbox below them. */
+.prefs-radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 8px 0;
+}

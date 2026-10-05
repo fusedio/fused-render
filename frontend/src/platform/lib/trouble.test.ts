@@ -248,7 +248,7 @@ test("the brief separates the installation from the user's own data", () => {
   });
   expect(text).toContain("~/.fused-render");
   expect(text).toContain("a reinstall does not touch it");
-  // The app's own log, which is per-pid in the temp dir and therefore a glob.
+  // The app's own log, which is per-pid in the log home and therefore a glob.
   expect(text).toContain("fused-render-*.log");
 });
 

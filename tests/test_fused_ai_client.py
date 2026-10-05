@@ -470,6 +470,32 @@ def test_image_wait_true_returns_reply_on_done(monkeypatch):
     assert "jobId" not in result and "path" not in result
 
 
+def test_speech_wait_true_returns_the_frame_on_done(monkeypatch):
+    sent = []
+    reply = {"jobId": "sys:ai-speech:1", "path": "/tmp/x.wav", "text": "hi",
+             "language": "auto", "refAudio": "/tmp/me.wav", "refText": "hello"}
+    monkeypatch.setattr(fused_ai, "_post_json",
+                        lambda p, b, timeout=None: (sent.append((p, b)), reply)[1])
+    monkeypatch.setattr(
+        fused_ai, "_wait_job",
+        lambda job_id, on_progress=None, timeout=None: {"state": "done"})
+    result = fused_ai.speech("hi", model="org/clone", ref_audio="me.wav", ref_text="hello")
+    path, body = sent[0]
+    assert path == "/api/ai/speech"
+    assert body["refAudio"] == os.path.abspath("me.wav") and body["refText"] == "hello"
+    assert "voice" not in body and "language" not in body
+    assert result["audio"] == [{"path": "/tmp/x.wav", "mediaType": "audio/wav"}]
+    assert result["response"]["id"] == "sys:ai-speech:1"
+    assert result["usage"] == {"audioGenerated": 1}
+    assert result["providerMetadata"]["local"]["refText"] == "hello"
+
+
+def test_speech_wait_false_returns_the_started_reply(monkeypatch):
+    reply = {"jobId": "sys:ai-speech:2", "path": "/tmp/y.wav"}
+    monkeypatch.setattr(fused_ai, "_post_json", lambda p, b, timeout=None: reply)
+    assert fused_ai.speech("hi", voice="ryan", wait=False) == reply
+
+
 def test_models_load_waits_by_default(monkeypatch):
     reply = {"jobId": "sys:ai-load:m", "model": "org/name", "state": "loading"}
     monkeypatch.setattr(fused_ai, "_post_json", lambda p, b, timeout=None: reply)
@@ -553,6 +579,22 @@ def test_the_clients_decide_wire_keys_match_the_servers_constant():
     assert fused_ai._DECIDE_WIRE_KEYS == ai_runtime._DECIDE_OPTIONS
 
 
+def test_the_clients_speech_wire_keys_match_the_servers_constant():
+    from fused_render.server.routers import ai_runtime
+    assert fused_ai._SPEECH_WIRE_KEYS == ai_runtime._SPEECH_OPTIONS
+
+
+def test_the_bridge_and_the_client_forward_the_same_speech_options():
+    import pathlib
+
+    runtime = (pathlib.Path(fused_ai.__file__).parents[2]
+               / "static" / "runtime.js").read_text(encoding="utf-8")
+    speech = runtime[runtime.index("function aiSpeech(opts)"):]
+    speech = speech[:speech.index("/api/ai/speech")]
+    for option in sorted(fused_ai._SPEECH_WIRE_KEYS):
+        assert f'"{option}"' in speech, option
+
+
 def test_the_bridge_and_the_client_forward_the_same_decide_options():
     """`runtime.js`'s `decideKeys` is the bridge's copy of the same surface;
     read as text, like the embed pin below."""
@@ -613,6 +655,7 @@ def test_the_ai_object_mirrors_the_js_surface():
     assert callable(fused_ai.ai.stream)
     assert callable(fused_ai.ai.transcribe)
     assert callable(fused_ai.ai.image)
+    assert callable(fused_ai.ai.speech)
     assert callable(fused_ai.ai.embed)
     assert callable(fused_ai.ai.decide)
     assert callable(fused_ai.ai.cancel)

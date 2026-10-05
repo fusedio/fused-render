@@ -76,6 +76,12 @@ const CAPABILITY_META: Record<string, CapabilityMeta> = {
     searchNoun: "transcription models",
     icon: capabilityIcon("automatic-speech-recognition"),
   },
+  "text-to-speech": {
+    plain: capabilityLabel("text-to-speech"),
+    blurb: "Type text and hear it read aloud. Use a preset voice, copy a voice from a short clip, or describe a new one.",
+    searchNoun: "speech models",
+    icon: capabilityIcon("text-to-speech"),
+  },
   embeddings: {
     plain: capabilityLabel("embeddings"),
     blurb: "Find things by meaning rather than by exact words — across notes, documents or photos.",

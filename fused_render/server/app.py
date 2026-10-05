@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import calls as shell_calls
+from fused_render import health
 from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
@@ -54,6 +55,7 @@ from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.capture import router as capture_router
 from fused_render.server.routers.terminal import router as terminal_router
 from fused_render.server.routers.config import router as config_router
+from fused_render.server.routers.health import router as health_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
@@ -219,6 +221,10 @@ def write_server_json(port: int, host: str = "127.0.0.1") -> None:
             "shared": shared,
             "version": fused_render.__version__,
             "started": time.time(),
+            # Same id `/api/health` returns and the app log's boot line
+            # carries, so an outside reader can tell this server.json from a
+            # stale one a crashed predecessor left behind (SPEC §50).
+            "boot_id": health.boot_id(),
         }
         # Write-then-rename so a reader never observes a half-written file —
         # `resolve_origin()` may be polling this path from another process at
@@ -625,6 +631,24 @@ def create_app(start_dir: str) -> FastAPI:
     async def _shutdown_server_json():
         remove_server_json()
 
+    # Resource trail (health.py, SPEC §50): one RSS/swap/load line per INTERVAL_S
+    # into resources.jsonl, so a diagnostics bundle shows what memory looked
+    # like in the hours before an outage. Its own daemon thread; a failure to
+    # start is a missing diagnostic, never a reason to refuse to serve.
+    @on_startup
+    async def _startup_resource_trail():
+        try:
+            health.start_resource_trail()
+        except Exception:  # noqa: BLE001 - never block startup on diagnostics
+            logger.exception("could not start the resource trail")
+
+    @on_shutdown
+    async def _shutdown_resource_trail():
+        try:
+            health.stop_resource_trail()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not stop the resource trail")
+
     @on_shutdown
     async def _shutdown_captures():
         from fused_render import capture
@@ -757,6 +781,10 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # Liveness probe, outage beacon and diagnostics bundle (routers/health.py,
+    # SPEC §50). Its own async router, not a field on /api/config: the probe
+    # must not queue behind the sync threadpool /api/config lives on.
+    app.include_router(health_router)
     # Native screen / microphone / still capture (routers/capture.py, SPEC §45):
     # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
     # than by the routes being absent — a page must be able to ask.

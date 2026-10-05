@@ -461,9 +461,10 @@ describe("capabilityLabel", () => {
     expect(capabilityLabel("automatic-speech-recognition")).toBe("Speech to text");
   });
 
-  it("names the sixth capability too", () => {
+  it("names the seventh capability too", () => {
     expect(capabilityLabel("text-to-video")).toBe("Video generation");
     expect(capabilityLabel("text-classification")).toBe("Decisions");
+    expect(capabilityLabel("text-to-speech")).toBe("Text to speech");
   });
 
   it("renders an unknown capability as ITSELF rather than hiding it", () => {

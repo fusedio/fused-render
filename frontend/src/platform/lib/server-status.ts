@@ -22,21 +22,57 @@ import { restartInFlight, type RestartStage } from "@platform/lib/restart-flow";
 
 export type ServerBanner =
   | "hidden"
+  | "slow"
   | "down"
   | "reconnected"
   | "update-refresh"
   | "update-restart";
 
+/** WHY a probe failed (SPEC §50, D1). Before this every failure collapsed to
+ *  `{ok: false}`, so "the server is gone" and "the server is alive but its
+ *  event loop is wedged for 4 s" read the same — and they want different
+ *  cards and different fixes:
+ *    timeout    — the request went out and nothing came back inside the
+ *                 probe's abort window (a busy or blocked server).
+ *    refused    — the fetch itself failed: nothing listening, or a network
+ *                 error before any response.
+ *    http-5xx   — the server answered, and said it was broken.
+ *    http-other — any other non-2xx (a proxy, a 404 from an older server).
+ *    parse      — a 2xx whose body was not the JSON the probe expects. */
+export type ProbeFailKind = "timeout" | "refused" | "http-5xx" | "http-other" | "parse";
+
 export interface StatusState {
   banner: ServerBanner;
+  /** Consecutive failed probes in the current streak. */
   fails: number;
   /** Last served version a healthy probe reported; undefined before one. */
   served?: string;
+  /** Last healthy probe's server boot id (/api/health `boot_id`). A change
+   *  between two healthy probes is a restart this tab never saw fail — the
+   *  only way a sub-5 s same-version restart is noticed at all. */
+  bootId?: string;
+  /** When (ms epoch) the last healthy probe landed — the lower bound of a
+   *  restart that no probe saw fail. */
+  lastOkAt?: number;
+  /** When (ms epoch) the current failure streak began; undefined when healthy. */
+  firstFailAt?: number;
+  /** The kinds of the current failure streak, oldest first. */
+  failKinds: ProbeFailKind[];
+  /** The last ≤ LATENCY_RING healthy probe latencies (ms), oldest first — sent
+   *  with an outage record so a slow-then-dead server shows its slope. */
+  latencies: number[];
 }
 
 export interface ProbeResult {
   ok: boolean;
-  /** Running server's version, from /api/config. */
+  /** Set on a failed probe — see `ProbeFailKind`. */
+  kind?: ProbeFailKind;
+  /** The answering server's boot id (/api/health). */
+  bootId?: string;
+  /** Wall time of the probe request, ms. */
+  latencyMs?: number;
+  /** Running server's version, from /api/config — fetched far less often
+   *  than the /api/health probe and merged in by the component. */
   version?: string;
   /** Version installed on disk (bundle Info.plist); null when unpackaged. */
   installedVersion?: string | null;
@@ -44,7 +80,29 @@ export interface ProbeResult {
   dev?: boolean;
 }
 
-export const FAIL_THRESHOLD = 2;
+/** One outage as this tab saw it — the body of POST /api/health/outage, less
+ *  the fields only the component knows (`visible`, `page`, `latencies_ms`).
+ *  Times are epoch SECONDS, the server's own unit (fused_render/health.py). */
+export interface OutageRecord {
+  t_down: number;
+  /** Null on the partial record a tab sends while going away mid-outage. */
+  t_up: number | null;
+  strikes: number;
+  kinds: ProbeFailKind[];
+  boot_id_before: string | null;
+  boot_id_after: string | null;
+  recovered: boolean;
+}
+
+/** Three, not two: two 4 s timeouts in a row are a busy server more often
+ *  than a dead one, and the first misses now draw the quieter "slow" line
+ *  rather than the "isn't running" card. */
+export const FAIL_THRESHOLD = 3;
+
+/** How many healthy latencies the state keeps. */
+export const LATENCY_RING = 50;
+
+const toSec = (ms: number) => Math.round(ms) / 1000;
 
 /** The URL param and the localStorage key that turn the refresh dialog into a
  *  PREVIEW in dev — how the dialog itself is looked at (see
@@ -130,31 +188,111 @@ export function updateDialogPreview(
 }
 
 export function initialStatus(): StatusState {
-  return { banner: "hidden", fails: 0 };
+  return { banner: "hidden", fails: 0, failKinds: [], latencies: [] };
+}
+
+/** The partial record a tab sends when it goes away mid-outage (`pagehide`):
+ *  no `t_up`, not recovered. Null when nothing is failing. */
+export function pendingOutage(state: StatusState): OutageRecord | null {
+  if (state.fails < 1 || state.firstFailAt === undefined) return null;
+  return {
+    t_down: toSec(state.firstFailAt),
+    t_up: null,
+    strikes: state.fails,
+    kinds: state.failKinds,
+    boot_id_before: state.bootId ?? null,
+    boot_id_after: null,
+    recovered: false,
+  };
 }
 
 export function reduceProbe(
   state: StatusState,
   probe: ProbeResult,
   buildVersion: string,
-): { state: StatusState; reload: boolean } {
+  now: number = Date.now(),
+): { state: StatusState; reload: boolean; outage?: OutageRecord } {
   if (!probe.ok) {
+    const kind: ProbeFailKind = probe.kind ?? "refused";
     const fails = state.fails + 1;
-    const banner = fails >= FAIL_THRESHOLD ? "down" : state.banner;
-    return { state: { banner, fails, served: state.served }, reload: false };
+    // A timeout below the threshold is "slow", not "down": the request went
+    // out and the server has not answered YET. Any other kind below the
+    // threshold leaves the banner where it was — one refused probe is as
+    // often a waking laptop's network as a dead server. "slow" only ever
+    // replaces a banner that says nothing (hidden) or a transient one
+    // (reconnected, or slow itself): the update dialogs are statements
+    // about a version mismatch that a busy probe does not change, and a
+    // blocking refresh dialog must not blink out for one poll (bugbot,
+    // PR #1399).
+    const quiet = state.banner === "hidden" || state.banner === "slow" || state.banner === "reconnected";
+    const banner: ServerBanner =
+      fails >= FAIL_THRESHOLD ? "down" : kind === "timeout" && quiet ? "slow" : state.banner;
+    return {
+      state: {
+        ...state,
+        banner,
+        fails,
+        firstFailAt: state.firstFailAt ?? now,
+        failKinds: [...state.failKinds, kind],
+      },
+      reload: false,
+    };
   }
 
   const wasDown = state.banner === "down";
   const served = probe.version;
   const installed = probe.installedVersion ?? null;
-  const next = (banner: ServerBanner) => ({
+  const latencies =
+    probe.latencyMs !== undefined
+      ? [...state.latencies, probe.latencyMs].slice(-LATENCY_RING)
+      : state.latencies;
+  // A boot id moving between two healthy probes is a restart no probe saw
+  // fail (faster than one poll, or the tab was hidden through it).
+  const bootChanged =
+    state.bootId !== undefined && probe.bootId !== undefined && probe.bootId !== state.bootId;
+
+  // THE OUTAGE RECORD. Even a single missed probe is one row: the server
+  // dedups nothing and a row is cheap, while a missing row is exactly the
+  // blind spot this exists to close. A boot-id change with no failed probe at
+  // all is a row too (strikes 0), bounded below by the last healthy probe.
+  let outage: OutageRecord | undefined;
+  if (state.fails >= 1) {
+    outage = {
+      t_down: toSec(state.firstFailAt ?? now),
+      t_up: toSec(now),
+      strikes: state.fails,
+      kinds: state.failKinds,
+      boot_id_before: state.bootId ?? null,
+      boot_id_after: probe.bootId ?? null,
+      recovered: true,
+    };
+  } else if (bootChanged) {
+    outage = {
+      t_down: toSec(state.lastOkAt ?? now),
+      t_up: toSec(now),
+      strikes: 0,
+      kinds: [],
+      boot_id_before: state.bootId ?? null,
+      boot_id_after: probe.bootId ?? null,
+      recovered: true,
+    };
+  }
+
+  const next = (banner: ServerBanner): StatusState => ({
     banner,
     fails: 0,
     served: served ?? state.served,
+    bootId: probe.bootId ?? state.bootId,
+    lastOkAt: now,
+    firstFailAt: undefined,
+    failKinds: [],
+    latencies,
   });
+  const done = (banner: ServerBanner, reload = false) =>
+    outage ? { state: next(banner), reload, outage } : { state: next(banner), reload };
 
   if (served && installed && installed !== served) {
-    return { state: next("update-restart"), reload: false };
+    return done("update-restart");
   }
   if (served && served !== buildVersion) {
     // A version can only change under a process swap, so seeing it move —
@@ -163,15 +301,18 @@ export function reduceProbe(
     // hidden) — means the server restarted updated. The user asked for that
     // (or was blocked by it), so reload without asking; views are URL-synced.
     const transitioned = wasDown || (state.served !== undefined && state.served !== served);
-    if (transitioned) return { state: next("reconnected"), reload: true };
-    return { state: next("update-refresh"), reload: false };
+    if (transitioned) return done("reconnected", true);
+    return done("update-refresh");
   }
-  if (wasDown) return { state: next("reconnected"), reload: false };
+  // A same-version restart (the boot id moved, the version did not) gets the
+  // reconnected line too, so the reader learns the app restarted under them
+  // even when no probe failed long enough to say so.
+  if (wasDown || bootChanged) return done("reconnected");
   // "reconnected" is dismissed by the component's timer, but never held past
   // the next probe: an in-flight probe can write a stale "reconnected" back
   // AFTER the timer fired, with no new timer armed (wasDown is false) — held
-  // here, that card would stick until the next outage.
-  return { state: next("hidden"), reload: false };
+  // here, that card would stick until the next outage. "slow" clears here too.
+  return done("hidden");
 }
 
 // ---- what the banner actually PUTS ON SCREEN ------------------------------
@@ -183,7 +324,7 @@ export function reduceProbe(
 // says the app is coming back is the exact contradiction this flow exists to
 // remove. Pure, so the agreement is a test rather than a reading of JSX.
 
-export type BannerSurface = "none" | "down" | "reconnected" | "refresh-dialog";
+export type BannerSurface = "none" | "slow" | "down" | "reconnected" | "refresh-dialog";
 
 export interface SurfaceInput {
   banner: ServerBanner;
@@ -254,6 +395,9 @@ export function bannerSurface({ banner, mode, updateState, stage }: SurfaceInput
   // the pre-request "ready to restart, haven't pressed it yet" wait.
   if (restartInFlight(stage) || diskAheadOfHealthyServer) return "none";
   if (banner === "hidden") return "none";
+  // "slow" sits behind the same restart-in-flight door as "down" above: a
+  // restart's first missed probe is the restart working, not a slow server.
+  if (banner === "slow") return "slow";
   if (banner === "reconnected") return "reconnected";
   if (banner === "update-refresh") return mode === "off" ? "none" : "refresh-dialog";
   return "down";

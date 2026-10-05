@@ -55,6 +55,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
+from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
 from fused_render.ai import hub_catalog_builder
@@ -136,6 +137,7 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
 VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
+SPEECH_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-speech:"
 #: And one row per GENERATION, same reasoning as `IMAGE_JOB_PREFIX`: two
 #: completions from the same resident model are two pieces of work with two
 #: answers, and a shared id would have the second overwrite the first's row
@@ -883,6 +885,25 @@ def _download_failure_text(stderr: str) -> str:
     return stderr.strip()
 
 
+#: Armed by the app's quit (app.py `_stop_children`) BEFORE `unload_all` runs.
+#: The quit kills workers while the server is still answering requests, so an
+#: in-flight AI route can `load` after `unload_all` emptied `_workers` and spawn
+#: a replacement that `os._exit` then orphans — holding gigabytes, with nothing
+#: left tracking it. Once armed, no worker or weights fetch is spawned again in
+#: this process. Not set by `unload_all` itself: tests unload and load again.
+_stopping = threading.Event()
+
+
+def refuse_new_workers() -> None:
+    """Quit path: no worker or fetch may be started from here on."""
+    _stopping.set()
+
+
+def _refuse_if_quitting() -> None:
+    if _stopping.is_set():
+        raise SupervisorError("fused-render is quitting; not starting a worker")
+
+
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     """Start worker.py and wait for it to publish its port.
 
@@ -891,6 +912,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     race, since anything this process reserves can be taken between the bind and
     the exec.
     """
+    _refuse_if_quitting()
     status = _status_path(worker)
     try:
         os.unlink(status)
@@ -1098,6 +1120,10 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
     """
     from fused_render import envinstall, projectenv
 
+    # Before the install, not only before the spawn: `envinstall` launches a
+    # DETACHED `uv sync` worker that setsid()s itself, lives in no registry the
+    # quit empties, and would keep pulling gigabytes after `os._exit`.
+    _refuse_if_quitting()
     if envinstall.is_installed(runner.folder):
         return envinstall.venv_python_for(runner.folder)
 
@@ -1373,6 +1399,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
         argv = [python, runner.worker, "--model", model, "--job", job, "--download-only"]
         if file:
             argv += ["--file", file]
+        _refuse_if_quitting()
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
@@ -1627,7 +1654,7 @@ def image_job_id(uid: str) -> str:
 
 def _start_render(capability: str, model: str, request: dict, job: str,
                    generate, *, noun: str, thread_name: str, page: str = "",
-                   source: str = "") -> None:
+                   source: str = "", title: str | None = None) -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
@@ -1669,7 +1696,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     _runner_or_raise(capability)
     _require_build_tools()
 
-    title = str(request.get("prompt") or model).strip() or model
+    title = str(title or request.get("prompt") or model).strip() or model
     # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
     # JobRow draws after the title — never folded into `title` (that's the
     # prompt) or `detail` (that's the worker's progress ticks, which would
@@ -2550,12 +2577,35 @@ def _drop_gone(worker: Worker) -> None:
     Shared by `refresh_memory()` (the sidebar's poll, which decides with
     `_alive`) and `ready_worker()` (every generation request, which decides
     with the stricter `_exited`) so the two agree on what "gone" leaves behind.
+
+    The row also says HOW it went (SPEC §50, D5): "the model process is gone:
+    killed by SIGKILL: …" rather than the bare phrase, which is what turns a
+    memory kill and a native crash into two different bug reports. The bare
+    phrase stays the prefix — and the whole message when there is no real exit
+    code to read (no Popen attached, as in every test fixture and an adopted
+    process) — because callers and tests match on it. The death is logged once,
+    with the tail of the worker's stderr, by whichever caller actually removes
+    the slot; nothing on this path runs `_cleanup_files`, so that log is still
+    on disk to be read.
     """
     worker.state = "error"
     worker.error = "the model process is gone"
+    code = None
+    if worker.proc is not None:
+        try:
+            polled = worker.proc.poll()
+        except OSError:
+            polled = None
+        if isinstance(polled, int) and not isinstance(polled, bool):
+            code = polled
     with _lock:
-        if _workers.get(worker.capability) is worker:
+        owned = _workers.get(worker.capability) is worker
+        if owned:
             del _workers[worker.capability]
+    if code is not None:
+        desc = (report_child_exit("ai-worker", worker.pid, code, _log_path(worker))
+                if owned else describe_exit(code))
+        worker.error = f"the model process is gone: {desc}"
 
 
 def _exited(worker: Worker) -> bool:
@@ -2865,6 +2915,16 @@ def _wait_ready(model: str, capability: str, job: str,
         _report(job, **final)
 
 
+def speech_job_id(uid: str) -> str:
+    return SPEECH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
+    _start_render(registry.TEXT_TO_SPEECH, model, request, job, generate_speech,
+                  noun="speech clip", thread_name="ai-speech", page=page, source=source,
+                  title=request.get("text"))
+
+
 def video_job_id(uid: str) -> str:
     """The download-manager row for one render. See `image_job_id`."""
     return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
@@ -2935,6 +2995,11 @@ def generate_video(model: str, request: dict, job: str) -> dict:
     """
     return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
+
+
+def generate_speech(model: str, request: dict, job: str) -> dict:
+    return _generate_via_worker(registry.TEXT_TO_SPEECH, model, request, job,
+                                timeout=GENERATE_TIMEOUT_S, noun="speech")
 
 
 def _await_turn(job: str, title: str, model: str = "", page: str = "") -> None:

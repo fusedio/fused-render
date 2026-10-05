@@ -121,7 +121,7 @@ describe("rendering + copy blocks", () => {
     expect(brief).toContain("Sign in: run `claude`, then `/login`");
     expect(brief).toContain("Where to look on this machine:");
     expect(brief).toContain("~/.fused-render");
-    expect(brief).toContain('ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3');
+    expect(brief).toContain("find ~/Library/Logs/fused-render ~/.fused-render/logs/app -name 'fused-render-*.log' 2>/dev/null | xargs ls -t 2>/dev/null | head -3");
   });
 
   test("the detail (a traceback) is what gets copied when there is one", () => {

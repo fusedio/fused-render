@@ -30,6 +30,22 @@ BASE_PATH = os.path.join(
 )
 
 
+def test_worker_base_imports_without_the_app_package(tmp_path):
+    import subprocess
+
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "import worker_base; "
+        "assert 'fused_render' not in sys.modules; "
+        "assert worker_base.JOB_ERROR_MARKER == '\\x00fused-render-job-error\\x00'"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", code, os.path.dirname(BASE_PATH)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _fresh_base():
     """A fresh import of worker_base.
 
