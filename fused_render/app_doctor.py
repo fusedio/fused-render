@@ -258,7 +258,35 @@ def _generated_paths(app_dir: str) -> list[str]:
         return True
 
     recurse(app_dir, "")
-    return out
+    return _drop_gitignored(app_dir, out)
+
+
+def _drop_gitignored(app_dir: str, paths: list[str]) -> list[str]:
+    """`paths` minus what git ignores — the row's own advice offers
+    "gitignore them" as a fix, so an ignored cache is not a finding. One
+    batched `git check-ignore` from the repo toplevel (server/gitignore.py is
+    the authority: nested/ancestor `.gitignore`, `.git/info/exclude`, the
+    global excludesfile). Outside a repo, on a mount, or when git cannot
+    answer, nothing is dropped — the behaviour before this existed."""
+    if not paths:
+        return paths
+    from fused_render.server.gitignore import _git_ignored, _repo_toplevel
+    from fused_render.shell import mounts as shell_mounts
+
+    try:
+        if shell_mounts.is_mount_backed(app_dir):
+            return paths
+        top = _repo_toplevel(app_dir)
+        if top is None:
+            return paths
+        rel = os.path.relpath(os.path.realpath(app_dir), os.path.realpath(top))
+    except (OSError, ValueError):
+        return paths
+    if rel.startswith(".."):
+        return paths
+    prefix = "" if rel == "." else rel.replace(os.sep, "/") + "/"
+    ignored = _git_ignored(top, [prefix + p for p in paths])
+    return [p for p in paths if prefix + p not in ignored]
 
 
 # ------------------------------------------------------------------ git state

@@ -291,6 +291,33 @@ def test_generated_state_outside_dot_fused_is_a_finding_and_inside_it_is_not(wor
     assert found == {"__pycache__/", "notes.log"}
 
 
+def _git_init(d):
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+
+
+def test_generated_row_honors_gitignore_inside_a_repo(workspace):
+    """The row's advice says "...or gitignore them" — a path git ignores
+    (root .gitignore, info/exclude, a nested .gitignore) must not count,
+    while an un-ignored sibling still fails."""
+    d = _app(workspace)
+    _git_init(d)
+    (d / ".gitignore").write_text("__pycache__/\n")
+    (d / ".git" / "info" / "exclude").write_text("*.db\n")
+    (d / "__pycache__").mkdir()
+    (d / "__pycache__" / "a.pyc").write_bytes(b"\x00")
+    (d / "x.db").write_bytes(b"\x00")
+    (d / "sub").mkdir()
+    (d / "sub" / ".gitignore").write_text("*.log\n")
+    (d / "sub" / "run.log").write_text("1\n")
+    row = _rows(app_doctor.report(str(d)))["generated"]
+    assert row["state"] == "pass"
+    # un-ignored still fails
+    (d / "notes.log").write_text("1\n")
+    row = _rows(app_doctor.report(str(d)))["generated"]
+    assert row["state"] == "fail"
+    assert {f["path"] for f in row["findings"]} == {"notes.log"}
+
+
 def test_missing_readme_and_thumbnail_each_fail_their_own_row(workspace):
     d = _app(workspace, readme=False, preview=False)
     rows = _rows(app_doctor.report(str(d)))
