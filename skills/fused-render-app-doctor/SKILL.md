@@ -46,7 +46,7 @@ Real: live-looking key shape, long random string, or a PEM block, in a file the 
 
 ## `pyproject` — pyproject.toml is valid TOML
 
-**fact** — required. Fail means either no `pyproject.toml` at all, or one that exists and won't parse.
+**fact** — Fail means either no `pyproject.toml` in an app that has Python (severity **info**, not a warning), or one that exists and won't parse (a **warning**). An app with no `.py` file at all is skipped — nothing to declare.
 
 **Fix, missing file.** A folder's dependency list is **all-or-nothing** — the bundled set (`numpy`, `pandas`, `pyarrow`, `duckdb`, `openpyxl`, `msgpack`, `pillow`, `python-pptx`, `fpdf2`, `requests`, `httpx`, `drain3`) is **NOT** unioned in. An **empty** `dependencies` list is safe — the folder stays on the app interpreter with the full bundled set. The hazard is a **non-empty but incomplete** list: an app importing `pandas` with no `pyproject.toml` runs fine on the bundled interpreter; add one that declares some other package but omits `pandas` and it stops running. A partial stub is a regression, not a fix.
 
@@ -58,7 +58,7 @@ Shape: `[project]` with `name`, `version`, `requires-python`, `dependencies`, pl
 
 ## `readme` — has a README explaining the app
 
-**fact** — a `README` or `README.*` at the app root.
+**fact**, severity **info** — a `README` or `README.*` at the app root.
 
 **Fix.** Write one. A sentence or two on what the app does, for whoever receives the folder.
 
@@ -101,7 +101,7 @@ Real: a line the skill's trap table names, in a view this app ships, with no fal
 
 ## `git` — repo in sync
 
-**fact** — one consolidated row covering three things: every change committed (`git status --porcelain`, scoped to the app folder), every commit pushed (`git rev-list --count @{upstream}..HEAD` — no network call, so as stale as the last fetch), and not behind origin (a real background `git fetch`, dispatched when App Doctor opens and read from cache here — never run inline, so it can be unresolved). The row's `detail` names whichever of the three apply; its findings mix uncommitted paths and unpushed commit subjects. Skip means no readable git repo, no git, no upstream configured, or the remote check hasn't resolved (offline, unreachable, or just not checked yet) — none of those are a defect in the app.
+**fact** — one consolidated row covering three things (with auto-sync on and the repo on its default branch, unpushed commits and behind-origin pass — they sync automatically — and a standing auto-sync failure fails the row instead; uncommitted paths always fail): every change committed (`git status --porcelain`, scoped to the app folder), every commit pushed (`git rev-list --count @{upstream}..HEAD` — no network call, so as stale as the last fetch), and not behind origin (a real background `git fetch`, dispatched when App Doctor opens and read from cache here — never run inline, so it can be unresolved). The row's `detail` names whichever of the three apply; its findings mix uncommitted paths and unpushed commit subjects. Skip means no readable git repo, no git, no upstream configured, or the remote check hasn't resolved (offline, unreachable, or just not checked yet) — none of those are a defect in the app.
 
 **Fix.** Handle whichever the row names:
 - **Uncommitted paths** — commit them, or `.gitignore` them if they shouldn't be tracked — and commit that `.gitignore` edit too, or it is itself an uncommitted change and this row fails again.
@@ -114,7 +114,7 @@ So what you share is what you tested, matches what you pushed, and matches what 
 
 **fact** — a bounded walk found `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/` (reported as the directory), or stray `.pyc`/`.pyo`/`.log`/`.db`/`.sqlite`/`.sqlite3` outside `.fused/`.
 
-**Fix.** Delete them, move them under `.fused/` (where an app's machine-local state belongs), or `.gitignore` what will just regenerate.
+**Fix.** Delete them, move them under `.fused/` (where an app's machine-local state belongs), or `.gitignore` what will just regenerate. Paths git already ignores (any `.gitignore`, `.git/info/exclude`) are not reported.
 
 ## `preview` — has a preview.png thumbnail
 
@@ -131,7 +131,7 @@ No row above judges whether a real `fused.*` call is correct. Read what the app 
 | `fused.ai` (text/image/video/transcribe/embed), model or provider choice | `fused-render-ai` |
 | `fused.runPython`, `fused.params`, general `.html`/`.py` view authoring | `fused-render-authoring` |
 | `fused.trackJob`/`fused.watchJob`, or a `runPython` risking the 60s timeout | `fused-render-jobs` |
-| `fused.fileIndex` | `fused-render-index` (full fused-render only — on Render App the call is itself the finding: it throws `is not supported on Render App`; `fused-render-authoring`, Render App paragraph) |
+| `fused.fileIndex` | `fused-render-index` |
 | `fused.capture` | `fused-render-capture` |
 | `fused.daemon`, `[tool.fused-render.app]` (Python alive after the page closes) | `fused-render-background-apps` |
 | stale or missing `fused-api-version` | `fused-render-api-migration` |
@@ -149,7 +149,7 @@ Asked to set up CI: write the files yourself, don't tell the user to copy them.
 3. Copy `ci/app_check.py` verbatim to `<repo root>/.github/app_check.py`.
 4. Report both paths, that it runs on push to `main` and on every PR, and that both files still need committing.
 
-That workflow is a floor, not a substitute for this review. It runs `app_check.py` (stdlib-only, nothing to install) per app folder and exits 1 only on a **fact** finding of severity **critical** or **warning**. It prints without failing: every **candidate** (all 40 in the measurement above were false positives, so one must never block a push) and a **suggested** fact — a missing README or `preview.png`, real but cosmetic. `suggested` exists only for this exit-code decision; the checklist itself has no such tier. Gating on `kind == "fact"` alone would fail a build over a thumbnail while a leaked-credential candidate exited 0.
+That workflow is a floor, not a substitute for this review. It runs `app_check.py` (stdlib-only, nothing to install) per app folder and exits 1 only on a **fact** finding of severity **critical** or **warning**. It prints without failing: every **candidate** (all 40 in the measurement above were false positives, so one must never block a push) and a **suggested** fact — a missing README or `preview.png`, real but cosmetic. `suggested` exists only for this exit-code decision; the checklist's quiet tier is `info` (a failing info row never turns the app not-ok or the header dot yellow). Gating on `kind == "fact"` alone would fail a build over a thumbnail while a leaked-credential candidate exited 0.
 
 The floor is deliberately a subset — no `entry`/`api-version`/`git`/`generated`, which need the runtime's own knowledge or a live repo a fresh checkout may not have, and no `cross-browser`, which needs a model.
 

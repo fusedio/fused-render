@@ -98,17 +98,19 @@
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
- *     opts.images: absolute paths to base images for a vision-language model,
- *     on THIS turn only.
+ *     opts.images: paths (page-relative or absolute) to pictures for THIS
+ *     turn only — a local vision-language model, or Claude (PNG/JPEG/GIF/
+ *     WebP under 3.75 MB each, carried as API image blocks).
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
  *     opts.thinking: boolean, local text models only (mlx and llama.cpp/GGUF)
  *     — tri-state, unset/true/false. Local models default to thinking ON
  *     (D886); set false when a model's own card requires it off. Dropped
  *     with a `warnings[]` entry on Claude and apple (no such flag there).
- *     history/raw/images are LOCAL-MODEL ONLY and are refused (400) on the
- *     Claude path — dropping them would answer a different question. The
- *     apple tier honours `history`, refuses `raw` (the framework owns its
- *     template) and refuses `images` until the OS offers image input
+ *     history/raw are LOCAL-MODEL ONLY and are refused (400) on the
+ *     Claude path — dropping them would answer a different question;
+ *     `images` IS honoured on Claude. The apple tier honours `history`,
+ *     refuses `raw` (the framework owns its template) and refuses `images`
+ *     until the OS offers image input
  *     (macOS 27 on the larger model; never on 26). The sampling knobs (and
  *     `effort` on a local model, `effort`/`topP` on apple) are TUNABLES: a
  *     tier that lacks one drops it and says so in the result's `warnings[]`
