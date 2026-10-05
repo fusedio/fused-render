@@ -211,7 +211,8 @@ def _is_home(url: str | None) -> bool:
     if not url:
         return False
     try:
-        return urlsplit(url).path in ("", "/")
+        # The shell rewrites "/" to "/home" via replaceState right after first paint.
+        return urlsplit(url).path in ("", "/", "/home")
     except ValueError:
         return False
 

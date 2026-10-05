@@ -101,6 +101,17 @@ def test_home_is_focus_or_open(host):
     assert b.created == 1
 
 
+def test_home_matches_the_spa_home_rewrite(host):
+    # The shell runs history.replaceState(null, "", "/home") right after first paint.
+    h, b = host
+    h.dispatch({"cmd": "open", "url": BASE + "/"})
+    b.urls[1] = BASE + "/home"
+    h.dispatch({"cmd": "open", "url": BASE + "/"})
+    h.dispatch({"cmd": "open", "url": BASE + "/home"})
+    assert b.created == 1
+    assert b.presented == [1, 1, 1]
+
+
 def test_closed_windows_are_forgotten(host):
     h, b = host
     h.dispatch({"cmd": "open", "url": BASE + "/"})
