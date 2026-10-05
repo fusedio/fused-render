@@ -81,9 +81,10 @@ const ANSI_LIGHT: typeof ANSI_DARK = {
   brightWhite: "#8c959f",
 };
 
-/** The xterm theme for the given app theme. Background stays transparent —
- * `.term-drawer` (styles/notifications.css) already paints `--bg` behind the
- * whole drawer, so xterm's own canvas has nothing to fill; every other slot
+/** The xterm theme for the given app theme. Background is the opaque `--bg`
+ * value, not "transparent": xterm only honours a transparent background with
+ * `allowTransparency` (off by default), and otherwise paints black — which
+ * made light mode dark-on-black. Every other slot
  * comes from the app's tokens (`lookup`) with the matching palette's own
  * hex as a fallback when a token resolves empty. */
 export function buildTerminalTheme(theme: Theme, lookup: CssVarLookup): ITheme {
@@ -94,7 +95,7 @@ export function buildTerminalTheme(theme: Theme, lookup: CssVarLookup): ITheme {
   const ansi = theme === "light" ? ANSI_LIGHT : ANSI_DARK;
 
   return {
-    background: "transparent",
+    background: bg,
     foreground: fg,
     // A block cursor's own fill is `cursor`, and the glyph drawn inside it
     // is `cursorAccent` — swapping fg/bg for those two is what keeps the

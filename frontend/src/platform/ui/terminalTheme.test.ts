@@ -15,7 +15,7 @@ describe("buildTerminalTheme", () => {
       "dark",
       lookupFrom({ "--fg": "#e8eaed", "--bg": "#131417", "--sel": "#2b3a52" }),
     );
-    expect(theme.background).toBe("transparent");
+    expect(theme.background).toBe("#131417");
     expect(theme.foreground).toBe("#e8eaed");
     expect(theme.cursor).toBe("#e8eaed");
     expect(theme.cursorAccent).toBe("#131417");
@@ -52,9 +52,10 @@ describe("buildTerminalTheme", () => {
     expect(light.brightWhite?.toLowerCase()).not.toBe("#ffffff");
   });
 
-  it("keeps background transparent regardless of theme", () => {
-    expect(buildTerminalTheme("dark", lookupFrom({})).background).toBe("transparent");
-    expect(buildTerminalTheme("light", lookupFrom({})).background).toBe("transparent");
+  it("paints the opaque --bg (never transparent: xterm renders black without allowTransparency)", () => {
+    expect(buildTerminalTheme("dark", lookupFrom({})).background).toBe("#131417");
+    expect(buildTerminalTheme("light", lookupFrom({})).background).toBe("#ffffff");
+    expect(buildTerminalTheme("light", lookupFrom({ "--bg": "#fafafa" })).background).toBe("#fafafa");
   });
 });
 
