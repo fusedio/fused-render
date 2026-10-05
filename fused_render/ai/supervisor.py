@@ -786,10 +786,18 @@ def _await_hardware_cache() -> hw_detect.HardwareInfo | None:
         return hardware
     deadline = time.monotonic() + hw_detect._PROBE_WAIT_S
     while time.monotonic() < deadline:
+        # Read the flag BEFORE the cache: a probe that finished in between
+        # still gets its (successful) write picked up by the read below.
+        finished = _hardware_first_probe_done.is_set()
         time.sleep(0.05)
         hardware = hw_detect.cached_hardware()
         if hardware is not None:
             return hardware
+        if finished:
+            # The first probe ended (failed, or no vendor tools) and left the
+            # cache empty; nothing more is coming, so do not stall the spawn
+            # for the rest of the bound — proceed with the no-GPU budget.
+            return None
     return None
 
 
@@ -2332,6 +2340,11 @@ _HARDWARE_REFRESH_INTERVAL_S = 6 * 60 * 60  # 6 hours
 _hardware_refresh_starter = _startonce.StartOnceThread()
 
 
+#: Set once the refresh thread's FIRST probe has ended, success or failure —
+#: lets `_await_hardware_cache` stop waiting on a cache that will stay empty.
+_hardware_first_probe_done = threading.Event()
+
+
 def _hardware_refresh_tick() -> None:
     """One probe-and-cache cycle — split out of `start_hardware_refresh`'s
     loop so a test can drive it directly with `hw_detect.refresh_hardware`
@@ -2373,10 +2386,15 @@ def start_hardware_refresh() -> None:
                 _hardware_refresh_tick()
             except Exception:  # noqa: BLE001 - a tick must never kill the loop
                 logger.exception("hardware-refresh tick failed")
+            finally:
+                _hardware_first_probe_done.set()
             time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
 
-    _hardware_refresh_starter.ensure(
-        lambda: threading.Thread(target=run, name="ai-hardware-refresh", daemon=True))
+    def make() -> threading.Thread:
+        _hardware_first_probe_done.clear()
+        return threading.Thread(target=run, name="ai-hardware-refresh", daemon=True)
+
+    _hardware_refresh_starter.ensure(make)
 
 
 #: How often the background Hub-metadata-warming thread re-sweeps the

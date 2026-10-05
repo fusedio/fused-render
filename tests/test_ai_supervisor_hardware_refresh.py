@@ -30,6 +30,7 @@ so it can be driven directly, with `hw_detect.refresh_hardware` and
 without ever starting `start_reaper`'s thread.
 """
 import threading
+import time
 
 import pytest
 
@@ -264,3 +265,37 @@ def test_await_hardware_cache_is_bounded_by_the_probe_wait_constant(monkeypatch)
     # The wait actually ran for roughly the patched bound, not an unrelated
     # fixed amount of time.
     assert deadlines[-1] - deadlines[0] < 1.0
+
+
+def test_await_hardware_cache_ends_early_once_the_probe_has_finished(monkeypatch):
+    """Detection that FAILS (probe exception, no vendor tools) never writes
+    the cache. Waiting the full `_PROBE_WAIT_S` for it would stall every
+    worker spawn that long; once the first probe has finished the cache will
+    not change, so the wait ends at once with the no-GPU answer."""
+    monkeypatch.setattr(hw_detect, "cached_hardware", lambda: None)
+    monkeypatch.setattr(hw_detect, "_PROBE_WAIT_S", 30.0)
+    supervisor._hardware_first_probe_done.set()
+    try:
+        started = time.monotonic()
+        assert supervisor._await_hardware_cache() is None
+        assert time.monotonic() - started < 2.0
+    finally:
+        supervisor._hardware_first_probe_done.clear()
+
+
+def test_a_failing_first_probe_marks_it_finished(monkeypatch):
+    """The refresh thread flags the first probe done even when the tick
+    raises, so a spawn waiting on it is released."""
+    def _boom(*a, **k):
+        raise OSError("no vendor tools")
+
+    monkeypatch.setattr(hw_detect, "refresh_hardware", _boom)
+    monkeypatch.setattr(supervisor, "_HARDWARE_REFRESH_INTERVAL_S", 3600)
+    supervisor._hardware_first_probe_done.clear()
+    supervisor._hardware_refresh_starter.reset_for_tests()
+    try:
+        _real_start_hardware_refresh()
+        assert supervisor._hardware_first_probe_done.wait(5.0)
+    finally:
+        supervisor._hardware_refresh_starter.reset_for_tests()
+        supervisor._hardware_first_probe_done.clear()
