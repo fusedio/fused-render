@@ -249,14 +249,23 @@ _WINDOW_MAX = 16
 def reset_cache() -> None:
     """Forget every cached transcript read. For tests, and for any caller that
     wants the next listing to re-read from disk unconditionally."""
-    global _snapshot, _builder_on
+    global _snapshot, _builder_on, _builder_thread
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
+    # The builder loop ends on the flag, but it is parked in `tasks_watch.wait`
+    # — so bump the watcher to wake it, and JOIN it before the snapshot is
+    # nulled and the watcher reset: a build still in flight would otherwise
+    # publish (and write the stores) into the state this reset makes way for.
+    with _SNAP_COND:
+        _builder_on = False
+        thread, _builder_thread = _builder_thread, None
+        _SNAP_COND.notify_all()
+    if thread is not None and thread.is_alive():
+        tasks_watch.notify()
+        thread.join(5)
     with _SNAP_COND:
         _snapshot = None
-        _builder_on = False  # a running loop sees this and ends
-        _SNAP_COND.notify_all()
     tasks_store.reset_cache()
     tasks_watch.reset()
 
@@ -4444,6 +4453,7 @@ _SNAP_COND = threading.Condition()
 _snapshot: _Snapshot | None = None
 _building = False
 _builder_on = False
+_builder_thread: threading.Thread | None = None
 # How long a request waits for the snapshot to catch up with the generation it
 # asked at before serving the one it has. A warm rebuild is tens of
 # milliseconds, so this is never felt on a healthy machine; it is the ceiling
@@ -4488,12 +4498,14 @@ def warm() -> None:
     logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
     if not tasks_watch.running():
         return
+    global _builder_thread
     with _SNAP_COND:
         if _builder_on:
             return
         _builder_on = True
-    threading.Thread(target=_builder_loop, daemon=True,
-                     name="fused-tasks-builder").start()
+    _builder_thread = threading.Thread(target=_builder_loop, daemon=True,
+                                       name="fused-tasks-builder")
+    _builder_thread.start()
 
 
 def _builder_loop() -> None:
@@ -4510,6 +4522,13 @@ def _builder_loop() -> None:
             if not _builder_on:
                 return
         gen, _ = tasks_watch.wait(max(last, 0), REBUILD_FLOOR_SEC)
+        # Checked AGAIN after the wait: `reset_cache` ends the loop by flipping
+        # the flag and bumping the watcher, and a build that ran anyway would
+        # publish a snapshot — and write the stores — into whatever state the
+        # reset was making way for.
+        with _SNAP_COND:
+            if not _builder_on:
+                return
         try:
             snap = _rebuild_snapshot()
         except Exception:  # noqa: BLE001 — a bad build keeps the last snapshot
@@ -4587,25 +4606,36 @@ def _listing(at_least: int | None = None) -> tuple[list[dict], int]:
     return snap.rows, snap.generation
 
 
-def _task_rows(only: frozenset | set | None = None,
-               at_least: int | None = None) -> list[dict]:
-    """The listing rows — every one, or those under the `only` keys.
+def _narrowed(only: frozenset | set, at_least: int | None = None) -> tuple[list[dict], int]:
+    """The rows under the `only` keys, and the generation they stand for.
 
-    With the builder running the answer comes off the snapshot (see
-    `_listing`), and a narrowed answer is the snapshot filtered: the full rows
-    are the truth every narrowed answer used to re-derive at full cost (one
+    With the builder running: the snapshot filtered (`_listing`). The full rows
+    are the truth every narrowed answer used to re-derive at full cost — one
     `_collect` and one runs-tree walk per long-poll answer, woken about once a
-    second per open document by transcript writes). Without the builder a
-    narrowed build runs as it always did, under the build lock."""
-    if only is None:
-        return _listing(at_least)[0]
+    second per open document by transcript writes. The generation is read in
+    the same call as the rows, so a caller comparing it to the one it wanted
+    is judging the rows it holds and not a snapshot published since.
+
+    Without the builder: a narrowed build under the build lock, as it always
+    ran — it builds rows for the named keys alone and runs none of the
+    full listing's side effects (`current_apps.observe` prunes what it does not
+    see, and must never see a partial listing)."""
     with _SNAP_COND:
         serving = _builder_on
     if not serving:
         with _BUILD_LOCK:
-            return _build_task_rows(only)
-    rows, _ = _listing(at_least)
-    return [row for row in rows if row.get("key") in only]
+            return _build_task_rows(only), tasks_watch.generation()
+    rows, have = _listing(at_least)
+    return [row for row in rows if row.get("key") in only], have
+
+
+def _task_rows(only: frozenset | set | None = None,
+               at_least: int | None = None) -> list[dict]:
+    """The listing rows — every one (`_listing`), or those under the `only`
+    keys (`_narrowed`)."""
+    if only is None:
+        return _listing(at_least)[0]
+    return _narrowed(only, at_least)[0]
 
 
 def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
@@ -4956,10 +4986,8 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     # "nothing yet" at the client's OWN generation: it polls again, the watcher
     # answers at once, and it waits out another bound for the build.
     wanted = set(keys) | set(rekeyed.values())
-    rows = _task_rows(only=wanted, at_least=gen)
-    with _SNAP_COND:
-        behind = _builder_on and (_snapshot is None or _snapshot.generation < gen)
-    if behind:
+    rows, have = _narrowed(wanted, at_least=gen)
+    if have < gen:
         return {"generation": since, "rows": [], "gone": [],
                 "drafts": {"changed": [], "gone": []}}
     listed = {row["key"] for row in rows}
