@@ -264,10 +264,16 @@ function observeResize(el: Element, cb: () => void): () => void {
 }
 
 /** How many rows the first paint draws in full before the observer has said
- *  which are in view — a screen and a half of closed rows. The rest paint as
- *  placeholders and are revealed by the observer's first report, which lands
- *  before the next frame. */
+ *  which are in view — a screen and a half of closed rows, starting a little
+ *  above where the restored scroll offset lands (`REVEAL_SEED_ABOVE`). The
+ *  rest paint as placeholders and are revealed by the observer's first
+ *  report, which lands before the next frame. */
 const REVEAL_SEED = 40;
+const REVEAL_SEED_ABOVE = 8;
+/** A closed row's height before any has been measured, for turning the
+ *  restored scroll offset into a row index. An estimate, used once: the
+ *  observer's first report replaces it. */
+const REVEAL_ROW_GUESS_PX = 38;
 /** How far past the viewport a row is still drawn in full: two viewports each
  *  way, so a wheel fling of ordinary speed never shows a placeholder and a
  *  row the reader is about to reach is already there. */
@@ -2321,8 +2327,25 @@ export function TaskList({
   // each way (REVEAL_MARGIN). Before it has reported once, the first
   // REVEAL_SEED rows are the band, so the first paint is a screen and a half
   // of real rows and not a frame of placeholders.
+  // KEYED BY THE ROW'S REACT KEY, NOT `task.key` (Bugbot, #1384): `rowKeys`
+  // stays on the task's number through the `pending:<entry>` → session-id
+  // handoff so the row does not remount, and a fold keyed on the name would
+  // have folded that row for a frame at the exact moment `taskListKeys` was
+  // added to stop it blinking.
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set());
   const observed = useRef(false);
+  // WHERE THE SEED STARTS (Bugbot, #1384): the scroll memory is paid in a
+  // layout effect, before the first paint, so a return visit paints the SAVED
+  // viewport — and a seed that only knew about the top of the list would have
+  // painted that viewport as placeholders until the observer's first report.
+  // So the seed is centred on the row the saved offset lands on, by estimate;
+  // the observer corrects it within a frame.
+  const seedFrom = useRef(
+    Math.max(
+      0,
+      Math.floor((memory.current.scroll || 0) / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE,
+    ),
+  );
   // The registry both the observer and the focus tracking read: which node
   // element is which task, and back.
   const nodesByEl = useRef(new Map<Element, string>());
@@ -2405,6 +2428,9 @@ export function TaskList({
     return () => {
       obs.disconnect();
       io.current = null;
+      // The scroller is going; when it comes back (a stale empty, see
+      // `staleEmptied`) the seed applies again until the new observer speaks.
+      observed.current = false;
     };
     // The scroller mounts with the first rows and unmounts with the last
     // (`hasRows`, declared below this hook), and the observer follows it.
@@ -2648,13 +2674,16 @@ export function TaskList({
           // wash must not vanish under the reader), and the row the keyboard
           // is on.
           folded={
-            (observed.current ? !revealed.has(task.key) : ix >= REVEAL_SEED)
+            (observed.current
+              ? !revealed.has(rowKeys[ix] ?? task.key)
+              : ix < seedFrom.current || ix >= seedFrom.current + REVEAL_SEED)
             && !expanded.has(task.key)
             && peeked !== task.key
             && selected !== task.key
-            && focusedKey !== task.key
+            && focusedKey !== (rowKeys[ix] ?? task.key)
           }
-          height={heights.current.get(task.key) ?? closedHeight.current}
+          height={heights.current.get(rowKeys[ix] ?? task.key) ?? closedHeight.current}
+          rowKey={rowKeys[ix] ?? task.key}
           onNode={onNode}
           task={task}
           home={home}
@@ -2792,6 +2821,7 @@ type TaskNodeProps = Parameters<typeof TaskNode>[0];
 const TaskRow = memo(function TaskRow({
   folded,
   height,
+  rowKey,
   onNode,
   ...props
 }: TaskNodeProps & {
@@ -2799,9 +2829,13 @@ const TaskRow = memo(function TaskRow({
   /** The placeholder's height, or null to let the stylesheet's closed-row
    *  minimum stand until a row has been measured. */
   height: number | null;
+  /** The List's key for this row (`taskListKeys`) — what the fold's registry
+   *  is keyed on, because it survives the queue's rekey and `task.key` does
+   *  not. */
+  rowKey: string;
   onNode: (key: string, el: HTMLDivElement | null) => void;
 }) {
-  const key = props.task.key;
+  const key = rowKey;
   // One ref callback per task, not per render: React calls a changed ref with
   // null and then the element, and that would be an unobserve/observe pair on
   // every re-render of the row.
