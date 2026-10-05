@@ -15,7 +15,7 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
 
 import { TerminalDockView } from "@shell/TerminalDock";
 import { resetExclusiveSectionsForTests, useExclusiveSection } from "@platform/lib/exclusiveSection";
-import { resetTerminalDockForTests, toggleTerminalDock, useTerminalDockOpen } from "@platform/lib/terminalDockStore";
+import { resetTerminalDockForTests, setTerminalCount, toggleTerminalDock, useTerminalCount, useTerminalDockOpen } from "@platform/lib/terminalDockStore";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -162,4 +162,30 @@ test("opening the terminal chip never triggers another section's forceClose", ()
   });
 
   expect(forceCloseCalls).toBe(0);
+});
+
+// ---- session count (multi-terminal) ---------------------------------------
+
+test("a lone terminal shows no count; two or more show the number", () => {
+  for (const [count, expected] of [[0, 0], [1, 0], [2, 1], [5, 1]] as const) {
+    const tree = renderTracked(<TerminalDockView open={true} onToggle={() => {}} count={count} />).toJSON() as ReactTestRendererJSON;
+    expect(findAll(tree, "sc-num")).toHaveLength(expected);
+    if (expected) expect(text(findAll(tree, "sc-num")[0])).toBe(String(count));
+  }
+});
+
+test("the chip count follows the store the drawer publishes to", () => {
+  function Probe() {
+    return <TerminalDockView open={false} onToggle={() => {}} count={useTerminalCount()} />;
+  }
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(<Probe />);
+  });
+  renderers.push(renderer);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "sc-num")).toHaveLength(0);
+  act(() => setTerminalCount(3));
+  expect(text(findAll(renderer.toJSON() as ReactTestRendererJSON, "sc-num")[0])).toBe("3");
+  act(() => setTerminalCount(1));
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "sc-num")).toHaveLength(0);
 });

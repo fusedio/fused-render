@@ -41,6 +41,7 @@ const TerminalDrawerModule = await import("@shell/TerminalDrawer");
 const TerminalDrawer = TerminalDrawerModule.default;
 const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny, TerminalBusyError } =
   TerminalDrawerModule;
+const TerminalTabStrip = (await import("@shell/TerminalTabStrip")).default;
 const { parseState, reconcileTabs, removeTab, programLabel, stateFor } = await import("@shell/terminalTabs");
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
@@ -639,4 +640,39 @@ test("removeTab: closing an inactive tab keeps the active one", () => {
 
 test("removeTab: the only tab leaves nothing -> empty (drawer closes)", () => {
   expect(removeTab([T("a")], "a", "a")).toEqual({ tabs: [], activeId: null, empty: true });
+});
+
+// ---- the tab strip ---------------------------------------------------------
+
+function strip(over: Partial<Parameters<typeof TerminalTabStrip>[0]> = {}) {
+  const calls: string[] = [];
+  const renderer = renderTracked(
+    <TerminalTabStrip
+      tabs={[{ id: "a", label: "zsh", cwd: "/home" }, { id: "b", label: "claude" }]}
+      activeId="b"
+      onSelect={(id) => calls.push("select:" + id)}
+      onClose={(id) => calls.push("close:" + id)}
+      onNew={() => calls.push("new")}
+      {...over}
+    />,
+  );
+  return { calls, root: renderer.root };
+}
+
+test("tab strip: one tab per terminal, the active one marked, cwd in the tooltip", () => {
+  const { root } = strip();
+  const tabs = root.findAll((n) => n.props.role === "tab");
+  expect(tabs.map((t) => t.props["aria-selected"])).toEqual([false, true]);
+  expect(tabs[0].props.className).toBe("term-tab");
+  expect(tabs[1].props.className).toBe("term-tab is-active");
+  expect(tabs[0].props.title).toContain("/home");
+});
+
+test("tab strip: clicking a label selects, × closes that tab, + asks for a new terminal", () => {
+  const { calls, root } = strip();
+  const byClass = (c: string) => root.findAll((n) => n.type === "button" && n.props.className === c);
+  act(() => byClass("term-tab-label")[0].props.onClick());
+  act(() => byClass("term-tab-close")[1].props.onClick());
+  act(() => byClass("term-tab-new")[0].props.onClick());
+  expect(calls).toEqual(["select:a", "close:b", "new"]);
 });
