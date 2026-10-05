@@ -100,6 +100,7 @@ import {
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
+import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
 // The flag module DIRECTLY, not the barrel: the barrel pulls `ChatMount` (and
@@ -523,13 +524,19 @@ export default function Listing({
   // shell handed a column by something else (`paneEnabled` above), and neither
   // owns the address bar it happens to be inside of.
   //
-  // Same gate on the session's hidden flag (`lib/side-hidden-store.ts`): a
+  // Same gate on the stored hidden flag (`lib/side-hidden-store.ts`): a
   // snapshot or panel pane is not the addressable folder view either, so a close
   // inside one must not shut every OTHER open folder/file's sidebar for the rest
   // of the session.
-  const applySide = (next: PaneSideState) => {
+  // `tab` is the companion the user EXPLICITLY picked (the switcher), which
+  // `next.mode` cannot say: picking the leading companion normalises to
+  // `mode: null` for the clean URL (`selectSide`). It is recorded in the shared
+  // tab store (`lib/side-tab-store.ts`) only here, i.e. only when the switch is
+  // actually applied (after the Claude confirm), and only on the addressable view.
+  const applySide = (next: PaneSideState, tab?: PaneSideChoice) => {
     setSideState(next);
     if (!paneEnabled) return;
+    if (tab) setSideTab(tab);
     setSideHidden(!next.open);
     const params = new URLSearchParams(location.search);
     const v = paneSideParam(next);
@@ -552,14 +559,16 @@ export default function Listing({
    * dead-zone trap `selectSide`'s own comment warns about.
    */
   const showingClaude = useRef(false);
-  const wouldShowClaude = useRef<(next: PaneSideState) => boolean>(() => false);
-  const setSide = (next: PaneSideState) => {
-    if (!showingClaude.current || wouldShowClaude.current(next)) {
-      applySide(next);
+  const wouldShowClaude = useRef<(next: PaneSideState, tab?: PaneSideChoice) => boolean>(
+    () => false
+  );
+  const setSide = (next: PaneSideState, tab?: PaneSideChoice) => {
+    if (!showingClaude.current || wouldShowClaude.current(next, tab)) {
+      applySide(next, tab);
       return;
     }
     void confirmLeave().then((ok) => {
-      if (ok) applySide(next);
+      if (ok) applySide(next, tab);
     });
   };
   // Reopening keeps the mode the pane was shut on, so closing and reopening is
@@ -978,7 +987,9 @@ export default function Listing({
     // pane owns no `_side` of its own to write (see `applySide` above), so
     // there `onOpenGit` is left `undefined` and the row falls back to
     // navigating instead.
-    onOpenGit: paneEnabled ? () => setSide({ open: true, mode: "git" }) : undefined,
+    onOpenGit: paneEnabled
+      ? () => setSide({ open: true, mode: "git" }, "git")
+      : undefined,
     // Open in embed — this listing under the chrome-free embed prefix, in a new
     // tab, `_mode=_listing` stamped so the embed shows the LISTING rather than
     // hopping to the folder's app entry (the same stamp the file preview's row
@@ -1018,19 +1029,28 @@ export default function Listing({
   };
   folderMenuRef.current = buildFolderMenu;
 
-  const paneSides = paneSideList(sideEntries);
+  // The remembered tab is consulted only where this surface OWNS the pane: a
+  // snapshot/panel pane never writes it (`applySide`), so reading it there would
+  // pin the pane to a tab its own clicks cannot change.
+  const rememberedTab = () => (paneEnabled ? getSideTab() : null);
+  // Only where `_side` names no mode does the memory lead, so only there may it
+  // hold the pane undecided while the remembered companion's probe is out.
+  const paneSides = paneSideList(
+    sideEntries,
+    sideState.mode === null ? rememberedTab() : null
+  );
   // UNDECIDED — this folder's companion probes have not answered yet (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
   // skeleton: resolving a side here would put the pill on `preview` while a chat
   // rendered under it regardless, and would then remount — and respawn
   // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
-  const paneSide = activePaneSide(paneSides, sideState.mode);
+  const paneSide = activePaneSide(paneSides, sideState.mode, rememberedTab());
   // The two facts `setSide`'s guard above needs, written on every render (see
   // its own comment for why they are refs and not values).
   showingClaude.current = paneOpen && paneSide === "claude";
-  wouldShowClaude.current = (next) =>
-    next.open && activePaneSide(paneSides, next.mode) === "claude";
+  wouldShowClaude.current = (next, tab) =>
+    next.open && activePaneSide(paneSides, next.mode, tab ?? rememberedTab()) === "claude";
 
   // Picking the mode that is ALREADY first on offer records NO choice (`mode: null`),
   // so the leading companion keeps the clean URL (PT-9, D285): a click on Claude
@@ -1041,7 +1061,7 @@ export default function Listing({
   // reads that list, and a closure over a `const` declared later in the same body is
   // a temporal-dead-zone trap waiting for the first caller that runs during render.
   const selectSide = (mode: PaneSideChoice) =>
-    setSide({ open: true, mode: mode === paneSides[0] ? null : mode });
+    setSide({ open: true, mode: mode === paneSides[0] ? null : mode }, mode);
 
   // --- the CLAUDE companion's seeded prompt (`window._fusedAskClaude`) -------
   // The `git` companion's "Fix with AI" button has no chat of its own — it

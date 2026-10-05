@@ -328,3 +328,35 @@ test("the restart card loses its ✕ and re-notifies in place while restartInFli
 
   await act(async () => r.unmount());
 });
+
+test("a press the old app never acted on ends as a dismissible 'couldn't restart itself' card", async () => {
+  const r = await mount();
+  await act(async () => {
+    setUpdateStatus(status({ state: "installed", latest_version: "0.5.81" }));
+  });
+  noteRestartProbe({ ok: true, version: "0.5.80" });
+  await act(async () => {
+    requestRestart();
+  });
+  expect(getPopupNotification()?.detail).toBe("Quitting…");
+
+  // The server keeps answering on the same version and never fails a probe.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 25_000;
+  try {
+    await act(async () => {
+      noteRestartProbe({ ok: true, version: "0.5.80" });
+    });
+  } finally {
+    Date.now = realNow;
+  }
+  const card = getPopupNotification();
+  expect(card?.title).toBe("fused-render couldn't restart itself");
+  expect(card?.detail).toContain("menu-bar icon");
+  expect(card?.detail).toContain("⌘Q");
+  expect(card?.tone).toBe("error");
+  expect(card?.dismissible).not.toBe(false);
+  // A repeat press would be dropped the same way: no "Restart now" button.
+  expect(card?.action).toBeUndefined();
+  await act(async () => r.unmount());
+});

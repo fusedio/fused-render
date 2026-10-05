@@ -12,7 +12,10 @@
 // (an iframe is a focusable stop the chassis handles), no ✕, Esc and backdrop
 // refused. If the restart does not come back inside RESTART_GIVE_UP_MS the flow
 // ends in `gave-up` and the contents become an error with Dismiss / Try again
-// rather than a spinner held forever.
+// rather than a spinner held forever. A press the running app never acted on
+// (the server answers on the same version, no probe ever failed) ends sooner,
+// in `stuck`: Dismiss only, because pressing again would be dropped the same
+// way — the sentence tells the reader to quit and reopen the app themselves.
 //
 // Mounted once in the top document next to UpdateNotifier (App.tsx), behind
 // the same !IS_EMBED guard: a pane drawing its own would stack a second scrim.
@@ -21,16 +24,18 @@ import { useEffect, useState } from "react";
 import {
   restartInFlight,
   restartStageLabel,
+  RESTART_STUCK_BODY,
+  RESTART_STUCK_TITLE,
   type RestartStage,
 } from "@platform/lib/restart-flow";
 import { requestRestart, useRestartFlow } from "@platform/lib/restart-store";
 import { Modal } from "@platform/ui/modal/Modal";
 
-/** Whether the overlay is up: any in-flight stage, or a give-up the reader has
- *  not dismissed yet. Pure so the rule is one test, not a reading of the JSX. */
+/** Whether the overlay is up: any in-flight stage, or a give-up / stuck ending
+ *  the reader has not dismissed yet. Pure so the rule is one test, not a reading of the JSX. */
 export function overlayVisible(stage: RestartStage, dismissed: boolean): boolean {
   if (restartInFlight(stage)) return true;
-  return stage === "gave-up" && !dismissed;
+  return (stage === "gave-up" || stage === "stuck") && !dismissed;
 }
 
 export function RestartOverlayView(props: {
@@ -44,7 +49,7 @@ export function RestartOverlayView(props: {
   // modal; document-level Esc listeners elsewhere in the page would still fire
   // for a press, closing something the reader cannot see. Swallowed while the
   // wait is live; the give-up state wants Esc to dismiss, so it is left alone.
-  const waiting = stage !== "gave-up";
+  const waiting = stage !== "gave-up" && stage !== "stuck";
   useEffect(() => {
     if (!waiting) return;
     const swallowEscape = (e: KeyboardEvent) => {
@@ -55,6 +60,22 @@ export function RestartOverlayView(props: {
     document.addEventListener("keydown", swallowEscape, true);
     return () => document.removeEventListener("keydown", swallowEscape, true);
   }, [waiting]);
+
+  if (stage === "stuck") {
+    return (
+      <Modal
+        title={RESTART_STUCK_TITLE}
+        onClose={onDismiss}
+        footer={
+          <button type="button" className="btn btn-primary" onClick={onDismiss}>
+            Dismiss
+          </button>
+        }
+      >
+        <p>{RESTART_STUCK_BODY}</p>
+      </Modal>
+    );
+  }
 
   if (stage === "gave-up") {
     return (

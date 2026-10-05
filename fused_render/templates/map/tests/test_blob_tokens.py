@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from blob_tokens import TokenStore, container_of, is_signed, refused_access  # noqa: E402
+from blob_tokens import TokenStore, container_of, is_signed, refused_access, unsigned  # noqa: E402
 
 
 HLS = (
@@ -93,6 +93,17 @@ def test_signing_appends_the_token_as_a_query_string():
 def test_signing_keeps_any_query_the_url_already_had():
     store = TokenStore(fetch=Fetches(), now=lambda: 0.0)
     assert store.sign(HLS + "?a=1") == HLS + "?a=1&sv=2025-07-05&sig=tok1"
+
+
+def test_signing_a_signed_url_replaces_its_token():
+    store = TokenStore(fetch=Fetches(), now=lambda: 0.0)
+    assert store.sign(HLS + "?a=1&st=old&se=old&sig=old") == HLS + "?a=1&sv=2025-07-05&sig=tok1"
+
+
+def test_unsigned_drops_only_the_sas_token():
+    assert unsigned(HLS + "?a=1&sv=2025&se=x&sig=abc%3D") == HLS + "?a=1"
+    assert unsigned(HLS + "?sv=2025&sig=abc") == HLS
+    assert unsigned(HLS + "?a=1") == HLS + "?a=1"
 
 
 def test_one_token_serves_every_object_in_the_container():

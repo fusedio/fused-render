@@ -73,6 +73,7 @@ import {
   sideSplit,
   parseSide,
   resolveSide,
+  sideFromMemory,
   sideParam,
   writeQueryParam,
   sideToggleTarget,
@@ -81,6 +82,7 @@ import {
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
+import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
   isSha,
   setResolvedSnapshot,
@@ -1127,9 +1129,10 @@ function TemplatePreview({
   // folder (lib/preview-side's header has the whole argument, and why the old
   // absent-means-closed rule had to go); `_side=off` is how a shut sidebar says so.
   //
-  // Nothing about it is persisted anywhere. It rides the URL, so it survives the
-  // shell's pushState navigation within this file, and a refresh — or an open of a
-  // different file, which starts from a bare URL — lands on the default again.
+  // The request itself is not persisted: it rides the URL. What survives a hop or
+  // a refresh is held by the shared stores — the open/closed flag
+  // (`lib/side-hidden-store`, persisted) and the last selected tab
+  // (`lib/side-tab-store`, memory only) — and applies only where the URL is silent.
   const [sideReq, setSideReq] = useState<SideRequest>(() =>
     parseSide(location.search, getSideHidden())
   );
@@ -1138,12 +1141,12 @@ function TemplatePreview({
   // `_side` — as opposed to an explicit `_side=off`, which needs none of this
   // (see the reconcile effect below). Tracked separately from `sideReq` itself
   // because the reconcile effect must not write this particular closed state
-  // into the URL: the flag is documented memory-only (no storage, cleared by a
-  // refresh), and a `_side=off` written on its behalf would defeat both halves
-  // of that promise — a refresh no longer reopens the panel because the URL,
-  // not just the module variable, now says shut, and a link copied from the
-  // address bar for this file carries a close nobody clicked (exactly what
-  // `platform/lib/session-params.ts` strips `_side` to prevent for recents).
+  // into the URL: the flag lives in the store (persisted across reloads), and a
+  // `_side=off` written on its behalf would make the URL, not just the store,
+  // say shut — a link copied from the address bar for this file would carry a
+  // close nobody clicked (exactly what `platform/lib/session-params.ts` strips
+  // `_side` to prevent for recents), and an explicit `off` could no longer be
+  // told from the stored preference.
   // `parseSide(location.search)` here (hidden defaulted false) is what the URL
   // ALONE would have resolved to; it differs from `sideReq.open` only in this
   // one case, since an explicit `_side` — off or a mode — resolves the same way
@@ -1177,7 +1180,7 @@ function TemplatePreview({
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
   // render and an unhonourable request falls to the default (lib/preview-side).
-  const activeSide = resolveSide(sideReq, split);
+  const activeSide = resolveSide(sideReq, split, getSideTab());
   const sideEntry = activeSide ? sidebarModes.find((e) => e.mode === activeSide) ?? null : null;
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
@@ -1203,7 +1206,7 @@ function TemplatePreview({
   // probe and take it away again, and must not outrank a companion this file
   // definitely has.
   const sideTargets = sideOn ? split.settled : [];
-  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
+  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide ?? getSideTab());
   const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
 
   // --- the shell's git snapshot (`_snapshot`) --------------------------------
@@ -1319,8 +1322,15 @@ function TemplatePreview({
   // Also the one place that records a close/reopen into the session's shared
   // hidden flag (`lib/side-hidden-store.ts`) — a close here must be visible to
   // the folder pane's later mounts too, same store either surface writes.
-  const applySide = (next: string | null) => {
+  //
+  // `tab` is the companion the user EXPLICITLY picked (the switcher, App Doctor's
+  // Open Git) and is the ONLY thing that writes the remembered tab
+  // (`lib/side-tab-store.ts`), mirroring Listing. A toggle reopen, a close and the
+  // reconcile pass none: reopening on a file that lacks the remembered companion
+  // lands on a fallback, and recording that would overwrite the real pick.
+  const applySide = (next: string | null, tab?: string) => {
     setSideHidden(next === null);
+    if (tab) setSideTab(tab);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
     // does not survive a click either way.
@@ -1351,13 +1361,13 @@ function TemplatePreview({
    * Only when CLAUDE is what is going away: every other companion has nothing to
    * lose, and a question in front of a git panel's ✕ is a dialog nobody earned.
    */
-  const setSide = (next: string | null) => {
+  const setSide = (next: string | null, tab?: string) => {
     if (activeSide !== "claude" || next === "claude") {
-      applySide(next);
+      applySide(next, tab);
       return;
     }
     void confirmLeave().then((ok) => {
-      if (ok) applySide(next);
+      if (ok) applySide(next, tab);
     });
   };
   const toggleSide = () => {
@@ -1611,6 +1621,9 @@ function TemplatePreview({
   // recorded the query and replayed it on the next bare open, which the `_side`
   // strip was written to prevent. That sidecar is gone outright now, D329; the
   // strip lives on for the recents store, lib/session-params.)
+  // The tab on screen came only from the remembered store: the reconcile must not
+  // write it (see `sideFromMemory`). Recomputed each render, so it is a dep.
+  const activeFromMemory = sideFromMemory(sideReq, activeSide, getSideTab());
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
@@ -1625,6 +1638,7 @@ function TemplatePreview({
       open: sideFromHiddenFlag ? true : sideReq.open,
       activeSide,
       defaultSide: split.defaultSide,
+      fromMemory: activeFromMemory,
     });
     if (search === null) return; // already agrees
     replaceSearch(location.pathname + (search ? "?" + search : ""));
@@ -1637,6 +1651,7 @@ function TemplatePreview({
     sideReq.open,
     sideFromHiddenFlag,
     activeSide,
+    activeFromMemory,
     sideKeys,
   ]);
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
@@ -2127,7 +2142,7 @@ function TemplatePreview({
   // through to the content pane as any unsplit surface would take it.
   const openMode = (m: string) => {
     if (m === "mcp" && mcpSrc) setMcpOpen(true);
-    else if (sideOn && isSidebarMode(m)) setSide(m);
+    else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
@@ -2185,7 +2200,7 @@ function TemplatePreview({
     // has no sidebar of its own (see `applySide`'s definition above), so
     // there `onOpenGit` is left `undefined` and the row falls back to
     // navigating instead.
-    onOpenGit: splitCapable ? () => applySide("git") : undefined,
+    onOpenGit: splitCapable ? () => applySide("git", "git") : undefined,
   });
 
   // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's
@@ -2694,7 +2709,7 @@ function TemplatePreview({
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
               />
             }
-            onSelect={setSide}
+            onSelect={(m) => setSide(m, m ?? undefined)}
             onClose={() => setSide(null)}
           />,
           sideSlot
