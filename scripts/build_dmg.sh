@@ -212,6 +212,48 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # keep a stale _baked_branch.py from a previous ref/wheel.
 "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${WHEEL_PATH}"
 
+# Force macOS-13-compatible wheels for packages whose newest-tag wheel pip would
+# otherwise pick on this (macOS 14+/26) host. pip chooses the platform tag from
+# the HOST's OS version and MACOSX_DEPLOYMENT_TARGET does not steer it (see step
+# 4f). numpy 2.x publishes both `macosx_14_0_arm64` (Accelerate, minos 14.0) and
+# `macosx_11_0_arm64` (OpenBLAS, minos 11.0) wheels; the host gets the 14.0 one,
+# which would raise the whole bundle's floor to macOS 14 (D1319).
+# The version is NOT hardcoded: it is whatever the main install above resolved,
+# so extras/pins in pyproject.toml stay the single source. We then swap just
+# that distribution's files for the same version's older-tagged wheel
+# (`--no-deps`, so nothing else moves). `pip download --platform` pins the
+# search to macosx_13_0_arm64 (which also accepts 11_0/12_0 tags), and
+# `--only-binary=:all:` makes a missing wheel a hard failure, never a fallback
+# to the host-tagged one or an sdist build.
+# Keep this AFTER every install of the build venv: a later `pip install` that
+# re-resolves the package would be free to swap the 14.0 wheel back in.
+MACOS13_WHEEL_PACKAGES=(numpy)
+MACOS13_WHEELS_DIR="$BUILD_DIR/macos13-wheels"
+rm -rf "$MACOS13_WHEELS_DIR"
+mkdir -p "$MACOS13_WHEELS_DIR"
+BUILD_PY_VER="$("$BUILD_VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+for pkg in "${MACOS13_WHEEL_PACKAGES[@]}"; do
+  pkg_ver="$("$BUILD_VENV/bin/pip" show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')"
+  if [[ -z "$pkg_ver" ]]; then
+    echo "FATAL: ${pkg} is not installed in the build venv; cannot pin its macOS 13 wheel." >&2
+    exit 1
+  fi
+  echo "==> ${pkg}==${pkg_ver}: fetching the macosx_13_0_arm64-compatible wheel"
+  if ! "$BUILD_VENV/bin/pip" download --quiet --only-binary=:all: --no-deps \
+      --platform macosx_13_0_arm64 --python-version "$BUILD_PY_VER" --implementation cp \
+      --dest "$MACOS13_WHEELS_DIR" "${pkg}==${pkg_ver}"; then
+    echo "FATAL: no ${pkg}==${pkg_ver} wheel runs on macOS 13 (arm64, cp${BUILD_PY_VER/./}); refusing to ship the host-tagged one." >&2
+    exit 1
+  fi
+  pkg_wheel="$(ls "$MACOS13_WHEELS_DIR"/"${pkg}"-"${pkg_ver}"-*.whl 2>/dev/null | head -1)"
+  if [[ -z "$pkg_wheel" ]]; then
+    echo "FATAL: pip download produced no ${pkg}-${pkg_ver} wheel in ${MACOS13_WHEELS_DIR}." >&2
+    exit 1
+  fi
+  "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "$pkg_wheel"
+  echo "    installed ${pkg_wheel##*/}"
+done
+
 # ---------------------------------------------------------------------------
 # 2a-bis. Reconcile the force-list against what [bundled] actually installed.
 #
@@ -986,14 +1028,16 @@ fi
 #         `macosx_15_0_arm64` wheels gives us the 15_0 one on a 26 runner.
 #         MACOSX_DEPLOYMENT_TARGET does not steer that choice; do not add it
 #         here expecting it to. When this trips on a wheel, the fix is per
-#         package (pin a version that ships only the old tag, or build it).
+#         package (add it to MACOS13_WHEEL_PACKAGES in step 2, pin a version
+#         that ships only the old tag, or build it).
 #
-#     Threshold 14.0, not the Info.plist's LSMinimumSystemVersion (11.0):
-#     numpy 2.x's arm64 wheels are `macosx_14_0_arm64` already, so 11.0 would
-#     fail today on a bundle that has shipped for months. 14 is the floor the
-#     macos-14 runner gave us for free and the one D468 restored; this keeps
-#     it. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
-#     OS; older linkers wrote `LC_VERSION_MIN_MACOSX` instead, read the same.
+#     Threshold 13.0, not the Info.plist's LSMinimumSystemVersion (11.0):
+#     13 (Ventura) is the oldest macOS the bundle is meant to run on in
+#     practice. numpy 2.x's default arm64 wheel is `macosx_14_0_arm64`, which
+#     would force 14, so step 2 swaps in the same version's older-tagged wheel
+#     (`macosx_11_0_arm64`, OpenBLAS; D1319). `LC_BUILD_VERSION`'s minos is what
+#     dyld compares against the running OS; older linkers wrote
+#     `LC_VERSION_MIN_MACOSX` instead, read the same.
 #     Exempt, and listed rather than hidden:
 #       - Contents/MacOS/fused-apple-ai: minos 26 by design, host.py never
 #         spawns it below that (D700).
@@ -1007,7 +1051,7 @@ fi
 #         product call (the NFS handle-cache and rcd-auth tests pin 1.74's
 #         behaviour), so it is exempted here and printed, not fixed.
 # ---------------------------------------------------------------------------
-MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-14.0}"
+MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-13.0}"
 MINOS_EXEMPT=("Contents/MacOS/fused-apple-ai" "Contents/Resources/bin/rclone")
 echo "==> bundle sanity: no Mach-O requires a macOS newer than ${MINOS_FLOOR}"
 for rel in "${MINOS_EXEMPT[@]}"; do

@@ -903,7 +903,7 @@ jobs:
     # build now uses the python.org-style framework `setup-python` installs
     # (old deployment target, own libexpat/OpenSSL) and refuses Homebrew's for
     # a release, and step 4f fails the build if ANY bundled Mach-O carries a
-    # minos above 14.0 — bottles and newer-tagged wheels alike.
+    # minos above 13.0 — bottles and newer-tagged wheels alike.
     runs-on: macos-26
     timeout-minutes: 30
     steps:

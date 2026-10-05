@@ -152,7 +152,7 @@ def test_build_dmg_refuses_a_homebrew_interpreter_for_a_release_and_guards_minos
     homebrew = src.index('HOMEBREW_FRAMEWORK_PYTHON="/opt/homebrew/opt/')
     assert resolution < homebrew, "the portable framework must be preferred over Homebrew's"
     assert 'FATAL: a release build needs a python.org-style framework python' in src
-    assert 'MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-14.0}"' in src, (
+    assert 'MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-13.0}"' in src, (
         "the step-4f minos guard is what lets the runner be newer than users' Macs"
     )
     assert 'otool -l' in src[src.index("# 4f."):src.index("# 5. Code signing")]
