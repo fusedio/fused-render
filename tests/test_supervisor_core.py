@@ -551,7 +551,7 @@ def test_open_browser_prefers_the_window_host(monkeypatch):
     host = _FakeHost(True)
     tabs = []
     monkeypatch.setattr(core, "_window_host", host)
-    monkeypatch.setattr(core.ui, "open_url", tabs.append)
+    monkeypatch.setattr(core.ui, "open_url", lambda url, *_: tabs.append(url))
     core._open_browser("http://127.0.0.1:1/")
     assert host.opened == ["http://127.0.0.1:1/"] and tabs == []
 
@@ -560,16 +560,25 @@ def test_open_browser_falls_back_when_the_host_declines(monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
     tabs = []
     monkeypatch.setattr(core, "_window_host", _FakeHost(False))
-    monkeypatch.setattr(core.ui, "open_url", tabs.append)
+    monkeypatch.setattr(core.ui, "open_url", lambda url, *_: tabs.append(url))
     core._open_browser("http://127.0.0.1:1/")
     assert tabs == ["http://127.0.0.1:1/"]
+
+
+def test_open_browser_hands_the_token_to_the_tab_it_falls_back_to(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", _FakeHost(False))
+    monkeypatch.setattr(core.ui, "open_url", lambda url, token=None: tabs.append((url, token)))
+    core._open_browser("http://127.0.0.1:1/", "tok-1")
+    assert tabs == [("http://127.0.0.1:1/", "tok-1")]
 
 
 def test_open_browser_without_a_host_is_the_old_behaviour(monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
     tabs = []
     monkeypatch.setattr(core, "_window_host", None)
-    monkeypatch.setattr(core.ui, "open_url", tabs.append)
+    monkeypatch.setattr(core.ui, "open_url", lambda url, *_: tabs.append(url))
     core._open_browser("http://x/")
     assert tabs == ["http://x/"]
 

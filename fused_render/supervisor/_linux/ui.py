@@ -12,6 +12,7 @@ tkinter fallback, then to a best-effort no-op).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -167,8 +168,8 @@ def open_uri(uri: str) -> None:
     _xdg_open(uri)
 
 
-def open_url(url: str) -> None:
-    _xdg_open(url)
+def open_url(url: str, activation_token: str | None = None) -> None:
+    _xdg_open(url, activation_token)
 
 
 def open_default_apps() -> None:
@@ -179,7 +180,7 @@ def open_default_apps() -> None:
     raise OSError("default-apps settings has no cross-desktop Linux equivalent")
 
 
-def _xdg_open(target: str) -> None:
+def _xdg_open(target: str, activation_token: str | None = None) -> None:
     # Detached like server.py's reveal handler, but the exit code is checked:
     # a failed open must raise OSError so core's _safe_open answers status 1
     # (rejection dialog) instead of silently reporting success — the regression
@@ -188,10 +189,16 @@ def _xdg_open(target: str) -> None:
     # underway). Raises OSError if xdg-open is absent (FileNotFoundError), which
     # core's _safe_call / _safe_open already log-and-ignore.
     # Its own session, so a killpg of our group (supervisor exit, window-host
-    # teardown) cannot take down a browser it exec'd.
+    # teardown) cannot take down a browser it exec'd. A launch token is handed
+    # to the browser through the environment xdg-open passes on, so the
+    # compositor lets the browser window take focus.
+    env = None
+    if activation_token:
+        env = {**os.environ, "XDG_ACTIVATION_TOKEN": activation_token,
+               "DESKTOP_STARTUP_ID": activation_token}
     proc = subprocess.Popen(
         ["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        start_new_session=True, env=env,
     )
     try:
         returncode = proc.wait(timeout=_XDG_OPEN_WAIT_S)

@@ -616,7 +616,7 @@ def _open_browser(url: str, activation_token: str | None = None) -> None:
     host = _window_host or _resolve_window_host()
     if host is not None and host.open(url, activation_token):
         return
-    ui.open_url(url)
+    ui.open_url(url, activation_token)
 
 
 def _resolve_window_host():
