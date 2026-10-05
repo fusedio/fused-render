@@ -497,6 +497,7 @@ def test_on_sigterm_quits_the_host():
     assert saved == [True]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the host serves a unix socket")
 def test_main_sets_app_identity_and_a_sigterm_handler_before_serving(monkeypatch, tmp_path):
     from types import SimpleNamespace
 

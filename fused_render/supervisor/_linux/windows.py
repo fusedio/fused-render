@@ -81,11 +81,6 @@ class WindowHost:
         self.log = paths.log
         self.socket = ipc.socket_path(paths.runtime)
 
-    def server_environment(self) -> dict[str, str]:
-        """Env for the SERVER process: where to reach the host. Empty when no
-        host will run, so the server installs no hooks and behaves as before."""
-        return server_environment(self._paths)
-
     def _log_once(self, message: str) -> None:
         if not self._logged:
             self._logged = True

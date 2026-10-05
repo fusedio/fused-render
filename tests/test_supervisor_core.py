@@ -11,6 +11,7 @@ convention in tests/test_supervisor_linux_instance.py.
 """
 import queue
 import threading
+import types
 from pathlib import Path
 
 import pytest
@@ -654,6 +655,9 @@ def test_resolve_window_host_lazily_starts_when_the_preference_flips_on(tmp_path
 
         threading.Timer(0.05, finish).start()
 
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(preference_enabled=lambda state: True),
+                        raising=False)
     monkeypatch.setattr(core, "_start_window_host", fake_start)
     result = core._resolve_window_host()
     assert result is not None and result.shows is True

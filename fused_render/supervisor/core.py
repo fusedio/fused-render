@@ -609,8 +609,7 @@ def _resolve_window_host():
     """Bridges a host that is still starting — or hasn't been asked to start
     at all yet — with an open that arrives before `_window_host` is set.
     `_host_paths` is None only when a caller drives `_open_browser` without
-    going through `run()` (tests): the old no-host behaviour (straight to the
-    browser) is exactly right there, so this returns None immediately."""
+    going through `run()`; that open goes straight to the browser."""
     if _host_paths is None:
         return None
     module = getattr(_backend, "windows", None)

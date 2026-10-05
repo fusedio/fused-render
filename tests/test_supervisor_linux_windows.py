@@ -234,12 +234,11 @@ def test_stop_before_start_is_a_noop(paths):
 
 
 def test_server_socket_env_only_when_a_host_is_wanted(paths, monkeypatch):
-    host = make(paths)
-    assert host.server_environment() == {
+    assert windows.server_environment(paths) == {
         ipc.ENV_SOCKET: str(ipc.socket_path(paths.runtime))}
     monkeypatch.delenv("WAYLAND_DISPLAY")
     monkeypatch.delenv("DISPLAY", raising=False)
-    assert make(paths).server_environment() == {}
+    assert windows.server_environment(paths) == {}
 
 
 def _timeout_error():
