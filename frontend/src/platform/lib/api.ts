@@ -2625,6 +2625,46 @@ export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
 }
 
+// One PAGE of the hub (GET /api/apps with `limit`). Filtered, sorted and
+// sliced on the server from its discovery snapshot: `apps` is the slice,
+// `total` the filtered count, `total_all` the whole catalog, and `tags` /
+// `categories` the chip rows for the WHOLE catalog (a chip row derived from
+// one page would lose options as the rest arrived). The order is the
+// server's — recency first, then name — and pages are appended as they come,
+// so a client must not re-sort them (see Apps.tsx).
+export interface AppsPage {
+  apps: AppInfo[];
+  offset: number;
+  limit: number;
+  total: number;
+  total_all: number;
+  tags: string[];
+  categories: string[];
+}
+
+export interface AppsPageParams {
+  offset: number;
+  limit: number;
+  tag?: string | null;
+  category?: string | null;
+  q?: string;
+  // Rebuild the server's snapshot before answering — for the refetch after a
+  // create or a showcase sync, when the folder that changed is exactly the one
+  // a 20 s TTL would hide.
+  fresh?: boolean;
+}
+
+export function getAppsPage(p: AppsPageParams, signal?: AbortSignal): Promise<AppsPage> {
+  const params = new URLSearchParams();
+  params.set("offset", String(p.offset));
+  params.set("limit", String(p.limit));
+  if (p.tag) params.set("tag", p.tag);
+  if (p.category) params.set("category", p.category);
+  if (p.q) params.set("q", p.q);
+  if (p.fresh) params.set("fresh", "1");
+  return getJson<AppsPage>(`/api/apps?${params.toString()}`, { signal });
+}
+
 // Home needs one recent row, not the exhaustive /apps catalog. The backend
 // hydrates stored recents first and only falls back to workspace discovery when
 // those do not fill the requested row.

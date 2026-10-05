@@ -1,6 +1,6 @@
 // Apps hub — lives at "/apps", chrome-free like Home (no sidebar, no
-// breadcrumb). Every detected app in the workspace (GET /api/apps) as a grid
-// of big preview cards — each thumbnail is the app itself rendered in a
+// breadcrumb). Every detected app in the workspace (GET /api/apps, one PAGE
+// at a time — see PAGE_SIZE) as a grid of big preview cards — each thumbnail is the app itself rendered in a
 // scaled, non-interactive iframe (AppPreviewCard). The list is narrowed by a
 // filter row — a Category/Folders mode selector with chips derived from the
 // apps themselves (categories from each folder's metadata.json, ordered
@@ -9,19 +9,21 @@
 // (name/title/tag/category, case-insensitive); the selector sits at the row's
 // left edge with the chips and search gathered at the right.
 // Order is always recently-opened (modified time stands in
-// for an app never opened — appEntry.sortApps); filtering never reorders cards
-// relative to each other.
+// for an app never opened); filtering never reorders cards relative to each
+// other. Filter, search, order and the chip rows are all the SERVER's
+// (routers/apps.py `_paged_apps`): the grid appends pages in the order they
+// arrive and never re-sorts, because re-sorting would interleave page 2 into
+// page 1 under the reader.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getApps, getBackgroundAppsRunning, getHomeApps } from "@platform/lib/api";
-import type { AppInfo, Config } from "@platform/lib/api";
+import { getAppsPage, getBackgroundAppsRunning } from "@platform/lib/api";
+import type { AppInfo, AppsPage, Config } from "@platform/lib/api";
 import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { appCardMenu } from "@platform/lib/appCardMenu";
-import { sortApps } from "@platform/lib/appEntry";
 import { runCommunity } from "@platform/lib/community";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
-import { orderCategories, repoChips } from "@apps/builder/app-categories";
+import { orderCategories } from "@apps/builder/app-categories";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
@@ -29,43 +31,23 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
 
-// The grid's three phases. "partial" is a REAL, OPENABLE prefix of the final
-// grid — Home's recent-first row (see the fetch effect) — not a placeholder:
-// sortApps is recency-first, so the cards it holds are the ones the exhaustive
-// catalog will also rank first, and the swap to "ok" appends rather than
-// reshuffles. Errors ride alongside in their own state rather than as a fourth
-// phase: a failed catalog fetch must not throw away a partial grid the user
-// can already click.
-type Loaded<T> =
-  | { status: "loading" }
-  | { status: "partial"; data: T }
-  | { status: "ok"; data: T };
-
-// How many cards the fast row asks for. The server caps it at HOME_APPS_LIMIT
-// (12) and its fast path only skips the exhaustive walk when the recents FILL
-// the request, so asking for more than a hub's first rows would buy nothing and
-// cost the walk twice — see /api/apps/home.
-const FAST_ROW = 12;
-
-// How many cards the grid draws per window. The catalog is fetched whole (the
-// chips, the count and the empty state all speak for the entire workspace, and
-// the fetch is the cheap half — see the fetch effect), but DRAWING it whole is
-// not cheap: every card is a DOM subtree, a preview.png request and two
-// IntersectionObserver entries, and the near-viewport gate in AppPreviewCard
-// only spares the iframe. A workspace in the hundreds paid all of that on
-// first paint for rows nobody had scrolled to. So the grid shows a window of
-// the filtered list and grows it as the reader nears the bottom (the sentinel
-// below) or asks for more. 24 is six rows at the layout's usual four columns:
-// well past a tall viewport, so the first window never looks like a fold.
+// How many cards one page asks for. The server fetches its catalog from a
+// snapshot and hydrates only this many, and the grid grows by this many as the
+// reader nears the bottom (the sentinel below) or asks for more. 24 is six
+// rows at the layout's usual four columns: well past a tall viewport, so the
+// first page never looks like a fold. Every card is a DOM subtree, a
+// preview.png request and two IntersectionObserver entries — AppPreviewCard's
+// near-viewport gate only spares the iframe — so what is NOT on a page is
+// what this number saves.
 const PAGE_SIZE = 24;
 
-// The last exhaustive catalog this tab fetched, kept at MODULE scope so it
-// outlives the page's unmount. Revisiting /apps is a common move (open an app,
-// come back) and a full grid drawn instantly from the previous answer, then
-// quietly replaced, beats a skeleton every time. Stale for as long as one
-// fetch takes: a card for an app deleted since is clickable and 404s on open,
-// the same as one deleted while the page sat open.
-let catalogCache: AppInfo[] | null = null;
+// The last first-page answer per filter, kept at MODULE scope so it outlives
+// the page's unmount. Revisiting /apps is a common move (open an app, come
+// back) and a grid drawn instantly from the previous answer, then quietly
+// replaced, beats a skeleton every time. Stale for as long as one fetch
+// takes: a card for an app deleted since is clickable and 404s on open, the
+// same as one deleted while the page sat open.
+const firstPages = new Map<string, AppsPage>();
 
 // Which facet the chips filter by. "category" reads each app's authored
 // metadata.json category; "repo" is the top-level workspace folder (tag):
@@ -151,9 +133,6 @@ function useRunningBackgroundApps(): Set<string> {
 }
 
 export default function Apps({ config }: { config: Config }) {
-  const [apps, setApps] = useState<Loaded<AppInfo[]>>(
-    catalogCache ? { status: "ok", data: catalogCache } : { status: "loading" },
-  );
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   // The selected filter lives in the URL (`?category=` or `?tag=`), not in
@@ -206,146 +185,133 @@ export default function Apps({ config }: { config: Config }) {
     setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app) });
   };
 
-  // Two fetches, in parallel, drawing the grid in two steps.
-  //
-  // The exhaustive catalog (GET /api/apps) is a recursive workspace walk plus
-  // an index query — a few hundred ms cold — and the hub used to show nothing
-  // but a skeleton for all of it. Home's row endpoint answers the same shape
-  // from the two recents stores by explicit path, so firing it alongside puts
-  // the apps the user actually uses on screen (and, more to the point, starts
-  // their preview iframes, which is the slow part) while the walk finishes.
-  //
-  // PARALLEL, not sequential: the fast row is only fast for a user with a full
-  // recents store — with fewer than FAST_ROW valid recents the server falls
-  // back to the same exhaustive walk — so it must never be a gate in front of
-  // the catalog. Its failure is likewise silent: the catalog is the answer,
-  // this is a head start.
-  //
-  // And ONLY while there is a skeleton for it to replace (`cold`). Once a full
-  // grid is on screen the fast row's answer is discarded on arrival anyway —
-  // the setApps guard below refuses to overwrite one — but for the thin-recents
-  // user the request is not free on the server either: /api/apps/home falls
-  // back to the SAME workspace walk, so firing it on a cache-warm revisit or on
-  // a `nonce` refetch (create, showcase sync) would pay that walk twice for an
-  // answer nothing reads.
-  const cold = useRef(catalogCache === null);
+  // The search box, debounced into the request. Search is a server round trip
+  // now (it has to be: a page of a filtered list cannot be cut on the client
+  // from a list it does not hold), so a keystroke waits 150 ms for the next
+  // one before it becomes a request. Against the server's snapshot a filtered
+  // page is a few milliseconds plus hydrating one page of cards.
+  const [q, setQ] = useState("");
   useEffect(() => {
-    let alive = true;
-    if (cold.current) {
-      getHomeApps(FAST_ROW).then(
-        ({ apps: fast }) => {
-          // Never overwrite a full grid — a catalog that simply won this race.
-          if (!alive || fast.length === 0) return;
-          setApps((prev) => (prev.status === "loading" ? { status: "partial", data: fast } : prev));
-        },
-        () => undefined,
-      );
-    }
-    getApps().then(
-      ({ apps }) => {
-        if (!alive) return;
-        catalogCache = apps;
-        cold.current = false;
-        setError(null);
-        setApps({ status: "ok", data: apps });
-      },
-      (e: Error) => alive && setError(e.message),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [nonce]);
+    const t = setTimeout(() => setQ(query.trim()), 150);
+    return () => clearTimeout(t);
+  }, [query]);
 
-  // Showcase apps are ordinary workspace apps now: the server clones the
-  // community repo into <workspace>/showcase in the background on startup,
-  // and the workspace scan picks it up like any other tag dir. No synthetic
-  // chip, no separate catalog surface.
-  //
-  // `all` is the CATALOG — chips, the count and the empty state all speak for
-  // the whole workspace, so they stay empty until the exhaustive answer lands
-  // (a chip row derived from twelve recents would drop options as the rest
-  // arrived, which reads as the page mis-drawing itself). `cards` is whatever
-  // is drawable NOW, partial row included.
-  const all = apps.status === "ok" ? apps.data : [];
-  const cards = apps.status === "loading" ? [] : apps.data;
-  // Folders chips, minus the exported `.fused` rows — see repoChips for why an
-  // app FILE contributes none.
-  const tags = useMemo(() => repoChips(all), [all]);
-  // Categories scanned from the apps themselves (metadata.json `category`).
-  // Apps without one carry null and so only ever appear under All. Ordered by
-  // orderCategories: the curated running order (starters, local-ai,
-  // productivity, geospatial) leads the row, then locale-alphabetical for
-  // anything else a workspace turns up (which also replaces the code-unit sort
-  // the Folders chips still use — see app-categories). Card order in the grid
-  // is unaffected.
-  const categories = useMemo(
-    () => orderCategories(all.map((a) => a.category).filter((c): c is string => !!c)),
-    [all],
-  );
-  const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1));
-  const runningPaths = useRunningBackgroundApps();
-  const q = query.trim().toLowerCase();
-  const shown = useMemo(
-    () =>
-      sortApps(
-        cards.filter(
-          (a) =>
-            (tag === null || a.tag === tag) &&
-            (category === null || a.category === category) &&
-            (q === "" ||
-              a.name.toLowerCase().includes(q) ||
-              (a.title ?? "").toLowerCase().includes(q) ||
-              (a.category ?? "").toLowerCase().includes(q) ||
-              a.tag.toLowerCase().includes(q)),
-        ),
-      ),
-    [cards, tag, category, q],
-  );
-  // The window over `shown` — see PAGE_SIZE. It belongs to ONE filter: a new
-  // chip or query is a new list and its first page is the right place to
-  // land, so the stored limit carries the filter it was grown under and is
-  // discarded the render the filter changes. That reset happens DURING
-  // render (React re-renders before committing) rather than in an effect: an
-  // effect runs after paint, and a reader who had grown the window to a
-  // hundred cards would get one committed frame of a hundred cards of the NEW
-  // list — the mounts, image requests and observers this window exists to
-  // avoid — before the collapse. `nonce` is deliberately not in the key: a
-  // refetch after create/sync keeps the reader's place.
+  // The filter this grid is for. A new chip or query is a new list and its
+  // first page is the right place to land, so the pages below are keyed by
+  // it and discarded the render it changes — DURING render (React re-renders
+  // before committing), not in an effect after paint: an effect would commit
+  // one frame of the OLD list's pages under the new filter first, which for a
+  // reader who had scrolled a hundred cards deep is a hundred mounts, image
+  // requests and observers for cards about to vanish. `nonce` is deliberately
+  // not in the key: a refetch after create/sync keeps the reader's place.
   const filterKey = `${tag ?? ""}\u0000${category ?? ""}\u0000${q}`;
-  const [win, setWin] = useState({ key: filterKey, limit: PAGE_SIZE });
-  if (win.key !== filterKey) setWin({ key: filterKey, limit: PAGE_SIZE });
-  const limit = win.key === filterKey ? win.limit : PAGE_SIZE;
-  const windowed = useMemo(() => shown.slice(0, limit), [shown, limit]);
-  // Only the exhaustive catalog has a fold: the partial row is twelve cards
-  // at most and is replaced wholesale when the catalog lands.
-  const hasMore = apps.status === "ok" && shown.length > windowed.length;
-  const showMore = () => setWin((w) => ({ ...w, limit: w.limit + PAGE_SIZE }));
+  const [loaded, setLoaded] = useState<{ key: string; page: AppsPage | null }>(() => ({
+    key: filterKey,
+    page: firstPages.get(filterKey) ?? null,
+  }));
+  if (loaded.key !== filterKey) {
+    setLoaded({ key: filterKey, page: firstPages.get(filterKey) ?? null });
+  }
+  const page = loaded.key === filterKey ? loaded.page : (firstPages.get(filterKey) ?? null);
+
+  // Page 1 (and the refetch). One request per filter key / nonce, the previous
+  // one aborted: a fast typist's intermediate queries never land out of order
+  // over the one they meant. A `nonce` refetch asks for as many cards as are
+  // already on screen (never fewer than a page) with `fresh`, so the snapshot
+  // behind it is rebuilt and the reader keeps their place; a filter change
+  // asks for the first page. A failed fetch keeps whatever grid is drawn —
+  // the error is its own state, not a phase that blanks the cards.
+  useEffect(() => {
+    const ctl = new AbortController();
+    const refetch = nonce > 0;
+    const limit = refetch
+      ? Math.max(PAGE_SIZE, firstPages.get(filterKey)?.apps.length ?? 0)
+      : PAGE_SIZE;
+    getAppsPage({ offset: 0, limit, tag, category, q, fresh: refetch }, ctl.signal).then(
+      (res) => {
+        if (ctl.signal.aborted) return;
+        firstPages.set(filterKey, res);
+        setError(null);
+        setLoaded({ key: filterKey, page: res });
+      },
+      (e: Error) => {
+        if (!ctl.signal.aborted) setError(e.message);
+      },
+    );
+    return () => ctl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tag/category/q are inside filterKey
+  }, [filterKey, nonce]);
+
+  // The next page, appended. Guarded by `loadingMore` (one in flight) and by
+  // there being more: the sentinel below asks for this on every intersect and
+  // a tall viewport asks several times in a row. The appended result is also
+  // stored as the filter's first-page answer so a revisit paints the whole
+  // grown grid, not just its first page.
+  const [loadingMore, setLoadingMore] = useState(false);
+  const hasMore = page !== null && page.apps.length < page.total;
+  const loadMore = () => {
+    if (!page || !hasMore || loadingMore) return;
+    setLoadingMore(true);
+    const key = filterKey;
+    getAppsPage({ offset: page.apps.length, limit: PAGE_SIZE, tag, category, q }).then(
+      (res) => {
+        setLoadingMore(false);
+        const cur = firstPages.get(key);
+        if (!cur || cur.apps.length !== res.offset) return; // a refetch moved under us
+        const grown = { ...res, offset: 0, apps: [...cur.apps, ...res.apps] };
+        firstPages.set(key, grown);
+        setLoaded((l) => (l.key === key ? { key, page: grown } : l));
+      },
+      (e: Error) => {
+        setLoadingMore(false);
+        setError(e.message);
+      },
+    );
+  };
   // Auto-extend: a sentinel after the grid, observed inside the page's own
   // scroller (the same root useNearViewport uses, since this page owns its
-  // vertical scroll), with a generous lookahead so the next window is in the
-  // DOM before the reader reaches the last row.
+  // vertical scroll), with a generous lookahead so the next page is requested
+  // before the reader reaches the last row.
   //
-  // Re-observed on every `limit`, not just on `hasMore`. An observer reports
-  // CHANGES of intersection, and after one extend on a wide or tall viewport
-  // the sentinel can still sit inside the lookahead zone — eight columns put
-  // a whole window in three rows — so nothing would fire again and the
-  // auto-load would stall with the pill as the only way on. A fresh
-  // `observe()` always delivers its initial state, which is what makes this
-  // keep going until the sentinel is pushed clear or `hasMore` flips.
+  // Re-observed on every page length, not just on `hasMore`. An observer
+  // reports CHANGES of intersection, and after one page on a wide or tall
+  // viewport the sentinel can still sit inside the lookahead zone — eight
+  // columns put a whole page in three rows — so nothing would fire again and
+  // the scroll would stall with the pill as the only way on. A fresh
+  // `observe()` always delivers its initial state, which is what keeps this
+  // going until the sentinel is pushed clear or `hasMore` flips.
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const shownCount = page?.apps.length ?? 0;
   useEffect(() => {
     const el = sentinelRef.current;
     if (!hasMore || !el) return;
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting))
-          setWin((w) => ({ ...w, limit: w.limit + PAGE_SIZE }));
+        if (entries.some((e) => e.isIntersecting)) loadMore();
       },
       { root: el.closest(".apps-page"), rootMargin: "600px 0px" },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [hasMore, limit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMore reads current state
+  }, [hasMore, shownCount, loadingMore]);
+
+  const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1));
+  const runningPaths = useRunningBackgroundApps();
+  // Showcase apps are ordinary workspace apps now: the server clones the
+  // community repo into <workspace>/showcase in the background on startup,
+  // and the workspace scan picks it up like any other tag dir. No synthetic
+  // chip, no separate catalog surface.
+  //
+  // Chips speak for the WHOLE catalog, which is why the server sends them
+  // with every page rather than the client deriving them from the cards it
+  // holds. Folders: the server's sorted tag list (minus exported `.fused`
+  // rows — see app-categories repoChips for why). Categories: orderCategories
+  // puts the curated running order (starters, local-ai, productivity,
+  // geospatial) first, then locale-alphabetical for anything else a workspace
+  // turns up. Card order in the grid is unaffected.
+  const tags = page?.tags ?? [];
+  const categories = orderCategories(page?.categories ?? []);
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
 
@@ -355,13 +321,7 @@ export default function Apps({ config }: { config: Config }) {
         {/* Same hero as Home: prompt composer that names, scaffolds, and lands
             in the new app's claude chat. Creating from here refreshes the grid. */}
         <HomeHero onCreated={() => setNonce((n) => n + 1)} />
-
-        {/* The hero's composer needs Claude Code, so the heads-up belongs
-            wherever the hero does — this page is the other front door, not a
-            second-class copy of Home. BELOW the hero here rather than above it:
-            the wordmark is this page's masthead, and pushing it down the page
-            would make a dismissible notice look like the app's own chrome.
-            Renders nothing when there is nothing to say. */}
+        {/* Shows ONLY when the Claude CLI isn't on PATH, with a one-click fix. */}
         <ClaudeHealthStrip />
         <FdaStrip />
 
@@ -384,12 +344,7 @@ export default function Apps({ config }: { config: Config }) {
               </button>
             ))}
           </div>
-          {/* Held open through the partial phase (chips are catalog-derived and
-              so still empty then): letting the row appear when the catalog
-              lands would push the grid down under a pointer already on a
-              card. */}
-          {(chips.length > 0 || tag !== null || category !== null
-            || apps.status === "partial") && (
+          {(chips.length > 0 || tag !== null || category !== null) && (
             <div className="apps-tags" role="group" aria-label={`Filter by ${modeLabel(mode)}`}>
               {/* Active only when nothing filters; clicking clears both params. */}
               <button
@@ -430,33 +385,28 @@ export default function Apps({ config }: { config: Config }) {
         {/* Above the grid, not inside its empty state: the local apps below
             are fine, it is only the showcase half that is missing. */}
         {showcaseError && <div className="apps-showcase-note">{showcaseError}</div>}
-        {/* Skeleton only while there is nothing drawable at all: once the fast
-            row has landed the cards themselves are the loading indicator, and
-            the count line below says the rest is still coming. */}
-        {apps.status === "loading" && !error && <SkeletonLines rows={4} label="Loading apps" />}
-        {apps.status !== "loading" && (
+        {/* Skeleton only while there is nothing drawable at all: once a page
+            has landed the cards themselves are the loading indicator. */}
+        {page === null && !error && <SkeletonLines rows={4} label="Loading apps" />}
+        {page !== null && (
           <>
+            {/* The FILTER count, never the page: "24 of 300" would read as a
+                filter the reader did not set. */}
             <div className="apps-count">
-              {apps.status === "partial"
-                ? "Recently opened — loading all apps…"
-                : shown.length === all.length
-                  ? `${all.length} app${all.length === 1 ? "" : "s"}`
-                  : `${shown.length} of ${all.length} apps`}
+              {page.total === page.total_all
+                ? `${page.total_all} app${page.total_all === 1 ? "" : "s"}`
+                : `${page.total} of ${page.total_all} apps`}
             </div>
-            {shown.length === 0 ? (
-              // Nothing to say yet during the partial phase: "no apps match" is
-              // a claim about the whole catalog, which has not arrived.
-              apps.status === "partial" ? null : (
-                <div className="home-empty">
-                  {all.length === 0
-                    ? "No apps yet. Describe one in the composer above to create it."
-                    : "No apps match — clear the search or filter."}
-                </div>
-              )
+            {page.apps.length === 0 ? (
+              <div className="home-empty">
+                {page.total_all === 0
+                  ? "No apps yet. Describe one in the composer above to create it."
+                  : "No apps match — clear the search or filter."}
+              </div>
             ) : (
               <>
                 <div className="apps-cards">
-                  {windowed.map((app) => (
+                  {page.apps.map((app) => (
                     <AppPreviewCard
                       key={app.path}
                       app={app}
@@ -472,8 +422,10 @@ export default function Apps({ config }: { config: Config }) {
                         for the reader who scrolls with the keyboard or whose
                         observer never fires. The count is what is LEFT, so it
                         reads as progress rather than as a filter. */}
-                    <button type="button" className="fhb-more" onClick={showMore}>
-                      Show more ({shown.length - windowed.length} remaining)
+                    <button type="button" className="fhb-more" onClick={loadMore} disabled={loadingMore}>
+                      {loadingMore
+                        ? "Loading…"
+                        : `Show more (${page.total - page.apps.length} remaining)`}
                     </button>
                   </>
                 )}
