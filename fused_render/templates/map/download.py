@@ -234,9 +234,11 @@ def _alive(pid) -> bool:
 def _resumable(candidate: Path, source: str) -> bool:
     """Whether `candidate.part` is an interrupted download of this same source:
     its progress file names the source, and the process that wrote it is gone."""
+    from blob_tokens import unsigned
+
     state = _read_progress(candidate)
-    return (state.get("source") == source and not state.get("finished")
-            and not _alive(state.get("pid")))
+    return (unsigned(state.get("source") or "") == unsigned(source)
+            and not state.get("finished") and not _alive(state.get("pid")))
 
 
 def _free_name(dest_dir: Path, name: str, source: str = "") -> tuple[Path, bool]:

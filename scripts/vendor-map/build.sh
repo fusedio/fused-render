@@ -32,6 +32,12 @@ prefix=$(grep -o '"__[a-z]*_kml_icon_url"' "$VENDOR/map.bundle.mjs" | head -1 | 
 if [ -n "$prefix" ] && [ "$prefix" != "__fmvec_" ]; then
   sed -i.bak "s#${prefix}#__fmvec_#g" "$VENDOR/map.bundle.mjs"
 fi
+# The point-cloud library loads its LAZ decoder from unpkg; ship it beside the
+# bundle instead so LAZ/COPC opens offline (fails if the URL stops matching).
+LAZ_CDN='"https://unpkg.com/laz-perf@0.0.7/lib/web/laz-perf.wasm"'
+grep -qF "$LAZ_CDN" "$VENDOR/map.bundle.mjs"
+sed -i.bak "s#${LAZ_CDN}#new URL(\"./laz-perf.wasm\",import.meta.url).href#g" "$VENDOR/map.bundle.mjs"
+cp node_modules/copc/node_modules/laz-perf/lib/web/laz-perf.wasm "$VENDOR/laz-perf.wasm"
 rm -f "$VENDOR/map.bundle.mjs.bak"
-cat node_modules/maplibre-gl/dist/maplibre-gl.css > "$VENDOR/map.bundle.css"
+cat node_modules/maplibre-gl/dist/maplibre-gl.css node_modules/maplibre-gl-lidar/dist/maplibre-gl-lidar.css > "$VENDOR/map.bundle.css"
 echo "built $VENDOR/map.bundle.mjs"
