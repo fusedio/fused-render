@@ -8,6 +8,7 @@ import {
   sideToggleTarget,
   sideReopenedByUrl,
   reconcileSideSearch,
+  sideFromMemory,
   writeQueryParam,
   SIDE_OFF,
   type SideEntry,
@@ -884,5 +885,145 @@ describe("a companion-less file in a folder with no working tree", () => {
         defaultSide: denied.defaultSide,
       })
     ).toBe("");
+  });
+});
+
+// THE REMEMBERED TAB (`lib/side-tab-store.ts`): where the URL names no mode, the
+// last tab the user picked this document leads over the file's default — but only
+// when that companion is READY (known to exist, not pending), so it can never
+// open a pending entry or swap columns under the user.
+describe("resolveSide with a remembered tab", () => {
+  const both = () => sideSplit(file([claude], "yes"));
+
+  it("a silent URL opens the remembered tab instead of the default", () => {
+    const s = both();
+    expect(s.defaultSide).toBe("claude");
+    expect(resolveSide(parseSide(""), s, "git")).toBe("git");
+  });
+
+  it("an explicit _side still wins over the remembered tab", () => {
+    expect(resolveSide(parseSide("?_side=claude"), both(), "git")).toBe("claude");
+  });
+
+  it("a remembered tab this file does not offer falls back to the default", () => {
+    expect(resolveSide(parseSide(""), sideSplit(file([claude], "no")), "git")).toBe("claude");
+  });
+
+  it("a PENDING borrowed git is not opened by the memory, and the default does not stand in", () => {
+    const s = sideSplit(file([claude], "pending"));
+    expect(s.defaultSide).toBe("claude");
+    // "not yet" (the posture defaultSide takes for a pending leader), not claude:
+    // claude would be swapped for git when the probe lands.
+    expect(resolveSide(parseSide(""), s, "git")).toBe(null);
+  });
+
+  it("pending -> ready opens the remembered tab with no default in between; pending -> denied lands on the default", () => {
+    const seen = (b: "pending" | "yes" | "no") =>
+      resolveSide(parseSide(""), sideSplit(file([claude], b)), "git");
+    expect([seen("pending"), seen("yes")]).toEqual([null, "git"]);
+    expect([seen("pending"), seen("no")]).toEqual([null, "claude"]);
+  });
+
+  it("while the remembered tab is pending the reconcile leaves _side alone", () => {
+    const s = sideSplit(file([claude], "pending"));
+    const active = resolveSide(parseSide(""), s, "git");
+    expect(
+      reconcileSideSearch("", {
+        splitCapable: true,
+        offered: s.offered,
+        open: true,
+        activeSide: active,
+        defaultSide: s.defaultSide,
+      })
+    ).toBe(null);
+  });
+
+  it("a gated claude still in flight is not opened by the memory", () => {
+    const s = sideSplit({ ...file([gatedClaude], "yes"), conditionsPending: true });
+    // git is settled and remembered: it opens.
+    expect(resolveSide(parseSide(""), s, "git")).toBe("git");
+    // the memory is claude, which is unresolved: nothing opens yet.
+    expect(resolveSide(parseSide(""), s, "claude")).toBe(null);
+    // ...and once the gate answers, the remembered claude opens.
+    expect(
+      resolveSide(
+        parseSide(""),
+        sideSplit({ ...file([gatedClaude], "yes"), conditionsPending: false }),
+        "claude"
+      )
+    ).toBe("claude");
+  });
+
+  it("a shut sidebar stays shut whatever is remembered", () => {
+    expect(resolveSide(parseSide("?_side=off"), both(), "git")).toBe(null);
+    expect(resolveSide(parseSide("", true), both(), "git")).toBe(null);
+  });
+
+  it("no memory is the old behaviour", () => {
+    expect(resolveSide(parseSide(""), both(), null)).toBe("claude");
+  });
+
+  it("the reconcile never writes a memory-derived tab into the URL (stable, no loop)", () => {
+    const s = both();
+    const req = parseSide("");
+    const active = resolveSide(req, s, "git");
+    expect(active).toBe("git");
+    expect(sideFromMemory(req, active, "git")).toBe(true);
+    const o = {
+      splitCapable: true,
+      offered: s.offered,
+      open: true,
+      activeSide: active,
+      defaultSide: s.defaultSide,
+      fromMemory: true,
+    };
+    expect(reconcileSideSearch("", o)).toBe(null);
+    expect(reconcileSideSearch("?zoom=2", o)).toBe(null);
+  });
+
+  it("sideFromMemory is false for an explicit mode, a default landing, or no memory", () => {
+    const s = both();
+    expect(sideFromMemory(parseSide("?_side=git"), "git", "git")).toBe(false);
+    expect(sideFromMemory(parseSide(""), "claude", "git")).toBe(false);
+    expect(sideFromMemory(parseSide(""), "claude", null)).toBe(false);
+    expect(sideFromMemory(parseSide("?_side=off"), null, "git")).toBe(false);
+    expect(s.defaultSide).toBe("claude");
+  });
+
+  it("an explicit pick still writes `_side` (fromMemory false)", () => {
+    const s = both();
+    expect(
+      reconcileSideSearch("", {
+        splitCapable: true,
+        offered: s.offered,
+        open: true,
+        activeSide: "git",
+        defaultSide: s.defaultSide,
+      })
+    ).toBe("_side=git");
+  });
+});
+
+// Only an EXPLICIT pick writes the remembered tab (mirroring Listing): the toggle
+// reopen/close/reconcile go through `setSide(next)` with no `tab`, so reopening on
+// a file lacking the remembered companion cannot overwrite the real pick with the
+// fallback it landed on.
+describe("Preview records the remembered tab only on an explicit pick", () => {
+  it("setSideTab is called once, guarded by the explicit `tab` argument", async () => {
+    const src = await Bun.file(new URL("../Preview.tsx", import.meta.url).pathname).text();
+    expect(src.match(/setSideTab\(/g)?.length).toBe(1);
+    expect(src).toContain("if (tab) setSideTab(tab);");
+    expect(src).toContain("onSelect={(m) => setSide(m, m ?? undefined)}");
+    // the toggle reopen passes no tab
+    expect(src).toContain("else if (sideTarget) setSide(sideTarget);");
+  });
+
+  it("App Doctor's Open Git is an explicit request for Git, so it is remembered", async () => {
+    const pv = await Bun.file(new URL("../Preview.tsx", import.meta.url).pathname).text();
+    const ls = await Bun.file(new URL("../Listing.tsx", import.meta.url).pathname).text();
+    expect(pv).toContain('applySide("git", "git")');
+    // Open With -> Git is an explicit pick too, so it passes the tab.
+    expect(pv).toContain("else if (sideOn && isSidebarMode(m)) setSide(m, m);");
+    expect(ls).toContain('setSide({ open: true, mode: "git" }, "git")');
   });
 });
