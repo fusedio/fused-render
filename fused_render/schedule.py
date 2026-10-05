@@ -99,6 +99,7 @@ module; keep it acyclic.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -107,7 +108,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import _startonce, claude_spawn, cron, recur
+from fused_render import _startonce, claude_spawn, cron, recur, tasks_store
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,36 @@ _events_lock = threading.Lock()
 # loop thread, the request thread, and the recording threads, and last-write-wins
 # across THOSE would drop a cancel or resurrect a fired entry.
 _lock = threading.RLock()
+
+# The same read-modify-write, across PROCESSES. `_lock` only serialises threads
+# of one process, but several `fused-render open` processes (and `serve`) share
+# one store, and only the machine-duties leader ticks: a non-leader's cancel
+# racing the leader's claim would be overwritten by whichever wrote last with a
+# snapshot taken before the other's change — a cancelled message that still
+# fires. Every RMW therefore runs under `_store_lock()`, which takes `_lock`
+# first and a sibling flock on the store second (never the reverse), and
+# RE-READS inside it. `flock` is not reentrant, so nesting is counted: the depth
+# is only touched while `_lock` is held, i.e. by one thread at a time.
+_store_depth = 0
+
+
+@contextlib.contextmanager
+def _store_lock():
+    global _store_depth
+    with _lock:
+        if _store_depth:
+            _store_depth += 1
+            try:
+                yield
+            finally:
+                _store_depth -= 1
+            return
+        with tasks_store.locked_path(store_path() + ".lock"):
+            _store_depth = 1
+            try:
+                yield
+            finally:
+                _store_depth = 0
 
 # Serialises the wake stub's launchctl pair. Separate from `_lock` because
 # `_sync_wake` must not hold the store lock across two subprocesses; see there for
@@ -1811,7 +1842,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
                     f"target: {target} exists and is not a folder") from None
         except OSError as exc:
             raise ValueError(f"target: could not create {target}: {exc}") from exc
-    with _lock:
+    with _store_lock():
         entries = _read()
         entries.append(entry)
         _write(entries)
@@ -1841,7 +1872,7 @@ def cancel(entry_id: str) -> dict | None:
     opposite — skip this one, keep the schedule (the next materialization pass
     picks up from the skipped time)."""
     cancelled = None
-    with _lock:
+    with _store_lock():
         entries = _read()
         for entry in entries:
             if entry.get("id") != entry_id:
@@ -1916,7 +1947,7 @@ def restore(entry_id: str) -> dict | None:
     the firing loop handles each at its own time, which is exactly what
     "unskip" means."""
     restored = None
-    with _lock:
+    with _store_lock():
         entries = _read()
         templates = {str(e.get("id")): e for e in entries
                      if e.get("state") == RECURRING}
@@ -2071,7 +2102,7 @@ def cancel_queued(entry_ids=None, all_queued: bool = False,
     cancelled: list[str] = []
     refused: list[str] = []
     reasons: dict[str, str] = {}
-    with _lock:
+    with _store_lock():
         entries = _read()
         by_id = {str(e.get("id") or ""): e for e in entries}
         if all_queued:
@@ -2146,7 +2177,7 @@ def set_priority(entry_ids: list[str], value: bool) -> dict:
     updated: list[str] = []
     refused: list[str] = []
     keys: set[str] = set()
-    with _lock:
+    with _store_lock():
         entries = _read()
         by_id = {str(e.get("id") or ""): e for e in entries}
         changed = False
@@ -2183,7 +2214,7 @@ def _update(entry_id: str, **fields) -> None:
     """Merge `fields` into one entry, re-reading under the lock so a concurrent
     cancel or create is not clobbered by a stale copy."""
     written = False
-    with _lock:
+    with _store_lock():
         entries = _read()
         for entry in entries:
             if entry.get("id") == entry_id:
@@ -2249,7 +2280,7 @@ def _claim_due(now: datetime) -> list[dict]:
     (`_emit` takes its own), so the two locks are never nested."""
     due: list[tuple[datetime, str, dict]] = []
     announce: list[tuple[str, dict, str]] = []
-    with _lock:
+    with _store_lock():
         entries = _read()
         changed = False
         for entry in entries:
@@ -2369,7 +2400,7 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
     ("resume this one"), and a row that resumed a conversation without recording
     which one would read afterwards as a fresh send. `session_learned` goes with
     it, because the system worked this id out from a run — nobody chose it."""
-    with _lock:
+    with _store_lock():
         entries = _read()
         for entry in entries:
             if entry.get("id") != entry_id:
@@ -2988,7 +3019,7 @@ def _chain_session(template_id: str, ran: str) -> None:
     """
     if not template_id or not ran:
         return
-    with _lock:
+    with _store_lock():
         entries = _read()
         template = next((e for e in entries
                          if str(e.get("id") or "") == template_id), None)
@@ -3421,7 +3452,7 @@ def _coalesce(now: datetime) -> None:
     what keeps this from resurrecting anything: an entry the old bound already
     called `missed` is terminal and invisible here."""
     announce: list[tuple[str, dict, str]] = []
-    with _lock:
+    with _store_lock():
         entries = _read()
         templates = {str(e.get("id")): e for e in entries
                      if e.get("state") == RECURRING}
@@ -3598,7 +3629,7 @@ def _materialize(now: datetime) -> None:
     to `error` and announced — silently never firing again is the one outcome
     this feature must not have."""
     announce: list[tuple[str, dict, str]] = []
-    with _lock:
+    with _store_lock():
         entries = _read()
         occurrences: dict[str, list[dict]] = {}
         for entry in entries:

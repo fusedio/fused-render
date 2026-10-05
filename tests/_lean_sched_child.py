@@ -22,7 +22,22 @@ def lockrmw(lock_path, counter, n):
                 f.write(str(v + 1))
 
 
-COMMANDS = {"lockrmw": lockrmw}
+def sched_create(target, n):
+    """Create n far-future entries; print their ids, one per line, to stdout."""
+    from fused_render import schedule
+    for i in range(int(n)):
+        entry = schedule.create(target, f"created {i}", "2099-01-01T00:00:00+00:00")
+        print(entry["id"], flush=True)
+
+
+def sched_cancel(ids_file):
+    from fused_render import schedule
+    for entry_id in open(ids_file).read().split():
+        assert schedule.cancel(entry_id), entry_id
+
+
+COMMANDS = {"lockrmw": lockrmw, "sched_create": sched_create,
+            "sched_cancel": sched_cancel}
 
 if __name__ == "__main__":
     COMMANDS[sys.argv[1]](*sys.argv[2:])
