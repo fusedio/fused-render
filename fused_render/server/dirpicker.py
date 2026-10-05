@@ -46,17 +46,14 @@ subprocess:
   ends — see the one-dialog claim section below, and `DialogAbandoned`.
 """
 import functools
-import ntpath
 import os
-import posixpath
 import shutil
 import subprocess
 import sys
 import threading
 from collections.abc import Sequence
-from pathlib import PureWindowsPath
 
-from fused_render._view_url_codec import _is_drive_path, canonical_fs_path
+from fused_render._view_url_codec import _is_drive_path, canonical_fs_path, normpath_for_shape
 from fused_render.server.common import logger
 
 # Long enough that a human really can browse to a folder, short enough that a
@@ -375,25 +372,6 @@ def _forget_outstanding_dialog() -> None:
 # ----------------------------------------------------------------- the entry point
 
 
-def _normpath_for_shape(path: str) -> str:
-    """`normpath` chosen by the SHAPE of the path, not by the host OS.
-
-    `os.path.normpath` is the host's: on POSIX it cannot see that a backslash is a
-    separator, so it leaves `C:\\Users\\ada\\code\\` with its trailing separator
-    and its `..` uncollapsed. That is invisible in production (a Windows path is
-    produced on Windows) and precisely why it is worth not depending on — it is
-    the same host-dependence that made the backslash bug itself invisible, and it
-    would silently weaken every test of this function written anywhere else.
-
-    A path with a Windows drive — a letter or a UNC share — is normalized as one;
-    anything else as POSIX, where a backslash stays the legal filename character
-    it is.
-    """
-    if PureWindowsPath(path).drive:
-        return ntpath.normpath(path)
-    return posixpath.normpath(path)
-
-
 def _canonical_absolute(chosen: str) -> str:
     """The form a picked folder is handed on in: canonical, and really absolute.
 
@@ -420,7 +398,7 @@ def _canonical_absolute(chosen: str) -> str:
     a Windows server produces — so `os.path.isabs` alone would reject the real
     answer anywhere but Windows.
     """
-    canonical = canonical_fs_path(_normpath_for_shape(chosen))
+    canonical = canonical_fs_path(normpath_for_shape(chosen))
     if not (os.path.isabs(canonical) or _is_drive_path(canonical)):
         raise PickerFailed(
             f"the folder chooser answered a relative path: {canonical!r}")

@@ -122,9 +122,14 @@ LOCAL_TAG = "local"
 # and unlinks it — best-effort, so a process that dies between the `os.open`
 # and the `os.unlink` leaves a stray zero-byte file behind. Left unignored, a
 # scoped `git add -A` would sweep that leftover into the app's history.
+#
+# `__pycache__/` is Python's bytecode cache: machine-generated, rebuilt on
+# the next import, and every app that runs a `.py` grows one. The App
+# Doctor's `generated` row honors gitignore, so ignoring it here keeps a
+# fresh app green there.
 _GITIGNORE = (
     "*.html.json\n.claude-split.json\n.venv/\n.fused/\n"
-    ".fused-render-write-probe.*\n"
+    ".fused-render-write-probe.*\n__pycache__/\n"
 )
 
 # The shared repo's root .gitignore: the per-app set plus the one file macOS

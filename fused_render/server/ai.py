@@ -688,17 +688,75 @@ class _AiSession:
 _AI_SESSION = _AiSession()
 
 
-async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
+#: Image types the Claude API accepts as a base64 `image` block, by file
+#: extension. Anything else (HEIC, TIFF, BMP, SVG, PDF) is refused up front —
+#: the API would reject it a subprocess hop later with a far less useful
+#: sentence — so a caller converts first (`sips -s format png` on macOS).
+_CLAUDE_IMAGE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+#: Per-image byte cap on the Claude tier: the API refuses an image block over
+#: 5 MB, and base64 grows the bytes by a third, so the file itself must stay
+#: under 3.75 MB. Checked here so the refusal names the file, not an opaque
+#: API error after the round trip.
+_CLAUDE_IMAGE_MAX_BYTES = 3_750_000
+
+
+def _claude_image_blocks(images: list[str]) -> tuple[list[dict] | None, str | None]:
+    """`images` (absolute paths, already resolved) as Claude API `image`
+    content blocks, or (None, why-not).
+
+    The Claude CLI has no attachment flag, but its stream-json stdin protocol
+    carries a full API user message, and an `image` block with a base64
+    `source` is part of that message shape — so a picture travels the same
+    way the prompt already does, never through argv. Read eagerly and fully
+    here so a missing or oversized file is a `bad_request` naming it, instead
+    of the CLI's own error a subprocess hop later."""
+    import base64
+    blocks = []
+    for path in images:
+        ext = os.path.splitext(path)[1].lower()
+        media = _CLAUDE_IMAGE_TYPES.get(ext)
+        if not media:
+            return None, (f"'images': {path!r} is not a type Claude accepts "
+                          f"({', '.join(sorted(_CLAUDE_IMAGE_TYPES))}); convert "
+                          "it to PNG or JPEG first")
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return None, f"'images': {path!r} does not exist or is not readable"
+        if size > _CLAUDE_IMAGE_MAX_BYTES:
+            return None, (f"'images': {path!r} is {size} bytes; Claude accepts "
+                          f"at most {_CLAUDE_IMAGE_MAX_BYTES} per image — "
+                          "downscale it first")
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            return None, f"'images': could not read {path!r}: {exc}"
+        blocks.append({"type": "image", "source": {
+            "type": "base64", "media_type": media,
+            "data": base64.b64encode(data).decode("ascii")}})
+    return blocks, None
+
+
+async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None,
+                    image_blocks: list[dict] | None = None) -> dict:
     """Write the user message to a stream-json process and read events until
     the terminal `result` line; return it parsed.
 
     `on_delta(text)` is called per text_delta when streaming (thinking_delta
-    and every other event type are skipped). The timeout covers message-write
-    to result. Raises asyncio.TimeoutError or _AiProcFailure (died/EOF/
-    garbage before a result — the process is reaped on EOF; the session
-    notices its death via returncode on the next request)."""
+    and every other event type are skipped). `image_blocks` (from
+    `_claude_image_blocks`) go BEFORE the text in the same user message, the
+    order the API documents for image-then-question prompts. The timeout
+    covers message-write to result. Raises asyncio.TimeoutError or
+    _AiProcFailure (died/EOF/garbage before a result — the process is reaped
+    on EOF; the session notices its death via returncode on the next
+    request)."""
+    content = list(image_blocks or []) + [{"type": "text", "text": prompt}]
     message = json.dumps({"type": "user", "message": {
-        "role": "user", "content": [{"type": "text", "text": prompt}]}})
+        "role": "user", "content": content}})
     deadline = asyncio.get_running_loop().time() + timeout
     try:
         proc.stdin.write((message + "\n").encode("utf-8"))
@@ -825,9 +883,11 @@ def _unsupported(setting: str, tier: str, why: str) -> dict:
     provider design called for: with N tiers × M knobs, "400 on anything a
     tier lacks" stops scaling and starts hiding real errors behind tunables.
     It applies to TUNABLES only — a knob whose absence changes quality, not
-    meaning. `history`, `raw` and `images` stay 400s on the Claude tier:
+    meaning. `history` and `raw` stay 400s on the Claude tier:
     dropping those answers a different question than the one asked, which
-    is not a degraded answer but a wrong one.
+    is not a degraded answer but a wrong one. (`images` IS honoured on the
+    Claude tier since the stdin message gained image blocks — see
+    `_claude_image_blocks`.)
     """
     return {"type": "unsupported-setting",
             "setting": _OPTION_NAMES.get(setting, setting),
@@ -883,10 +943,10 @@ _MAX_IMAGES = 8
 
 
 def _images_problem(images) -> str | None:
-    """Why this `images` list is unusable, or None. Local models only — the
-    caller-facing refusal for a Claude-tier request lives in `_ai_relay`,
-    beside `history`'s and `raw`'s own refusals, and this only checks the
-    SHAPE: a list of non-empty strings, under the cap."""
+    """Why this `images` list is unusable, or None. Every tier — this only
+    checks the SHAPE: a list of non-empty strings, under the cap. The Claude
+    tier then reads the files (`_claude_image_blocks`); a local model's
+    worker reads them itself."""
     if not isinstance(images, list):
         return "'images' must be a list of file paths"
     if len(images) > _MAX_IMAGES:
@@ -1494,8 +1554,8 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
     # Base images for a vision-language local model, on the CURRENT turn only
     # (mlx_text/worker.py's own boundary — `history` stays text-only, matching
     # `_history_problem`'s `content: str` requirement, which this leaves
-    # alone). Shape-checked here, refused for Claude below, same as history
-    # and raw.
+    # alone). Shape-checked here; Claude attaches them as API image blocks
+    # below, apple refuses them until the OS offers image input.
     images = body.get("images")
     if images is not None:
         problem = _images_problem(images)
@@ -1533,7 +1593,8 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
     # provider decides; only an omitted one falls back to the model's shape.
     # Options a tier cannot honour are DROPPED and reported in the result's
     # `warnings[]` (RH-11, `_unsupported`) — for tunables. The semantic flags
-    # (`history`, `raw`, `images`) stay refusals on the Claude tier below.
+    # `history` and `raw` stay refusals on the Claude tier below; `images`
+    # is carried as API image blocks there.
     warnings: list[dict] = []
     if provider == "apple":
         # Apple's on-device model (D700). Tunables it lacks are warnings, like
@@ -1649,17 +1710,17 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             "which is always a chat",
             status=400)
 
-    # Third flag, same rule. The Claude CLI has no notion of an attachment —
-    # `claude -p` takes a prompt string — so silently dropping the picture
-    # would answer as if it had never been sent, which reads as the model
-    # ignoring what was attached rather than the API declining to attach it.
+    # Third flag is HONOURED here, unlike `history`/`raw`: the CLI has no
+    # attachment flag, but the stream-json user message it reads on stdin is
+    # a full API message, and an `image` block is part of that shape — so the
+    # picture rides beside the prompt (`_claude_image_blocks`). Every Claude
+    # model the CLI offers has vision. A file the API would refuse (type,
+    # size, missing) is a `bad_request` naming it, before any hop.
+    image_blocks = None
     if images:
-        return _ai_error(
-            "bad_request",
-            "'images' is only supported by a local model (a Hugging Face repo "
-            "id, e.g. 'mlx-community/Qwen3-8B-4bit'); this call would go to "
-            f"{model!r}, which cannot be handed a picture",
-            status=400)
+        image_blocks, problem = _claude_image_blocks(images)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
 
     # Sampling knobs are the OTHER kind of option: tunables, not semantics.
     # The Claude CLI exposes none of them — `effort` is what it has — so each
@@ -1860,7 +1921,8 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                 proc = await session.configure(model, system_prompt,
                                                effort)
                 return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                       on_delta=deliver)
+                                       on_delta=deliver,
+                                       image_blocks=image_blocks)
             except asyncio.CancelledError:
                 # Client went away mid-turn: the process is still emitting
                 # this turn's events, and a later request's /clear loop would
@@ -1877,7 +1939,8 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                     proc = await session.configure(
                         model, system_prompt, effort)
                     return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                           on_delta=deliver)
+                                           on_delta=deliver,
+                                           image_blocks=image_blocks)
                 except asyncio.CancelledError:
                     # Cancelled mid-retry: the respawned instance is left
                     # mid-reconfig/mid-turn. Discard it too, or the next

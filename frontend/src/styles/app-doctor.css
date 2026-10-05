@@ -78,6 +78,11 @@
   color: var(--warning);
 }
 
+/* info: a quiet, non-warning suggestion — themed blue, never amber. */
+.appdoc-row-sev-info .appdoc-state {
+  color: var(--app-icon-blue);
+}
+
 .appdoc-skip .appdoc-state,
 .appdoc-unrun .appdoc-state {
   color: var(--fg-muted);

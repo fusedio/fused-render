@@ -92,6 +92,7 @@ import {
   CircleMinus,
   CirclePlay,
   GitPullRequest,
+  Info,
   LoaderCircle,
   RotateCw,
   TriangleAlert,
@@ -113,7 +114,7 @@ import {
   gitRowFetchPending,
   groupBySection,
   rowActionLabel,
-  failingCount,
+  fixButtonLabel,
   readinessCount,
   readinessSentence,
   reviewNote,
@@ -164,7 +165,13 @@ function StateMark({ state, severity }: { state: AppCheckState; severity?: Sever
   const common = { size: 16, "aria-hidden": true } as const;
   if (state === "pass") return <Check {...common} />;
   if (state === "fail")
-    return severity === "warning" ? <TriangleAlert {...common} /> : <CircleAlert {...common} />;
+    return severity === "warning" ? (
+      <TriangleAlert {...common} />
+    ) : severity === "info" ? (
+      <Info {...common} />
+    ) : (
+      <CircleAlert {...common} />
+    );
   if (state === "unrun") return <CirclePlay {...common} />;
   return <CircleMinus {...common} />;
 }
@@ -915,10 +922,8 @@ function AppDoctorFixAllButton({ report, busy, liveTask, checkLive, fixAll, foll
     >
       {busy
         ? "Creating task…"
-        : report && failingCount(report.checks) > 0
-          ? "Fix " +
-            failingCount(report.checks) +
-            (failingCount(report.checks) === 1 ? " issue" : " issues")
+        : report
+          ? fixButtonLabel(report.checks)
           : "Nothing to fix"}
     </Button>
   );

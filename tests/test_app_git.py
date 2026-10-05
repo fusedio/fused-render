@@ -89,6 +89,8 @@ def test_init_repo_lands_in_the_shared_local_repo(workspace):
     # `os.unlink` leaves a stray zero-byte file behind, and a scoped `git add -A`
     # must never sweep it into the app's history.
     assert ".fused-render-write-probe.*" in gi
+    # …and Python's bytecode caches: machine-generated, never app history.
+    assert "__pycache__/" in gi
 
 
 def test_sibling_apps_never_ride_each_others_commits(workspace):
