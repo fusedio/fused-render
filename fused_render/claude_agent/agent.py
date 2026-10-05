@@ -4657,6 +4657,23 @@ def _is_api_error_row(row: dict) -> bool:
     return isinstance(row, dict) and row.get("isApiErrorMessage") is True
 
 
+def _turn_starts(rows: list) -> list:
+    """WHEN THE CLI OPENED EACH REPLY IN THIS WINDOW — the stamp of every
+    echoed user row (`_starts_new_turn`), in file order, `None` where a row
+    carried no clock. The page slices the window into one reply per seam and
+    reads slice `j`'s start here, so a follow-up folded into the FIRST reply
+    before its bubble existed (two echoes, one slice, no seam) still starts
+    that reply at the first echo and not the follow-up's (Bugbot, PR #1430).
+    `_turn_ts` below is the last of these, kept for the page's fallback."""
+    out = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("isSidechain"):
+            continue
+        if _starts_new_turn(row):
+            out.append(_row_ts(row))
+    return out
+
+
 def _turn_ts(rows: list):
     """WHEN THE CLI OPENED THE REPLY THIS WINDOW ANSWERS — the stamp of the
     LAST echoed user row (`_starts_new_turn`) in it, epoch seconds, or None.
@@ -5658,6 +5675,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # the echo lands, which is the same moment the payload stops
             # being blanked.
             "turn_ts": None if echo_pending else _turn_ts(parsed),
+            # …AND EVERY ECHO'S, in order, one per reply slice (`_turn_starts`).
+            "turn_starts": [] if echo_pending else _turn_starts(parsed),
             # WHERE THIS WINDOW STARTS, as a byte offset into out.jsonl (the
             # cursor `_read_current_turn` settled on). The page keeps one
             # bubble per reply in the window and has to notice when the cursor

@@ -533,6 +533,15 @@ export interface PollResponse {
    */
   turn_ts?: number | null;
   /**
+   * EVERY echoed user row's stamp in this payload, in order (agent.py
+   * `_turn_starts`), one per reply slice: slice `j` of the window starts at
+   * `turn_starts[j]`. `null` where a row carried no clock. Lets a follow-up
+   * folded into the first reply before its bubble existed keep that reply's
+   * start at the first echo rather than the follow-up's. Absent from an older
+   * agent.py; `turn_ts` is then the only clue, for the last slice.
+   */
+  turn_starts?: (number | null)[];
+  /**
    * FOLLOW-UPS THE LIVE RUN HAS TAKEN AND THE MODEL HAS NOT ANSWERED YET —
    * the CLI's undrained inbox, in the order they were typed (agent.py `_poll`).
    *

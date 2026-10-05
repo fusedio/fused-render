@@ -1273,14 +1273,27 @@ def test_the_poll_says_when_the_cli_opened_the_reply(agent, tmp_path):
         {"type": "assistant", "timestamp": "2026-10-04T10:00:09.000Z",
          "message": {"content": [{"type": "text", "text": "Working."}]}},
     ]
-    assert _poll_rows(agent, tmp_path, rows)["turn_ts"] == 1791108000.0
-    # A follow-up echoed into the same window moves it to the newer echo.
+    first = _poll_rows(agent, tmp_path, rows)
+    assert first["turn_ts"] == 1791108000.0
+    assert first["turn_starts"] == [1791108000.0]
+    # A follow-up echoed into the same window moves the LAST to the newer echo
+    # — and `turn_starts` keeps both, in order, so the page can start the
+    # first reply at the first echo (Bugbot, PR #1430).
     rows.append({"type": "user", "timestamp": "2026-10-04T10:00:20.000Z",
                  "message": {"role": "user",
                              "content": [{"type": "text", "text": "and then"}]}})
-    assert _poll_rows(agent, tmp_path, rows)["turn_ts"] == 1791108020.0
+    second = _poll_rows(agent, tmp_path, rows)
+    assert second["turn_ts"] == 1791108020.0
+    assert second["turn_starts"] == [1791108000.0, 1791108020.0]
+    # No clock on an echo keeps its place as null rather than shifting the rest.
+    rows.append({"type": "user",
+                 "message": {"role": "user",
+                             "content": [{"type": "text", "text": "more"}]}})
+    assert _poll_rows(agent, tmp_path, rows)["turn_starts"] == [1791108000.0, 1791108020.0, None]
     # No echo yet (or a transcript with no clocks): null, never 0.
-    assert _poll_rows(agent, tmp_path, [_delta("text_delta", "hi")])["turn_ts"] is None
+    empty = _poll_rows(agent, tmp_path, [_delta("text_delta", "hi")])
+    assert empty["turn_ts"] is None
+    assert empty["turn_starts"] == []
     # A tool_result row is a user row too, and is not a turn's opening.
     assert agent._turn_ts([
         {"type": "user", "timestamp": "2026-10-04T10:00:30.000Z",
