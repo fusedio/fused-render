@@ -308,6 +308,70 @@ def _no_queue_manager_across_tests():
 
 
 @pytest.fixture(autouse=True)
+def _no_tasks_store_leases_across_tests():
+    """No test inherits another test's machine-duties lease (B2).
+
+    `tasks_store.acquire_lease_blocking` keeps the winning open file handle
+    for the rest of the PROCESS's life, not the test's — and `STATE_DIR` is
+    repointed at a fresh `tmp_path` every test (see `state_dir` fixtures
+    across the suite). Left standing, a lease name reused by a later test in
+    the same xdist worker would short-circuit to "already held" against a
+    handle opened under a directory that no longer exists, instead of really
+    acquiring one under the new test's dir."""
+    from fused_render import tasks_store
+
+    tasks_store.reset_leases_for_tests()
+    yield
+    tasks_store.reset_leases_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_share_rules_warm_guard_across_tests():
+    """`share_file._kick_warm_once`'s "already kicked" flag is process state,
+    not per-`create_app()` state — the same leak shape `_no_queue_manager_
+    across_tests` above guards against, for the same reason (no `app` to key
+    it off from `_cached_rules()`, which a lean server's first request calls
+    with no startup hook having run first)."""
+    from fused_render import share_file
+
+    share_file.reset_for_tests()
+    yield
+    share_file.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_fused_credentials(tmp_path_factory, monkeypatch):
+    """The suite starts signed OUT of Fused, whatever the machine holds.
+
+    `share_app._logged_in()` is a presence check on `~/.fused/credentials`. On
+    a signed-in developer machine every full `create_app` startup then kicked
+    the real share-rules warm (`_startup_warm_share_rules`), which spawns a
+    `_fused_share_app.py` shim subprocess that outlives pytest (daemon thread
+    + `subprocess.run`): ten orphaned shims per test_tasks_watch run. Tests
+    that need a signed-in state set FUSED_RENDER_FUSED_CREDENTIALS themselves
+    (a later monkeypatch wins over this one)."""
+    monkeypatch.setenv(
+        "FUSED_RENDER_FUSED_CREDENTIALS",
+        str(tmp_path_factory.getbasetemp() / "no-fused-credentials"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_share_shim(monkeypatch):
+    """No test may spawn the real `_fused_share_app.py` shim by accident.
+
+    Tests that sign in on purpose (test_share_file_*) reach the lazy
+    `_cached_rules()` warm, whose `subprocess.run` shim then outlives pytest as
+    an orphan (it hangs on the network). A test that drives the shim stubs
+    `share_app._run_shim` itself (a later monkeypatch wins over this one)."""
+    from fused_render import share_app
+
+    def _refuse(request, timeout):
+        return None, share_app._error("the real share shim is disabled under pytest", 502)
+
+    monkeypatch.setattr(share_app, "_run_shim", _refuse)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_appenv_contract_vars():
     """Every test starts with the contract vars UNSET and cannot leak them.
 
@@ -600,14 +664,16 @@ def _no_startup_engine_warm(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_ai_idle_reaper_thread(monkeypatch):
-    """`create_app` starts the AI idle-unload reaper thread (SPEC AI-13, D414);
-    no test may let it run.
+    """`supervisor._start_resident` starts the AI idle-unload reaper thread
+    (SPEC AI-13, D414) the moment any local model becomes resident; no test
+    may let it run.
 
     Same hazard as `_no_schedule_loop_thread`/`_no_background_mount_threads`/
     `_no_startup_index_scan` above, same root cause: `supervisor.start_reaper()`
-    runs from the app's STARTUP event, so any test that enters
-    `with TestClient(create_app(...))` spawns a daemon that is never joined and
-    ticks every `_REAPER_TICK_S` for the REST OF THE WORKER PROCESS, calling
+    is reached from `_start_resident`, which plenty of AI tests call directly
+    (never through a lifespan), so letting it run spawns a daemon that is
+    never joined and ticks every `_REAPER_TICK_S` for the REST OF THE WORKER
+    PROCESS, calling
     `prefs.effective_ai_idle_unload_minutes()` -> `read_prefs()`, which reads
     `FUSED_RENDER_HOME` AFRESH on every tick. A later test's tmp home is
     whatever is current when a tick lands, not the one that started the
@@ -629,6 +695,35 @@ def _no_ai_idle_reaper_thread(monkeypatch):
     from fused_render.ai import supervisor
 
     monkeypatch.setattr(supervisor, "start_reaper", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_duties_waiter_thread(monkeypatch):
+    """No test may start the real machine-duties waiter thread.
+
+    `routers/tasks.py`'s `_ensure_duties()` dependency runs on EVERY
+    `/api/tasks*` request, so any test that hits that router through a real
+    `TestClient` calls `queue_manager.ensure_duties_waiter()` — and unlike
+    `schedule.start()`/`tasks_watch.start()` (already no-op'd by
+    `_no_schedule_loop_thread`/`_no_tasks_watch_thread` above), the waiter's
+    OWN first step, `tasks_store.acquire_lease_blocking`, does real
+    filesystem I/O (opening `STATE_DIR`'s lease file) before either of those
+    ever runs — so patching them is not enough. Same hazard as
+    `_no_ai_idle_reaper_thread` just above, same root cause: a leaked daemon
+    thread, never joined, reaching `STATE_DIR` afresh on its own schedule
+    reads whatever test's `tmp_path` is current (or, once that test's
+    `monkeypatch` has unwound, a `STATE_DIR` that no longer exists at all) —
+    confirmed directly, a `FileNotFoundError` inside the thread surfaced by
+    pytest as an unhandled-thread-exception warning before this fixture
+    existed.
+
+    No test asserts `ensure_duties_waiter` spawns a real thread through the
+    router; the tests that are ABOUT it (`tests/test_queue_manager.py`) call
+    the REAL function directly, captured at import before this fixture
+    replaces it, and join every thread they start with a timeout."""
+    from fused_render import queue_manager
+
+    monkeypatch.setattr(queue_manager, "ensure_duties_waiter", lambda: None)
 
 
 @pytest.fixture(autouse=True)

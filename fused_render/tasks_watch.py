@@ -178,6 +178,9 @@ _perm_stamps: dict[str, tuple] = {}
 # watching further back would ring about news no page could draw.
 PERM_SCAN_LIMIT = 120
 _started = False
+# Guards `start()`'s check-then-set so two concurrent first callers can't both
+# see `_started` as False and both spawn a watcher thread.
+_start_lock = threading.Lock()
 
 
 # ------------------------------------------------------------------ the reads
@@ -1050,6 +1053,79 @@ def _read_permission_cards() -> set[str]:
     return keys
 
 
+# (mtime_ns, size) of each shared store last seen, keyed by path. These are
+# edited by OTHER processes — the machine-duties leader's scheduler writes the
+# schedule store and the queue index for every app on the machine — and a lean
+# page long-polls THIS process, which would otherwise never hear about them.
+_store_stamps: dict[str, tuple[int, int] | None] = {}
+
+
+def _store_paths() -> list[str]:
+    # Deferred: both modules reach back into this one.
+    from fused_render import queue_manager, schedule
+
+    return [schedule.store_path(),
+            os.path.join(tasks_store.STATE_DIR, queue_manager.INDEX_FILE)]
+
+
+#: Per-path content signature of the stores whose file also changes for reasons
+#: that carry no news (see `_content_signature`); None when it could not be read.
+_store_sigs: dict[str, str | None] = {}
+
+
+def _content_signature(path: str) -> str | None:
+    """A digest of the schedule store with the `watcher_at` heartbeat left out.
+
+    The watching process rewrites that one field every 30 s for as long as a
+    turn runs, which moves the file's mtime without telling a page anything;
+    treating it as an edit sent every process's long-poll a full reload twice
+    a minute. None means "could not tell" and the caller falls back to calling
+    the stat change real."""
+    import hashlib
+    import json
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        rows = data.get("entries") if isinstance(data, dict) else None
+        if isinstance(rows, list):
+            data = {**data, "entries": [
+                {k: v for k, v in e.items() if k != "watcher_at"}
+                if isinstance(e, dict) else e for e in rows]}
+        blob = json.dumps(data, sort_keys=True, default=str)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
+def _read_store_files() -> bool:
+    """Did any shared store change on disk since the last pass? Both are
+    replaced atomically, so a change always shows as a new mtime or size. The
+    edit cannot be named row by row from here, so the caller announces a full
+    reload. The schedule store's heartbeat-only rewrites do not count."""
+    from fused_render import schedule
+
+    changed = False
+    for path in _store_paths():
+        try:
+            st = os.stat(path)
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = None
+        if path in _store_stamps and _store_stamps[path] != stamp:
+            if path == schedule.store_path() and stamp is not None:
+                sig = _content_signature(path)
+                if sig is None or sig != _store_sigs.get(path):
+                    changed = True
+                _store_sigs[path] = sig
+            else:
+                changed = True
+        elif path == schedule.store_path() and path not in _store_sigs and stamp is not None:
+            _store_sigs[path] = _content_signature(path)
+        _store_stamps[path] = stamp
+    return changed
+
+
 def tick() -> set[str]:
     """One pass over the registry, the transcripts it names, the permission
     cards this app's own runs have raised or had answered, and the marks that
@@ -1084,9 +1160,14 @@ def tick() -> set[str]:
     # either way — `_live` reads `busy` over a mark — but the announcement
     # belongs after the fact that replaces it.
     keys |= _expire_marks(time.time())
+    stores_moved = _read_store_files()
     if not _primed:
         _primed = True
         return set()
+    if stores_moved:
+        # One full reload covers `keys` too, and a tick bumps at most once.
+        _bump(None)
+        return keys
     if keys:
         _bump(keys)
     return keys
@@ -1106,11 +1187,21 @@ def _loop() -> None:
 def start() -> None:
     """Start the watcher thread, once per process. From the app's startup
     event, never from create_app — tests build apps without lifespan and must
-    not spawn a thread that reads the developer's real ~/.claude."""
+    not spawn a thread that reads the developer's real ~/.claude.
+
+    Two near-simultaneous first callers (e.g. two requests landing together
+    under `lean`, which calls this on every request) must not both pass the
+    `_started` check and each spawn a watcher thread — `_start_lock` guards
+    only the check-then-set so that whichever caller wins publishes
+    `_started = True` before the other's check runs. `tick()` and the thread
+    spawn stay OUTSIDE the lock: they only need to happen once, which the
+    guard above already ensures, and keeping them out means a slow first
+    `tick()` never blocks a second caller from returning promptly."""
     global _started
-    if _started:
-        return
-    _started = True
+    with _start_lock:
+        if _started:
+            return
+        _started = True
     try:
         tick()  # prime synchronously so the first request has the registry
     except Exception:  # noqa: BLE001
@@ -1138,3 +1229,5 @@ def reset() -> None:
     _tr_paths.clear()
     _tr_sizes.clear()
     _perm_stamps.clear()
+    _store_stamps.clear()
+    _store_sigs.clear()

@@ -1,0 +1,290 @@
+"""The unix-socket protocol between the Linux supervisor / server and the
+native-window host (window_host_ipc.py). Pure stdlib sockets, so it runs on
+every OS that has AF_UNIX (macOS included) — no GTK involved."""
+import errno
+import json
+import os
+import shutil
+import socket
+import tempfile
+import threading
+import time
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from fused_render import window_host_ipc as ipc
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="Unix domain sockets required"
+)
+
+
+@pytest.fixture
+def sock_path():
+    # AF_UNIX paths are capped (~104 bytes on macOS); pytest's tmp_path is too long.
+    d = tempfile.mkdtemp(prefix="fr")
+    try:
+        yield os.path.join(d, "h.sock")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+def server(sock_path):
+    stop = threading.Event()
+    seen = []
+
+    def handler(cmd):
+        seen.append(cmd)
+        if cmd.get("cmd") == "boom":
+            raise RuntimeError("handler exploded")
+        return {"ok": True, "echo": cmd.get("cmd")}
+
+    thread = ipc.serve(sock_path, handler, stop)
+    deadline = time.monotonic() + 3
+    while not os.path.exists(sock_path) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    yield seen
+    stop.set()
+    thread.join(timeout=3)
+
+
+def test_socket_path_lives_in_the_runtime_dir():
+    assert ipc.socket_path(Path("/run/user/1000/fused-render")) == \
+        Path("/run/user/1000/fused-render/window-host.sock")
+
+
+def test_round_trip(sock_path, server):
+    reply = ipc.request(sock_path, {"cmd": "open", "url": "http://127.0.0.1:1/"})
+    assert reply == {"ok": True, "echo": "open"}
+    assert server == [{"cmd": "open", "url": "http://127.0.0.1:1/"}]
+
+
+def test_socket_is_owner_only(sock_path, server):
+    assert (os.stat(sock_path).st_mode & 0o777) == 0o600
+
+
+def test_ping(sock_path, server):
+    assert ipc.ping(sock_path) is True
+
+
+def test_handler_exception_becomes_a_not_ok_reply(sock_path, server):
+    reply = ipc.request(sock_path, {"cmd": "boom"})
+    assert reply["ok"] is False and "exploded" in reply["reason"]
+    # ...and the accept loop survived it.
+    assert ipc.ping(sock_path) is True
+
+
+def test_garbage_client_does_not_kill_the_loop(sock_path, server):
+    with socket.socket(socket.AF_UNIX) as s:
+        s.connect(sock_path)
+        s.sendall(b"this is not json\n")
+        reply = json.loads(s.makefile().readline())
+    assert reply["ok"] is False
+    assert ipc.ping(sock_path) is True
+
+
+def test_oversized_request_is_rejected(sock_path, server):
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(3)
+        s.connect(sock_path)
+        try:
+            s.sendall(b"x" * (ipc.MAX_LINE + 10))
+            data = s.recv(4096)
+        except OSError:
+            data = b""
+    assert data == b"" or b'"ok": false' in data
+    assert ipc.ping(sock_path) is True
+
+
+def test_missing_socket_is_host_unavailable(sock_path):
+    with pytest.raises(ipc.HostUnavailable):
+        ipc.request(sock_path, {"cmd": "ping"})
+    assert ipc.ping(sock_path) is False
+
+
+def test_stale_socket_file_is_host_unavailable(sock_path):
+    # A crashed host leaves its socket file behind; connect() must read as
+    # "unavailable", never raise something the caller does not catch.
+    s = socket.socket(socket.AF_UNIX)
+    s.bind(sock_path)
+    s.close()
+    with pytest.raises(ipc.HostUnavailable):
+        ipc.request(sock_path, {"cmd": "ping"})
+
+
+def test_silent_host_times_out_as_unavailable(sock_path):
+    srv = socket.socket(socket.AF_UNIX)
+    srv.bind(sock_path)
+    srv.listen(1)
+    try:
+        with pytest.raises(ipc.HostUnavailable):
+            ipc.request(sock_path, {"cmd": "ping"}, timeout=0.2)
+    finally:
+        srv.close()
+
+
+def test_a_slow_request_does_not_block_a_concurrent_ping(sock_path):
+    # Preferences treats a 0.3s ping as "is the host up"; a one-connection-at-
+    # a-time accept loop would starve that ping while an `open` or
+    # `set_enabled` is still in flight (e.g. waiting on the GTK main thread),
+    # making the Native windows section flicker away for no reason.
+    stop = threading.Event()
+    gate = threading.Event()
+
+    def handler(cmd):
+        if cmd.get("cmd") == "slow":
+            gate.wait(3)
+        return {"ok": True}
+
+    thread = ipc.serve(sock_path, handler, stop)
+    deadline = time.monotonic() + 3
+    while not os.path.exists(sock_path) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        result = {}
+
+        def slow_client():
+            result["reply"] = ipc.request(sock_path, {"cmd": "slow"}, timeout=3)
+
+        slow = threading.Thread(target=slow_client)
+        slow.start()
+        time.sleep(0.2)  # let the slow request be accepted and start blocking
+        assert ipc.ping(sock_path, timeout=0.5) is True
+        gate.set()
+        slow.join(timeout=3)
+        assert result["reply"] == {"ok": True}
+    finally:
+        stop.set()
+        thread.join(timeout=3)
+
+
+@pytest.mark.parametrize("code,transient", [
+    (errno.EMFILE, True), (errno.ENFILE, True), (errno.ECONNABORTED, True),
+    (errno.EINTR, True), (errno.ENOBUFS, True), (errno.ENOMEM, True),
+    (errno.EBADF, False), (errno.EINVAL, False),
+])
+def test_transient_accept_error_classification(code, transient):
+    assert ipc._is_transient_accept_error(OSError(code, "x")) is transient
+
+
+def test_serve_survives_transient_accept_errors(sock_path):
+    # A momentary EMFILE/ECONNABORTED/... on accept() must not end the accept
+    # loop: the listener is still fine, only that one connection attempt
+    # failed.
+    original_accept = socket.socket.accept
+    state = {"n": 0}
+
+    def flaky_accept(self, *a, **kw):
+        if state["n"] < 2:
+            state["n"] += 1
+            raise OSError(errno.ECONNABORTED, "flaky")
+        return original_accept(self, *a, **kw)
+
+    stop = threading.Event()
+    logged = []
+    with mock.patch.object(socket.socket, "accept", flaky_accept):
+        thread = ipc.serve(sock_path, lambda c: {"ok": True}, stop, logged.append)
+        try:
+            deadline = time.monotonic() + 3
+            while not ipc.ping(sock_path, timeout=0.5) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert ipc.ping(sock_path)
+        finally:
+            stop.set()
+            thread.join(timeout=3)
+    assert state["n"] == 2
+    assert len(logged) == 1  # logged once, not once per failure
+
+
+def test_serve_still_stops_on_a_real_listener_error(sock_path):
+    # EBADF/EINVAL means the listener itself is gone; the loop must still
+    # exit (never spin forever) and not be mistaken for a transient failure.
+    def dead_accept(self, *a, **kw):
+        raise OSError(errno.EBADF, "listener closed")
+
+    stop = threading.Event()
+    with mock.patch.object(socket.socket, "accept", dead_accept):
+        thread = ipc.serve(sock_path, lambda c: {"ok": True}, stop)
+        deadline = time.monotonic() + 3
+        while not os.path.exists(sock_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        try:  # a pending connection makes the listener fd "ready" so the
+            # mocked accept() above actually runs.
+            with socket.socket(socket.AF_UNIX) as c:
+                c.settimeout(1)
+                c.connect(sock_path)
+        except OSError:
+            pass
+        thread.join(timeout=3)
+    assert not thread.is_alive()
+
+
+def test_on_listening_runs_before_any_dispatch(sock_path):
+    # A connection attempted while `on_listening` is still running must queue
+    # in the backlog, not reach the handler before that callback finishes —
+    # the window_host reads its enabled state there, and no command may be
+    # dispatched against a Host that does not exist yet. `serve()` itself
+    # calls `on_listening` synchronously before returning, so the call to
+    # `serve()` has to be made from its own thread for this test to observe
+    # the gate.
+    order = []
+    gate = threading.Event()
+    stop = threading.Event()
+    started = {}
+
+    def on_listening():
+        order.append("on_listening-start")
+        gate.wait(3)
+        order.append("on_listening-end")
+
+    def handler(cmd):
+        order.append("dispatch")
+        return {"ok": True}
+
+    def start_serving():
+        started["thread"] = ipc.serve(sock_path, handler, stop, on_listening=on_listening)
+
+    starter = threading.Thread(target=start_serving)
+    starter.start()
+    try:
+        deadline = time.monotonic() + 3
+        while not os.path.exists(sock_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        client_result = {}
+
+        def client():
+            client_result["reply"] = ipc.request(sock_path, {"cmd": "ping"}, timeout=3)
+
+        client_thread = threading.Thread(target=client)
+        client_thread.start()
+        time.sleep(0.2)  # the connection queues in the backlog while the gate holds
+        assert order == ["on_listening-start"]
+        gate.set()
+        starter.join(timeout=3)
+        client_thread.join(timeout=3)
+        assert client_result["reply"] == {"ok": True}
+        assert order == ["on_listening-start", "on_listening-end", "dispatch"]
+    finally:
+        stop.set()
+        if started.get("thread") is not None:
+            started["thread"].join(timeout=3)
+
+
+def test_serve_replaces_a_stale_socket_file(sock_path):
+    s = socket.socket(socket.AF_UNIX)
+    s.bind(sock_path)
+    s.close()
+    stop = threading.Event()
+    thread = ipc.serve(sock_path, lambda c: {"ok": True}, stop)
+    try:
+        deadline = time.monotonic() + 3
+        while not ipc.ping(sock_path) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ipc.ping(sock_path)
+    finally:
+        stop.set()
+        thread.join(timeout=3)

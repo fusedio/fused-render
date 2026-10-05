@@ -9,11 +9,24 @@ import pytest
 from fused_render._view_url_codec import (
     canonical_fs_path,
     is_launch_url,
+    normpath_for_shape,
     open_target_path,
     open_target_url,
     view_url,
     view_url_path,
 )
+
+
+def test_normpath_for_shape_picks_windows_semantics_for_a_drive_path():
+    # A Windows path's '..'/doubled separators collapse with its own rules,
+    # on any host — this is the shared function deeplink.py and
+    # server/dirpicker.py both use.
+    assert normpath_for_shape("C:\\Users\\ada\\..\\code\\") == "C:\\Users\\code"
+
+
+def test_normpath_for_shape_picks_posix_semantics_otherwise():
+    assert normpath_for_shape("/home/ada/../code/") == "/home/code"
+    assert normpath_for_shape("relative\\path") == "relative\\path"
 
 
 def test_drive_letter_path():

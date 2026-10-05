@@ -107,7 +107,7 @@ def test_no_copy_yet_lands_on_home_with_the_file(tmp_path):
     fused = export(tmp_path)
     path, q = _redirect(tmp_path, link(fused))
     assert path == "/"
-    assert q == {EDIT_APPFILE_PARAM: str(fused)}
+    assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(fused))}
     # Read-only: the GET cloned nothing (the shell does, behind X-Fused).
     assert not os.path.exists(tmp_path / "workspace" / "local" / "demo")
 
@@ -119,7 +119,7 @@ def test_an_existing_copy_lands_on_its_entry_page_with_the_file(tmp_path):
     _client(tmp_path).post("/api/appfile/clone", json={"file": str(fused)}, headers=FUSED)
     path, q = _redirect(tmp_path, link(fused))
     assert path == _view(tmp_path / "workspace" / "local" / "demo" / "index.html")
-    assert q == {EDIT_APPFILE_PARAM: str(fused)}
+    assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(fused))}
 
 
 @pytest.mark.skipif(sys.platform == "win32",
@@ -137,7 +137,7 @@ def test_a_missing_file_still_lands_on_home_for_the_shell_to_report(tmp_path):
     gone = tmp_path / "gone.fused"
     path, q = _redirect(tmp_path, link(gone))
     assert path == "/"
-    assert q == {EDIT_APPFILE_PARAM: str(gone)}
+    assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(gone))}
 
 
 def test_a_malformed_payload_is_ferried_verbatim(tmp_path):

@@ -218,6 +218,112 @@ def test_put_rejects_empty_body(tmp_path, monkeypatch):
     assert client.put("/api/prefs", json={"nope": 1}, headers=FUSED).status_code == 400
 
 
+# -- native_windows_enabled -------------------------------------------------------
+
+
+def test_native_windows_enabled_saves_with_no_hook_installed(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED).json()
+    assert body["native_windows"]["enabled"] is False
+    assert json.loads((home / "prefs.json").read_text())["native_windows_enabled"] is False
+
+
+def test_native_windows_enabled_rejects_the_put_when_the_host_refuses(tmp_path, monkeypatch):
+    """`apply` reachable and explicitly refusing the value (e.g. the host is
+    mid-shutdown) must not be recorded as a clean switch — the live state and
+    prefs.json would then disagree for as long as that host keeps running —
+    so the PUT fails and the value written just before `apply` ran is written
+    back out (here: the key is removed again, since it was never set)."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    window_policy.native_hooks["apply"] = lambda on: False
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 409
+        assert "native_windows_enabled" not in json.loads((home / "prefs.json").read_text())
+    finally:
+        window_policy.native_hooks.clear()
+
+
+def test_native_windows_enabled_rejects_the_put_and_restores_the_previous_value(
+        tmp_path, monkeypatch):
+    """A refusal when a value was already stored writes that prior value back
+    out, rather than leaving the key absent or stuck on the rejected one."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    window_policy.native_hooks["apply"] = lambda on: True
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": True}, headers=FUSED)
+        assert resp.status_code == 200
+    finally:
+        window_policy.native_hooks.clear()
+
+    window_policy.native_hooks["apply"] = lambda on: False
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 409
+        assert json.loads((home / "prefs.json").read_text())["native_windows_enabled"] is True
+    finally:
+        window_policy.native_hooks.clear()
+
+
+def test_native_windows_enabled_write_lands_before_apply_is_called(tmp_path, monkeypatch):
+    """The host reads prefs.json once it is listening, so a PUT that races its
+    startup must already be on disk by the time `apply` runs (whether or not
+    `apply` can reach it)."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    seen = {}
+
+    def apply(on):
+        seen["on_disk"] = json.loads((home / "prefs.json").read_text()).get(
+            "native_windows_enabled")
+        return True
+
+    window_policy.native_hooks["apply"] = apply
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 200
+        assert seen["on_disk"] is False
+    finally:
+        window_policy.native_hooks.clear()
+
+
+def test_native_windows_enabled_saves_when_the_hook_returns_none(tmp_path, monkeypatch):
+    """macOS's `apply` hops to the main thread via `AppHelper.callAfter`,
+    which returns None no matter what the applied callback does. None is not
+    a refusal, so the toggle must still save."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    window_policy.native_hooks["apply"] = lambda on: None
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 200
+        assert json.loads((home / "prefs.json").read_text())["native_windows_enabled"] is False
+    finally:
+        window_policy.native_hooks.clear()
+
+
+def test_native_windows_enabled_saves_when_the_host_is_unreachable(tmp_path, monkeypatch):
+    """A host that isn't reachable at all (not started yet, lazy-start
+    design) is not a failure — it reads this same preference for itself at
+    its own startup, so the write still lands."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    window_policy.native_hooks["apply"] = lambda on: True
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 200
+        assert json.loads((home / "prefs.json").read_text())["native_windows_enabled"] is False
+    finally:
+        window_policy.native_hooks.clear()
+
+
 # -- indexing_enabled -------------------------------------------------------------
 
 

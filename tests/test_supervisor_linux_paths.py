@@ -346,6 +346,16 @@ def test_xdg_open_treats_timeout_as_success(monkeypatch):
     ui.open_url("https://example.invalid")  # returns without raising
 
 
+def test_open_url_passes_the_activation_token_to_xdg_open(monkeypatch):
+    seen = []
+    monkeypatch.setattr(ui.subprocess, "Popen",
+                        lambda *a, **k: seen.append(k.get("env")) or _FakePopen(returncode=0))
+    ui.open_url("https://example.invalid", "tok-1")
+    ui.open_url("https://example.invalid")
+    assert seen[0]["XDG_ACTIVATION_TOKEN"] == seen[0]["DESKTOP_STARTUP_ID"] == "tok-1"
+    assert seen[1] is None
+
+
 def test_open_default_apps_raises_on_linux(monkeypatch):
     # No cross-desktop Linux equivalent of ms-settings:defaultapps: the backend
     # method must raise so core's _safe_call logs an honest no-op, instead of
