@@ -81,6 +81,7 @@ import {
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
+import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
   isSha,
   setResolvedSnapshot,
@@ -1178,7 +1179,7 @@ function TemplatePreview({
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
   // render and an unhonourable request falls to the default (lib/preview-side).
-  const activeSide = resolveSide(sideReq, split);
+  const activeSide = resolveSide(sideReq, split, getSideTab());
   const sideEntry = activeSide ? sidebarModes.find((e) => e.mode === activeSide) ?? null : null;
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
@@ -1204,7 +1205,7 @@ function TemplatePreview({
   // probe and take it away again, and must not outrank a companion this file
   // definitely has.
   const sideTargets = sideOn ? split.settled : [];
-  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
+  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide ?? getSideTab());
   const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
 
   // --- the shell's git snapshot (`_snapshot`) --------------------------------
@@ -1322,6 +1323,9 @@ function TemplatePreview({
   // the folder pane's later mounts too, same store either surface writes.
   const applySide = (next: string | null) => {
     setSideHidden(next === null);
+    // An explicit pick is the remembered tab (`lib/side-tab-store.ts`); a close
+    // is not a pick, so it leaves the memory as it was.
+    if (next !== null) setSideTab(next);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
     // does not survive a click either way.

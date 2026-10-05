@@ -467,3 +467,29 @@ describe("paneKey", () => {
   });
 });
 
+
+// THE REMEMBERED TAB (`lib/side-tab-store.ts`): where `_side` names no mode, the
+// last tab the user picked leads over the first on offer — but only if it is on
+// offer here. The offered list is empty while undecided, so nothing pending opens.
+describe("activePaneSide with a remembered tab", () => {
+  test("a silent request opens the remembered tab", () => {
+    expect(activePaneSide(paneSideList(ALL), null, "git")).toBe("git");
+  });
+
+  test("an explicit request still wins", () => {
+    expect(activePaneSide(paneSideList(ALL), "claude", "git")).toBe("claude");
+  });
+
+  test("a remembered tab the folder does not offer falls back to the default", () => {
+    expect(activePaneSide(paneSideList(CLAUDE_ONLY), null, "git")).toBe("claude");
+  });
+
+  test("undecided stays undecided", () => {
+    expect(paneSideList({ ...ALL, claude: null, claudePending: true })).toEqual([]);
+    expect(activePaneSide([], null, "git")).toBe(PANE_SIDE_FALLBACK);
+  });
+
+  test("no memory is the old behaviour", () => {
+    expect(activePaneSide(paneSideList(ALL), null, null)).toBe("claude");
+  });
+});

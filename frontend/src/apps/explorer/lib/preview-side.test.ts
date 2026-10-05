@@ -886,3 +886,62 @@ describe("a companion-less file in a folder with no working tree", () => {
     ).toBe("");
   });
 });
+
+// THE REMEMBERED TAB (`lib/side-tab-store.ts`): where the URL names no mode, the
+// last tab the user picked this document leads over the file's default — but only
+// when that companion is READY (known to exist, not pending), so it can never
+// open a pending entry or swap columns under the user.
+describe("resolveSide with a remembered tab", () => {
+  const both = () => sideSplit(file([claude], "yes"));
+
+  it("a silent URL opens the remembered tab instead of the default", () => {
+    const s = both();
+    expect(s.defaultSide).toBe("claude");
+    expect(resolveSide(parseSide(""), s, "git")).toBe("git");
+  });
+
+  it("an explicit _side still wins over the remembered tab", () => {
+    expect(resolveSide(parseSide("?_side=claude"), both(), "git")).toBe("claude");
+  });
+
+  it("a remembered tab this file does not offer falls back to the default", () => {
+    expect(resolveSide(parseSide(""), sideSplit(file([claude], "no")), "git")).toBe("claude");
+  });
+
+  it("a PENDING borrowed git is not opened by the memory", () => {
+    const s = sideSplit(file([claude], "pending"));
+    expect(resolveSide(parseSide(""), s, "git")).toBe("claude");
+  });
+
+  it("a gated claude still in flight is not opened by the memory", () => {
+    const s = sideSplit({ ...file([gatedClaude], "yes"), conditionsPending: true });
+    // git is settled and remembered: it opens (and is not displaced later, since
+    // a verdict only ever removes companions).
+    expect(resolveSide(parseSide(""), s, "git")).toBe("git");
+    // the memory is claude, which is unresolved: nothing opens yet.
+    expect(resolveSide(parseSide(""), s, "claude")).toBe(null);
+  });
+
+  it("a shut sidebar stays shut whatever is remembered", () => {
+    expect(resolveSide(parseSide("?_side=off"), both(), "git")).toBe(null);
+    expect(resolveSide(parseSide("", true), both(), "git")).toBe(null);
+  });
+
+  it("no memory is the old behaviour", () => {
+    expect(resolveSide(parseSide(""), both(), null)).toBe("claude");
+  });
+
+  it("the reconcile writes the remembered non-default tab once and then agrees", () => {
+    const s = both();
+    const active = resolveSide(parseSide(""), s, "git");
+    const o = {
+      splitCapable: true,
+      offered: s.offered,
+      open: true,
+      activeSide: active,
+      defaultSide: s.defaultSide,
+    };
+    expect(reconcileSideSearch("", o)).toBe("_side=git");
+    expect(reconcileSideSearch("?_side=git", o)).toBe(null);
+  });
+});

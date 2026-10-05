@@ -23,12 +23,32 @@
 // the URL at mount (`parseSide`), resolved against what the file offers on every
 // render (`resolveSide`), carried across the shell's pushState navigation because
 // the URL carries it, and gone on a refresh because a bare URL opens at the
-// default again. The width follows the same policy in `lib/side-store.ts`, and
+// default again. (The width no longer follows that policy: see the table below.) And
 // `_side` is stripped out of anything that persists a url (lib/session-params,
 // whose only consumer is now the recents store) so nothing can put the old
 // behaviour back. *The session sidecar that used to be the other consumer — and
 // the reason that strip exists at all — is gone with the per-file session restore
 // (D329), server-side `_strip_side` included.*
+//
+// WHAT IS REMEMBERED BEYOND THE URL, AND FOR HOW LONG (owner's request, reversing
+// part of the quote above — the open/closed bit and the width are stored preferences, the tab is not):
+//
+//   open/closed   `lib/side-hidden-store.ts` — PERSISTED across reloads
+//                 (`localStorage`). Consulted only where the URL is silent;
+//                 an explicit `_side` (or legacy `_mode`) wins, and a deep link
+//                 that opens clears the flag (`sideReopenedByUrl`).
+//   width         `lib/side-store.ts` — PERSISTED across reloads
+//                 (`localStorage`, `SIDE_WIDTH_KEY`), shared by both surfaces.
+//                 Unchanged from before this branch.
+//   selected tab  `lib/side-tab-store.ts` — memory only, shared by both
+//                 surfaces, cleared by a reload. Used by `resolveSide` where the
+//                 URL names no mode and the remembered companion is `ready` on
+//                 this file; otherwise the file's own `defaultSide` applies.
+//
+// The URL's spelling rule (`sideParam`) is unchanged and still measured against
+// `defaultSide`: a remembered tab that is not the default is written as an
+// explicit `_side=<mode>` by the reconcile (once — it then agrees), and one that
+// IS the default keeps the clean URL.
 //
 // THE TWO SOURCES, and the whole reason this module exists:
 //
@@ -167,6 +187,14 @@ export interface SideSplit {
   all: TemplateEntry[];
   // Those known to exist — `all` minus a still-pending borrowed entry.
   settled: TemplateEntry[];
+  // The modes in `all` that are READY to be opened by something other than an
+  // explicit `_side`: neither a pending borrowed placeholder nor an own gated
+  // companion whose verdict is still in flight — the same `unresolved` test
+  // `defaultSide` applies to the leader. This is the list the REMEMBERED TAB
+  // (`lib/side-tab-store.ts`) is checked against: a verdict only ever removes a
+  // companion, so a ready one never gets displaced later, and a pending one is
+  // never opened on the memory's say-so (empty when the surface cannot split).
+  ready: string[];
   // A companion is known to exist AND there is a content pane to put it beside.
   on: boolean;
   // Something may yet land in the sidebar, so a `_side` naming it is tolerated.
@@ -291,6 +319,7 @@ export function sideSplit(i: SideSplitInput): SideSplit {
     menu: sidebarMenu(all, i.bound ?? []),
     all,
     settled,
+    ready: splittable ? all.filter((e) => !unresolved(e)).map((e) => e.mode) : [],
     on: splittable && settled.length > 0,
     offered: splittable && all.length > 0,
     defaultSide:
@@ -329,7 +358,7 @@ export interface SideRequest {
 // The state a bare URL asks for: open, at whatever this file offers first.
 const OPEN_UNCHOSEN: SideRequest = { open: true, mode: null };
 
-// What a SILENT `_side` resolves to once the session's hidden flag
+// What a SILENT `_side` resolves to once the stored hidden flag
 // (`lib/side-hidden-store.ts`) is in the picture: the ordinary open-unchosen
 // request, unless the user shut the sidebar earlier this session, in which
 // case silence now means "stay shut" rather than "open at the default". Only
@@ -378,14 +407,29 @@ export function parseSide(search: string, hidden = false): SideRequest {
 // to put in it. That is also what makes the switcher's disabled rows safe to
 // deep-link to: the URL resolves onward to something real instead of leaving a
 // closed column beside a param the user cannot act on.
-export function resolveSide(req: SideRequest, split: SideSplit): string | null {
+//
+// THE REMEMBERED TAB (`lib/side-tab-store.ts`, memory only, shared with the
+// folder pane) slots in between: where the request names NO mode (`req.mode`
+// null — an absent `_side`), the last tab the user explicitly picked this document
+// leads over `defaultSide`, provided it is `ready` on this file. Not merely
+// listed: a pending entry is never opened by the memory (the same rule that keeps
+// `defaultSide` from opening one), so it cannot put an empty column on screen or
+// swap columns when a verdict lands. A named mode — including one that cannot be
+// honoured and so lands on the default — never consults it: an explicit `_side`
+// wins, and so does the file's own answer to a denial.
+export function resolveSide(
+  req: SideRequest,
+  split: SideSplit,
+  remembered: string | null = null
+): string | null {
   if (!split.offered || !req.open) return null;
   if (req.mode && split.all.some((e) => e.mode === req.mode)) return req.mode;
+  if (!req.mode && remembered && split.ready.includes(remembered)) return remembered;
   return split.defaultSide;
 }
 
 // D495's TWO RULES COLLIDE HERE, and this is the resolution. "An explicit
-// `_side` always wins over the session's hidden flag" (`unchosenOrHidden` is
+// `_side` always wins over the stored hidden flag" (`unchosenOrHidden` is
 // only ever reached where the URL said nothing) and "reopening on either
 // surface clears the flag" both hold in isolation, but neither one says what
 // happens to the FLAG when a deep link is the thing that opened the sidebar —

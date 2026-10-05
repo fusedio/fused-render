@@ -1,7 +1,7 @@
 // Whether the user has SHUT the companion sidebar — one boolean, shared by BOTH
 // surfaces the sidebar has: the file view (`Preview.tsx`, via `lib/preview-side`)
 // and the folder listing's pane (`Listing.tsx`, via `listing/pane-side`). Sibling
-// to `side-store.ts` (the shared WIDTH, memory only) and `side-tab-store.ts` (the
+// to `side-store.ts` (the shared WIDTH, also persisted) and `side-tab-store.ts` (the
 // selected companion, memory only).
 //
 // WHY THIS EXISTS: `_side` normally rides the URL alone (both `preview-side.ts`
@@ -19,10 +19,9 @@
 // so it is a preference now: stored in `localStorage` under `SIDE_HIDDEN_KEY`,
 // seeded once at module load (both consumers read it in a `useState`
 // initializer, so it has to be there before the first render), and written
-// through on every set — the same pattern `side-store.ts` used for the width
-// before the width went back to memory only. Only the open/closed bit is a
-// stored preference: the width and the selected tab are deliberately NOT, and
-// reset on a reload (see those modules).
+// through on every set — the same pattern `side-store.ts` uses for the width.
+// The open/closed bit and the width are stored preferences; the selected tab is
+// deliberately NOT, and resets on a reload (see `side-tab-store.ts`).
 //
 // Every storage access is wrapped — a private window, cleared site data, or a
 // browser set to block storage makes the accessor itself throw — and a failure
