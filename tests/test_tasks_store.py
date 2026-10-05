@@ -1431,11 +1431,10 @@ def test_acquire_lease_blocking_waits_for_a_real_rival_to_release(state_dir):
     description, the only thing that exercises an actual block — stands in
     for a rival process; `acquire_lease_blocking` on a background thread
     must sit there until it lets go, then return promptly once it does."""
-    import fcntl
+    from tests import _lease_rival
 
     path = os.path.join(state_dir, "duties")
-    rival = open(path, "w")
-    fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    rival = _lease_rival.hold(path)
 
     done = threading.Event()
 

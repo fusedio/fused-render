@@ -2855,7 +2855,7 @@ def test_ensure_duties_waiter_starts_exactly_one_daemon_thread(monkeypatch):
     A second call while that thread is still alive (here: still blocked
     behind a rival holder of the lease) is a no-op — same thread object
     back, nothing new started."""
-    import fcntl
+    from tests import _lease_rival
 
     from fused_render import project_queue, schedule
 
@@ -2864,9 +2864,8 @@ def test_ensure_duties_waiter_starts_exactly_one_daemon_thread(monkeypatch):
 
     path = os.path.join(str(tasks_store.STATE_DIR), qm._DUTIES_LEASE)
     os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
-    with open(path, "w") as rival:
-        fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
+    rival = _lease_rival.hold(path)
+    try:
         first = _REAL_ENSURE_DUTIES_WAITER()
         assert first.name == "fused-queue-duties-waiter"
         assert first.daemon is True
@@ -2874,6 +2873,8 @@ def test_ensure_duties_waiter_starts_exactly_one_daemon_thread(monkeypatch):
 
         second = _REAL_ENSURE_DUTIES_WAITER()
         assert second is first
+    finally:
+        _lease_rival.release(rival)
 
     first.join(timeout=5)
     assert not first.is_alive()
@@ -2924,7 +2925,7 @@ def test_ensure_duties_waiter_blocks_behind_a_rival_then_takes_over(state,
     `reconcile()` must not run while the rival holds the lease — and wakes
     the instant the rival releases it, same as a real holder's process
     exiting drops its flock with it."""
-    import fcntl
+    from tests import _lease_rival
 
     from fused_render import project_queue, schedule
 
@@ -2933,8 +2934,7 @@ def test_ensure_duties_waiter_blocks_behind_a_rival_then_takes_over(state,
     monkeypatch.setattr(project_queue, "enabled", lambda: False)
 
     path = os.path.join(str(state), qm._DUTIES_LEASE)
-    rival = open(path, "w")
-    fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    rival = _lease_rival.hold(path)
     try:
         thread = _REAL_ENSURE_DUTIES_WAITER()
         # Give the thread a moment to actually park on the blocking acquire;
@@ -2943,8 +2943,7 @@ def test_ensure_duties_waiter_blocks_behind_a_rival_then_takes_over(state,
         assert thread.is_alive()
         assert started == []
     finally:
-        fcntl.flock(rival, fcntl.LOCK_UN)
-        rival.close()
+        _lease_rival.release(rival)
 
     thread.join(timeout=5)
     assert not thread.is_alive()
