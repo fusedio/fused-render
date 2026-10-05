@@ -160,6 +160,11 @@ def test_sweep_leaves_a_turn_another_live_process_is_watching(sched_home):
         child.wait()
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="a dead watcher pid is only detectable on POSIX: schedule._pid_running "
+           "is POSIX-only (os.kill(pid, 0) is CTRL_C_EVENT on Windows), so there "
+           "the heartbeat going stale alone closes the turn")
 def test_sweep_closes_a_turn_once_its_watcher_process_is_dead(sched_home):
     from fused_render import schedule
 

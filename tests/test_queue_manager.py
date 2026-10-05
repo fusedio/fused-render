@@ -2456,6 +2456,11 @@ def test_reconcile_never_pops_an_in_flight_spawn_past_the_grace():
     assert owner_key(m) is None
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the in-flight-spawn pid probe is deliberately POSIX-only (D1311): "
+           "Windows has no safe pid-liveness check, so it falls back to the "
+           "SPAWN_GRACE backstop and this premise does not exist there")
 def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
     """B1b: `self._spawning` only answers "is MY spawn still running" — a
     SECOND manager over the same state dir (another `open` process, or
@@ -2494,6 +2499,11 @@ def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
         other.wait(5)
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the in-flight-spawn pid probe is deliberately POSIX-only (D1311): "
+           "Windows has no safe pid-liveness check, so it falls back to the "
+           "SPAWN_GRACE backstop and this premise does not exist there")
 def test_reconcile_pops_a_starting_owner_whose_spawner_process_died():
     """The other half of B1b: a `starting` owner whose `spawner_pid` names a
     process that is actually gone (crashed mid-spawn) is NOT treated as
@@ -2597,6 +2607,11 @@ def test_reconcile_never_pops_this_processs_own_in_flight_spawn_past_spawn_max()
     assert m.owner(F1)["run_id"] == "run-slow"
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the in-flight-spawn pid probe is deliberately POSIX-only (D1311): "
+           "Windows has no safe pid-liveness check, so it falls back to the "
+           "SPAWN_GRACE backstop and this premise does not exist there")
 def test_reconcile_still_trusts_a_fresh_in_flight_spawn_under_spawn_max():
     """The ordinary case the ceiling must not touch: a `starting` owner well
     under `SPAWN_MAX`, past only `SPAWN_GRACE`, with a live spawner pid is
@@ -3259,6 +3274,11 @@ def test_valid_json_that_is_not_an_object_is_treated_as_unreadable(state, top_le
     assert owner_key(m) == "a"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="replaces the index file while the reader still holds it open, "
+           "which Windows refuses (os.replace on an open file raises "
+           "PermissionError); the stat-the-handle race only exists on POSIX")
 def test_load_stats_the_handle_it_actually_read_not_the_path_afterward(state):
     """`_load()` has to record the stat of the BYTES it parsed, not whatever
     happens to be at `path` by the time it gets around to calling `os.stat`.

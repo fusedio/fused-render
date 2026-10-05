@@ -254,6 +254,15 @@ def test_lean_still_serves_ordinary_routes():
     assert resp.status_code == 200
 
 
+def _alive(p: int) -> bool:
+    """Is this pid a live process? `tasks_watch._pid_alive` rather than
+    `os.kill(p, 0)`, which on Windows is a real signal (and raises WinError 87
+    for a pid that is gone), not a probe."""
+    from fused_render import tasks_watch
+
+    return tasks_watch._pid_alive(p)
+
+
 def test_lean_app_leaves_no_engine_process_after_a_request_starts_one(tmp_path, monkeypatch):
     """The proof for the shutdown-leak fix: `_startup_resurrect_background_apps`
     (`@on_startup`) never runs in a lean server — nothing is brought back at
@@ -280,13 +289,6 @@ def test_lean_app_leaves_no_engine_process_after_a_request_starts_one(tmp_path, 
         )
         assert resp.status_code == 200, resp.text
         pid = resp.json()["pid"]
-
-        def _alive(p: int) -> bool:
-            try:
-                os.kill(p, 0)
-            except (ProcessLookupError, PermissionError):
-                return False
-            return True
 
         assert _alive(pid), "the fixture daemon never actually started"
 
