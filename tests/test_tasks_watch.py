@@ -806,44 +806,33 @@ def test_a_tick_with_no_card_does_not_ring(claude_home, carded, rings):
 # -------------------------------------------------------- lean on-demand (B3)
 
 
-def test_a_lean_requests_the_watcher_on_its_first_tasks_request(
+def test_a_lean_starts_the_watcher_at_startup_not_on_first_request(
         claude_home, tmp_path, monkeypatch):
-    """`lean` registers no `_startup_tasks_watch` hook at all (it's an
-    `@on_startup`), so without this the watcher thread never starts and
-    `/api/tasks/changes` blocks out its full wait with nothing to report.
-    `routers/tasks._ensure_duties` — a dependency on every `/api/tasks*`
-    route — must bring it up lazily instead, on an ORDINARY request, no
-    lifespan involved.
+    """`_startup_tasks_watch` is `on_startup_always`, so a lean process brings
+    the watcher up with its lifespan: a lean page's long-poll must hear about
+    edits another process's scheduler makes even if this process never served
+    a tasks request itself. (`routers/tasks._ensure_duties` still calls
+    `start()` per request as an idempotent fallback.)
 
-    `tasks_watch.start()` is called on EVERY request (see `_ensure_duties`),
-    not just the first — its own `_started` flag is what makes repeating
-    that call free, so this only has to prove the dependency reaches it at
-    all under `lean`, not re-derive `start`'s own idempotence (covered
-    elsewhere). A spy that never calls through to the real `start` — this
-    test is only about the dependency wiring, and the real function spawns
-    a daemon thread this test would otherwise have to join or leak."""
+    The spy never calls through to the real `start`, which would spawn a
+    daemon thread this test would otherwise have to join or leak."""
     calls = []
 
     def recording_start():
         calls.append(True)
-        # Mirror the one observable effect a real `start()` call would have
-        # had, without spawning its never-ending `_loop` thread.
         tasks_watch._started = True
 
     monkeypatch.setattr(tasks_watch, "start", recording_start)
     monkeypatch.setattr(tasks_watch, "_started", False)
 
     app = create_app(start_dir=str(tmp_path), lean=True)
-    assert "_startup_tasks_watch" not in [
-        f.__name__ for f in app.state.startup_handlers], (
-        "lean must not register the startup hook for this test to prove "
-        "anything")
+    assert "_startup_tasks_watch" in [
+        f.__name__ for f in app.state.startup_handlers]
 
     with TestClient(app) as client:
-        assert calls == [], "must not start before any request lands"
+        assert calls == [True], "lean must start the watcher with its lifespan"
         resp = client.get("/api/tasks")
         assert resp.status_code == 200
-        assert calls == [True]
         assert tasks_watch._started is True
 
 
