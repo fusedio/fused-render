@@ -32,6 +32,7 @@ import {
   terminalFontSettled,
 } from "@platform/ui/terminalTheme";
 import { rememberTerminalSize } from "@platform/ui/terminalSizeHint";
+import { fitWhenVisible, isLaidOut } from "@platform/ui/terminalFit";
 import { isMod } from "@platform/lib/platform";
 
 // The drawer's toggle chord (TerminalDrawer.tsx): Cmd/Ctrl+Shift+` or the
@@ -223,7 +224,10 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
             // opens, for the same reason: it no-ops too, so there is no
             // second eager-resize path to worry about here.
             term.reset();
-            session.resize(term.rows, term.cols);
+            // Re-measure first (an earlier fit against a not-yet-laid-out box
+            // left the 80x24 default), but only against a real box.
+            fitWhenVisible(el, fit, term);
+            if (isLaidOut(el)) session.resize(term.rows, term.cols);
           }
           onStatus?.(status);
         },
@@ -234,14 +238,16 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
       teardown.push(() => dataSub.dispose());
       // Every fitted size is remembered so the NEXT terminal's create request
       // can start its pty at it (terminalSizeHint.ts).
+      // A hidden/zero-size container must neither be remembered nor reach the
+      // pty: it would SIGWINCH the shell into redrawing at a bogus width.
       const resizeSub = term.onResize(({ rows, cols }) => {
+        if (!isLaidOut(el)) return;
         rememberTerminalSize(rows, cols);
         session.resize(rows, cols);
       });
       teardown.push(() => resizeSub.dispose());
 
-      fit.fit();
-      rememberTerminalSize(term.rows, term.cols);
+      fitWhenVisible(el, fit, term);
 
       // Coalesced to at most one `fit.fit()` per animation frame: a resize
       // drag (TerminalDrawer.tsx) can hand this observer a burst of
@@ -255,7 +261,7 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
         if (fitRaf !== null) return;
         fitRaf = requestAnimationFrame(() => {
           fitRaf = null;
-          fit.fit();
+          fitWhenVisible(el, fit, term);
         });
       });
       observer.observe(el);
@@ -271,7 +277,7 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
         void terminalFontSettled().then((ok) => {
           if (!ok || cancelled) return;
           term.options.fontFamily = terminalFontFamily(documentCssVarLookup());
-          fit.fit();
+          fitWhenVisible(el, fit, term);
           term.refresh(0, term.rows - 1);
         });
       }
