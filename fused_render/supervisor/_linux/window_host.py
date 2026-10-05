@@ -53,6 +53,10 @@ class ToolkitUnavailable(RuntimeError):
 # behalf. WebKit2 4.1's NavigationAction has no is_main_frame, so this stands in
 # for it: a sub-frame load (a map's tile iframe, an embed) arrives as OTHER and
 # is left to the page, exactly like `navigation_action(is_main_frame=False)`.
+# A same-frame `location.assign` (the update dialog's Restart) also arrives as
+# OTHER, so OTHER counts as main-frame too when the URL needs launch services
+# (`fused-render://relaunch`, `mailto:`) — the one case where leaving it to the
+# page hangs the window instead of just doing nothing.
 _MAIN_FRAME_NAV = {"LINK_CLICKED", "FORM_SUBMITTED", "FORM_RESUBMITTED",
                    "BACK_FORWARD", "RELOAD"}
 
@@ -61,9 +65,11 @@ def map_navigation(url: str | None, port: int, nav_type: str, *,
                    button: int = 0, ctrl: bool = False) -> str:
     """allow | new_window | open_external for a navigation inside a window.
     ``nav_type`` is WebKitNavigationType's nick upper-cased (``LINK_CLICKED``)."""
+    is_main_frame = (nav_type in _MAIN_FRAME_NAV
+                     or window_policy.needs_launch_services(url))
     return window_policy.navigation_action(
         url, port,
-        is_main_frame=nav_type in _MAIN_FRAME_NAV,
+        is_main_frame=is_main_frame,
         has_target_frame=True,
         wants_download=False,
         new_window_modifier=ctrl or button == 2,
@@ -72,10 +78,16 @@ def map_navigation(url: str | None, port: int, nav_type: str, *,
 
 def map_new_window(url: str | None, port: int) -> str:
     """new_window | open_external | ignore for `window.open` / ``target=_blank``.
-    Blank / ``about:`` targets are ignored: they must neither open nor focus a window."""
+    Blank / ``about:`` targets are ignored: they must neither open nor focus a
+    window. Otherwise classified like a main-frame navigation with no target
+    frame (as on macOS); ``"allow"`` has no window to load into, so it is
+    ignored."""
     if _is_blank(url):
         return "ignore"
-    return "open_external" if window_policy.classify(url, port) == "external" else "new_window"
+    verdict = window_policy.navigation_action(
+        url, port, is_main_frame=True, has_target_frame=False,
+        wants_download=False, new_window_modifier=False)
+    return "ignore" if verdict == "allow" else verdict
 
 
 def map_response(*, can_show: bool, content_disposition: str | None) -> str:

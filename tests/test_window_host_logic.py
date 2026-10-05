@@ -217,8 +217,10 @@ def test_dispatch_runs_window_work_on_the_main_thread():
     (BASE + "/x", "LINK_CLICKED", 2, False, "new_window"),   # middle click
     (BASE + "/x", "LINK_CLICKED", 1, True, "new_window"),    # ctrl-click
     ("https://example.com/", "LINK_CLICKED", 1, False, "open_external"),
-    ("https://example.com/", "OTHER", 0, False, "allow"),     # sub-frame / script: left to the page
+    ("https://example.com/", "OTHER", 0, False, "allow"),     # sub-frame foreign host: left to the page
     ("about:blank", "OTHER", 0, False, "allow"),
+    ("fused-render://relaunch", "OTHER", 0, False, "open_external"),  # location.assign Restart
+    ("mailto:a@b.com", "OTHER", 0, False, "open_external"),
 ])
 def test_map_navigation(url, nav, button, ctrl, expected):
     assert wh.map_navigation(url, PORT, nav, button=button, ctrl=ctrl) == expected
@@ -230,6 +232,16 @@ def test_new_window_request_for_app_url_opens_a_window_external_goes_out():
     assert wh.map_new_window("about:blank", PORT) == "ignore"
     assert wh.map_new_window("", PORT) == "ignore"
     assert wh.map_new_window(None, PORT) == "ignore"
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("fused-render://relaunch", "open_external"),  # launch-service scheme
+    ("mailto:a@b.com", "open_external"),
+    ("javascript:alert(1)", "ignore"),              # WebKit scheme, no popup possible
+    ("data:text/plain,hi", "ignore"),
+])
+def test_new_window_request_for_non_http_scheme(url, expected):
+    assert wh.map_new_window(url, PORT) == expected
 
 
 def test_response_mapping_downloads_what_cannot_be_shown():

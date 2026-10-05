@@ -175,8 +175,10 @@ Per-distro runtime packages: Debian/Ubuntu `gir1.2-webkit2-4.1`
   Reload link; media pages do not play in a native window on such a system
   (install the GStreamer plugin packages, or turn the preference off).
 - Sub-frame vs main-frame cannot be told apart on WebKit2 4.1 navigation
-  actions; a script-driven `location.href` to an external host navigates the
-  window rather than opening the browser.
+  actions; a script-driven `location.href` to an external **http(s)** host
+  navigates the window rather than opening the browser. A script-driven
+  navigation to a launch-service scheme (`fused-render:`, `mailto:`, ...) is
+  always handed to `xdg-open`, regardless of frame.
 - `window.open("")` blank popups are blocked.
 - Wayland ignores window positioning; only size is restored.
 
