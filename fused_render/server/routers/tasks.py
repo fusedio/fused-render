@@ -7743,7 +7743,34 @@ def api_task_create(body: dict = Body(...),
         # Marked under the key the row answers to NOW; `learn_forced` carries
         # the mark onto the session id the run mints (queue_manager).
         queue_manager.get().mark_forced(key, entry_id)
-    if immediate:
+    if immediate and not queue:
+        # THE FORCE DOOR'S OWN ROAD (`api_queue_force`), not `run_now`: with
+        # the project queue on, `run_now` on a busy folder is the Skip verb —
+        # it files the entry at the head of that folder's line, which is the
+        # one thing this opt-out exists to avoid (Bugbot, PR #1429).
+        # `dispatch_entry` claims and sends without asking the folder; a
+        # conversation that cannot take the message yet (`SpawnBusy`) leaves
+        # the entry pending AND forced, and the tick's flag-off road sends
+        # it, exactly as the force door promises.
+        try:
+            started = schedule.dispatch_entry(entry_id)
+        except schedule.SpawnBusy:
+            logger.debug("page task %s: forced dispatch deferred; the tick "
+                         "sends it", entry_id, exc_info=True)
+        except Exception:  # noqa: BLE001 — the loop still has the entry
+            logger.debug("page task %s: forced dispatch failed; the tick "
+                         "sends it", entry_id, exc_info=True)
+        else:
+            session_id = str((started or {}).get("session_id") or "")
+            if session_id:
+                # The turn just began on this session; the manager's own
+                # dispatch marks it the same way so the row reads running.
+                try:
+                    tasks_watch.mark_running(session_id)
+                except Exception:  # noqa: BLE001 — a missed mark is the old behaviour
+                    logger.debug("could not mark %s running", session_id,
+                                 exc_info=True)
+    elif immediate:
         try:
             schedule.run_now(entry_id)
         except Exception:  # noqa: BLE001 — the loop still has the entry

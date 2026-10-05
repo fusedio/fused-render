@@ -3995,16 +3995,24 @@ def test_the_queue_switch_write_is_guarded_and_typed(client):
 
 def test_create_with_queue_false_marks_the_task_forced_before_dispatch(
         client, flag, tmp_path, monkeypatch):
-    """The mark lands BEFORE `run_now`, under the pending key and the entry id,
-    so the admission the spawn asks answers `run: true` even on a busy folder."""
+    """The mark lands BEFORE the dispatch, under the pending key and the entry
+    id — and the dispatch is the FORCE DOOR'S (`dispatch_entry`), never
+    `run_now`: with the queue on, `run_now` on a busy folder is the Skip verb
+    and files the entry at the head of the line (Bugbot, PR #1429)."""
     flag(True)
     seen = {}
 
-    def run_now(entry_id):
+    def dispatch_entry(entry_id):
         seen["forced_at_dispatch"] = queue_manager.get().is_forced(
             tasks_store.pending_key(entry_id), entry_id)
-        return {"ok": True}
+        return {"run_id": "r1", "session_id": "sess-forced"}
+
+    def run_now(entry_id):
+        raise AssertionError("a forced create must not go through run_now")
+    monkeypatch.setattr(schedule, "dispatch_entry", dispatch_entry)
     monkeypatch.setattr(schedule, "run_now", run_now)
+    marked = []
+    monkeypatch.setattr(tasks_watch, "mark_running", marked.append)
     folder = tmp_path / "proj"
     folder.mkdir()
     r = client.post("/api/tasks/create",
@@ -4015,11 +4023,40 @@ def test_create_with_queue_false_marks_the_task_forced_before_dispatch(
     assert seen["forced_at_dispatch"] is True
     assert queue_manager.get().is_forced(body["key"]) is True
     assert queue_manager.get().is_forced(body["entry_id"]) is True
+    # The row reads running from the dispatch, as the manager's own does.
+    assert marked == ["sess-forced"]
+
+
+def test_a_forced_create_the_conversation_cannot_take_yet_stays_pending_and_forced(
+        client, flag, tmp_path, monkeypatch):
+    """`SpawnBusy` is not an error for the caller: the entry stays pending, the
+    mark stays, and the tick's flag-off road sends it — the force door's own
+    promise. Nothing goes into a line."""
+    flag(True)
+
+    def dispatch_entry(entry_id):
+        raise schedule.SpawnBusy(f"{entry_id}: a send is in flight")
+    monkeypatch.setattr(schedule, "dispatch_entry", dispatch_entry)
+    monkeypatch.setattr(schedule, "run_now",
+                        lambda entry_id: (_ for _ in ()).throw(AssertionError("run_now")))
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": False},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert queue_manager.get().is_forced(body["key"]) is True
+    entry = next(e for e in schedule._read() if str(e.get("id")) == body["entry_id"])
+    assert entry.get("state") == schedule.PENDING
 
 
 def test_create_without_queue_false_is_not_forced(client, flag, tmp_path, monkeypatch):
+    """…and the ordinary road is still `run_now` (Skip on a busy folder)."""
     flag(True)
     monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    monkeypatch.setattr(schedule, "dispatch_entry",
+                        lambda entry_id: (_ for _ in ()).throw(AssertionError("dispatch_entry")))
     folder = tmp_path / "proj"
     folder.mkdir()
     for body in ({"prompt": "go", "target": str(folder)},
