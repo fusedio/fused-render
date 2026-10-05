@@ -2373,7 +2373,15 @@ async def shutdown_ai_session(app=None):
     session = getattr(app.state, "ai_session", None) if app is not None else None
     if session is None:
         session = _AI_SESSION
-    await session.shutdown()
+        # A lean app never sets `app.state.ai_session`, so it lands here on
+        # every teardown. Acquiring the global's asyncio.Lock binds it to
+        # this loop (a later TestClient/app on another loop then hits "bound
+        # to a different event loop"), so touch it only if something on the
+        # global was actually started — a live process or a pending prewarm.
+        if session._proc is None and session._spawn_task is None:
+            session = None
+    if session is not None:
+        await session.shutdown()
     # The apple tier's helper is a child of this server too (host.py); it is
     # stopped here beside the Claude instance rather than left to die with the
     # pipe, so a transcription mid-run gets its cancel rather than a SIGPIPE.
