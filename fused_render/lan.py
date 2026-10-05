@@ -1345,7 +1345,7 @@ class _Controller:
         try:
             from zeroconf import ServiceInfo, Zeroconf
         except ImportError:
-            self.error = "zeroconf not installed"
+            self.error = "zeroconf not installed (pip install 'fused-render[desktop]')"
             return
         self._unadvertise()
         zc = None

@@ -753,6 +753,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             logger.info("reclaimed %d orphaned project venv(s)", removed)
 
     app.exception_handler(Exception)(unhandled_exception)
+    # A route whose feature group is not installed: 503 + `missing_extra`
+    # naming the extra (fused_render/extras.py).
+    from fused_render import extras as _extras
+
+    _extras.install_handler(app)
     # A PermissionError no route caught: 403 + the Full Disk Access warning
     # hears about it (shell/fda.py), instead of a 500 that explains nothing.
     # Routes that handle their own denial return shell_fda.refused() and
@@ -1104,6 +1109,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # falls back to the live walk with no error state (SPEC server-api.md §2).
     @on_startup
     async def _startup_index_scan():
+        from fused_render import extras
+
+        if not extras.available("index"):
+            return
         await index_routes.startup_scan(start_dir)
         # ...and warm the corpus path the explorer's home search reads, on a
         # detached thread, so the gitignore sweep and the duckdb import are
@@ -1127,8 +1136,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # singleton-start convention as `shell_mounts.start_health_monitor`.
     @on_startup
     async def _startup_index_watch():
+        from fused_render import extras
         from fused_render.server import index_watch
 
+        if not extras.available("index"):
+            return
         index_watch.start()
 
     @on_shutdown

@@ -298,8 +298,8 @@ def probe() -> dict:
     """
     image = _pillow()
     shot_reason = None if image else (
-        "screenshots need Pillow — pip install pillow (the packaged app ships "
-        "it)")
+        "screenshots need Pillow — pip install 'fused-render[desktop]' (the "
+        "packaged app ships it)")
     try:
         displays = _monitors()
     except Exception as e:                               # noqa: BLE001
@@ -342,7 +342,7 @@ def screenshot(out: str, spec: dict) -> dict:
     image_mod = _pillow()
     if image_mod is None:
         raise Unsupported(
-            "screenshots need Pillow — pip install pillow")
+            "screenshots need Pillow — pip install 'fused-render[desktop]'")
 
     monitor = _pick(spec.get("display"), _monitors())
     x, y, width, height = _region(monitor, spec.get("rect"))

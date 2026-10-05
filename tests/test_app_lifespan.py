@@ -321,6 +321,38 @@ def test_lean_shutdown_is_a_noop_when_no_ai_session_ever_started(tmp_path, monke
     # lifespan shutdown (including _startup_shutdown_ai) completed cleanly.
 
 
+def test_lean_teardown_never_touches_the_module_global_ai_lock(tmp_path, monkeypatch):
+    """A lean app never sets `app.state.ai_session`, so teardown used to fall
+    through to the module-global `_AI_SESSION` and acquire its `asyncio.Lock`
+    on every shutdown. That lock binds to whichever event loop contends it, so
+    a later TestClient on a new loop hit "is bound to a different event loop".
+    A global session nothing ever started has nothing to tear down: skip it."""
+    from starlette.testclient import TestClient
+
+    from fused_render.server import ai as ai_mod
+
+    acquired = []
+
+    class _TrackingLock:
+        async def __aenter__(self):
+            acquired.append(True)
+
+        async def __aexit__(self, *exc):
+            return False
+
+    session = ai_mod._AiSession()
+    session.lock = _TrackingLock()
+    monkeypatch.setattr(ai_mod, "_AI_SESSION", session)
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    app = create_app(start_dir=str(tmp_path), lean=True)
+    assert getattr(app.state, "ai_session", None) is None
+
+    with TestClient(app) as client:
+        assert client.get("/api/config").status_code == 200
+
+    assert acquired == [], "lean teardown acquired the module-global AI lock"
+
+
 def test_lean_app_shuts_down_an_ai_session_started_by_an_ordinary_request(tmp_path, monkeypatch):
     """The AI-cleanup analogue of
     `test_lean_app_leaves_no_engine_process_after_a_request_starts_one`:

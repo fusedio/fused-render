@@ -78,12 +78,16 @@ def test_nothing_gtk_or_webkit_is_core():
             raise AssertionError("pyobjc-framework-WebKit must stay in [app]")
 
 
-def test_every_darwin_pyobjc_in_core_still_has_its_marker():
-    core = _reqs(_project()["dependencies"])
-    pyobjc = [r for r in core if r.name.lower().startswith("pyobjc")]
-    assert pyobjc, "the core pyobjc entries are deliberate (see pyproject comments)"
+def test_pyobjc_lives_in_desktop_extra_with_darwin_marker_not_in_core():
+    project = _project()
+    core = _reqs(project["dependencies"])
+    assert not [r for r in core if r.name.lower().startswith("pyobjc")], \
+        "pyobjc must not be in core dependencies; the lean base is deliberate"
+    desktop = _reqs(project["optional-dependencies"]["desktop"])
+    pyobjc = [r for r in desktop if r.name.lower().startswith("pyobjc")]
+    assert pyobjc, "the [desktop] pyobjc entries are deliberate (see pyproject comments)"
     for req in pyobjc:
-        assert _marker_pins(req, "darwin")
+        assert _marker_pins(req, "darwin"), f"{req} must be darwin-only"
 
 
 def test_gi_is_never_imported_at_module_level():
