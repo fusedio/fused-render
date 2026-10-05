@@ -205,6 +205,28 @@ export default function Apps({ config }: { config: Config }) {
   // requests and observers for cards about to vanish. `nonce` is deliberately
   // not in the key: a refetch after create/sync keeps the reader's place.
   const filterKey = `${tag ?? ""}\u0000${category ?? ""}\u0000${q}`;
+  // A new list starts at its top. The scroller (`.apps-page`) keeps its
+  // scrollTop across the collapse to a first page, and a reader who typed a
+  // query from deep in a grown grid would otherwise be left clamped to the
+  // new list's bottom — first cards off screen, sentinel already in view and
+  // asking for more. Clamp to the toolbar's top rather than zero: a reader
+  // already above it (hero in view) is not moved, one below it comes back to
+  // the row they just used. Not on mount: a deep link or a back/forward
+  // restore arrives with the scroll position it should keep.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const firstFilter = useRef(true);
+  useEffect(() => {
+    if (firstFilter.current) {
+      firstFilter.current = false;
+      return;
+    }
+    const bar = toolbarRef.current;
+    const scroller = bar?.closest(".apps-page");
+    if (!bar || !(scroller instanceof HTMLElement)) return;
+    const barTop =
+      bar.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    if (scroller.scrollTop > barTop) scroller.scrollTop = barTop;
+  }, [filterKey]);
   const [loaded, setLoaded] = useState<{ key: string; page: AppsPage | null }>(() => ({
     key: filterKey,
     page: firstPages.get(filterKey) ?? null,
@@ -334,7 +356,7 @@ export default function Apps({ config }: { config: Config }) {
         <ClaudeHealthStrip />
         <FdaStrip />
 
-        <div className="apps-toolbar">
+        <div className="apps-toolbar" ref={toolbarRef}>
           {/* Facet selector: which chip set filters the grid. Switching facets
               resets the filter to All — a selection from the old facet would
               otherwise keep narrowing the grid invisibly under the new chips. */}
