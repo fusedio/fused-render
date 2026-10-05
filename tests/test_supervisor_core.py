@@ -9,8 +9,11 @@ run. Where no backend exists for the running OS (e.g. darwin) the import raises
 at module load; we skip rather than ERROR at collection, matching the sibling
 convention in tests/test_supervisor_linux_instance.py.
 """
+import os
 import queue
 import threading
+import time
+import types
 from pathlib import Path
 
 import pytest
@@ -66,7 +69,7 @@ def test_spawn_call_never_blocks_the_loop_thread():
 
 def test_open_command_routes_deep_link_to_clone(monkeypatch):
     opened = []
-    monkeypatch.setattr(core, "_open_browser", opened.append)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: opened.append(url))
     core._open_command(9000, protocol.Open("fused-render://open?git=https://github.com/o/r"))
     assert opened == [
         "http://127.0.0.1:9000/clone?src="
@@ -78,7 +81,7 @@ def test_open_command_routes_file_uri_to_view(monkeypatch, tmp_path):
     f = tmp_path / "a.parquet"
     f.write_text("x")
     opened = []
-    monkeypatch.setattr(core, "_open_browser", opened.append)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: opened.append(url))
     # Path.as_uri() — not f"file://{f}" — builds a well-formed file URI on every
     # platform: on Windows the drive path becomes file:///C:/... (three slashes),
     # whereas f"file://{f}" would read C:\... as the netloc and be rejected as a
@@ -92,13 +95,13 @@ def test_open_command_routes_plain_file_to_view(monkeypatch, tmp_path):
     f = tmp_path / "report.parquet"
     f.write_text("x")
     opened = []
-    monkeypatch.setattr(core, "_open_browser", opened.append)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: opened.append(url))
     core._open_command(9000, protocol.Open(str(f)))
     assert opened == [f"http://127.0.0.1:9000" + _view_path(str(f))]
 
 
 def test_open_command_missing_file_still_errors(monkeypatch):
-    monkeypatch.setattr(core, "_open_browser", lambda url: None)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: None)
     with pytest.raises(FileNotFoundError):
         core._open_command(9000, protocol.Open("/nope/does/not/exist.parquet"))
 
@@ -278,7 +281,7 @@ def test_open_command_signals_relaunch_on_linux_backend(monkeypatch):
     # instead of tearing the process down from this call's own thread.
     monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
     opened = []
-    monkeypatch.setattr(core, "_open_browser", opened.append)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: opened.append(url))
     relaunch = queue.Queue()
 
     core._open_command(9000, protocol.Open("fused-render://relaunch"), relaunch)
@@ -293,7 +296,7 @@ def test_open_command_relaunch_is_noop_without_appimage_path_hook(monkeypatch):
     # the queue is never signalled, so run() never attempts a respawn.
     monkeypatch.setattr(core, "startup", _FakeStartupNoAppImage())
     opened = []
-    monkeypatch.setattr(core, "_open_browser", opened.append)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: opened.append(url))
     relaunch = queue.Queue()
 
     core._open_command(9000, protocol.Open("fused-render://relaunch"), relaunch)
@@ -309,7 +312,7 @@ def test_open_command_leaves_fda_relaunch_untouched(monkeypatch):
     # is_launch_url branch below it, same as before Task 5).
     monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
     opened = []
-    monkeypatch.setattr(core, "_open_browser", opened.append)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: opened.append(url))
     relaunch = queue.Queue()
 
     core._open_command(
@@ -326,7 +329,7 @@ def test_event_loop_returns_relaunch_reason_for_forwarded_relaunch_link(monkeypa
     # thread signals the queue it owns, without teardown running from that
     # worker thread.
     monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
-    monkeypatch.setattr(core, "_open_browser", lambda url: None)
+    monkeypatch.setattr(core, "_open_browser", lambda url, token=None: None)
 
     paths = _Paths()
     tray_actions = queue.Queue()
@@ -400,6 +403,8 @@ class _FakePrimaryInstance:
 
 
 class _FakeRunPaths:
+    state = Path("/nonexistent")  # no prefs.json there -> preference_enabled() default True
+
     @classmethod
     def discover(cls) -> "_FakeRunPaths":
         return cls()
@@ -512,3 +517,288 @@ def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(m
 
     assert calls == ["release", "respawn"]
     assert tray_handles[0].update_calls == ["9.9.9"]
+
+
+# ---- native-window host routing (Linux backend only; core._window_host) ----
+
+@pytest.fixture(autouse=True)
+def _reset_host_globals():
+    """`_host_paths`/`_host_port`/`_host_starting`/`_host_stopping` are
+    module-level state the background host start writes to outside of
+    `run()` — reset around every test in this file so one test's host-start
+    attempt can't leak into the next."""
+    yield
+    core._host_paths = None
+    core._host_port = None
+    core._host_starting = False
+    core._host_stopping = False
+    core._host_attempt_done.set()
+    core._window_host = None
+    core._activation = None
+
+
+class _FakeHost:
+    def __init__(self, shows):
+        self.shows, self.opened = shows, []
+
+    def open(self, url, activation_token=None):
+        self.opened.append(url)
+        return self.shows
+
+
+def test_open_browser_prefers_the_window_host(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    host = _FakeHost(True)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", host)
+    monkeypatch.setattr(core.ui, "open_url", lambda url, *_: tabs.append(url))
+    core._open_browser("http://127.0.0.1:1/")
+    assert host.opened == ["http://127.0.0.1:1/"] and tabs == []
+
+
+def test_open_browser_falls_back_when_the_host_declines(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", _FakeHost(False))
+    monkeypatch.setattr(core.ui, "open_url", lambda url, *_: tabs.append(url))
+    core._open_browser("http://127.0.0.1:1/")
+    assert tabs == ["http://127.0.0.1:1/"]
+
+
+def test_open_browser_hands_the_token_to_the_tab_it_falls_back_to(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", _FakeHost(False))
+    monkeypatch.setattr(core.ui, "open_url", lambda url, token=None: tabs.append((url, token)))
+    core._open_browser("http://127.0.0.1:1/", "tok-1")
+    assert tabs == [("http://127.0.0.1:1/", "tok-1")]
+
+
+def test_open_browser_without_a_host_is_the_old_behaviour(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    tabs = []
+    monkeypatch.setattr(core, "_window_host", None)
+    monkeypatch.setattr(core.ui, "open_url", lambda url, *_: tabs.append(url))
+    core._open_browser("http://x/")
+    assert tabs == ["http://x/"]
+
+
+def test_a_crashing_host_start_never_escapes_run(monkeypatch):
+    paths = _Paths()
+
+    class Boom:
+        class WindowHost:
+            def __init__(self, *a):
+                raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(core._backend, "windows", Boom, raising=False)
+    monkeypatch.setattr(core, "_window_host", None)
+    core._start_window_host(paths, 1)
+    assert core._window_host is None and "kaboom" in paths.messages[0]
+
+
+def test_stop_window_host_stops_and_clears(monkeypatch):
+    stopped = []
+
+    class H:
+        def stop(self):
+            stopped.append(1)
+
+    monkeypatch.setattr(core, "_window_host", H())
+    core._stop_window_host()
+    core._stop_window_host()
+    assert stopped == [1] and core._window_host is None
+
+
+def test_open_browser_forwards_the_activation_token(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_SUPERVISOR_NO_BROWSER", raising=False)
+    host = _FakeHost(True)
+    tokens = []
+    host.open = lambda url, activation_token=None: (tokens.append(activation_token), True)[1]
+    monkeypatch.setattr(core, "_window_host", host)
+    core._open_browser("http://127.0.0.1:1/", "xdg-token-1")
+    assert tokens == ["xdg-token-1"]
+
+
+def test_activation_token_prefers_xdg_over_desktop_startup_id(monkeypatch):
+    monkeypatch.delenv("XDG_ACTIVATION_TOKEN", raising=False)
+    monkeypatch.delenv("DESKTOP_STARTUP_ID", raising=False)
+    core._claim_activation_token()
+    assert core._activation_token() is None
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "legacy-id")
+    core._claim_activation_token()
+    assert core._activation_token() == "legacy-id"
+    monkeypatch.setenv("XDG_ACTIVATION_TOKEN", "new-token")
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "legacy-id")
+    core._claim_activation_token()
+    assert core._activation_token() == "new-token"
+
+
+def test_activation_token_leaves_the_environment_and_is_spent_once(monkeypatch):
+    """Claimed before anything is spawned, so no child inherits it; the
+    first open spends it and later opens send none."""
+    monkeypatch.setenv("XDG_ACTIVATION_TOKEN", "xdg-token")
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "legacy-id")
+    core._claim_activation_token()
+    assert "XDG_ACTIVATION_TOKEN" not in os.environ
+    assert "DESKTOP_STARTUP_ID" not in os.environ
+    assert core._activation_token() == "xdg-token"
+    assert core._activation_token() is None
+
+
+def test_run_claims_the_activation_token_before_anything_else(monkeypatch):
+    order = []
+    monkeypatch.setattr(core, "_claim_activation_token", lambda: order.append("claim"))
+    def stop(cmd):
+        order.append("next")
+        raise SystemExit
+    monkeypatch.setattr(core, "_absolute_command", stop)
+    with pytest.raises(SystemExit):
+        core.run(object())
+    assert order == ["claim", "next"]
+
+
+def test_start_window_host_at_launch_starts_regardless_of_the_preference(
+        tmp_path, monkeypatch):
+    """The host is started whenever the platform can run one at all — the
+    `native_windows_enabled` preference never gates the launch-time start; it
+    only decides the host's initial `enabled` state (the host reads it from
+    prefs.json itself once listening) and is toggled live afterwards."""
+    import json
+
+    class _P:
+        state = tmp_path
+        logs = tmp_path
+
+        def log(self, message):
+            pass
+
+    (tmp_path / "prefs.json").write_text(json.dumps({"native_windows_enabled": False}))
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(launchable=lambda: True),
+                        raising=False)
+    started = []
+    monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
+    core._start_window_host_at_launch(_P(), 9000)
+    assert len(started) == 1 and started[0][1] == 9000
+    assert core._host_paths is not None and core._host_port == 9000
+
+
+def test_start_window_host_at_launch_skips_when_the_platform_cannot_run_one(
+        tmp_path, monkeypatch):
+    class _P:
+        state = tmp_path
+        logs = tmp_path
+
+        def log(self, message):
+            pass
+
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(launchable=lambda: False),
+                        raising=False)
+    started = []
+    monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
+    core._start_window_host_at_launch(_P(), 9000)
+    assert started == []
+    assert core._host_paths is not None and core._host_port == 9000
+
+
+def test_resolve_window_host_never_starts_a_host(tmp_path, monkeypatch):
+    """`_resolve_window_host` only waits on a start already in flight — the
+    only start is the one `run()` kicks off at launch."""
+    class _P:
+        state = tmp_path
+        logs = tmp_path
+
+        def log(self, message):
+            pass
+
+    core._host_paths, core._host_port = _P(), 9000
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(launchable=lambda: True),
+                        raising=False)
+    started = []
+    monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
+    assert core._resolve_window_host() is None
+    assert started == []
+
+
+def test_resolve_window_host_waits_for_the_launch_time_start(monkeypatch):
+    class _P:
+        logs = None
+
+        def log(self, message):
+            pass
+
+    core._host_paths, core._host_port = _P(), 9000
+    core._host_starting = True
+    core._host_attempt_done.clear()
+
+    def finish():
+        core._window_host = _FakeHost(True)
+        core._host_starting = False
+        core._host_attempt_done.set()
+
+    threading.Timer(0.05, finish).start()
+    result = core._resolve_window_host()
+    assert result is not None and result.shows is True
+
+
+def test_resolve_window_host_falls_back_without_waiting_forever(monkeypatch):
+    """A host that never finishes starting (bounded by `_HOST_WAIT_S`) must
+    not hang `_open_browser` — the caller falls back to a browser tab for
+    this one open."""
+    class _P:
+        logs = None
+
+        def log(self, message):
+            pass
+
+    core._host_paths, core._host_port = _P(), 9000
+    monkeypatch.setattr(core, "_HOST_WAIT_S", 0.05)
+    core._host_starting = True
+    core._host_attempt_done.clear()  # never set again within the test
+    assert core._resolve_window_host() is None
+
+
+def test_start_window_host_does_nothing_once_stopping(monkeypatch):
+    paths = _Paths()
+    constructed = []
+    monkeypatch.setattr(
+        core._backend, "windows",
+        types.SimpleNamespace(WindowHost=lambda *a: constructed.append(a)),
+        raising=False)
+    core._host_stopping = True
+    core._start_window_host(paths, 9000)
+    assert constructed == [] and core._host_starting is False
+
+
+def test_stop_window_host_waits_for_an_in_flight_start_and_never_orphans_it(
+        monkeypatch):
+    """A host that finishes starting while `_stop_window_host` is already
+    tearing things down must be stopped by the worker itself — publishing it
+    into `_window_host` after that point would leave it running with nobody
+    left tracking it."""
+    paths = _Paths()
+    stop_calls = []
+
+    class FakeHost:
+        def start(self):
+            time.sleep(0.05)
+            return True
+
+        def stop(self):
+            stop_calls.append(1)
+
+    monkeypatch.setattr(
+        core._backend, "windows",
+        types.SimpleNamespace(WindowHost=lambda *a: FakeHost()),
+        raising=False)
+
+    core._start_window_host(paths, 9000)
+    assert core._host_starting is True  # the start is still in flight
+
+    core._stop_window_host()
+
+    assert core._window_host is None  # never published
+    assert stop_calls == [1]  # the worker stopped it itself instead

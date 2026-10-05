@@ -4,7 +4,27 @@
 // this is where "separate" is kept from becoming "divergent".
 import { describe, expect, it } from "bun:test";
 
-import { GIT_MARKS, gitMarkFor, gitRowClass } from "./git-mark";
+import { GIT_MARKS, gitAheadMark, gitMarkFor, gitRowClass } from "./git-mark";
+
+describe("gitAheadMark", () => {
+  it("is null when nothing is unpushed", () => {
+    expect(gitAheadMark(undefined, undefined)).toBeNull();
+    expect(gitAheadMark(0, undefined)).toBeNull();
+    expect(gitAheadMark(-1, undefined)).toBeNull();
+    expect(gitAheadMark(Number.NaN, undefined)).toBeNull();
+  });
+
+  it("shows the count with a singular/plural tooltip on a clean row", () => {
+    expect(gitAheadMark(1, undefined)).toEqual({ text: "↑1", label: "1 unpushed commit" });
+    expect(gitAheadMark(3, undefined)).toEqual({ text: "↑3", label: "3 unpushed commits" });
+  });
+
+  it("is null on any dirty row", () => {
+    for (const status of ["M", "U", "S", "!", "A", "D"]) {
+      expect(gitAheadMark(2, status)).toBeNull();
+    }
+  });
+});
 
 const STATES = Object.keys(GIT_MARKS);
 

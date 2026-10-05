@@ -2780,7 +2780,10 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # re-checks machine identity), and this join answers as many rows as the
     # Hub sent back before truncation. `_model_row` threads both straight
     # through to `fit.verdict`/`speed.estimate_tok_s` rather than letting
-    # either call resolve its own reading per row.
+    # either call resolve its own reading per row. `hw_detect.cached_
+    # hardware()` kicks the background refresh thread awake itself on a
+    # cache miss, so a lean process (which skips `server/app.py`'s
+    # `@on_startup` hook) still gets it started by this very read.
     footprint_store = footprints.load_store()
     hardware = hw_detect.cached_hardware()
     # `_model_row` is also the supported-tag filter (see its docstring): a row

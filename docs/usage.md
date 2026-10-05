@@ -10,7 +10,8 @@ Python runs in a fresh subprocess per call through the built-in runner by
 default. Opt into fused's local compute backend — which gives a folder its own
 cached virtual environment (see [Dependencies](#dependencies)) — with
 `FUSED_RENDER_ENGINE=auto` (use it when `fused` is importable, else the builtin)
-or `=fused` (require it); `pip install "fused-render[fused]"` first. Under the
+or `=fused` (require it). The base install carries plain `fused`;
+`pip install "fused-render[fused]"` adds its deploy, share and MCP extras. Under the
 fused engine a file may also expose a `@fused.udf`-decorated function or assign
 `result = ...` directly instead of defining `main()`. You can also switch the
 engine in [Preferences](#preferences).

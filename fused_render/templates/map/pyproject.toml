@@ -19,6 +19,9 @@
 #                       clashes with h5py's in one process on Windows)
 #   numpy/pandas/       arrays and tables a script returns; GeoParquet writes
 #   pyarrow
+#   laspy[lazrs]        prepare.py — a LAS/LAZ the browser cannot read (LAS 1.4,
+#                       a CRS only in GeoTIFF keys, or none) rewritten as LAS 1.2
+#                       in lon/lat; COPC and EPT always stream in the browser
 #
 # `duckdb` and `requests` are here because a user's `.py` map target runs in
 # THIS process (prepare.py imports it to get the object it returns), and those
@@ -47,6 +50,7 @@ dependencies = [
     "numpy",
     "pandas",
     "pyarrow",
+    "laspy[lazrs]>=2.5",
     "duckdb>=1.1",
     "requests",
 ]

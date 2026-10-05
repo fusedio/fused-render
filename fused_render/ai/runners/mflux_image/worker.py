@@ -158,14 +158,14 @@ _MLX_COMPONENTS = formats.MFLUX_COMPONENTS
 
 
 def download(model_id):
-    """The whole repo, and nothing clever.
+    """The repo minus the formats MLX cannot open (`formats.MLX_IGNORE`).
 
-    No `ignore_patterns`, which is the visible difference from the diffusers
-    runner's `download`: there is no full-precision component here being
-    replaced by a quantized one, so every file in the snapshot is a file the
-    load will read.
+    No component is being swapped for a quantized one (the diffusers runner's
+    reason for a scope), so every safetensors file is read; only other
+    frameworks' copies of the weights are skipped.
     """
-    return worker_base.download_snapshot(model_id)
+    return worker_base.download_snapshot(
+        model_id, ignore_patterns=list(formats.MLX_IGNORE))
 
 
 def _recipe_for(model_id, mode):

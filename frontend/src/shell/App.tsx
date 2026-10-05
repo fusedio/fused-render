@@ -27,6 +27,7 @@ import {
   navigateUrl,
 } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
+import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
   appIconUrl,
   getAppIcon,
@@ -607,10 +608,13 @@ export default function App({ config }: { config: Config }) {
   // The INTERACTIVE half of the same promise. A follow-up typed into a chat
   // creates no sys:schedule job and no schedule event, so neither wiring above
   // fires — the Tasks page and the sidebar sat on stale unread until their next
-  // slow poll (Akshil, 2026-08-19). The chat template stamps CHAT_ACTIVITY_KEY
-  // in localStorage when a turn starts or ends; the chat is its own iframe
-  // document, so THIS document receives the `storage` event and pokes the
-  // shared store (which forwards to the mounted Tasks page's own reload).
+  // slow poll (Akshil, 2026-08-19). The chat stamps CHAT_ACTIVITY_KEY in
+  // localStorage when a turn starts or ends (apps/claude ClaudeChat
+  // `stampChatActivity`); every OTHER window of this app receives the
+  // `storage` event and pokes the shared store here (which forwards to the
+  // mounted Tasks page's own reload). The writing window hears the turn through
+  // the chat controller's own `announceTasksChanged` instead — `storage` never
+  // fires in the writer.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => pokeOnChatActivity(e.key);
     window.addEventListener("storage", onStorage);
@@ -782,6 +786,11 @@ export default function App({ config }: { config: Config }) {
   const isExplorerHome = pathname === "/explorer";
   // The app's front door: search hero + the three recency strips.
   const isHome = pathname === "/home";
+  // A fresh page from either home starts on the default companion: drop the
+  // remembered sidebar tab (lib/side-tab-store). Open/closed and width are global.
+  useEffect(() => {
+    if (isHome || isExplorerHome) setSideTab(null);
+  }, [isHome, isExplorerHome]);
   const isClaudeConfig = pathname === "/claude-config";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is

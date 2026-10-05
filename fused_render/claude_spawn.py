@@ -1,26 +1,27 @@
-"""Starting a detached Claude Code session FROM THE SERVER PROCESS.
+"""Starting a Claude Code session FROM THE SERVER PROCESS, and following it.
 
-Two features now do this — the apps API's scaffolding turn
-(`server/routers/apps.py`) and scheduled messages (`schedule.py`) — and both
-have to know the same three awkward things: that `agent._start` cannot be
-called in this process at all, where the agent backend lives, and that a run
-nobody polls never gets its finished turn committed. That is why this module exists rather
-than a second copy of the comment block below: the fork-safety reasoning is the
-kind that gets paraphrased into something false on the second telling.
+The chat backend is `fused_render.claude_agent` (one in-process module). This
+module is the small seam the scheduler, the apps API's scaffolding turn and
+canvases use to start a session and to follow a run nobody is polling until
+its finished turn is recorded and committed.
+
+History worth keeping: until 0.6.5 `agent._start` could NOT run in this
+process. Its Popen used start_new_session, which forces CPython off
+posix_spawn onto fork()+exec, and the server has libproj resident with a live
+proj.db SQLite handle — fork() runs PROJ's pthread_atfork child handler, which
+closes that handle and SIGSEGVs the child before exec. So `_start` ran one hop
+away in a bare `python -c` helper (`SESSION_HELPER`). The spawn is now
+posix_spawn-safe (`agent._HOST_SPAWN`; the host does its own setsid), so
+`spawn_helper` is a plain in-process call. The NAME stays because eighteen
+test files and three callers know it, and because the error mapping it did
+on the helper's stderr is still the right thing to tell the user.
 
 No import of anything under `fused_render.server` — `schedule.py` imports this
-and the routers import both; keep it acyclic. The one thing that would tempt
-such an import is the agent's path, and `core_templates` is where that actually
-comes from (`server.templates.TEMPLATES_DIR` *is* `ensure_core_templates()`),
-so asking it directly costs nothing and keeps the layering straight.
+and the routers import both; keep it acyclic.
 """
 from __future__ import annotations
 
-import importlib.util
-import json
 import os
-import subprocess
-import sys
 import time
 
 # How long the recording poll follows a run before giving up. A turn can run
@@ -32,27 +33,19 @@ _RECORD_POLL_INTERVAL = 2
 
 
 def agent_path() -> str:
-    """The claude template backend (agent.py) — the STAGED core copy, the same
-    file the split app view executes, so the runs dir and permission_server
-    path stay in step with what the page will poll when the user opens the chat.
+    """Path of agent.py — the package copy. Kept for the callers that still
+    hand a path to a by-path loader (session_host's request dict, tests)."""
+    from fused_render.claude_agent import AGENT_PATH
 
-    Staging is idempotent (a marker compare, memoized per process), so calling
-    it per spawn is a path lookup, not a tree copy."""
-    from fused_render.core_templates import ensure_core_templates
-
-    return os.path.join(ensure_core_templates(), "claude", "agent.py")
+    return AGENT_PATH
 
 
 def load_agent():
-    """Load agent.py as a module, for in-process READ paths only (`_poll`).
+    """THE agent module. Delegates to `fused_render.claude_agent.agent_module`;
+    kept under its old name for the callers and tests that monkeypatch it."""
+    from fused_render.claude_agent import agent_module
 
-    The SPAWN goes through `spawn_helper` in a subprocess — see `SESSION_HELPER`
-    for why calling `agent._start` in this process crashes it."""
-    spec = importlib.util.spec_from_file_location(
-        "fused_render_claude_agent", agent_path())
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return agent_module()
 
 
 def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
@@ -91,85 +84,37 @@ def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
         time.sleep(_RECORD_POLL_INTERVAL)
 
 
-# The helper the spawn runs in. agent._start cannot be called in THIS process:
-# its Popen sets cwd + start_new_session, which forces CPython off posix_spawn
-# onto fork()+exec, and the server has libproj resident with a live proj.db
-# SQLite handle — fork() runs PROJ's pthread_atfork child handler, which
-# sqlite3_close()es that now-invalid handle and SIGSEGVs the child before exec
-# (the exact crash test_worker_forksafe.py locks out of the executor; verified
-# live: empty out.jsonl, dead pid, a Python .ips crash report with the server
-# as parent). So the _start happens one hop away, in a bare python that has no
-# libproj loaded and can fork freely. Args ride over stdin as JSON (never
-# argv — the prompt is user text); the result comes back as one JSON line.
-#
-# `session_id` rides through as a real parameter because a scheduled message may
-# target an EXISTING conversation ("" is a fresh one, which is all the apps API
-# ever wants). model/effort ride through the same way now that the /apps hero
-# composer has a picker for them: empty means "no --model/--effort flag
-# at all", which is what leaves the session on the same defaults a chat opened
-# by hand would detect for itself. `.get` and not `[...]`: the request dict is
-# built by whichever caller ran, and the ones with no picker send neither key.
-SESSION_HELPER = """\
-import importlib.util, json, sys
-req = json.load(sys.stdin)
-spec = importlib.util.spec_from_file_location("claude_agent", req["agent"])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(json.dumps(mod._start(req["file"], req["message"], req["session_id"],
-                            req.get("model", ""), req.get("effort", ""),
-                            permission_mode=req["permission_mode"],
-                            message_via_stdin=True,
-                            extra_read_dirs=req.get("extra_read_dirs") or None)))
-"""
-
-
 def spawn_helper(target: str, prompt: str, permission_mode: str,
                  session_id: str = "", model: str = "", effort: str = "",
                  extra_read_dirs: list[str] | None = None) -> dict:
-    """Run `agent._start` in the fork-safe helper; return its result dict.
+    """Start a session in-process; return `agent._start`'s result dict.
 
-    close_fds=False + no cwd + no start_new_session keeps THIS Popen on the
-    posix_spawn path (no atfork handlers — same discipline as executor.py's
-    worker spawn). The helper itself detaches claude with setsid; it is a bare
-    python where fork() is safe.
+    `session_id` rides through because a scheduled message may target an
+    EXISTING conversation ("" is a fresh one, which is all the apps API ever
+    wants). model/effort likewise: empty means "no --model/--effort flag at
+    all", which leaves the session on the defaults a chat opened by hand would
+    detect for itself. `extra_read_dirs` are folders whose Read the run
+    pre-allows — the scheduler passes its task-shots dir so an attached image
+    never raises a permission card in a headless run nobody is watching.
 
-    The prompt never enters argv (`input=`, and `message_via_stdin` on the far
-    side): this runs inside the server process, whose argv every local user can
-    read with `ps`.
-
-    text=True alone decodes stdout/stderr with locale.getpreferredencoding(False),
-    which is ASCII on a GUI-launched server with no LANG/LC_ALL — see
-    claude_config/lib.py's SUBPROCESS_KWARGS for the fuller writeup of this same
-    bug. The helper's JSON result routinely carries non-ASCII bytes (the prompt
-    echoed back, a scaffolded app's name/title, model output), so without
-    encoding="utf-8" the first em dash or curly quote raises UnicodeDecodeError
-    here and the whole app-creation call reports "failed to start Claude
-    session" instead of the real result."""
-    proc = subprocess.run(
-        [sys.executable, "-c", SESSION_HELPER],
-        input=json.dumps(
-            {"agent": agent_path(), "file": target, "message": prompt,
-             "session_id": session_id, "permission_mode": permission_mode,
-             "model": model, "effort": effort,
-             # Extra dirs whose Read the run pre-allows (agent._start): the
-             # scheduler passes its task-shots dir so an attached image never
-             # raises a permission card in a headless run nobody is watching.
-             "extra_read_dirs": list(extra_read_dirs or [])}),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=60, close_fds=False,
-    )
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
-        # _claude_bin's FileNotFoundError arrives here as a traceback whose
-        # last line is the "Also looked in: ..." tail of a multi-line message
-        # — useless on its own. Recognize it and say the one thing the user
-        # can act on instead.
-        if "claude CLI not found" in stderr:
+    The one error this still rewrites: `_claude_bin`'s FileNotFoundError, whose
+    multi-line "Also looked in: ..." message is useless to a user. Say the one
+    thing they can act on instead. Everything else propagates as it did from
+    the helper's stderr tail — as an `{"error": ...}` dict, never a raise, so
+    a scheduler tick or an apps-API request keeps its own error path."""
+    agent = load_agent()
+    try:
+        return agent._start(target, prompt, session_id, model, effort,
+                            permission_mode=permission_mode,
+                            extra_read_dirs=list(extra_read_dirs or []) or None)
+    except FileNotFoundError as exc:
+        if "claude CLI not found" in str(exc):
             return {"error":
                     "Claude Code isn't installed (or couldn't be found). "
                     "Install it, check that `claude` runs in a terminal, then "
                     "try again. Help: "
                     "https://render.fused.io/#troubleshooting-notfound"}
-        tail = stderr.splitlines()
-        return {"error": "session helper failed: " + (tail[-1] if tail else "unknown")}
-    return json.loads(proc.stdout)
+        return {"error": "session start failed: " + (str(exc).splitlines() or ["unknown"])[-1]}
+    except Exception as exc:  # noqa: BLE001 — same contract as the old helper's stderr tail
+        tail = str(exc).splitlines()
+        return {"error": "session start failed: " + (tail[-1] if tail else type(exc).__name__)}

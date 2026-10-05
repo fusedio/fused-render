@@ -739,14 +739,13 @@ function DiagnosticsSection() {
 // run — but the switch also governs Run now, the scheduler's own dispatch and
 // the Tasks board's Queued lane. A control filed under a feature it is not part
 // of is a control nobody finds again when they go looking for the thing it
-// actually does. (The "Native chat" switch that used to sit above this left the
-// page on 2026-09-19 — the React chat is simply on; `native_chat_enabled` stays
-// a stored pref for the env override and old installs, shell/prefs.py.)
+// actually does. (A "Native chat" switch used to sit above this; the React
+// chat is the only chat now, and the switch and its pref are gone.)
 function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // `=== true`: OPT-IN, so a server that predates the field is a server with no
-  // queue — the opposite polarity from the native-chat switch, which defaults on.
+  // queue.
   const enabled = prefs.queue?.enabled === true;
 
   const toggle = async () => {
@@ -756,7 +755,7 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
     try {
       const next = await putProjectQueueEnabled(!enabled);
       onChange(next);
-      // The same publish the native flag makes, for the same reason: the chat's
+      // Published, not just saved: the chat's
       // send path reads this flag from a module cache that is otherwise only
       // refreshed by a mount, and a composer already on screen would keep
       // admitting (or not admitting) by the old answer until a navigation.
@@ -893,7 +892,8 @@ function TaskNotifyTerminalSection({
 // turns on. Same one-checkbox section shape as Canvases above. While the
 // listener is up it shows the QR code a phone scans to pair (the ONLY way in —
 // no PIN, no approval dialog), and the devices that have, with revoke.
-// Native windows (macOS, fused_render/mac_window.py): the shell in the app's
+// Native windows (macOS: fused_render/mac_window.py; Linux: the WebKitGTK window
+// host, fused_render/supervisor/_linux/window_host.py): the shell in the app's
 // own windows instead of browser tabs. On by default; this is the only place
 // it turns off, and it applies live — on, the next open is a window; off, every
 // window closes and opens go back to the browser. The launcher below is not
@@ -923,9 +923,9 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
     <section className="prefs-section">
       <h2>Native windows</h2>
       <p className="deploy-muted">
-        Open Fused Render in its own macOS windows instead of browser tabs: a window per app, the
-        Dock icon, ⌘N and the View menu. On by default. Turning it off closes the open windows and
-        the app opens everything in your default browser instead.
+        Open Fused Render in its own windows instead of browser tabs: a window per app, with
+        native window controls. On by default. Turning it off closes the open windows and the app
+        opens everything in your default browser instead.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />

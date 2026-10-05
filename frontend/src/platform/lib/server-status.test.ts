@@ -16,12 +16,13 @@ import {
   updateDialogMode,
   updateDialogPreview,
   pendingOutage,
+  probeHealth,
   type ProbeFailKind,
   type ProbeResult,
   type StatusState,
   type SurfaceInput,
 } from "@platform/lib/server-status";
-import { restartInFlight, RESTART_STAGES } from "@platform/lib/restart-flow";
+import { reduceRestart, restartInFlight, RESTART_STAGES } from "@platform/lib/restart-flow";
 
 const BUILD = "0.4.8";
 
@@ -412,7 +413,7 @@ test("a hidden tab keeps probing only while a restart is in flight", () => {
   for (const stage of ["quitting", "restarting", "reconnecting", "back"] as const) {
     expect(probeWhileHidden(stage)).toBe(true);
   }
-  for (const stage of ["ready", "gave-up"] as const) {
+  for (const stage of ["ready", "gave-up", "stuck"] as const) {
     expect(probeWhileHidden(stage)).toBe(false);
   }
 });
@@ -425,4 +426,81 @@ test("the poll tick probes a visible tab always, and a hidden one only mid-resta
   expect(probeOnTick("hidden", "quitting")).toBe(true);
   // A DOM with no visibilityState at all (the test shim) is not a hidden tab.
   expect(probeOnTick(undefined, "ready")).toBe(true);
+});
+
+// ---- probeHealth: a NEW frontend against an OLD server ----------------------
+// Version skew (2026-10-05): an update replaced the bundle under a running
+// 0.6.2 process, so the window loaded the 0.6.5 frontend, whose probe is
+// /api/health — a route 0.6.2 does not have. Every probe was a 404, the restart
+// dialog walked to "Reconnecting…", and the same server answered /api/config
+// 200 throughout.
+
+function fakeFetch(routes: Record<string, () => Response | Promise<Response> | Error>) {
+  const calls: string[] = [];
+  const fn = (async (url: string) => {
+    calls.push(url);
+    const r = routes[url];
+    if (!r) return new Response("nope", { status: 404 });
+    const out = await r();
+    if (out instanceof Error) throw out;
+    return out;
+  }) as unknown as typeof fetch;
+  return { fn, calls };
+}
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+test("a 404 from /api/health falls back to /api/config and is healthy, with the version", async () => {
+  const { fn, calls } = fakeFetch({
+    "/api/config": () => json({ version: "0.6.2", installed_version: "0.6.5", dev: false }),
+  });
+  const probe = await probeHealth(fn);
+  expect(calls).toEqual(["/api/health", "/api/config"]);
+  expect(probe.ok).toBe(true);
+  expect(probe.version).toBe("0.6.2");
+  expect(probe.installedVersion).toBe("0.6.5");
+  expect(probe.dev).toBe(false);
+  // No boot id: an older server has none, and the reducer reads that as "no claim".
+  expect(probe.bootId).toBeUndefined();
+  // …which makes it an ordinary healthy probe to both reducers.
+  const state = reduceProbe(initialStatus(), { ...probe }, "0.6.2").state;
+  expect(state.fails).toBe(0);
+  expect(reduceRestart(
+    { stage: "quitting", requestedAt: 1, fails: 0, before: "0.6.2" },
+    { type: "probe", ok: true, version: probe.version },
+    2,
+  ).stage).toBe("quitting");
+});
+
+test("a healthy /api/health is used as is, with no second request", async () => {
+  const { fn, calls } = fakeFetch({ "/api/health": () => json({ boot_id: "b1" }) });
+  const probe = await probeHealth(fn);
+  expect(calls).toEqual(["/api/health"]);
+  expect(probe).toMatchObject({ ok: true, bootId: "b1" });
+});
+
+test("only a 404 falls back: 5xx and other statuses stay failures", async () => {
+  for (const [status, kind] of [[500, "http-5xx"], [503, "http-5xx"], [403, "http-other"], [502, "http-5xx"]] as const) {
+    const { fn, calls } = fakeFetch({ "/api/health": () => new Response("", { status }) });
+    expect(await probeHealth(fn)).toEqual({ ok: false, kind });
+    expect(calls).toEqual(["/api/health"]);
+  }
+});
+
+test("a network failure is still down, with and without the fallback", async () => {
+  const refused = fakeFetch({ "/api/health": () => new TypeError("Failed to fetch") });
+  expect(await probeHealth(refused.fn)).toEqual({ ok: false, kind: "refused" });
+  const abort = new Error("aborted");
+  abort.name = "AbortError";
+  expect(await probeHealth(fakeFetch({ "/api/health": () => abort }).fn)).toEqual({ ok: false, kind: "timeout" });
+  // Health 404s, then the fallback itself cannot be reached: down, not healthy.
+  const gone = fakeFetch({ "/api/config": () => new TypeError("Failed to fetch") });
+  expect(await probeHealth(gone.fn)).toEqual({ ok: false, kind: "refused" });
+});
+
+test("a 404 whose fallback is also broken is not healthy", async () => {
+  const bad = fakeFetch({ "/api/config": () => new Response("", { status: 500 }) });
+  expect(await probeHealth(bad.fn)).toEqual({ ok: false, kind: "http-5xx" });
+  const notJson = fakeFetch({ "/api/config": () => new Response("<html>", { status: 200 }) });
+  expect(await probeHealth(notJson.fn)).toEqual({ ok: false, kind: "parse" });
 });

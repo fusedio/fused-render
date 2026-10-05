@@ -29,7 +29,7 @@ TEMPLATES = os.path.join(os.path.dirname(__file__), "..",
 
 
 def _load_agent():
-    path = os.path.abspath(os.path.join(TEMPLATES, "claude", "agent.py"))
+    path = os.path.abspath(os.path.join(TEMPLATES, "..", "claude_agent", "agent.py"))
     shared = os.path.abspath(os.path.join(TEMPLATES, "shared"))
     if shared not in sys.path:
         sys.path.insert(0, shared)
@@ -51,6 +51,10 @@ class _HostProc:
     that wants the argv has to capture the request and rebuild it, the same
     call session_host.py's own `main()` makes."""
     pid = 4242
+
+    def wait(self, timeout=None):
+        # `_start` parks a daemon reaper thread in wait() on the host.
+        return 0
 
     class _Stdin:
         def __init__(self, seen):

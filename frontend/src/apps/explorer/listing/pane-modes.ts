@@ -72,8 +72,7 @@ export function paneModeList(input: PaneModeInput): string[] {
 //
 // One mode does: `claude`. In a column this narrow the chat template's copy of
 // the target would be a second, differently run preview of the same thing beside
-// the host's (see Preview's sideSrcFor, and CHAT_ONLY in
-// templates/claude/template.html).
+// the host's (ChatMount's `chatOnly`).
 //
 // **It used to matter for a second reason, now historical.** The chat template
 // fills its own pane by resolving the folder's ENTRY PAGE and rendering it

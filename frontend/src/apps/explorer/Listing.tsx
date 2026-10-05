@@ -84,6 +84,7 @@ import {
   skeletonRows,
   ClipMark,
   GitMark,
+  GitAheadMark,
   renderHighlightPath,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
@@ -100,12 +101,12 @@ import {
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
+import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
 // The flag module DIRECTLY, not the barrel: the barrel pulls `ChatMount` (and
 // through it the chat's lazy boundary) into this file's graph for one boolean,
 // which is the very thing feature-flag.ts's header says it is separate to avoid.
-import { useNativeChatFlag } from "@apps/claude/feature-flag";
 import {
   pendingClaudeAskVersion,
   subscribePendingClaudeAsk,
@@ -148,15 +149,12 @@ import {
 
 // The window global the injected runtime calls to hand this pane a prompt the
 // git companion's "Fix with AI" button built for a failed operation
-// (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
-// template as `window._fusedAskClaude` and from the claude template as
-// `window._fusedTakeClaudeAsk`). Same ancestor-global shape Preview.tsx
-// declares for the file sidebar's copy of this pair — this is the folder
-// pane's.
+// (static/runtime.js `noteAskClaude`, reached from the git template as
+// `window._fusedAskClaude`). Same ancestor-global shape Preview.tsx declares
+// for the file sidebar's copy — this is the folder pane's.
 declare global {
   interface Window {
     _fusedClaudeAsk?: (text: unknown) => void;
-    _fusedClaudeAskTake?: () => string | null;
   }
 }
 
@@ -523,13 +521,19 @@ export default function Listing({
   // shell handed a column by something else (`paneEnabled` above), and neither
   // owns the address bar it happens to be inside of.
   //
-  // Same gate on the session's hidden flag (`lib/side-hidden-store.ts`): a
+  // Same gate on the stored hidden flag (`lib/side-hidden-store.ts`): a
   // snapshot or panel pane is not the addressable folder view either, so a close
   // inside one must not shut every OTHER open folder/file's sidebar for the rest
   // of the session.
-  const applySide = (next: PaneSideState) => {
+  // `tab` is the companion the user EXPLICITLY picked (the switcher), which
+  // `next.mode` cannot say: picking the leading companion normalises to
+  // `mode: null` for the clean URL (`selectSide`). It is recorded in the shared
+  // tab store (`lib/side-tab-store.ts`) only here, i.e. only when the switch is
+  // actually applied (after the Claude confirm), and only on the addressable view.
+  const applySide = (next: PaneSideState, tab?: PaneSideChoice) => {
     setSideState(next);
     if (!paneEnabled) return;
+    if (tab) setSideTab(tab);
     setSideHidden(!next.open);
     const params = new URLSearchParams(location.search);
     const v = paneSideParam(next);
@@ -552,14 +556,16 @@ export default function Listing({
    * dead-zone trap `selectSide`'s own comment warns about.
    */
   const showingClaude = useRef(false);
-  const wouldShowClaude = useRef<(next: PaneSideState) => boolean>(() => false);
-  const setSide = (next: PaneSideState) => {
-    if (!showingClaude.current || wouldShowClaude.current(next)) {
-      applySide(next);
+  const wouldShowClaude = useRef<(next: PaneSideState, tab?: PaneSideChoice) => boolean>(
+    () => false
+  );
+  const setSide = (next: PaneSideState, tab?: PaneSideChoice) => {
+    if (!showingClaude.current || wouldShowClaude.current(next, tab)) {
+      applySide(next, tab);
       return;
     }
     void confirmLeave().then((ok) => {
-      if (ok) applySide(next);
+      if (ok) applySide(next, tab);
     });
   };
   // Reopening keeps the mode the pane was shut on, so closing and reopening is
@@ -978,7 +984,9 @@ export default function Listing({
     // pane owns no `_side` of its own to write (see `applySide` above), so
     // there `onOpenGit` is left `undefined` and the row falls back to
     // navigating instead.
-    onOpenGit: paneEnabled ? () => setSide({ open: true, mode: "git" }) : undefined,
+    onOpenGit: paneEnabled
+      ? () => setSide({ open: true, mode: "git" }, "git")
+      : undefined,
     // Open in embed — this listing under the chrome-free embed prefix, in a new
     // tab, `_mode=_listing` stamped so the embed shows the LISTING rather than
     // hopping to the folder's app entry (the same stamp the file preview's row
@@ -1018,19 +1026,28 @@ export default function Listing({
   };
   folderMenuRef.current = buildFolderMenu;
 
-  const paneSides = paneSideList(sideEntries);
+  // The remembered tab is consulted only where this surface OWNS the pane: a
+  // snapshot/panel pane never writes it (`applySide`), so reading it there would
+  // pin the pane to a tab its own clicks cannot change.
+  const rememberedTab = () => (paneEnabled ? getSideTab() : null);
+  // Only where `_side` names no mode does the memory lead, so only there may it
+  // hold the pane undecided while the remembered companion's probe is out.
+  const paneSides = paneSideList(
+    sideEntries,
+    sideState.mode === null ? rememberedTab() : null
+  );
   // UNDECIDED — this folder's companion probes have not answered yet (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
   // skeleton: resolving a side here would put the pill on `preview` while a chat
   // rendered under it regardless, and would then remount — and respawn
   // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
-  const paneSide = activePaneSide(paneSides, sideState.mode);
+  const paneSide = activePaneSide(paneSides, sideState.mode, rememberedTab());
   // The two facts `setSide`'s guard above needs, written on every render (see
   // its own comment for why they are refs and not values).
   showingClaude.current = paneOpen && paneSide === "claude";
-  wouldShowClaude.current = (next) =>
-    next.open && activePaneSide(paneSides, next.mode) === "claude";
+  wouldShowClaude.current = (next, tab) =>
+    next.open && activePaneSide(paneSides, next.mode, tab ?? rememberedTab()) === "claude";
 
   // Picking the mode that is ALREADY first on offer records NO choice (`mode: null`),
   // so the leading companion keeps the clean URL (PT-9, D285): a click on Claude
@@ -1041,7 +1058,7 @@ export default function Listing({
   // reads that list, and a closure over a `const` declared later in the same body is
   // a temporal-dead-zone trap waiting for the first caller that runs during render.
   const selectSide = (mode: PaneSideChoice) =>
-    setSide({ open: true, mode: mode === paneSides[0] ? null : mode });
+    setSide({ open: true, mode: mode === paneSides[0] ? null : mode }, mode);
 
   // --- the CLAUDE companion's seeded prompt (`window._fusedAskClaude`) -------
   // The `git` companion's "Fix with AI" button has no chat of its own — it
@@ -1053,58 +1070,44 @@ export default function Listing({
   // `splitCapable` — a snapshot or panel pane with no pane at all has nothing
   // to open this into.
   //
-  // THIS IS A PULL, NOT A PARAM ON THE COMPANION IFRAME'S SRC (review #804
-  // round 2) — see Preview.tsx's copy of this comment for the full argument.
-  // In short: a param baked into `ListingPreviewPane`'s src, kept "one-shot" by
-  // a cache keyed on `paneKey(paneSide, fsPath)`, still replayed on any
-  // remount that key comparison could not tell apart from a genuinely new ask
-  // — closing and reopening the pane on the SAME folder is a fresh mount with
-  // an unchanged key, and so is toggling `git` -> `claude` -> `git` -> `claude`
-  // without a second click. So the prompt lives here as plain state instead,
-  // and the CLAUDE TEMPLATE pulls it at its own boot
-  // (`window._fusedClaudeAskTake`, via the claude template's
-  // `_fusedTakeClaudeAsk` / static/runtime.js `pullClaudeAsk`) — consumption is
-  // then a property of WHEN a pull happens, not something a cache reconstructs
-  // from a key.
+  // THIS IS A LEDGER, NOT A PARAM (review #804 round 2) — see Preview.tsx's
+  // copy of this comment for the full argument. In short: a value kept
+  // "one-shot" by a cache keyed on `paneKey(paneSide, fsPath)` still replayed
+  // on any remount that key comparison could not tell apart from a genuinely
+  // new ask — closing and reopening the pane on the SAME folder is a fresh
+  // mount with an unchanged key. So the prompt lives here as plain state, and
+  // the host reads-and-clears it once per ask (lib/claude-ask.ts).
   //
-  // A REF, not state: it must survive from the moment it arrives to whichever
-  // later boot pulls it, and must never itself cause a render —
-  // `selectSide` already does that.
+  // A REF, not state: it must survive from the moment it arrives to the pull,
+  // and must never itself cause a render — `selectSide` already does that.
   const claudeSeedRef = useRef<string | null>(null);
   // A new ask can arrive while the pane is ALREADY showing claude on the SAME
   // folder — a second "Fix with AI" click without switching companion or
   // folder first — and `paneKey(paneSide, fsPath)` alone cannot tell that
   // apart from an unrelated re-render: neither `paneSide` nor `fsPath` changed,
   // so `ListingPreviewPane`'s key would not either, and nothing would remount
-  // it to make its boot pull the new text. Bumped on every incoming ask and
+  // it to take the new text. Bumped on every incoming ask and
   // folded into the key passed down (below), the same fix Preview.tsx's
   // `claudeAskInstance` is for the sidebar's copy of this gap.
   const [claudeAskInstance, setClaudeAskInstance] = useState(0);
-  // WHO PULLS THE ASK (Preview.tsx carries the same pair for the file sidebar).
-  // Flag OFF, the claude template pulls it out of `window._fusedClaudeAskTake`
-  // at its own boot and nothing here may touch it. Flag ON there is no boot to
-  // pull from, so the host reads-and-clears once per ask — a LEDGER and not a
-  // memo, because the pull IS the clear (lib/claude-ask.ts) — and hands the text
-  // down as a prop.
+  // WHO PULLS THE ASK (Preview.tsx carries the same pair for the file sidebar):
+  // the host reads-and-clears once per ask — a LEDGER and not a memo, because
+  // the pull IS the clear (lib/claude-ask.ts) — and hands the text down as a
+  // prop.
   // In a COMMITTED EFFECT, not the render body: the pull is destructive, so a
   // render React discards would eat the ask. And the pane is keyed on the
   // DELIVERY rather than on the arrival, because the effect lands after the
   // render that saw the bumped instance — keying on the arrival remounted the
   // pane before there was anything to boot it with (Preview.tsx carries the
   // same pair, with the full argument).
-  // TRI-STATE, and the key below is why: `null` is "the prefs read has not
-  // landed", not "legacy". Flattened to a boolean for the ask ledger, where
-  // "not asked yet" is honestly "no" (feature-flag.ts).
-  const nativeChatState = useNativeChatFlag();
-  const nativeChat = nativeChatState === true;
   const [askDelivery, setAskDelivery] = useState<{ text: string; seq: number } | null>(null);
   const pulledFor = useRef(-1);
   useEffect(() => {
-    if (!nativeChat || pulledFor.current === claudeAskInstance) return;
+    if (pulledFor.current === claudeAskInstance) return;
     pulledFor.current = claudeAskInstance;
     const text = takeClaudeAsk(claudeSeedRef);
     if (text) setAskDelivery({ text, seq: claudeAskInstance });
-  }, [nativeChat, claudeAskInstance]);
+  }, [claudeAskInstance]);
   // Handed over exactly once: `closeSide` then reselecting claude remounts
   // `ListingPreviewPane` at the same key, and a ledger still holding the text
   // would replay a stale prompt into the new conversation.
@@ -1153,13 +1156,8 @@ export default function Listing({
       if (typeof text !== "string" || !text) return false;
       return claudeAskActionRef.current(text);
     };
-    // The other half of the pull: the claude template's own boot calls this to
-    // collect whatever is pending. `takeClaudeAsk` (lib/claude-ask.ts, shared
-    // with Preview.tsx's copy of this hook) is what actually reads-and-clears.
-    window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);
     return () => {
       delete window._fusedClaudeAsk;
-      delete window._fusedClaudeAskTake;
     };
     // The wrapper itself never goes stale just by staying installed — see
     // `claudeAskActionRef`'s own comment just above.
@@ -1771,6 +1769,7 @@ export default function Listing({
               <span className="name-text">{entry.name}</span>
             </span>
             <GitMark status={entry.git} />
+            <GitAheadMark count={entry.git_ahead} status={entry.git} />
             {/* Guaranteed sweep-start strip — see explorer.css's
                 .sweep-anchor comment. Before ClipMark in the DOM so a
                 cut/copied badge, when present, still wins the overlap at
@@ -2252,29 +2251,14 @@ export default function Listing({
                   (a `git status`/`git log` fork, or a second `agent.py` spawn) on
                   every keystroke.
 
-                  `claudeAskInstance` rides along ONLY for `claude` (see its own
-                  comment above): a second "Fix with AI" ask on the same folder
-                  changes neither `paneSide` nor `fsPath`, so without it the key
-                  would not change either, and the claude template's next boot
-                  would never fire to pull the new prompt. */}
+                  The ask's delivery seq rides along ONLY for `claude` (see
+                  `claudeAskInstance`'s own comment above): a second "Fix with
+                  AI" ask on the same folder changes neither `paneSide` nor
+                  `fsPath`, so without it the key would not change either, and
+                  the new prompt would never reach a fresh chat. */}
               <ListingPreviewPane
                 key={paneSide === "claude"
-                  ? `${paneKey(paneSide, fsPath)}:${
-                      // ONLY A REAL `false` TAKES THE LEGACY SHAPE. Read as a
-                      // boolean this walked `claudeAskInstance` (legacy, flag not
-                      // yet read) → the delivery seq (flag landed on) → the seq
-                      // again (delivered): the middle step remounted and booted a
-                      // whole chat only to throw it away. So "not asked yet"
-                      // takes the NATIVE shape — the one it keeps if the flag
-                      // lands on — and a later `false` changes the key while
-                      // `ChatMount` is still showing nothing but its cover
-                      // (Preview.tsx `claudeMountKey` carries the same argument).
-                      nativeChatState === false
-                        ? claudeAskInstance
-                        : askDelivery
-                          ? askDelivery.seq
-                          : 0
-                    }`
+                  ? `${paneKey(paneSide, fsPath)}:${askDelivery ? askDelivery.seq : 0}`
                   : paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
                 folder={fsPath}

@@ -5,7 +5,7 @@ every app folder under it (D626; local_monorepo.py migrates the old
 one-repo-per-app layout into it). Every app scaffolded by POST /api/apps/new
 lands in that shared repo as one scoped boilerplate commit; after that, each
 completed Claude turn lands as its own small commit
-(templates/claude/agent.py mirrors the commit helper here, since templates
+(claude_agent/agent.py mirrors the commit helper here, since templates
 must not import fused_render, D166). Manual edits made through the editor's
 /api/fs endpoints are NOT committed (D245) — the user's own commits and
 Claude's turns are the whole history.
@@ -122,9 +122,14 @@ LOCAL_TAG = "local"
 # and unlinks it — best-effort, so a process that dies between the `os.open`
 # and the `os.unlink` leaves a stray zero-byte file behind. Left unignored, a
 # scoped `git add -A` would sweep that leftover into the app's history.
+#
+# `__pycache__/` is Python's bytecode cache: machine-generated, rebuilt on
+# the next import, and every app that runs a `.py` grows one. The App
+# Doctor's `generated` row honors gitignore, so ignoring it here keeps a
+# fresh app green there.
 _GITIGNORE = (
     "*.html.json\n.claude-split.json\n.venv/\n.fused/\n"
-    ".fused-render-write-probe.*\n"
+    ".fused-render-write-probe.*\n__pycache__/\n"
 )
 
 # The shared repo's root .gitignore: the per-app set plus the one file macOS

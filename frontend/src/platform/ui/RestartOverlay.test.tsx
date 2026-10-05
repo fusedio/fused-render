@@ -52,6 +52,8 @@ test("overlayVisible: in-flight stages and an undismissed give-up only", () => {
   }
   expect(overlayVisible("gave-up", false)).toBe(true);
   expect(overlayVisible("gave-up", true)).toBe(false);
+  expect(overlayVisible("stuck", false)).toBe(true);
+  expect(overlayVisible("stuck", true)).toBe(false);
 });
 
 test("an in-flight restart blocks the window: busy modal, spinner, title", async () => {
@@ -87,4 +89,21 @@ test("gave-up shows an error with Dismiss and Try again, no spinner", async () =
   act(() => btn("Dismiss").props.onClick());
   expect(onRetry).toHaveBeenCalledTimes(1);
   expect(onDismiss).toHaveBeenCalledTimes(1);
+});
+
+test("stuck names the dropped press and is closable, with no spinner and no retry", async () => {
+  const onDismiss = mock(() => {});
+  const onRetry = mock(() => {});
+  const r = await mount(<RestartOverlayView stage="stuck" onDismiss={onDismiss} onRetry={onRetry} />);
+  expect(text(r.root.findByType("h2"))).toBe("fused-render couldn't restart itself");
+  expect(text(r.root.findByType("p"))).toContain("menu-bar icon");
+  expect(text(r.root.findByType("p"))).toContain("⌘Q");
+  expect(byClass(r, "restart-spinner").length).toBe(0);
+  const labels = r.root.findAllByType("button").map((b) => text(b));
+  expect(labels).toContain("Dismiss");
+  expect(labels).not.toContain("Try again");
+  const dismiss = r.root.findAllByType("button").find((b) => text(b) === "Dismiss")!;
+  act(() => dismiss.props.onClick());
+  expect(onDismiss).toHaveBeenCalledTimes(1);
+  expect(onRetry).toHaveBeenCalledTimes(0);
 });

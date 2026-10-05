@@ -15,7 +15,7 @@ import pytest
 
 
 def _load_agent():
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    path = os.path.join("fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

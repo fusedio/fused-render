@@ -31,7 +31,7 @@ DOC_VERSION = 1
 DOC_SUFFIX = ".fmap"
 
 BASEMAPS = ("light", "dark", "sat", "none")
-KINDS = ("auto", "raster", "vector", "zarr", "pmtiles")
+KINDS = ("auto", "raster", "vector", "zarr", "pmtiles", "pointcloud")
 
 # Every style key a layer may carry, by the kind that reads it, with the JSON
 # type it must have. A command naming any other key is refused rather than
@@ -76,12 +76,24 @@ STYLE_KEYS: dict[str, dict[str, str]] = {
         "circle_color": "color",
         "circle_radius": "num",
     },
+    # LAS / LAZ / COPC / EPT. `clim`: colour range of elevation or intensity
+    # (absent = 2–98%); `hidden_classes`: ASPRS codes not drawn.
+    "pointcloud": {
+        "color_scheme": "enum:elevation|intensity|classification|rgb",
+        "colormap": "str",
+        "point_size": "num",
+        "clim": "range",
+        "elevation_range": "range",
+        "hidden_classes": "codes",
+        "z_offset": "num",
+    },
 }
 # Options are about WHAT is read rather than how it is drawn.
 OPTION_KEYS: dict[str, str] = {
     "variable": "str",        # zarr / netcdf variable
     "selector": "dict",       # zarr: {dim: index}
     "source_layer": "str",    # a layer inside a GeoPackage / multi-layer file
+    "crs": "str",             # point cloud: the CRS of a file whose header has none
 }
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
@@ -129,6 +141,10 @@ def _check(where: str, rule: str, value: Any) -> Any:
     elif rule == "int[]":
         ok = (isinstance(value, list) and 1 <= len(value) <= 4
               and all(isinstance(v, int) and not isinstance(v, bool) and v >= 1
+                      for v in value))
+    elif rule == "codes":
+        ok = (isinstance(value, list) and len(value) <= 256
+              and all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255
                       for v in value))
     elif rule == "range":
         # [lo, hi] for one channel, or [[lo, hi], ...] per channel.

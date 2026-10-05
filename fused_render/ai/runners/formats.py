@@ -78,6 +78,63 @@ PARAKEET_WEIGHTS = "model.safetensors"
 #: inside a library that never had a chance.
 NEMO_ASR_TARGET = "nemo.collections.asr.models."
 
+# ---------------------------------------------------------------- download scopes
+#
+# A Hub repo often publishes ONE set of weights in several formats, and a bare
+# `download_snapshot(model_id)` fetches every one of them — 2-3x the bytes the
+# engine reads. What each runner's `download()` passes to `download_snapshot` is
+# written here, once, next to the format checks that say what each engine opens.
+# (Stdlib-only, like the rest of this module: these are plain tuples of `fnmatch`
+# patterns, matched against the path relative to the repo root, where `*` crosses
+# `/` — see `worker_base.selects`.)
+#
+# **An IGNORE list where the engine's file set is open-ended, an ALLOW list only
+# where it is closed.** An MLX text/vision model reads arbitrary configs,
+# tokenizers, processors, chat templates and `trust_remote_code` modules, so
+# naming what it needs would drop something the next architecture wants. What it
+# can NEVER read is knowable, and that is what is listed.
+#
+# **Nothing here ignores a file that could be the only copy of weights the engine
+# can load.** `*.bin` is deliberately NOT a pattern: CTranslate2's weights ARE
+# `model.bin`, and ignoring a bare `.bin` anywhere would be one refactor away from
+# deleting them. The `.bin` patterns below are the PyTorch spellings by name.
+
+#: Formats no MLX engine (mlx-lm, mlx-vlm, mlx-embeddings, mflux, mlx-audio,
+#: ltx-2-mlx) ever opens — they glob `*.safetensors` (or `.npz`) and nothing
+#: else, so a repo whose only weights were one of these could not load here
+#: anyway and skipping them costs nothing. PyTorch pickles (`pytorch_model*.bin`,
+#: `*.pt`, `*.pth`, `training_args.bin`), Flax `.msgpack`, TF `.h5`/`.tflite`,
+#: Rust `.ot`, ONNX and OpenVINO exports, GGUF, and the `original/` folder Meta
+#: ships beside the HF files (a consolidated `.pth` plus a second copy of the
+#: tokenizer — the loaders read the root-level ones).
+MLX_IGNORE = (
+    "pytorch_model*.bin", "training_args.bin", "*.pt", "*.pth",
+    "*.msgpack", "*.h5", "*.tflite", "*.ot", "*.onnx", "*.onnx_data", "*.gguf",
+    "onnx/*", "openvino/*", "original/*",
+)
+
+#: faster-whisper's OWN `download_model` allow list, verbatim — the files
+#: `WhisperModel` opens, and a closed set. Includes `model.bin`, which is why this
+#: is an allow list and not `MLX_IGNORE`'s sibling: a Systran repo also carries
+#: `README.md` and, on some, a transformers-format copy of the same model.
+CT2_FILES = ("config.json", "preprocessor_config.json", CT2_WEIGHTS,
+             "tokenizer.json", "vocabulary.*")
+
+#: What `mlx_whisper.load_model` opens: `config.json` and one of the three weight
+#: spellings (see `MLX_WHISPER_WEIGHTS`). The tokenizer ships inside the package,
+#: so nothing else in the repo is read.
+MLX_WHISPER_FILES = ("config.json",) + MLX_WHISPER_WEIGHTS + (MLX_WHISPER_SHARED_WEIGHTS,)
+
+#: What a diffusers `from_pretrained` never opens in a repo that is not one of the
+#: curated recipes: other frameworks' copies of the same components. Torch weights
+#: (`.safetensors`, `.bin`, and `.fp16` variants) are all left alone — which of
+#: two torch spellings gets read depends on the listing, and a listing is not
+#: available to the offline cache check that has to reproduce this scope.
+DIFFUSERS_IGNORE = (
+    "*.msgpack", "*.h5", "*.tflite", "*.ot", "*.onnx", "*.onnx_data", "*.gguf",
+    "onnx/*", "openvino/*",
+)
+
 #: What an mflux-readable snapshot always has: component subfolders of MLX
 #: safetensors, rather than the single-file layout diffusers writes.
 MFLUX_COMPONENTS = ("transformer", "text_encoder", "vae")

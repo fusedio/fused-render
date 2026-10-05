@@ -619,11 +619,11 @@ body.tasks-peek-dragging {
   flex-direction: column;
 }
 
-/* `.chat-frame` (legacy) and `.chat-mount` (native) both already declare
-   `flex: 1 1 auto; width: 100%; height: 100%`, so the column above is all
-   either of them needs — and the SHIMMER over a conversation that has not
-   painted yet is ChatFrame's own placeholder, restarted on every swap because
-   the mount is keyed on the task (TaskPeek). One skeleton, not two. */
+/* `.chat-mount` already declares `flex: 1 1 auto; width: 100%; height: 100%`,
+   so the column above is all it needs — and the SHIMMER over a conversation
+   that has not painted yet is the chat's own placeholder, restarted on every
+   swap because the mount is keyed on the task (TaskPeek). One skeleton, not
+   two. */
 
 /* The wait BEFORE there is a frame at all: the folder's chat template is still
    being resolved (a stat), so there is no src to hand the mount yet. */

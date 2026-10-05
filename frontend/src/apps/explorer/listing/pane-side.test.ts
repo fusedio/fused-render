@@ -467,3 +467,55 @@ describe("paneKey", () => {
   });
 });
 
+
+// THE REMEMBERED TAB (`lib/side-tab-store.ts`): where `_side` names no mode, the
+// last tab the user picked leads over the first on offer — but only if it is on
+// offer here. The offered list is empty while undecided, so nothing pending opens.
+describe("activePaneSide with a remembered tab", () => {
+  test("a silent request opens the remembered tab", () => {
+    expect(activePaneSide(paneSideList(ALL), null, "git")).toBe("git");
+  });
+
+  test("an explicit request still wins", () => {
+    expect(activePaneSide(paneSideList(ALL), "claude", "git")).toBe("claude");
+  });
+
+  test("a remembered tab the folder does not offer falls back to the default", () => {
+    expect(activePaneSide(paneSideList(CLAUDE_ONLY), null, "git")).toBe("claude");
+  });
+
+  test("undecided stays undecided", () => {
+    expect(paneSideList({ ...ALL, claude: null, claudePending: true })).toEqual([]);
+    expect(activePaneSide([], null, "git")).toBe(PANE_SIDE_FALLBACK);
+  });
+
+  test("a remembered git whose probe is still out is undecided, not the default", () => {
+    const pending = { claude: entry("claude"), git: null, gitPending: true };
+    // no remembered tab: claude opens as before
+    expect(paneSideList(pending)).toEqual(["claude"]);
+    // remembered git pending: hold the skeleton (empty list), no default in between
+    expect(paneSideList(pending, "git")).toEqual([]);
+    // becomes ready: the remembered tab, never claude first
+    expect(activePaneSide(paneSideList(ALL, "git"), null, "git")).toBe("git");
+    // becomes unavailable: the default
+    expect(paneSideList(CLAUDE_ONLY, "git")).toEqual(["claude"]);
+    expect(activePaneSide(paneSideList(CLAUDE_ONLY, "git"), null, "git")).toBe("claude");
+    // a remembered claude pending is already a wait (the leader rule)
+    expect(paneSideList({ ...ALL, claude: null, claudePending: true }, "claude")).toEqual([]);
+  });
+
+  test("no memory is the old behaviour", () => {
+    expect(activePaneSide(paneSideList(ALL), null, null)).toBe("claude");
+  });
+});
+
+describe("Listing reads the remembered tab only where it owns the pane", () => {
+  test("passes null (not getSideTab()) on a snapshot/panel pane", async () => {
+    const src = await Bun.file(
+      new URL("../Listing.tsx", import.meta.url).pathname
+    ).text();
+    expect(src).toContain("const rememberedTab = () => (paneEnabled ? getSideTab() : null);");
+    // no reader may bypass the guard
+    expect(src.match(/getSideTab\(\)/g)?.length).toBe(1);
+  });
+});

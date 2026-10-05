@@ -104,6 +104,10 @@ def _backend():
             f"native capture has no backend for {sys.platform}")
     try:
         from fused_render.capture import _darwin
+    except ModuleNotFoundError as e:
+        # pyobjc itself is absent: an install without the `[desktop]` extra.
+        raise Unsupported(
+            f"native capture needs pyobjc — pip install 'fused-render[desktop]' ({e})") from e
     except ImportError as e:
         # `Unsupported`, not the raw ImportError: the backend imports its Apple
         # frameworks at module top, and `ScreenCaptureKit.framework` does not

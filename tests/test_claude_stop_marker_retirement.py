@@ -37,11 +37,11 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="claude session host doe
 
 from _claude_stub_cli import write_stub_cli
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
+AGENT_DIR = os.path.join("fused_render", "claude_agent")
 
 
 def _load_agent():
-    path = os.path.join(TEMPLATE_DIR, "agent.py")
+    path = os.path.join(AGENT_DIR, "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

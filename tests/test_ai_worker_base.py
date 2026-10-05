@@ -3017,6 +3017,63 @@ def test_a_snapshot_fetched_at_a_NARROWER_scope_does_not_answer_a_WIDER_request(
     assert ("snapshot", False) in hub.calls, hub.calls
 
 
+def test_a_FULL_snapshot_answers_a_request_that_only_IGNORES_formats(
+        base, monkeypatch, tmp_path):
+    """Every cache filled before the per-runner format filters landed holds a
+    record at the UNSCOPED scope. A request that merely ignores some of those
+    files is a SUBSET of what was fetched, so the record answers it — offline, with
+    no listing — rather than sending a fully downloaded model back to the Hub."""
+    folder = _cache_folder(tmp_path)
+    names = ["config.json", "model.safetensors", "pytorch_model.bin",
+             "onnx/model.onnx"]
+    snapshot = _snapshot_dir(tmp_path, *names)
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot), names=names)
+
+    got = base.download_snapshot(
+        "u/x", ignore_patterns=["pytorch_model*.bin", "onnx/*"])
+
+    assert got == snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_the_superset_answer_still_requires_the_SELECTED_files_to_be_present(
+        base, monkeypatch, tmp_path):
+    """The subset rule narrows the check to what the request selects; it does not
+    relax it. A selected file that went away sends the download to the Hub."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json", "pytorch_model.bin")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot),
+             names=["config.json", "model.safetensors", "pytorch_model.bin"])
+
+    base.download_snapshot("u/x", ignore_patterns=["pytorch_model*.bin"])
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_an_IGNORE_scoped_snapshot_does_not_answer_an_unscoped_request(
+        base, monkeypatch, tmp_path):
+    """The reverse direction stays closed: what was fetched under an ignore list
+    is NOT the whole repo."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot),
+             names=["config.json"], ignore=["*.bin"])
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
 def test_a_snapshot_fetched_at_the_SAME_scope_answers_from_the_cache(
         base, monkeypatch, tmp_path):
     """The other side: a scoped call is not refused on principle — it is answered

@@ -23,6 +23,8 @@ import types
 
 import pytest
 
+from fused_render.ai.runners import formats
+
 WORKER_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "fused_render", "ai", "runners", "mflux_image", "worker.py",
@@ -749,13 +751,12 @@ def test_an_mlx_without_thread_local_streams_is_left_alone(
     assert model.image.saved, "the render never produced an image"
 
 
-def test_the_whole_repo_is_downloaded_with_nothing_skipped(monkeypatch, base):
-    """The visible difference from the diffusers runner's `download`: there is
-    no full-precision component being replaced by a quantized one, so every
-    file in the snapshot is a file the load will read."""
+def test_only_other_frameworks_formats_are_skipped_on_download(monkeypatch, base):
+    """No component is replaced by a quantized one, so every safetensors file is
+    read; only formats MLX can never open are ignored."""
     worker, _ = load_worker(monkeypatch, base)
     assert worker.download(MODEL) == f"/snapshots/{MODEL}"
-    assert base.snapshot_kwargs == {}
+    assert base.snapshot_kwargs == {"ignore_patterns": list(formats.MLX_IGNORE)}
 
 
 def test_a_model_with_no_variant_is_named_as_the_cause(monkeypatch, base, tmp_path):

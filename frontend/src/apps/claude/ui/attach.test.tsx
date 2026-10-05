@@ -38,14 +38,14 @@ function fakeApi(over: Partial<AttachApi> = {}): { api: AttachApi; spy: Spy } {
     },
     attachPane: async () => att({ kind: "pane", seat: "pane", thumb: "blob:pane" }),
     attachOverview: async () => att({ kind: "overview", view: "/shots/overview.png" }),
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       for (const f of files) yield att({ kind: "file", name: f.name, view: "/shots/" + f.name });
     },
-    attachPaths: (_dir, paths) =>
+    attachPaths: (paths) =>
       paths.map((p) => att({ kind: "file", view: p, name: p, brought: true })),
     readDirs: (list) =>
       (list || []).map((s) => (s.view || "").replace(/\/[^/]*$/, "")).filter(Boolean),
-    readDirsFor: (_dir, list) =>
+    readDirsFor: (list) =>
       (list || []).map((s) => (s.view || "").replace(/\/[^/]*$/, "")).filter(Boolean),
     revoke: (a) => {
       if (a) spy.revoked.push(a);
@@ -66,7 +66,6 @@ function mountTray(api: AttachApi, frame: HTMLIFrameElement | null = null) {
   function Host() {
     hook = useAttachments({
       api,
-      agentDir: "/t/claude",
       frame: () => frame,
       flashHost: () => null,
       paneNoun: "preview",
@@ -499,7 +498,7 @@ test("THE CAMERA TELLS THE PIPELINE WHETHER THE PANE IS OURS TO READ (Bugbot #10
   // not shoot fell through to a DOM clone of a document this page cannot open.
   const seen: (boolean | undefined)[] = [];
   const { api } = fakeApi({
-    attachPane: async (_dir, _frame, opts) => {
+    attachPane: async (_frame, opts) => {
       seen.push(opts?.xo);
       return att({ kind: "pane", seat: "pane", thumb: "blob:pane" });
     },
@@ -530,7 +529,7 @@ test("A PLACEHOLDER ALWAYS BECOMES A CHIP, even when the pipeline throws", async
   // user dropped vanished with no chip, no error and nothing to retry from
   // (Bugbot, PR #1064). Every gesture gets an answer, even a refusal.
   const { api } = fakeApi({
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       yield att({ kind: "file", name: files[0]!.name, view: "/shots/one.csv" });
       throw new Error("disk full");
     },
@@ -561,7 +560,7 @@ test("discard() empties the tray for good: ready chips revoked, late bytes revok
     release = r;
   });
   const { api, spy } = fakeApi({
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       yield att({ kind: "file", name: files[0]!.name, view: "/shots/ready.csv" });
       await gate;
       yield att({ kind: "file", name: files[1]!.name, view: "/shots/late.csv" });
@@ -609,7 +608,7 @@ test("discard() also disowns a capture and a path registration still in flight",
       new Promise((r) => {
         releasePane = () => r(att({ kind: "pane", seat: "pane", thumb: "blob:late-pane" }));
       }),
-    attachPaths: (_dir, paths) =>
+    attachPaths: (paths) =>
       paths.map((p) => att({ kind: "file", view: p, name: p, brought: true })),
   });
   const tray = mountTray(api);

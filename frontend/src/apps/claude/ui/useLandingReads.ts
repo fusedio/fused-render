@@ -45,7 +45,6 @@ export interface LandingReads {
 }
 
 export function useLandingReads(
-  agentDir: string | null,
   file: string | null,
   /** The session list as `useRecentSessions` publishes it: `null` until the
    *  first read answers. */
@@ -64,7 +63,6 @@ export function useLandingReads(
   const sessionsIn = recent !== null;
   // STEP TWO: `await mountSnapshots()`, held behind the list.
   const snaps = useSnapshots(
-    agentDir,
     file,
     snapInvalidation,
     deps?.snaps,
@@ -75,7 +73,6 @@ export function useLandingReads(
   // target with no panel as well as for an answer, so nothing here can be
   // stranded behind a read that is never going to happen.
   const artifacts = useArtifacts(
-    agentDir,
     file,
     deps?.artifacts,
     sessionsIn && snaps.settled,

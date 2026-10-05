@@ -3,13 +3,14 @@ folder resolves to.
 
 The rule: `index.html` if the folder has one, else the FIRST non-hidden
 top-level `.html` in name order, else nothing. Only ONE consumer is left —
-`templates/claude/app.py`, whose split view frames a folder's page beside the
-chat. The other two are gone: the `app` template (D264, which took its own tests
+the chat's `POST /api/claude/app-entry` (server/routers/claude_agent.py, which
+replaced `templates/claude/app.py`), whose split view frames a folder's page
+beside the chat. The other two are gone: the `app` template (D264, which took its own tests
 with it) and the per-path timeline mode, which asked the same predicate of an
 extracted snapshot tree to decide whether a revision rendered as a page or was
 browsed as a directory. This file is what survived, because the rule did.
 
-Deliberately still SHARED rather than folded into claude/app.py: "which page is
+Deliberately still SHARED rather than folded into the chat's router: "which page is
 this folder's page" is the kind of question that grows second answers the moment
 it lives inside one template, which is exactly what happened while there were
 three callers.
@@ -103,18 +104,18 @@ def test_a_missing_or_unreadable_directory_resolves_to_nothing(tmp_path, entry_o
 # The one remaining CONSUMER, pinned to the rule: the split view's left pane
 # must frame the same page anything else would call the folder's page.
 def test_the_claude_backend_resolves_through_the_shared_rule(tmp_path):
-    split = _load(os.path.join(TEMPLATES_DIR, "claude"), "app",
-                  "test_shared_app_entry_claude_backend")
+    from fused_render.server.routers import claude_agent as router
+
     entry_of = _load(os.path.join(TEMPLATES_DIR, "shared"), "app_entry",
                      "test_shared_app_entry_direct").entry_html
     (tmp_path / "index.html").write_text(TAGGED)
     (tmp_path / "other.html").write_text("<html></html>")
-    assert split.main(dir=str(tmp_path)) == {"entry": entry_of(str(tmp_path))}
-    assert split.main(dir=str(tmp_path))["entry"] == str(tmp_path / "index.html")
-    assert split.main(dir=str(tmp_path / "nope")) == {"entry": None}
-    # No argument at all must not blow up in the /api/run worker: the template
-    # always passes _file, but a missing param must answer, not raise.
-    assert "entry" in split.main()
+    split = router._app_entry_main
+    assert split(dir=str(tmp_path)) == {"entry": entry_of(str(tmp_path))}
+    assert split(dir=str(tmp_path))["entry"] == str(tmp_path / "index.html")
+    assert split(dir=str(tmp_path / "nope")) == {"entry": None}
+    # No argument at all must not blow up: a missing param must answer, not raise.
+    assert "entry" in split()
 
 
 # ---------------------------------------------------------------- the parity

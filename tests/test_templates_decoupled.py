@@ -90,6 +90,23 @@ def test_no_template_imports_fused_render():
                     for ln, src in hits))
 
 
+# The chat's backend left templates/ (fused_render/claude_agent) but these
+# files are still run BY PATH in processes that cannot import the package: the
+# session host is spawned as a script and loads agent.py with
+# spec_from_file_location, and the permission server is spawned by `claude`
+# itself. PY-15's reason applies to them unchanged, so the guard follows them.
+CLAUDE_AGENT = os.path.join(os.path.dirname(TEMPLATES), "claude_agent")
+BY_PATH = ("agent.py", "session_host.py", "permission_server.py")
+
+
+@pytest.mark.parametrize("name", BY_PATH)
+def test_the_chat_backends_by_path_files_never_import_fused_render(name):
+    hits = _fused_render_imports(os.path.join(CLAUDE_AGENT, name))
+    assert not hits, (
+        f"claude_agent/{name} is loaded by path in a child that cannot import "
+        f"the package:\n" + "\n".join(f"  {ln}: {src}" for ln, src in hits))
+
+
 def test_the_allowlist_has_no_stale_entries():
     """An allowlisted file that no longer imports the package must leave the list,
     or the exception outlives the reason for it."""
@@ -139,7 +156,11 @@ MIGRATED = [
     # answer — which is the discriminating pair this table wants. (The
     # sidecar-path rows that used to sit here went with the sidecar, D359;
     # annotate.py no longer touches appenv directly at all, so it has no row.)
-    (os.path.join("claude", "agent.py"),
+    # agent.py left templates/ for the package (fused_render/claude_agent) but
+    # is still loaded BY PATH in children that cannot import the package
+    # (session_host, the permission server's config), so it keeps its row:
+    # relative to TEMPLATES, through `..`.
+    (os.path.join("..", "claude_agent", "agent.py"),
      "[bool(mod._snap_target(MOUNTED)), bool(mod._snap_target(LOCAL))]",
      [True, False]),
     (os.path.join("zarr_aoi", "tile_server.py"),

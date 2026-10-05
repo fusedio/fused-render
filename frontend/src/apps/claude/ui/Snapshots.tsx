@@ -12,7 +12,6 @@ import type { SnapshotsTimeline } from "../protocol/types";
 import { SnapRow } from "./SnapRow";
 
 export interface SnapshotsProps {
-  agentDir: string;
   file: string;
   /** `null` = mounted and reading (the note stands in for the rows). */
   timeline: SnapshotsTimeline | null;
@@ -30,7 +29,6 @@ export interface SnapshotsProps {
 }
 
 export function Snapshots({
-  agentDir,
   file,
   timeline,
   failed,
@@ -88,7 +86,6 @@ export function Snapshots({
               key={v.id}
               version={v}
               timeline={timeline}
-              agentDir={agentDir}
               file={file}
               open={v.id === openId}
               onToggle={() => setOpenId(v.id === openId ? null : v.id)}

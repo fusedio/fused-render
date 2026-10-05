@@ -87,12 +87,12 @@ def _pyproject():
 
 @functools.lru_cache(maxsize=1)
 def _declared_dists() -> frozenset[str]:
-    """`[bundled]` + core `dependencies` — what Linux and Windows ship."""
-    pp = _pyproject()
-    return frozenset(
-        {_norm(d) for d in pp["project"]["optional-dependencies"]["bundled"]}
-        | {_norm(d) for d in pp["project"]["dependencies"]}
-    )
+    """Everything `fused-render[bundled]` installs — what Linux and Windows ship.
+
+    Read through setup_py2app's `declared_requirements`, which expands the
+    `fused-render[all]` self-reference into the feature extras it names.
+    """
+    return frozenset(_norm(d) for d in _packaging_module().declared_requirements("bundled"))
 
 
 @functools.lru_cache(maxsize=1)
@@ -106,10 +106,7 @@ def _declared_dists_installable_here() -> frozenset[str]:
     3.11+. Without the distinction the flag fails on a venv that has `[bundled]`
     installed exactly as declared — which is how this was found.
     """
-    pp = _pyproject()
-    raw = list(pp["project"]["optional-dependencies"]["bundled"]) + list(
-        pp["project"]["dependencies"]
-    )
+    raw = _packaging_module().declared_requirements("bundled")
     return frozenset(_norm(d) for d in raw if projectenv.marker_applies(d))
 
 
@@ -142,10 +139,7 @@ def _declared_dists_the_BUNDLE_can_have() -> frozenset[str]:
 
     build_env = {"python_version": SCRIPT_PYTHON_VERSION,
                  "python_full_version": SCRIPT_PYTHON_VERSION + ".0"}
-    pp = _pyproject()
-    raw = list(pp["project"]["optional-dependencies"]["bundled"]) + list(
-        pp["project"]["dependencies"]
-    )
+    raw = _packaging_module().declared_requirements("bundled")
     keep = set()
     for spec in raw:
         marker = Requirement(spec).marker
@@ -338,55 +332,57 @@ def test_every_exclusion_is_declared_and_reasoned():
         )
 
 
-def test_the_bundled_and_fused_extras_pin_the_same_wheel():
-    """`fused` is declared twice on purpose, so the two copies must not drift.
+def test_the_base_and_fused_extra_pin_the_same_engine():
+    """`fused` is declared twice on purpose, so the two must name one version.
 
-    `[bundled]` is what the packaging derivation reads (setup_py2app.py's
-    `bundled_force_lists`, and therefore the reconciliation below) plus what the
-    Linux/Windows installers install; `[fused]` is the documented light install
-    path — `pip install "fused-render[fused]"` (README, docs/usage.md) and CI's
-    `fused-engine` job (`.[dev,fused]`) — which must be able to get the engine
-    without the ~650 MB scientific stack. Keeping both is the deliberate call;
-    the cost is a duplicated requirement string, and this is the guard that makes
-    the duplication safe instead of hopeful. Byte-identical, not merely
-    same-version: the version pin and the `python_version` marker are both
-    load-bearing, and a mismatch would mean the bundle and the pip path ship
-    different engines.
+    The base `dependencies` carry plain `fused==X`, the engine `fused-render
+    open` runs project apps with. `[fused]` asks for `fused[aws,mcp]==X`, the
+    deploy/share/MCP extras on top, and is what `[all]` (so every packaged
+    build and `[dev]`) installs. Two different versions would be an
+    unsatisfiable resolve for `[all]` at best, and at worst two builds shipping
+    different engines, so the version string must match exactly.
     """
-    pp = _pyproject()
-    extras = pp["project"]["optional-dependencies"]
-    in_bundled = [r for r in extras["bundled"] if _norm(r) == "fused"]
-    in_extra = [r for r in extras["fused"] if _norm(r) == "fused"]
-    assert len(in_bundled) == 1, (
-        "`[bundled]` must declare the `fused` requirement exactly once (the "
-        f"packaging force-list derives the engine from it); got {in_bundled}"
+    from packaging.requirements import Requirement
+
+    project = _pyproject()["project"]
+    in_base = [r for r in project["dependencies"] if _norm(r) == "fused"]
+    in_extra = [r for r in project["optional-dependencies"]["fused"] if _norm(r) == "fused"]
+    assert len(in_base) == 1, f"the base must declare `fused` exactly once; got {in_base}"
+    assert len(in_extra) == 1, f"`[fused]` must declare `fused` exactly once; got {in_extra}"
+    base, extra = Requirement(in_base[0]), Requirement(in_extra[0])
+    assert not base.extras, (
+        f"the base pin {in_base[0]!r} must be plain `fused`: its extras (boto3, "
+        "pyarrow, pandas, cryptography, mcp) are what `[fused]` is for"
     )
-    assert len(in_extra) == 1, (
-        f"`[fused]` must declare the `fused` requirement exactly once; got {in_extra}"
+    assert str(base.specifier) == str(extra.specifier), (
+        "the `fused` version in the base and in `[fused]` have drifted:\n"
+        f"  base    {in_base[0]!r}\n  [fused] {in_extra[0]!r}"
     )
-    assert in_bundled[0] == in_extra[0], (
-        "the `fused` requirement in `[bundled]` and in `[fused]` have drifted:\n"
-        f"  [bundled] {in_bundled[0]!r}\n  [fused]   {in_extra[0]!r}\n"
-        "They must be updated TOGETHER and stay byte-identical. `[bundled]` is "
-        "what the packaging derivation reads (so it decides what the DMG ships); "
-        "`[fused]` is the documented light install path that gets the engine "
-        "without the scientific stack."
+    # `anthropic` travels with the full engine. Since fused 2.9.3b10 it sits only
+    # in fused's `verify` extra, next to `ty`, which this app does not ship, so
+    # `[fused]` declares it directly, and the bundle reaches it through `[all]`.
+    ant = [r for r in project["optional-dependencies"]["fused"] if _norm(r) == "anthropic"]
+    assert len(ant) == 1, f"`[fused]` must declare `anthropic` exactly once; got {ant}"
+    assert "anthropic" in _declared_dists(), "`[bundled]` must reach anthropic through `[all]`"
+
+
+def test_all_is_every_feature_extra_and_every_build_takes_it():
+    """`[all]` is what `serve` requires (fused_render/extras.py), so it must name
+    every feature extra the guards know about, and every packaged build plus
+    `[dev]` must install it, or a build ships a desktop that refuses to serve."""
+    from packaging.requirements import Requirement
+
+    from fused_render import extras as fr_extras
+
+    table = _pyproject()["project"]["optional-dependencies"]
+    (all_req,) = table["all"]
+    assert set(Requirement(all_req).extras) == set(fr_extras.EXTRAS), (
+        f"`[all]` names {sorted(Requirement(all_req).extras)} but extras.EXTRAS "
+        f"guards {sorted(fr_extras.EXTRAS)}"
     )
-    # `anthropic` travels WITH the engine pin, in both extras and byte-identical
-    # for the same reason. Since fused 2.9.3b10 it sits only in fused's `verify`
-    # extra, next to `ty`, which this app deliberately does not ship. So it is
-    # declared directly, and one extra carrying it and the other not would mean
-    # the DMG and the pip path ship different engines.
-    ant_bundled = [r for r in extras["bundled"] if _norm(r) == "anthropic"]
-    ant_extra = [r for r in extras["fused"] if _norm(r) == "anthropic"]
-    assert len(ant_bundled) == 1 and len(ant_extra) == 1, (
-        "both `[bundled]` and `[fused]` must declare `anthropic` exactly once; "
-        f"got {ant_bundled} and {ant_extra}"
-    )
-    assert ant_bundled[0] == ant_extra[0], (
-        "the `anthropic` requirement in `[bundled]` and in `[fused]` have drifted:\n"
-        f"  [bundled] {ant_bundled[0]!r}\n  [fused]   {ant_extra[0]!r}"
-    )
+    assert set(fr_extras.EXTRAS) <= set(table), "every guarded extra must be declared"
+    for build in ("dev", "bundled", "app", "windows-desktop", "linux-desktop"):
+        assert "fused-render[all]" in table[build], f"`[{build}]` must include fused-render[all]"
 
 
 def test_the_fused_pin_asks_for_the_mcp_extra():
@@ -424,7 +420,7 @@ def test_the_fused_pin_only_asks_for_extras_fused_provides():
     except md.PackageNotFoundError:
         pytest.skip("fused is not installed here, so there is no metadata to check against")
     extras = _pyproject()["project"]["optional-dependencies"]
-    for group in ("bundled", "fused"):
+    for group in ("fused",):
         for raw in extras[group]:
             if _norm(raw) != "fused":
                 continue

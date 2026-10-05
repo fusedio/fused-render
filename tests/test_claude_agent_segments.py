@@ -32,11 +32,11 @@ import os
 
 import pytest
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
+AGENT_DIR = os.path.join("fused_render", "claude_agent")
 
 
 def _load(name):
-    path = os.path.join(TEMPLATE_DIR, name + ".py")
+    path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("claude_seg_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -896,7 +896,7 @@ def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
     """Order is the guarantee: a stat taken AFTER the read would describe rows
     the payload does not contain — a turn silently swallowed for good. Taken
     first, a write that lands mid-read costs one redundant re-render."""
-    src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
+    src = open(os.path.join(AGENT_DIR, "agent.py"), encoding="utf-8").read()
     body = src[src.index("def _history(file: str, session_id: str, app_reads: bool = False,"):]
     body = body[:body.index("\ndef ")]
     assert body.index("_transcript_stat(path)") < body.index("for line in open(path")
@@ -1119,7 +1119,7 @@ def test_poll_reports_the_context_reading_mid_turn():
     A source read rather than a run: `_poll` wants a live run dir and a live
     CLI, and what is worth pinning is that both seats exist and that both go
     through the one filter."""
-    src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
+    src = open(os.path.join(AGENT_DIR, "agent.py"), encoding="utf-8").read()
     body = src[src.index("def _poll(run_id: str"):]
     body = body[:body.index("\ndef ")]
     assert body.count("_context_usage(") == 2

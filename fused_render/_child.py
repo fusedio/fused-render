@@ -78,6 +78,9 @@ def run():
     out = {"ok": False}
     try:
         module_dir = os.path.dirname(path)
+        # D1316: children (a detached worker) inherit the calling page so
+        # their /api/jobs reports can send it as X-Fused-Page.
+        os.environ["FUSED_RENDER_PAGE"] = path
         os.chdir(module_dir)  # relative data paths in user code resolve next to the .py
         sys.path.insert(0, module_dir)
         # APPENDED, not inserted at 0: a user module of the same name (e.g. a

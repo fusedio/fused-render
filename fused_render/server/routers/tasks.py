@@ -121,7 +121,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlencode
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from fused_render import (
@@ -141,7 +141,40 @@ from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
 from fused_render.shell import prefs as shell_prefs
 
-router = APIRouter()
+
+def _ensure_duties() -> None:
+    """FastAPI dependency, attached to every route below — the one place
+    that brings up everything a `/api/tasks*` request needs to be CORRECT
+    but `lean` skips as a startup hook (create_app's rule: skip only
+    BACKGROUND/WARM-UP work).
+
+    Ensures THIS process's machine-duties waiter thread is running (B2 —
+    scheduler + project-queue resume), lazily, on the first request reaching
+    it. `serve` already starts that waiter from `_startup_queue_manager`, so
+    here it is normally a no-op repeat of a thread this process already
+    has — one lock-guarded `is_alive()` check, nothing else.
+    `queue_manager.ensure_duties_waiter()` itself never blocks: it only
+    starts (or confirms it already started) a dedicated daemon thread that
+    does the actual, potentially long, lease-acquire wait, so calling this
+    on every request's handling thread is cheap and never holds the request
+    up. `open` (lean) runs no startup hooks at all, so this is the only
+    place it ever starts that thread — which is what lets a lean process end
+    up with a waiter parked and ready to take over the moment a `serve` that
+    was holding the lease exits, with no separate retry/polling mechanism of
+    its own.
+
+    Also starts the Tasks page's change watcher (B3 — `tasks_watch.start()`,
+    otherwise only run from `_startup_tasks_watch`): read-only and safe to
+    run in every process at once, unlike the waiter above, so this is a
+    plain idempotent start rather than anything gated. Without it `lean`'s
+    `/api/tasks/changes` had nothing to `wait()` on and always blocked the
+    full 25s with nothing to report — and `generation()`/`live_from_registry`
+    and every other route above read from the same registry this primes."""
+    queue_manager.ensure_duties_waiter()
+    tasks_watch.start()
+
+
+router = APIRouter(dependencies=[Depends(_ensure_duties)])
 
 logger = logging.getLogger(__name__)
 
@@ -1547,19 +1580,18 @@ def _limit_outvotes_live(messages: list[dict]) -> bool:
 # tail is cut at all) and `project_queue.SCAN_TTL` (why one walk answers both).
 
 def _agent_module():
-    """The claude template's agent.py, loaded once, or None if it will not load.
+    """The chat backend's agent module, or None if it will not import.
 
-    `project_queue.agent_module()` does the loading and the caching — of the
-    FAILURE as well as the success, because `load_agent` execs the whole module
-    on every call and this is on the listing's path. Kept as a name HERE rather
-    than called through at each use because two things depend on it being one:
-    the listing degrades to "nothing is parked" when it answers None, and the
-    router's own suite replaces exactly this name with a stand-in (agent.py is a
-    TEMPLATE outside the import graph, SPEC PY-15).
+    `project_queue.agent_module()` — THE one instance
+    (`fused_render.claude_agent.agent_module()`) behind the one failure cache.
+    Kept as a name HERE rather than called through at each use because two
+    things depend on it being one: the listing degrades to "nothing is parked"
+    when it answers None, and the router's own suite replaces exactly this name
+    with a stand-in.
 
     ONE COPY, not two. This function and the queue's were the same twenty lines
-    with different log lines, and two caches over one exec meant a machine whose
-    agent.py will not load paid for the discovery twice and could answer
+    with different log lines, and two caches over one load meant a machine whose
+    agent will not import paid for the discovery twice and could answer
     differently on the two paths — the listing saying nothing is parked while the
     queue said every folder is free.
     """
@@ -2633,7 +2665,7 @@ def _place(task: dict) -> None:
     if task["path"]:
         cwd, first_ts, prompt, pane, entrypoint = tasks_store.head(task["path"])
     # ENTRYPOINT (2026-09-18): "cli" (interactive terminal) vs "sdk-cli"
-    # (headless/programmatic, what templates/claude/agent.py's spawn
+    # (headless/programmatic, what claude_agent/agent.py's spawn
     # produces) off the same head-parsed record `cwd`/`prompt`/`pane` already
     # come from — see tasks_store.head's own doc comment. Stored UNDEFINED,
     # never a placeholder default, when the transcript has none (an older
@@ -5097,7 +5129,7 @@ _PULSE_FIELDS = (
     # one. A single integer on a row that is already being built.
     "queue_waiting",
     # "cli" (interactive terminal) / "sdk-cli" (headless — what
-    # templates/claude/agent.py's spawn produces) / `None` (unknown, e.g. no
+    # claude_agent/agent.py's spawn produces) / `None` (unknown, e.g. no
     # transcript yet) — see `_place`'s own comment. task-status-notify.ts's
     # finished-task notice gates on this: only an exact "cli" is treated as
     # "started outside our own template", and anything else, including
@@ -6791,7 +6823,7 @@ def api_queue_admit(body: dict = Body(...),
         resp: dict = {"run": True}
         # THE CLAIM TOKEN RIDES ALONG (2026-09-17, Bugbot PR #1194): the client
         # echoes it back on the run request as `queue_claim`, and
-        # `routers/run.py::_folder_busy` consuming it there is the proof this
+        # `claude_agent/gate.py::_folder_busy` consuming it there is the proof this
         # send is the one `claim_for_send` just counted, so the gate looks
         # rather than claiming a second time. `claim_for_send` only fails to
         # mint one when `ok` is False, which never reaches here.
@@ -6801,7 +6833,7 @@ def api_queue_admit(body: dict = Body(...),
             # A NAMELESS SEND GETS ITS NAME BACK. The client is untouched in
             # this PR and ignores the field; the run it is about to start
             # replaces the placeholder through the spawn site
-            # (`routers/run._file_owner` → `queue_manager.started`), and the
+            # (`claude_agent/gate._file_owner` → `queue_manager.started`), and the
             # token is here so the composer can eventually say "that owner is
             # me" without waiting for a run id.
             resp["owner_token"] = owner_token
@@ -7288,7 +7320,7 @@ def api_queue_force(body: dict = Body(...),
     # MARKED BEFORE THE DISPATCH, under every name this chat answers to — the
     # row's key and each waiting message's own `pending:` key. The dispatch
     # below mints a session, and the two doors this send is about to walk
-    # through (`api_queue_admit`, `routers/run._folder_busy`) ask under
+    # through (`api_queue_admit`, `claude_agent/gate._folder_busy`) ask under
     # whichever name they happen to hold; the session and the run are added the
     # moment they exist, below.
     pending_keys = [tasks_store.pending_key(i) for i in pending_ids]

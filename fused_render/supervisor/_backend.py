@@ -29,6 +29,9 @@ Optional hooks (a backend may omit them; core probes with getattr):
   deintegrate    — reverse of integrate(): remove that desktop integration
                    (Linux only, driven by the tray "Uninstall" item;
                    integration-only, never app data or the binary)
+  windows        — native app windows (Linux only: a WebKitGTK window host
+                   process; `WindowHost.start()/open(url)/stop()`; every
+                   failure degrades to the browser, see _linux/windows.py)
   update         — auto-updater: start_auto_checks(paths, notify), check(paths)
                    (Windows only: signed-manifest poll + user-approved install)
 """
@@ -48,7 +51,7 @@ if sys.platform == "win32":
     # Linux backend spawning with stdlib primitives would leave this empty.
     SPAWN_ERRORS: tuple[type[BaseException], ...] = (pywintypes.error,)
 elif sys.platform.startswith("linux"):
-    from fused_render.supervisor._linux import instance, startup, ui
+    from fused_render.supervisor._linux import instance, startup, ui, windows
     from fused_render.supervisor._linux.integration import deintegrate, integrate
     from fused_render.supervisor._linux.tree import Job
 

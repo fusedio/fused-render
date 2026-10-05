@@ -1,7 +1,7 @@
 """Unit tests for the stdlib GOOG4 URL signer and the local GCS bearer-token
 resolver (shell/gcssign.py). Pure — no network, no rclone, no google SDK on the
 resolver path (google.auth/google.oauth2 are faked via sys.modules so the tests
-pin the DEGRADE contract regardless of whether [cloud-auth] is installed).
+pin the DEGRADE contract regardless of whether [cloud] is installed).
 
 The signer is checked against Google's published V4 signing conformance vector
 (googleapis/conformance-tests storage/v1/v4_signatures.json "Simple GET"): the
@@ -354,7 +354,7 @@ def test_resolve_token_refresh_failure_falls_through(google_stub):
 
 
 def test_resolve_token_none_when_google_auth_absent(monkeypatch):
-    # [cloud-auth] not installed: every source's lazy import raises -> None.
+    # [cloud] not installed: every source's lazy import raises -> None.
     for name in ("google.auth", "google.auth.transport.requests",
                  "google.oauth2.service_account", "google.oauth2.credentials"):
         monkeypatch.setitem(sys.modules, name, None)

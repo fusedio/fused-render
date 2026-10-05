@@ -209,6 +209,13 @@ def test_an_interrupted_file_download_resumes_from_where_it_stopped(download, se
     assert list(dest.iterdir()) == [dest / "scene.tif"]
 
 
+def test_a_download_resumes_under_a_fresh_token(download, dest):
+    source = "https://acct.blob.core.windows.net/c/scene.tif"
+    _interrupted(download, dest / "scene.tif", source + "?se=old&sig=old")
+    assert download._resumable(dest / "scene.tif", source + "?se=new&sig=new")
+    assert not download._resumable(dest / "scene.tif", "https://acct.blob.core.windows.net/c/other.tif")
+
+
 def test_a_range_capable_server_continues_the_part(download, dest, tmp_path, monkeypatch):
     """With a server that honours Range, only the missing tail is fetched."""
     payload = bytes(range(256)) * 20000

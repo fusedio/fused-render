@@ -1,6 +1,6 @@
-// Wire types for `templates/claude/agent.py` as reached through POST /api/run
-// (`{py: <tplDir>/agent.py, params: {action, ...fields}}`). Every request field
-// crosses into Python STRING-shaped (the param binder, agent.py:5179-5186);
+// Wire types for `fused_render/claude_agent/agent.py` as reached through
+// POST /api/claude/agent (`{action, ...fields}`). Every request field crosses
+// into Python STRING-shaped (the router binds them to the handler's signature);
 // nested data (`read_dirs`, `answers`, `custom`, `state`) is JSON.stringify'd
 // by the caller. Response shapes are read off each handler's `return` — the
 // `agent.py:line` cites point at them. Inventory: 04-core-chat.md §B/§C.

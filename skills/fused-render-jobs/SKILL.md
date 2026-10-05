@@ -31,10 +31,11 @@ Rules:
 
 ## Report from the WORKER too
 
-Page-only reporting freezes row when user navigates. Detached worker outlives page — and runs own venv, no `import fused_render`, so it speaks plain JSON over HTTP: POST `{FUSED_RENDER_ORIGIN}/api/jobs`, headers `Content-Type: application/json` + `X-Fused: 1`, body `{id, title, kind, state, done, total, detail}`. Reply carries `cancel_requested` — worker is only thing able to honor ✕ once page gone. Best-effort: swallow all errors, short timeout (~3 s), rate-limit ~1/s. **Same job id both sides** (derive from something both know) = one row, not two. Keep page reporting too — only reporter alive during first-run env build.
+Page-only reporting freezes row when user navigates. Detached worker outlives page — and runs own venv, no `import fused_render`, so it speaks plain JSON over HTTP: POST `{FUSED_RENDER_ORIGIN}/api/jobs`, headers `Content-Type: application/json` + `X-Fused: 1` + `X-Fused-Page: $FUSED_RENDER_PAGE` (env every `.py` run exports; children inherit — without it the row has no app: no caption, no grouping with the app's other jobs, click goes nowhere), body `{id, title, kind, state, done, total, detail}`. Reply carries `cancel_requested` — worker is only thing able to honor ✕ once page gone. Best-effort: swallow all errors, short timeout (~3 s), rate-limit ~1/s. **Same job id both sides** (derive from something both know) = one row, not two. Keep page reporting too — only reporter alive during first-run env build.
 
 ## Pitfalls
 
 - No terminal call → stalled row lying about closed page.
 - Page-only reporting; two rows from mismatched ids; one row per file.
+- Worker POSTs without `X-Fused-Page` → orphan rows: no caption, never grouped with the app's other jobs, click opens nothing of the app.
 - Job started under `_preview=1` → every listing card starts work (gate boot — `fused-render-authoring`).

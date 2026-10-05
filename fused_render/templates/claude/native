@@ -1,0 +1,4 @@
+Native template marker (PT-6 amendment).
+The claude chat UI is served by the React shell (frontend/src/apps/claude);
+its backend lives in fused_render/claude_agent.
+This folder exists only for registry identity, the condition.py gate and icon.svg.

@@ -1,54 +1,52 @@
 // WHERE A SHOT GOES, AND WHAT IT IS CALLED (T:9012-9040, T:10041, T:11375).
 //
-// Our own 0700 temp dir, asked for once per agent dir and cached — NOT the
-// user's project, a screenshot is not their file. Fetched lazily rather than at
-// boot so a chat that never attaches never makes the directory, and a failure
+// Our own 0700 temp dir, asked for once per page and cached — NOT the user's
+// project, a screenshot is not their file. Fetched lazily rather than at boot
+// so a chat that never attaches never makes the directory, and a failure
 // clears the cache so the next attach tries again instead of degrading forever
 // (T:9019).
 import { runAgent } from "../protocol/agent";
 
-/** Resolved dirs, kept synchronously readable: `readDirs` has to know which
+/** The resolved dir, kept synchronously readable: `readDirs` has to know which
  *  attachment paths are ALREADY covered by the spawn line's standing Read rule
  *  and it runs inside the send with nothing to await on, so the answer is
  *  remembered the moment it lands (T:9018 `shotDirSeen`). */
-const seen = new Map<string, string>();
-const pending = new Map<string, Promise<string>>();
+let seen = "";
+let pending: Promise<string> | null = null;
 
-/** The shots dir for one agent dir. One in-flight promise per dir; a rejection
- *  is not cached (T:9019-9036). */
-export function shotsDir(agentDir: string): Promise<string> {
-  const cached = seen.get(agentDir);
-  if (cached) return Promise.resolve(cached);
-  const running = pending.get(agentDir);
-  if (running) return running;
-  const p = runAgent(agentDir, "shots_dir", {}, { key: null })
+/** The shots dir. One in-flight promise; a rejection is not cached
+ *  (T:9019-9036). */
+export function shotsDir(): Promise<string> {
+  if (seen) return Promise.resolve(seen);
+  if (pending) return pending;
+  const p = runAgent("shots_dir", {})
     .then((r) => {
       // The union is `{dir}` | `{error}`; a handler that answered neither is the
       // same failure as one that answered `error` (T:9022).
       const dir = "dir" in r ? r.dir : "";
       if (!dir) throw new Error(("error" in r && r.error) || "no screenshot directory");
-      seen.set(agentDir, dir);
+      seen = dir;
       return dir;
     })
     .catch((err: unknown) => {
-      pending.delete(agentDir);
+      pending = null;
       throw err;
     });
-  pending.set(agentDir, p);
+  pending = p;
   return p;
 }
 
 /** What `shotsDir` has already answered, without awaiting. `""` until then,
  *  which is a safe default: the worst it costs is one redundant Read rule
  *  (T:9018). */
-export function shotsDirSeen(agentDir: string): string {
-  return seen.get(agentDir) || "";
+export function shotsDirSeen(): string {
+  return seen;
 }
 
 /** Test-only: the cache is a page-lifetime memo in production. */
 export function resetShotsDirForTests(): void {
-  seen.clear();
-  pending.clear();
+  seen = "";
+  pending = null;
 }
 
 /** Always "/", never a guessed platform separator: agent.py hands the directory

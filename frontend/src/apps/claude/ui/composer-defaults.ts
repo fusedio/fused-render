@@ -210,7 +210,6 @@ export interface ComposerDefaults {
  * ranking (T:12608-12645).
  */
 export function useComposerDefaults(
-  agentDir: string | null,
   file: string | null,
   params: ParamsStore,
   hostSeeded = false,
@@ -389,7 +388,7 @@ export function useComposerDefaults(
   }, [sessionId]);
 
   useEffect(() => {
-    if (!agentDir || !file) return;
+    if (!file) return;
     let live = true;
     pickedSinceRead.current = {};
     // Same rule as the fast read: a detection is about ONE conversation. Left
@@ -398,9 +397,7 @@ export function useComposerDefaults(
     // when its own answer landed (Bugbot, PR #1226).
     setDetected({ model: "", effort: "" });
     setDetectionReady(false);
-    void runAgent(agentDir, "defaults",
-                  sessionId ? { file, session_id: sessionId } : { file },
-                  { key: null })
+    void runAgent("defaults", sessionId ? { file, session_id: sessionId } : { file })
       .then((out) => {
         if (!live) return;
         const d = out as DefaultsResponse;
@@ -448,7 +445,7 @@ export function useComposerDefaults(
     // and the first answer was about the folder. Re-asking then is what makes a
     // conversation's own settings appear as soon as it has an identity —
     // and it is one cheap read of one transcript's tail.
-  }, [agentDir, file, sessionId]);
+  }, [file, sessionId]);
 
   useEffect(() => {
     let live = true;

@@ -18,6 +18,7 @@ import {
   RESTART_RECONNECTING_FAILS,
   RESTART_SLOW_MS,
   RESTART_STAGES,
+  RESTART_STUCK_MS,
   RESTART_STEP_STAGES,
   type RestartEvent,
   type RestartState,
@@ -174,7 +175,7 @@ test("the cap can fire from every stage the dialog is on screen for", () => {
   // Stated as a sweep, because "no stage outlives the cap" is the invariant
   // that keeps an undismissable dialog from becoming a dead end.
   for (const stage of RESTART_STAGES) {
-    if (stage === "ready" || stage === "gave-up") continue;
+    if (stage === "ready" || stage === "gave-up" || stage === "stuck") continue;
     const state: RestartState = { stage, requestedAt: T0, fails: 1, before: OLD };
     expect(reduceRestart(state, tick(), T0 + RESTART_GIVE_UP_MS + 1).stage).toBe("gave-up");
     expect(reduceRestart(state, fail(), T0 + RESTART_GIVE_UP_MS + 1).stage).toBe("gave-up");
@@ -241,6 +242,7 @@ test("every stage has exactly the label the design asked for", () => {
   // The two non-waits have no word: each hands the surface to something else.
   expect(restartStageLabel("ready")).toBe("");
   expect(restartStageLabel("gave-up")).toBe("");
+  expect(restartStageLabel("stuck")).toBe("");
   // One word plus an ellipsis, never a phrase (Akshil, 2026-09-08).
   for (const stage of ["quitting", "restarting", "reconnecting"] as const) {
     expect(restartStageLabel(stage)).toMatch(/^\S+…$/);
@@ -345,4 +347,63 @@ test("the mark sits between the promise and the cap, with room on both sides", (
   // the wait is long BEFORE they are told it failed.
   expect(RESTART_SLOW_MS).toBeGreaterThan(60_000);
   expect(RESTART_SLOW_MS).toBeLessThan(RESTART_GIVE_UP_MS);
+});
+
+// ---- the press the old app never acted on -----------------------------------
+// Version skew (2026-10-05): a v0.6.2 process whose window code does not route
+// `fused-render://relaunch`. The press is dropped, the server answers on the
+// same version forever and no probe ever fails. That is not "the app did not
+// come back" — the app never went down.
+
+test("a press the app never acted on ends as stuck well before the cap", () => {
+  let state = run([[press(), T0]]);
+  for (let t = 5_000; t < RESTART_STUCK_MS; t += 5_000) {
+    state = reduceRestart(state, ok(OLD), T0 + t);
+    expect(state.stage).toBe("quitting");
+  }
+  state = reduceRestart(state, ok(OLD), T0 + RESTART_STUCK_MS);
+  expect(state.stage).toBe("stuck");
+  expect(RESTART_STUCK_MS).toBeLessThan(RESTART_GIVE_UP_MS);
+  expect(restartInFlight(state.stage)).toBe(false);
+});
+
+test("stuck can also be reached by the clock alone once an answer has been seen", () => {
+  const seen = run([[press(), T0], [ok(OLD), T0 + 5_000]]);
+  expect(reduceRestart(seen, tick(), T0 + RESTART_STUCK_MS).stage).toBe("stuck");
+  // With no healthy answer at all the page has no evidence the server is up,
+  // so the clock alone must not claim it.
+  const silent = run([[press(), T0]]);
+  expect(reduceRestart(silent, tick(), T0 + RESTART_STUCK_MS + 1_000).stage).toBe("quitting");
+});
+
+test("any failed probe since the press keeps today's behaviour", () => {
+  // A real outage, however brief: the app did go down, so the long wait and the
+  // cap are the honest story. Never `stuck`, even once the old version is back.
+  let state = run([[press(), T0], [ok(OLD), T0 + 2_000], [fail(), T0 + 7_000], [ok(OLD), T0 + 12_000]]);
+  expect(state.stage).toBe("quitting");
+  state = reduceRestart(state, ok(OLD), T0 + RESTART_STUCK_MS + 10_000);
+  expect(state.stage).toBe("quitting");
+  expect(reduceRestart(state, tick(), T0 + RESTART_STUCK_MS + 20_000).stage).toBe("quitting");
+  expect(reduceRestart(state, ok(OLD), T0 + RESTART_GIVE_UP_MS + 1).stage).toBe("gave-up");
+});
+
+test("a version that moves still wins over stuck", () => {
+  const seen = run([[press(), T0], [ok(OLD), T0 + 5_000]]);
+  expect(reduceRestart(seen, ok(NEW), T0 + RESTART_STUCK_MS + 5_000).stage).toBe("back");
+});
+
+test("stuck latches, and a new press re-arms the whole flow", () => {
+  const stuck = run([[press(), T0], [ok(OLD), T0 + 5_000], [ok(OLD), T0 + RESTART_STUCK_MS]]);
+  expect(stuck.stage).toBe("stuck");
+  expect(reduceRestart(stuck, fail(), T0 + RESTART_STUCK_MS + 5_000).stage).toBe("stuck");
+  expect(reduceRestart(stuck, ok(NEW), T0 + RESTART_STUCK_MS + 5_000).stage).toBe("stuck");
+  expect(reduceRestart(stuck, tick(), T0 + RESTART_GIVE_UP_MS + 5_000).stage).toBe("stuck");
+  const again = reduceRestart(stuck, press(T0 + 60_000), T0 + 60_000);
+  expect(again.stage).toBe("quitting");
+  // The memory of the old press does not leak into the new one.
+  expect(reduceRestart(again, ok(OLD), T0 + 60_000 + RESTART_STUCK_MS - 1).stage).toBe("quitting");
+});
+
+test("stuck draws a strip with no live step", () => {
+  expect(shape("stuck")).toBe("···");
 });

@@ -8,6 +8,8 @@ legal filename character that must round-trip untouched.
 Pure path classification only (no filesystem/OS calls), so this module and
 its tests run identically on Windows, macOS, and Linux.
 """
+import ntpath
+import posixpath
 import re
 from pathlib import PureWindowsPath
 from urllib.parse import quote, unquote, urlsplit
@@ -19,6 +21,18 @@ def _is_drive_path(fs_path: str) -> bool:
     # 'C:foo' (drive-relative, no root) is excluded.
     p = PureWindowsPath(fs_path)
     return p.drive.endswith(":") and bool(p.root)
+
+
+def normpath_for_shape(path: str) -> str:
+    """`normpath` picked by the path's SHAPE, not by the host OS: a drive-
+    letter path (`C:\\...`) is normalized with Windows backslash semantics,
+    anything else with POSIX ones — so a deep link or a dirpicker request can
+    name a POSIX or a Windows path whichever platform this server runs on,
+    and `normpath` still collapses `.`/`..`/doubled separators the way that
+    path's own OS would."""
+    if PureWindowsPath(path).drive:
+        return ntpath.normpath(path)
+    return posixpath.normpath(path)
 
 
 def canonical_fs_path(fs_path: str) -> str:
@@ -86,6 +100,12 @@ def view_url(port: int, fs_path: str | None) -> str:
     if not fs_path:
         return f"http://127.0.0.1:{port}/"
     return f"http://127.0.0.1:{port}" + view_url_path(fs_path)
+
+
+def embed_url(port: int, fs_path: str) -> str:
+    """Full local URL form of `embed_url_path` (host/port prefixed) — what
+    `fused-render open` points the browser at."""
+    return f"http://127.0.0.1:{port}" + embed_url_path(fs_path)
 
 
 # A launch argument is a URL (not a filesystem path) when it is a

@@ -64,7 +64,7 @@ type Handler = (fields: Record<string, unknown>, call: number) => unknown;
 
 function make(handlers: Record<string, Handler>, schedule?: (body: unknown) => Promise<unknown>) {
   const counts: Record<string, number> = {};
-  const run = ((_dir: string, action: string, fields: Record<string, unknown>) => {
+  const run = ((action: string, fields: Record<string, unknown>) => {
     const n = (counts[action] = (counts[action] || 0) + 1) - 1;
     const h = handlers[action];
     if (!h) throw new Error("no handler for " + action);
@@ -72,7 +72,6 @@ function make(handlers: Record<string, Handler>, schedule?: (body: unknown) => P
   }) as unknown as typeof runAgent;
   const controller = createChatController({
     file: "/proj/app.py",
-    agentDir: "/tpl/claude",
     params: createMemoryParamsStore(),
     run,
     sleep: () => Promise.resolve(),

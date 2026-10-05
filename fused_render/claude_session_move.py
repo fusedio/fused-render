@@ -77,7 +77,7 @@ _HEAD_LINES = 64
 
 def munge(path: str) -> str:
     """A cwd's bucket name under `~/.claude/projects` — Claude Code's own rule,
-    the same one `templates/claude/agent.py._munge` uses."""
+    the same one `claude_agent/agent.py._munge` uses."""
     return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
 
 

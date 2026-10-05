@@ -451,19 +451,16 @@ jobs:
           FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
         run: python -m pytest tests/ -q
 
-  # Does fused-render actually WORK with nothing beyond core + `[dev]`
-  # installed? (LEAN_WHEEL_SPEC.md item 4, modeled on the sibling openfused
-  # repo's `local-extra` job, ci.yml:81.) test-python above already installs
-  # only `.[dev]`, but it never asserts the install works BEFORE running
-  # ~11,000 tests that can silently `importorskip` past anything
-  # bundled/fused-only touches — a fully broken lean install could still show
-  # green there, the same failure mode that job's own comment (below) warns
-  # about for extras. This job is narrower and cheaper: an explicit up-front
-  # import of the two real entry points, a genuine block of every
-  # `[bundled]`-only package (tests/test_import_weight.py), then a real boot
-  # of the CLI's own `serve` subcommand and a request against it — so "the
-  # lean install works" is asserted directly, not inferred from what happened
-  # not to skip.
+  # Does the base install (`pip install fused-render`, no extras) actually
+  # WORK for what it is for, `fused-render open`? (LEAN_WHEEL_SPEC.md item 4,
+  # modeled on the sibling openfused repo's `local-extra` job, ci.yml:81.)
+  # test-python above installs `.[dev]`, which includes `[all]`, so it never
+  # sees the base install at all. This job is narrow and cheap: an explicit
+  # up-front import of the two real entry points, a genuine block of every
+  # package outside the base (tests/test_import_weight.py, which also checks
+  # the 503 `missing_extra` replies), then a real `fused-render open` of a
+  # fixture app: the embed page must render and `/api/run` must run the app's
+  # script. `serve` must refuse on this install and name `[all]`.
   # ubuntu-only here would be a hole this repo has already fallen into once:
   # a bare `pip install fused-render` (no extras) crashed at startup on every
   # macOS install (ModuleNotFoundError: No module named 'cryptography',
@@ -511,28 +508,31 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # No [bundled], no [fused], no [dev] — the leanest real install: core
-      # deps only, plus just the test tooling this job's own steps need
-      # (pytest). [dev] pulls in cryptography on every platform
-      # (pyproject.toml ~:156-163), which would make this job unable to ever
-      # reproduce a bare-install crash like the one this job exists to catch.
-      - name: Install fused-render (core only, plus pytest)
+      # No extras at all: the base install exactly, plus just the test tooling
+      # this job's own steps need (pytest). [dev] includes [all], which pulls
+      # in cryptography (and everything else), so this job could never
+      # reproduce a bare-install crash with it.
+      - name: Install fused-render (base only, plus pytest)
         run: |
           pip install -e .
           pip install pytest
 
-      - name: Assert cryptography is genuinely absent
-        # Without this assertion, a dependency added later (directly or
-        # transitively) can silently reintroduce cryptography into this
-        # "lean" install and this job would go back to testing nothing,
-        # exactly as it did before this fix.
+      - name: Assert cryptography is genuinely absent (macOS)
+        # The bare-install crash this job exists to catch was a darwin-only
+        # unguarded `import cryptography` (update/common.py). On macOS the base
+        # install carries no cryptography, so a dependency that later
+        # reintroduces it would quietly stop this leg from testing that. Linux
+        # is skipped because the base install does carry it there: `fused`
+        # needs keyring, whose Linux backend (secretstorage) requires it.
+        # tests/test_import_weight.py blocks it on both legs regardless.
+        if: runner.os == 'macOS'
         run: |
           if python -c "import cryptography" 2>/dev/null; then
             echo "::error::cryptography is present; this job no longer tests a lean install"
             exit 1
           fi
 
-      - name: Assert the entry points import with nothing but core deps
+      - name: Assert the entry points import with nothing but the base
         # Without this, a broken lean install can still go green below: the
         # server import could already be failing on a missing bundled
         # package, and the boot step would surface it later as a less legible
@@ -546,37 +546,66 @@ jobs:
           create_app(tempfile.mkdtemp())
           "
 
-      - name: Prove no [bundled]-only package is reachable from either entry point
+      - name: Prove no optional package is reachable from either entry point
         # pyproject's addopts asks for `-n auto` (pytest-xdist), which this
         # minimal venv deliberately does not have; run this one file serially.
         run: python -m pytest -o addopts="" tests/test_import_weight.py -q
 
-      - name: Boot the server and hit it for real
-        # No TestClient/ASGI shortcut — the real CLI subprocess and a real
-        # HTTP request, so nothing about the process boundary or the uvicorn
-        # startup path is assumed away.
+      - name: Open an app on the base install and run its script for real
+        # No TestClient/ASGI shortcut: the real CLI subprocess and real HTTP
+        # requests, so nothing about the process boundary or the uvicorn
+        # startup path is assumed away. The fixture is local rather than a
+        # GitHub URL so the job does not depend on the network for its app.
         shell: bash
         run: |
           set -euo pipefail
-          python -m fused_render.cli serve --port 8781 --no-browser &
+          app="$RUNNER_TEMP/fixture-app"
+          mkdir -p "$app"
+          printf '%s\n' '<!doctype html><title>fixture</title><p>fixture</p>' > "$app/index.html"
+          printf '%s\n' 'def main(n: int = 1) -> dict:' '    return {"double": n * 2}' > "$app/double.py"
+          python -m fused_render.cli open "$app/index.html" --port 8781 --no-browser > "$RUNNER_TEMP/open.log" 2>&1 &
           server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          trap 'kill "$server_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/open.log"' EXIT
+          url=""
           for i in $(seq 1 30); do
-            if curl -sf "http://127.0.0.1:8781/api/config" >/dev/null; then
-              echo "Lean install served a real request."
-              exit 0
-            fi
+            url=$(sed -n 's/^fused-render open at \(.*\)$/\1/p' "$RUNNER_TEMP/open.log" | head -1)
+            if [ -n "$url" ] && curl -sf "$url" >/dev/null; then break; fi
+            url=""
             sleep 1
           done
-          echo "::error::server never answered /api/config on a minimal install"
-          exit 1
+          if [ -z "$url" ]; then
+            echo "::error::fused-render open never served its embed page on the base install"
+            exit 1
+          fi
+          echo "Embed page served: $url"
+          body=$(python -c 'import json,sys; print(json.dumps({"py": "./double.py", "html": sys.argv[1], "params": {"n": "21"}}))' "$app/index.html")
+          reply=$(curl -sf -X POST -H 'Content-Type: application/json' -H 'X-Fused: 1' \
+            --data "$body" "http://127.0.0.1:8781/api/run")
+          echo "/api/run -> $reply"
+          python -c 'import json,sys; r=json.loads(sys.argv[1]); assert r.get("ok") and r["result"] == {"double": 42}, r' "$reply"
+          status=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8781/api/index/status")
+          if [ "$status" != "503" ]; then
+            echo "::error::/api/index/status answered $status on the base install, expected 503 missing_extra"
+            exit 1
+          fi
 
-  # Does the actual wheel that ships to users install and run with nothing but
-  # itself? (LEAN_WHEEL_SPEC.md item 4, modeled on the sibling openfused repo's
-  # `wheel` job, ci.yml:228.) The artifact-presence check catches a
-  # hatch_build.py regression that silently drops shell-dist/skills from the
-  # built wheel; the boot+curl step catches an install that LOOKS complete but
-  # can't actually serve (a missing runtime dep, a broken entry point). `cd`
+      - name: serve refuses on the base install and names [all]
+        shell: bash
+        run: |
+          out=$(python -m fused_render.cli serve --port 8783 --no-browser 2>&1) && code=0 || code=$?
+          echo "$out"
+          if [ "$code" = "0" ] || ! grep -q "fused-render\[all\]" <<<"$out"; then
+            echo "::error::serve did not refuse with the [all] install line on the base install"
+            exit 1
+          fi
+
+  # Does the actual wheel that ships to users install and serve? (LEAN_WHEEL_SPEC.md
+  # item 4, modeled on the sibling openfused repo's `wheel` job, ci.yml:228.)
+  # The artifact-presence check catches a hatch_build.py regression that
+  # silently drops shell-dist/skills from the built wheel; the boot+curl step
+  # catches an install that LOOKS complete but can't actually serve (a missing
+  # runtime dep, a broken entry point). It installs the wheel with `[all]`,
+  # which `serve` requires; minimal-install above covers the base install. `cd`
   # into a directory with no fused_render source before booting is
   # load-bearing, exactly as it is in the source repo: without it a broken
   # wheel could still boot by accidentally resolving fused_render off this
@@ -628,10 +657,10 @@ jobs:
             fi
           done
 
-      - name: Install the wheel into a throwaway venv
+      - name: Install the wheel with [all] into a throwaway venv
         run: |
           python -m venv /tmp/fr-wheel-venv
-          /tmp/fr-wheel-venv/bin/pip install "$(ls dist/*.whl)"
+          /tmp/fr-wheel-venv/bin/pip install "$(ls dist/*.whl)[all]"
 
       - name: Boot the installed wheel and hit it for real
         # Working directory /tmp, not the checkout: from here nothing can
@@ -729,10 +758,18 @@ jobs:
       # runs against the bundled .desktop file during the AppImage build smoke.
       # (No rclone install here: every test file below monkeypatches or never
       # execs rclone, and the build script downloads its own pinned binary.)
-      - name: Install desktop-file-utils
+      #
+      # libgirepository1.0-dev + libcairo2-dev + pkg-config + gcc are BUILD-time
+      # only: PyGObject (the [linux-desktop] extra, for the native windows) has
+      # no manylinux wheel and compiles from its sdist against these headers.
+      # Nothing from them is copied into the AppImage — WebKitGTK, GTK and
+      # libgirepository stay the user's own system libraries (the script asserts
+      # that), and a machine without them just opens browser tabs.
+      - name: Install desktop-file-utils and the PyGObject build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y desktop-file-utils
+          sudo apt-get install -y desktop-file-utils \
+            libgirepository1.0-dev libcairo2-dev pkg-config gcc
 
       - name: Install fused-render (dev + linux-desktop extras)
         run: pip install -e ".[dev,linux-desktop]"
@@ -758,6 +795,11 @@ jobs:
           tests/test_supervisor_linux_instance.py
           tests/test_supervisor_linux_paths.py
           tests/test_supervisor_linux_tray.py
+          tests/test_supervisor_linux_windows.py
+          tests/test_window_host_ipc.py
+          tests/test_window_host_logic.py
+          tests/test_linux_windows_hooks.py
+          tests/test_native_window_deps.py
           tests/test_supervisor_tray.py
           tests/test_file_associations.py
           tests/test_mounts_rclone_bin.py

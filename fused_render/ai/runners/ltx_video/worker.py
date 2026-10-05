@@ -246,7 +246,7 @@ def download(model_id):
 
     fetched, _gemma = worker_base.download_plan([
         (model_id, patterns, None),
-        (_GEMMA_MODEL_ID, None, None),
+        (_GEMMA_MODEL_ID, None, list(formats.MLX_IGNORE)),
     ])
     return fetched
 

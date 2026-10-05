@@ -112,7 +112,7 @@ def _cached_resolve(cache: dict, name: str, ttl, resolve):
     `ttl` is the lifetime in seconds, or a callable value->seconds when the
     lifetime depends on the resolved value (the GCS bearer token runs to its own
     expiry). A None result IS cached — the negative caching is load-bearing (it
-    bounds how often an absent [cloud-auth] / black-holed metadata endpoint is
+    bounds how often an absent [cloud] / black-holed metadata endpoint is
     re-probed). Double-checked: the cache is re-read after the lock is acquired
     so a racer that already resolved is reused, not re-resolved. resolve() runs
     WITHOUT _upstream_lock held, so it may call other _cached_resolve caches."""
@@ -430,7 +430,7 @@ def _gcs_bearer_token(name: str, cfg: dict | None):
     credential object, so a live token is reused for its whole life instead of
     forcing an OAuth round trip per _CRED_TTL_S window. The token cache runs to
     expiry minus _GCS_TOKEN_SLACK_S (re-resolved before GCS would reject it); a
-    None result (not credentialed / [cloud-auth] absent) is cached for
+    None result (not credentialed / [cloud] absent) is cached for
     _CRED_TTL_S. Returns a gcssign.Token or None. Single-flight per name via
     _cached_resolve — the one refresher requirement of finding 7 (the shared
     google-auth credential's refresh() runs under this per-name lock)."""
@@ -441,7 +441,7 @@ def _gcs_bearer_token(name: str, cfg: dict | None):
 
     def ttl(tok):
         if tok is None:
-            return _CRED_TTL_S  # None (not credentialed / no [cloud-auth])
+            return _CRED_TTL_S  # None (not credentialed / no [cloud])
         # token.expiry_epoch is wall-clock (time.time); map its remaining life
         # onto the monotonic clock _cached_resolve keys off. Runs to expiry-slack
         # (not clamped to _CRED_TTL_S) — the self-refreshing creds object picks
@@ -523,7 +523,7 @@ def _gcs_signable(name: str, cfg: dict | None) -> bool:
 
 def _gcs_signed_url(fs: str, rel: str) -> str | None:
     """A locally V4-signed GET URL for one object on an SA-key GCS remote, or
-    None when the remote isn't signer-capable (no SA key / [cloud-auth] absent /
+    None when the remote isn't signer-capable (no SA key / [cloud] absent /
     a transient key-read error) or carries no bucket. The signer rides the
     cached _gcs_signer (no per-object key re-parse); mints per object — gsign
     mode never caches links, same rationale as S3 sign mode."""

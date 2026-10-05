@@ -289,7 +289,6 @@ test("the snapshots panel draws one box per run, the position marked", () => {
   const r = mount(
     <Lists
       file="/repo/x.py"
-      agentDir="/tpl"
       recent={[]}
       artifacts={[]}
       snaps={{
@@ -319,7 +318,6 @@ test("a FAILED snapshots read keeps its place in the block, holding the retry", 
   const r = mount(
     <Lists
       file="/repo/x.py"
-      agentDir="/tpl"
       recent={[]}
       artifacts={[]}
       snaps={{
@@ -356,7 +354,6 @@ test("a Recent row carries the queue's two handles", () => {
   const r = mount(
     <Lists
       file="/repo/x.py"
-      agentDir="/tpl"
       recent={[chat("s1", { status: "queued", queue_position: 3 })]}
       artifacts={[]}
       onOpen={() => {}}
@@ -409,13 +406,13 @@ test("a waiting row and the run it becomes are ONE list item, flag on", async ()
   await setQueueFlag(true);
   try {
     const r = mount(
-      <Lists file="/repo/x.py" agentDir="/tpl" recent={[WAITING]} artifacts={[]} onOpen={() => {}} />,
+      <Lists file="/repo/x.py" recent={[WAITING]} artifacts={[]} onOpen={() => {}} />,
     );
     const before = rowKey(r.root.findByType(TaskRowItem));
     expect(before).toBe("TASK-052");
     act(() => {
       r.update(
-        <Lists file="/repo/x.py" agentDir="/tpl" recent={[RUNNING]} artifacts={[]} onOpen={() => {}} />,
+        <Lists file="/repo/x.py" recent={[RUNNING]} artifacts={[]} onOpen={() => {}} />,
       );
     });
     const rows = r.root.findAllByType(TaskRowItem);
@@ -443,7 +440,6 @@ test("a draft sharing the number keeps its own key, flag on", async () => {
     const r = mount(
       <Lists
         file="/repo/x.py"
-        agentDir="/tpl"
         recent={[draft, RUNNING]}
         artifacts={[]}
         onFillDraft={() => {}}
@@ -461,7 +457,6 @@ test("with the queue off every row is keyed on `task.key`, as before", () => {
   const r = mount(
     <Lists
       file="/repo/x.py"
-      agentDir="/tpl"
       recent={[WAITING, RUNNING]}
       artifacts={[]}
       onOpen={() => {}}
@@ -474,7 +469,6 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
   const r = mount(
     <Lists
       file="/repo/x.py"
-      agentDir="/tpl"
       recent={[chat("s1")]}
       artifacts={ART}
       snaps={{
@@ -501,7 +495,6 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
  *  that earns a bar at all. */
 const TABBED: Omit<ListsProps, "onOpen"> = {
   file: "/repo/x.py",
-  agentDir: "/tpl",
   recent: [chat("s1")],
   artifacts: ART,
   snaps: {
@@ -614,7 +607,7 @@ test("THE SELECTED TAB SURVIVES ENTER-AND-BACK (T:18260-18265)", () => {
   // could never hold this.
   act(() => first.unmount());
   mounted.splice(mounted.indexOf(first), 1);
-  expect(rememberedTab(listTabKey("/tpl", "/repo/x.py"))).toBe("artifacts");
+  expect(rememberedTab(listTabKey("/repo/x.py"))).toBe("artifacts");
 
   // Back.
   const back = mount(<Lists {...TABBED} onOpen={() => {}} />);
@@ -640,11 +633,9 @@ test("THE TAB MEMORY IS KEYED ON THE TARGET: another file answers for itself", (
   expect(tabs(a).find((t) => t.selected)?.name).toBe("artifacts");
 
   // Each key holds its own answer.
-  expect(rememberedTab(listTabKey("/tpl", "/repo/x.py"))).toBe("artifacts");
-  expect(rememberedTab(listTabKey("/tpl", "/repo/other.py"))).toBe("recent");
-  // The agent dir is half the key as well, so the same file under a second
-  // template folder is a second memory.
-  expect(rememberedTab(listTabKey("/tpl2", "/repo/x.py"))).toBe("recent");
+  expect(rememberedTab(listTabKey("/repo/x.py"))).toBe("artifacts");
+  expect(rememberedTab(listTabKey("/repo/other.py"))).toBe("recent");
+  // The file is the whole key: there is one agent now, so no folder half.
 });
 
 test("a target CHANGE under one mount reads that target's own tab back", () => {
@@ -677,7 +668,7 @@ test("A LOCKED BLOCK REFUSES THE ARROW WALK (P4-23)", () => {
   expect(press.prevented).toBe(false);
   expect(press.stopped).toBe(false);
   // And nothing was written to the page's memory either.
-  expect(rememberedTab(listTabKey("/tpl", "/repo/x.py"))).toBe("recent");
+  expect(rememberedTab(listTabKey("/repo/x.py"))).toBe("recent");
 
   // The lock lifting gives the gesture straight back.
   act(() => r.update(<Lists {...TABBED} onOpen={() => {}} />));

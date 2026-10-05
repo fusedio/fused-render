@@ -43,7 +43,7 @@ type Defaults = {
   recorded?: { model: string; effort: string };
 };
 
-/** Every `/api/run` and `/api/tasks/settings` body this render posted, newest
+/** Every `/api/claude/agent` and `/api/tasks/settings` body this render posted, newest
  *  last. Both go through one shim so a test can assert on the ORDER of a pick:
  *  it re-asks nothing and writes once. */
 function record(answer: Defaults = {},
@@ -52,7 +52,7 @@ function record(answer: Defaults = {},
   const seen: Record<string, unknown>[] = [];
   globalThis.fetch = ((url: string, init?: RequestInit) => {
     const target = String(url);
-    if ((target.startsWith("/api/run")
+    if ((target.startsWith("/api/claude/agent")
          || target.startsWith("/api/tasks/settings")) && init?.body) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       if (target.startsWith("/api/tasks/settings")) body.__settings = true;
@@ -76,13 +76,9 @@ function record(answer: Defaults = {},
       ok: true,
       status: 200,
       json: () => Promise.resolve({
-        ok: true,
-        result: {
-          model: answer.model ?? "",
-          effort: answer.effort ?? "",
-          recorded: answer.recorded ?? { model: "", effort: "" },
-        },
-        model: "", effort: "",
+        model: answer.model ?? "",
+        effort: answer.effort ?? "",
+        recorded: answer.recorded ?? { model: "", effort: "" },
       }),
     } as unknown as Response);
   }) as unknown as typeof fetch;
@@ -102,10 +98,8 @@ function wroteGlobal(seen: Record<string, unknown>[]) {
 
 /** The params the `defaults` call went out with, or null if it never went. */
 function askedWith(seen: Record<string, unknown>[]) {
-  const call = seen.find(
-    (b) => (b.params as { action?: string } | undefined)?.action === "defaults",
-  );
-  return call ? (call.params as Record<string, unknown>) : null;
+  const call = seen.find((b) => b.action === "defaults");
+  return call ?? null;
 }
 
 /** The live hook result, so a test can read the pills and move them. */
@@ -119,7 +113,7 @@ async function mount(params: ReturnType<typeof createMemoryParamsStore>,
   (await import("@platform/lib/claude-defaults")).resetClaudeDefaultsForTests();
   await act(async () => {
     const r = create(createElement(function Probe() {
-      box.pills = useComposerDefaults("/w/p/.fused/claude", "/w/p", params, hostSeeded);
+      box.pills = useComposerDefaults("/w/p", params, hostSeeded);
       return null;
     }));
     mounted.push(r);
@@ -162,11 +156,9 @@ test("a session that arrives LATE is asked about as soon as it exists", async ()
   await act(async () => { params.set({ session_id: "sess-late" }); });
   await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 
-  const calls = seen.filter(
-    (b) => (b.params as { action?: string } | undefined)?.action === "defaults",
-  );
+  const calls = seen.filter((b) => b.action === "defaults");
   expect(calls.length).toBe(2);
-  expect(calls[1].params).toMatchObject({ session_id: "sess-late" });
+  expect(calls[1]).toMatchObject({ session_id: "sess-late" });
 });
 
 
@@ -322,7 +314,7 @@ test("a pick made while the defaults read is in flight is not undone by its answ
         ok: true, status: 200, json: () => Promise.resolve({ ok: true }),
       } as unknown as Response);
     }
-    if (target.startsWith("/api/run")) {
+    if (target.startsWith("/api/claude/agent")) {
       // Held open until the test lets it land.
       return new Promise((resolve) => {
         answer = resolve;
@@ -345,9 +337,8 @@ test("a pick made while the defaults read is in flight is not undone by its answ
     answer!({
       ok: true, status: 200,
       json: () => Promise.resolve({
-        ok: true,
-        result: { model: "opus", effort: "max",
-                  recorded: { model: "opus", effort: "max" } },
+        model: "opus", effort: "max",
+        recorded: { model: "opus", effort: "max" },
       }),
     });
     await new Promise((done) => setTimeout(done, 0));
@@ -364,9 +355,8 @@ test("a pick made while the defaults read is in flight is not undone by its answ
 // page after 2-3 seconds it flips, same when I reload" (Akshil, 2026-09-19).
 //
 // The record above is the rank that outranks every other, and it used to arrive
-// on the SLOW read: `runAgent(agentDir, "defaults")` is a POST /api/run that
-// spawns agent.py as a subprocess to scan a transcript tail. Two to three
-// seconds — during which the pills had already painted the constant default or
+// on the SLOW read: `runAgent("defaults")` was a POST /api/run that spawned
+// agent.py as a subprocess to scan a transcript tail. Two to three seconds — during which the pills had already painted the constant default or
 // the URL seed, and then swapped it.
 //
 // So the record gets a door of its own: `GET /api/tasks/settings`, one JSON file
@@ -394,12 +384,9 @@ function reads(opts: {
     effort: opts.fast?.effort ?? "",
   });
   const slowBody = () => ({
-    ok: true,
-    result: {
-      model: opts.slow?.model ?? "",
-      effort: opts.slow?.effort ?? "",
-      recorded: opts.slow?.recorded ?? { model: "", effort: "" },
-    },
+    model: opts.slow?.model ?? "",
+    effort: opts.slow?.effort ?? "",
+    recorded: opts.slow?.recorded ?? { model: "", effort: "" },
   });
   globalThis.fetch = ((url: string, init?: RequestInit) => {
     const target = String(url);
@@ -413,7 +400,7 @@ function reads(opts: {
         letFast = () => done(answer(fastBody()));
       });
     }
-    if (target.startsWith("/api/run")) {
+    if (target.startsWith("/api/claude/agent")) {
       if (!opts.holdSlow) return Promise.resolve(answer(slowBody()));
       return new Promise<Response>((done) => {
         letSlow = () => done(answer(slowBody()));
@@ -547,7 +534,7 @@ test("a field settled by a param is reported settled on its own, while the other
         json: () => Promise.resolve({ model: "", effort: "" }),
       } as unknown as Response);
     }
-    if (target.startsWith("/api/run") && init?.body) {
+    if (target.startsWith("/api/claude/agent") && init?.body) {
       return new Promise((resolve) => { answerSlow = resolve; });
     }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) } as unknown as Response);
@@ -579,7 +566,7 @@ test("switching conversation clears the previous one's record and detection befo
         ok: true, status: 200, json: () => Promise.resolve(rec),
       } as unknown as Response);
     }
-    if (target.startsWith("/api/run") && init?.body) {
+    if (target.startsWith("/api/claude/agent") && init?.body) {
       return new Promise((resolve) => { slowPending.push(resolve); });
     }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) } as unknown as Response);
