@@ -45,6 +45,7 @@ from fused_render.server.common import (
 from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.app_api import router as app_api_router
 from fused_render.server.routers.background_apps import router as background_apps_router
+from fused_render.server.routers.claude_agent import router as claude_agent_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_health import router as claude_health_router
@@ -151,7 +152,7 @@ def export_app_env() -> None:
     skill_plugin.export_skill_plugin_env()
     # And the `workbench` plugin's canvas/UDF skills, if the app's own clone of
     # them is already on disk: a SECOND --plugin-dir, handed to CANVAS-clone
-    # sessions only (the gate is in templates/claude/agent.py), so a canvas
+    # sessions only (the gate is in claude_agent/agent.py), so a canvas
     # clone's CLAUDE.md can name the canvas.toml format reference without the
     # app ever telling the user to go install something.
     #
@@ -896,6 +897,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
+    # The chat's backend, in process (routers/claude_agent.py): agent.py's
+    # actions, the app-entry lookup and the artifacts reads that used to run
+    # as one /api/run interpreter per call. X-Fused-guarded like /api/run.
+    app.include_router(claude_agent_router)
     # Artifacts published from those sessions, recovered from the same
     # transcripts (routers/claude_artifacts.py) — read-only, no auth guard.
     app.include_router(claude_artifacts_router)

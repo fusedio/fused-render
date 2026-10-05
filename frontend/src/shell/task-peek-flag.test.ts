@@ -179,9 +179,6 @@ describe("the markup adds nothing when the feature is off", () => {
     // …and the OFF shells share no name with the peek's host, so no rule reaches them.
     expect(FRAME).toContain('<div ref={frameRef} className="peek-shell-frame">');
     expect(read("AppPage.tsx")).toContain('const peekable = peekOn === true && tab === "tasks";');
-    // Which also means no param-boundary claim from this page: the claim lives
-    // in TaskPeek, and TaskPeek is inside the branch above.
-    expect(read("TaskPeek.tsx")).toContain("useParamBoundary(nativeChat === false && !!src)");
   });
 
   it("keeps the nav epoch's ignore list empty", () => {
@@ -451,11 +448,7 @@ describe("the peek header", () => {
     // navigation it has always been.
     expect(VIEWS).toContain("if (openPeek(task.key, { anchor: m.anchor || null })) {");
     expect(VIEWS).toContain("navigateUrl(to);");
-    // The anchor reaches BOTH chats: the legacy template takes it on its URL,
-    // the native one as a seeded param.
-    expect(read("../apps/claude/legacy-src.ts")).toContain(
-      'msgAnchor ? `&msg=${encodeURIComponent(msgAnchor)}` : ""',
-    );
+    // The anchor reaches the chat as a seeded param.
     expect(HEAD).toContain("{...(anchor ? { msgAnchor: anchor } : {})}");
     expect(read("../apps/claude/ChatMount.tsx")).toContain(
       'if (msgAnchor && memory.get("msg") !== msgAnchor) memory.set({ msg: msgAnchor });',
@@ -880,11 +873,6 @@ describe("the peek's run settings", () => {
     // now, and it exists from the first spawn rather than from the first
     // transcript row.
     expect(flat).toContain("model={task.model} effort={task.effort}");
-  });
-
-  it("…and does the same to the FLAG-OFF frame's URL, so the branches agree", () => {
-    // The legacy template reads the same two params (`curModel`/`curEffort`).
-    expect(flat).toContain("{ model: task.model, effort: task.effort }),");
   });
 
   it("does not DRAW them — the peek is about a task, not about the tool", () => {

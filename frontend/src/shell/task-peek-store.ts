@@ -399,8 +399,8 @@ export function frameClickCloses(hit: Element | null): boolean {
  *     a dialog still naming the old one. A modal is modal — nothing outside it
  *     may act while it is up — and this mirrors `PEEK_FRAME_KEEPS_OPEN`, which
  *     already spares `.modal-dialog` from the frame's click-to-close;
- *   * an IFRAME that holds focus: the app preview and the legacy chat are other
- *     documents and the arrows there are the app's. The documents themselves
+ *   * an IFRAME that holds focus: the app preview is another document and the
+ *     arrows there are the app's. The documents themselves
  *     are handled at the call site (a press that did not happen in the top
  *     document is not ours), and this is the case where the element holding
  *     focus in OUR document is the frame.
@@ -425,9 +425,9 @@ export function arrowShouldWalk(target: EventTarget | null): boolean {
   // the element's name — and every dialog, by all three of the marks the shared
   // `Modal` chassis puts on one (`platform/ui/modal/Modal`), so a dialog that
   // wears only one of them is still covered.
-  // The native chat renders in THIS document (the legacy one is behind the
-  // frame guard above), and ↑/↓ over its transcript belong to the transcript's
-  // scroll, not to the task list (Bugbot, 3b720ee0b). The header keeps walking.
+  // The chat renders in THIS document, and ↑/↓ over its transcript belong to
+  // the transcript's scroll, not to the task list (Bugbot, 3b720ee0b). The
+  // header keeps walking.
   return (
     el.closest(
       '.context-menu, .tasks-pop, [role="menu"], [role="listbox"], ' +

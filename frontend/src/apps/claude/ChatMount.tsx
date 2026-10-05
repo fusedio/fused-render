@@ -1,28 +1,12 @@
-// THE FLAG SWITCH every chat embed site calls: the native `<ClaudeChat/>` when
-// `native_chat_enabled` is on, else the legacy `<ChatFrame/>` iframe EXACTLY as
-// today — same `src`, same class, same title, same `frameRef`, same `onLoad`.
-// Props are the union of what the 4 ChatFrame sites and the 2 plain-iframe sites
-// pass (00 §1a/§1b); the URL shapes themselves live in `legacy-src.ts` behind a
-// byte-for-byte parity test.
-//
-// WHY THE HOST STILL BUILDS `legacySrc` rather than this component building it:
-// the two wrappers around it — `withNoFocus` and `revSrc` — are facts about the
-// HOST (a thumbnail shell, a git revision being previewed), and the sites that
-// need them apply them at their own level today. Threading them through here
-// would buy nothing and would make the parity guard argue about wrappers
-// instead of about addresses.
-import {
-  Component,
-  lazy,
-  Suspense,
-  useEffect,
-  useState,
-  type MutableRefObject,
-  type ReactNode,
-} from "react";
-import { ChatFrame, ChatFramePlaceholder } from "@platform/ui/ChatFrame";
+// THE ONE CHAT MOUNT every embed site calls (the tasks cards wall and its
+// popup, the explorer sidebar and content pane, the folder listing pane, the
+// canvases workspace): the native `<ClaudeChat/>` behind a `lazy` boundary,
+// with a per-mount memory params store for the hosts that are not the page's
+// own URL.
+import { Component, lazy, Suspense, useEffect, useState, type MutableRefObject, type ReactNode } from "react";
+import { TroubleCard } from "@platform/ui/TroubleCard";
+import { ChatFramePlaceholder } from "./ChatPlaceholder";
 import type { ClaudeAsk } from "./ClaudeChat";
-import { useNativeChatFlag } from "./feature-flag";
 import {
   createMemoryParamsStore,
   type ParamsSnapshot,
@@ -32,28 +16,13 @@ import {
 /**
  * THE CODE-SPLIT BOUNDARY, and the reason it is here rather than anywhere else:
  * this is the one place that knows whether a chat is going to be rendered at
- * all. A static import made every host that merely CAN frame a chat — the
- * explorer, the tasks wall, the canvases workspace — bundle the whole native
- * chat and its markdown stack (marked + DOMPurify + highlight.js, 75 kB gz)
- * into the shell's entry graph, flag off, for routes that never mount one.
- *
- * The tri-state flag already has to hold a placeholder over this box while the
- * prefs read is in flight (feature-flag.ts), so the wait a `lazy` chunk needs
- * is a wait that already exists: `Suspense` falls back to the same skeleton, and
- * the reader sees ONE wait either way.
+ * all. A static import made every host that merely CAN show a chat — the
+ * explorer, the tasks wall, the canvases workspace — bundle the whole chat and
+ * its markdown stack (marked + DOMPurify + highlight.js, 75 kB gz) into the
+ * shell's entry graph, for routes that never mount one. `Suspense` covers the
+ * chunk load with the chat's own skeleton.
  */
 const ClaudeChat = lazy(() => import("./ClaudeChat"));
-
-/** The one cover for both waits: the flag read, and the chunk. The class is
- *  passed ONLY where this placeholder stands in for the legacy FRAME itself —
- *  the flag-unknown return, where no branch has been chosen yet and the box has
- *  to hold a frame's geometry. Inside `.chat-mount` it must not be: the frame
- *  classes are frame geometry (`.task-card-frame` lays out at 133.33% and draws
- *  at `scale(0.75)`), and a cover wearing them inside the native box is scaled
- *  twice and pops when the real chat lands. */
-const placeholderFor = (className?: string) => (
-  <ChatFramePlaceholder {...(className ? { className } : {})} />
-);
 
 /**
  * THE CHUNK'S OWN FAILURE, which `Suspense` has no opinion about: a `lazy`
@@ -63,26 +32,84 @@ const placeholderFor = (className?: string) => (
  * across a deploy asks for a hashed chunk that is no longer on disk, which is
  * exactly the case `__BUILD_VERSION__` exists for.
  *
- * So: two screens, and the second one is the LEGACY FRAME. The template is
- * still on disk and still serves this conversation, so falling back to it is
- * honest degradation rather than an apology — the same node the flag-off branch
- * renders, geometry class and all, built by the same `legacyBranch`.
+ * So the box says what happened and offers the one thing that fixes it — a
+ * reload fetches the current build's chunk. Plain platform UI, never anything
+ * from the chunk that just failed to load.
+ *
+ * It also catches every OTHER render-time throw from inside the chat (a bug,
+ * not a deploy). Those must not wear the deploy-skew copy — "older copy of the
+ * app" sends the reader hunting for an update that does not exist — so only a
+ * message that LOOKS like a chunk load (`isChunkLoadError`) gets it; the rest
+ * get a plain "the chat hit an error" card with the message. Reload is still
+ * the only recovery the boundary has for either, and the copy says so.
  */
+/** The messages a failed dynamic import rejects with: Chromium, WebKit, and
+ *  webpack/vite-style chunk loaders' own names for it. */
+const CHUNK_LOAD = /Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk/i;
+
+/** Did this render-time throw come from the chat's chunk failing to load? */
+export function isChunkLoadError(message: string): boolean {
+  return CHUNK_LOAD.test(message);
+}
+
 export class ChatChunkBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode },
-  { failed: boolean }
+  { children: ReactNode },
+  { error: string | null }
 > {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
+  state: { error: string | null } = { error: null };
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
   }
   componentDidCatch(error: unknown) {
-    // Not a toast: the fallback IS the chat, so nothing is lost for the reader
-    // to act on — but a 404'd chunk is a deploy fact worth having in a console.
-    console.error("native chat chunk failed to load; using the legacy frame", error);
+    console.error("chat failed to render", error);
   }
   render() {
-    return <>{this.state.failed ? this.props.fallback : this.props.children}</>;
+    if (this.state.error === null) return <>{this.props.children}</>;
+    const chunk = isChunkLoadError(this.state.error);
+    return (
+      // Inline, not chat.css: that sheet ships in the chunk that failed.
+      <div
+        className="chat-mount-failed"
+        style={{
+          flex: "1 1 auto",
+          width: "100%",
+          height: "100%",
+          minWidth: 0,
+          minHeight: 0,
+          overflow: "auto",
+          padding: 16,
+          boxSizing: "border-box",
+        }}
+      >
+        {chunk ? (
+          <TroubleCard
+            what="loading the chat"
+            error={this.state.error}
+            title="The chat didn't load"
+            explain={
+              "This window is running an older copy of the app than the one on " +
+              "disk, or the app went away while it loaded. Reloading the page " +
+              "fetches the current one."
+            }
+            onRetry={() => location.reload()}
+            retryLabel="Reload the page"
+          />
+        ) : (
+          <TroubleCard
+            what="using the chat"
+            error={this.state.error || "the chat failed to render"}
+            title="The chat hit an error"
+            explain={
+              "Something inside the chat broke while it was drawing. Reloading " +
+              "the page is the only way to bring it back. The conversation " +
+              "itself is saved on disk and is not lost."
+            }
+            onRetry={() => location.reload()}
+            retryLabel="Reload the page"
+          />
+        )}
+      </div>
+    );
   }
 }
 
@@ -119,22 +146,6 @@ export function useHostIds(
   useEffect(() => {
     if (msgAnchor && memory.get("msg") !== msgAnchor) memory.set({ msg: msgAnchor });
   }, [memory, msgAnchor]);
-}
-
-/** The flag-off element, and the boundary's fallback: one builder so the two
- *  cannot drift. Exported for the test that pins the fallback — the boundary is
- *  only reachable from a chunk that fails to load, which no host can stage. */
-export function legacyBranch(props: ChatMountProps) {
-  if (props.legacy !== undefined) return <>{props.legacy}</>;
-  return (
-    <ChatFrame
-      src={props.legacySrc}
-      title={props.title ?? "Claude"}
-      className={props.className}
-      {...(props.legacyFrameRef ? { frameRef: props.legacyFrameRef } : {})}
-      onLoad={props.onReady}
-    />
-  );
 }
 
 export interface ChatMountProps {
@@ -195,50 +206,20 @@ export interface ChatMountProps {
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
-   *  tab — what the iframe's `_fusedParamBoundary` used to buy (00 §1e). */
+   *  tab, whose page URL is not this chat's (00 §1e). */
   paramsSource: "url" | "memory";
-  /** The `/render?path=…` URL the legacy iframe loads today (`legacy-src.ts`).
-   *  Used to build the flag-off `<ChatFrame>` for the four sites that had one. */
-  legacySrc: string;
   /**
-   * THE FLAG-OFF ELEMENT, VERBATIM — for the two sites that framed the template
-   * with a PLAIN `<iframe>` rather than a `<ChatFrame>` (the canvases workspace
-   * and the explorer content pane, 00 §1b). Those two carry attributes no chat
-   * cover ever had — `allow="display-capture"`, the annotate and revision marks,
-   * the held-frame swap's `is-shown` class — and rebuilding them from props here
-   * would be five more props and a worse guarantee than handing the element over.
-   * When given it wins outright, so the flag off is the same node it always was.
-   */
-  legacy?: ReactNode;
-  /**
-   * The LEGACY iframe's class (`.task-card-frame`, `.task-peek-frame`,
-   * `.preview-side-frame`, `.pane-frame`) — and legacy only, deliberately. Those
-   * rules are geometry for a FRAME: `.task-card-frame` lays out at 133.33% and
-   * draws at `scale(0.75)`, which is precisely the trick the native compact
-   * variant replaces with a type scale (styles/chat.css). Stamping it on the
-   * native mount would apply both and shrink the card twice.
-   */
-  className?: string;
-  /**
-   * A class for the NATIVE mount's own box, where the host needs one that is
-   * not frame geometry. Site 6 is the case: the explorer content pane's
+   * A class for the mount's own box, where the host needs one. Site 6 is the
+   * case: the explorer content pane's
    * held-frame swap decides which of two mounted panes is on screen with
    * `.preview-frame.is-shown`, and that has to ride whatever renders there.
    */
   mountClassName?: string;
-  title?: string;
-  /** The legacy frame's `load`; natively, the transcript's first paint — which
-   *  is what `dataset.chatReady` used to say (00 §1e, "Ready signal"). */
+  /** The transcript's first paint (00 §1e, "Ready signal"). */
   onReady?: () => void;
-  /** LEGACY ONLY, and named for it: TaskPeek's Esc listener and `Modal
-   *  initialFocus` both wanted the iframe ELEMENT. Natively those are
-   *  `onEscape` and `focusRef`, and there is no iframe to hand back — so this
-   *  stays null with the flag on rather than a host quietly reading a ref that
-   *  the native branch was never going to fill. */
-  legacyFrameRef?: MutableRefObject<HTMLIFrameElement | null>;
-  /** Natively: Esc with nothing of the chat's own open — TaskPeek's close. */
+  /** Esc with nothing of the chat's own open — TaskPeek's close. */
   onEscape?: () => void;
-  /** Natively: the composer's textarea, for `Modal initialFocus`. */
+  /** The composer's textarea, for `Modal initialFocus`. */
   focusRef?: MutableRefObject<HTMLTextAreaElement | null>;
   /** PR3's annotate target — the sibling workbench iframe (canvas). */
   annotateTarget?: () => HTMLIFrameElement | null;
@@ -258,7 +239,6 @@ export interface ChatMountProps {
 }
 
 export function ChatMount(props: ChatMountProps) {
-  const native = useNativeChatFlag();
   // ONE MEMORY STORE PER MOUNT, and per mount is the whole of it: the store
   // holds the live `run` / `permission` / `paneview` of the conversation on
   // screen, and re-seating it re-creates the controller under a running turn.
@@ -280,18 +260,10 @@ export function ChatMount(props: ChatMountProps) {
   });
   useHostIds(memory, props.sessionId, props.runId, props.msgAnchor);
 
-  // NEITHER BRANCH while the flag read is in flight. A `false` here is not
-  // "legacy": it is "we have not asked yet", and mounting the legacy template
-  // on it boots a whole `/render` document that drains the pending ask and
-  // starts a poll before being thrown away (feature-flag.ts's header). The
-  // placeholder is the same skeleton `ChatFrame` holds over a booting frame, so
-  // the wait the reader sees is one wait either way.
-  if (native === null) return placeholderFor(props.className);
-  if (!native) return legacyBranch(props);
   return (
-   <ChatChunkBoundary fallback={legacyBranch(props)}>
+   <ChatChunkBoundary>
     <div className={props.mountClassName ? `chat-mount ${props.mountClassName}` : "chat-mount"}>
-     <Suspense fallback={placeholderFor()}>
+     <Suspense fallback={<ChatFramePlaceholder />}>
       <ClaudeChat
         file={props.file}
         chatOnly={!!props.chatOnly}

@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.venv
 .venv/
 venv/
 # pip-managed project (pip install -e ".[dev]"); a uv.lock is only ever a

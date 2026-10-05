@@ -25,7 +25,7 @@ from fused_render import claude_spawn, schedule, tasks_store
 def _load_agent():
     """The template's own reader, loaded the way the other template tests load
     it — it is not importable as a package module."""
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    path = os.path.join("fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent_pane", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

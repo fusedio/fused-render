@@ -75,7 +75,7 @@ immediately without showing a plan.
   `commit` (:302-352, scoped add -A + commit). Callers: `server/routers/apps.py:1389`,
   `server/fs_mutate.py:997` (delete), `:1406-1412` (move/restore).
   Also the shared `<workspace>/local` repo (:237-256) — often has no remote → skip silently.
-- `fused_render/templates/claude/agent.py` — `_commit_turn` (:2818), invoked from the
+- `fused_render/claude_agent/agent.py` — `_commit_turn` (:2818), invoked from the
   sweep at :5313-5325. Note: the app's CLAUDE.md also tells Claude to commit its own
   work during a turn; the sweep runs after a clean turn — a post-turn sync should push
   whatever is ahead on the default branch, not only the sweep commit.
@@ -108,9 +108,9 @@ immediately without showing a plan.
 - `frontend/src/platform/lib/pending-claude-ask.ts` — 60 s TTL ask hand-over.
 
 **Claude chat plan/confirm support (for the confirm-first fix):**
-- `fused_render/templates/claude/agent.py:2326-2329` (`--permission-prompt-tool` un-gates
+- `fused_render/claude_agent/agent.py:2326-2329` (`--permission-prompt-tool` un-gates
   `AskUserQuestion` / `ExitPlanMode`), `PERMISSION_MODES` :250-278, `PLAN_TOOL` :310.
-- `fused_render/templates/claude/permission_server.py:45-65,112`.
+- `fused_render/claude_agent/permission_server.py:45-65,112`.
 - `frontend/src/apps/claude/ui/PlanCard.tsx`; ask path `frontend/src/apps/claude/ClaudeChat.tsx:1738-1919`
   (`sendMessage(ask)` :1918) — ask is text-only today; decide whether to carry a permission
   mode (e.g. start in `plan`) or rely on prompt instructions. Record the choice below.

@@ -26,7 +26,6 @@ import { ATTACH_API, type AttachApi } from "./attachApi";
 export interface UseAttachmentsOptions {
   /** The real pipeline by default; replaced whole in tests (`ATTACH_API`). */
   api?: AttachApi;
-  agentDir: string;
   /** The pane's iframe, read at gesture time. */
   frame(): HTMLIFrameElement | null;
   /** What the shutter flashes over — the frame's own box (T:11233 uses the
@@ -35,7 +34,7 @@ export interface UseAttachmentsOptions {
   /** "preview" / "app": the word the wire block uses for the pane. */
   paneNoun: string;
   /** The shots dir, when a caller knows it. Left out, the pipeline's own
-   *  resolved answer for `agentDir` is used — either way it is FILTERED OUT of
+   *  resolved answer is used — either way it is FILTERED OUT of
    *  the Read rules, because the spawn line pre-approves it unconditionally and
    *  a duplicate rule would grow on every turn (T:11698).  */
   shotsDir?: string;
@@ -110,7 +109,7 @@ function errText(err: unknown): string {
 }
 
 export function useAttachments(opts: UseAttachmentsOptions): Attachments {
-  const { api = ATTACH_API, agentDir, frame, flashHost, paneNoun, shotsDir } = opts;
+  const { api = ATTACH_API, frame, flashHost, paneNoun, shotsDir } = opts;
   const [items, setItems] = useState<Attachment[]>([]);
   const [capturing, setCapturing] = useState(false);
   /**
@@ -195,7 +194,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       // a document this page cannot open (Bugbot, PR #1064).
       const target = frame();
       const began = epoch.current;
-      const shot = await api.attachPane(agentDir, target, {
+      const shot = await api.attachPane(target, {
         xo: frameIsCrossOrigin(target),
       });
       if (!alive.current || epoch.current !== began) {
@@ -239,7 +238,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       busy.current = false;
       if (alive.current) setCapturing(false);
     }
-  }, [api, agentDir, flashHost, frame, commit]);
+  }, [api, flashHost, frame, commit]);
 
   /**
    * A PLACEHOLDER PER FILE, replaced as its bytes land. The pipeline yields
@@ -266,7 +265,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
        *  chips left standing get to say. */
       let broke: unknown = null;
       try {
-        for await (const att of api.attachFiles(agentDir, [...files])) {
+        for await (const att of api.attachFiles([...files])) {
           const id = ids[i++];
           if (!id) break;
           if (!alive.current) {
@@ -315,7 +314,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         }
       }
     },
-    [api, agentDir, commit],
+    [api, commit],
   );
 
   const addPaths = useCallback(
@@ -323,7 +322,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       const noop = () => {};
       if (!paths.length) return noop;
       const began = epoch.current;
-      const added = await api.attachPaths(agentDir, [...paths]);
+      const added = await api.attachPaths([...paths]);
       if (!alive.current || epoch.current !== began) {
         // Gone, or emptied for a message already sent (`discard`) — which is
         // also how a peek's draft re-seed racing a Board drop is kept from
@@ -349,7 +348,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         commit((prev) => prev.filter((s) => !ids.has(s.id)));
       };
     },
-    [api, agentDir, commit],
+    [api, commit],
   );
 
   const remove = useCallback(
@@ -384,13 +383,13 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         blocks: block ? [block] : [],
         readDirs: shotsDir
           ? api.readDirs(sending, shotsDir)
-          : api.readDirsFor(agentDir, sending),
+          : api.readDirsFor(sending),
         receipts: sending.map((s) => api.receiptFor(s)),
         // The tray's own only: `lead` is nobody's to give back.
         items: mine,
       };
     },
-    [api, agentDir, paneNoun, shotsDir, commit],
+    [api, paneNoun, shotsDir, commit],
   );
 
   const giveBack = useCallback(

@@ -866,7 +866,7 @@ def test_the_head_keeps_scanning_past_a_machinery_record(projects_dir):
                                          "text": extra["text"]}]}}) + "\n")
     # Not the notification, and not the SUBAGENT's prompt either — `isSidechain`
     # is a prompt this module writes for a subagent, never one the user typed,
-    # and its sibling reader in templates/claude/agent.py has always skipped it.
+    # and its sibling reader in claude_agent/agent.py has always skipped it.
     assert tasks_store.head(str(path))[2] == "fix the parser"
 
 

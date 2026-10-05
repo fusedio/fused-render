@@ -17,7 +17,7 @@ as available and found out otherwise on click.
 `server/ai.py` imports its candidate tuples from here rather than keeping a
 second copy — that divergence is what let a CLI in `~/.bun/bin` produce a
 working Claude-config tab and an `ai_unavailable` from `fused.ai()` on the same
-machine, in the same second. `templates/claude/agent.py` keeps its own copy on
+machine, in the same second. `claude_agent/agent.py` keeps its own copy on
 purpose (a template is standalone user-forkable code and may not import the app,
 D166); `tests/test_claude_health.py` pins the two lists together so they cannot
 drift silently.

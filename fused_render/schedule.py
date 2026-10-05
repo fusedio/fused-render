@@ -911,12 +911,12 @@ def shots_dir() -> str:
 
 
 #: The claude page's wire tag for a message's attachments — a SECOND COPY of
-#: `PANE_SHOT_TAG` in fused_render/templates/claude/template.html, which is the
-#: canonical one. It cannot be imported in either direction (a template may not
-#: import fused_render, SPEC PY-15 / D166), and it is already spelled a third
+#: `PANE_SHOT_TAG` in frontend/src/apps/claude/protocol/wire.ts, which is the
+#: canonical one. It cannot be imported (TypeScript on one side, Python on the
+#: other), and it is already spelled a third
 #: time in `tasks_store._MACHINERY_STRIP` and a fourth in `agent.py`'s. The
 #: parity test in tests/test_schedule_images.py reads the page's constant out of
-#: template.html and compares this one to it.
+#: frontend/src/apps/claude/protocol/wire.ts and compares this one to it.
 _PANE_SHOT_TAG = "pane-shot"
 
 
@@ -2636,7 +2636,7 @@ def _attachments_block(entry: dict) -> str:
     opening the viewer). Same files, two presentations, and the one the user
     could not read was the one they never chose.
 
-    The block the chat writes is the block that renders. `template.html` reads
+    The block the chat writes is the block that renders. The React chat reads
     it back on restore (`paneShotIn` → `shotRestoreReceipt`) and every reader of
     a transcript already strips it from a row title (`tasks_store`,
     `agent.py::_strip_machinery`, `sessionTitle`), because `pane-shot` has been
@@ -2652,8 +2652,9 @@ def _attachments_block(entry: dict) -> str:
     not import fused_render and fused_render may not import a template (SPEC
     PY-15 / D166), so `_PANE_SHOT_TAG` is a second copy of the page's
     `PANE_SHOT_TAG` and the entries are hand-written to the shape `paneShotIn`
-    parses. A parity test reads the page's constant out of template.html and
-    compares (D146: the duplicated rule gets a test, not a comment).
+    parses. A parity test reads the page's constant out of
+    frontend/src/apps/claude/protocol/wire.ts and compares (D146: the
+    duplicated rule gets a test, not a comment).
 
     What the payload leaves out, and why that is safe: `viewNote` is "" (there
     is nothing this picture fails to show — nobody cropped it), and there is no
@@ -2706,7 +2707,7 @@ def _composed(entry: dict) -> str:
     """Everything the scheduler prepends to the user's words, in the claude
     page's own reading order — state block, attachments block, message.
 
-    The inverse of `composeOutgoing` in template.html, and the order is that
+    The inverse of `composeOutgoing` in the React chat (protocol/wire.ts), and the order is that
     function's: the machinery first, the words last. It matters for more than
     tidiness — `tasks_store`'s and `agent.py`'s strips only peel a LEADING
     block, so a block wedged after the message would be read as something the
@@ -2897,12 +2898,11 @@ def _send(entry: dict) -> None:
     # SECOND, placeholder row beside it (`tasks._collect`) for the same message,
     # and the reader would watch two rows collapse into one.
     #
-    # (`_start` cannot mark on its own behalf either, whoever calls it: it runs
-    # in `claude_spawn.SESSION_HELPER`'s bare python, or in the executor's
-    # worker for a page send — never in this process, and a template may not
-    # import `fused_render` at all. The mark is always made by the server-side
-    # caller that knows it wants one, which for a page send is the page, through
-    # `POST /api/tasks/running`.)
+    # (`_start` cannot mark on its own behalf either, whoever calls it: agent.py
+    # never imports `fused_render` — `session_host.py` loads it by path in a
+    # child that cannot import the package. The mark is always made by the
+    # server-side caller that knows it wants one, which for a page send is the
+    # page, through `POST /api/tasks/running`.)
     # Registered BEFORE the store says `sent`, and that order is the point: the
     # sweep treats a `sent` entry with nothing watching it as abandoned, so a
     # window where this one is already `sent` but not yet registered is a window in

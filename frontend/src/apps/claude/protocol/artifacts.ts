@@ -80,14 +80,11 @@ function readRows(out: { artifacts?: unknown[] }): Artifact[] {
  *  the landing page (boot and Back), not once per page life: a turn that just
  *  published a page must be able to leave it behind here. */
 export async function loadArtifacts(
-  agentDir: string,
   file: string | null,
 ): Promise<Artifact[]> {
   try {
     const out = await runArtifacts(
-      agentDir,
       { action: "list", file: file ?? "" },
-      { key: null },
     );
     if (out.error) throw new Error(out.error);
     return readRows(out);
@@ -105,16 +102,13 @@ export async function loadArtifacts(
  *  because a publish that arrives twice must be idempotent anyway (a redeploy
  *  reports the same url again). */
 export async function pollArtifacts(
-  agentDir: string,
   file: string | null,
   sessionId: string,
 ): Promise<Artifact[]> {
   if (!sessionId) return [];
   try {
     const out = await runArtifacts(
-      agentDir,
       { action: "live", session_id: sessionId, file: file ?? "" },
-      { key: null },
     );
     return readRows(out);
   } catch (err) {

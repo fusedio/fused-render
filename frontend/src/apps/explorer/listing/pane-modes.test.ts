@@ -167,9 +167,9 @@ describe("the pane never previews a folder as its app page", () => {
   test("the pane's chat-only rule still guards its one claude surface", () => {
     // D460 deleted the row-mode embed entirely (the pane no longer previews a
     // selected row's own templates at all), so the `claude` COMPANION iframe
-    // is the only caller left — one query literal, spelled once as a constant,
-    // one call asking whether to send it.
-    expect(src.match(/&chat_only=1/g)?.length).toBe(1);
+    // is the only caller left — one call asking whether the chat goes
+    // chat-only. The chat is a mount, not a URL, so no query literal remains.
+    expect(src).not.toContain("&chat_only=1");
     expect(src.match(/paneChatOnly\(/g)?.length).toBe(1);
   });
 

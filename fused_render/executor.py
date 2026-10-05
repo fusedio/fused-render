@@ -17,9 +17,11 @@ Two execution paths (D72):
   preview/pagination/slider tick on a file under a protected folder — was the
   bug this split fixes; it also drops the per-call pandas/pyarrow re-import
   cost, since those stay warm in the server. Other shipped helpers under
-  `templates/` (the claude/ chat agent, the geo tile servers/browsers, …) are
-  deliberately NOT allowlisted — they can be slow or long-running, so they take
-  the subprocess path and keep its timeout + isolation.
+  `templates/` (the geo tile servers/browsers, …) are deliberately NOT
+  allowlisted — they can be slow or long-running, so they take the subprocess
+  path and keep its timeout + isolation. (The Claude chat agent no longer comes
+  through here at all: it is a server module with its own router,
+  `server/routers/claude_agent.py`.)
 """
 import importlib.util
 import json
@@ -50,8 +52,8 @@ DEFAULT_TIMEOUT = 60.0
 # bounded, self-contained, and never imports or executes user code — the
 # data-page readers, the two grid writers, plus the api inspector (which only
 # `ast`-parses). Realpaths, so a symlink can't smuggle another path in.
-# Everything else under templates/ (the claude/ chat agent, the geo/h3/las/
-# vector/zarr browsers + tile servers, converters, …) is NOT here and runs on
+# Everything else under templates/ (the geo/h3/las/vector/zarr browsers + tile
+# servers, converters, …) is NOT here and runs on
 # the subprocess path, keeping its 30 s timeout and process isolation — critical
 # for the slow/long-running ones. This is an allowlist, not a "path under
 # templates/" check, precisely so that a new shipped helper defaults to the safe

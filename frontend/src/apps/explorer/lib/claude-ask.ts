@@ -1,8 +1,8 @@
-// The host side of the "Fix with AI" pull (review #804 round 2). Both
-// Preview.tsx (the file sidebar) and Listing.tsx (the folder pane) install
-// `window._fusedClaudeAskTake` — the claude template's own boot calls it
-// through the runtime's ancestor hop (static/runtime.js `pullClaudeAsk`) to
-// collect whatever prompt is waiting, if any.
+// The "Fix with AI" ask ledger (review #804 round 2). Both Preview.tsx (the
+// file sidebar) and Listing.tsx (the folder pane) keep the prompt the git
+// template handed over (`window._fusedClaudeAsk`, static/runtime.js
+// `noteAskClaude`) and read it out of here once per ask, handing the text to
+// the chat they mount as `initialAsk`.
 //
 // This replaces the round-1 design: a `_fused_ask` query param baked into the
 // claude iframe's `src`, kept "one-shot" by a cache keyed on "has the
@@ -18,9 +18,9 @@
 // prompt is plain in-memory state on the host, and `takeClaudeAsk` is the
 // one and only way to read it — reading it IS clearing it, in the same step,
 // so there is no separate "and now remember this was already sent" bookkeeping
-// to get wrong. Whatever frame actually boots and calls this exactly once
-// gets the text; every OTHER boot — a remount with nothing new pending, two
-// pulls in a row, a boot before any ask ever arrived — gets `null`. There is
+// to get wrong. The one pull per ask gets the text; every OTHER read — a
+// remount with nothing new pending, two pulls in a row, a read before any ask
+// ever arrived — gets `null`. There is
 // no "is this the same key as last time" question left to ask, because the
 // consumption already happened the first time anything asked.
 export function takeClaudeAsk(pending: { current: string | null }): string | null {

@@ -18,7 +18,7 @@ def _run_js(script):
 
 
 def test_streaming_height_default_waits_for_ground():
-    html = TEMPLATE.read_text()
+    html = TEMPLATE.read_text(encoding="utf-8")
     engine = html.split("const pointcloudEngine = ", 1)[1].split("\nconst ENGINES =", 1)[0]
     harness = "const pointcloudEngine = " + engine + r'''
 const assert = require("node:assert/strict");
@@ -79,7 +79,7 @@ assert.equal(colorRange.absoluteMax, 10);
 
 
 def test_streaming_refresh_preserves_controls_and_style_edits_take_priority():
-    html = TEMPLATE.read_text()
+    html = TEMPLATE.read_text(encoding="utf-8")
     scheduling = html.split("let uiTimer = null;", 1)[1].split("function statusLine", 1)[0]
     harness = "let uiTimer = null;" + scheduling + r'''
 const assert = require("node:assert/strict");

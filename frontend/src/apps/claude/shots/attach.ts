@@ -176,13 +176,12 @@ function newId(): string {
  *  click replaces the first, T:11309): that is the tray's swap to make, so this
  *  only marks the seat (T:10088, 11258). */
 export async function attachPane(
-  agentDir: string,
   frame: HTMLIFrameElement | null,
   opts: CaptureOptions = {},
 ): Promise<Attachment> {
-  const dir = beginShotsDir(agentDir);
+  const dir = beginShotsDir();
   const shot = await capturePane(frame, opts);
-  return uploadCapture(agentDir, shot, "pane", SHOT_SUFFIX_VIEW, dir);
+  return uploadCapture(shot, "pane", SHOT_SUFFIX_VIEW, dir);
 }
 
 /** T:10083 asks `shotDirPath()` BEFORE `shotPane()`, so an unresolvable shots
@@ -193,8 +192,8 @@ export async function attachPane(
  *  capture. Rejections are parked here so the in-flight promise cannot become an
  *  unhandled rejection while the capture is still running; `uploadCapture`
  *  awaits it inside its own try. */
-function beginShotsDir(agentDir: string): Promise<string> {
-  const p = shotsDir(agentDir);
+function beginShotsDir(): Promise<string> {
+  const p = shotsDir();
   p.catch(() => {});
   return p;
 }
@@ -221,26 +220,23 @@ function beginShotsDir(agentDir: string): Promise<string> {
  * send captures a fresh one.
  */
 export async function attachOverview(
-  agentDir: string,
   capture: CaptureResult,
 ): Promise<Attachment> {
-  return uploadCapture(agentDir, capture, "overview", SHOT_SUFFIX_OVERVIEW, beginShotsDir(agentDir));
+  return uploadCapture(capture, "overview", SHOT_SUFFIX_OVERVIEW, beginShotsDir());
 }
 
 /** The one-call form, for a caller that has badges but no capture yet. Kept
  *  because `captureOverview`'s options (the budget, the XO flag, `rectOf`) are
  *  `shots/`'s own vocabulary and a caller should not have to assemble them. */
 export async function captureAndAttachOverview(
-  agentDir: string,
   frame: HTMLIFrameElement | null,
   badges: ShotBadge[],
   opts: CaptureOptions = {},
 ): Promise<Attachment> {
-  return attachOverview(agentDir, await captureOverview(frame, badges, opts));
+  return attachOverview(await captureOverview(frame, badges, opts));
 }
 
 async function uploadCapture(
-  agentDir: string,
   shot: Awaited<ReturnType<typeof capturePane>>,
   kind: ShotKind,
   suffix: string,
@@ -256,7 +252,7 @@ async function uploadCapture(
     return att;
   }
   try {
-    const dir = await (dirp ?? shotsDir(agentDir));
+    const dir = await (dirp ?? shotsDir());
     const path = shotJoin(dir, shotStamp() + suffix + shotExt(shot.blob));
     await uploadFile(path, shot.blob, shotBase(path));
     att.view = path;
@@ -313,7 +309,7 @@ async function pixelsOf(file: File): Promise<Awaited<ReturnType<typeof shotPixel
  *
  *  The HEIC→PNG server transcode below stays: it is a conversion for a format
  *  nothing here can read, not a refusal, and the chip says it happened. */
-export async function attachFile(agentDir: string, file: File): Promise<Attachment> {
+export async function attachFile(file: File): Promise<Attachment> {
   const kind = kindFor(file);
   const name = file.name || (kind === "image" ? "pasted image" : "attached file");
   // What actually gets written, what the chip says happened to it, and whether a
@@ -344,7 +340,7 @@ export async function attachFile(agentDir: string, file: File): Promise<Attachme
     }
   }
   try {
-    const dir = await shotsDir(agentDir);
+    const dir = await shotsDir();
     // The extension follows whichever bytes are going up: the file's own when the
     // file itself is being copied, and the ENCODER'S when it was re-encoded — a
     // path called `.jpg` holding webp bytes is the exact lie `shotExt` prevents
@@ -359,7 +355,7 @@ export async function attachFile(agentDir: string, file: File): Promise<Attachme
     let conv: { path: string; width: number; height: number; source_w: number; source_h: number } | null =
       null;
     if (undecodable) {
-      conv = await serverPng(agentDir, path);
+      conv = await serverPng(path);
       note = conv
         ? "converted from " +
           formatLabel(name) +
@@ -410,9 +406,9 @@ export async function attachFile(agentDir: string, file: File): Promise<Attachme
  *  after another as they land IS the feedback for a drop big enough to take a
  *  moment. A parallel fan-out would buy little and would land the chips in a
  *  scrambled order (T:11618). No count cap (D617). */
-export async function* attachFiles(agentDir: string, files: File[]): AsyncIterable<Attachment> {
+export async function* attachFiles(files: File[]): AsyncIterable<Attachment> {
   for (const f of (files || []).filter(Boolean)) {
-    yield await attachFile(agentDir, f);
+    yield await attachFile(f);
   }
 }
 
@@ -421,11 +417,10 @@ export async function* attachFiles(agentDir: string, files: File[]): AsyncIterab
  *  riding on this call is how GOOD the attachment is, never whether there is one
  *  (T:11438). */
 async function serverPng(
-  agentDir: string,
   path: string,
 ): Promise<{ path: string; width: number; height: number; source_w: number; source_h: number } | null> {
   try {
-    const out = await runAgent(agentDir, "image_to_png", { path }, { key: null });
+    const out = await runAgent("image_to_png", { path });
     return out && "path" in out && out.path ? out : null;
   } catch {
     return null;
@@ -441,7 +436,7 @@ async function serverPng(
  *  work: the file is one the user already has, at a path they can name, and the
  *  agent is about to be asked to Read it — likely to EDIT it next, which a copy
  *  in a directory pruned in 12 hours cannot survive (T:11680). */
-export function attachPaths(_agentDir: string, paths: string[]): Attachment[] {
+export function attachPaths(paths: string[]): Attachment[] {
   const out: Attachment[] = [];
   for (const path of paths || []) {
     const name = shotBase(path);
@@ -475,13 +470,12 @@ export function readDirs(
   return dirs;
 }
 
-/** `readDirs` against whatever `shotsDir` has already answered for `agentDir` —
+/** `readDirs` against whatever `shotsDir` has already answered —
  *  the synchronous read T's `shotDirSeen` exists for (T:9018). */
 export function readDirsFor(
-  agentDir: string,
   attachments: Pick<Attachment, "view">[] | null | undefined,
 ): string[] {
-  return readDirs(attachments, shotsDirSeen(agentDir));
+  return readDirs(attachments, shotsDirSeen());
 }
 
 // ── cleanup (T:10645) ───────────────────────────────────────────────────────
