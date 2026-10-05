@@ -24,7 +24,12 @@ away. The next trigger (a search, or the daily delta) checks
 """
 from __future__ import annotations
 
+import collections
+import json
 import logging
+import os
+import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlencode
@@ -33,6 +38,7 @@ import httpx
 
 _log = logging.getLogger(__name__)
 
+from fused_render.crashlog import describe_exit
 from fused_render.ai import hub_catalog
 from fused_render.ai import hub_metadata
 from fused_render.ai import tasks as ai_tasks
@@ -182,6 +188,7 @@ def _page(url: str, headers: dict):
 def _fetch_all_pages(tag: str, fmt: str | None, *,
                       capability: str | None = None,
                       page_counter: list[int] | None = None,
+                      on_rows=None,
                       ) -> tuple[list[dict], float | None, str | None]:
     """Every row for one (tag, format) pair, paged via `Link: rel="next"`.
 
@@ -196,7 +203,12 @@ def _fetch_all_pages(tag: str, fmt: str | None, *,
     every page fetched logs one INFO line (capability, tag/format, page
     index, rows so far, elapsed seconds since this call started) and bumps
     `page_counter[0]` so the caller can total pages across every (tag,
-    format) pair for the manifest's `pages` count."""
+    format) pair for the manifest's `pages` count.
+
+    `on_rows`: when given, each page's dict rows are handed to it as they
+    arrive and NOT accumulated, so the returned `rows` is `[]`. This keeps a
+    full build's memory at one page (~1,000 rows) instead of the whole
+    slice; without it the accumulate-and-return behaviour is unchanged."""
     params: dict[str, object] = {
         "sort": "lastModified", "direction": -1, "limit": _PAGE_LIMIT,
         "expand[]": list(_EXPAND),
@@ -210,6 +222,7 @@ def _fetch_all_pages(tag: str, fmt: str | None, *,
 
     url = f"{_hub_endpoint()}/api/models?{urlencode(params, doseq=True)}"
     rows: list[dict] = []
+    total = 0
     started = time.time()
     for page_index in range(_MAX_PAGES):
         page_rows, response, error = _page(url, headers)
@@ -219,14 +232,20 @@ def _fetch_all_pages(tag: str, fmt: str | None, *,
             return rows, (reset_s if reset_s is not None else _DEFAULT_BACKOFF_S), None
         if error is not None:
             return rows, None, error
-        rows.extend(r for r in page_rows if isinstance(r, dict))
+        page_dicts = [r for r in page_rows if isinstance(r, dict)]
+        total += len(page_dicts)
+        if on_rows is not None:
+            on_rows(page_dicts)
+        else:
+            rows.extend(page_dicts)
+        del page_rows, page_dicts
         if capability is not None:
             if page_counter is not None:
                 page_counter[0] += 1
             _log.info(
                 "hub-catalog build: capability=%s tag=%s format=%s page=%d "
                 "rows_so_far=%d elapsed=%.1fs",
-                capability, tag, fmt or "", page_index, len(rows),
+                capability, tag, fmt or "", page_index, total,
                 time.time() - started)
         next_link = response.links.get("next") if response is not None else None
         if not next_link:
@@ -237,104 +256,121 @@ def _fetch_all_pages(tag: str, fmt: str | None, *,
     return rows, None, None
 
 
-def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
-    """Build (or fully rebuild) `capability`'s pool: fetch every
-    (pipeline_tag, format) pair the capability resolves to, merge, and write
-    one generation via `hub_catalog.write_pool`. Synchronous — callers that
-    want this off the request thread use `ensure_build_started`.
+def build_capability_pool(cfg: HubCatalogConfig, capability: str, *,
+                          formats: tuple[str, ...] | None = None,
+                          page_counter: list[int] | None = None) -> dict:
+    """Build (or fully rebuild) `capability`'s pool IN THIS PROCESS: fetch
+    every (pipeline_tag, format) pair the capability resolves to, merge, and
+    write one generation. Synchronous. This is the engine the build worker
+    (`hub_catalog_worker`) runs; the server never calls it directly any more
+    — `ensure_build_started` runs it in a child process so the transient
+    memory of a build (and the heap fragmentation it leaves behind) dies with
+    that process instead of pinning the server's footprint.
+
+    Rows stream into a `hub_catalog.PoolWriter` a page at a time, de-duped by
+    repo id, so peak memory is one page, not the slice.
 
     Returns a small summary dict: `{"rows": N, "rateLimited": bool}` — or,
-    when a 429 was hit before a single row came back, does NOT call
-    `write_pool` at all (an empty pool would be worse than no pool: the
-    search route's `pool_exists` check would start serving zero results
-    instead of falling back to the live path). Same principle for a genuine
-    fetch error (network error, 5xx, non-JSON body) on ANY (tag, format)
-    pair: `write_pool` is never called, so a build that fails partway leaves
-    whatever pool existed before (or none) untouched rather than committing
-    a truncated one that `pool_exists` would then serve forever — the daily
-    delta only ever WIDENS an existing pool, it never backfills a gap left
-    by a build that silently skipped a pair (D1241)."""
+    when a 429 was hit, does NOT write a pool at all (an empty/partial pool
+    would be worse than no pool: the search route's `pool_exists` check would
+    start serving zero/truncated results instead of falling back to the live
+    path). Same principle for a genuine fetch error (network error, 5xx,
+    non-JSON body) on ANY (tag, format) pair: nothing is committed, so a
+    build that fails partway leaves whatever pool existed before (or none)
+    untouched rather than committing a truncated one that `pool_exists` would
+    then serve forever — the daily delta only ever WIDENS an existing pool, it
+    never backfills a gap left by a build that silently skipped a pair
+    (D1241).
+
+    `formats`/`page_counter` are optional: the parent passes the format union
+    it computed so the child cannot drift from it, and a counter object the
+    worker uses to stream page progress back."""
     started_at = time.time()
-    page_counter = [0]
+    if page_counter is None:
+        page_counter = [0]
     with _progress_lock:
         _progress[capability] = {"pagesDone": page_counter, "startedAt": started_at}
     try:
-        return _build_capability_pool_inner(cfg, capability, started_at, page_counter)
+        return _build_capability_pool_inner(
+            cfg, capability, started_at, page_counter, formats)
     finally:
         with _progress_lock:
             _progress.pop(capability, None)
 
 
 def _build_capability_pool_inner(cfg: HubCatalogConfig, capability: str,
-                                  started_at: float, page_counter: list[int]) -> dict:
+                                  started_at: float, page_counter: list[int],
+                                  formats: tuple[str, ...] | None = None) -> dict:
     tags = ai_tasks.tags_for_capability(capability)
-    formats = _formats_for_capability(capability)
+    if formats is None:
+        formats = _formats_for_capability(capability)
     format_list: tuple[str | None, ...] = formats if formats else (None,)
 
-    merged: dict[str, dict] = {}
+    # Repo ids seen so far — a set of strings, NOT the rows. Rows stream into
+    # the writer a page at a time and are dropped.
+    seen: set[str] = set()
     rate_limit_reset_s: float | None = None
-    for tag in tags:
-        for fmt in format_list:
-            rows, reset_s, error = _fetch_all_pages(
-                tag, fmt, capability=capability, page_counter=page_counter)
-            if error is not None:
-                # Abort the whole build without writing anything — see the
-                # docstring above. The next trigger (a search, or the daily
-                # delta's own retry-on-next-tick shape) simply tries again.
-                return {"rows": 0, "error": True}
-            for raw in rows:
-                repo_id = raw.get("id") if isinstance(raw, dict) else None
-                if not isinstance(repo_id, str):
-                    continue
-                # First writer wins per repo id across (tag, format) pairs —
-                # the same de-dupe `_fetch_query_tags` already does for the
-                # live multi-tag path.
-                merged.setdefault(repo_id, {
-                    "capability": capability,
-                    "format": fmt or "",
-                    "raw": raw,
-                })
-            if reset_s is not None:
-                rate_limit_reset_s = reset_s
+    with hub_catalog.PoolWriter(cfg, capability) as writer:
+        for tag in tags:
+            for fmt in format_list:
+                def on_rows(page: list[dict], fmt=fmt) -> None:
+                    fresh = []
+                    for raw in page:
+                        repo_id = raw.get("id")
+                        # First writer wins per repo id across (tag, format)
+                        # pairs — the same de-dupe `_fetch_query_tags`
+                        # already does for the live multi-tag path.
+                        if not isinstance(repo_id, str) or repo_id in seen:
+                            continue
+                        seen.add(repo_id)
+                        fresh.append({"capability": capability,
+                                      "format": fmt or "", "raw": raw})
+                    writer.append(fresh)
+
+                _rows, reset_s, error = _fetch_all_pages(
+                    tag, fmt, capability=capability, page_counter=page_counter,
+                    on_rows=on_rows)
+                if error is not None:
+                    # Abort the whole build without writing anything — see
+                    # the docstring above (leaving the `with` discards the
+                    # temp file). The next trigger (a search, or the daily
+                    # delta's own retry-on-next-tick shape) simply tries
+                    # again.
+                    return {"rows": 0, "error": True}
+                if reset_s is not None:
+                    rate_limit_reset_s = reset_s
+                    break
+            if rate_limit_reset_s is not None:
                 break
+
         if rate_limit_reset_s is not None:
-            break
+            # C1 (bugbot): a 429 mid-build must NEVER produce a servable
+            # pool, whether or not any rows were accumulated before it hit.
+            # Writing a partial pool here made `pool_exists` accept a
+            # truncated pool built from however many (tag, format) pairs
+            # happened to complete before the rate limit landed — the search
+            # route would then serve that partial pool FOREVER once the block
+            # window passed, since `ensure_build_started` refuses to start a
+            # new build while `pool_exists` is already true. Persist only the
+            # backoff (leaving the `with` discards the partial file); the
+            # next trigger, once `is_blocked` clears, restarts the WHOLE
+            # build from page 1 of the first (tag, format) pair (no
+            # partial-resume state) — a real request-cost trade-off accepted
+            # deliberately over ever serving a truncated pool as if it were
+            # complete.
+            hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
+            return {"rows": len(seen), "rateLimited": True}
 
-    if rate_limit_reset_s is not None:
-        # C1 (bugbot): a 429 mid-build must NEVER produce a servable pool,
-        # whether or not any rows were accumulated before it hit. Writing a
-        # partial pool here (the old rule only skipped `write_pool` when
-        # `merged` was still completely EMPTY) made `pool_exists` accept a
-        # truncated pool built from however many (tag, format) pairs happened
-        # to complete before the rate limit landed — the search route would
-        # then serve that partial pool FOREVER once the block window passed,
-        # since `ensure_build_started` refuses to start a new build while
-        # `pool_exists` is already true. Persist only the backoff; the next
-        # trigger, once `is_blocked` clears, restarts the WHOLE build from
-        # page 1 of the first (tag, format) pair (this function has no
-        # partial-resume state to pick back up from) — a real request-cost
-        # trade-off (a machine that keeps getting rate-limited partway
-        # re-fetches the same early pages every retry) accepted deliberately
-        # over ever serving a truncated pool as if it were complete.
-        hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
-        return {"rows": len(merged), "rateLimited": True}
-
-    build_seconds = time.time() - started_at
-    # `write_pool` writes a fresh manifest entry (clearing any prior
-    # `blockedUntil`), so the backoff has to be set AFTER it when both apply
-    # — otherwise this write would immediately clobber the block it is
-    # itself supposed to be recording.
-    hub_catalog.write_pool(cfg, capability, list(merged.values()),
-                           build_seconds=build_seconds, pages=page_counter[0],
-                           started_at=started_at, formats=formats)
-    if rate_limit_reset_s is not None:
-        hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
+        build_seconds = time.time() - started_at
+        # `commit` writes a fresh manifest entry, clearing any prior
+        # `blockedUntil` (a 429 never reaches here — it returned above).
+        writer.commit(build_seconds=build_seconds, pages=page_counter[0],
+                      started_at=started_at, formats=formats)
     _log.info(
         "hub-catalog build complete: capability=%s rows=%d pages=%d "
-        "buildSeconds=%.1f rateLimited=%s",
-        capability, len(merged), page_counter[0], build_seconds,
-        rate_limit_reset_s is not None)
-    return {"rows": len(merged), "rateLimited": rate_limit_reset_s is not None}
+        "buildSeconds=%.1f rateLimited=False",
+        capability, len(seen), page_counter[0], build_seconds)
+    return {"rows": len(seen), "rateLimited": False}
 
 
 def _fetch_delta_pages(tag: str, fmt: str | None, watermark: str, *,
@@ -408,40 +444,74 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
     Flows": "daily thread -> Hub (1 lastModified delta per built pool)").
 
     Unlike `build_capability_pool`, this NEVER refetches the whole slice: it
-    reads the existing pool, works out the newest `lastModified` it already
-    holds, and asks the Hub only for rows newer than that — merging any
-    match (new repo, or an existing repo whose metadata changed) into the
-    existing set by id before writing a fresh generation. A capability with
-    no pool yet is a no-op (`{"skipped": "no-pool"}` — the daily thread must
-    never build one from scratch, only widen one that already exists,
-    exactly as the spec's own line "unbuilt pools are never refreshed"
-    requires) and so is one still sitting inside a 429 backoff window
-    (`{"skipped": "blocked"}`).
-    """
+    asks the Hub only for rows newer than the newest `lastModified` the pool
+    already holds, and merges any match (new repo, or an existing repo whose
+    metadata changed) into the existing set by id before writing a fresh
+    generation. A capability with no pool yet is a no-op
+    (`{"skipped": "no-pool"}` — the daily thread must never build one from
+    scratch, only widen one that already exists, exactly as the spec's own
+    line "unbuilt pools are never refreshed" requires) and so is one still
+    sitting inside a 429 backoff window (`{"skipped": "blocked"}`).
+
+    The merge itself runs in a short-lived child process (see
+    `_run_pool_job`): rewriting a pool streams every existing row through
+    memory, and that transient heap must not linger in the server."""
+    if not hub_catalog.pool_exists(cfg, capability):
+        return {"skipped": "no-pool"}
+    if hub_catalog.is_blocked(cfg, capability):
+        return {"skipped": "blocked"}
+    result = _run_pool_job(cfg, capability, "delta", _formats_for_capability(capability))
+    _invalidate_changed(result.pop("changedIds", ()))
+    return result
+
+
+def _invalidate_changed(changed_ids) -> None:
+    """SPEC item 5's TTL replacement: a repo whose `lastModified` the delta
+    just showed us has moved may now have a stale harvested `config.json`
+    reading in `hub_metadata`'s store even though its own wall-clock TTL has
+    not elapsed yet — force it to refetch on next `get()` rather than waiting
+    out the full TTL. A repo this delta never touched (unchanged
+    `lastModified`, or belonging to no pool at all) is untouched here and
+    keeps relying on `hub_metadata`'s own TTL fallback. Runs in the SERVER
+    process (the metadata store is its state), from the ids the child
+    reports."""
+    for repo_id in changed_ids:
+        try:
+            hub_metadata.invalidate(repo_id)
+        except Exception:  # noqa: BLE001 - one repo's invalidation failing
+            # must not stop the pool write, which already succeeded.
+            pass
+
+
+def _refresh_delta_inprocess(cfg: HubCatalogConfig, capability: str, *,
+                              formats: tuple[str, ...] | None = None,
+                              page_counter: list[int] | None = None) -> dict:
+    """`refresh_capability_pool_delta`'s work, in THIS process (what the
+    worker runs). Streams the existing pool back out batch by batch rather
+    than loading it: only the (small) set of changed rows is held, and
+    existing rows whose id is in it are dropped from the copy. Returns the
+    public result plus `changedIds` for the parent's cache invalidation.
+
+    Row ORDER differs from the old in-memory merge: a changed repo used to be
+    replaced in place and is now written after the untouched rows. Nothing
+    reads pool order (`query_pool` callers sort/score)."""
     if not hub_catalog.pool_exists(cfg, capability):
         return {"skipped": "no-pool"}
     if hub_catalog.is_blocked(cfg, capability):
         return {"skipped": "blocked"}
 
     started_at = time.time()
-    page_counter = [0]
-    existing_rows = hub_catalog.query_pool(cfg, capability)
-    watermark = ""
-    by_id: dict[str, dict] = {}
-    for raw in existing_rows:
-        repo_id = raw.get("id") if isinstance(raw, dict) else None
-        if isinstance(repo_id, str):
-            by_id[repo_id] = raw
-        last_modified = raw.get("lastModified") if isinstance(raw, dict) else None
-        if isinstance(last_modified, str) and last_modified > watermark:
-            watermark = last_modified
+    if page_counter is None:
+        page_counter = [0]
+    watermark = hub_catalog.max_last_modified(cfg, capability)
 
     tags = ai_tasks.tags_for_capability(capability)
-    formats = _formats_for_capability(capability)
+    if formats is None:
+        formats = _formats_for_capability(capability)
     format_list: tuple[str | None, ...] = formats if formats else (None,)
 
     rate_limit_reset_s: float | None = None
-    changed_ids: set[str] = set()
+    new_by_id: dict[str, dict] = {}
     for tag in tags:
         for fmt in format_list:
             new_rows, reset_s, error = _fetch_delta_pages(
@@ -461,46 +531,133 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
             for raw in new_rows:
                 repo_id = raw.get("id") if isinstance(raw, dict) else None
                 if isinstance(repo_id, str):
-                    by_id[repo_id] = raw
-                    changed_ids.add(repo_id)
+                    new_by_id[repo_id] = raw
             if reset_s is not None:
                 rate_limit_reset_s = reset_s
                 break
         if rate_limit_reset_s is not None:
             break
 
-    merged = [{"capability": capability, "format": "", "raw": raw} for raw in by_id.values()]
-    build_seconds = time.time() - started_at
-    # Unlike `build_capability_pool`, a delta always has the EXISTING rows to
-    # write even when a 429 lands before a single new one comes back — there
-    # is no "empty pool would be worse than no pool" case here, only "no
-    # widening happened this round".
-    hub_catalog.write_pool(cfg, capability, merged, build_seconds=build_seconds,
-                           pages=page_counter[0], started_at=started_at,
-                           formats=formats)
+    with hub_catalog.PoolWriter(cfg, capability) as writer:
+        for batch in hub_catalog.iter_pool_rows(cfg, capability):
+            keep = [{"capability": capability, "format": "", "raw": raw}
+                    for raw in batch if raw.get("id") not in new_by_id]
+            writer.append(keep)
+        writer.append([{"capability": capability, "format": "", "raw": raw}
+                       for raw in new_by_id.values()])
+        total = writer.rows
+        build_seconds = time.time() - started_at
+        # Unlike `build_capability_pool`, a delta always has the EXISTING rows
+        # to write even when a 429 lands before a single new one comes back —
+        # there is no "empty pool would be worse than no pool" case here,
+        # only "no widening happened this round".
+        writer.commit(build_seconds=build_seconds, pages=page_counter[0],
+                      started_at=started_at, formats=formats)
+    # `commit` clears `blockedUntil`, so a backoff must be set AFTER it.
     if rate_limit_reset_s is not None:
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
     _log.info(
         "hub-catalog delta complete: capability=%s rows=%d pages=%d "
         "buildSeconds=%.1f rateLimited=%s",
-        capability, len(merged), page_counter[0], build_seconds,
+        capability, total, page_counter[0], build_seconds,
         rate_limit_reset_s is not None)
+    return {"rows": total, "rateLimited": rate_limit_reset_s is not None,
+            "changedIds": list(new_by_id)}
 
-    # SPEC item 5's TTL replacement: a repo whose `lastModified` the delta
-    # just showed us has moved may now have a stale harvested `config.json`
-    # reading in `hub_metadata`'s store even though its own wall-clock TTL
-    # has not elapsed yet — force it to refetch on next `get()` rather than
-    # waiting out the full TTL. A repo this delta never touched (unchanged
-    # `lastModified`, or belonging to no pool at all) is untouched here and
-    # keeps relying on `hub_metadata`'s own TTL fallback.
-    for repo_id in changed_ids:
-        try:
-            hub_metadata.invalidate(repo_id)
-        except Exception:  # noqa: BLE001 - one repo's invalidation failing
-            # must not stop the pool write above, which already succeeded.
-            pass
 
-    return {"rows": len(merged), "rateLimited": rate_limit_reset_s is not None}
+#: The build worker entrypoint, run as `python -m <module>` (never a script
+#: path: a py2app bundle has no source file — see `index/runner.py`).
+WORKER_MODULE = "fused_render.ai.hub_catalog_worker"
+
+#: Worker -> parent protocol, on the worker's stdout (stderr is merged in, so
+#: anything NOT carrying one of these prefixes is plain log output).
+PAGES_PREFIX = "@@pages "
+RESULT_PREFIX = "@@result "
+
+#: Last lines of worker output kept for the failure log.
+_TAIL_LINES = 40
+
+
+def _spawn_kwargs() -> dict:
+    """Popen kwargs for the worker. On POSIX these MUST stay
+    posix_spawn-compatible: `close_fds=False`, no `cwd=`, no
+    `start_new_session`/`preexec_fn`, and an ABSOLUTE `sys.executable` (not
+    realpath'd). Any of those forces CPython onto fork()+exec, and a fork of a
+    server process that has touched pyproj/rasterio runs PROJ's pthread_atfork
+    handler and dies with SIGSEGV before Python starts. Same discipline as
+    `index/runner.py:_detach_kwargs`/`envinstall.py`."""
+    if os.name == "nt":
+        return {}
+    return {"close_fds": False}
+
+
+def _run_pool_job(cfg: HubCatalogConfig, capability: str, mode: str,
+                  formats: tuple[str, ...], page_counter: list[int] | None = None) -> dict:
+    """Run one pool job (`mode` is `"build"` or `"delta"`) in a short-lived
+    child process and return its result dict.
+
+    Why a child: a full build parses ~100k raw Hub dicts, and the pymalloc
+    arenas that leaves fragmented are never handed back to the OS, so an
+    in-server build left the app at a ~3 GB footprint until restart. A child's
+    memory is returned in full when it exits.
+
+    The child gets only small args (mode, capability, catalog dir, the format
+    union as JSON) — never rows, never the HF token: it resolves the token
+    itself through the same `_token()` the in-process path uses, and inherits
+    this process's environment. A crash or a non-zero exit raises
+    `RuntimeError` (the caller's existing exception logging handles it); the
+    worker only ever commits through `PoolWriter`/`set_blocked_until`, so a
+    killed child leaves no pool file and no manifest entry behind."""
+    cmd = [sys.executable, "-m", WORKER_MODULE, mode, capability, cfg.dir,
+           json.dumps(list(formats))]
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+        **_spawn_kwargs())
+    tail: collections.deque[str] = collections.deque(maxlen=_TAIL_LINES)
+    result: dict | None = None
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            if line.startswith(PAGES_PREFIX):
+                try:
+                    if page_counter is not None:
+                        page_counter[0] = int(line[len(PAGES_PREFIX):])
+                except ValueError:
+                    pass
+            elif line.startswith(RESULT_PREFIX):
+                try:
+                    parsed = json.loads(line[len(RESULT_PREFIX):])
+                    result = parsed if isinstance(parsed, dict) else None
+                except ValueError:
+                    pass
+            else:
+                tail.append(line)
+    finally:
+        proc.stdout.close()
+        returncode = proc.wait()
+    if returncode != 0 or result is None:
+        desc = describe_exit(returncode)
+        _log.error("hub-catalog %s worker for %s pid %s %s; last output:\n%s",
+                   mode, capability, proc.pid, desc, "\n".join(tail))
+        raise RuntimeError(f"hub-catalog {mode} worker for {capability} {desc}")
+    return result
+
+
+def build_capability_pool_in_child(cfg: HubCatalogConfig, capability: str) -> dict:
+    """`build_capability_pool`, run in a child process. Same return value,
+    same `_progress` registration (so `build_status` reports live pages),
+    same 429/manifest semantics — those are the worker's own."""
+    started_at = time.time()
+    page_counter = [0]
+    with _progress_lock:
+        _progress[capability] = {"pagesDone": page_counter, "startedAt": started_at}
+    try:
+        return _run_pool_job(cfg, capability, "build",
+                             _formats_for_capability(capability), page_counter)
+    finally:
+        with _progress_lock:
+            _progress.pop(capability, None)
 
 
 def build_status(capability: str, *, cfg: HubCatalogConfig | None = None) -> dict:
@@ -617,7 +774,7 @@ def ensure_build_started(capability: str, *, cfg: HubCatalogConfig | None = None
 
         def run() -> None:
             try:
-                build_capability_pool(cfg, capability)
+                build_capability_pool_in_child(cfg, capability)
             except Exception:  # noqa: BLE001 - a background build must never
                 # crash the thread silently into nothing; the next trigger
                 # simply retries since no pool/manifest entry got written.
