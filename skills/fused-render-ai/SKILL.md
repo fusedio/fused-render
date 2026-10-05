@@ -74,7 +74,7 @@ Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated
 
 ## From Python
 
-`import fused_ai` works in any server-run `.py`, no path setup. Same option names, blocking; all verbs except video (speech: `ref_audio=`, `ref_text=`). `fused_ai.text(prompt, ...)` → str; `stream(...)` yields; `decide(state, questions, model=, provider=)` and the rest return frame (dict). `wait=False`, `on_progress=`, `timeout=` on job-backed calls. Catch `ServerNotRunning`, `AiError` (`.type`). Outside server: `sys.path.insert(0, server.json["shared"])`. No live UI through it — `runPython` returns once, no streaming.
+`import fused_ai` works in any `runPython` `.py`, no path setup. A daemon (`main =` or `daemon =`) must add the path itself, see fused-render-background-apps. Same option names, blocking; all verbs except video (speech: `ref_audio=`, `ref_text=`). `fused_ai.text(prompt, ...)` → str; `stream(...)` yields; `decide(state, questions, model=, provider=)` and the rest return frame (dict). `wait=False`, `on_progress=`, `timeout=` on job-backed calls. Catch `ServerNotRunning`, `AiError` (`.type`). Outside server: `sys.path.insert(0, server.json["shared"])`. No live UI through it — `runPython` returns once, no streaming.
 
 ## Errors
 
