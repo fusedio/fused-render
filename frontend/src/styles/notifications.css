@@ -1930,3 +1930,25 @@ a.sys-link {
   outline-offset: 2px;
   border-radius: 2px;
 }
+
+/* The terminal's own font (platform/ui/terminalTheme.ts, TERMINAL_NERD_FONT):
+   JetBrainsMono Nerd Font Mono, regular + bold, SIL OFL 1.1 (assets/fonts/OFL.txt).
+   No local() source on purpose, so a differently-patched install of the same
+   name can't change the cell metrics. font-display: block because TerminalView
+   waits for the load before xterm measures its grid, so a fallback-font flash
+   would only ever be a wrong-width grid. */
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("../assets/fonts/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("../assets/fonts/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
+}

@@ -24,7 +24,13 @@ import "@xterm/xterm/css/xterm.css";
 
 import { TerminalSession, type TerminalStatus } from "@platform/lib/terminalSession";
 import { useResolvedTheme } from "@platform/lib/theme";
-import { buildTerminalTheme, documentCssVarLookup, terminalFontFamily } from "@platform/ui/terminalTheme";
+import {
+  buildTerminalTheme,
+  documentCssVarLookup,
+  loadTerminalFont,
+  terminalFontFamily,
+  terminalFontSettled,
+} from "@platform/ui/terminalTheme";
 import { isMod } from "@platform/lib/platform";
 
 // The drawer's toggle chord (TerminalDrawer.tsx): Cmd/Ctrl+Shift+` or the
@@ -64,6 +70,11 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
   // effect below re-applies `term.options.theme` whenever this changes,
   // independent of the `[id]` effect that (re)builds the whole `Terminal`.
   const resolvedTheme = useResolvedTheme();
+  // The mount effect below builds the `Terminal` only after the web font has
+  // loaded (an await), so the theme it was started with can be stale by then;
+  // it reads the latest through this ref instead.
+  const resolvedThemeRef = useRef(resolvedTheme);
+  resolvedThemeRef.current = resolvedTheme;
 
   // Re-runs whenever `id` changes (a restarted shell gets a new session id
   // from the caller, which this effect treats as a fresh mount).
@@ -86,13 +97,23 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
       while (teardown.length > 0) teardown.pop()!();
     };
 
-    try {
+    // xterm measures its cell grid once, at `term.open()`, so the Terminal is
+    // built only after the web font has loaded (bounded by a timeout, and
+    // `loadTerminalFont` never rejects) — otherwise the grid is sized for the
+    // fallback font. `cancelled` covers an unmount/id change during that
+    // await: nothing has been created yet, so there is nothing to unwind.
+    let cancelled = false;
+    teardown.push(() => {
+      cancelled = true;
+    });
+
+    const build = (fontReady: boolean) => {
       const lookup = documentCssVarLookup();
       const term = new Terminal({
         fontSize: 12,
         cursorBlink: true,
         fontFamily: terminalFontFamily(lookup),
-        theme: buildTerminalTheme(resolvedTheme, lookup),
+        theme: buildTerminalTheme(resolvedThemeRef.current, lookup),
       });
       termRef.current = term;
       teardown.push(() => {
@@ -235,17 +256,39 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
         if (fitRaf !== null) cancelAnimationFrame(fitRaf);
         observer.disconnect();
       });
-    } catch (err) {
-      cleanup();
-      throw err;
-    }
+
+      // The font missed the timeout (slow disk/network): the grid above was
+      // measured on the fallback. Once it does arrive, drop the cached glyph
+      // metrics and fit again.
+      if (!fontReady) {
+        void terminalFontSettled().then((ok) => {
+          if (!ok || cancelled) return;
+          term.options.fontFamily = terminalFontFamily(documentCssVarLookup());
+          fit.fit();
+          term.refresh(0, term.rows - 1);
+        });
+      }
+    };
+
+    void loadTerminalFont().then((fontReady) => {
+      if (cancelled) return;
+      try {
+        build(fontReady);
+      } catch (err) {
+        cleanup();
+        // Not rethrown: this is a promise callback, so a throw would only be
+        // an unhandled rejection; the pane stays empty and the console says why.
+        console.error("terminal failed to start", err);
+      }
+    });
 
     return cleanup;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onExit/onStatus
     // are event callbacks, not reactive inputs; re-subscribing to them would
     // tear down and rebuild the whole terminal on every parent render.
-    // `resolvedTheme` is deliberately read only once here, at construction —
-    // the effect below re-applies it live without rebuilding the `Terminal`.
+    // `resolvedTheme` is deliberately read only at construction (via
+    // `resolvedThemeRef`) — the effect below re-applies it live without
+    // rebuilding the `Terminal`.
   }, [id]);
 
   // Re-applies `term.options.theme` whenever the app theme changes, without
