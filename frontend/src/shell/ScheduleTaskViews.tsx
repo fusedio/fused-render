@@ -2606,10 +2606,18 @@ export function TaskList({
   // stored: a seed computed in the observer's teardown read the memory
   // before the empty-list effect below zeroed it, and a filter that emptied
   // and refilled remounted at the top with the seed still down the list.
-  // `owed` is the offset the layout effect pays on this very commit; a stale
-  // empty re-arms it from memory in that same effect (`staleEmptied`), so the
-  // memory stands in for it here; anything else lands at the top.
-  const seedScroll = owed.current ?? (staleEmptied.current ? memory.current.scroll || 0 : 0);
+  // `owed` is the offset the layout effect pays on this very commit. Once it
+  // is paid it is null, and the scroller is wherever `settled` says — the
+  // offset that effect last wrote, kept current by `onScroll` — so a
+  // re-render between the restore and the observer's first report (the peek
+  // host's own layout update, on every mount) seeds where the list IS, not
+  // at the top (Bugbot, #1384, third pass). A stale empty re-arms `owed`
+  // from memory in that same effect and nulls `settled` (`staleEmptied`),
+  // so the memory stands in for both there; anything else lands at the top.
+  const seedScroll =
+    owed.current
+    ?? settled.current
+    ?? (staleEmptied.current ? memory.current.scroll || 0 : 0);
   const seedFrom = observed.current
     ? 0
     : Math.max(0, Math.floor(seedScroll / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE);
