@@ -793,3 +793,76 @@ def test_a_tick_with_no_card_does_not_ring(claude_home, carded, rings):
     _transcript(claude_home, SID, lines=2)
     assert tasks_watch.tick() == {SID}, "the transcript grew"
     assert rings == []
+
+
+# ------------------------------------------------------- the snapshot builder
+#
+# With the watcher running, the listing is a snapshot one builder thread keeps
+# current (routers/tasks.py `_builder_loop`); requests read it and do no I/O.
+# `tasks_watch.start` is a no-op under conftest, so `running()` is faked here
+# and the builder is driven by `notify` alone — the thread is the one under
+# test, the watcher's own loop is not.
+
+@pytest.fixture
+def builder(claude_home, monkeypatch):
+    monkeypatch.setattr(tasks_watch, "_started", True)
+    _transcript(claude_home, SID)
+    tasks_mod.warm()
+    yield
+    tasks_mod.reset_cache()
+
+
+def _wait_for(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not pred():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.02)
+
+
+def test_requests_read_the_snapshot_and_a_bump_rebuilds_it_once(builder, claude_home, monkeypatch):
+    builds = []
+    real = tasks_mod._build_task_rows
+    monkeypatch.setattr(tasks_mod, "_build_task_rows",
+                        lambda only=None: builds.append(only) or real(only))
+    rows, gen = tasks_mod._listing()
+    assert [r["key"] for r in rows] == [SID] and gen == tasks_watch.generation()
+    assert builds == []  # served off the warm build, nothing rebuilt
+    # Ten concurrent listings after one bump: one rebuild, every caller sees it.
+    _transcript(claude_home, SID2)
+    tasks_watch.notify({SID2})
+    seen = []
+    threads = [threading.Thread(target=lambda: seen.append(tasks_mod._listing()))
+               for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert all({r["key"] for r in rows} == {SID, SID2} for rows, _ in seen)
+    assert all(gen == tasks_watch.generation() for _, gen in seen)
+    _wait_for(lambda: len(builds) >= 1)
+    assert builds == [None]
+
+
+def test_changes_waits_for_the_snapshot_and_names_the_client_generation_when_it_cannot(
+        builder, claude_home, monkeypatch):
+    monkeypatch.setattr(tasks_mod, "SNAPSHOT_CATCHUP_SEC", 0.2)
+    gate = threading.Event()
+    real = tasks_mod._build_task_rows
+
+    def slow(only=None):
+        gate.wait(5)
+        return real(only)
+    monkeypatch.setattr(tasks_mod, "_build_task_rows", slow)
+    with TestClient(create_app(str(claude_home))) as client:
+        since = client.get("/api/tasks").json()["generation"]
+        tasks_watch.notify({SID})
+        # The build is stuck: the answer is "nothing yet" at the client's own
+        # generation, so it asks again rather than skipping the change.
+        stuck = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+        assert stuck == {"generation": since, "rows": [], "gone": [],
+                         "drafts": {"changed": [], "gone": []}}
+        gate.set()
+        _wait_for(lambda: tasks_mod._snapshot.generation > since)
+        answer = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+        assert answer["generation"] == since + 1
+        assert [r["key"] for r in answer["rows"]] == [SID]
