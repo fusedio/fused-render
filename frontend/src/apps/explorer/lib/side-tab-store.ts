@@ -20,6 +20,11 @@
 // applies, and the memory is left alone for the next subject that does offer it.
 // Only an explicit user switch writes it — closing the sidebar, a deep link, and
 // the default resolving do not.
+//
+// CLEARED ON HOME: mounting the Home page (`/home`) or the explorer homepage
+// (`/explorer`) calls `setSideTab(null)` (`shell/App.tsx`), so a fresh page opened
+// from home starts on the default companion (Claude), not a remembered tab. The
+// open/closed flag and the width are global and are NOT touched.
 let tab: string | null = null;
 
 export function getSideTab(): string | null {

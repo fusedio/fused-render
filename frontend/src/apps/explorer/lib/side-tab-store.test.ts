@@ -27,6 +27,12 @@ describe("side-tab-store", () => {
     expect(getSideTab()).toBe("claude");
   });
 
+  it("setSideTab(null) forgets the tab (what landing on Home does)", () => {
+    setSideTab("git");
+    setSideTab(null);
+    expect(getSideTab()).toBeNull();
+  });
+
   it("never touches storage, and a reload forgets it", async () => {
     setSideTab("git");
     const fresh = (await import(`./side-tab-store?reload=${1}`)) as typeof import("./side-tab-store");
