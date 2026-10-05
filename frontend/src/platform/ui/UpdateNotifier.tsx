@@ -33,6 +33,8 @@ import {
 import {
   restartInFlight,
   restartStageLabel,
+  RESTART_STUCK_BODY,
+  RESTART_STUCK_TITLE,
   type RestartStage,
 } from "@platform/lib/restart-flow";
 import { requestRestart, restartStageNow, useRestartFlow } from "@platform/lib/restart-store";
@@ -300,6 +302,21 @@ export default function UpdateNotifier(): null {
   // alone is not enough to keep the card on screen.
   useEffect(() => {
     if (flow.stage === "ready") return; // nothing requested yet — the effect above owns the card
+    if (flow.stage === "stuck") {
+      // No "Restart now": the press was dropped by the running app, and a
+      // second one would be dropped the same way. Dismissible (the default).
+      restartIdRef.current = notify(
+        {
+          title: RESTART_STUCK_TITLE,
+          detail: RESTART_STUCK_BODY,
+          tone: "error",
+          tier: "attention",
+          familyKey: UPDATE_RESTART_FAMILY_KEY,
+        },
+        restartIdRef.current,
+      );
+      return;
+    }
     if (flow.stage === "gave-up") {
       restartIdRef.current = notify(
         {

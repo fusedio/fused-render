@@ -413,7 +413,7 @@ test("a hidden tab keeps probing only while a restart is in flight", () => {
   for (const stage of ["quitting", "restarting", "reconnecting", "back"] as const) {
     expect(probeWhileHidden(stage)).toBe(true);
   }
-  for (const stage of ["ready", "gave-up"] as const) {
+  for (const stage of ["ready", "gave-up", "stuck"] as const) {
     expect(probeWhileHidden(stage)).toBe(false);
   }
 });

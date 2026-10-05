@@ -29,6 +29,14 @@
 //                  whatever the SERVER says — the ordinary "down" card while it
 //                  is still not answering, the dialog with its button live
 //                  again if it is (see `bannerSurface`).
+//   stuck        — the press was never acted on: the server answered healthy on
+//                  the SAME version, and never failed a single probe, for
+//                  RESTART_STUCK_MS. The app did not go down, so "it didn't come
+//                  back" would be a lie; the honest sentence is that the running
+//                  app could not restart itself (an older build whose window
+//                  code does not route the relaunch link, 2026-10-05), and the
+//                  way out is the reader's own quit and reopen. Terminal like
+//                  `gave-up`, and dismissible the same way.
 //
 // `back` does NOT reload the page from here. `reduceProbe` (server-status.ts)
 // already returns `reload: true` for exactly this transition — a version that
@@ -43,6 +51,7 @@ export const RESTART_STAGES = [
   "reconnecting",
   "back",
   "gave-up",
+  "stuck",
 ] as const;
 
 export type RestartStage = (typeof RESTART_STAGES)[number];
@@ -58,6 +67,13 @@ export interface RestartState {
   /** The version the server was serving when the button was pressed — what a
    *  later healthy probe is compared against to know the process swapped. */
   before: string | null;
+  /** True once ANY probe failed since the press. Absent = false. Never reset by
+   *  a later healthy answer: a flap is an outage that did happen, and `stuck`
+   *  is only for a server that never went anywhere. */
+  outage?: boolean;
+  /** True once a healthy answer on the SAME version landed since the press.
+   *  Absent = false. The clock alone is not evidence the server is up. */
+  answered?: boolean;
 }
 
 /** The cap (D4). Two minutes: a teardown plus a cold start of a signed bundle
@@ -66,6 +82,14 @@ export interface RestartState {
  *  short enough that one that is never coming back hands the page to the
  *  "down" card while the reader is still watching. */
 export const RESTART_GIVE_UP_MS = 120_000;
+
+/** The stuck threshold. Twenty seconds: a teardown that is going fine has taken
+ *  its first probe down well inside that (`quit_teardown` stops answering in
+ *  seconds), so a server that has answered on the old version for this long
+ *  without one failed probe is not quitting. Far under RESTART_GIVE_UP_MS on
+ *  purpose — the cap is for a restart that went down and did not return, and
+ *  waiting two minutes to tell the reader the press did nothing is the bug. */
+export const RESTART_STUCK_MS = 20_000;
 
 /** How many failed probes in a row read as "still gone" rather than "just
  *  went". Deliberately the same shape as `FAIL_THRESHOLD` next door, and
@@ -101,12 +125,19 @@ export function reduceRestart(state: RestartState, event: RestartEvent, now: num
     // Re-armable from ANY stage, `gave-up` included: the cap dropped the story,
     // it did not forbid asking again, and the down card the cap falls through
     // to is a surface with its own way back.
-    return { stage: "quitting", requestedAt: event.at, fails: 0, before: event.served ?? null };
+    return {
+      stage: "quitting",
+      requestedAt: event.at,
+      fails: 0,
+      before: event.served ?? null,
+      outage: false,
+      answered: false,
+    };
   }
 
   // Nothing in flight, or a story that has already ended.
   if (state.requestedAt === null) return state;
-  if (state.stage === "ready" || state.stage === "gave-up") return state;
+  if (state.stage === "ready" || state.stage === "gave-up" || state.stage === "stuck") return state;
 
   // THE CAP WINS FROM EVERY STAGE, `back` INCLUDED, and it is checked before
   // anything else so that is a property of the reducer rather than a promise
@@ -123,6 +154,19 @@ export function reduceRestart(state: RestartState, event: RestartEvent, now: num
   // Reached `back` inside the window: the restart is over, and nothing a later
   // probe says re-opens the wait.
   if (state.stage === "back") return state;
+
+  // THE PRESS THE APP NEVER ACTED ON. Only from `quitting` with no failed probe
+  // ever and at least one same-version answer: any outage, however brief,
+  // means the app DID go down and the long wait is the honest story. Checked
+  // for the clock and for a same-version probe (below), never for a failure.
+  const stuckNow = (s: RestartState): RestartState =>
+    s.stage === "quitting" &&
+    !s.outage &&
+    s.answered &&
+    now - (s.requestedAt ?? now) >= RESTART_STUCK_MS
+      ? { ...s, stage: "stuck" }
+      : s;
+  if (event.type === "tick") return stuckNow(state);
 
   if (event.type === "probe" && event.ok) {
     // A VERSION THAT MOVED IS THE ONLY PROOF THE PROCESS SWAPPED, and this used
@@ -161,13 +205,13 @@ export function reduceRestart(state: RestartState, event: RestartEvent, now: num
     // outage after this re-walks the stages from the start. The cap is
     // untouched by any of it, so a press the app never acted on — which looks
     // exactly like this, forever — still ends.
-    return { ...state, stage: "quitting", fails: 0 };
+    return stuckNow({ ...state, stage: "quitting", fails: 0, answered: true });
   }
 
   if (event.type === "probe") {
     const fails = state.fails + 1;
     const stage: RestartStage = fails >= RESTART_RECONNECTING_FAILS ? "reconnecting" : "restarting";
-    return { ...state, stage, fails };
+    return { ...state, stage, fails, outage: true };
   }
 
   return state;
@@ -177,9 +221,9 @@ export function reduceRestart(state: RestartState, event: RestartEvent, now: num
  *  longer phrases, just words") — the same vocabulary `UpdateBadge` uses for
  *  "Installing…"/"Downloading…". The end is the exception and is not a stage
  *  word at all: it is the sentence the reconnected pill has always said, said
- *  here because the modal is what is on screen at that moment. `ready` and
- *  `gave-up` have no label — neither is a wait, and both hand the surface to
- *  something else (the button, the down card). */
+ *  here because the modal is what is on screen at that moment. `ready`,
+ *  `gave-up` and `stuck` have no label — none is a wait, and each hands the
+ *  surface to something else (the button, the down card, a sentence). */
 export function restartStageLabel(stage: RestartStage): string {
   if (stage === "quitting") return "Quitting…";
   if (stage === "restarting") return "Restarting…";
@@ -201,8 +245,8 @@ export function restartStageLabel(stage: RestartStage): string {
 // process answers on the same version (the blip), and the strip simply un-ticks
 // — there is no "furthest reached" to unwind and nothing animates backwards.
 //
-// `back` and `gave-up` are not steps. `back` is every step done; `gave-up` is
-// the strip with no claim left to make, which is why it shows no live step at
+// `back`, `gave-up` and `stuck` are not steps. `back` is every step done; the
+// other two are the strip with no claim left to make, which is why it shows no live step at
 // all rather than freezing a spinner on the one it died in — a spinner held
 // forever is the promise the cap exists to stop making.
 
@@ -240,7 +284,7 @@ export interface RestartStep {
  *   quitting/restarting/reconnecting — everything before it done, it live,
  *                                      everything after it upcoming;
  *   back                            — all three done;
- *   gave-up / ready                 — none done, none live. `gave-up` draws
+ *   gave-up / stuck / ready         — none done, none live. `gave-up` draws
  *                                     that greyed (the restart did not take,
  *                                     so no step may claim it did) and `ready`
  *                                     draws no strip at all.
@@ -272,3 +316,10 @@ export function restartIsSlow(requestedAt: number | null, now: number): boolean 
   if (requestedAt === null) return false;
   return now - requestedAt >= RESTART_SLOW_MS;
 }
+
+/** The sentence a stuck press ends in. Terminal states get sentences (the
+ *  stage words stay one word); the overlay and the notification both say it, so
+ *  it lives here once. */
+export const RESTART_STUCK_TITLE = "fused-render couldn't restart itself";
+export const RESTART_STUCK_BODY =
+  "The running app didn't act on the restart. Quit fused-render from its menu-bar icon (or press ⌘Q), then open it again.";

@@ -130,7 +130,7 @@ export function versionFactsFrom(body: {
  * answering — neither may be softened into "healthy".
  */
 export async function probeHealth(
-  fetchFn: typeof fetch = (...a) => fetch(...a),
+  fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (url, init) => fetch(url, init),
 ): Promise<ProbeResult> {
   const t0 = performance.now();
   const latency = () => Math.round(performance.now() - t0);
