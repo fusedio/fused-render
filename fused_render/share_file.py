@@ -112,12 +112,119 @@ def _record_for(file_id: str) -> dict | None:
 # -- viewer resolution -------------------------------------------------------
 
 
+#: Set once this process has a background rebuild ACTUALLY UNDER WAY with
+#: credentials — so a lean server's first few reads don't each spawn their
+#: own shim subprocess while the first one is still running.
+#: `_startup_warm_share_rules` sets it too (through `_kick_warm_once`
+#: below), so the two never race: whichever gets there first wins, and the
+#: other becomes a plain disk read. NOT a bare one-shot, though: a caller
+#: that finds nobody signed in never sets this (nothing was kicked, so
+#: nothing should be "used up"), and a kick that starts but fails clears it
+#: again — see `_kick_warm_once`/`_run_warm_and_untrack` — so sign-in later
+#: in the same process, or a transient failure, both still get retried
+#: rather than being stuck for the rest of this process's life.
+_warm_kicked = False
+_warm_kicked_lock = threading.Lock()
+
+#: The earliest a THIRD, failed/no-op attempt may retry after a prior one —
+#: bounds how often a signed-out (or persistently failing) process re-spawns
+#: a thread on every empty-cache read, e.g. a share sheet left open and
+#: polling status. Not applied to the very first attempt, and not needed on
+#: the signed-out path at all (that path never sets `_warm_kicked`, so it
+#: would retry every read anyway) — it only matters once a kick has actually
+#: started and lost its flag back to `_run_warm_and_untrack` on failure.
+_WARM_RETRY_BACKOFF_S = 5.0
+_warm_last_attempt = 0.0
+
+
+def _kick_warm_once(*, name: str = "fused-share-file-rules-warm") -> threading.Thread | None:
+    """Fire `warm_rules_cache` on a background thread, at most once per
+    process while it can plausibly succeed — the thread, or `None` if
+    nothing was kicked this time (already running, backed off, or nobody is
+    signed in to build anything from). Non-blocking: a caller that read an
+    empty/missing cache still gets the built-in rules for THIS read, and a
+    later read (this request's retry, or the next open of the share sheet)
+    sees the real table once the thread finishes.
+
+    Checking `_logged_in()` here — before touching `_warm_kicked` — is what
+    makes retry work: a signed-out reader's call never sets the flag, so it
+    costs nothing but a cheap file-existence check on every such read, and
+    the FIRST read after sign-in still finds `_warm_kicked` false and kicks
+    a real attempt. Bugbot correctly flagged the earlier version, which set
+    the flag unconditionally: a signed-out reader's very first empty-cache
+    read spent the one-shot guard on a call that immediately no-opped
+    inside `warm_rules_cache`, so no read for the rest of the process's
+    life — including ones long after sign-in — ever tried again."""
+    if not _logged_in():
+        return None
+    global _warm_kicked, _warm_last_attempt
+    now = time.monotonic()
+    with _warm_kicked_lock:
+        if _warm_kicked:
+            return None
+        if now - _warm_last_attempt < _WARM_RETRY_BACKOFF_S:
+            return None
+        _warm_kicked = True
+        _warm_last_attempt = now
+    thread = threading.Thread(target=_run_warm_and_untrack, daemon=True, name=name)
+    thread.start()
+    return thread
+
+
+def _run_warm_and_untrack() -> None:
+    """`_kick_warm_once`'s thread target: runs the real warm, then — unless
+    it actually wrote a fresh rule table — clears `_warm_kicked` so a LATER
+    empty-cache read gets its own attempt (subject to the backoff above)
+    instead of finding the guard permanently spent by one that didn't pan
+    out (offline mid-attempt, the shim erroring, a stale token). `wrote`
+    starts `False` and the clear happens in `finally`, so an exception out
+    of `warm_rules_cache` — `_write_cache` can raise `OSError` (a full
+    disk, a state dir that became unwritable) — still releases the guard
+    instead of leaving it stuck `True` for the rest of the process, same as
+    any other failed attempt. This is a background daemon thread with
+    nothing watching it, so the exception is swallowed (logged) rather than
+    left to crash silently AND leave the guard stuck."""
+    global _warm_kicked
+    wrote = False
+    try:
+        wrote = warm_rules_cache()
+    except Exception:
+        logger.exception("share-rules warm-up failed")
+    finally:
+        if not wrote:
+            with _warm_kicked_lock:
+                _warm_kicked = False
+
+
+def reset_for_tests() -> None:
+    """Clear the process-wide "already kicked" guard (and its backoff
+    timer). `_warm_kicked` is process state, not per-`create_app()` state
+    (`_cached_rules()` has no `app` to key it off) — left standing, the
+    second test in an xdist worker to read an empty cache would see
+    `_kick_warm_once` silently return `None` for a warm-up the first test's
+    OWN tmp-path cache already satisfied, same shape as
+    `queue_manager.reset_for_tests` in tests/conftest.py."""
+    global _warm_kicked, _warm_last_attempt
+    with _warm_kicked_lock:
+        _warm_kicked = False
+        _warm_last_attempt = 0.0
+
+
 def _cached_rules() -> list[dict]:
-    """Disk-only: read whatever rule table the cache already holds (however
-    stale) and never triggers the SDK subprocess a rebuild needs. A missing
-    cache degrades to the built-in rules alone (so `.fused` still resolves)
-    rather than blocking `status` on a shim spawn."""
+    """Disk-only read of whatever rule table the cache already holds
+    (however stale) — never itself blocks on the SDK subprocess a rebuild
+    needs. A missing cache degrades to the built-in rules alone for this
+    call (so `.fused` still resolves) rather than blocking `status` on a
+    shim spawn, but ALSO kicks a background rebuild the first time this
+    process sees an empty cache — the case a lean server (`fused-render
+    open`), which never runs `_startup_warm_share_rules`, hits on its very
+    first read on a machine that has never run a full server before. A full
+    server's own startup thread normally wins that race, so this is a no-op
+    there in the common case; it only matters when nothing warmed the cache
+    first."""
     rules, _built_at = share_file_rules._read_cache()
+    if rules is None:
+        _kick_warm_once(name="fused-share-file-rules-warm-lazy")
     return share_file_rules._with_builtin(rules or [])
 
 
@@ -125,7 +232,7 @@ def resolve_viewer(path: str) -> dict | None:
     return share_file_rules.resolve(path, _cached_rules())
 
 
-def warm_rules_cache() -> None:
+def warm_rules_cache() -> bool:
     """Actually build the catalog rule cache, through the shim's `rules`
     action — nothing else in the product does this (code review finding 1):
     `_cached_rules()` above is disk-only by design, so a cache that is never
@@ -137,16 +244,21 @@ def warm_rules_cache() -> None:
     Best-effort and silent: no CLI, not signed in, offline, or a stale token
     all leave the cache exactly as before (missing, or whatever it already
     held) rather than raising into a startup thread nobody is watching.
-    """
+
+    Returns whether it actually wrote a fresh rule table — `_kick_warm_once`
+    (via `_run_warm_and_untrack`) uses this to decide whether the one-shot
+    guard should stay set or be released for a later retry."""
     if not _logged_in():
-        return
+        return False
     out, err = share_app._run_shim(
         {"action": "rules", "ttl": share_file_rules.RULES_TTL_PUBLISH}, RULES_TIMEOUT)
     if err is not None:
-        return
+        return False
     rules = out.get("rules") if isinstance(out, dict) else None
     if isinstance(rules, list):
         share_file_rules._write_cache(rules)
+        return True
+    return False
 
 
 def _refusal_for(path: str, rule: dict | None) -> str | None:
