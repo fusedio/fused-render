@@ -2367,7 +2367,28 @@ def _queue_due(entry: dict, when: datetime) -> datetime:
     return min(when, asked)
 
 
-def _claim_due(now: datetime) -> list[dict]:
+def _claim_due(now: datetime) -> list[str]:
+    """`_sweep_due` plus the orphan resolution it leaves out, as one step for
+    callers that only want the sweep (tests, mostly). `tick` composes the two
+    itself."""
+    due, orphans = _sweep_due(now)
+    _resolve_orphans(orphans)
+    return due
+
+
+def _resolve_orphans(orphans: list[dict]) -> None:
+    """Resolve each orphan on its own: a failure on one (`_close_unwatched`
+    reports and rings, and any of that can raise OSError) is logged and must
+    not stop the rest, nor the dispatch that follows."""
+    for entry in orphans:
+        try:
+            _resolve_orphan(entry)
+        except Exception:  # noqa: BLE001
+            logger.warning("could not resolve orphaned turn %s", entry.get("id"),
+                           exc_info=True)
+
+
+def _sweep_due(now: datetime) -> tuple[list[str], list[dict]]:
     """Move every entry that should act now out of `pending`, and return the
     ones to actually send.
 
@@ -2473,11 +2494,16 @@ def _claim_due(now: datetime) -> list[dict]:
         if changed:
             _write(entries)
     for kind, entry, detail in announce:
-        _emit(kind, entry, detail)
-    for entry in orphans:
-        _resolve_orphan(entry)
+        try:
+            _emit(kind, entry, detail)
+        except Exception:  # noqa: BLE001 - a verdict's announcement never blocks a send
+            logger.warning("could not announce %s for %s", kind, entry.get("id"),
+                           exc_info=True)
     if changed:
-        _sync_wake()
+        try:
+            _sync_wake()
+        except Exception:  # noqa: BLE001
+            logger.warning("wake sync failed after the sweep", exc_info=True)
     # BY DUE TIME, not by store order. The store is in creation order, and the two
     # disagree the moment a catch-up pass finds several messages overdue at once:
     # something scheduled this morning for tonight would go before something
@@ -2490,7 +2516,10 @@ def _claim_due(now: datetime) -> list[dict]:
     # offers the due entries in due order and the queue manager's index is what
     # puts a skipped one at the head of its folder's line (`_tick_queued`).
     due.sort(key=lambda item: (item[0], item[1]))
-    return [entry_id for _, entry_id, _ in due]
+    # ORPHANS ARE NOT RESOLVED HERE, under no lock and not between the claim
+    # and the return: following a run polls it (`_followable`) and closing one
+    # reports and rings, all of which can be slow or raise. The caller does it.
+    return [entry_id for _, entry_id, _ in due], orphans
 
 
 def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
@@ -4224,7 +4253,12 @@ def tick(now: datetime | None = None) -> list[dict]:
     # ignored below until its own time comes.
     _coalesce(now)
     _materialize(now)
-    due = _claim_due(now)
+    due, orphans = _sweep_due(now)
+    # Orphans are settled HERE, before the busy-session map is read below: an
+    # abandoned turn closed this pass frees its session for a follower due in
+    # the same pass. Each is isolated (`_resolve_orphans`), so one that raises
+    # can no longer abort the dispatch of `due`.
+    _resolve_orphans(orphans)
     # THE MANAGER'S PASS, and it is a different shape rather than a smaller one.
     # With the flag on and a manager built, this loop is not the dispatcher any
     # more: there are no folder gates here, no holder map to move forward by

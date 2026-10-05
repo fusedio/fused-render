@@ -360,3 +360,32 @@ def test_tasks_watch_sees_another_processs_queue_index_edit(tmp_path, monkeypatc
         assert tasks_watch.generation() == before + 1
     finally:
         tasks_watch.reset()
+
+
+def test_a_failing_orphan_close_does_not_abort_dispatch_of_due_messages(
+        sched_home, monkeypatch):
+    """Orphan resolution reports and rings (`_close_unwatched`), and any of
+    that can raise (OSError). It used to run inside `_claim_due` before `due`
+    was returned, so one bad orphan aborted the whole tick and the messages
+    that were due waited for the next pass. Now each orphan is isolated."""
+    from fused_render import schedule
+
+    schedule._write([
+        {"id": "E1", "state": schedule.SENT, "turn": "", "run_id": "r-gone",
+         "target": "/tmp", "message": "m", "due": "2020-01-01T00:00:00+00:00",
+         "session_id": "", "error": ""},
+        {"id": "D1", "state": schedule.PENDING, "turn": "", "run_id": "",
+         "target": "/tmp", "message": "go", "due": "2020-01-01T00:00:00+00:00",
+         "session_id": "", "error": ""},
+    ])
+    sent_ids = []
+    monkeypatch.setattr(schedule, "_followable", lambda run_id: False)
+    monkeypatch.setattr(schedule, "_send", lambda entry: sent_ids.append(entry["id"]))
+
+    def _boom(entry, reason):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(schedule, "_close_unwatched", _boom)
+    sent = schedule.tick()
+    assert [e["id"] for e in sent] == ["D1"]
+    assert sent_ids == ["D1"]
