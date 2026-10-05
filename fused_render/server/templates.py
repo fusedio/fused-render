@@ -90,7 +90,9 @@ def _resolve_name(name):
     shadows a core PAGE template. A core NATIVE template is the exception:
     nothing shadows it, and a stale user template.html of the same name is
     ignored with a warning (D1308). `/render` refuses a native template (404
-    "served by the shell"); see `is_native_template_path`.
+    "served by the shell") — and anything inside such a stale user fork, so
+    the ignored page cannot be served by hand either; see
+    `is_native_template_path`.
     """
     # The name is joined into a filesystem path, so it must be one plain
     # segment — a stray "../x" must not stat arbitrary locations. Correctness
@@ -159,8 +161,11 @@ def _native_folder(folder: str) -> bool:
 
 def is_native_template_path(path) -> bool:
     """True when `path` is a native template folder, or its `native` marker,
-    directly under a template root (user, staged core, or the packaged tree).
-    /render uses it to refuse such paths: there is no page to serve. The
+    directly under a template root (user, staged core, or the packaged tree),
+    or ANYTHING inside a user folder named for a core-native template (a stale
+    fork: its template.html is ignored by `_resolve_name`, so it must not be
+    servable either). /render uses it to refuse such paths: there is no page
+    to serve. The
     realpath costs an lstat per component, no more than /render's own read
     of the same path is about to."""
     if not isinstance(path, str) or not path:
@@ -176,6 +181,15 @@ def is_native_template_path(path) -> bool:
         return x.lower() if sys.platform == "darwin" else x
 
     p = os.path.realpath(path).rstrip(os.sep)
+    # A USER fork of a core-native name, at any depth (D1308): `_resolve_name`
+    # never resolves it, so nothing in it is a template any more — and a
+    # hand-typed `/render?path=~/.fused-render/templates/claude/template.html`
+    # would otherwise still serve the retired iframe page off disk.
+    user_root = fold(os.path.realpath(USER_TEMPLATES_DIR))
+    if fold(p).startswith(user_root + os.sep):
+        name = os.path.relpath(fold(p), user_root).split(os.sep)[0]
+        if _native_folder(os.path.join(TEMPLATES_DIR, name)):
+            return True
     folder = (os.path.dirname(p)
               if fold(os.path.basename(p)) == NATIVE_MARKER else p)
     from fused_render.core_templates import PACKAGE_TEMPLATES_DIR

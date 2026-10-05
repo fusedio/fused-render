@@ -185,6 +185,19 @@ async def _run(label: str, budget: float, fn, kwargs: dict,
             on_cancel(cfut)
         raise
     except TimeoutError:
+        if cfut.cancelled() or cfut.cancel():
+            # NEVER RAN (D1308). The whole budget went on waiting for a pool
+            # worker — the clock starts at submit — and the job is now
+            # cancelled, so the handler ran zero times and nothing will land
+            # later. A different answer from "Timeout" on purpose: the caller
+            # (and the gate, which files this like any failed call) can treat
+            # it as a clean failure with no late outcome to wait for.
+            logger.warning("claude agent: %s never got a worker in %s s",
+                           label, budget)
+            return ({"ok": False, "error": {
+                "type": "NotRun",
+                "message": f"{label} waited {budget:g} s for a worker and never ran"}},
+                504, cfut)
         # The thread keeps running until the handler returns (pool.py says
         # why that is accepted); only the caller stops waiting. No
         # duration_ms: the handler has not finished, so there is none yet.
@@ -277,7 +290,17 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
         action, pool.budget(action), agent.main, bound,
         executor=pool.pool_for(action),
         on_cancel=_on_cancel if action in ("start", "send") else None)
-    if status == 504 and action in ("start", "send"):
+    timed_out = status == 504 and envelope["error"].get("type") == "Timeout"
+    if status == 504 and action == "start":
+        # A start that never ran was admitted by `/api/tasks/queue/admit`
+        # (flag on), whose placeholder `_folder_busy` consumed with no token on
+        # `body` — `_drop_placeholder` cannot see it, and it would hold the
+        # folder until its TTL against the user's retry. Released by the
+        # request's own `queue_claim`, for both 504 kinds.
+        key = gate._queue_target(params)
+        if key:
+            gate._drop_admitted_placeholder(key, params, body)
+    if timed_out and action in ("start", "send"):
         if action == "start":
             # THE FOLDER GOES BACK NOW, not when the late `_start` lands. The
             # page shows the Timeout and the user retries — and a placeholder
@@ -298,7 +321,9 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
         # actually spawned — see `gate._file_owner`. Nothing before this call
         # has a run id or a session to file under for a brand-new chat's first
         # send. Runs on the error paths too: a start that raised must give back
-        # a placeholder its gate minted.
+        # a placeholder its gate minted. A NotRun 504 lands here as well: the
+        # handler never ran, so it is filed now as the failure it is (the
+        # placeholder dropped, a send's spent claim restored) with no `_late`.
         gate._file_owner(params, envelope, body)
     # A turn writes files (and `_poll` commits them at turn end), so the git
     # status cache is dropped after every call, success or failure — the same

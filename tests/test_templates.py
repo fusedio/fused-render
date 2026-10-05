@@ -162,6 +162,32 @@ def test_a_stale_user_page_cannot_shadow_a_core_native_template(user_dir, caplog
     assert len(warned) == 1, "warned once per process, not once per call"
 
 
+def test_render_refuses_a_stale_user_fork_of_a_native_name(user_dir):
+    """`_resolve_name` ignores `~/.fused-render/templates/claude/template.html`,
+    and a hand-typed /render of that file — or anything else in that folder —
+    must not serve the retired page either: the same 404 as the marker."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    fork = user_dir.path / "claude"
+    (fork / "vendor").mkdir(parents=True)
+    (fork / "template.html").write_text("<html>old chat</html>")
+    (fork / "vendor" / "x.js").write_text("1")
+    assert server.is_native_template_path(str(fork / "template.html"))
+    assert server.is_native_template_path(str(fork / "vendor" / "x.js"))
+    assert server.is_native_template_path(str(fork))
+    # A user folder for a name core does NOT ship natively stays servable.
+    mine = user_dir.path / "mine"
+    mine.mkdir()
+    (mine / "template.html").write_text("<html></html>")
+    assert not server.is_native_template_path(str(mine / "template.html"))
+    client = TestClient(create_app(start_dir=str(user_dir.path)))
+    r = client.get("/render", params={"path": str(fork / "template.html")})
+    assert r.status_code == 404
+    assert "served by the shell" in r.text
+
+
 def test_render_refuses_a_native_folder_by_any_spelling(tmp_path):
     """A symlink to the native folder, or (on a case-insensitive volume) a
     differently-cased path to it, is the same folder: refused the same way."""

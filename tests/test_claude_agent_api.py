@@ -258,6 +258,7 @@ def test_a_start_past_its_budget_frees_the_folder_now_and_files_late(
                         (filed.append(envelope), lates.append(late), landed.set()))
     r = _post(client, {"action": "start", "file": "/w/a.html"})
     assert r.status_code == 504
+    assert r.json()["error"]["type"] == "Timeout", "it ran; it was just slow"
     assert dropped == ["/w"], "the placeholder goes back with the 504"
     assert filed == [], "the run has not landed yet"
     release.set()
@@ -286,30 +287,43 @@ class _FakeQueue:
 
 
 @pytest.mark.parametrize("current, files", [
-    ({"task": "s-B", "run_id": "r-B"}, False),   # the retry's real run owns it
-    ({"task": "admit:tok"}, True),                # still a placeholder
-    (None, True),                                 # free
+    # The retry's real run owns it.
+    ({"task": "s-B", "run_id": "r-B"}, False),
+    # A same-session retry: task S, exactly the name A carries — but run B.
+    ({"task": "s-A", "run_id": "r-B"}, False),
+    # Somebody else's live placeholder, with a run already filed on it.
+    ({"task": "admit:other", "run_id": "r-B", "claims": ["other-tok"]}, False),
+    # A's OWN placeholder: its admit token is still among the claims.
+    ({"task": "admit:mine", "run_id": "r-X", "claims": ["mine-tok"]}, True),
+    # A placeholder (or any owner) with no run filed yet.
+    ({"task": "admit:tok"}, True),
+    # This very run.
+    ({"task": "s-A", "run_id": "r-A"}, True),
+    # Free.
+    (None, True),
 ])
 def test_a_late_start_never_takes_the_folder_from_a_real_owner(
         monkeypatch, current, files):
     """Run A's start 504'd, the user retried, run B was filed as the folder's
     owner — then A lands. Filing A would hand the folder back to the run the
     user gave up on, so it is skipped (A is still in the runs dir and listed in
-    Tasks). Into a free folder or one a placeholder holds, A files as before."""
+    Tasks). It files only into a free folder, its own placeholder, or an owner
+    with no run yet / this run — never by NAME, since a same-session retry
+    carries A's own session id."""
     from fused_render import queue_manager
 
     fake = _FakeQueue(dict(current) if current else None)
     monkeypatch.setattr(queue_manager, "get", lambda: fake)
     monkeypatch.setattr(gate, "_queue_target", lambda params: "/w")
     envelope = {"ok": True, "result": {"run_id": "r-A", "session_id": "s-A"}}
-    gate._file_owner({"action": "start", "file": "/w/a.html"}, envelope, {},
-                     late=True)
+    gate._file_owner({"action": "start", "file": "/w/a.html"}, envelope,
+                     {"_queue_admit_token": "mine-tok"}, late=True)
     if files:
         assert fake.started_calls == ["s-A"]
-        assert fake.owners["/w"]["task"] == "s-A"
+        assert fake.owners["/w"]["run_id"] == "r-A"
     else:
         assert fake.started_calls == []
-        assert fake.owners["/w"]["task"] == "s-B", "owner stays B"
+        assert fake.owners["/w"] == current, "the retry's owner is untouched"
     # Not late (the ordinary path): unchanged — `started` decides.
     fake2 = _FakeQueue({"task": "s-B", "run_id": "r-B"})
     monkeypatch.setattr(queue_manager, "get", lambda: fake2)
@@ -331,6 +345,100 @@ def test_a_send_past_its_budget_drops_nothing(client, stub, monkeypatch):
     release.set()
     assert r.status_code == 504
     assert dropped == []
+
+
+@pytest.fixture
+def one_busy_worker(monkeypatch):
+    """Every action routed to a ONE-worker pool whose only worker is held, so
+    a submitted job waits its whole budget in the queue and never runs."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    busy = ThreadPoolExecutor(max_workers=1)
+    hold = threading.Event()
+    busy.submit(hold.wait, 10)
+    monkeypatch.setattr(pool, "pool_for", lambda action: busy)
+    monkeypatch.setattr(pool, "budget", lambda action: 0.1)
+    yield busy
+    hold.set()
+    busy.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("action", ["start", "send", "poll"])
+def test_a_call_that_never_got_a_worker_is_a_notrun_504(
+        client, stub, monkeypatch, one_busy_worker, action):
+    """The budget ran out in the QUEUE: the handler ran zero times and never
+    will. That is "NotRun", not "Timeout" — and nothing waits for a late
+    outcome: the gate files it at once as the failure it is (a start's
+    placeholder dropped, a send's claim restored), exactly once."""
+    stub["install"](lambda action="", file="": {"run_id": "never"})
+    lates = []
+    monkeypatch.setattr(gate, "_file_owner",
+                        lambda params, envelope, body=None, late=False:
+                        (stub["file_owner"].append(envelope), lates.append(late)))
+    r = _post(client, {"action": action, "file": "/w/a.html"})
+    assert r.status_code == 504
+    err = r.json()["error"]
+    assert err["type"] == "NotRun", err
+    assert "never ran" in err["message"] and action in err["message"]
+    one_busy_worker.shutdown(wait=False, cancel_futures=True)
+    time.sleep(0.2)
+    assert stub["main"] == [], "the handler never ran"
+    assert len(stub["file_owner"]) == 1, "filed once, now, with no late filing"
+    assert stub["file_owner"][0]["error"]["type"] == "NotRun"
+    assert lates == [False]
+
+
+def test_a_start_the_queue_admitted_gives_its_placeholder_back_on_504(
+        client, monkeypatch, tmp_path, one_busy_worker):
+    """Flag ON. `/api/tasks/queue/admit` minted the placeholder for a brand-new
+    chat and the gate spent its `queue_claim` on it — leaving no token on the
+    body for `_drop_placeholder`. A 504 must still free the folder, or it holds
+    until the placeholder's TTL against the user's own retry."""
+    from fused_render import project_queue, queue_manager, tasks_store
+
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "state").mkdir()
+    folder = str(tmp_path / "proj")
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+    monkeypatch.setattr(project_queue, "queue_key", lambda target: folder)
+    m = queue_manager.QueueManager(
+        spawn=lambda f, t: None, deliver=lambda a: None,
+        running=lambda r: False, blocked=lambda r: False,
+        pending_due=lambda: [])
+    m.reconcile()
+    queue_manager.reset_for_tests(m)
+    ok, _took, token = m.claim_for_send(folder, "admit:" + "a" * 32)
+    assert ok and token
+    assert m.owner(folder)["task"].startswith("admit:")
+
+    def main(action="", file="", queue_claim=""):
+        return {"run_id": "never"}
+    main.__signature__ = inspect.signature(main)
+    monkeypatch.setattr(claude_agent, "agent_module",
+                        lambda: types.SimpleNamespace(main=main))
+    r = _post(client, {"action": "start", "file": folder + "/a.html",
+                       "queue_claim": token})
+    assert r.status_code == 504
+    assert m.owner(folder) is None, "the admitted placeholder was released"
+
+
+def test_a_spent_token_releases_only_its_own_placeholder(tmp_path, monkeypatch):
+    from fused_render import queue_manager, tasks_store
+
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(tmp_path))
+    m = queue_manager.QueueManager(
+        spawn=lambda f, t: None, deliver=lambda a: None,
+        running=lambda r: False, blocked=lambda r: False,
+        pending_due=lambda: [])
+    m.reconcile()
+    _, _, token = m.claim_for_send("/f", "admit:" + "b" * 32)
+    assert m.release_spent_placeholder("/f", token) is False, "not spent yet"
+    assert m.consume_claim("/f", token)
+    assert m.release_spent_placeholder("/f", "someone-else") is False
+    assert m.owner("/f") is not None
+    assert m.release_spent_placeholder("/f", token) is True
+    assert m.owner("/f") is None
 
 
 # ---------------------------------------------------- the call log attribution

@@ -131,18 +131,26 @@ export const POLL_TIMEOUT_RETRIES = 3;
  * So a timed-out send re-asks whether the host is still live, this many times
  * this far apart (≈1.4 s of waiting), and ADOPTS it if so. Nothing live after
  * that is the Timeout itself, shown as trouble — never a fresh `start`.
+ *
+ * ONLY `"Timeout"`. The server answers the same 504 with `type: "NotRun"` when
+ * the job was cancelled while still QUEUED for a worker — that send provably
+ * never ran, so it takes the ordinary not-sent road (`start` for a first send,
+ * the hand-back for a follow-up), exactly like a `{error}` answer.
  */
 export const SEND_TIMEOUT_PROBES = 3;
 export const SEND_TIMEOUT_PROBE_MS = 700;
 
-/** The server's 504, as `agent.ts` throws it. */
+/** The server's 504 for a call that RAN and overran its budget (it may still
+ *  finish), as `agent.ts` throws it. Not `"NotRun"` — see `SEND_TIMEOUT_PROBES`. */
 function isTimeout(err: unknown): err is AgentError {
   return err instanceof AgentError && err.type === "Timeout";
 }
 
 /** The retry budget for a thrown poll, or `0` when it is not transient. */
 function transientPollBudget(err: unknown): number {
-  if (err instanceof AgentError) return err.type === "Timeout" ? POLL_TIMEOUT_RETRIES : 0;
+  // `NotRun` too: a poll cancelled while queued for a worker is a backed-up
+  // pool, which says no more about the run than a slow one does.
+  if (err instanceof AgentError) return err.type === "Timeout" || err.type === "NotRun" ? POLL_TIMEOUT_RETRIES : 0;
   return isNetworkFailure(err) ? POLL_NETWORK_RETRIES : 0;
 }
 /** T:11911 — `params.permission || DEFAULT_PERMISSION`. */
@@ -1196,18 +1204,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * After a `send` 504 (see `SEND_TIMEOUT_PROBES`): the run id of the host
    * still live for `sessionId`, or `""` when none answers within the probes.
    * `want`, when given, must be the id that answers — a follow-up only counts
-   * as delivered into the run it was sent to. With no session to ask about,
-   * the only witness is this page's own loop: the run is live while it is
-   * still the active one.
+   * as delivered into the run it was sent to. No session means nothing to ask
+   * about, and `""` at once: this page's own loop still running is no evidence
+   * the message ARRIVED, so callers treat that case as not sent.
    */
   async function liveAfterSendTimeout(sessionId: string, want?: string): Promise<string> {
+    if (!sessionId) return "";
     for (let i = 0; i < SEND_TIMEOUT_PROBES; i++) {
       if (i) await sleep(SEND_TIMEOUT_PROBE_MS);
       if (disposed) return "";
-      if (!sessionId) {
-        if (want && activeRun === want) return want;
-        continue;
-      }
       try {
         const res = (await run("live_host", { file: FILE || "", session_id: sessionId })) as RunIdResponse;
         const id = res && res.run_id ? String(res.run_id) : "";
@@ -1385,8 +1390,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // A 504 or a fetch that never left the machine says nothing about
           // the RUN — ride it out for a bounded number of laps, keeping the
           // bubble, before the outer catch draws the card. A disposed or
-          // superseded loop never retries: its abort is not a failure.
-          if (disposed || logGen !== gen || ++transient > transientPollBudget(err)) throw err;
+          // superseded loop neither retries NOR reports: its abort is not a
+          // failure, and a card would land in whatever transcript replaced it.
+          if (disposed || logGen !== gen) break;
+          if (++transient > transientPollBudget(err)) throw err;
           await sleep(POLL_MS);
           // `dispose` during the wait (it aborts `life`, which this sleep does
           // not take): leave quietly, exactly like the reader-left check below.
@@ -1741,7 +1748,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       //
       // A DISPOSED controller says nothing: the poll we aborted ourselves is
       // not a failure of the run, and there is nobody left to read a card.
-      if (!disposed) {
+      // A SUPERSEDED loop (the reader left: `logGen` moved) is the same: its
+      // bubbles and its card belong to a transcript that is no longer on screen.
+      if (!disposed && logGen === gen) {
         for (const c of chunks.values()) if (c.key) dropTurn(c.key);
         reportTrouble(troubleFromError(err));
       }
@@ -2324,9 +2333,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // the bump below splits the streaming reply around it, exactly as for a
       // confirmed send. `landed` stays false — nothing CONFIRMED the inbox has
       // it, which is what `stopRun`'s hand-back rule reads.
-      if (isTimeout(err)) {
-        const alive = await liveAfterSendTimeout(deps.params.get("session_id") || "", runId);
+      //
+      // WITH A SESSION TO ASK ABOUT. Without one there is no witness that the
+      // message arrived (the loop still running proves nothing about it), so
+      // that Timeout falls to the ordinary hand-back below, like a `NotRun`.
+      const followSession = deps.params.get("session_id") || "";
+      if (isTimeout(err) && followSession) {
+        const alive = await liveAfterSendTimeout(followSession, runId);
         if (logGen !== gen) return;
+        // A Stop pressed during the probes already handed this entry back
+        // (`stopRun`): it owns the outcome, and a Timeout card now would be
+        // news about a message the reader has already been given back.
+        if (entry.handedBack) return;
         if (alive) {
           followupSeq++;
           return;

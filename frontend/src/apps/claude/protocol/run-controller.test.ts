@@ -571,6 +571,25 @@ describe("start → poll → done", () => {
     expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "r2" });
   });
 
+  test("a send the server says NEVER RAN (504 `NotRun`) falls through to `start` unprobed", async () => {
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller, agent } = makeController(
+      {
+        live_host: () => ({ run_id: "live-1" }),
+        send: () => Promise.reject(new AgentError({ type: "NotRun", message: "cancelled while queued" })),
+        start: () => ({ run_id: "r2" }),
+        poll: () => poll({ done: true }),
+      },
+      params,
+    );
+    await controller.sendMessage("again", { queueClaim: "q-1" });
+    expect(agent.of("live_host").length).toBe(1);
+    expect(agent.of("start").length).toBe(1);
+    expect(agent.of("start")[0].fields).toMatchObject({ queue_claim: "q-1" });
+    expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "r2" });
+    expect(controller.getState().trouble).toBeNull();
+  });
+
   // ---- the draft this send spends (`draft_key`, PR #1118 round 5) ----------
   //
   // A chat with no session has been drafting — and carrying its TASK number —
@@ -905,6 +924,85 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(made.agent.of("live_host").length).toBe(1);
     expect(made.returned).toEqual([{ text: "and this" }]);
     expect(controller.getState().trouble?.message).toBe("Could not send: Failed to fetch");
+  });
+
+  test("a follow-up the server says NEVER RAN (`NotRun`) is handed back, unprobed", async () => {
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        live_host: () => ({ run_id: "" }),
+        start: () => ({ run_id: "r1" }),
+        send: () => Promise.reject(new AgentError({ type: "NotRun", message: "cancelled while queued" })),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this");
+            return poll({ segments: [text("working")] });
+          }
+          return poll({ done: true, segments: [text("working")] });
+        },
+      },
+      createMemoryParamsStore({ session_id: "s1" }),
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("live_host").length).toBe(1);
+    expect(made.returned).toEqual([{ text: "and this" }]);
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    expect(controller.getState().trouble?.message).toBe("Could not send: cancelled while queued");
+  });
+
+  test("a follow-up 504 with NO session is handed back — the loop running is no witness", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => Promise.reject(followTimeout()),
+      // No session id ever named, so there is nothing to probe about.
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("and this");
+          return poll({ session_id: "", segments: [text("working")] });
+        }
+        return poll({ session_id: "", done: true, segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("live_host").length).toBe(0);
+    expect(made.returned).toEqual([{ text: "and this" }]);
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    expect(controller.getState().trouble?.message).toBe("Could not send: send timed out after 60s");
+  });
+
+  test("a Stop during a follow-up's 504 re-probe owns the outcome: no Timeout card", async () => {
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        // The opening send's probe, then the follow-up's re-probes — the first
+        // of which is where the reader presses Stop.
+        live_host: async (_f, n) => {
+          if (n === 1) await controller.stopRun();
+          return { run_id: "" };
+        },
+        start: () => ({ run_id: "r1" }),
+        send: () => Promise.reject(followTimeout()),
+        cancel: () => ({ cancelled: "r1", still_queued: ["and this"] }),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this");
+            return poll({ segments: [text("working")] });
+          }
+          return poll({ done: true, cancelled: true, segments: [text("working")] });
+        },
+      },
+      createMemoryParamsStore({ session_id: "s1" }),
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("cancel").length).toBe(1);
+    expect(controller.getState().trouble).toBeNull();
+    // Handed back ONCE, by the Stop — not a second time by the probe's end.
+    expect(made.stranded).toEqual([["and this"]]);
+    expect(made.returned.filter((r) => r.text === "and this").length).toBe(1);
   });
 
   // QA round 3a, defect 1. Native's `start` body is pinned FIELD FOR FIELD
@@ -2948,6 +3046,26 @@ describe("poll refusals and throws", () => {
     await controller.sendMessage("go");
     expect(agent.of("poll").length).toBe(2);
     expect(controller.getState().trouble?.message).toBe("agent.py raised");
+  });
+
+  test("a SUPERSEDED loop that then fails leaves quietly: no card in the landing", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 0) {
+          // The reader goes Back while this poll is in flight, and it fails.
+          controller.newChat();
+          return Promise.reject(new AgentError({ type: "RuntimeError", message: "agent.py raised" }));
+        }
+        return poll({ done: true });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("poll").length).toBe(1);
+    expect(controller.getState().trouble).toBeNull();
+    expect(controller.getState().turns).toEqual([]);
   });
 
   test("dispose during the retry wait exits cleanly: no card, no further poll", async () => {

@@ -125,7 +125,10 @@ def test_commit_turn_spawns_git_by_absolute_path(tmp_path, monkeypatch):
     (app / "f.txt").write_text("x")
     monkeypatch.setattr(agent, "_workspace_dir", lambda: str(ws))
     import shutil
-    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: "/opt/bin/git")
+    # Built off sys.executable's own directory, so it is absolute on every
+    # platform (a bare "/opt/bin/git" is not absolute on Windows from 3.13).
+    git = os.path.join(os.path.dirname(sys.executable), "git")
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: git)
     argv0 = []
 
     def fake_run(cmd, *a, **k):
@@ -134,7 +137,7 @@ def test_commit_turn_spawns_git_by_absolute_path(tmp_path, monkeypatch):
 
     monkeypatch.setattr(agent.subprocess, "run", fake_run)
     agent._commit_turn(str(app / "f.txt"), "msg")
-    assert argv0 and set(argv0) == {"/opt/bin/git"}
+    assert argv0 and set(argv0) == {git}
 
 
 # ------------------------------------------- a host that dies before stdin
