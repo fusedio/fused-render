@@ -6307,5 +6307,16 @@ pane, one shared set of stores) splits its memory like this:
   otherwise (known unavailable) the existing default applies and the
   memory is kept for a subject that does offer it. Explicit `_side=<mode>` wins.
   The URL spelling rule is unchanged and still measured against the file's real
-  default: a remembered non-default tab is written once as `_side=<mode>` by
-  the reconcile, then agrees (no loop).
+  default, but only for an explicit pick: a tab that resolves ONLY from the
+  remembered store (URL silent, nobody picked on this file) is NOT written into
+  `_side` by the file view's reconcile (`sideFromMemory` / `fromMemory`, the same
+  treatment as the hidden-flag-only closed state). Writing it made a reload keep
+  Git, a copied link carry an unchosen `_side=git`, and Back restore a stale tab
+  (an explicit `_side` beats memory). The silent URL + memory-derived tab is a
+  stable state (no loop). The folder pane has no reconcile writer, so nothing
+  there leaks.
+- **A fresh page from Home starts on the default companion.** Mounting the Home
+  page (`/home`) or the file-explorer homepage (`/explorer`) clears the
+  remembered tab (`setSideTab(null)`, in `shell/App.tsx`), so the next file or
+  app opened from there lands on Claude. The open/closed flag and the width are
+  global and untouched.

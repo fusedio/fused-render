@@ -442,6 +442,20 @@ export function resolveSide(
   return split.defaultSide;
 }
 
+// WHETHER THE TAB ON SCREEN CAME ONLY FROM THE REMEMBERED STORE: the URL named no
+// mode, the sidebar is open, and what resolved is the remembered tab itself. Nobody
+// picked anything on THIS file, so the reconcile must not write it into the URL
+// (`reconcileSideSearch`'s `fromMemory`): a reload would keep Git against the
+// reset-on-reload policy, a copied link would carry an unchosen `_side=git`, and
+// Back would restore a stale tab (an explicit `_side` beats memory).
+export function sideFromMemory(
+  req: SideRequest,
+  activeSide: string | null,
+  remembered: string | null
+): boolean {
+  return req.open && !req.mode && activeSide !== null && activeSide === remembered;
+}
+
 // D495's TWO RULES COLLIDE HERE, and this is the resolution. "An explicit
 // `_side` always wins over the stored hidden flag" (`unchosenOrHidden` is
 // only ever reached where the URL said nothing) and "reopening on either
@@ -570,6 +584,9 @@ export function reconcileSideSearch(
     open: boolean;
     activeSide: string | null;
     defaultSide: string | null;
+    // `activeSide` came only from the remembered tab (`sideFromMemory`): the URL
+    // stays as silent as it is, exactly like the hidden-flag-only closed state.
+    fromMemory?: boolean;
   }
 ): string | null {
   if (!o.splitCapable) return null;
@@ -586,7 +603,9 @@ export function reconcileSideSearch(
       ? null
       : o.activeSide === null && o.open
         ? undefined
-        : sideParam(o.activeSide, o.defaultSide);
+        : o.fromMemory
+          ? null
+          : sideParam(o.activeSide, o.defaultSide);
   const agrees = want === undefined || (params.get("_side") ?? null) === want;
   if (agrees && !stale) return null;
   let out = search.replace(/^\?/, "");

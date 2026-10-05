@@ -8,6 +8,7 @@ import {
   sideToggleTarget,
   sideReopenedByUrl,
   reconcileSideSearch,
+  sideFromMemory,
   writeQueryParam,
   SIDE_OFF,
   type SideEntry,
@@ -962,18 +963,44 @@ describe("resolveSide with a remembered tab", () => {
     expect(resolveSide(parseSide(""), both(), null)).toBe("claude");
   });
 
-  it("the reconcile writes the remembered non-default tab once and then agrees", () => {
+  it("the reconcile never writes a memory-derived tab into the URL (stable, no loop)", () => {
     const s = both();
-    const active = resolveSide(parseSide(""), s, "git");
+    const req = parseSide("");
+    const active = resolveSide(req, s, "git");
+    expect(active).toBe("git");
+    expect(sideFromMemory(req, active, "git")).toBe(true);
     const o = {
       splitCapable: true,
       offered: s.offered,
       open: true,
       activeSide: active,
       defaultSide: s.defaultSide,
+      fromMemory: true,
     };
-    expect(reconcileSideSearch("", o)).toBe("_side=git");
-    expect(reconcileSideSearch("?_side=git", o)).toBe(null);
+    expect(reconcileSideSearch("", o)).toBe(null);
+    expect(reconcileSideSearch("?zoom=2", o)).toBe(null);
+  });
+
+  it("sideFromMemory is false for an explicit mode, a default landing, or no memory", () => {
+    const s = both();
+    expect(sideFromMemory(parseSide("?_side=git"), "git", "git")).toBe(false);
+    expect(sideFromMemory(parseSide(""), "claude", "git")).toBe(false);
+    expect(sideFromMemory(parseSide(""), "claude", null)).toBe(false);
+    expect(sideFromMemory(parseSide("?_side=off"), null, "git")).toBe(false);
+    expect(s.defaultSide).toBe("claude");
+  });
+
+  it("an explicit pick still writes `_side` (fromMemory false)", () => {
+    const s = both();
+    expect(
+      reconcileSideSearch("", {
+        splitCapable: true,
+        offered: s.offered,
+        open: true,
+        activeSide: "git",
+        defaultSide: s.defaultSide,
+      })
+    ).toBe("_side=git");
   });
 });
 

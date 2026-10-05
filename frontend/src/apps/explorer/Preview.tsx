@@ -73,6 +73,7 @@ import {
   sideSplit,
   parseSide,
   resolveSide,
+  sideFromMemory,
   sideParam,
   writeQueryParam,
   sideToggleTarget,
@@ -1620,6 +1621,9 @@ function TemplatePreview({
   // recorded the query and replayed it on the next bare open, which the `_side`
   // strip was written to prevent. That sidecar is gone outright now, D329; the
   // strip lives on for the recents store, lib/session-params.)
+  // The tab on screen came only from the remembered store: the reconcile must not
+  // write it (see `sideFromMemory`). Recomputed each render, so it is a dep.
+  const activeFromMemory = sideFromMemory(sideReq, activeSide, getSideTab());
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
@@ -1634,6 +1638,7 @@ function TemplatePreview({
       open: sideFromHiddenFlag ? true : sideReq.open,
       activeSide,
       defaultSide: split.defaultSide,
+      fromMemory: activeFromMemory,
     });
     if (search === null) return; // already agrees
     replaceSearch(location.pathname + (search ? "?" + search : ""));
@@ -1646,6 +1651,7 @@ function TemplatePreview({
     sideReq.open,
     sideFromHiddenFlag,
     activeSide,
+    activeFromMemory,
     sideKeys,
   ]);
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
