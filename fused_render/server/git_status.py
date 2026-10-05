@@ -334,6 +334,7 @@ def invalidate_status_cache() -> None:
     """
     with _status_lock:
         _status_cache.clear()
+        _unpushed_cache.clear()
 
 
 def _run_status(cwd: str) -> list[tuple[str, str]] | None:
@@ -432,3 +433,105 @@ def listing_statuses(cwd: str, names: list[str]) -> dict[str, str]:
     if not records:
         return {}
     return entry_statuses(prefix, records, names)
+
+
+# ------------------------------------------------------- unpushed-commit counts
+#
+# A second, independent decoration: how many commits that exist locally but not
+# on the branch's upstream touched each listed entry. Same TTL / invalidation as
+# the status cache above. Only the repo containing the listed folder is asked —
+# a child folder that is its own repo gets no probe — and only an UPSTREAM
+# counts: no `@{upstream}` (no tracking branch, detached HEAD) is "nothing to
+# say", exactly like a clean tree.
+
+_unpushed_cache: "OrderedDict[str, tuple[float, list[frozenset[str]]]]" = OrderedDict()
+
+
+def _run_unpushed(cwd: str) -> "list[frozenset[str]] | None":
+    """For each commit in `@{upstream}..HEAD`, the set of first path segments
+    (relative to `cwd`) it touched. `[]` = nothing unpushed or no upstream;
+    None = git could not answer (not cached)."""
+    with _status_lock:
+        cached = _unpushed_cache.get(cwd)
+        if cached is not None and time.monotonic() - cached[0] < _STATUS_CACHE_TTL_S:
+            _unpushed_cache.move_to_end(cwd)
+            return cached[1]
+    commits = _run_unpushed_uncached(cwd)
+    if commits is not None:
+        with _status_lock:
+            _unpushed_cache[cwd] = (time.monotonic(), commits)
+            _unpushed_cache.move_to_end(cwd)
+            while len(_unpushed_cache) > _STATUS_CACHE_SIZE:
+                _unpushed_cache.popitem(last=False)
+    return commits
+
+
+def _run_unpushed_uncached(cwd: str) -> "list[frozenset[str]] | None":
+    try:
+        proc = subprocess.run(
+            [
+                git_bin(), "-C", cwd, "--no-optional-locks",
+                # %x01 marks each commit; -z NUL-separates the names so odd
+                # filenames survive. `--relative` scopes to (and relativizes
+                # against) `cwd`, so no prefix arithmetic is needed. A failing
+                # `@{upstream}` (none configured, detached HEAD) exits non-zero
+                # in one cheap call: that is the fast bail.
+                "log", "--format=%x01", "--name-only", "-z", "--relative",
+                "@{upstream}..HEAD", "--", ".",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            **_spawn_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        _warn_git_unusable("log @{upstream}..HEAD", e)
+        return None
+    if proc.returncode != 0:
+        # No upstream is the ordinary case, a fact about the repo that is safe
+        # to cache as "nothing unpushed" (the TTL bounds staleness).
+        return []
+    commits: list[frozenset[str]] = []
+    current: set[str] | None = None
+    after_marker = False
+    for chunk in proc.stdout.split(b"\0"):
+        if chunk.startswith(b"\x01"):
+            if current is not None:
+                commits.append(frozenset(current))
+            current = set()
+            after_marker = True
+            continue
+        if current is None or not chunk:
+            continue
+        if after_marker and chunk.startswith(b"\n"):
+            chunk = chunk[1:]
+        after_marker = False
+        if chunk:
+            current.add(os.fsdecode(chunk).split("/", 1)[0])
+    if current is not None:
+        commits.append(frozenset(current))
+    return commits
+
+
+def listing_unpushed(cwd: str, names: list[str]) -> dict[str, int]:
+    """Unpushed-commit count per listed name in `cwd`; `{}` when there is
+    nothing to say (not a repo, no upstream, not ahead, git failure).
+
+    Names are matched by exact spelling: the segments come from git's own
+    index spelling, and on a case-folding filesystem a rename-by-case is the
+    only way the two could disagree, which is not worth a fold table here.
+    """
+    if not names:
+        return {}
+    if _repo_toplevel(cwd) is None:
+        return {}
+    commits = _run_unpushed(cwd)
+    if not commits:
+        return {}
+    wanted = set(names)
+    counts: dict[str, int] = {}
+    for segs in commits:
+        for seg in segs:
+            if seg in wanted:
+                counts[seg] = counts.get(seg, 0) + 1
+    return counts

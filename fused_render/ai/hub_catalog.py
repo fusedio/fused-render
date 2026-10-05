@@ -235,14 +235,196 @@ def _row_columns(rows: list[dict]) -> dict:
     return cols
 
 
+def _pool_schema():
+    """The pool's parquet schema. An explicit schema, not `pa.table`'s own
+    type inference: every column here is already normalised to one Python type
+    per value by `_row_columns` (see `gated_str`'s docstring for why `gated`
+    specifically needed that), but declaring the schema up front means a
+    future column that mixes types the same way fails loudly at the point it
+    is added to `_row_columns`, not with an opaque pyarrow error the first
+    time a real pool happens to contain both variants."""
+    import pyarrow as pa
+
+    return pa.schema([
+        ("id", pa.string()),
+        ("capability", pa.string()),
+        ("format", pa.string()),
+        ("downloads", pa.int64()),
+        ("likes", pa.int64()),
+        ("lastModified", pa.string()),
+        ("createdAt", pa.string()),
+        ("libraryName", pa.string()),
+        ("gated", pa.string()),
+        ("private", pa.bool_()),
+        ("modelType", pa.string()),
+        ("hasDiffusersIndex", pa.bool_()),
+        ("raw", pa.string()),
+    ])
+
+
+#: A `.pool-*.tmp` older than this is the debris of a writer that was killed
+#: mid-build (an `abort`/`commit` always removes its own); swept on the next
+#: writer's start. A day is far longer than any real build.
+_STALE_TMP_S = 24 * 3600
+
+#: Rows per batch when streaming an existing pool back out.
+_STREAM_BATCH = 1000
+
+
+class PoolWriter:
+    """Stream a pool's rows into one parquet file a batch at a time, then
+    swap it in atomically — so a build's memory is bounded by ONE batch (a
+    Hub page, ~1,000 rows) rather than the whole slice (~100k rows of full
+    raw Hub dicts, which pushed the server to a multi-GB footprint).
+
+    `append(rows)` takes the same row shape `write_pool` does and runs it
+    through the SAME `_row_columns`, so the file is row-for-row what
+    `write_pool(all_rows)` writes. Rows go to a temp file in `pools_dir`; only
+    `commit` (under `store_lock`) renames it to the generation-numbered name
+    and writes the manifest, so a failed/aborted/killed build leaves no pool
+    file under a real name and no manifest entry — the previous generation
+    stays exactly as it was. Use as a context manager: leaving the `with`
+    without `commit` aborts."""
+
+    def __init__(self, cfg: HubCatalogConfig, capability: str):
+        self._cfg = cfg
+        self._capability = capability
+        self.rows = 0
+        self._writer = None
+        self._schema = None
+        self._done = False
+        os.makedirs(cfg.pools_dir, exist_ok=True)
+        self._sweep_stale()
+        self._tmp = os.path.join(
+            cfg.pools_dir, f".pool-{capability}-{os.getpid()}-{os.urandom(3).hex()}.tmp")
+
+    def _sweep_stale(self) -> None:
+        now = time.time()
+        try:
+            names = os.listdir(self._cfg.pools_dir)
+        except OSError:
+            return
+        for name in names:
+            if name.startswith(".pool-") and name.endswith(".tmp"):
+                path = os.path.join(self._cfg.pools_dir, name)
+                try:
+                    if now - os.path.getmtime(path) > _STALE_TMP_S:
+                        os.unlink(path)
+                except OSError:
+                    pass
+
+    def _open(self):
+        import pyarrow.parquet as pq
+
+        if self._writer is None:
+            self._schema = _pool_schema()
+            self._writer = pq.ParquetWriter(self._tmp, self._schema)
+        return self._writer
+
+    def append(self, rows: list[dict]) -> None:
+        import pyarrow as pa
+
+        if not rows:
+            return
+        writer = self._open()
+        writer.write_table(pa.table(_row_columns(rows), schema=self._schema))
+        self.rows += len(rows)
+
+    def _close_writer(self) -> None:
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            finally:
+                self._writer = None
+
+    def abort(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            self._close_writer()
+        finally:
+            try:
+                os.unlink(self._tmp)
+            except OSError:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.abort()
+
+    def commit(self, *, build_seconds: float | None = None, pages: int | None = None,
+               started_at: float | None = None,
+               formats: tuple[str, ...] | None = None) -> dict:
+        """Swap the written file in as the next generation; returns the
+        manifest entry. Arguments are `write_pool`'s instrumentation."""
+        import pyarrow as pa
+
+        if self._done:
+            raise RuntimeError("PoolWriter already finished")
+        cfg, capability = self._cfg, self._capability
+        try:
+            if self._writer is None:
+                # No rows at all: still a valid (empty) pool file, as
+                # `write_pool([])` always wrote.
+                self._open().write_table(pa.table(_row_columns([]), schema=self._schema))
+            self._close_writer()
+            with store_lock(cfg):
+                manifest = read_manifest(cfg)
+                prev = manifest["capabilities"].get(capability) or {}
+                generation = int(prev.get("generation") or 0) + 1
+                filename = f"pool-{capability}-{generation:06d}.parquet"
+                path = os.path.join(cfg.pools_dir, filename)
+                os.replace(self._tmp, path)
+                self._done = True
+
+                entry = {"file": filename, "generation": generation, "rows": self.rows,
+                         "updated": time.time(), "blockedUntil": None,
+                         # D1276: written on every build, unconditionally
+                         # (unlike `formats` below, which is caller-optional)
+                         # — every pool from here on has this key, so an
+                         # ABSENT key unambiguously means "built before this
+                         # column existed".
+                         "schemaVersion": ROW_SCHEMA_VERSION}
+                if build_seconds is not None:
+                    entry["buildSeconds"] = build_seconds
+                if pages is not None:
+                    entry["pages"] = pages
+                if started_at is not None:
+                    entry["startedAt"] = started_at
+                if formats is not None:
+                    # C3 (bugbot): the exact set of Hub `filter=` format tags
+                    # this build paged, so a later `ensure_build_started` can
+                    # tell a pool built before a second runner/format became
+                    # available on this machine from one that already covers
+                    # it, and trigger a rebuild rather than serving a
+                    # permanently narrower pool forever.
+                    entry["formats"] = list(formats)
+                manifest["capabilities"][capability] = entry
+                _write_manifest(cfg, manifest)
+
+                prev_file = prev.get("file")
+                if prev_file and prev_file != filename:
+                    try:
+                        os.unlink(os.path.join(cfg.pools_dir, prev_file))
+                    except OSError:
+                        pass
+                return entry
+        finally:
+            if not self._done:
+                self.abort()
+
+
 def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict], *,
                build_seconds: float | None = None, pages: int | None = None,
                started_at: float | None = None,
                formats: tuple[str, ...] | None = None) -> dict:
     """Write a fresh generation of `capability`'s pool and swap the manifest
-    in — the whole operation under `store_lock`, so two writers (two dev
-    servers on the same home dir, or a retriggered build racing the daily
-    delta) serialize rather than corrupt each other's file or manifest entry.
+    in — the whole swap under `store_lock`, so two writers (two dev servers on
+    the same home dir, or a retriggered build racing the daily delta)
+    serialize rather than corrupt each other's file or manifest entry.
 
     `rows`: `[{"capability": ..., "format": ..., "raw": <raw Hub row dict>}]`.
     `build_seconds`/`pages`/`started_at` are OPTIONAL instrumentation the
@@ -256,72 +438,61 @@ def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict], *,
     deleted only after the new one is durably swapped in via the manifest —
     the atomic-swap-then-reclaim shape `index/store.py:compact` uses, scaled
     down to "one file in, one file out" since a pool is a single parquet
-    rather than a set of size-bounded partitions."""
-    import pyarrow as pa
+    rather than a set of size-bounded partitions. A one-batch wrapper over
+    `PoolWriter`; a slice too big to hold as one list uses that directly."""
+    with PoolWriter(cfg, capability) as writer:
+        writer.append(rows)
+        return writer.commit(build_seconds=build_seconds, pages=pages,
+                             started_at=started_at, formats=formats)
+
+
+def _pool_path(cfg: HubCatalogConfig, capability: str) -> str | None:
+    entry = pool_entry(cfg, capability)
+    if not entry or not entry.get("file"):
+        return None
+    path = os.path.join(cfg.pools_dir, entry["file"])
+    return path if os.path.exists(path) else None
+
+
+def max_last_modified(cfg: HubCatalogConfig, capability: str) -> str:
+    """The newest `lastModified` string in the pool (`""` when empty or no
+    pool) — the delta's watermark, read from the one column instead of
+    parsing every row's `raw`."""
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
-    with store_lock(cfg):
-        manifest = read_manifest(cfg)
-        prev = manifest["capabilities"].get(capability) or {}
-        generation = int(prev.get("generation") or 0) + 1
-        os.makedirs(cfg.pools_dir, exist_ok=True)
-        filename = f"pool-{capability}-{generation:06d}.parquet"
-        path = os.path.join(cfg.pools_dir, filename)
-        # An explicit schema, not `pa.table`'s own type inference: every
-        # column here is already normalised to one Python type per value by
-        # `_row_columns` (see `gated_str`'s docstring for why `gated`
-        # specifically needed that), but declaring the schema up front means
-        # a future column that mixes types the same way fails loudly at the
-        # point it is added to `_row_columns`, not with an opaque pyarrow
-        # error the first time a real pool happens to contain both variants.
-        schema = pa.schema([
-            ("id", pa.string()),
-            ("capability", pa.string()),
-            ("format", pa.string()),
-            ("downloads", pa.int64()),
-            ("likes", pa.int64()),
-            ("lastModified", pa.string()),
-            ("createdAt", pa.string()),
-            ("libraryName", pa.string()),
-            ("gated", pa.string()),
-            ("private", pa.bool_()),
-            ("modelType", pa.string()),
-            ("hasDiffusersIndex", pa.bool_()),
-            ("raw", pa.string()),
-        ])
-        table = pa.table(_row_columns(rows), schema=schema)
-        pq.write_table(table, path)
+    path = _pool_path(cfg, capability)
+    if path is None:
+        return ""
+    best = ""
+    for batch in pq.ParquetFile(path).iter_batches(
+            batch_size=_STREAM_BATCH, columns=["lastModified"]):
+        m = pc.max(batch.column(0)).as_py()
+        if isinstance(m, str) and m > best:
+            best = m
+    return best
 
-        entry = {"file": filename, "generation": generation, "rows": len(rows),
-                  "updated": time.time(), "blockedUntil": None,
-                  # D1276: written on every build, unconditionally (unlike
-                  # `formats` below, which is caller-optional) — every pool
-                  # from here on has this key, so an ABSENT key unambiguously
-                  # means "built before this column existed".
-                  "schemaVersion": ROW_SCHEMA_VERSION}
-        if build_seconds is not None:
-            entry["buildSeconds"] = build_seconds
-        if pages is not None:
-            entry["pages"] = pages
-        if started_at is not None:
-            entry["startedAt"] = started_at
-        if formats is not None:
-            # C3 (bugbot): the exact set of Hub `filter=` format tags this
-            # build paged, so a later `ensure_build_started` can tell a pool
-            # built before a second runner/format became available on this
-            # machine from one that already covers it, and trigger a rebuild
-            # rather than serving a permanently narrower pool forever.
-            entry["formats"] = list(formats)
-        manifest["capabilities"][capability] = entry
-        _write_manifest(cfg, manifest)
 
-        prev_file = prev.get("file")
-        if prev_file and prev_file != filename:
+def iter_pool_rows(cfg: HubCatalogConfig, capability: str):
+    """Yield the pool's raw Hub row dicts in lists of up to `_STREAM_BATCH`,
+    reading only the `raw` column batch by batch — `query_pool`'s rows
+    without ever holding the whole pool."""
+    import pyarrow.parquet as pq
+
+    path = _pool_path(cfg, capability)
+    if path is None:
+        return
+    for batch in pq.ParquetFile(path).iter_batches(
+            batch_size=_STREAM_BATCH, columns=["raw"]):
+        out = []
+        for raw_json in batch.column(0).to_pylist():
             try:
-                os.unlink(os.path.join(cfg.pools_dir, prev_file))
-            except OSError:
-                pass
-        return entry
+                parsed = json.loads(raw_json)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                out.append(parsed)
+        yield out
 
 
 def query_pool(cfg: HubCatalogConfig, capability: str, *,
