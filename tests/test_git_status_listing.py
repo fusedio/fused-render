@@ -19,7 +19,8 @@ import sys
 
 import pytest
 
-from _git_repo import build_repo, git, git_available, write
+from _git_repo import (bare_repo, build_repo, empty_repo, git, git_available,
+                       with_remote, write)
 
 from fused_render.server import git_status
 
@@ -353,3 +354,130 @@ def test_list_endpoint_omits_git_outside_a_repository(tmp_path):
     data = TestClient(create_app(start_dir=str(tmp_path))).get(
         "/api/fs/list", params={"path": str(tmp_path)}).json()
     assert all("git" not in e for e in data["entries"])
+
+
+# ------------------------------------------------- unpushed-commit counts (↑N)
+
+def _cloned_repo(tmp_path):
+    """A clone of a bare origin with published files, so `@{upstream}`
+    resolves and the branch starts level with it."""
+    remote = str(tmp_path / "origin.git")
+    seed = str(tmp_path / "seed")
+    empty_repo(seed)
+    write(seed, "top.txt", "t\n")
+    write(seed, "pkg/a.py", "a\n")
+    write(seed, "pkg/sub/b.py", "b\n")
+    write(seed, "other/c.py", "c\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "seed")
+    with_remote(seed, remote)
+    clone = str(tmp_path / "clone")
+    git(str(tmp_path), "clone", "-q", remote, clone)
+    return clone
+
+
+def _commit(root, rel, text, msg):
+    write(root, rel, text)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", msg)
+
+
+@pytestmark_git
+def test_listing_unpushed_counts_commits_per_entry(tmp_path):
+    root = _cloned_repo(tmp_path)
+    _commit(root, "pkg/a.py", "a2\n", "one")
+    _commit(root, "pkg/sub/b.py", "b2\n", "two")
+    _commit(root, "pkg/a.py", "a3\n", "three")
+    top = git_status.listing_unpushed(root, ["top.txt", "pkg", "other"])
+    assert top == {"pkg": 3}   # untouched entries are absent
+    inner = git_status.listing_unpushed(
+        os.path.join(root, "pkg"), ["a.py", "sub"])
+    assert inner == {"a.py": 2, "sub": 1}
+
+
+@pytestmark_git
+def test_listing_unpushed_counts_a_commit_once_per_folder(tmp_path):
+    root = _cloned_repo(tmp_path)
+    write(root, "pkg/a.py", "x\n")
+    write(root, "pkg/sub/b.py", "y\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "both")
+    assert git_status.listing_unpushed(root, ["pkg"]) == {"pkg": 1}
+
+
+@pytestmark_git
+def test_listing_unpushed_absent_when_not_ahead(tmp_path):
+    root = _cloned_repo(tmp_path)
+    assert git_status.listing_unpushed(root, ["pkg"]) == {}
+
+
+@pytestmark_git
+def test_listing_unpushed_absent_without_an_upstream(tmp_path):
+    root = str(tmp_path / "repo")
+    empty_repo(root)
+    _commit(root, "a.txt", "a\n", "one")
+    # A remote exists but the branch tracks nothing: still nothing to show.
+    bare_repo(str(tmp_path / "o.git"))
+    git(root, "remote", "add", "origin", str(tmp_path / "o.git"))
+    assert git_status.listing_unpushed(root, ["a.txt"]) == {}
+
+
+@pytestmark_git
+def test_listing_unpushed_absent_on_detached_head(tmp_path):
+    root = _cloned_repo(tmp_path)
+    _commit(root, "pkg/a.py", "a2\n", "one")
+    git(root, "checkout", "-q", "--detach")
+    assert git_status.listing_unpushed(root, ["pkg"]) == {}
+
+
+def test_listing_unpushed_empty_outside_a_repository(tmp_path):
+    (tmp_path / "a.txt").write_text("x\n", encoding="utf-8")
+    assert git_status.listing_unpushed(str(tmp_path), ["a.txt"]) == {}
+
+
+@pytestmark_git
+def test_listing_unpushed_survives_git_being_unusable(tmp_path, monkeypatch):
+    root = _cloned_repo(tmp_path)
+    _commit(root, "pkg/a.py", "a2\n", "one")
+    git_status.invalidate_status_cache()
+
+    def boom(*a, **k):
+        raise OSError("no git")
+    monkeypatch.setattr(git_status.subprocess, "run", boom)
+    assert git_status.listing_unpushed(root, ["pkg"]) == {}
+
+
+@pytestmark_git
+def test_list_endpoint_carries_git_ahead(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    root = _cloned_repo(tmp_path)
+    _commit(root, "pkg/a.py", "a2\n", "one")
+    _commit(root, "pkg/a.py", "a3\n", "two")
+    client = TestClient(create_app(start_dir=root))
+    data = client.get("/api/fs/list", params={"path": root}).json()
+    by_name = {e["name"]: e for e in data["entries"]}
+    assert by_name["pkg"]["git_ahead"] == 2
+    assert "git_ahead" not in by_name["other"]
+    assert "git_ahead" not in by_name["top.txt"]
+    # Independent of the dirty mark: dirty AND ahead shows both.
+    write(root, "pkg/a.py", "dirty\n")
+    git_status.invalidate_status_cache()
+    data = client.get("/api/fs/list", params={"path": root}).json()
+    by_name = {e["name"]: e for e in data["entries"]}
+    assert by_name["pkg"]["git"] == "modified"
+    assert by_name["pkg"]["git_ahead"] == 2
+
+
+@pytestmark_git
+def test_list_endpoint_omits_git_ahead_when_level(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    root = _cloned_repo(tmp_path)
+    data = TestClient(create_app(start_dir=root)).get(
+        "/api/fs/list", params={"path": root}).json()
+    assert all("git_ahead" not in e for e in data["entries"])
