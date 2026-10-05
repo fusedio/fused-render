@@ -1312,11 +1312,119 @@ def _watching(entry_id: str, on: bool) -> None:
             _watched.add(entry_id)
         else:
             _watched.discard(entry_id)
+            _beats.pop(entry_id, None)
 
 
 def _is_watched(entry_id: str) -> bool:
     with _watched_lock:
         return entry_id in _watched
+
+
+# A watch is proven by `watcher_pid` + a heartbeat (`watcher_at`) on the stored
+# entry, because `_watched` is per-process and the sweep runs in whichever
+# process holds the machine-duties lease — which is often NOT the one that sent
+# the message (a lean `open` process sends a page's message; the leader may be
+# another process, or the desktop `serve`). Without a stamp the leader's sweep
+# reads every such entry as "nobody is watching" and closes a live turn.
+#
+# The heartbeat is what makes a pid trustworthy: a pid alone is reused by the
+# OS. `_turn_tick` refreshes it every `_WATCH_BEAT_S`; a watcher silent for
+# `_WATCH_STALE_S` is treated as gone even if its pid still answers.
+_WATCH_BEAT_S = 30.0
+_WATCH_STALE_S = 120.0
+_beats: dict[str, float] = {}
+
+
+def _watcher_stamp() -> dict:
+    return {"watcher_pid": os.getpid(), "watcher_at": _now().isoformat()}
+
+
+def _pid_running(pid: int) -> bool:
+    """POSIX probe only. `os.kill(pid, 0)` on Windows is CTRL_C_EVENT, so there
+    the heartbeat alone decides."""
+    if os.name != "posix":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _watcher_alive(entry: dict, now: datetime) -> bool:
+    """Is ANOTHER process still watching this entry's turn? This process's own
+    answer is `_is_watched` and is authoritative: our own pid on an entry we
+    are not watching means the watch thread is gone."""
+    try:
+        pid = int(entry.get("watcher_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not pid or pid == os.getpid():
+        return False
+    try:
+        beat = parse_due(entry.get("watcher_at"))
+    except ValueError:
+        return False
+    if (now - beat).total_seconds() > _WATCH_STALE_S:
+        return False
+    return _pid_running(pid)
+
+
+def _heartbeat(entry_id: str) -> None:
+    """Refresh this watch's stamp, at most every `_WATCH_BEAT_S`."""
+    t = time.monotonic()
+    if t - _beats.get(entry_id, 0.0) < _WATCH_BEAT_S:
+        return
+    _beats[entry_id] = t
+    _update(entry_id, **_watcher_stamp())
+
+
+_INTERRUPTED = "interrupted: the app stopped while this message's turn was running"
+
+
+def _followable(run_id: str) -> bool:
+    """Can this run still be followed to a verdict? The run is a detached
+    process that outlives whoever started it, and `agent._poll` reads its own
+    files, so a run that is still going — or that finished while nobody
+    watched — answers. One that left no files at all says `unknown run_id`."""
+    try:
+        data = claude_spawn.load_agent()._poll(run_id)
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(data, dict) and data.get("error") != "unknown run_id"
+
+
+def _resolve_orphan(entry: dict) -> None:
+    """A `sent` entry with no live watcher anywhere. Follow its run if it can
+    still be followed (the previous leader died, its Claude child did not);
+    otherwise it really was interrupted."""
+    run_id = str(entry.get("run_id") or "")
+    if run_id and _followable(run_id):
+        _adopt_watch(entry)
+    else:
+        _close_unwatched(entry, _INTERRUPTED)
+
+
+def _adopt_watch(entry: dict) -> None:
+    """Take over the watch of a sent turn whose watcher is gone. The run is a
+    detached process that outlives whoever started it, and `_poll(run_id)`
+    reads the run's own files, so ANY process can follow it to its verdict."""
+    entry_id = str(entry.get("id") or "")
+    with _watched_lock:
+        if entry_id in _watched:
+            return
+        _watched.add(entry_id)
+    try:
+        _update(entry_id, **_watcher_stamp())
+        _beats[entry_id] = time.monotonic()
+        threading.Thread(
+            target=_watch_turn, args=(dict(entry), str(entry["run_id"])),
+            daemon=True, name="fused-schedule-session-adopt").start()
+    except Exception:  # noqa: BLE001
+        logger.debug("could not adopt a turn's watch", exc_info=True)
+        _watching(entry_id, False)
 
 
 def _sync_wake() -> None:
@@ -2280,6 +2388,7 @@ def _claim_due(now: datetime) -> list[dict]:
     (`_emit` takes its own), so the two locks are never nested."""
     due: list[tuple[datetime, str, dict]] = []
     announce: list[tuple[str, dict, str]] = []
+    orphans: list[dict] = []
     with _store_lock():
         entries = _read()
         changed = False
@@ -2318,13 +2427,12 @@ def _claim_due(now: datetime) -> list[dict]:
                 # `state` stays SENT because that is true — the message did go —
                 # and `turn` becomes `unknown`, the same verdict and the same word
                 # `_close_unwatched` uses for a watch that ended without one.
-                if not _is_watched(str(entry.get("id") or "")):
-                    entry["turn"] = "unknown"
-                    entry["turn_at"] = now.isoformat()
-                    entry["error"] = ("interrupted: the app stopped while this "
-                                      "message's turn was running")
-                    announce.append((EVENT_FAILED, dict(entry), entry["error"]))
-                    changed = True
+                if (_is_watched(str(entry.get("id") or ""))
+                        or _watcher_alive(entry, now)):
+                    continue
+                # Decided AFTER the lock: following a run means polling it, and
+                # nothing slow belongs under the store's flock.
+                orphans.append(dict(entry))
                 continue
             if state != PENDING:
                 continue
@@ -2366,6 +2474,8 @@ def _claim_due(now: datetime) -> list[dict]:
             _write(entries)
     for kind, entry, detail in announce:
         _emit(kind, entry, detail)
+    for entry in orphans:
+        _resolve_orphan(entry)
     if changed:
         _sync_wake()
     # BY DUE TIME, not by store order. The store is in creation order, and the two
@@ -2775,7 +2885,9 @@ def _send(entry: dict) -> None:
     # downstream needs and cannot re-derive: the run id on this entry is a
     # session host the CHAT owns, not a process this send started.
     _update(entry["id"], state=SENT, run_id=str(run_id), error="",
+            **_watcher_stamp(),
             **({"host_sent": True} if host_sent else {}))
+    _beats[entry["id"]] = time.monotonic()
     if host_sent:
         entry["host_sent"] = True
     # §5's "scheduled run started" moment — emitted right after the spawn is
@@ -2865,6 +2977,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     and for an unattended session that is the single most likely way to be
     stuck."""
     entry_id = entry["id"]
+    _heartbeat(entry_id)
     # CAPTURE THE SESSION THE TURN RAN IN, on whichever tick first reports it.
     # `session_id` on the entry is an INPUT — "resume this one", empty meaning
     # "start a fresh one" — so it cannot double as the answer without retroactively
