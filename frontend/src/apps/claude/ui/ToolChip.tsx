@@ -21,6 +21,8 @@ import {
   chipOutput,
   formatEditDiff,
   leftoverInput,
+  planFilePath,
+  PLAN_HIDDEN_INPUT_KEYS,
   PLAN_TOOL,
   prettyToolName,
   toolChipSummary,
@@ -28,9 +30,12 @@ import {
   toolStatusGlyph,
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
+import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
+import { activateOnKey } from "./planAffordance";
+import { PlanModal } from "./PlanModal";
 
 function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -76,10 +81,21 @@ function CopyPre({
   className,
   copy,
   children,
+  runnable,
+  cwd,
 }: {
   className?: string;
   copy: string;
   children?: React.ReactNode;
+  /** The Bash chip only: this `copy` IS the command the tool ran, so where the
+   *  drawer exists it can be typed there too — `execute: false`, the same
+   *  review-before-Enter as the markdown fence's own "run" button, since a
+   *  transcript's copy of a past command is not a request to run it again
+   *  unchanged. */
+  runnable?: boolean;
+  /** The chat's working directory (ToolChipProps.cwd) — the run button `cd`'s
+   *  here first. */
+  cwd?: string | null;
 }) {
   const [copied, setCopied] = useState(false);
   // ONE TIMER, REPLACED RATHER THAN STACKED, AND CANCELLED ON THE WAY OUT
@@ -107,9 +123,19 @@ function CopyPre({
       setCopied(false);
     }, COPY_RESET_MS);
   }, [copy]);
+  const canRun = useCanRunInTerminal();
   return (
     <pre {...(className ? { className } : {})}>
       <span className="copywrap">
+        {runnable && canRun && copy ? (
+          <button
+            className="runbtn"
+            type="button"
+            onClick={() => openTerminal({ cwd: cwd ?? undefined, command: copy, execute: false })}
+          >
+            run
+          </button>
+        ) : null}
         <button className="copybtn" type="button" onClick={onCopy}>
           {copied ? "copied" : "copy"}
         </button>
@@ -161,7 +187,12 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
     case PLAN_TOOL:
       // ...and when `plan` is not a usable string it stays UNUSED, so it falls
       // into the dump: a chip must never imply a plan was read.
-      return typeof inp.plan === "string" && inp.plan ? ["plan"] : [];
+      // `PLAN_HIDDEN_INPUT_KEYS` (`planFilePath`) is hidden from the dump ONLY
+      // when `PlanChipBody` (the sole renderer of the "Saved to" line, mounted
+      // only for a usable plan) actually shows it instead (D890 code review,
+      // finding 4). Without a usable plan nothing renders it, so it must stay
+      // in the dump rather than vanish.
+      return typeof inp.plan === "string" && inp.plan ? ["plan", ...PLAN_HIDDEN_INPUT_KEYS] : [];
     case ANSWERABLE_TOOL:
       return Array.isArray(inp.questions) ? ["questions"] : [];
     default:
@@ -169,13 +200,13 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
   }
 }
 
-function ChipBody({ seg }: { seg: ToolSegment }) {
+function ChipBody({ seg, cwd }: { seg: ToolSegment; cwd?: string | null }) {
   const inp = asRecord(seg.input);
   const extra = leftoverInput(inp, usedKeys(seg, inp));
   const out = chipOutput(seg.output);
   return (
     <>
-      {renderInput(seg, inp)}
+      {renderInput(seg, inp, cwd)}
       {extra ? <CopyPre copy={JSON.stringify(extra, null, 2)}>{JSON.stringify(extra, null, 2)}</CopyPre> : null}
       {out === null ? null : (
         <CopyPre className="chip-out" copy={out}>
@@ -194,7 +225,7 @@ function ChipBody({ seg }: { seg: ToolSegment }) {
   );
 }
 
-function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
+function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: string | null) {
   switch (seg.name) {
     case "Edit":
       return (
@@ -221,7 +252,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
       return (
         <>
           {inp.description ? <div className="chip-label">{String(inp.description)}</div> : null}
-          <CopyPre copy={typeof inp.command === "string" ? inp.command : ""}>
+          <CopyPre copy={typeof inp.command === "string" ? inp.command : ""} runnable cwd={cwd}>
             {typeof inp.command === "string" ? inp.command : ""}
           </CopyPre>
         </>
@@ -245,7 +276,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
       // record that a plan was ever proposed, so a raw JSON dump would be a
       // record of the bytes rather than of the plan (D248).
       const plan = typeof inp.plan === "string" && inp.plan ? inp.plan : "";
-      return plan ? <MarkdownView className="plan-body chip-plan" text={plan} /> : null;
+      return plan ? <PlanChipBody plan={plan} savedTo={planFilePath(inp)} /> : null;
     }
     case ANSWERABLE_TOOL: {
       // Structured plain text, never markdown: the labels are what the answer
@@ -285,6 +316,43 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
   }
 }
 
+/** The chip's plan is always historical (see PLAN_TOOL's docblock below) —
+ *  there is no pending decision to share, so this owns its own `open` bit
+ *  rather than reusing PlanCard's state (D890). The modal it opens is
+ *  read-only (`resolved`, no actions) for the same reason: whatever the plan's
+ *  outcome was, a restored transcript has no live row to decide against. */
+function PlanChipBody({ plan, savedTo }: { plan: string; savedTo?: string }) {
+  const [open, setOpen] = useState(false);
+  const openModal = () => setOpen(true);
+  return (
+    <>
+      <div
+        className="plan-open-chip"
+        role="button"
+        tabIndex={0}
+        aria-label="Open plan in full view"
+        onClick={openModal}
+        onKeyDown={activateOnKey(openModal)}
+      >
+        Open ⤢
+      </div>
+      <MarkdownView className="plan-body chip-plan" text={plan} />
+      {savedTo ? <div className="plan-saved-path">Saved to {savedTo}</div> : null}
+      {open ? (
+        <PlanModal
+          onClose={() => setOpen(false)}
+          plan={plan}
+          savedTo={savedTo}
+          status={{ cls: "", text: "" }}
+          resolved
+          posting={false}
+          note=""
+        />
+      ) : null}
+    </>
+  );
+}
+
 function PathLabel({ value }: { value: unknown }) {
   const s = text(value);
   return s ? <div className="chip-label chip-label-path">{s}</div> : null;
@@ -294,11 +362,15 @@ export interface ToolChipProps {
   seg: ToolSegment;
   /** Collapse-policy key (cardPolicy.cardKey). */
   cardKey: string;
+  /** The chat's working directory — the Bash chip's "run" button `cd`'s here
+   *  first, so re-running a past command lands where the chat is actually
+   *  working rather than wherever the drawer happens to be. */
+  cwd?: string | null;
 }
 
 /** MEMOIZED: a replayed tool call is the same segment object poll after poll,
  *  and a chip's body is the most expensive thing in a long turn. */
-export const ToolChip = memo(function ToolChip({ seg, cardKey }: ToolChipProps) {
+export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipProps) {
   const [open, toggle] = useCardOpen(cardKey);
   const raw = String(seg.name || "tool");
   const pretty = prettyToolName(raw);
@@ -336,7 +408,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey }: ToolChipProps) 
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="chip-body">
-        <ChipBody seg={seg} />
+        <ChipBody seg={seg} cwd={cwd} />
       </CollapsibleContent>
     </Collapsible>
   );

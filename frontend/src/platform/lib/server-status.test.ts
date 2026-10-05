@@ -15,21 +15,28 @@ import {
   reduceProbe,
   updateDialogMode,
   updateDialogPreview,
+  pendingOutage,
+  probeHealth,
+  type ProbeFailKind,
+  type ProbeResult,
   type StatusState,
   type SurfaceInput,
 } from "@platform/lib/server-status";
-import { restartInFlight, RESTART_STAGES } from "@platform/lib/restart-flow";
+import { reduceRestart, restartInFlight, RESTART_STAGES } from "@platform/lib/restart-flow";
 
 const BUILD = "0.4.8";
 
-const ok = (version = BUILD, installedVersion: string | null = null) => ({
+const ok = (version = BUILD, installedVersion: string | null = null): ProbeResult => ({
   ok: true,
   version,
   installedVersion,
 });
-const fail = () => ({ ok: false });
+const fail = (kind: ProbeFailKind = "refused"): ProbeResult => ({ ok: false, kind });
+/** Enough consecutive failures to reach "down". */
+const down = (kind: ProbeFailKind = "refused") =>
+  Array.from({ length: FAIL_THRESHOLD }, () => fail(kind));
 
-function run(state: StatusState, probes: Array<ReturnType<typeof ok | typeof fail>>) {
+function run(state: StatusState, probes: ProbeResult[]) {
   let reload = false;
   for (const probe of probes) ({ state, reload } = reduceProbe(state, probe, BUILD));
   return { state, reload };
@@ -57,7 +64,7 @@ test("a success between failures resets the streak", () => {
 });
 
 test("recovery on the same version shows reconnected, no reload", () => {
-  const { state, reload } = run(initialStatus(), [fail(), fail(), ok()]);
+  const { state, reload } = run(initialStatus(), [...down(), ok()]);
   expect(state.banner).toBe("reconnected");
   expect(reload).toBe(false);
 });
@@ -69,7 +76,7 @@ test("served version differs from bundle: refresh banner", () => {
 });
 
 test("recovery onto a new version auto-reloads", () => {
-  const { reload } = run(initialStatus(), [fail(), fail(), ok("0.4.9")]);
+  const { reload } = run(initialStatus(), [...down(), ok("0.4.9")]);
   expect(reload).toBe(true);
 });
 
@@ -92,7 +99,7 @@ test("reconnected clears on the following healthy probe", () => {
   // "reconnected" back AFTER the timer fired (and no new timer arms, wasDown
   // being false). The reducer therefore never holds "reconnected" past the
   // next probe — worst case the card shows for two poll ticks, never forever.
-  const { state } = run(initialStatus(), [fail(), fail(), ok(), ok()]);
+  const { state } = run(initialStatus(), [...down(), ok(), ok()]);
   expect(state.banner).toBe("hidden");
 });
 
@@ -109,7 +116,7 @@ test("restart wins over refresh when both versions drift", () => {
 });
 
 test("no auto-reload on recovery while the disk is still ahead", () => {
-  const { state, reload } = run(initialStatus(), [fail(), fail(), ok("0.4.9", "0.5.0")]);
+  const { state, reload } = run(initialStatus(), [...down(), ok("0.4.9", "0.5.0")]);
   expect(reload).toBe(false);
   expect(state.banner).toBe("update-restart");
 });
@@ -125,7 +132,7 @@ test("update banner clears if versions re-align", () => {
 });
 
 test("down interrupts an update banner once the threshold is hit", () => {
-  const { state } = run(initialStatus(), [ok("0.4.9"), fail(), fail()]);
+  const { state } = run(initialStatus(), [ok("0.4.9"), ...down()]);
   expect(state.banner).toBe("down");
 });
 
@@ -133,6 +140,88 @@ test("probe body without versions is treated as healthy, not an update", () => {
   const { state, reload } = run(initialStatus(), [{ ok: true }]);
   expect(state.banner).toBe("hidden");
   expect(reload).toBe(false);
+});
+
+// ---- failure kinds, the slow line and the outage record (SPEC §50) --------
+
+test("a timeout below the threshold is slow, not down", () => {
+  const { state } = run(initialStatus(), [fail("timeout")]);
+  expect(state.banner).toBe("slow");
+  expect(state.failKinds).toEqual(["timeout"]);
+});
+
+test("a refused probe below the threshold leaves the banner alone", () => {
+  const { state } = run(initialStatus(), [fail("refused")]);
+  expect(state.banner).toBe("hidden");
+});
+
+test("slow becomes down at the threshold, and clears quietly on recovery", () => {
+  let { state } = run(initialStatus(), down("timeout"));
+  expect(state.banner).toBe("down");
+  ({ state } = run(initialStatus(), [fail("timeout"), ok()]));
+  expect(state.banner).toBe("hidden");
+});
+
+test("recovery emits one outage record with the streak's kinds and boot ids", () => {
+  let state = initialStatus();
+  ({ state } = reduceProbe(state, { ...ok(), bootId: "a", latencyMs: 12 }, BUILD, 1_000));
+  ({ state } = reduceProbe(state, fail("timeout"), BUILD, 6_000));
+  ({ state } = reduceProbe(state, fail("refused"), BUILD, 11_000));
+  const r = reduceProbe(state, { ...ok(), bootId: "b", latencyMs: 30 }, BUILD, 16_000);
+  expect(r.outage).toEqual({
+    t_down: 6,
+    t_up: 16,
+    strikes: 2,
+    kinds: ["timeout", "refused"],
+    boot_id_before: "a",
+    boot_id_after: "b",
+    recovered: true,
+  });
+  expect(r.state.fails).toBe(0);
+  expect(r.state.failKinds).toEqual([]);
+  expect(r.state.firstFailAt).toBeUndefined();
+  expect(r.state.bootId).toBe("b");
+  expect(r.state.latencies).toEqual([12, 30]);
+});
+
+test("a healthy streak emits no outage record", () => {
+  let state = initialStatus();
+  ({ state } = reduceProbe(state, { ...ok(), bootId: "a" }, BUILD, 1_000));
+  const r = reduceProbe(state, { ...ok(), bootId: "a" }, BUILD, 6_000);
+  expect(r.outage).toBeUndefined();
+  expect(r.state.banner).toBe("hidden");
+});
+
+test("a same-version restart no probe saw fail still reconnects and records", () => {
+  let state = initialStatus();
+  ({ state } = reduceProbe(state, { ...ok(), bootId: "a" }, BUILD, 1_000));
+  const r = reduceProbe(state, { ...ok(), bootId: "b" }, BUILD, 6_000);
+  expect(r.state.banner).toBe("reconnected");
+  expect(r.reload).toBe(false);
+  expect(r.outage).toMatchObject({ t_down: 1, t_up: 6, strikes: 0, kinds: [], recovered: true });
+});
+
+test("the latency ring keeps only the newest entries", () => {
+  let state = initialStatus();
+  for (let i = 0; i < 60; i++) ({ state } = reduceProbe(state, { ...ok(), latencyMs: i }, BUILD));
+  expect(state.latencies.length).toBe(50);
+  expect(state.latencies[49]).toBe(59);
+});
+
+test("a tab leaving mid-outage has a partial, unrecovered record", () => {
+  expect(pendingOutage(initialStatus())).toBeNull();
+  let state = initialStatus();
+  ({ state } = reduceProbe(state, { ...ok(), bootId: "a" }, BUILD, 1_000));
+  ({ state } = reduceProbe(state, fail("http-5xx"), BUILD, 2_000));
+  expect(pendingOutage(state)).toEqual({
+    t_down: 2,
+    t_up: null,
+    strikes: 1,
+    kinds: ["http-5xx"],
+    boot_id_before: "a",
+    boot_id_after: null,
+    recovered: false,
+  });
 });
 
 // ---- the refresh case's dialog, and its three modes -----------------------
@@ -204,6 +293,13 @@ test("today's cards are unchanged when no restart is anywhere near", () => {
   expect(surface({ banner: "reconnected" })).toBe("reconnected");
   expect(surface({ banner: "update-refresh" })).toBe("refresh-dialog");
   expect(surface({ banner: "update-refresh", mode: "off" })).toBe("none");
+});
+
+test("slow draws its own line, and a restart in flight suppresses it like down", () => {
+  expect(surface({ banner: "slow" })).toBe("slow");
+  for (const stage of RESTART_STAGES.filter(restartInFlight)) {
+    expect(surface({ banner: "slow", stage })).toBe("none");
+  }
 });
 
 test("the disk being ahead suppresses the down card, but draws no dialog", () => {
@@ -317,7 +413,7 @@ test("a hidden tab keeps probing only while a restart is in flight", () => {
   for (const stage of ["quitting", "restarting", "reconnecting", "back"] as const) {
     expect(probeWhileHidden(stage)).toBe(true);
   }
-  for (const stage of ["ready", "gave-up"] as const) {
+  for (const stage of ["ready", "gave-up", "stuck"] as const) {
     expect(probeWhileHidden(stage)).toBe(false);
   }
 });
@@ -330,4 +426,81 @@ test("the poll tick probes a visible tab always, and a hidden one only mid-resta
   expect(probeOnTick("hidden", "quitting")).toBe(true);
   // A DOM with no visibilityState at all (the test shim) is not a hidden tab.
   expect(probeOnTick(undefined, "ready")).toBe(true);
+});
+
+// ---- probeHealth: a NEW frontend against an OLD server ----------------------
+// Version skew (2026-10-05): an update replaced the bundle under a running
+// 0.6.2 process, so the window loaded the 0.6.5 frontend, whose probe is
+// /api/health — a route 0.6.2 does not have. Every probe was a 404, the restart
+// dialog walked to "Reconnecting…", and the same server answered /api/config
+// 200 throughout.
+
+function fakeFetch(routes: Record<string, () => Response | Promise<Response> | Error>) {
+  const calls: string[] = [];
+  const fn = (async (url: string) => {
+    calls.push(url);
+    const r = routes[url];
+    if (!r) return new Response("nope", { status: 404 });
+    const out = await r();
+    if (out instanceof Error) throw out;
+    return out;
+  }) as unknown as typeof fetch;
+  return { fn, calls };
+}
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+test("a 404 from /api/health falls back to /api/config and is healthy, with the version", async () => {
+  const { fn, calls } = fakeFetch({
+    "/api/config": () => json({ version: "0.6.2", installed_version: "0.6.5", dev: false }),
+  });
+  const probe = await probeHealth(fn);
+  expect(calls).toEqual(["/api/health", "/api/config"]);
+  expect(probe.ok).toBe(true);
+  expect(probe.version).toBe("0.6.2");
+  expect(probe.installedVersion).toBe("0.6.5");
+  expect(probe.dev).toBe(false);
+  // No boot id: an older server has none, and the reducer reads that as "no claim".
+  expect(probe.bootId).toBeUndefined();
+  // …which makes it an ordinary healthy probe to both reducers.
+  const state = reduceProbe(initialStatus(), { ...probe }, "0.6.2").state;
+  expect(state.fails).toBe(0);
+  expect(reduceRestart(
+    { stage: "quitting", requestedAt: 1, fails: 0, before: "0.6.2" },
+    { type: "probe", ok: true, version: probe.version },
+    2,
+  ).stage).toBe("quitting");
+});
+
+test("a healthy /api/health is used as is, with no second request", async () => {
+  const { fn, calls } = fakeFetch({ "/api/health": () => json({ boot_id: "b1" }) });
+  const probe = await probeHealth(fn);
+  expect(calls).toEqual(["/api/health"]);
+  expect(probe).toMatchObject({ ok: true, bootId: "b1" });
+});
+
+test("only a 404 falls back: 5xx and other statuses stay failures", async () => {
+  for (const [status, kind] of [[500, "http-5xx"], [503, "http-5xx"], [403, "http-other"], [502, "http-5xx"]] as const) {
+    const { fn, calls } = fakeFetch({ "/api/health": () => new Response("", { status }) });
+    expect(await probeHealth(fn)).toEqual({ ok: false, kind });
+    expect(calls).toEqual(["/api/health"]);
+  }
+});
+
+test("a network failure is still down, with and without the fallback", async () => {
+  const refused = fakeFetch({ "/api/health": () => new TypeError("Failed to fetch") });
+  expect(await probeHealth(refused.fn)).toEqual({ ok: false, kind: "refused" });
+  const abort = new Error("aborted");
+  abort.name = "AbortError";
+  expect(await probeHealth(fakeFetch({ "/api/health": () => abort }).fn)).toEqual({ ok: false, kind: "timeout" });
+  // Health 404s, then the fallback itself cannot be reached: down, not healthy.
+  const gone = fakeFetch({ "/api/config": () => new TypeError("Failed to fetch") });
+  expect(await probeHealth(gone.fn)).toEqual({ ok: false, kind: "refused" });
+});
+
+test("a 404 whose fallback is also broken is not healthy", async () => {
+  const bad = fakeFetch({ "/api/config": () => new Response("", { status: 500 }) });
+  expect(await probeHealth(bad.fn)).toEqual({ ok: false, kind: "http-5xx" });
+  const notJson = fakeFetch({ "/api/config": () => new Response("<html>", { status: 200 }) });
+  expect(await probeHealth(notJson.fn)).toEqual({ ok: false, kind: "parse" });
 });

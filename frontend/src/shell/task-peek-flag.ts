@@ -2,14 +2,13 @@
 // of navigating to the Explorer — the `task_peek_enabled` pref
 // (fused_render/shell/prefs.py), default ON since 2026-09-17.
 //
-// A CLONE OF `apps/claude/feature-flag.ts`, deliberately down to the shape: one
-// shared GET, a generation guard so a publish beats a slower in-flight read, and
-// `null` meaning "not asked yet". Two flags that gate a whole behaviour should
-// not have two different idioms for the same three states.
+// The shape of `apps/canvases/feature-flag.ts`: one shared GET, a generation
+// guard so a publish beats a slower in-flight read, and `null` meaning "not
+// asked yet".
 //
 // WHY THE TRI-STATE STILL MATTERS, now that the default is ON: "not asked yet"
 // is still not an answer. A premature `true` would stamp `data-peek-key` on
-// every row, claim the window's param boundary and adopt a `?peek=` from the
+// every row and adopt a `?peek=` from the
 // URL on behalf of a reader who may have switched the panel OFF — so the first
 // frames stay `null`, every consumer takes `=== true`, and the page navigates
 // as it always did until the read lands a few milliseconds later.

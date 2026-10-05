@@ -233,7 +233,33 @@ def _write_status(path: str, payload: dict) -> None:
     os.replace(tmp, path)
 
 
+def _enable_faulthandler() -> None:
+    """Native-crash stacks for this child (SPEC §50, D4), stdlib only.
+
+    Not `fused_render.crashlog.install`: this file runs as a standalone script
+    (as `_child.py` does) on an interpreter that need not have the package. So
+    faulthandler goes to fd 2 instead, and that is the right place anyway:
+    `engine_host._spawn` appends this process's stderr to `<cache>/daemon.log`
+    and tails it when the child dies, so a SIGSEGV out of native code leaves
+    its Python stack in the very output the parent already reads after a death.
+
+    No SIGTERM registration, unlike `crashlog.install`: a deliberate stop is
+    routine for this process, and a stack dump on every one would bury the
+    real failures in that same stderr. Uncaught Python exceptions need
+    nothing here — the default hooks already print them to stderr. Never
+    raises: a child must not fail to start over diagnostics.
+    """
+    try:
+        import faulthandler
+
+        if sys.stderr is not None:
+            faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> None:
+    _enable_faulthandler()
     parser = argparse.ArgumentParser()
     parser.add_argument("--status", required=True)
     parser.add_argument("--cache", required=True)

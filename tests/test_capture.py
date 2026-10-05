@@ -556,7 +556,8 @@ def test_the_quit_ladder_runs_the_capture_rung_before_the_unmounts(monkeypatch):
 
     steps = desktop_app.quit_teardown(
         None, stop_captures=lambda: None, close_duckdb=lambda: None,
-        unmount_mounts=lambda: None, stop_rcd=lambda: None)
+        unmount_mounts=lambda: None, stop_rcd=lambda: None,
+        stop_children=lambda: None, record_exit=lambda: None)
     assert steps.index("capture") < steps.index("unmount")
 
 
@@ -823,3 +824,90 @@ def test_the_mux_handle_reports_an_error_it_has_already_died_of():
     assert _darwin_mux.failure(handle) == "the display went away"
     handle.note_error("something later")
     assert _darwin_mux.failure(handle) == "the display went away"
+
+
+# ------------------------------------------------------------ native serialisation
+
+def test_backend_calls_never_overlap(backend, monkeypatch, tmp_path):
+    """Every call into the native backend is serialised.
+
+    The backends drive ObjC objects from whichever threadpool thread the
+    request landed on; the same shape crashed the app through NSPasteboard.
+    A backend that counts how many callers are inside it at once must never
+    see more than one across concurrent screenshots, starts and stops.
+    """
+    import threading
+    import time
+
+    inside = {"n": 0, "peak": 0}
+    guard = threading.Lock()
+
+    def tracked(fn):
+        def wrapper(*a, **kw):
+            with guard:
+                inside["n"] += 1
+                inside["peak"] = max(inside["peak"], inside["n"])
+            try:
+                time.sleep(0.002)
+                return fn(*a, **kw)
+            finally:
+                with guard:
+                    inside["n"] -= 1
+        return wrapper
+
+    for name in ("start_screen", "start_audio", "stop", "screenshot"):
+        monkeypatch.setattr(backend, name, tracked(getattr(backend, name)))
+
+    def shoot(i):
+        capture.screenshot({"path": str(tmp_path / f"s{i}.png")})
+
+    def record(i):
+        rec = capture.start("audio", {"path": str(tmp_path / f"r{i}.m4a")})
+        capture.stop(rec["id"])
+
+    threads = [threading.Thread(target=shoot, args=(i,)) for i in range(6)]
+    threads += [threading.Thread(target=record, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert inside["peak"] == 1
+
+
+def test_an_ending_does_not_wait_forever_behind_a_prompting_start(
+        backend, monkeypatch, tmp_path, caplog):
+    """A `start` can hold the native lock for the whole OS permission prompt
+    (up to WAIT_S). A `stop` — user, cap, death or quit — waits a bounded
+    time and then ends the recording unserialised rather than leaving a
+    microphone on or a quit hanging."""
+    import threading
+    import time
+
+    monkeypatch.setattr(capture, "STOP_LOCK_WAIT_S", 0.05)
+    rec = capture.start("audio", {"path": str(tmp_path / "r.m4a")})
+
+    prompting = threading.Event()
+    release = threading.Event()
+
+    def slow_start():
+        with capture._native():
+            prompting.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=slow_start, daemon=True)
+    holder.start()
+    assert prompting.wait(2)
+
+    t0 = time.monotonic()
+    result = capture.stop(rec["id"])
+    elapsed = time.monotonic() - t0
+    release.set()
+    holder.join(2)
+
+    assert result["state"] == "stopped"
+    assert backend.handles[0].stopped
+    assert elapsed < 1.0
+    assert "native lock busy" in caplog.text
+    # The lock was never released by the loser: it is back to free now.
+    assert capture._native_lock.acquire(timeout=1)
+    capture._native_lock.release()

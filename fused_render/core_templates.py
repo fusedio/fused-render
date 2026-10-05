@@ -29,7 +29,7 @@ import hashlib
 import os
 import shutil
 
-from fused_render import __version__
+from fused_render import __version__, tasks_store
 from fused_render.shell.storage import home_dir
 
 # Source of truth: the templates shipped inside the package (app bundle).
@@ -131,6 +131,51 @@ def _expected_marker() -> str:
     return marker
 
 
+def _read_marker(marker: str):
+    try:
+        with open(marker, encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        # OSError: absent / unreadable. ValueError (⊇ UnicodeDecodeError): the
+        # marker holds non-UTF-8 garbage. Either way treat it as unstaged and
+        # let the mismatch re-copy — never propagate at import. A marker written
+        # by a pre-digest release (a bare version, no digest) lands in the same
+        # mismatch branch, which is how those installs heal.
+        return None
+
+
+def _stage(core_dir: str, expected: str) -> None:
+    # Stage into a private sibling dir, then swap atomically. copytree never
+    # targets the live dir, so a concurrent reader / a second instance can't
+    # observe a partial tree, and the marker lands only inside a complete copy.
+    staging = f"{core_dir}.staging.{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    # `.venv` is excluded on principle rather than because one is ever
+    # meant to be here: this predicate never puts one inside the package
+    # (`projectenv._use_home_store` keys a bundled folder to the home
+    # store precisely because that tree is read-only). But a developer
+    # running `uv sync` by hand in `fused_render/templates/<name>/` would
+    # create one, and without this it gets copied into the staging dir on
+    # every release-digest change -- a multi-gigabyte tree neither this
+    # process nor the release ever asked for.
+    shutil.copytree(PACKAGE_TEMPLATES_DIR, staging, ignore=shutil.ignore_patterns(".venv"))
+    with open(_marker_path(staging), "w", encoding="utf-8") as f:
+        f.write(expected)
+    shutil.rmtree(core_dir, ignore_errors=True)
+    try:
+        os.replace(staging, core_dir)
+    except OSError:
+        if os.path.isdir(core_dir):
+            # Lost a swap race: another instance already put this exact tree
+            # in place, so a complete tree is live. Discard ours.
+            shutil.rmtree(staging, ignore_errors=True)
+        else:
+            # Genuine swap failure with core_dir already wiped. Surface it
+            # rather than silently returning a path to nothing (crash on
+            # failure, by design); the staging copy is left for inspection.
+            raise
+
+
 def ensure_core_templates() -> str:
     """Stage the packaged templates into the core dir if the staged copy doesn't
     match the packaged one, and return the core dir. Idempotent and cheap on the
@@ -151,47 +196,17 @@ def ensure_core_templates() -> str:
 
     expected = _expected_marker()
 
-    staged_marker = None
-    try:
-        with open(marker, encoding="utf-8") as f:
-            staged_marker = f.read().strip()
-    except (OSError, ValueError):
-        # OSError: absent / unreadable. ValueError (⊇ UnicodeDecodeError): the
-        # marker holds non-UTF-8 garbage. Either way treat it as unstaged and
-        # let the mismatch below re-copy — never propagate at import. A marker
-        # written by a pre-digest release (a bare version, no digest) lands in
-        # the same mismatch branch, which is how those installs heal.
-        staged_marker = None
-
-    if staged_marker != expected:
-        # Stage into a private sibling dir, then swap atomically. copytree never
-        # targets the live dir, so a concurrent reader / a second instance can't
-        # observe a partial tree, and the marker lands only inside a complete copy.
-        staging = f"{core_dir}.staging.{os.getpid()}"
-        shutil.rmtree(staging, ignore_errors=True)
-        # `.venv` is excluded on principle rather than because one is ever
-        # meant to be here: this predicate never puts one inside the package
-        # (`projectenv._use_home_store` keys a bundled folder to the home
-        # store precisely because that tree is read-only). But a developer
-        # running `uv sync` by hand in `fused_render/templates/<name>/` would
-        # create one, and without this it gets copied into the staging dir on
-        # every release-digest change -- a multi-gigabyte tree neither this
-        # process nor the release ever asked for.
-        shutil.copytree(PACKAGE_TEMPLATES_DIR, staging, ignore=shutil.ignore_patterns(".venv"))
-        with open(_marker_path(staging), "w", encoding="utf-8") as f:
-            f.write(expected)
-        shutil.rmtree(core_dir, ignore_errors=True)
-        try:
-            os.replace(staging, core_dir)
-        except OSError:
-            if os.path.isdir(core_dir):
-                # Lost a swap race: another instance already put this exact tree
-                # in place, so a complete tree is live. Discard ours.
-                shutil.rmtree(staging, ignore_errors=True)
-            else:
-                # Genuine swap failure with core_dir already wiped. Surface it
-                # rather than silently returning a path to nothing (crash on
-                # failure, by design); the staging copy is left for inspection.
-                raise
+    if _read_marker(marker) != expected:
+        # Several processes starting at once (many `fused-render open` apps on a
+        # fresh home or after an upgrade) all see a mismatch. Without a lock
+        # each wiped the live `core_dir` before swapping its own copy in — so a
+        # process that had already finished staging lost `vendor/` under a
+        # running app. Serialise the stage+swap and re-check inside: the first
+        # process stages, every other one finds the marker matching and leaves
+        # the tree alone.
+        with tasks_store.locked_path(core_dir + ".lock"):
+            if _read_marker(marker) == expected:
+                return core_dir
+            _stage(core_dir, expected)
 
     return core_dir

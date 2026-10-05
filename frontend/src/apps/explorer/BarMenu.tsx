@@ -21,8 +21,12 @@
 // Both popups are position:fixed off the trigger's rect rather than absolutely
 // positioned: .panel-pane and the tab bar clip their overflow, and a menu that
 // works in three of four bars is a menu that will be reported as broken in the
-// fourth.
+// fourth. And they are PORTALED TO <body> (see ContextMenu.tsx for the why): a
+// fixed box left under the bar is pinned to whichever ancestor is a containing
+// block for fixed descendants — on WebKit before Safari 18.4 that includes the
+// explorer's `container-type` columns, and the kebab menu opened 500px off.
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { modeTitle } from "@platform/lib/mode-name";
 
@@ -46,11 +50,14 @@ interface MenuPos {
 function useMenuAnchor(align: "left" | "right" = "left") {
   const [pos, setPos] = useState<MenuPos | null>(null); // non-null = open
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // The popup is portaled out of `rootRef`'s subtree, so "inside" is either.
+  const popupRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!pos) return;
     const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setPos(null);
+      const t = e.target as Node;
+      if (!rootRef.current?.contains(t) && !popupRef.current?.contains(t)) setPos(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setPos(null);
@@ -90,7 +97,7 @@ function useMenuAnchor(align: "left" | "right" = "left") {
     );
   };
 
-  return { pos, rootRef, toggle, close: () => setPos(null) };
+  return { pos, rootRef, popupRef, toggle, close: () => setPos(null) };
 }
 
 function CaretIcon({ open }: { open: boolean }) {
@@ -165,7 +172,7 @@ interface ModeMenuProps {
 }
 
 export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
-  const { pos, rootRef, toggle, close } = useMenuAnchor();
+  const { pos, rootRef, popupRef, toggle, close } = useMenuAnchor();
   const activeEntry = entries.find((e) => e.mode === active) ?? null;
   // One ROW is not a choice — the same rule the icon strips used — unless
   // nothing is active (a caller whose surface can show no mode at all, e.g. the
@@ -219,8 +226,10 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
         </span>
         <CaretIcon open={pos !== null} />
       </button>
-      {pos && (
+      {pos &&
+        createPortal(
         <div
+          ref={popupRef}
           className="bar-menu-popup"
           role="menu"
           aria-label="View mode"
@@ -256,7 +265,8 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
               <span className="bar-menu-item-label">{modeTitle(e.mode)}</span>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -310,7 +320,7 @@ export function OverflowMenu({
   // row inside a closed menu is a dot nobody sees.
   badge?: ReactNode;
 }) {
-  const { pos, rootRef, toggle, close } = useMenuAnchor("right");
+  const { pos, rootRef, popupRef, toggle, close } = useMenuAnchor("right");
   if (items.length === 0) return null;
   return (
     <div className="bar-overflow" ref={rootRef}>
@@ -332,9 +342,11 @@ export function OverflowMenu({
         <EllipsisIcon />
         {badge && <span className="bar-overflow-badge">{badge}</span>}
       </button>
-      {pos && (
+      {pos &&
+        createPortal(
         <div
-          className="bar-menu-popup"
+          ref={popupRef}
+          className="bar-menu-popup bar-overflow-popup"
           role="menu"
           aria-label={title}
           style={{ top: pos.top, left: pos.left, right: pos.right }}
@@ -361,7 +373,8 @@ export function OverflowMenu({
               </button>
             )
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

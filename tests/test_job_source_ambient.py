@@ -119,6 +119,7 @@ def test_every_job_minting_prefix_is_accounted_for():
         "IMAGE_JOB_PREFIX",      # ai/supervisor.py — /api/ai/image
         "TRANSCRIBE_JOB_PREFIX",  # ai/supervisor.py — /api/ai/transcribe
         "VIDEO_JOB_PREFIX",      # ai/supervisor.py — /api/ai/video
+        "SPEECH_JOB_PREFIX",
         "TEXT_JOB_PREFIX",       # ai/supervisor.py — /api/ai (local + apple)
         "BENCHMARK_JOB_PREFIX",  # ai/supervisor.py
         "JOB_PREFIX",            # capture/__init__.py — /api/capture/start

@@ -21,7 +21,6 @@ import { act, create } from "react-test-renderer";
 
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
-const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { publishProjectQueueEnabled } = await import("./feature-flag");
 
 // ---- the server, cut down to what a queued chat touches ---------------------
@@ -75,14 +74,10 @@ function stubFetch(): void {
     // stub that answers it is an infinite re-arm inside `act`.
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
     if (url === "/api/tasks") return jsonRes({ tasks: [] });
-    if (url === "/api/run") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        py: string;
-        params: Record<string, string>;
-      };
+    if (url === "/api/claude/agent" || url === "/api/claude/app-entry") {
       // An ordinary folder: no app entry, so no pane and nothing to annotate.
-      if (String(body.py).endsWith("/app.py")) return jsonRes({ ok: true, result: { entry: "" } });
-      return jsonRes({ ok: true, result: {} });
+      if (url === "/api/claude/app-entry") return jsonRes({ entry: "" });
+      return jsonRes({});
     }
     return jsonRes({});
   };
@@ -97,7 +92,6 @@ beforeEach(() => {
   cancelFails = false;
   historyTurns = [];
   admitAnswer = { run: true };
-  resetAgentDirCacheForTests();
   stubFetch();
   publishProjectQueueEnabled(false);
 });

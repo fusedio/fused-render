@@ -197,7 +197,7 @@ test("the poke is ignored once the number is known — a number does not change"
 function kebab(running: boolean): ReactTestRenderer {
   let r!: ReactTestRenderer;
   act(() => {
-    r = create(<Kebab agentDir="/tpl" file="/proj/app.py" sessionId={SESSION} running={running} />);
+    r = create(<Kebab file="/proj/app.py" sessionId={SESSION} running={running} />);
   });
   mounted.push(r);
   return r;
@@ -219,7 +219,7 @@ test("the menu re-reads the row when the run ends, and on every announcement (R3
     answer = async () => ({ tasks: [{ key: SESSION, task_id: 42, status: "done" }] });
     await act(async () => {
       r.update(
-        <Kebab agentDir="/tpl" file="/proj/app.py" sessionId={SESSION} running={false} />,
+        <Kebab file="/proj/app.py" sessionId={SESSION} running={false} />,
       );
       await new Promise((done) => setTimeout(done, 0));
     });
@@ -260,7 +260,7 @@ test("the menu's watch goes with the mount", async () => {
 test("the landing's menu has no session and reads nothing", async () => {
   let r!: ReactTestRenderer;
   act(() => {
-    r = create(<Kebab agentDir="/tpl" file="/proj" sessionId="" running={false} landing />);
+    r = create(<Kebab file="/proj" sessionId="" running={false} landing />);
   });
   mounted.push(r);
   await settle();
@@ -308,8 +308,8 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
   // this menu owns no vocabulary of the annotation subsystem's.
   expect(src).toContain("locked?: boolean");
   expect(src).toContain("lockedReason?: string");
-  const items = src.split("<DropdownMenuItem").slice(2);
-  expect(items).toHaveLength(2); // Archive and Delete; the terminal item is neither
+  const items = src.split("<DropdownMenuItem").slice(3);
+  expect(items).toHaveLength(2); // Archive and Delete; the terminal/copy items are neither
   for (const item of items) {
     const head = item.slice(0, item.indexOf("</DropdownMenuItem>"));
     // A run is still named first — it is the refusal the reader cannot lift

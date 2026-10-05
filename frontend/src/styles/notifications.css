@@ -129,13 +129,16 @@
      to the BAR's right edge, not to its own chip's, so Models' panel no longer
      opens a hundred pixels in from where Notifications' does. */
   --status-bar-gutter: 12px;
+  /* The LEFT end's gutter: the System chip (`.status-bar-start`) starts here
+     and its panel opens from here, the mirror of the right gutter above. */
+  --status-bar-start-gutter: 8px;
   position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 0;
-  padding: 0 var(--status-bar-gutter) 0 8px;
+  padding: 0 var(--status-bar-gutter) 0 var(--status-bar-start-gutter);
   /* FIXED 22px, VS Code's own status-bar height (D576, user: "lets follow
      exactly what vscode is doing for the status bar") — `height`, not
      `min-height`, because every item is now full-height and nothing inside
@@ -561,7 +564,22 @@
   border-radius: 8px;
   box-shadow: 0 6px 20px var(--shadow-lg);
   animation: toast-in var(--dur-med) var(--ease-out);
-  overflow: hidden;
+  /* THE ONLY SCROLL REGION IN EITHER POPOVER (status-popovers R1): a section's
+     own `.dl-rows` used to carry its own `max-height`/`overflow-y`, so a
+     popover with two sections (Running + Background tasks, or Needs you +
+     New/Earlier) scrolled in two places at once — confusing, and it hid
+     `.dl-head`'s "Clear all" footer below whichever section's own scrollbar
+     the pointer happened to be over. `.dl-panel` itself scrolls now, start to
+     finish — headings, rows and the footer all travel together — and
+     `overflow-x: hidden` keeps that the only axis, the same guard `.dl-rows`
+     used to carry for the identical reason (a row wide enough to overflow
+     turning the whole list into a sideways scroller). `560px` is comfortably
+     taller than a one-section panel ever needs and still leaves room above
+     the status bar on a short window; `70vh` is the floor that matters on a
+     short window, same shape as `.dl-rows`' retired `min(46vh, 340px)`. */
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  overflow-x: hidden;
   /* Above `.notif-host`'s own 2000 (code review finding #5): `#main` — this
      panel's ancestor — precedes `<NotificationHost />` in App.tsx's markup,
      so on an EQUAL z-index the later sibling wins regardless of which one
@@ -616,6 +634,14 @@
   padding: 6px 10px;
   font-size: 12px;
   border-top: 1px solid var(--border);
+  /* PINNED TO THE BOTTOM OF `.dl-panel`'s OWN SCROLLER (status-popovers R1):
+     `.dl-panel` is the only scroll region either popover has now, and "Clear
+     all" has to stay reachable without scrolling all the way down — sticky,
+     on the panel's own background, rather than a wrapper outside the
+     scroller (see DECISIONS-status-popovers.md for why). */
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-alt);
 }
 
 .dl-summary {
@@ -791,65 +817,76 @@
 }
 
 /* ---- Activity's own labelled sections (status-bar merge) ------------------ */
-/* One `.dl-section` per non-empty group — Running, Background tasks, Models —
-   wrapping that group's own `.dl-rows`/footer. Plain block, no border of its
-   own: the hairline between two sections is the same `.dl-rows > * + *` rule
-   already draws between two rows, applied one level up so Running's last row
-   and Background tasks' first one read as continuing one list rather than two
-   pasted-together boxes. */
-.dl-section + .dl-section {
+/* One `.dl-section` per non-empty group — Running, Background tasks, and (in
+   RepoUpdatesDock.tsx's own card) Needs you/New/Earlier — wrapping that
+   group's own `.dl-rows`/footer. */
+
+/* status-popovers item 8 (visual finding): the sticky `.dl-section-head`
+   band alone did not read as a boundary once a reader had scrolled a
+   section's own rows up underneath it — the opaque background looks the
+   same whether it is the panel's only header or the Nth one in a row. A
+   hairline above every section but the FIRST fixes that without doubling up
+   on the first section's own top edge (`.dl-panel`'s own padding already
+   separates it from the panel's edge there). Scoped to the header
+   (`> .dl-section-head`), not the section box itself, so the line stays
+   attached to the sticky band and scrolls away WITH it rather than sitting
+   pinned at a fixed spot while the band slides out from under it. */
+.dl-section + .dl-section > .dl-section-head {
   border-top: 1px solid var(--border);
+  padding-top: 9px;
 }
 
-/* Rendered only when 2+ sections are present at once (DownloadManagerView's
-   own doc) — a lone section carrying a label nobody needed to tell it apart
-   from a sibling is a redundant header, the same "PLURALITY, NOT PRESENCE"
-   principle D604 already applied to Clear/Cancel queued. Quiet on purpose:
-   this is a sub-heading inside an already-labelled chip, not a second chip. */
+/* ALWAYS RENDERED WHEN ITS SECTION RENDERS (status-popovers R2) — even a
+   lone section gets a heading, because the count it carries ("Running 3")
+   is information on its own, not just a label disambiguating it from a
+   sibling. `position: sticky` keeps it pinned to the top of `.dl-panel`'s
+   own scroller (R1) while that section's rows scroll past underneath it, so
+   it needs an opaque background rather than the panel's transparent one. */
 .dl-section-head {
-  padding: 6px 10px 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 10px;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
+  background: var(--bg-alt);
 }
 
-/* Scrolls rather than growing without bound: the registry caps live records
-   well above what fits a 360px column, and a card taller than the viewport
-   would push its own header off-screen. Never rendered at all while
-   collapsed (D562, 2026-08-27, user call: "everything is foldable, even for
-   the job cards") — collapsing hides EVERY row, queue and job alike, with no
-   exemption and no partial-height fold, so there is no `.is-folded` cap any
-   more; DownloadManagerView and RepoUpdatesDock.tsx's own card both omit
-   this element outright rather than leave an empty box when collapsed. */
-.dl-rows {
-  max-height: min(46vh, 340px);
-  overflow-y: auto;
-  /* ROUND 3, REAL BUG (user, with a screenshot: "the notification cards
-     should not be scrollable" — their panel had scrolled SIDEWAYS, cutting
-     off the left half of every row, to reach a Cancel button clipped on the
-     right). This rule declared `overflow-y` alone; per the CSS overflow
-     spec, a computed `visible` on one axis becomes `auto` on the other axis
-     the moment that axis is not `visible` — so `overflow-x` silently
-     computed to `auto` too, and any row wide enough to overflow (the
-     `.dl-title`/`.dl-model` fix above is the actual cause, not this rule)
-     turned the whole panel into a horizontal scroll container instead of
-     clipping or, better, genuinely fitting. `overflow-x: hidden` makes that
-     axis explicit and permanently closed — this panel must never scroll
-     sideways, whatever a row does — while `overflow-y` stays `auto` on
-     purpose: a long job list has to scroll vertically or it pushes its own
-     header off-screen, and that half of this rule is unchanged. This is
-     belt-and-braces alongside the row fix above, not a replacement for it —
-     clamping the axis alone would silently CLIP a control that overflows
-     instead of letting the user scroll to it, which is worse; the row
-     itself must still genuinely fit within `.dl-panel`'s width. */
-  overflow-x: hidden;
-  /* NO `border-top` any more (D602): it existed to divide the old header from
-     this list, and that divider now lives on `.dl-head` as a `border-top`
-     because the actions moved below. Left here it would draw a line across the
-     panel's top edge, doubled against `.dl-panel`'s own border. */
+/* The heading's own row/job/message count, e.g. the "3" in "Running 3" —
+   a muted secondary figure, dimmer than the label it sits beside and not
+   uppercase/letter-spaced like it, so it reads as a value rather than part
+   of the section's name. */
+.dl-section-count {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--fg-faint);
 }
+
+/* A PLAIN BLOCK LIST, NOT A SCROLL REGION (status-popovers R1): `.dl-panel`
+   itself is now the only element either popover ever scrolls — see its own
+   comment for why two independently-scrolling `.dl-rows` in one popover (one
+   per section) read as broken. This element still exists as the wrapper one
+   section's rows render into (so `.dl-panel:has(.dl-rows)`'s width rule keeps
+   working and `.dl-rows > * + *` below keeps drawing the hairline between
+   rows); it just no longer bounds or scrolls its own height. Never rendered
+   at all while collapsed (D562, 2026-08-27, user call: "everything is
+   foldable, even for the job cards") — collapsing hides EVERY row, queue and
+   job alike, with no exemption and no partial-height fold, so there is no
+   `.is-folded` cap any more; DownloadManagerView and RepoUpdatesDock.tsx's
+   own card both omit this element outright rather than leave an empty box
+   when collapsed.
+
+   NO `border-top` (D602): it existed to divide the old header from this
+   list, and that divider now lives on `.dl-head` as a `border-top` because
+   the actions moved below. Left here it would draw a line across the panel's
+   top edge, doubled against `.dl-panel`'s own border. */
 
 /* One rule for every row in the list, whatever kind it is. Stated on the
    container rather than as a `.dl-row + .dl-row` pair, which is exactly the
@@ -1034,6 +1071,76 @@
    of dimmed text for no reason. */
 .dl-eyebrow {
   margin-top: 0;
+}
+
+/* THE TIMESTAMP'S OWN LINE (status-popovers R5) — ONLY on the instances that
+   pass `age` (`NotificationCard`'s own gate): `.dl-origin` turns into a flex
+   row, origin on the left and the compact relative-time stamp pinned to the
+   right by `margin-left: auto` on `.dl-row-age`, rather than a second line
+   nothing asked for. Scoped to `.dl-meta-line` specifically so every caller
+   that never passes `age` (every row in ActivityDock's own Running/Background
+   tasks sections) keeps the exact single-line `.dl-origin` it always had —
+   this rule never fires for them. */
+.dl-origin.dl-meta-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dl-origin-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-row-age {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--fg-faint);
+}
+
+/* A caption-less row (NotificationCard: no `.dl-eyebrow` line at all when
+   there's no `caption`) draws the age inline on `.dl-row-head` instead of
+   alone on an otherwise empty line above it. Same muted color and
+   right-pinning `.dl-row-age` already carries; `font-size` is set explicitly
+   because `.dl-row-head` is 12px where the eyebrow line's own 11px was
+   inherited from `.dl-origin`, and this keeps the figure reading identically
+   small in either position. */
+.dl-row-age-inline {
+  font-size: 11px;
+}
+
+/* THE UNSEEN DOT (status-popovers R4) — a small filled circle ahead of a row's
+   title, drawn only for a row the Notifications panel has not yet been open
+   while it was present (`notifications-seen-store.ts`'s `isSeen`). Round,
+   not a glyph, so it reads as a mark rather than a letter; the accent token,
+   not the error one, because unseen is a neutral fact ("new"), not itself a
+   warning — a row that is BOTH unseen and attention-worthy already gets its
+   warning from the left accent bar below. */
+.dl-unread-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+/* THE NEEDS-YOU ACCENT BAR (status-popovers R3) — every row in that section
+   gets a left stripe, not only a folded group's own (`.dl-row-group-attention`
+   above, kept as its own class since §3's "a group is one row" framing still
+   names it specifically). `--error` is the ordinary case: a failed job, a
+   waiting task, a plain attention message. The fused-render update row is the
+   one exception — it is not a failure, so it earns the accent token instead,
+   via `.dl-row-attention-update` layered on top. */
+.dl-row.dl-row-attention {
+  border-left: 3px solid var(--error);
+  padding-left: 7px;
+}
+
+.dl-row.dl-row-attention-update {
+  border-left-color: var(--accent);
 }
 
 /* THE MODEL ROW'S FIGURES, ON THEIR OWN LINE — the same device D596 used for
@@ -1423,7 +1530,8 @@
 }
 
 /* ---- Server-status card (foot of the notification stack) ----------------- */
-/* Shown by ServerStatusBanner after two failed /api/config probes; the green
+/* Shown by ServerStatusBanner after three failed /api/health probes; a single
+   timed-out probe draws the quiet amber -slow line instead, and the green
    -reconnected variant auto-dismisses. Placement and stacking belong to
    .notif-host — this only describes the card. */
 .server-status {
@@ -1489,6 +1597,13 @@
 .server-status-reconnected {
   border-color: var(--success);
   color: var(--fg);
+}
+
+/* A probe timed out, the down threshold is not reached: a busy server, most
+   likely. One muted line, no title and no buttons. */
+.server-status-slow {
+  border-color: var(--warning, var(--border));
+  color: var(--fg-muted);
 }
 
 /* ---- The update DIALOG (platform/ui/UpdateDialog) -------------------------- */
@@ -1565,3 +1680,165 @@
   display: contents;
 }
 
+
+/* ---- The bar's left end (StatusBar.tsx `.status-bar-start`) -------------
+   Akshil: "move this to bottom left in place". The System chip is the only
+   thing here; `margin-right: auto` takes the bar's free space so every other
+   chip stays packed right exactly as before. `position: static` like
+   `.dl-host`, so the panel still anchors to `.status-bar` itself — but to its
+   LEFT gutter, the mirror of every right-packed panel. No `|` divider: the
+   rule above only draws between DIRECT `.dl-host` children of the bar, and
+   this chip has no neighbour to be separated from. */
+.status-bar-start {
+  height: 100%;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+}
+
+.status-bar-start .dl-panel {
+  right: auto;
+  left: var(--status-bar-start-gutter);
+}
+
+/* ---- System chip + popover (shell/SystemDock.tsx) ----------------------
+   The chip's label is figures ("CPU 12% · 1.4 GB"), so it takes tabular
+   digits and is not held to the 18ch name cap the other chips use — a cap
+   would clip the memory figure, the half of the label that moves least. */
+.sys-chip .dl-summary {
+  max-width: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.sys-panel {
+  width: min(340px, calc(100vw - 32px));
+  /* Glass, the /monitor page's own cards (styles/monitor.css): it floats over
+     page content, so the blur has something real to soften. */
+  background: color-mix(in srgb, var(--bg-alt) 80%, transparent);
+  border-color: color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 8px 28px var(--shadow-lg);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .sys-panel {
+    background: var(--bg-alt);
+  }
+}
+
+/* The whole-machine context line, above fused-render's own figures. */
+.sys-host {
+  padding: 8px 10px 6px;
+  font-size: 12px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.sys-spark-wrap {
+  padding: 2px 10px 8px;
+}
+
+.sys-spark {
+  display: block;
+  width: 100%;
+  height: 34px;
+  color: var(--accent);
+}
+
+.sys-spark-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--fg-faint);
+  border-bottom: 1px solid var(--border);
+}
+
+.sys-spark-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sys-spark-area {
+  fill: currentColor;
+  opacity: 0.14;
+}
+
+.sys-rows {
+  padding: 0 0 4px;
+}
+
+/* name | CPU | memory — numbers right-aligned in fixed columns so they line
+   up down the list the way Activity Monitor's do. */
+.sys-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px 72px;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.sys-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sys-num {
+  text-align: right;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sys-foot {
+  position: sticky;
+  bottom: 0;
+  padding: 6px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  background: color-mix(in srgb, var(--bg-alt) 92%, transparent);
+  text-align: right;
+}
+
+.sys-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.sys-link:hover {
+  text-decoration: underline;
+}
+
+.sys-foot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+}
+
+a.sys-link {
+  text-decoration: none;
+}
+
+.sys-link-quiet {
+  color: var(--fg-muted);
+}
+
+.sys-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}

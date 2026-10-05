@@ -1617,3 +1617,107 @@
   flex: 1;
   font-size: 12px;
 }
+
+/* ---- Shortcuts (the macOS launcher: hotkey recorder + row modifier) ------- */
+
+.prefs-shortcuts {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+
+.prefs-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+}
+
+.prefs-shortcut-row + .prefs-shortcut-row {
+  border-top: 1px solid var(--border);
+}
+
+.prefs-shortcut-label {
+  min-width: 0;
+}
+
+.prefs-shortcut-label b {
+  display: block;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.prefs-shortcut-label span {
+  display: block;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.prefs-shortcut-label .prefs-shortcut-warn {
+  color: var(--error);
+}
+
+/* Specificity: `.prefs-section button` styles every button on the page;
+   these two controls need their own look and win by being more specific. */
+.prefs-section .prefs-keycap {
+  font: inherit;
+  font-size: 13px;
+  min-width: 88px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--fg) 5%, var(--bg-alt));
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.prefs-section .prefs-keycap.rec {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.prefs-seg {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  flex: none;
+}
+
+.prefs-section .prefs-seg button {
+  font: inherit;
+  font-size: 14px;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+}
+
+.prefs-section .prefs-seg button + button {
+  border-left: 1px solid var(--border);
+}
+
+.prefs-section .prefs-seg button.on {
+  background: var(--accent);
+  color: var(--accent-ink, var(--bg));
+}
+
+@media (max-width: 520px) {
+  .prefs-shortcut-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* Diagnostics window presets (SPEC §50): four radios on one wrapping row,
+   each the same .prefs-radio as the section's checkbox below them. */
+.prefs-radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 8px 0;
+}

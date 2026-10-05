@@ -37,7 +37,7 @@ _MAX_SEGMENTS = 24
 
 # --- slug -> real folder ----------------------------------------------------
 # Claude Code names each project dir by munging the cwd:
-# re.sub(r"[^A-Za-z0-9]", "-", abspath) — see templates/claude/agent.py's
+# re.sub(r"[^A-Za-z0-9]", "-", abspath) — see claude_agent/agent.py's
 # _munge(). That is LOSSY and irreversible: "/", ".", "_" and a literal "-" all
 # collapse to "-". So a "-" -> "/" replace turns
 # "-Users-me-Work-fused-render" into "/Users/me/Work/fused/render", a path that
@@ -84,7 +84,7 @@ def _transcript_cwd(slug_dir: str) -> Optional[str]:
 
 def _munge(name: str) -> str:
     """Claude Code's own transform, applied to one path component.
-    templates/claude/agent.py::_munge does this to the whole abspath."""
+    claude_agent/agent.py::_munge does this to the whole abspath."""
     return re.sub(r"[^A-Za-z0-9]", "-", name)
 
 

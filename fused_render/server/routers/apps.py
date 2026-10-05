@@ -98,8 +98,123 @@ def _workspace_apps() -> list[dict]:
     return apps
 
 
+# -- The paged listing's snapshot -----------------------------------------
+#
+# The hub is sorted by recency, so page 1 cannot be known without discovering
+# EVERY app folder first: paging bounds how many cards are hydrated, never how
+# many folders are walked. What takes the walk out of the request path is this
+# snapshot: the discovery rows (`app_listing.light_app_dict`) for the workspace,
+# merged with the linked folders and the exported `.fused` files, kept for
+# SNAPSHOT_TTL_S. Page 2..N of one scroll, every chip click and every search
+# keystroke read it and walk nothing.
+#
+# A time-to-live, not watcher invalidation (owner's call, 2026-10-05, design
+# memo "Apps Hub Paging" Q1): the same posture as the `.fused` query cache in
+# exported_apps.py, no dependency on the index watcher running, and 20 s is
+# the longest a folder dropped in from Finder goes unlisted. The create and
+# showcase-sync refetches pass `fresh=1` and rebuild it outright, so the app
+# the user just made is never behind the TTL.
+#
+# Measured on this machine (157 apps, 395 dirs listed): the walk is 14 ms
+# warm and ~180 ms cold, the duckdb query behind the exported rows 379 ms
+# cold (0.4 ms within its own TTL). Those are the costs one snapshot build
+# pays, and what every request within the TTL does not.
+SNAPSHOT_TTL_S = 20.0
+_snapshot: tuple[str, float, list[dict]] | None = None
+_snapshot_lock = threading.Lock()
+
+
+def _discovery_rows(fresh: bool) -> list[dict]:
+    """The merged discovery rows for the workspace, from the snapshot when it
+    is fresh, rebuilt otherwise. Rows are shared between requests: callers
+    read them and build their own lists, never mutate them in place."""
+    global _snapshot
+    from fused_render import exported_apps, registered_apps
+
+    root = fused_dir()
+    now = time.monotonic()
+    # The lock covers the BUILD, not just the swap: a second request arriving
+    # mid-build waits and then reads the finished snapshot rather than walking
+    # again beside it. A `fresh` request that arrives mid-build rebuilds once
+    # more after the first build lands — one extra walk on the create path,
+    # which is the price of never answering a create with the pre-create rows.
+    with _snapshot_lock:
+        if (not fresh and _snapshot is not None and _snapshot[0] == root
+                and now - _snapshot[1] < SNAPSHOT_TTL_S):
+            return _snapshot[2]
+        rows = app_listing.discover_workspace_apps(root)
+        opened = _opened_at_by_app()
+        for r in rows:
+            r["opened_at"] = opened.get(_workspace_rel(root, r["path"]))
+        rows.extend(registered_apps.registered_apps())
+        rows.extend(exported_apps.exported_apps())
+        _snapshot = (root, now, rows)
+        return rows
+
+
+def _reset_snapshot() -> None:
+    """Test hook, and the create path's: drop the snapshot so the next paged
+    request walks."""
+    global _snapshot
+    with _snapshot_lock:
+        _snapshot = None
+
+
+def _matches(row: dict, tag: str | None, category: str | None, q: str) -> bool:
+    """The hub's filter, as the client used to apply it: a chip is an exact
+    match on its facet, the query a case-insensitive substring of name, title,
+    category or tag."""
+    if tag is not None and row["tag"] != tag:
+        return False
+    if category is not None and row.get("category") != category:
+        return False
+    if q:
+        hay = (row["name"], row.get("title") or "", row.get("category") or "", row["tag"])
+        if not any(q in h.lower() for h in hay):
+            return False
+    return True
+
+
+def _paged_apps(offset: int, limit: int, tag: str | None, category: str | None,
+                q: str, fresh: bool) -> dict:
+    """One page of the hub: filter, sort and slice the discovery rows, then
+    hydrate only the slice. The order is the SERVER's (recency descending,
+    then name case-folded) and the client appends pages as they come, so the
+    tiebreak is fixed here rather than re-sorted per page on the client.
+    `tags` and `categories` are the chip rows for the WHOLE catalog — a chip
+    row derived from one page would lose options as the rest arrived."""
+    rows = _discovery_rows(fresh)
+    q = q.strip().lower()
+    shown = [r for r in rows if _matches(r, tag, category, q)]
+    shown.sort(key=lambda a: (-_app_recency(a), a["name"].casefold()))
+    # Copy, then hydrate: the snapshot's rows are shared between requests and
+    # `hydrate_app` fills its row in place.
+    page = [app_listing.hydrate_app(dict(r)) for r in shown[offset:offset + limit]]
+    return {
+        "apps": page,
+        "offset": offset,
+        "limit": limit,
+        "total": len(shown),
+        "total_all": len(rows),
+        # Exported `.fused` rows contribute no Folders chip (app-categories.ts
+        # repoChips): their tag names what the file IS, not where it came from.
+        "tags": sorted({r["tag"] for r in rows if r.get("kind") != "appfile"}),
+        "categories": sorted({r["category"] for r in rows if r.get("category")}),
+    }
+
+
 @router.get("/api/apps")
-def api_apps():
+def api_apps(offset: int = 0, limit: int | None = None, tag: str | None = None,
+             category: str | None = None, q: str = "", fresh: int = 0):
+    """The hub's catalog. With `limit`, one PAGE of it (`_paged_apps`):
+    `{apps, offset, limit, total, total_all, tags, categories}`, filtered and
+    sorted server-side from the discovery snapshot. Without `limit`, the
+    exhaustive listing in its original shape, `{apps}` — the launcher, the LAN
+    share and the onboarding step read that and are unchanged by paging."""
+    if limit is not None:
+        return _paged_apps(
+            max(0, offset), max(1, min(limit, 200)), tag, category, q, bool(fresh)
+        )
     from fused_render import registered_apps
 
     apps = _workspace_apps()
@@ -186,18 +301,16 @@ def _app_recency(app: dict) -> float:
     return opened if isinstance(opened, (int, float)) else (app.get("updated_at") or 0)
 
 
-@router.get("/api/apps/home")
-def api_home_apps(limit: int = HOME_APPS_LIMIT):
-    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+def recent_apps(limit: int) -> list[dict]:
+    """At most ``limit`` recently OPENED apps, newest open first — the one
+    definition of "recently opened" on this machine, merged from the three
+    stores that record an open (every one written by GET /render, D301): the
+    workspace recents (``app_recents.json``), the linked apps' own
+    ``openedAt`` and the opened ``.fused`` files (D396). Every row carries
+    ``opened_at``. Home's strip and the launcher's empty query both read
+    this, so an app opened anywhere lands at the top of both."""
+    from fused_render import exported_apps, registered_apps
 
-    A warm Home visit touches only explicit paths from the two recents stores.
-    When those do not fill its single row, the ordinary workspace listing runs
-    once and fills the holes; because showcase is an ordinary workspace tag,
-    that fallback preserves unopened showcase cards as well as new local apps.
-    """
-    from fused_render import registered_apps
-
-    limit = max(1, min(limit, HOME_APPS_LIMIT))
     recent = _recent_workspace_apps(limit)
     recent.extend(
         registered_apps.registered_apps(
@@ -206,13 +319,25 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT):
     )
     # Opened .fused files (D396): their recents store is already newest-first
     # and every entry carries openedAt, so they merge exactly as the other two.
-    from fused_render import exported_apps
-
     recent.extend(exported_apps.recent_exported_apps(limit))
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )
-    recent = recent[:limit]
+    return recent[:limit]
+
+
+@router.get("/api/apps/home")
+def api_home_apps(limit: int = HOME_APPS_LIMIT):
+    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+
+    A warm Home visit touches only explicit paths from the recents stores
+    (`recent_apps`). When those do not fill its single row, the ordinary
+    workspace listing runs once and fills the holes; because showcase is an
+    ordinary workspace tag, that fallback preserves unopened showcase cards
+    as well as new local apps.
+    """
+    limit = max(1, min(limit, HOME_APPS_LIMIT))
+    recent = recent_apps(limit)
     if len(recent) >= limit:
         return {"apps": recent}
 
@@ -1268,8 +1393,8 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
 
 
 # How long the create call waits for the task's spawn to report a run id.
-# spawn_helper's own timeout is 60s; a spawn ordinarily returns in a second or
-# two. Past this the response goes out without a run id and the page lands on
+# spawn_helper is an in-process `_start` call with no timeout of its own
+# (D1310); a spawn ordinarily returns in well under a second. Past this the response goes out without a run id and the page lands on
 # the file with the pane open on its sessions list, where the run turns up.
 _SENT_WAIT_S = 20.0
 
@@ -1339,6 +1464,9 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         # retry sees a clean slate and the exists-check stays meaningful.
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create app {name!r}: {exc}")
+    # The paged listing's snapshot is at most SNAPSHOT_TTL_S behind the disk;
+    # the one folder it must never be behind on is the one just created.
+    _reset_snapshot()
 
     # The `.fused/` state folder, before git rather than after: `init_repo`'s
     # boilerplate commit is "the untouched starter", and `.fused/` is not

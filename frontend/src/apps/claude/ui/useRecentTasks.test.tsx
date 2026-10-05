@@ -73,32 +73,32 @@ afterEach(() => {
 interface Harness {
   rows(): Task[] | null;
   /** Re-render with a different target, or with none (entering a chat). */
-  retarget(agentDir: string | null, file?: string | null): Promise<void>;
+  retarget(active: boolean, file?: string | null): Promise<void>;
   /** The newest subscription's callback. */
   serve(rows: Task[] | null): Promise<void>;
   subs: Sub[];
 }
 
 async function mount(
-  agentDir: string | null,
+  active: boolean,
   file: string | null,
   coverWrite = false,
 ): Promise<Harness> {
   let out: Task[] | null = null;
-  function Probe(p: { agentDir: string | null; file: string | null }) {
-    out = useRecentTasks(p.agentDir, p.file, subscribe, coverWrite);
+  function Probe(p: { active: boolean; file: string | null }) {
+    out = useRecentTasks(p.active, p.file, subscribe, coverWrite);
     return null;
   }
   let r!: ReactTestRenderer;
   await act(async () => {
-    r = create(createElement(Probe, { agentDir, file }));
+    r = create(createElement(Probe, { active, file }));
   });
   mounted.push(r);
   return {
     rows: () => out,
-    async retarget(next: string | null, nextFile: string | null = file) {
+    async retarget(next: boolean, nextFile: string | null = file) {
       await act(async () => {
-        r.update(createElement(Probe, { agentDir: next, file: nextFile }));
+        r.update(createElement(Probe, { active: next, file: nextFile }));
       });
     },
     async serve(rows) {
@@ -110,19 +110,19 @@ async function mount(
 }
 
 test("BOOT is the only place the skeleton is real", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   expect(h.rows()).toBe(null);
   await h.serve([row("a")]);
   expect(h.rows()?.map((t) => t.key)).toEqual(["a"]);
 });
 
 test("a target change repaints in place — no blink into placeholder bars", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   await h.serve([row("a"), row("b")]);
 
   // The re-subscribe fires `null` first, and a list already drawn must keep its
   // rows through it (T:18408-18411).
-  await h.retarget("/tpl", "/repo/y.py");
+  await h.retarget(true, "/repo/y.py");
   expect(h.subs.length).toBe(2);
   // The rows are still THERE — but the pane they are shown in has changed, and
   // the narrowing is the hook's (`taskInPane`), so rows about the old file are
@@ -136,25 +136,25 @@ test("a target change repaints in place — no blink into placeholder bars", asy
 });
 
 test("ENTERING A CHAT does not empty the list (T:13049-13053)", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   await h.serve([row("a")]);
 
-  // `ClaudeChat` passes a null agentDir while in a chat, which tears the
+  // `ClaudeChat` passes `active: false` while in a chat, which tears the
   // subscription down. The rows stay: the tab bar over them counts them, and
   // taking it off screen and putting it back for the trip is the blink T
   // deliberately avoids.
-  await h.retarget(null);
+  await h.retarget(false);
   expect(h.subs[0].stopped).toBe(true);
   expect(h.rows()?.map((t) => t.key)).toEqual(["a"]);
 
   // Back: a fresh subscription, still no skeleton over the drawn rows.
-  await h.retarget("/tpl");
+  await h.retarget(true);
   expect(h.subs.length).toBe(2);
   expect(h.rows()?.map((t) => t.key)).toEqual(["a"]);
 });
 
 test("an honestly EMPTY answer is still published", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   await h.serve([row("a")]);
   // `[]` is not `null`: a folder whose chats really went away must go back to
   // no section at all, or the block outlives its rows.
@@ -163,12 +163,12 @@ test("an honestly EMPTY answer is still published", async () => {
 });
 
 test("A COLD LANDING ASKS FOR NO EXTRA LOOKS (P4-21)", async () => {
-  const cold = await mount("/tpl", "/repo/x.py");
+  const cold = await mount(true, "/repo/x.py");
   expect(cold.subs[0].coverWrite).toBe(false);
 });
 
 test("leaving a LIVE turn asks for them (T's `leftLive`, T:13066-13071)", async () => {
-  const live = await mount("/tpl", "/repo/x.py", true);
+  const live = await mount(true, "/repo/x.py", true);
   expect(live.subs[0].coverWrite).toBe(true);
 });
 
@@ -182,7 +182,7 @@ const laned = (id: string, status: string, extra: Partial<Task> = {}): Task =>
   ({ ...row(id), status, ...extra }) as Task;
 
 test("the chat's Recent list is ordered like the Tasks LIST view", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   // Handed over in the server's flat order, which puts Done first.
   await h.serve([
     laned("done", "done"),
@@ -196,7 +196,7 @@ test("the chat's Recent list is ordered like the Tasks LIST view", async () => {
 });
 
 test("a lane's DRAFTS come first, and ties keep the server's order", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   await h.serve([
     laned("a", "in_progress"),
     laned("b", "in_progress"),
@@ -215,7 +215,7 @@ test("a lane's DRAFTS come first, and ties keep the server's order", async () =>
 // which reads as a button that does nothing.
 
 test("a skip's claim paints the row, ahead of the sort", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   const waiting = laned("q", "queued", { queue_position: 4, queue_priority: false });
   await h.serve([waiting]);
   expect(h.rows()?.[0].queue_position).toBe(4);
@@ -229,7 +229,7 @@ test("a skip's claim paints the row, ahead of the sort", async () => {
 });
 
 test("…and the next listing retires it, right or wrong", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   const waiting = laned("q", "queued", { queue_position: 4, queue_priority: false });
   await h.serve([waiting]);
   await act(async () => noteQueueClaim(skippedOverride(waiting)));
@@ -248,7 +248,7 @@ test("a skip repaints the WHOLE line, so no frame shows two 1sts", async () => {
   // row and said nothing about the row it went past, so for the 0.3-0.6 s before
   // the listing landed both of them read "1st in line" and the reader could not
   // tell which one was going to run.
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   const first = laned("a", "queued", {
     queue_position: 1,
     queue_ahead: "TASK-000",
@@ -291,7 +291,7 @@ test("a skip repaints the WHOLE line, so no frame shows two 1sts", async () => {
 });
 
 test("a claim for a key this pane has no row for changes nothing", async () => {
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   await h.serve([laned("a", "in_progress")]);
   await act(async () =>
     noteQueueClaim(skippedOverride(laned("elsewhere", "queued"))),
@@ -394,7 +394,7 @@ test("a waiting row is this pane's row, and keeps its identity when it runs", as
     ...waiting, key: "sess-4", session_id: "sess-4", status: "in_progress",
   } as Task;
 
-  const h = await mount("/tpl", "/repo/x.py");
+  const h = await mount(true, "/repo/x.py");
   // A row with NO SESSION is still a row of this pane: `taskInPane` asks about
   // the target, and a message that has not run yet has one.
   await h.serve([waiting]);

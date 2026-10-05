@@ -5,7 +5,7 @@ every app folder under it (D626; local_monorepo.py migrates the old
 one-repo-per-app layout into it). Every app scaffolded by POST /api/apps/new
 lands in that shared repo as one scoped boilerplate commit; after that, each
 completed Claude turn lands as its own small commit
-(templates/claude/agent.py mirrors the commit helper here, since templates
+(claude_agent/agent.py mirrors the commit helper here, since templates
 must not import fused_render, D166). Manual edits made through the editor's
 /api/fs endpoints are NOT committed (D245) — the user's own commits and
 Claude's turns are the whole history.
@@ -280,9 +280,12 @@ def init_repo(app_dir: str) -> bool:
             if _git(local, "diff", "--cached", "--quiet",
                     "--", _pathspec(name)).returncode == 0:
                 return False
-            return _git_retry_lock(
+            ok = _git_retry_lock(
                 local, "commit", "-q", "-m", "New app from starter",
                 "--", _pathspec(name)).returncode == 0
+            if ok:
+                _auto_sync(app_dir, "Auto-push after app create")
+            return ok
         # Legacy: an app outside the shared tag gets its own repository.
         if _git(app_dir, "init", "-q").returncode != 0:
             return False
@@ -299,7 +302,20 @@ def init_repo(app_dir: str) -> bool:
         return False
 
 
-def commit(path: str, message: str, only_shared: bool = False) -> bool:
+def _auto_sync(app_dir: str, action: str) -> None:
+    """Push what the app just committed (and fast-forward first) in the
+    background — fused_render/git_upstream.py's auto-sync, which no-ops with
+    the setting off, with no remote, or off the default branch. Never raises
+    and never blocks the lifecycle request that committed."""
+    try:
+        from fused_render import git_upstream
+        git_upstream.schedule_sync(app_dir, action, push=True)
+    except Exception:
+        logger.warning("auto-sync scheduling failed for %s", app_dir, exc_info=True)
+
+
+def commit(path: str, message: str, only_shared: bool = False,
+           action: str | None = None) -> bool:
     """Commit everything pending under the app folder containing `path`,
     scoped to that folder alone.
 
@@ -346,6 +362,7 @@ def commit(path: str, message: str, only_shared: bool = False) -> bool:
                            "stdout=%r stderr=%r", app_dir, r.returncode,
                            (r.stdout or "").strip(), (r.stderr or "").strip())
             return False
+        _auto_sync(app_dir, action or "Auto-push after app change")
         return True
     except Exception:
         logger.warning("app commit skipped (%s): unexpected", path, exc_info=True)

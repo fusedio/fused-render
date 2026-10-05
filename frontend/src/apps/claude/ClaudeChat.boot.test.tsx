@@ -1,6 +1,6 @@
 // THE BOOT'S LIFETIME, and the one answer it puts on the wire about the pane.
 //
-// Everything here is asserted through `/api/run`, because that is where the
+// Everything here is asserted through `/api/claude/agent`, because that is where the
 // damage of getting it wrong actually lands: a run SPAWNED for a chat nobody is
 // looking at any more, a second "Fix with AI" run on the same prompt, or a
 // `has_pane: 1` telling the model it can see an app that was never framed.
@@ -13,13 +13,11 @@ import { act, create } from "react-test-renderer";
 
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
-const { resetAgentDirCacheForTests, resolveAgentDir } = await import("./protocol/agent");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
 
-/** One `/api/run` call: the script and the action, plus the fields. */
+/** One `/api/claude/agent` call: the action, plus the fields. */
 interface RunCall {
-  py: string;
   action: string;
   params: Record<string, string>;
 }
@@ -27,9 +25,8 @@ interface RunCall {
 const runs: RunCall[] = [];
 /** Held back so a test can park the boot inside its detection wait. */
 let holdPrefs = false;
-/** Held back so a test can send while the PANE is still unresolved: the first
- *  stat is `resolveAgentDir`'s (the chat cannot mount without it), the second is
- *  `usePaneState`'s own. */
+/** Held back so a test can send while the PANE is still unresolved: the only
+ *  stat a booting chat makes is `usePaneState`'s own. */
 let holdPaneStat = false;
 let stats = 0;
 /** Held back so a test can watch the landing's ready signal wait on the task
@@ -51,7 +48,7 @@ function jsonRes(body: unknown): Response {
   } as unknown as Response;
 }
 
-/** The three endpoints a booting chat touches. `agent.py` answers the minimum
+/** The endpoints a booting chat touches. The agent answers the minimum
  *  that lets the run loop finish in one lap, so no test has to wait on a poll. */
 function stubFetch(): void {
   (globalThis as { fetch: unknown }).fetch = async (
@@ -61,7 +58,7 @@ function stubFetch(): void {
     const url = String(typeof input === "string" ? input : (input as { url: string }).url);
     if (url.startsWith("/api/fs/stat")) {
       stats++;
-      if (holdPaneStat && stats > 1) return new Promise<Response>(() => {});
+      if (holdPaneStat) return new Promise<Response>(() => {});
       return jsonRes({
         path: "/w/p",
         is_dir: true,
@@ -93,21 +90,16 @@ function stubFetch(): void {
       if (holdPrefs) return new Promise<Response>(() => {});
       return jsonRes({});
     }
-    if (url === "/api/run") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        py: string;
-        params: Record<string, string>;
-      };
-      const action = String(body.params?.action ?? "");
-      runs.push({ py: body.py, action, params: body.params ?? {} });
-      if (body.py.endsWith("/app.py")) return jsonRes({ ok: true, result: {} });
-      if (action === "defaults") return jsonRes({ ok: true, result: {} });
-      if (action === "live_host") return jsonRes({ ok: true, result: { run_id: "" } });
-      if (action === "start") return jsonRes({ ok: true, result: { run_id: "r1" } });
-      if (action === "poll") {
-        return jsonRes({ ok: true, result: { done: true, session_id: "s1", text: "ok" } });
-      }
-      return jsonRes({ ok: true, result: {} });
+    if (url === "/api/claude/app-entry") return jsonRes({});
+    if (url === "/api/claude/agent") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
+      const action = String(body.action ?? "");
+      runs.push({ action, params: body });
+      if (action === "defaults") return jsonRes({});
+      if (action === "live_host") return jsonRes({ run_id: "" });
+      if (action === "start") return jsonRes({ run_id: "r1" });
+      if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok" });
+      return jsonRes({});
     }
     return jsonRes({});
   };
@@ -121,8 +113,7 @@ beforeEach(() => {
   releaseSessions = () => {};
   stats = 0;
   scheduleReads = 0;
-  resetAgentDirCacheForTests();
-  // AND THE LISTING FEED, which is module state shared by every suite in the one
+  // THE LISTING FEED, which is module state shared by every suite in the one
   // `bun test` process (`shell/tasksPulse`): the rows a previous mount's
   // `/api/tasks` returned are remembered and REPLAYED synchronously to the next
   // subscriber, so a landing that is supposed to be waiting on a held read would
@@ -415,20 +406,15 @@ test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () =>
   // THE PATH THE TWO TESTS ABOVE CANNOT REACH. Both re-render the HOST, which
   // by construction cannot change the controller's identity — and the controller
   // is what the boot latch is keyed on (`bootedFor`), deliberately, so a new
-  // target gets its own `openSession`/`resumeRun`. Swap `file` for one whose
-  // `agentDir` is ALREADY in the resolver cache and both halves fire at once:
-  // the controller memo (deps `[agentDir, file, params]`) rebuilds, the boot
+  // target gets its own `openSession`/`resumeRun`. Swap `file` in place and
+  // both halves fire at once: the controller memo (deps `[file, params]`)
+  // rebuilds, the boot
   // re-runs with `bootDispatched` re-armed, and a sticky `askRef` took the
   // `if (ask)` branch a second time — `params.set({session_id: null, run: null})`
   // disowning the conversation on screen, and the same "Fix with AI" prompt
   // fired at the OTHER file.
   //
   // The ask is spent on the LATCH now, so the rebuild finds nothing to send.
-  resetAgentDirCacheForTests();
-  // Both targets pre-resolved, so neither swap spends a stat round-trip that
-  // would take `agentDir` back to `undefined` and remount the body.
-  await resolveAgentDir("/w/p");
-  await resolveAgentDir("/w/p/other.html");
   const params = createMemoryParamsStore();
   let r!: ReturnType<typeof create>;
   await act(async () => {
@@ -479,164 +465,9 @@ function troubleText(r: ReturnType<typeof create>, klass: string): string[] {
   return out;
 }
 
-// ---- the cover over the agentDir stat, and its 8 s backstop (P3-13) --------
+// ---- R1-3: the clipboard does not say what the screen stopped saying ---------
 
-test("the template lookup shows the SKELETON, not an empty box", async () => {
-  // This branch used to return a bare `.chat-root` on the argument that "the
-  // host is still holding its own cover over this box (ChatFrame's skeleton)".
-  // True flag-OFF, where the host frames a booting document — but flag-on there
-  // is no frame: `ChatMount`'s `Suspense` fallback covers the CHUNK LOAD and has
-  // already resolved by the time this component runs its own stat. So a first
-  // mount drew an empty box on the host background for the length of one
-  // `/api/fs/stat`, and a cold wall of six cards drew six empty tiles where
-  // legacy drew six skeletons.
-  let release!: (r: Response) => void;
-  (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
-    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
-    if (url.startsWith("/api/fs/stat")) {
-      return new Promise<Response>((res) => {
-        release = res;
-      });
-    }
-    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
-    return jsonRes({});
-  };
-
-  const params = createMemoryParamsStore();
-  let r!: ReturnType<typeof create>;
-  await act(async () => {
-    r = create(<ClaudeChat {...baseProps} params={params} />);
-  });
-  mounted.push(r);
-
-  // The SAME node `Suspense` shows and `ChatFrame` holds over a booting frame,
-  // so the two waits read as one wait rather than a skeleton flashing to an
-  // empty box.
-  const roots = r.root.findAll(
-    (n) => typeof n.type === "string" && String((n.props as { className?: string }).className ?? "").includes("chat-frame"),
-  );
-  expect(roots.length).toBeGreaterThan(0);
-  // A skeleton, not a bare plate: the shimmer bars are what makes it a wait.
-  expect(
-    r.root.findAll(
-      (n) =>
-        typeof n.type === "string" &&
-        String((n.props as { className?: string }).className ?? "").includes("skel"),
-    ).length,
-  ).toBeGreaterThan(0);
-
-  await act(async () => {
-    release(
-      jsonRes({
-        path: "/w/p",
-        is_dir: true,
-        templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
-      }),
-    );
-  });
-});
-
-test("a stat that never settles gets an 8 s backstop to the TroubleView", async () => {
-  // Legacy revealed at `CHAT_FRAME_FALLBACK_MS`; without a backstop a stalled
-  // server — or a request the browser never answers — left the box covered for
-  // ever, with no road to the branch that exists to explain exactly this.
-  //
-  // The TIMER is asserted rather than waited out: the real duration is 8 s, and
-  // a suite that actually sleeps it pays that on every run. The firing is then
-  // driven by hand, which also proves the branch it lands on.
-  const { CHAT_FRAME_FALLBACK_MS } = await import("@platform/ui/ChatFrame");
-
-  (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
-    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
-    if (url.startsWith("/api/fs/stat")) return new Promise<Response>(() => {});
-    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
-    return jsonRes({});
-  };
-
-  const G = globalThis as Record<string, unknown>;
-  const realTimeout = G.setTimeout as typeof setTimeout;
-  const armed: Array<{ ms: number; fn: () => void }> = [];
-  G.setTimeout = ((fn: () => void, ms?: number) => {
-    if (ms === CHAT_FRAME_FALLBACK_MS) {
-      armed.push({ ms, fn });
-      return 0 as unknown as ReturnType<typeof setTimeout>;
-    }
-    return realTimeout(fn, ms);
-  }) as typeof setTimeout;
-
-  let r!: ReturnType<typeof create>;
-  try {
-    const params = createMemoryParamsStore();
-    await act(async () => {
-      r = create(<ClaudeChat {...baseProps} params={params} />);
-    });
-    mounted.push(r);
-
-    // Exactly one backstop, at legacy's own number — one constant, so the two
-    // waits cannot drift apart.
-    expect(armed).toHaveLength(1);
-    expect(armed[0]!.ms).toBe(8000);
-  } finally {
-    G.setTimeout = realTimeout;
-  }
-
-  const trouble = () =>
-    r.root.findAll(
-      (n) =>
-        typeof n.type === "string" &&
-        String((n.props as { className?: string }).className ?? "").includes("trouble-card"),
-    );
-  // Covered until it fires...
-  expect(trouble()).toHaveLength(0);
-  // ...and the reader is told, instead of watching a skeleton for ever.
-  await act(async () => {
-    armed[0]!.fn();
-  });
-  expect(trouble().length).toBeGreaterThan(0);
-
-  // ── P3R1-8: AND WHAT IT SAYS IS TWO PLAIN SENTENCES ────────────────────
-  //
-  // The stalled stat is the commonest way into this card, and it used to read
-  // "Something went wrong" over a monospace box saying "There is no claude
-  // template for this folder." — a title that says nothing, a sentence about an
-  // internal thing the reader cannot act on, and a claim that is false here:
-  // the folder's template is fine, the request never answered (owner,
-  // 2026-09-10: short and human-readable, one sentence of what happened and one
-  // of what to do).
-  expect(troubleText(r, "trouble-title")).toEqual(["This chat couldn't load."]);
-  expect(troubleText(r, "trouble-explain")).toEqual([
-    "Reload the page, or check that Fused Render is still running.",
-  ]);
-  // NO VERBATIM BOX: there are no machine words behind this failure, and a
-  // monospace plate reading our own sentence back (or "(no message)") reads as
-  // a program having said it.
-  expect(
-    r.root.findAll(
-      (n) =>
-        typeof n.type === "string" &&
-        String((n.props as { className?: string }).className ?? "").includes("trouble-error"),
-    ),
-  ).toHaveLength(0);
-  // …and nothing in the card names the app's insides.
-  const words = JSON.stringify(r.toJSON());
-  for (const term of ["agentDir", "template.html", "claude template", "stat", "controller"]) {
-    expect(words).not.toContain(term);
-  }
-
-  // R1-4: THE ACTION THE SENTENCE NAMES IS A BUTTON. The explanation asks the
-  // reader to reload the page, and without `onRetry` the card drew no button at
-  // all — so the copy named an action the card did not offer, while the other
-  // boot card (`main.tsx`) has always passed one.
-  const buttons = r.root
-    .findAll((n) => n.type === "button")
-    .map((n) => String((n.props as { children?: unknown }).children ?? ""));
-  expect(buttons).toContain("Reload the page");
-  // The label is the sentence's own word, not the shared "Try again": a stalled
-  // stat is usually a server that has gone away, and re-running the same
-  // request would answer the reader with the same wait.
-  expect(buttons).not.toContain("Try again");
-
-  // R1-3: AND THE CLIPBOARD DOES NOT SAY WHAT THE SCREEN STOPPED SAYING.
+test("a failure with nothing verbatim behind it reports no error section", () => {
   // `troubleReport` printed `Error:` over "(no message)" for a blank error, so
   // "Copy the details" handed on the one string P3R1-8 removed — as the only
   // machine fact in it. A failure with nothing verbatim behind it now reports
@@ -653,10 +484,8 @@ test("a stat that never settles gets an 8 s backstop to the TroubleView", async 
 
 // ---- P3R1-8: the OTHER way into the boot card -----------------------------
 
-test("no target at all gets its own two sentences, not the stalled-load ones", async () => {
-  // Two different facts with two different things to do about them, so they are
-  // not folded into one sentence: nothing to open a chat ON is the reader's own
-  // next move, where a stalled load is the app's.
+test("no target at all gets its own two sentences", async () => {
+  // Nothing to open a chat ON is the reader's own next move.
   const params = createMemoryParamsStore();
   let r!: ReturnType<typeof create>;
   await act(async () => {
@@ -674,10 +503,9 @@ test("no target at all gets its own two sentences, not the stalled-load ones", a
         String((n.props as { className?: string }).className ?? "").includes("trouble-error"),
     ),
   ).toHaveLength(0);
-  // AND NO RETRY BUTTON HERE (R1-4). The stalled load gets one, because
-  // reloading is the thing to do about it; this card's own next move is opening
-  // a file, so a button back to the same empty room would be the same fault the
-  // other card had in reverse — an action the copy never asked for.
+  // AND NO RETRY BUTTON HERE (R1-4): this card's own next move is opening a
+  // file, so a button back to the same empty room would be an action the copy
+  // never asked for.
   expect(
     r.root
       .findAll((n) => n.type === "button")
@@ -709,15 +537,12 @@ test("the block says APP, the outline goes to a FILE, and its nodes carry a path
     init?: { body?: unknown },
   ): Promise<Response> => {
     const url = String(typeof input === "string" ? input : (input as { url: string }).url);
-    if (url === "/api/run") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        py: string;
-        params: Record<string, string>;
-      };
+    if (url === "/api/claude/agent") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
       // The shots dir the outline is offloaded into — the one answer the boot
       // stub does not give, and the only reason it stayed inline in tests.
-      if (String(body.params?.action) === "shots_dir") {
-        return jsonRes({ ok: true, result: { dir: "/w/p/.fused/shots" } });
+      if (String(body.action) === "shots_dir") {
+        return jsonRes({ dir: "/w/p/.fused/shots" });
       }
     }
     if (url.startsWith("/api/fs/upload")) {

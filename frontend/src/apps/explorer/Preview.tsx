@@ -40,6 +40,7 @@ import {
   buildOpenWithItems,
   friendlyFsError,
   claudeTerminalCommand,
+  claudeTerminalCwd,
 } from "@apps/explorer/lib/fs-actions";
 import { crumbMenu, fileMenu, splitItems } from "@apps/explorer/lib/bar-menus";
 import { getShareFileStatus, openShareFile } from "@platform/lib/share-file";
@@ -72,6 +73,7 @@ import {
   sideSplit,
   parseSide,
   resolveSide,
+  sideFromMemory,
   sideParam,
   writeQueryParam,
   sideToggleTarget,
@@ -80,6 +82,7 @@ import {
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
+import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
   isSha,
   setResolvedSnapshot,
@@ -91,10 +94,11 @@ import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
-import { openTerminal } from "@shell/terminalDockStore";
+import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
-import { ChatMount, sideFrameSrc, useNativeChatFlag } from "@apps/claude";
+import { ChatMount } from "@apps/claude";
 
 /** The chat companion's mode key, in `templates` and in `_side` alike. */
 const CHAT_MODE = "claude";
@@ -119,20 +123,15 @@ import { FileSearchField } from "@apps/explorer/FileSearchField";
 // held, because every frame under this shell (not only the content pane) has
 // to see the same commit.
 //
-// `_fusedClaudeAsk`/`_fusedClaudeAskTake` are the git sidebar's "Fix with AI"
-// hop (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
-// template as `window._fusedAskClaude` and from the claude template as
-// `window._fusedTakeClaudeAsk`). Two calls, not one, because this is a PULL:
-// `_fusedClaudeAsk` is the PUSH half — the git template hands over the prompt
-// and this shell remembers it and switches to Claude — and `_fusedClaudeAskTake`
-// is what the claude template's OWN boot calls to collect it, which is also
-// what CONSUMES it (see the effect below for why the prompt is never baked
-// into that iframe's `src`).
+// `_fusedClaudeAsk` is the git sidebar's "Fix with AI" hop (static/runtime.js
+// `noteAskClaude`, reached from the git template as `window._fusedAskClaude`):
+// the git template hands over the prompt, and this shell remembers it and
+// switches to Claude, which reads it once through the ask ledger (see the
+// effect below for why the prompt is never a param).
 declare global {
   interface Window {
     _fusedSnapshotSelected?: (sha: unknown) => void;
     _fusedClaudeAsk?: (text: unknown) => void;
-    _fusedClaudeAskTake?: () => string | null;
   }
 }
 
@@ -426,6 +425,7 @@ function usePreviewFileMenu(
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
+  const canRun = useCanRunInTerminal();
   // Publish this header menu's overlay state to the shared registry (lib/
   // ui-overlay). A directory opened in Preview embeds a Listing whose own
   // document-level keyboard handlers would otherwise fire (Cmd+Backspace,
@@ -580,9 +580,20 @@ function usePreviewFileMenu(
     setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
   };
 
-  // Copy the command that starts Claude Code on this file's folder — the same
-  // clipboard hand-off the listing's row menu makes, not a launch.
+  // Where the status-bar drawer exists, run a new Claude Code session on this
+  // file's folder there directly; everywhere else, the same clipboard
+  // hand-off the listing's row menu makes.
   const doOpenInClaude = () => {
+    void runOrCopyInTerminal("claude", {
+      cwd: claudeTerminalCwd(fsPath, stat.is_dir, parent),
+      copyCommand: claudeTerminalCommand(fsPath, stat.is_dir, parent),
+    });
+  };
+
+  // THE SECONDARY DOOR, only where the primary one no longer copies: a reader
+  // with their own terminal should not have to fight the drawer for the
+  // string.
+  const doCopyClaudeCommand = () => {
     copyToClipboard(claudeTerminalCommand(fsPath, stat.is_dir, parent)).then((ok) => {
       if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
     });
@@ -729,17 +740,17 @@ function usePreviewFileMenu(
         icon: MenuIcons.newTab,
         onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       },
-      // Absent under IS_EMBED, same as `splits` below: an embedded pane
-      // mounts no TerminalDrawer (App.tsx) for the row to open.
-      ...(IS_EMBED
-        ? []
-        : [
+      // Absent where no TerminalDrawer is mounted to open (an embedded pane,
+      // App.tsx) or on Windows, where the drawer's shell isn't offered.
+      ...(canRun
+        ? [
             {
               label: "Open in Terminal",
               icon: MenuIcons.terminal,
               onClick: () => openTerminal({ cwd: stat.is_dir ? fsPath : dirname(fsPath) }),
             },
-          ]),
+          ]
+        : []),
     ],
     share: shareRow({
       sharingEnabled: sharingFilesEnabled,
@@ -751,7 +762,20 @@ function usePreviewFileMenu(
     }),
     copy: [
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
-      { label: "Copy Claude session command", icon: MenuIcons.openWith, onClick: doOpenInClaude },
+      {
+        label: canRun ? "Open in Claude" : "Copy Claude session command",
+        icon: MenuIcons.openWith,
+        onClick: doOpenInClaude,
+      },
+      ...(canRun
+        ? [
+            {
+              label: "Copy Claude session command",
+              icon: MenuIcons.copyPath,
+              onClick: doCopyClaudeCommand,
+            },
+          ]
+        : []),
     ],
     setPreview: isAppEntry
       ? [{ label: "Set Current View as Preview", icon: MenuIcons.camera, onClick: doSetPreview }]
@@ -908,18 +932,15 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
  *
  * The `_side` split puts the chat next to this file's preview, and that preview
  * IS the app: it is the document the sidebar's notes point at and the document
- * its app-state reads describe (`ClaudeChat`'s `annotateTarget`). The legacy
- * template found it by reaching up through `parent.document` for the mark
- * (template.html `annMarkedFrame`, T:6117); natively the sidebar is a subtree of
- * THIS document, so the lookup is a plain `querySelector` and nothing crosses a
- * frame boundary at all.
+ * its app-state reads describe (`ClaudeChat`'s `annotateTarget`). The sidebar is
+ * a subtree of THIS document, so the lookup is a plain `querySelector` and
+ * nothing crosses a frame boundary at all.
  *
  * BY MARK, NOT BY POSITION, for the reason the attribute exists (see where it is
  * stamped below): the held-frame swap keeps two frames mounted and only the
  * SHOWN one carries the mark, so this cannot be fooled by a mode switch — and a
  * view with no content pane at all (a listing, a pending gate, the fallback
- * card) answers `null`, which the chat reads as "no pane" exactly as the
- * template did.
+ * card) answers `null`, which the chat reads as "no pane".
  */
 const annotateTargetFrame = (): HTMLIFrameElement | null =>
   document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
@@ -1100,9 +1121,10 @@ function TemplatePreview({
   // folder (lib/preview-side's header has the whole argument, and why the old
   // absent-means-closed rule had to go); `_side=off` is how a shut sidebar says so.
   //
-  // Nothing about it is persisted anywhere. It rides the URL, so it survives the
-  // shell's pushState navigation within this file, and a refresh — or an open of a
-  // different file, which starts from a bare URL — lands on the default again.
+  // The request itself is not persisted: it rides the URL. What survives a hop or
+  // a refresh is held by the shared stores — the open/closed flag
+  // (`lib/side-hidden-store`, persisted) and the last selected tab
+  // (`lib/side-tab-store`, memory only) — and applies only where the URL is silent.
   const [sideReq, setSideReq] = useState<SideRequest>(() =>
     parseSide(location.search, getSideHidden())
   );
@@ -1111,12 +1133,12 @@ function TemplatePreview({
   // `_side` — as opposed to an explicit `_side=off`, which needs none of this
   // (see the reconcile effect below). Tracked separately from `sideReq` itself
   // because the reconcile effect must not write this particular closed state
-  // into the URL: the flag is documented memory-only (no storage, cleared by a
-  // refresh), and a `_side=off` written on its behalf would defeat both halves
-  // of that promise — a refresh no longer reopens the panel because the URL,
-  // not just the module variable, now says shut, and a link copied from the
-  // address bar for this file carries a close nobody clicked (exactly what
-  // `platform/lib/session-params.ts` strips `_side` to prevent for recents).
+  // into the URL: the flag lives in the store (persisted across reloads), and a
+  // `_side=off` written on its behalf would make the URL, not just the store,
+  // say shut — a link copied from the address bar for this file would carry a
+  // close nobody clicked (exactly what `platform/lib/session-params.ts` strips
+  // `_side` to prevent for recents), and an explicit `off` could no longer be
+  // told from the stored preference.
   // `parseSide(location.search)` here (hidden defaulted false) is what the URL
   // ALONE would have resolved to; it differs from `sideReq.open` only in this
   // one case, since an explicit `_side` — off or a mode — resolves the same way
@@ -1150,7 +1172,7 @@ function TemplatePreview({
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
   // render and an unhonourable request falls to the default (lib/preview-side).
-  const activeSide = resolveSide(sideReq, split);
+  const activeSide = resolveSide(sideReq, split, getSideTab());
   const sideEntry = activeSide ? sidebarModes.find((e) => e.mode === activeSide) ?? null : null;
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
@@ -1176,7 +1198,7 @@ function TemplatePreview({
   // probe and take it away again, and must not outrank a companion this file
   // definitely has.
   const sideTargets = sideOn ? split.settled : [];
-  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
+  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide ?? getSideTab());
   const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
 
   // --- the shell's git snapshot (`_snapshot`) --------------------------------
@@ -1292,8 +1314,15 @@ function TemplatePreview({
   // Also the one place that records a close/reopen into the session's shared
   // hidden flag (`lib/side-hidden-store.ts`) — a close here must be visible to
   // the folder pane's later mounts too, same store either surface writes.
-  const applySide = (next: string | null) => {
+  //
+  // `tab` is the companion the user EXPLICITLY picked (the switcher, App Doctor's
+  // Open Git) and is the ONLY thing that writes the remembered tab
+  // (`lib/side-tab-store.ts`), mirroring Listing. A toggle reopen, a close and the
+  // reconcile pass none: reopening on a file that lacks the remembered companion
+  // lands on a fallback, and recording that would overwrite the real pick.
+  const applySide = (next: string | null, tab?: string) => {
     setSideHidden(next === null);
+    if (tab) setSideTab(tab);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
     // does not survive a click either way.
@@ -1324,13 +1353,13 @@ function TemplatePreview({
    * Only when CLAUDE is what is going away: every other companion has nothing to
    * lose, and a question in front of a git panel's ✕ is a dialog nobody earned.
    */
-  const setSide = (next: string | null) => {
+  const setSide = (next: string | null, tab?: string) => {
     if (activeSide !== "claude" || next === "claude") {
-      applySide(next);
+      applySide(next, tab);
       return;
     }
     void confirmLeave().then((ok) => {
-      if (ok) applySide(next);
+      if (ok) applySide(next, tab);
     });
   };
   const toggleSide = () => {
@@ -1344,49 +1373,28 @@ function TemplatePreview({
   // runtime's ancestor-window hop (static/runtime.js `noteAskClaude`), the same
   // idiom `_fusedSnapshotSelected` above uses for `_snapshot`.
   //
-  // THIS IS A PULL, NOT A PARAM ON THE SRC (review #804 round 2). It used to be
-  // the latter — a `_fused_ask` query baked into the claude iframe's URL, kept
-  // one-shot by a cache keyed on "has the src's own base changed" — and that
-  // shape had a hole no amount of caching closed: ANY remount of that iframe
-  // for a reason that has NOTHING to do with a new ask (toggling the sidebar to
-  // `git` and back, closing and reopening the folder pane, a panel/tab
-  // reattaching) rebuilds the exact same cached src and replays the ask into a
-  // brand-new conversation. A `src` is an ADDRESS; "visit this document, but
-  // only follow this part of the address the first time" is not a thing a URL
-  // can express, however the cache around it is shaped.
+  // THIS IS A PULL, NOT A PARAM (review #804 round 2). It used to be a
+  // `_fused_ask` query baked into the chat's URL, kept one-shot by a cache
+  // keyed on "has the src's own base changed" — and that shape had a hole no
+  // amount of caching closed: ANY remount for a reason that has NOTHING to do
+  // with a new ask (toggling the sidebar to `git` and back, closing and
+  // reopening the folder pane, a panel/tab reattaching) rebuilt the exact same
+  // cached address and replayed the ask into a brand-new conversation.
   //
-  // So the prompt lives here as plain in-memory state instead, and the CLAUDE
-  // TEMPLATE pulls it at its own boot (`window._fusedClaudeAskTake`, called
-  // through the claude template's `_fusedTakeClaudeAsk` export — see
-  // static/runtime.js `pullClaudeAsk`). Consumption is then a property of WHEN
-  // a pull happens (the one frame that is actually about to use the text, at
-  // the one moment — its own boot — that can matter) rather than something a
-  // cache has to reconstruct from a src string. `sideSrcFor` below carries
-  // nothing about this at all any more.
+  // So the prompt lives here as plain in-memory state instead, and the host
+  // pulls it once per ask (the ledger below). Consumption is then a property
+  // of WHEN a pull happens rather than something a cache has to reconstruct.
   const claudeSeedRef = useRef<string | null>(null);
   // A new ask can arrive while claude is ALREADY showing — a second "Fix with
   // AI" click without leaving it first — and that is the one case a plain ref
-  // cannot handle: whatever frame is showing claude (sidebar OR content pane)
-  // is `key`ed on the mode alone, so if the mode does not change, NEITHER does
-  // the key, and nothing remounts the frame to make it boot and pull again.
-  // This state exists to force exactly that remount: bumped on every incoming
-  // ask (see the ref below) and folded into the key `sideSrcFor`'s caller
-  // passes down (`claudeFrameKey`, further down), so a second ask on an
-  // already-open sidebar gets a fresh document the same as a first one does.
+  // cannot handle: the chat (sidebar OR content pane) is `key`ed on the mode
+  // and the delivery, so nothing remounts it to boot with the new text until
+  // the ledger below has pulled it. This state is what triggers that pull:
+  // bumped on every incoming ask (see the ref below).
   const [claudeAskInstance, setClaudeAskInstance] = useState(0);
-  // WHO PULLS THE ASK. Flag OFF, the claude template pulls it out of
-  // `window._fusedClaudeAskTake` at its own boot, so nothing here may touch it.
-  // Flag ON there is no boot to pull from — the host reads-and-clears once per
-  // ask (`claudeAskInstance` is bumped on every incoming one) and hands the text
+  // WHO PULLS THE ASK: the host reads-and-clears once per ask
+  // (`claudeAskInstance` is bumped on every incoming one) and hands the text
   // down as `initialAsk`, which lands on the chat's own ask branch (T:19194).
-  // THE TRI-STATE, not the boolean: `null` is "the prefs read has not landed",
-  // and the two things below need different answers to it. The PULL wants the
-  // boolean (`null` is honestly "no host pull yet" — the template would do its
-  // own, and nothing has mounted either way), while the mount KEY has to not
-  // move under a chat that is already on screen, which needs the difference
-  // between "off" and "not asked".
-  const nativeChatState = useNativeChatFlag();
-  const nativeChat = nativeChatState === true;
   // A LEDGER, not a memo: the pull IS the clear (lib/claude-ask.ts), so it must
   // happen exactly once per ask — and in a COMMITTED EFFECT, because a render
   // React discards (StrictMode, a concurrent interruption, a Suspense retry)
@@ -1399,11 +1407,11 @@ function TemplatePreview({
   const [askDelivery, setAskDelivery] = useState<{ text: string; seq: number } | null>(null);
   const pulledFor = useRef(-1);
   useEffect(() => {
-    if (!nativeChat || pulledFor.current === claudeAskInstance) return;
+    if (pulledFor.current === claudeAskInstance) return;
     pulledFor.current = claudeAskInstance;
     const text = takeClaudeAsk(claudeSeedRef);
     if (text) setAskDelivery({ text, seq: claudeAskInstance });
-  }, [nativeChat, claudeAskInstance]);
+  }, [claudeAskInstance]);
   // AND CLEARED ONCE IT HAS BEEN HANDED OVER. The mount keyed on this seq read
   // the text at its own boot; a LATER remount at the same key — toggling the
   // sidebar companion to git and back is one, see the held-frame note below —
@@ -1503,14 +1511,8 @@ function TemplatePreview({
       if (typeof text !== "string" || !text) return false;
       return claudeAskActionRef.current(text);
     };
-    // The other half of the pull: the claude template's own boot calls this
-    // (through the runtime's `pullClaudeAsk`) to collect whatever is pending.
-    // `takeClaudeAsk` (lib/claude-ask.ts) is what actually reads-and-clears —
-    // read its header for why that single step is the whole guarantee.
-    window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);
     return () => {
       delete window._fusedClaudeAsk;
-      delete window._fusedClaudeAskTake;
     };
     // The only thing this effect needs to re-run for is `suppressForListing`
     // itself — everything the wrapper function DOES is read fresh out of
@@ -1584,6 +1586,9 @@ function TemplatePreview({
   // recorded the query and replayed it on the next bare open, which the `_side`
   // strip was written to prevent. That sidecar is gone outright now, D329; the
   // strip lives on for the recents store, lib/session-params.)
+  // The tab on screen came only from the remembered store: the reconcile must not
+  // write it (see `sideFromMemory`). Recomputed each render, so it is a dep.
+  const activeFromMemory = sideFromMemory(sideReq, activeSide, getSideTab());
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
@@ -1598,6 +1603,7 @@ function TemplatePreview({
       open: sideFromHiddenFlag ? true : sideReq.open,
       activeSide,
       defaultSide: split.defaultSide,
+      fromMemory: activeFromMemory,
     });
     if (search === null) return; // already agrees
     replaceSearch(location.pathname + (search ? "?" + search : ""));
@@ -1610,6 +1616,7 @@ function TemplatePreview({
     sideReq.open,
     sideFromHiddenFlag,
     activeSide,
+    activeFromMemory,
     sideKeys,
   ]);
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
@@ -1886,36 +1893,22 @@ function TemplatePreview({
   //   where THIS FILE's bytes come from, and the git gate refuses a mount-backed
   //   directory outright, so a borrowed target is never remote.
   //
-  // Plus the one thing the sidebar has to tell a template about its host —
-  // `chat_only=1` for the chat. That template's own layout is a split whose left
-  // half is ITS copy of this file's preview (templates/claude/template.html),
-  // which in the sidebar would be the same file previewed twice in one window,
-  // the inner one a few hundred pixels wide. The param makes it take that half
-  // away and run the chat column full width; the template does it through its
-  // existing no-pane path (enterNoPane), the same designed absence a folder with
-  // no app entry gets.
-  //
   // Null while the mode's gate is unresolved — a pending borrowed entry has no
-  // template path yet — and the column holds a spinner.
-  // No mention of the "Fix with AI" prompt anywhere in here (review #804 round
-  // 2): it is no longer a param this src carries at all — see the seed ref's
-  // own comment above for why, and `claudeFrameKey` below for the other half
-  // (forcing a fresh mount so the claude template's boot-time PULL actually
-  // fires when one is waiting).
+  // template path yet — and the column holds a spinner. The CHAT is a mount,
+  // not a document, so it has no address: its answer is "" once its gate has
+  // resolved, which is all `PreviewSidebar` reads it for. The "Fix with AI"
+  // prompt is never part of any of this (review #804 round 2) — see the seed
+  // ref's own comment above.
   const sideSrcFor = (m: string): string | null => {
     const t = sidebarModes.find((e) => e.mode === m);
     if (!t || t.path === null) return null;
+    if (m === CHAT_MODE) return "";
     const borrowed = isBorrowedMode(m);
     const target = borrowed ? parentDir : fsPath;
     const rem = borrowed ? "" : remote;
-    const chatOnly = m === "claude" ? "&chat_only=1" : "";
-    // The two claude shapes live in `apps/claude/legacy-src.ts` behind the
-    // byte-for-byte parity test; `git`/`mcp` keep the inline form, which is the
-    // same string with an empty `chatOnly`.
-    if (m === CHAT_MODE) return sideFrameSrc(t.path, target, rem, thumbFlags);
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
+      `&_file=${encodeURIComponent(target)}${rem}${thumbFlags}`
     );
   };
   // The MCP dialog's document: the same URL shape `sideSrcFor` builds for a
@@ -1928,56 +1921,17 @@ function TemplatePreview({
       ? `/render?path=${encodeURIComponent(mcpEntry.path)}` +
         `&_file=${encodeURIComponent(parentDir)}${thumbFlags}`
       : null;
-  // The claude iframe's REMOUNT key, distinct from the mode name `active`
-  // everything else keys off of (the switcher's highlighted row, the title).
-  // Ordinarily the mode alone is the right key — switching to a DIFFERENT
-  // companion and back is exactly when a fresh document is wanted. The one
-  // gap is a second "Fix with AI" ask that arrives while claude is ALREADY
-  // active: the mode never changes, so a key of just the mode never would
-  // either, and nothing would remount the frame to make its boot pull the new
-  // text. `claudeAskInstance` (bumped on every incoming ask, above) closes
-  // that gap without disturbing the ordinary case: it only changes when an ask
-  // arrives, so toggling away to `git` and back with no new ask reuses the
-  // same instance number and still remounts on the mode change alone, exactly
-  // as before.
-  const claudeFrameKey = (m: string) => (m === "claude" ? `claude:${claudeAskInstance}` : m);
-  // THE SAME GAP, ONE LAYER UP, for the mount that decides between the two
-  // branches (`ChatMount`). Flag off it is the legacy key above — the template
-  // pulls the ask at its own boot, so the ARRIVAL is the right trigger. Flag on
-  // the host pulls in a committed effect, so the render that first sees a
-  // bumped `claudeAskInstance` has nothing to hand down yet and a remount there
-  // would boot an askless chat; `askDelivery.seq` changes exactly when there IS
-  // text to boot with. Kept apart from `claudeFrameKey` rather than folded into
-  // it: that one is the legacy iframe's key and a legacy suite pins its shape
-  // (tests/test_claude_ask_lifecycle.py).
-  //
-  // ONLY A REAL `false` TAKES THE LEGACY SHAPE. Read as a boolean this walked
-  // `claude:1` (legacy shape, flag not yet read) → `claude:0` (flag landed on,
-  // nothing delivered) → `claude:1` (delivered): the middle step mounted and
-  // booted a whole chat on whatever `session_id` the URL carried, only to throw
-  // it away. So "not asked yet" takes the NATIVE shape — the shape it will keep
-  // if the flag lands on — and the one key change a `false` then causes happens
-  // while `ChatMount` is still showing nothing but its cover, which costs a
-  // remount of a placeholder.
-  //
-  // FLAG OFF, THE CONTENT PANE KEEPS ITS BASELINE KEY, which is the bare `m`:
-  // `claudeFrameKey` was only ever the SIDEBAR's key (see its call below), and
-  // `claudeAskInstance` bumps on EVERY incoming ask regardless of route. Keying
-  // the content pane on it meant an ask routed to the sidebar destroyed and
-  // reloaded the content pane's chat document — scroll position and a whole
-  // transcript re-restore — where before this file grew a mount it kept it.
+  // The chat's REMOUNT key, for both the sidebar and the content pane. The
+  // mode alone is the ordinary key — switching to a DIFFERENT companion and
+  // back is exactly when a fresh chat is wanted. The one gap is a second "Fix
+  // with AI" ask that arrives while claude is ALREADY active: the mode never
+  // changes, so nothing would remount the chat to boot with the new text. The
+  // host pulls in a committed effect, so the render that first sees a bumped
+  // `claudeAskInstance` has nothing to hand down yet and a remount there would
+  // boot an askless chat; `askDelivery.seq` changes exactly when there IS text
+  // to boot with.
   const claudeMountKey = (m: string) =>
-    nativeChatState === false
-      ? m
-      : m === CHAT_MODE
-        ? `claude:${askDelivery ? askDelivery.seq : 0}`
-        : m;
-  // THE SIDEBAR'S, whose flag-off shape genuinely IS `claudeFrameKey`: the
-  // legacy template pulls the ask at its own boot, so a second "Fix with AI"
-  // into an already-open sidebar has to remount for it to be pulled at all
-  // (tests/test_claude_ask_lifecycle.py pins that shape).
-  const claudeSideMountKey = (m: string) =>
-    nativeChatState === false ? claudeFrameKey(m) : claudeMountKey(m);
+    m === CHAT_MODE ? `claude:${askDelivery ? askDelivery.seq : 0}` : m;
 
   // Held-frame swap. Switching mode used to destroy the iframe and mount the
   // next one bare (`key={mode}`), so the user watched a blank pane for as long
@@ -2100,7 +2054,7 @@ function TemplatePreview({
   // through to the content pane as any unsplit surface would take it.
   const openMode = (m: string) => {
     if (m === "mcp" && mcpSrc) setMcpOpen(true);
-    else if (sideOn && isSidebarMode(m)) setSide(m);
+    else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
@@ -2158,7 +2112,7 @@ function TemplatePreview({
     // has no sidebar of its own (see `applySide`'s definition above), so
     // there `onOpenGit` is left `undefined` and the row falls back to
     // navigating instead.
-    onOpenGit: splitCapable ? () => applySide("git") : undefined,
+    onOpenGit: splitCapable ? () => applySide("git", "git") : undefined,
   });
 
   // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's
@@ -2409,10 +2363,48 @@ function TemplatePreview({
              re-created by a switch away and back within the swap window. */}
             <div className="preview-frames">
             {frames.map((m) => {
-              // THE ONE FRAME ELEMENT, built once here and used by BOTH branches
-              // below: a non-chat mode renders it directly, and claude hands it to
-              // `ChatMount` as its flag-off node. Built once rather than written
-              // twice because of the capability marks on it — each is a contract
+              // THE CONTENT PANE'S CHAT (`_mode=claude` as the main body): the
+              // FULL split variant, `chatOnly` false, because the chat's own
+              // left pane IS this target's preview and that is the whole point
+              // of this route (00 §1b, site 6). No `data-fused-annotate-target`
+              // on it either: the chat is not something notes point AT, and its
+              // own pane marks itself (pane/AppPane.tsx).
+              //
+              // Kept inside the held-frame swap so a switch into and out of
+              // claude crossfades like every other mode; `is-shown` is the one
+              // thing that decides which of the mounted panes is on screen.
+              if (m === CHAT_MODE) return (
+                <ChatMount
+                  // The content pane's chat remounts for a fresh ask on the same
+                  // rule the sidebar's does: `initialAsk` is read once, at boot
+                  // (ClaudeChat's `booted`), so a second ask arriving while this
+                  // pane already shows claude needs a fresh mount to boot it.
+                  key={claudeMountKey(m)}
+                  mountClassName={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  file={fsPath}
+                  paramsSource="url"
+                  {...(stat.remote ? { remote: true } : {})}
+                  /* THE RECAP OPT-IN, and one of only two sites that take it:
+                     this pane and the `?_side=claude` sidebar are the full chat
+                     the reader opened. A thumbnail is neither — `IS_PREVIEW`
+                     already says "display-only", and that is as true of a ~12s
+                     model call for a fold nobody reads as it is of the keyboard
+                     (ChatMount's `recap`). */
+                  {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
+                  {...(nativeAsk && claudeAskRoute === "content"
+                    ? { initialAsk: nativeAsk }
+                    : {})}
+                  onReady={() => {
+                    // The swap's own completion signal, which for a frame was
+                    // its `load`: the chat has painted, so it can take over from
+                    // whatever is being held.
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                />
+              );
+              // THE ONE FRAME ELEMENT, for every mode but the chat. Written once
+              // because of the capability marks on it — each is a contract
               // with EXACTLY ONE holder ("this frame is what notes point at" / "a
               // revision can be driven into this frame"), and
               // `tests/test_git_scope.py` counts the literal to keep it that way.
@@ -2425,12 +2417,10 @@ function TemplatePreview({
                   className={"preview-frame" + (m === shown ? " is-shown" : "")}
                   src={srcFor(m) as string}
                   /* The shell's ONE contribution to annotation, and deliberately
-                     the whole of it: the claude sidebar looks this attribute up
-                     through `parent.document` and treats the frame it marks as the
-                     document its notes point at — see
-                     fused_render/templates/claude/template.html (the annotate
-                     target seam). Nothing here knows what annotation is, and the
-                     template stays host-agnostic: no mark, no annotate switch.
+                     the whole of it: the claude sidebar finds the frame this
+                     attribute marks (`annotateTargetFrame`) and treats it as the
+                     document its notes point at. Nothing here knows what
+                     annotation is: no mark, no annotate switch.
 
                      The contract is "exactly one, and it is the content the reader
                      is looking at". So it rides `shown` and not `activeMode`: the
@@ -2484,56 +2474,7 @@ function TemplatePreview({
                   }}
                 />
               );
-              // THE CONTENT PANE'S CHAT (`_mode=claude` as the main body): the
-              // FULL split variant, `chatOnly` false, because the template's own
-              // left half IS this target's preview and that is the whole point
-              // of this route (00 §1b, site 6). No `data-fused-annotate-target`
-              // on it either: the chat is not something notes point AT, and its
-              // own pane marks itself (pane/AppPane.tsx).
-              //
-              // Kept inside the held-frame swap so a switch into and out of
-              // claude crossfades like every other mode; `is-shown` is the one
-              // thing that decides which of the mounted panes is on screen.
-              return m === CHAT_MODE ? (
-                <ChatMount
-                  // The content pane's chat remounts for a fresh ask on the same
-                  // rule the sidebar's does: `initialAsk` is read once, at boot
-                  // (ClaudeChat's `booted`), so a second ask arriving while this
-                  // pane already shows claude needs a new document to boot it.
-                  key={claudeMountKey(m)}
-                  legacySrc={srcFor(m) ?? ""}
-                  mountClassName={"preview-frame" + (m === shown ? " is-shown" : "")}
-                  title={modeTitle(m)}
-                  file={fsPath}
-                  paramsSource="url"
-                  {...(stat.remote ? { remote: true } : {})}
-                  /* THE RECAP OPT-IN, and one of only two sites that take it:
-                     this pane and the `?_side=claude` sidebar are the full chat
-                     the reader opened. A thumbnail is neither — `IS_PREVIEW`
-                     already says "display-only", and that is as true of a ~12s
-                     model call for a fold nobody reads as it is of the keyboard
-                     (ChatMount's `recap`). */
-                  {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
-                  {...(nativeAsk && claudeAskRoute === "content"
-                    ? { initialAsk: nativeAsk }
-                    : {})}
-                  onReady={() => {
-                    // The swap's own completion signal, which for a frame was
-                    // its `load`: the chat has painted, so it can take over from
-                    // whatever is being held.
-                    loadedFrames.current.add(m);
-                    if (m === activeMode) setShown(m);
-                  }}
-                  // The flag-off node, verbatim — the very element the
-                  // non-chat branch returns, marks and all, so flag off is the
-                  // plain iframe this branch has always built. Never a
-                  // `ChatFrame`: the content pane's crossfade IS its cover, and
-                  // a second one over it would be two covers on two clocks.
-                  legacy={frame}
-                />
-              ) : (
-                frame
-              );
+              return frame;
             })}
           </div>
             </div>
@@ -2627,30 +2568,22 @@ function TemplatePreview({
               disabledReason: t.disabledReason,
             }))}
             active={activeSide}
-            frameKey={claudeFrameKey(activeSide)}
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
             chat={
-              /* THE SIDEBAR'S CHAT, `chat_only` because the template's own left
-                 half would be this same file previewed twice in one window (see
-                 `sideSrcFor`). The key is `claudeFrameKey`'s, unchanged: it is
-                 what makes a second "Fix with AI" ask remount and be pulled.
-                 `_preview`/`_nofocus` become `autoFocus={false}` — a thumbnail
-                 must not take the keyboard (D348) — and the ask itself is
-                 PULLED here, in the host, instead of the chat reaching up
-                 through `window._fusedTakeClaudeAsk`. */
+              /* THE SIDEBAR'S CHAT, `chat_only` because the chat's own left
+                 pane would be this same file previewed twice in one window. The
+                 key (`claudeMountKey`) is what makes a second "Fix with AI" ask
+                 remount with it. A thumbnail must not take the keyboard (D348),
+                 and the ask itself is PULLED here, in the host. */
               <ChatMount
-                key={claudeSideMountKey(CHAT_MODE)}
-                legacySrc={sideSrcFor(CHAT_MODE) ?? ""}
-                className="preview-side-frame"
-                title={modeTitle(CHAT_MODE)}
+                key={claudeMountKey(CHAT_MODE)}
                 file={fsPath}
                 chatOnly
                 /* `chat_only` takes the chat's OWN pane away, not the pane:
                    the app is still on screen in the middle column, and that
                    frame is what the sidebar reads app state from and points its
                    notes at. Handing it over is the whole of the shell's side of
-                   that contract — the same one attribute, read the same way the
-                   template read it (see `annotateTargetFrame`). Without it the
+                   that contract (see `annotateTargetFrame`). Without it the
                    chat reported `has_pane:"0"`, pushed no `<live-app-state>`
                    block, and its sessions were recorded as FOLDER chats that
                    never appeared in this file's Recent list. */
@@ -2667,7 +2600,7 @@ function TemplatePreview({
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
               />
             }
-            onSelect={setSide}
+            onSelect={(m) => setSide(m, m ?? undefined)}
             onClose={() => setSide(null)}
           />,
           sideSlot

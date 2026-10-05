@@ -67,7 +67,6 @@ export interface ArtStripStore {
  * strip would drop the user's mid-click on a chip.
  */
 export function useArtStrip(
-  agentDir: string | null,
   file: string | null,
   sessionId: string,
   /** The transcript read, injectable so a suite drives the strip without
@@ -87,8 +86,8 @@ export function useArtStrip(
   const busy = useRef(false);
   // Read at POLL time, never captured: the tick comes from the run loop, which
   // outlives any one render of this hook.
-  const live = useRef({ agentDir, file, sessionId });
-  live.current = { agentDir, file, sessionId };
+  const live = useRef({ file, sessionId });
+  live.current = { file, sessionId };
 
   const readRef = useRef(read);
   readRef.current = read;
@@ -106,8 +105,8 @@ export function useArtStrip(
    */
   const owed = useRef(false);
   const poll = useCallback(() => {
-    const { agentDir: dir, file: target, sessionId: sid } = live.current;
-    if (!dir || !sid) {
+    const { file: target, sessionId: sid } = live.current;
+    if (!sid) {
       // Not a read and not a retry loop: one flag, spent by the next render
       // that has an id. A chat that never gets one never reads.
       owed.current = true;
@@ -117,7 +116,7 @@ export function useArtStrip(
     busy.current = true;
     void (async () => {
       try {
-        const rows = await readRef.current(dir, target, sid);
+        const rows = await readRef.current(target, sid);
         // The await straddles navigation: Back may have cleared the strip (and
         // the session) while this read was in flight, and a fresh chat may even
         // be underway. A stale answer must evaporate, not repopulate the strip.
@@ -142,10 +141,10 @@ export function useArtStrip(
   // The re-arm. Keyed on the two facts a read needs, so it fires on the render
   // that brings either of them and on no other.
   useEffect(() => {
-    if (!owed.current || !agentDir || !sessionId) return;
+    if (!owed.current || !sessionId) return;
     owed.current = false;
     poll();
-  }, [agentDir, sessionId, poll]);
+  }, [sessionId, poll]);
 
   const clear = useCallback(() => {
     if (!chips.current.size) return;

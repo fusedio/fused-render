@@ -104,6 +104,10 @@ export function sendTerminalInput(id: string, data: string): Promise<{ ok: boole
 export interface BuildTerminalCommandArgs {
   cwd?: string;
   command?: string;
+  /** Defaults to true. False leaves the trailing Enter off, so the string
+   * lands at the prompt typed but not yet run — for a model-suggested
+   * command a person should read before it executes. */
+  execute?: boolean;
 }
 
 /** Build the string to type into a freshly-opened (or already-open) terminal
@@ -112,15 +116,23 @@ export interface BuildTerminalCommandArgs {
  * Windows). Single-quotes `cwd` the POSIX way (`'` -> `'\''`, ie. close the
  * quote, an escaped literal quote, reopen the quote) so a path with spaces,
  * `$`, or embedded quotes still lands as one argument to `cd`. With both
- * `cwd` and `command`: `cd '<cwd>' && <command>\r`. With only `cwd`: `cd
- * '<cwd>'\r`. With only `command`: `<command>\r`. With neither: `""` (no-op
- * — nothing to send). */
-export function buildTerminalCommand({ cwd, command }: BuildTerminalCommandArgs): string {
+ * `cwd` and `command`: `cd '<cwd>' && <command>`. With only `cwd`: `cd
+ * '<cwd>'`. With only `command`: `<command>`. With neither: `""` (no-op —
+ * nothing to send). The trailing `\r` that runs the line is appended unless
+ * `execute` is explicitly `false`. */
+export function buildTerminalCommand({ cwd, command, execute }: BuildTerminalCommandArgs): string {
   const quotedCwd = cwd ? `'${cwd.replace(/'/g, "'\\''")}'` : undefined;
-  if (quotedCwd && command) return `cd ${quotedCwd} && ${command}\r`;
-  if (quotedCwd) return `cd ${quotedCwd}\r`;
-  if (command) return `${command}\r`;
-  return "";
+  const line = quotedCwd && command ? `cd ${quotedCwd} && ${command}` : quotedCwd ? `cd ${quotedCwd}` : command || "";
+  if (!line) return "";
+  if (execute === false) {
+    // A multi-line block typed with execute:false must not let its embedded
+    // newlines act as Enter at the prompt for the inner lines. Bracketed
+    // paste mode (bash >=5.1, zsh, fish) makes the shell treat the whole
+    // span — cd prefix included — as one pasted unit sitting at the prompt
+    // instead of running each line as it arrives.
+    return line.includes("\n") ? `\x1b[200~${line}\x1b[201~` : line;
+  }
+  return `${line}\r`;
 }
 
 /** One attached terminal: owns the WebSocket for a pty session id, decodes

@@ -181,6 +181,37 @@ def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_monitor_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: the System chip and /monitor page are opt-in.
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    body = client.put("/api/prefs", json={"monitor_enabled": True}, headers=FUSED).json()
+    assert body["monitor"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["monitor_enabled"] is True
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is True
+    assert client.put("/api/prefs", json={"monitor_enabled": False}, headers=FUSED).json()[
+        "monitor"
+    ]["enabled"] is False
+
+
+def test_monitor_enabled_reads_a_hand_edited_junk_value_as_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"monitor_enabled": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["monitor"]["enabled"] is False
+    assert prefs_mod.monitor_enabled() is False
+
+
+def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"monitor_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.
@@ -220,6 +251,27 @@ def test_indexing_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeyp
     body = client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()
     assert body["reader"]["enabled"] is True
     assert body["indexing"]["enabled"] is False
+
+
+def test_git_auto_sync_defaults_on_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["git"]["auto_sync"] is True
+    body = client.put("/api/prefs", json={"git_auto_sync_enabled": False}, headers=FUSED).json()
+    assert body["git"]["auto_sync"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "git_auto_sync_enabled"
+    ] is False
+    assert client.put("/api/prefs", json={"git_auto_sync_enabled": True}, headers=FUSED).json()[
+        "git"
+    ]["auto_sync"] is True
+
+
+def test_put_rejects_bad_git_auto_sync(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"git_auto_sync_enabled": "yes"}, headers=FUSED
+    ).status_code == 400
+    assert not (home / "prefs.json").exists()
 
 
 def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
@@ -1259,21 +1311,6 @@ def test_a_resident_model_the_switch_does_not_affect_is_LEFT_ALONE(
 # -- native chat flag (default ON since 2026-09-17) ----------------------------
 
 
-def test_native_chat_defaults_on_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    # Default ON: an install that has never opened Preferences gets the native
-    # chat, and the switch is the way back to the legacy template iframe.
-    assert client.get("/api/prefs").json()["chat"]["native"] is True
-    body = client.put("/api/prefs", json={"native_chat_enabled": False}, headers=FUSED).json()
-    assert body["chat"]["native"] is False
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["native_chat_enabled"] is False
-    assert client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()[
-        "chat"
-    ]["native"] is True
-
-
 # -- task side peek: always on since 2026-09-20 ------------------------------
 
 
@@ -1298,6 +1335,19 @@ def test_put_no_longer_accepts_the_removed_task_switches(tmp_path, monkeypatch):
         "/api/prefs", json={"task_card_last_message": True}, headers=FUSED).status_code == 400
     assert not (home / "prefs.json").exists()
     assert "task_cards" not in client.get("/api/prefs").json()
+
+
+def test_the_native_chat_switch_is_gone(tmp_path, monkeypatch):
+    # `native_chat_enabled` (and its FUSED_RENDER_NATIVE_CHAT override) chose
+    # between the React chat and the legacy iframe page until that page was
+    # retired; with one chat there is nothing to choose, so the PUT names no
+    # known preference and the env var decides nothing.
+    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "0")
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"native_chat_enabled": False}, headers=FUSED).status_code == 400
+    assert not (home / "prefs.json").exists()
+    assert "chat" not in client.get("/api/prefs").json()
 
 
 # -- project (app page) task peek: always on -------------------------------------
@@ -1353,58 +1403,6 @@ def test_put_rejects_bad_task_notify_terminal_sessions(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
-def test_native_chat_junk_value_reads_as_on(tmp_path, monkeypatch):
-    # Junk is not `false`, so it reads as ON — the default, not the opt-out.
-    client, home = _client(tmp_path, monkeypatch)
-    monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "prefs.json").write_text(json.dumps({"native_chat_enabled": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["chat"]["native"] is True
-    assert prefs_mod.native_chat_enabled() is True
-
-
-def test_native_chat_env_override_beats_pref(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    # Env on beats a stored off (and a missing pref).
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "1")
-    assert client.get("/api/prefs").json()["chat"]["native"] is True
-    # Env off beats a stored on; the PUT still persists the pref.
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "0")
-    body = client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()
-    assert body["chat"]["native"] is False
-    # Any other env value is ignored and the stored pref decides.
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "yes")
-    assert client.get("/api/prefs").json()["chat"]["native"] is True
-
-
-def test_native_chat_reports_which_env_value_is_deciding(tmp_path, monkeypatch):
-    """`forced_by`, the same shape `engine_state()` uses: with the override in
-    force the stored switch cannot win, so the Preferences checkbox has to be
-    able to say what is deciding instead of silently snapping back."""
-    client, _ = _client(tmp_path, monkeypatch)
-    # Unset: nothing is forcing it, and the switch is the user's.
-    monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    assert client.get("/api/prefs").json()["chat"]["forced_by"] is None
-    for value in ("1", "0"):
-        monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", value)
-        chat = client.get("/api/prefs").json()["chat"]
-        assert chat["forced_by"] == value
-        assert chat["native"] is (value == "1")
-    # A value the override IGNORES is not "forcing" anything: the pref decides,
-    # so the switch stays live.
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "yes")
-    assert client.get("/api/prefs").json()["chat"]["forced_by"] is None
-
-
-def test_put_rejects_bad_native_chat_enabled(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    assert (
-        client.put("/api/prefs", json={"native_chat_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
-    assert not (home / "prefs.json").exists()
-
-
 # -- project queue (beta) flag -------------------------------------------------
 
 
@@ -1442,4 +1440,25 @@ def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
                    headers=FUSED).status_code
         == 400
     )
+    assert not (home / "prefs.json").exists()
+
+
+def test_auto_download_updates_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["update"]["auto_download"] is False
+    body = client.put("/api/prefs", json={"auto_download_updates": True}, headers=FUSED).json()
+    assert body["update"]["auto_download"] is True
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "auto_download_updates"
+    ] is True
+    assert client.put("/api/prefs", json={"auto_download_updates": False}, headers=FUSED).json()[
+        "update"
+    ]["auto_download"] is False
+
+
+def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
+    ).status_code == 400
     assert not (home / "prefs.json").exists()

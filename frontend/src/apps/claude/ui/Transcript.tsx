@@ -112,6 +112,11 @@ export interface TranscriptProps {
    *  it scrolls with the conversation — Claude Code prints its `※ recap:` as
    *  the last line of the transcript, and so does this. */
   recap?: ReactNode;
+  /** The chat's working folder (ClaudeChat `chatWorkdir`), threaded down to
+   *  every `Turn` so a shell fence's or a Bash chip's "run" button `cd`'s
+   *  there first instead of running wherever the terminal drawer happens to
+   *  be. */
+  cwd?: string | null;
 }
 
 export const Transcript = memo(function Transcript({
@@ -130,6 +135,7 @@ export const Transcript = memo(function Transcript({
   comebackPending,
   followRef,
   recap,
+  cwd,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -707,6 +713,7 @@ export const Transcript = memo(function Transcript({
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
+                  cwd={cwd}
                   collapsed={isFolded(folds.current.get(foldIds.current.get(turn.key) ?? turn.key))}
                   onToggleCollapse={onToggleCollapse}
                   {...(blocked === turn.key &&

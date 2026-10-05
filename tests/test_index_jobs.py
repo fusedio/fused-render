@@ -1,11 +1,11 @@
-"""The Activity bridge: index scan runs mirrored into sys:index:<run_id> jobs.
+"""The Activity bridge: index scan runs mirrored into the ONE sys:index job.
 
 The card at the foot of the shell (`DownloadManager.tsx`) already polls
 `GET /api/jobs` for every download/task the app is running; a re-index run
 must show up there the same way instead of only being visible in
 Preferences > Indexing. This module's `mirror_index_jobs_once` is the bridge:
 one tick reads `runner.list_runs()` (the same fold `/api/index/status` uses)
-and writes one `jobs.upsert(..., server=True)` per active/just-finished run.
+and writes upserts into a single `sys:index` job for all active/just-finished runs.
 
 See DECISIONS.md D724+.
 """
@@ -25,11 +25,13 @@ def _reset():
     index_router._mirrored_terminal.clear()
     index_router._seen_running.clear()
     index_router._index_job_wake.clear()
+    index_router._reset_batch()
     yield
     jobs.reset()
     index_router._mirrored_terminal.clear()
     index_router._seen_running.clear()
     index_router._index_job_wake.clear()
+    index_router._reset_batch()
 
 
 def _run(run_id, root="/Users/tester/docs", **over):
@@ -49,12 +51,12 @@ def _tick(monkeypatch, runs, cfg=None):
     index_router.mirror_index_jobs_once(cfg=cfg if cfg is not None else object())
 
 
-def test_active_run_creates_an_indeterminate_job_keyed_by_run_id(monkeypatch):
+def test_active_run_creates_an_indeterminate_job_with_the_stable_id(monkeypatch):
     _tick(monkeypatch, [_run("r1", files=12)])
     rows = jobs.list_jobs()
     assert len(rows) == 1
     row = rows[0]
-    assert row["id"] == "sys:index:r1"
+    assert row["id"] == "sys:index"
     assert row["state"] == "running"
     assert row["owner"] == "server"
     assert row["kind"] == "task"
@@ -78,13 +80,105 @@ def test_the_row_names_the_explorer_as_its_own_origin(monkeypatch):
     assert jobs.list_jobs()[0]["origin"] == "Explorer"
 
 
-def test_two_concurrent_runs_produce_two_distinct_jobs(monkeypatch):
+def test_two_concurrent_runs_produce_one_job_naming_the_folder_count(monkeypatch):
     _tick(monkeypatch, [
-        _run("r1", root="/Users/tester/a"),
-        _run("r2", root="/Users/tester/b"),
+        _run("r1", root="/Users/tester/a", files=5),
+        _run("r2", root="/Users/tester/b", files=7),
     ])
-    ids = {j["id"] for j in jobs.list_jobs()}
-    assert ids == {"sys:index:r1", "sys:index:r2"}
+    rows = jobs.list_jobs()
+    assert [j["id"] for j in rows] == ["sys:index"]
+    assert rows[0]["detail"] == "2 folders"
+    assert rows[0]["done"] == 12.0
+    assert rows[0]["total"] is None
+
+
+def test_a_single_running_root_is_named_in_the_detail(monkeypatch):
+    _tick(monkeypatch, [_run("r1", root="/Users/tester/a")])
+    assert jobs.list_jobs()[0]["detail"] == "/Users/tester/a"
+
+
+def test_one_errored_run_in_a_batch_makes_the_terminal_state_error(monkeypatch):
+    _tick(monkeypatch, [_run("r1"), _run("r2", root="/Users/tester/b")])
+    _tick(monkeypatch, [
+        _run("r1", running=False, summary={"files": 3}),
+        _run("r2", root="/Users/tester/b", running=False, error="disk full"),
+    ])
+    rows = jobs.list_jobs()
+    assert len(rows) == 1
+    assert rows[0]["state"] == "error"
+    assert rows[0]["message"] == "disk full"
+    assert jobs.effective_tier(jobs._jobs["sys:index"]) == jobs.ATTENTION
+
+
+def test_the_batch_stays_running_until_the_last_live_run_ends(monkeypatch):
+    _tick(monkeypatch, [_run("r1"), _run("r2", root="/Users/tester/b")])
+    _tick(monkeypatch, [
+        _run("r1", running=False, summary={"files": 3}),
+        _run("r2", root="/Users/tester/b", running=True),
+    ])
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "running"
+    assert row["detail"] == "/Users/tester/b"
+    _tick(monkeypatch, [
+        _run("r1", running=False, summary={"files": 3}),
+        _run("r2", root="/Users/tester/b", running=False, summary={"files": 4}),
+    ])
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "done"
+    assert row["message"] == "7 files indexed"
+
+
+def test_many_short_rescans_in_a_row_surface_at_most_one_visible_index_row(
+        monkeypatch):
+    """The live watcher starts many short per-folder runs back to back. Each
+    used to get its own row that then lingered FINISHED_TTL_S; read through the
+    path the Activity dock consumes (frozen clock), at most one index row may
+    ever exist."""
+    t = 1000.0
+    seen_counts = []
+    finished = []
+    for i in range(6):
+        rid = f"r{i}"
+        _tick(monkeypatch, finished + [_run(rid, root=f"/Users/tester/d{i}")])
+        seen_counts.append(len(jobs.list_jobs(now=t, mark_read=True)))
+        t += 0.5
+        finished.append(_run(rid, root=f"/Users/tester/d{i}", running=False,
+                             summary={"files": 1}))
+        _tick(monkeypatch, finished)
+        seen_counts.append(len(jobs.list_jobs(now=t, mark_read=True)))
+        t += 0.1
+    assert max(seen_counts) == 1
+    assert [j["id"] for j in jobs.list_jobs(now=t)] == ["sys:index"]
+
+
+def test_a_new_run_reuses_the_lingering_done_row_and_gets_its_own_retention(
+        monkeypatch):
+    t = 1000.0
+    _tick(monkeypatch, [_run("r1")])
+    _tick(monkeypatch, [_run("r1", running=False, summary={"files": 1})])
+    assert jobs.list_jobs(now=t, mark_read=True)[0]["state"] == "done"
+    # A new run starts while the done row still lingers: same row, running.
+    _tick(monkeypatch, [_run("r1", running=False), _run("r2")])
+    rows = jobs.list_jobs(now=t + 1, mark_read=True)
+    assert [(j["id"], j["state"]) for j in rows] == [("sys:index", "running")]
+    # ...and its later terminal write must not inherit the old read stamp and
+    # be swept before anyone sees it.
+    _tick(monkeypatch, [_run("r1", running=False),
+                        _run("r2", running=False, summary={"files": 1})])
+    rows = jobs.list_jobs(now=t + 20)
+    assert [(j["id"], j["state"]) for j in rows] == [("sys:index", "done")]
+
+
+def test_cancel_on_the_aggregate_row_cancels_every_live_run(monkeypatch):
+    cancelled = []
+    monkeypatch.setattr(
+        index_router.runner, "cancel",
+        lambda cfg, run_id: cancelled.append(run_id) or {"cancelled": run_id})
+    runs = [_run("r1"), _run("r2", root="/Users/tester/b")]
+    _tick(monkeypatch, runs)
+    jobs.request_cancel("sys:index")
+    _tick(monkeypatch, runs)
+    assert sorted(cancelled) == ["r1", "r2"]
 
 
 def test_phase_string_reaches_the_job(monkeypatch):
@@ -158,7 +252,7 @@ def test_a_failed_scan_is_still_attention_despite_the_silent_tier(monkeypatch):
     identical for SILENT and TRANSIENT rows alike."""
     _tick(monkeypatch, [_run("r1", running=True)])
     _tick(monkeypatch, [_run("r1", running=False, error="disk full")])
-    job = jobs._jobs["sys:index:r1"]
+    job = jobs._jobs["sys:index"]
     assert job.tier == jobs.SILENT
     assert jobs.effective_tier(job) == jobs.ATTENTION
 
@@ -239,7 +333,7 @@ def test_cancel_requested_on_the_job_actually_cancels_the_run(monkeypatch):
 
     _tick(monkeypatch, [_run("r1", running=True)])
     assert jobs.list_jobs()[0]["cancellable"] is True
-    jobs.request_cancel("sys:index:r1")
+    jobs.request_cancel("sys:index")
     assert cancelled_run_ids == []  # not yet honored — only on the NEXT tick
 
     _tick(monkeypatch, [_run("r1", running=True)])
@@ -311,8 +405,10 @@ def test_the_manifest_is_read_once_per_tick_not_once_per_running_run(monkeypatch
     index_router.mirror_index_jobs_once(cfg=object())
     assert len(calls) == 1
     rows = jobs.list_jobs()
-    assert len(rows) == 3
-    assert all(r["total"] == 100.0 for r in rows)
+    # One aggregate row: an estimate only fits a lone run, so it is withheld.
+    assert len(rows) == 1
+    assert rows[0]["total"] is None
+    assert rows[0]["done"] == 36.0
 
 
 class _StopLoop(Exception):

@@ -34,7 +34,6 @@ import { getPrefs, readChatSettings, recordChatSettings } from "@platform/lib/ap
 import {
   getClaudeDefaults,
   readClaudeDefaults,
-  setClaudeDefaults,
   subscribeClaudeDefaults,
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
@@ -164,10 +163,10 @@ export interface ComposerDefaults {
   effort: string;
   permission: PermissionMode;
   /** The pane param AND this chat's record — never localStorage (03 §F) — or,
-   *  for a chat with no session and no host seed, the GLOBAL pair itself
-   *  (2026-09-21): there is no conversation to record against, so the pick is a
-   *  statement about what this machine opens next, and it goes to the one file
-   *  that holds that. See `pickGlobal` in the body.
+   *  for a chat with no session and no host seed, this mount's own `local`
+   *  state (2026-10-01): there is no conversation to record against yet, and
+   *  the pick is about THIS chat only — never the global pair, which the Claude
+   *  config page alone edits. See `pickLocal` in the body.
    *
    *  The param alone was the whole of it, and it is not persistence: it dies
    *  with the address bar, so a pick was lost on the next open and detection
@@ -211,7 +210,6 @@ export interface ComposerDefaults {
  * ranking (T:12608-12645).
  */
 export function useComposerDefaults(
-  agentDir: string | null,
   file: string | null,
   params: ParamsStore,
   hostSeeded = false,
@@ -291,6 +289,9 @@ export function useComposerDefaults(
   // replace. A document that has already asked once (another composer, the New
   // task card) starts settled, so the second surface paints on its first render.
   const [globalReady, setGlobalReady] = useState(() => getClaudeDefaults() !== null);
+  // This mount's own pick for a chat that has no session yet (see `pickLocal`).
+  const [local, setLocal] = useState<ClaudeDefaults>({ model: "", effort: "" });
+  const prevSessionId = useRef(sessionId);
   useEffect(() => {
     if (sessionId) {
       // A conversation that exists answers for itself. Nothing here is waited
@@ -350,6 +351,13 @@ export function useComposerDefaults(
     // pills go back to the wash and paint this chat's own record, or "".
     setRecorded({ model: "", effort: "" });
     setRecordReady(false);
+    // THE LOCAL PICK FOLLOWS EXACTLY ONE TRANSITION: "no session" → "the id
+    // this chat was just given". A fresh chat (back to "") opens on the global
+    // pair again, and a switch straight from one conversation to another must
+    // not carry a pick the first one made into a chat whose record is empty
+    // (review, 2026-10-01).
+    if (!(sessionId && !prevSessionId.current)) setLocal({ model: "", effort: "" });
+    prevSessionId.current = sessionId;
     if (!sessionId) {
       setRecordReady(true);
       return;
@@ -380,7 +388,7 @@ export function useComposerDefaults(
   }, [sessionId]);
 
   useEffect(() => {
-    if (!agentDir || !file) return;
+    if (!file) return;
     let live = true;
     pickedSinceRead.current = {};
     // Same rule as the fast read: a detection is about ONE conversation. Left
@@ -389,9 +397,7 @@ export function useComposerDefaults(
     // when its own answer landed (Bugbot, PR #1226).
     setDetected({ model: "", effort: "" });
     setDetectionReady(false);
-    void runAgent(agentDir, "defaults",
-                  sessionId ? { file, session_id: sessionId } : { file },
-                  { key: null })
+    void runAgent("defaults", sessionId ? { file, session_id: sessionId } : { file })
       .then((out) => {
         if (!live) return;
         const d = out as DefaultsResponse;
@@ -439,7 +445,7 @@ export function useComposerDefaults(
     // and the first answer was about the folder. Re-asking then is what makes a
     // conversation's own settings appear as soon as it has an identity —
     // and it is one cheap read of one transcript's tail.
-  }, [agentDir, file, sessionId]);
+  }, [file, sessionId]);
 
   useEffect(() => {
     let live = true;
@@ -491,16 +497,20 @@ export function useComposerDefaults(
   // seconds, and it is the copy that hears another surface's write.
   const globModel = sessionId ? "" : glob.model;
   const globEffort = sessionId ? "" : glob.effort;
+  // THE PICK THIS NEW CHAT MADE rides just under its record: it is the record
+  // the first send is about to write, so it has to outrank the global and the
+  // reads, and it has to keep answering across the seconds between the CLI
+  // reporting a session id and that session's record read landing.
   const model = resolveModel(
     paramModel,
     globModel || detected.model,
     pref,
-    recorded.model,
+    recorded.model || local.model,
   );
   const effort = resolveEffort(
     paramEffort,
     globEffort || detected.effort,
-    recorded.effort,
+    recorded.effort || local.effort,
   );
   const permission = resolvePermission(snapshot.permission);
 
@@ -527,11 +537,11 @@ export function useComposerDefaults(
   const recordAnswered = recordReady;
   const modelSettled =
     recordAnswered &&
-    (!!recorded.model || !!paramModel || !!globModel ||
+    (!!recorded.model || !!local.model || !!paramModel || !!globModel ||
       (globalReady && detectionReady && prefsReady));
   const effortSettled =
     recordAnswered &&
-    (!!recorded.effort || !!paramEffort || !!globEffort ||
+    (!!recorded.effort || !!local.effort || !!paramEffort || !!globEffort ||
       (globalReady && detectionReady));
   const pillsReady = modelSettled && effortSettled;
 
@@ -556,32 +566,29 @@ export function useComposerDefaults(
     [sessionId],
   );
 
-  // A PICK ON A CHAT THAT DOES NOT EXIST YET IS A PICK OF THE GLOBAL VALUE
-  // (Akshil, 2026-09-21). There is no conversation to key a record on, and the
-  // address bar is not storage — it died with the tab, and while it lived it
-  // shadowed the very setting the New task card was showing. So the write goes
-  // to `~/.claude/settings.json`, the one home this pair has, and every other
-  // open surface hears it (`claude-defaults` announces it).
+  // A PICK ON A CHAT THAT DOES NOT EXIST YET IS THIS CHAT'S PICK, NOT THE
+  // GLOBAL'S (Akshil, 2026-10-01, reversing 2026-09-21: "any change in that
+  // model and thinking should only affect that instance of the new chat"). The
+  // global pair in `~/.claude/settings.json` is edited from the Claude config
+  // page and nowhere else. So the pick lives in `local` — component state,
+  // ranked right under this chat's record — until the first send records it
+  // per session (`_start` writes `session_settings.json`), and it is dropped
+  // the moment this mount goes back to "no session" (a fresh chat opens on the
+  // global pair again). Not the address bar: a `?model=` on the shell URL
+  // outlived the tab and shadowed the real global on the next visit, which was
+  // the bug of 2026-09-21, so a stale one is still CLEARED on the way.
   //
   // NOT for a host-seeded mount: a peek on a task that has not run is showing
-  // that TASK's stored setting, and moving its pill is not a statement about
-  // every future chat on this machine. It keeps writing the param it always
-  // did, which is the memory store that mount owns.
-  //
-  // The stale param is CLEARED on the way, and only in the case that no longer
-  // reads it: a `?model=`/`?effort=` left in the URL by an older build would
-  // otherwise sit in every copied link saying something the app has stopped
-  // believing. `replace`, because removing our own leftovers is not a
-  // navigation the Back button should have to undo.
-  const globalPick = !sessionId && !hostSeeded;
-  const pickGlobal = useCallback(
+  // that TASK's stored setting, and it keeps writing the param it always did,
+  // which is the memory store that mount owns.
+  const localPick = !sessionId && !hostSeeded;
+  const pickLocal = useCallback(
     (patch: { model?: string; effort?: string }) => {
-      setGlob((prev) => ({ ...prev, ...patch }));
+      setLocal((prev) => ({ ...prev, ...patch }));
       params.set(
         { model: null, effort: null },
         { history: "replace" },
       );
-      void setClaudeDefaults(patch);
     },
     [params],
   );
@@ -592,16 +599,16 @@ export function useComposerDefaults(
       effort,
       permission,
       setModel: (value: string) => {
-        if (globalPick) {
-          pickGlobal({ model: value });
+        if (localPick) {
+          pickLocal({ model: value });
           return;
         }
         params.set({ model: value });
         record({ model: value });
       },
       setEffort: (value: string) => {
-        if (globalPick) {
-          pickGlobal({ effort: value });
+        if (localPick) {
+          pickLocal({ effort: value });
           return;
         }
         params.set({ effort: value });
@@ -614,7 +621,7 @@ export function useComposerDefaults(
       modelSettled,
       effortSettled,
     }),
-    [model, effort, permission, params, record, globalPick, pickGlobal,
+    [model, effort, permission, params, record, localPick, pickLocal,
      detectionReady, prefsReady, recordReady, globalReady, pillsReady,
      modelSettled, effortSettled],
   );

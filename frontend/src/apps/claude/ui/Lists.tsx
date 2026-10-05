@@ -69,9 +69,6 @@ export function RecentSkeleton() {
 
 export interface ListsProps {
   file: string | null;
-  /** The template folder holding `agent.py`, for the snapshot plan/revert calls
-   *  the rows make. Without it the snapshots panel does not mount. */
-  agentDir?: string | null;
   /** The chats about this target, as TASKS — the Tasks page's own model, drawn
    *  in the Tasks page's own row (`TaskRowItem`, .claude-design/design.md §B).
    *  Already narrowed to this pane and in the TASKS PAGE'S OWN order — status
@@ -106,7 +103,6 @@ export interface ListsProps {
 
 export function Lists({
   file,
-  agentDir,
   recent,
   artifacts = null,
   snaps,
@@ -123,14 +119,14 @@ export function Lists({
    * enough to re-render on a press, never the place the answer is kept.
    *
    * KEYED ON THIS MOUNT'S TARGET (batch review F3): the memory is per
-   * `agentDir + file`, so two wall tiles on different files no longer answer
+   * `file`, so two wall tiles on different files no longer answer
    * for each other, and a target change reads its OWN remembered tab back
    * rather than carrying the previous file's across. The key change is adopted
    * during render — the documented shape for "adjust state when a prop changes"
    * — so the first paint after a target switch is already on the right panel
    * instead of flashing the old one for a frame.
    */
-  const memoKey = listTabKey(agentDir ?? null, file);
+  const memoKey = listTabKey(file);
   const [tab, setTabState] = useState<ListName>(() => rememberedTab(memoKey));
   const seenKey = useRef(memoKey);
   if (seenKey.current !== memoKey) {
@@ -404,9 +400,8 @@ export function Lists({
       </div>
     ),
     snaps:
-      agentDir && file && snaps && timeline !== undefined ? (
+      file && snaps && timeline !== undefined ? (
         <Snapshots
-          agentDir={agentDir}
           file={file}
           timeline={timeline}
           failed={snapsFailed}

@@ -123,16 +123,17 @@ EXPECTED_STARTUP = [
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
     # Added 2026-09-17 (PR 2): the project queue's factory is registered here
-    # explicitly, and with the flag on the manager is built and reconciled once
-    # so a restart resumes every folder's line. BEFORE `_startup_schedule`, whose
-    # first tick otherwise self-wires it as a fallback.
+    # explicitly. Also claims the machine-duties lease (B2) and, only for the
+    # process that wins it, starts the scheduler and reconciles once so a
+    # restart resumes every folder's line — folded in rather than left as a
+    # separate `_startup_schedule` hook, since both duties now share one
+    # lease and deciding that only once, in one place, is the whole point.
     "_startup_queue_manager",
-    "_startup_schedule",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
-    "_startup_ai_idle_reaper",
-    "_startup_ai_hardware_refresh",
     "_startup_ai_hub_metadata_refresh",
+    "_startup_ai_hub_catalog_refresh",
+    "_startup_resource_trail",
     "_startup_gc_project_venvs",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
@@ -153,6 +154,7 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_background_apps_resurrection",
     "_startup_shutdown_ai",
     "_shutdown_server_json",
+    "_shutdown_resource_trail",
     "_shutdown_captures",
     "_shutdown_ai_workers",
     "_shutdown_engines",
@@ -195,6 +197,10 @@ def test_create_app_registers_nothing_on_the_deprecated_path():
 #: `on_startup_always` in app.py.
 EXPECTED_STARTUP_LEAN = [
     "_startup_pooled_client",
+    # Task scheduling must work in lean apps, and the machine-duties lease only
+    # hands over promptly if every live process is parked on it from startup.
+    "_startup_queue_manager",
+    "_startup_tasks_watch",
 ]
 
 #: The shutdown handlers registered even in `lean` — anything that can start
@@ -248,6 +254,15 @@ def test_lean_still_serves_ordinary_routes():
     assert resp.status_code == 200
 
 
+def _alive(p: int) -> bool:
+    """Is this pid a live process? `tasks_watch._pid_alive` rather than
+    `os.kill(p, 0)`, which on Windows is a real signal (and raises WinError 87
+    for a pid that is gone), not a probe."""
+    from fused_render import tasks_watch
+
+    return tasks_watch._pid_alive(p)
+
+
 def test_lean_app_leaves_no_engine_process_after_a_request_starts_one(tmp_path, monkeypatch):
     """The proof for the shutdown-leak fix: `_startup_resurrect_background_apps`
     (`@on_startup`) never runs in a lean server — nothing is brought back at
@@ -274,13 +289,6 @@ def test_lean_app_leaves_no_engine_process_after_a_request_starts_one(tmp_path, 
         )
         assert resp.status_code == 200, resp.text
         pid = resp.json()["pid"]
-
-        def _alive(p: int) -> bool:
-            try:
-                os.kill(p, 0)
-            except (ProcessLookupError, PermissionError):
-                return False
-            return True
 
         assert _alive(pid), "the fixture daemon never actually started"
 

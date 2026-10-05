@@ -56,15 +56,18 @@ import {
 } from "@platform/lib/terminalSession";
 import { getJson } from "@platform/lib/api";
 import { isMod } from "@platform/lib/platform";
+import { copyToClipboard } from "@platform/lib/clipboard";
+import { notify } from "@platform/lib/notifications";
 import {
   closeTerminalDock,
   peekPendingTerminalRequest,
+  registerTerminalDrawerMounted,
   takePendingTerminalRequest,
   toggleTerminalDock,
   usePendingTerminalRequestVersion,
   useTerminalDockOpen,
   type TerminalRequest,
-} from "@shell/terminalDockStore";
+} from "@platform/lib/terminalDockStore";
 
 const STORAGE_KEY = "fused-render:terminal-drawer";
 const MIN_HEIGHT = 120;
@@ -158,6 +161,22 @@ export async function createSessionOrAbandon(
  * command (if any) is sent. Exported and dependency-injectable so a
  * test can drive it without a real store slot or a real POST, the same
  * shape `createSessionOrAbandon` uses. */
+/** The `data` bracketed-paste/`\r` framing strippped back to plain text — what
+ * a person would actually want on the clipboard when the pty refuses it
+ * (below), rather than the raw control bytes sent over the wire. */
+function plainCommandText(data: string): string {
+  return data.replace(/^\x1b\[200~/, "").replace(/\x1b\[201~$/, "").replace(/\r$/, "");
+}
+
+/** An error `sendPendingRequestIfAny` throws once it has ALREADY copied the
+ * command to the clipboard as a fallback — the caller's catch just needs to
+ * show the notice, not do the copy itself. */
+export class TerminalBusyError extends Error {
+  constructor() {
+    super("terminal is busy — command copied");
+  }
+}
+
 export async function sendPendingRequestIfAny(
   sessionId: string,
   // `createdCwd`: the cwd the session was ACTUALLY created with, if this call
@@ -171,20 +190,43 @@ export async function sendPendingRequestIfAny(
   deps: {
     take?: () => TerminalRequest | null;
     send?: (id: string, data: string) => Promise<{ ok: boolean }>;
+    copy?: (text: string) => Promise<boolean>;
   } = {},
 ): Promise<void> {
   const take = deps.take ?? takePendingTerminalRequest;
   const send = deps.send ?? sendTerminalInput;
+  const copy = deps.copy ?? copyToClipboard;
   const req = take();
   if (req === null) return;
   const skipCd = opts.createdCwd !== undefined && req.cwd === opts.createdCwd;
-  const toSend = skipCd ? { command: req.command } : req;
+  const toSend = skipCd ? { command: req.command, execute: req.execute } : req;
   const data = buildTerminalCommand(toSend);
   if (!data) return;
-  await send(sessionId, data);
+  try {
+    await send(sessionId, data);
+  } catch (err) {
+    // 409: the pty's foreground process isn't the shell itself (server-side
+    // check, fused_render/server/routers/terminal.py, reusing pty_session.py's
+    // `wait_shell_foreground`) — a Claude TUI or any other foreground program
+    // is running, so `cd ... && ...\r` would go to IT as keystrokes instead of
+    // starting the thing the reader actually asked for. Atomically fall back
+    // to the clipboard rather than typing into whatever has the pty, and let
+    // the caller surface the notice.
+    const status = err && typeof err === "object" && "status" in err ? (err as { status?: unknown }).status : undefined;
+    if (status === 409) {
+      await copy(plainCommandText(data));
+      throw new TerminalBusyError();
+    }
+    throw err;
+  }
 }
 
 export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
+  // Registers for exactly as long as this component is mounted, so every
+  // Run affordance's `useCanRunInTerminal()`/`canRunInTerminal()` agrees
+  // with whether there is actually a drawer here to hand a command to (App.tsx
+  // does not mount this on the onboarding route).
+  useEffect(() => registerTerminalDrawerMounted(), []);
   const open = useTerminalDockOpen();
   const [height, setHeight] = useState(() => loadState().height);
   // Deliberately NOT seeded from `loadState().sessionId`: doing that made
@@ -212,16 +254,17 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // happened to also mint the session.
   const pendingVersion = usePendingTerminalRequestVersion();
   // `sendPendingRequestIfAny`'s three call sites below all funnel their
-  // rejection here instead of swallowing it: a 409 (fused_render/server/routers/terminal.py
-  // — the pty's foreground process isn't the shell itself, so typing into it
-  // would go to whatever program is running) gets its own actionable line;
-  // anything else (a dropped connection, a dead session the list check
-  // missed) still surfaces in the drawer's existing error line rather than
-  // vanishing with nothing typed and no explanation.
+  // rejection here instead of swallowing it: a `TerminalBusyError` — the
+  // server (fused_render/server/routers/terminal.py) 409'd because the pty's
+  // foreground process isn't the shell itself, so `sendPendingRequestIfAny`
+  // has already copied the command to the clipboard instead — gets a toast
+  // instead of typing into whatever program is actually running; anything
+  // else (a dropped connection, a dead session the list check missed) still
+  // surfaces in the drawer's existing error line rather than vanishing with
+  // nothing typed and no explanation.
   function reportPendingSendFailure(err: unknown): void {
-    const status = err && typeof err === "object" && "status" in err ? (err as { status?: unknown }).status : undefined;
-    if (status === 409) {
-      setCreateError("Terminal is busy — finish the running program, then try again");
+    if (err instanceof TerminalBusyError) {
+      notify({ title: "Terminal is busy — command copied", tone: "info" });
       return;
     }
     setCreateError(

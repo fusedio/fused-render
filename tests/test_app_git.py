@@ -10,6 +10,7 @@ Real git, in tmp workspaces (FUSED_RENDER_DIR) — best-effort behaviour is the
 contract under test, so nothing here may raise even on non-repos.
 """
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -290,9 +291,8 @@ def test_local_monorepo_migration_adopts_per_app_repos(workspace, monkeypatch,
 # ------------------------------------------------- claude template mirror
 
 def _agent_module():
-    from fused_render.server import templates as server_templates
+    from fused_render.claude_agent import AGENT_PATH as path
 
-    path = os.path.join(server_templates.TEMPLATES_DIR, "claude", "agent.py")
     spec = importlib.util.spec_from_file_location("test_claude_agent_git", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -314,3 +314,71 @@ def test_agent_commit_turn_commits_app_and_skips_others(workspace, tmp_path,
     (repo / "f.txt").write_text("x")
     agent._commit_turn(str(repo / "f.txt"), "nope")
     assert _log(repo) == []
+
+
+# --------------------------------------------------------------- auto-sync hooks
+
+def _spy_sync(monkeypatch):
+    from fused_render import git_upstream
+
+    calls = []
+    monkeypatch.setattr(git_upstream, "schedule_sync",
+                        lambda path, action, **kw: calls.append((path, action, kw)))
+    return calls
+
+
+def test_app_commit_and_create_schedule_an_auto_push(workspace, monkeypatch):
+    calls = _spy_sync(monkeypatch)
+    d = _make_app(workspace)
+    assert [c[1] for c in calls] == ["Auto-push after app create"]
+    (d / "index.html").write_text("<html>v2</html>")
+    assert app_git.commit(str(d / "index.html"), "Edit", only_shared=True,
+                          action="Auto-push after app move")
+    assert calls[-1][1] == "Auto-push after app move"
+    assert calls[-1][2] == {"push": True}
+    n = len(calls)
+    # Nothing to commit -> nothing scheduled.
+    assert not app_git.commit(str(d / "index.html"), "Edit")
+    assert len(calls) == n
+
+
+def test_agent_commit_turn_requests_a_server_push(workspace, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_WORKSPACE_DIR", str(workspace))
+    agent = _agent_module()
+    sent = []
+    monkeypatch.setattr(agent, "_origin", lambda: "http://127.0.0.1:1")
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        sent.append((req.full_url, req.data, req.headers))
+        return _Resp()
+
+    monkeypatch.setattr(agent.urllib.request, "urlopen", fake_urlopen)
+    d = _make_app(workspace)
+    # The turn committed nothing itself: the sweep finds a clean tree, and the
+    # push is still requested (the turn may have committed its own work).
+    agent._commit_turn(str(d / "index.html"), "noop")
+    assert len(sent) == 1
+    url, data, headers = sent[0]
+    assert url == "http://127.0.0.1:1/api/git-upstream"
+    body = json.loads(data)
+    assert body == {"action": "sync", "path": str(d), "trigger": "claude-turn"}
+    assert headers.get("X-fused") == "1"
+
+
+def test_sync_endpoint_only_accepts_app_paths(workspace, client, monkeypatch):
+    calls = _spy_sync(monkeypatch)
+    d = _make_app(workspace)
+    r = client.post("/api/git-upstream", headers=HDRS, json={
+        "action": "sync", "path": str(d), "trigger": "claude-turn"}).json()
+    assert r["ok"] is True
+    assert calls[-1][1] == "Auto-push after Claude commit"
+    bad = client.post("/api/git-upstream", headers=HDRS, json={
+        "action": "sync", "path": "/etc"}).json()
+    assert bad["ok"] is False and bad["reason"] == "not-an-app"

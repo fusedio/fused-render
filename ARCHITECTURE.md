@@ -52,6 +52,7 @@ fused-render/
 │   │   └── routers/            # route-wiring-only modules (no standalone reusable logic)
 │   │       ├── shell.py        # "/", "/apps...", "/explorer...", settings pages + legacy "/view","/embed" (serves the built React shell)
 │   │       ├── config.py       # /api/mounts/health, /api/config, /api/desktop/shutdown
+│   │       ├── health.py       # /api/health liveness probe (boot_id), /api/health/outage, /api/diagnostics[/plan] (SPEC §50/D1307)
 │   │       ├── fs_read.py      # /api/fs/stat|conditions|list|walk|raw|events|reveal
 │   │       ├── render.py       # /render
 │   │       ├── run.py          # /api/run
@@ -61,7 +62,10 @@ fused-render/
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)
 │   ├── _binding.py             # param coercion shared by both execution paths
-│   ├── logs.py                 # rotating app log for 500 / right-click-open diagnostics (D68)
+│   ├── logs.py                 # rotating app log + persistent log home, retention prune, uvicorn log_config (D68, D1307)
+│   ├── crashlog.py             # per-process faulthandler crash file + excepthooks; describe/report child exits (SPEC §50.3)
+│   ├── health.py               # boot_id, outages.jsonl writer, ResourceTrail -> resources.jsonl (SPEC §50.2/§50.4)
+│   ├── diagnostics.py          # build_bundle: the diagnostics zip, files only, no server needed (SPEC §50.5)
 │   ├── jobs.py                 # the background-job registry itself (in-memory, swept) — the download manager's model
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)

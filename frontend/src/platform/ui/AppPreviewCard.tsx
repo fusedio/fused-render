@@ -38,7 +38,9 @@ import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useLivePreviewsFeature } from "@platform/lib/live-previews-flag";
 import { AppStar } from "@platform/ui/AppStar";
+import { ThumbPlaceholder } from "@platform/ui/ThumbPlaceholder";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -155,8 +157,17 @@ export function AppPreviewCard({
     : app.kind === "appfile" && app.opened_at != null
       ? embedUrlForFsPath(app.path)
       : null;
+  // Whether live thumbnails are allowed at all — the `live_previews_enabled`
+  // preference (live-previews-flag.ts; opt-in, and off until the one shared
+  // read lands). `false` turns both live branches off — the body below and
+  // the hover swap — and puts the placeholder where the live body would have
+  // been. Called every render, before any early return: hook order.
+  const liveAllowed = useLivePreviewsFeature();
   const wantsLive = Boolean(
-    liveSrc && nearViewport && ((!shotSrc || shotFailed) || hovered),
+    liveAllowed === true &&
+      liveSrc &&
+      nearViewport &&
+      ((!shotSrc || shotFailed) || hovered),
   );
   // The still's hover path keeps the queue's `true` fast lane: a gesture skips
   // the idle wait and jumps the queue. It only ever flips together with
@@ -295,7 +306,7 @@ export function AppPreviewCard({
                 a `load` event ever fires, which would leave `liveReady` (and
                 the shimmer above) stuck forever and a scheduler slot held
                 until the 10s timeout. */}
-            {hovered && liveSrc && nearViewport && liveStarted && (
+            {liveAllowed === true && hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
                 {...thumbFrame(liveSrc)}
                 style={{
@@ -348,6 +359,13 @@ export function AppPreviewCard({
                 that opens it. */}
             <span className="app-pcard-shield" />
           </>
+        ) : liveAllowed === false ? (
+          // Live previews turned off and nothing authored to show (no still,
+          // or one that failed to decode): the placeholder mark, whether or
+          // not a `liveSrc` exists. The one departure from D365's empty box,
+          // and only on this path — with previews ON, a card with no entry
+          // file or one offloaded by scroll keeps the plain box it always had.
+          <ThumbPlaceholder />
         ) : liveSrc && nearViewport && liveStarted ? (
           <>
             {/* No `loading="lazy"` — see the comment on the hover iframe

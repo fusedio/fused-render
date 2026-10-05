@@ -301,9 +301,24 @@ def test_cancelling_an_unknown_id_is_a_404(client):
 def test_the_loop_is_not_started_by_building_the_app(tmp_path, monkeypatch):
     """A startup event, not the create_app body. The loop SENDS things, and its
     first tick fires everything overdue — under the create_app body every test
-    that builds an app would spawn whatever the developer's store held."""
+    that builds an app would spawn whatever the developer's store held.
+
+    `schedule.start()` itself only ever runs from inside the machine-duties
+    waiter thread (`queue_manager.ensure_duties_waiter`), once this process
+    wins the lease — the suite's autouse `_no_duties_waiter_thread` fixture
+    (`tests/conftest.py`) no-ops that waiter for every other test, for good
+    reason (real filesystem I/O on a thread nothing joins). This is the one
+    test about the wiring itself, so it stands in for "this process won the
+    lease" with a synchronous fake rather than waiting on a real thread's
+    timing, the same way `_no_schedule_loop_thread`'s own docstring already
+    promises: "the one wiring test that asserts startup DOES call start
+    monkeypatches it in its own body, which wins over this fixture"."""
+    from fused_render import queue_manager
+
     started = []
     monkeypatch.setattr(schedule, "start", lambda: started.append(True))
+    monkeypatch.setattr(queue_manager, "ensure_duties_waiter",
+                        lambda: schedule.start())
 
     create_app(start_dir=str(tmp_path))
     assert started == []

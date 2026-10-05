@@ -21,6 +21,14 @@ from fused_render.server.routers import tasks as tasks_mod
 SID = "11111111-1111-1111-1111-111111111111"
 SID2 = "22222222-2222-2222-2222-222222222222"
 
+# Captured at collection time, before the autouse `_no_tasks_watch_thread`
+# fixture (conftest.py) replaces `tasks_watch.start` with a no-op for every
+# test in the suite — the one place in this file that needs the REAL
+# implementation back (B3's lazy-start test) grabs it from here rather than
+# from `tasks_watch.start` at test-body time, which would already be the
+# patched no-op.
+_REAL_TASKS_WATCH_START = tasks_watch.start
+
 
 @pytest.fixture(autouse=True)
 def claude_home(tmp_path, monkeypatch):
@@ -793,3 +801,154 @@ def test_a_tick_with_no_card_does_not_ring(claude_home, carded, rings):
     _transcript(claude_home, SID, lines=2)
     assert tasks_watch.tick() == {SID}, "the transcript grew"
     assert rings == []
+
+
+# -------------------------------------------------------- lean on-demand (B3)
+
+
+def test_a_lean_starts_the_watcher_at_startup_not_on_first_request(
+        claude_home, tmp_path, monkeypatch):
+    """`_startup_tasks_watch` is `on_startup_always`, so a lean process brings
+    the watcher up with its lifespan: a lean page's long-poll must hear about
+    edits another process's scheduler makes even if this process never served
+    a tasks request itself. (`routers/tasks._ensure_duties` still calls
+    `start()` per request as an idempotent fallback.)
+
+    The spy never calls through to the real `start`, which would spawn a
+    daemon thread this test would otherwise have to join or leak."""
+    calls = []
+
+    def recording_start():
+        calls.append(True)
+        tasks_watch._started = True
+
+    monkeypatch.setattr(tasks_watch, "start", recording_start)
+    monkeypatch.setattr(tasks_watch, "_started", False)
+
+    app = create_app(start_dir=str(tmp_path), lean=True)
+    assert "_startup_tasks_watch" in [
+        f.__name__ for f in app.state.startup_handlers]
+
+    with TestClient(app) as client:
+        assert calls == [True], "lean must start the watcher with its lifespan"
+        resp = client.get("/api/tasks")
+        assert resp.status_code == 200
+        assert tasks_watch._started is True
+
+
+def test_concurrent_first_calls_start_the_loop_exactly_once(monkeypatch):
+    """Two threads calling `start()` for the first time at once (the race this
+    guards against: two near-simultaneous requests under `lean`, which calls
+    `start()` on every request) must not both pass the `_started` check and
+    each spawn a watcher thread. A sequential call proves idempotence but
+    never exercises the window between the check and the set — this pins
+    threads at a `Barrier` so they all call `start()` at the same instant.
+
+    `_loop` is replaced with a no-op (count the calls, return immediately)
+    so the spawned thread is both harmless and joinable, rather than the
+    real forever-loop a leaked thread would otherwise run past this test."""
+    monkeypatch.setattr(tasks_watch, "_started", False)
+    monkeypatch.setattr(tasks_watch, "tick", lambda: None)
+    loop_calls = []
+
+    def fake_loop():
+        loop_calls.append(1)
+
+    monkeypatch.setattr(tasks_watch, "_loop", fake_loop)
+
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def call_start():
+        barrier.wait(timeout=5)
+        _REAL_TASKS_WATCH_START()
+
+    threads = [threading.Thread(target=call_start) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+        assert not t.is_alive(), "a start() caller never returned"
+
+    # The spawned watcher thread(s) run `fake_loop` and return immediately;
+    # give them a beat to finish before counting.
+    deadline = time.monotonic() + 2
+    while len(loop_calls) < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert loop_calls == [1], (
+        f"expected exactly one watcher thread to start, got {len(loop_calls)}")
+    assert tasks_watch._started is True
+
+
+# ------------------------------------------------------- the snapshot builder
+#
+# With the watcher running, the listing is a snapshot one builder thread keeps
+# current (routers/tasks.py `_builder_loop`); requests read it and do no I/O.
+# `tasks_watch.start` is a no-op under conftest, so `running()` is faked here
+# and the builder is driven by `notify` alone — the thread is the one under
+# test, the watcher's own loop is not.
+
+@pytest.fixture
+def builder(claude_home, monkeypatch):
+    monkeypatch.setattr(tasks_watch, "_started", True)
+    _transcript(claude_home, SID)
+    tasks_mod.warm()
+    yield
+    tasks_mod.reset_cache()
+
+
+def _wait_for(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not pred():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.02)
+
+
+def test_requests_read_the_snapshot_and_a_bump_rebuilds_it_once(builder, claude_home, monkeypatch):
+    builds = []
+    real = tasks_mod._build_task_rows
+    monkeypatch.setattr(tasks_mod, "_build_task_rows",
+                        lambda only=None: builds.append(only) or real(only))
+    rows, gen = tasks_mod._listing()
+    assert [r["key"] for r in rows] == [SID] and gen == tasks_watch.generation()
+    assert builds == []  # served off the warm build, nothing rebuilt
+    # Ten concurrent listings after one bump: one rebuild, every caller sees it.
+    _transcript(claude_home, SID2)
+    tasks_watch.notify({SID2})
+    seen = []
+    threads = [threading.Thread(target=lambda: seen.append(tasks_mod._listing()))
+               for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert all({r["key"] for r in rows} == {SID, SID2} for rows, _ in seen)
+    assert all(gen == tasks_watch.generation() for _, gen in seen)
+    _wait_for(lambda: len(builds) >= 1)
+    assert builds == [None]
+
+
+def test_changes_waits_for_the_snapshot_and_names_the_client_generation_when_it_cannot(
+        builder, claude_home, monkeypatch):
+    monkeypatch.setattr(tasks_mod, "SNAPSHOT_CATCHUP_SEC", 0.2)
+    gate = threading.Event()
+    real = tasks_mod._build_task_rows
+
+    def slow(only=None):
+        gate.wait(5)
+        return real(only)
+    monkeypatch.setattr(tasks_mod, "_build_task_rows", slow)
+    with TestClient(create_app(str(claude_home))) as client:
+        since = client.get("/api/tasks").json()["generation"]
+        tasks_watch.notify({SID})
+        # The build is stuck: the answer is "nothing yet" at the client's own
+        # generation, so it asks again rather than skipping the change.
+        stuck = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+        assert stuck == {"generation": since, "rows": [], "gone": [],
+                         "drafts": {"changed": [], "gone": []}}
+        gate.set()
+        _wait_for(lambda: tasks_mod._snapshot.generation > since)
+        answer = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+        assert answer["generation"] == since + 1
+        assert [r["key"] for r in answer["rows"]] == [SID]

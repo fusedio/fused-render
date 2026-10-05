@@ -41,7 +41,7 @@ import { chatDraftKey } from "@platform/lib/drafts";
 import { queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
-import { runAgent } from "./agent";
+import { AgentError, runAgent } from "./agent";
 import type {
   AdoptOptions,
   AssistantTurn,
@@ -62,7 +62,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
-import { isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
+import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
   AppStateResponse,
@@ -95,6 +95,64 @@ import type { Receipt } from "../shots/types";
 
 /** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
+
+/**
+ * HOW MANY CONSECUTIVE TRANSIENT POLL FAILURES a live view rides out before it
+ * gives up and shows the trouble card. One failed poll is not a failed run: the
+ * run lives in the server, and the next poll replays the whole turn anyway.
+ *
+ * Two kinds, two budgets, because they cost very different amounts of time:
+ *
+ *   * NETWORK (`fetch` rejected: dropped socket, sleep/wake, a server mid-
+ *     restart) fails fast, so a lap is ~`POLL_MS`. 15 laps ≈ 6 s — enough for
+ *     a blip; a real restart loses the in-process run anyway and the next good
+ *     poll answers `unknown run_id`, which has its own card.
+ *   * TIMEOUT (504, `AgentError.type === "Timeout"`) has ALREADY waited out the
+ *     server's `poll` budget (60 s, `claude_agent/pool.py` BUDGETS_S) before
+ *     it reaches us. One is a slow lap worth riding out; 3 in a row ≈ 3 min of
+ *     a poll that cannot answer, which is a wedged server, not a slow lap, and
+ *     the reader should know. Kept at 3 rather than scaled to the budget: the
+ *     wait between cards is the budget's job, the count only says "repeatedly".
+ *
+ * Any good poll resets the count. Anything else thrown keeps today's road: the
+ * card, at once.
+ */
+export const POLL_NETWORK_RETRIES = 15;
+export const POLL_TIMEOUT_RETRIES = 3;
+
+/**
+ * A `send` THAT TIMED OUT (504) IS NOT A SEND THAT FAILED. The router's budget
+ * expired, but the handler thread keeps running (`claude_agent/pool.py`: "A
+ * TIMEOUT DOES NOT STOP THE WORK"), so the message may still land in the live
+ * host a moment later. Falling through to `start` — or handing the words back
+ * for the reader to send again — would then run the same message twice: a
+ * second run, a double-counted turn, the line duplicated in the transcript.
+ *
+ * So a timed-out send re-asks whether the host is still live, this many times
+ * this far apart (≈1.4 s of waiting), and ADOPTS it if so. Nothing live after
+ * that is the Timeout itself, shown as trouble — never a fresh `start`.
+ *
+ * ONLY `"Timeout"`. The server answers the same 504 with `type: "NotRun"` when
+ * the job was cancelled while still QUEUED for a worker — that send provably
+ * never ran, so it takes the ordinary not-sent road (`start` for a first send,
+ * the hand-back for a follow-up), exactly like a `{error}` answer.
+ */
+export const SEND_TIMEOUT_PROBES = 3;
+export const SEND_TIMEOUT_PROBE_MS = 700;
+
+/** The server's 504 for a call that RAN and overran its budget (it may still
+ *  finish), as `agent.ts` throws it. Not `"NotRun"` — see `SEND_TIMEOUT_PROBES`. */
+function isTimeout(err: unknown): err is AgentError {
+  return err instanceof AgentError && err.type === "Timeout";
+}
+
+/** The retry budget for a thrown poll, or `0` when it is not transient. */
+function transientPollBudget(err: unknown): number {
+  // `NotRun` too: a poll cancelled while queued for a worker is a backed-up
+  // pool, which says no more about the run than a slow one does.
+  if (err instanceof AgentError) return err.type === "Timeout" || err.type === "NotRun" ? POLL_TIMEOUT_RETRIES : 0;
+  return isNetworkFailure(err) ? POLL_NETWORK_RETRIES : 0;
+}
 /** T:11911 — `params.permission || DEFAULT_PERMISSION`. */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 /** T:16130 — a follow-up waits this long for `sendMessage`'s own `start` to
@@ -231,17 +289,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** WHAT TIME IT IS, as opposed to how long something took (review #9). See
    *  `ControllerDeps.wallClock`. */
   const wallClock = deps.wallClock || Date.now;
-  const dir = deps.agentDir;
   const FILE = deps.file;
-  // Every `agent.py` call this controller makes carries the chat's own target
-  // as `X-Fused-Target`, so `fused-render calls` can be filtered by the file a
-  // conversation is about (SPEC CL-5; `protocol/agent.ts` derives the PAGE half
-  // from the script's own dir). A wrapper rather than a change at each of the
-  // ~17 call sites, and it leaves `deps.run` — the tests' seam — untouched.
+  // Every agent call this controller makes carries the chat's own target as
+  // `X-Fused-Target`, so `fused-render calls` can be filtered by the file a
+  // conversation is about (SPEC CL-5; `protocol/agent.ts` sends the constant
+  // PAGE half). A wrapper rather than a change at each of the ~17 call sites,
+  // and it leaves `deps.run` — the tests' seam — untouched.
   const run =
     deps.run ||
-    ((d, action, fields, opts = {}) =>
-      runAgent(d, action, fields, { ...opts, ...(FILE ? { target: FILE } : {}) })) as typeof runAgent;
+    ((action, fields, opts = {}) =>
+      runAgent(action, fields, { ...opts, ...(FILE ? { target: FILE } : {}) })) as typeof runAgent;
 
   let state = emptyState(FILE);
   const listeners = new Set<() => void>();
@@ -503,7 +560,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *
    * `announceTasksChanged` below is a message between documents on this origin;
    * this is the other half, and it is needed because the turn does not start in
-   * the server at all — a chat here runs `claude -p` through `/api/run`, out of
+   * the server at all — a chat here runs `claude -p` in a session host, out of
    * process, and the CLI publishes the fact two to four seconds later. Until
    * then the listing read the row as done, so every turn sent from this app
    * wore a done ring for its first seconds and a short turn for all of it
@@ -1143,6 +1200,56 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- the poll loop (T:16204-16428) -------------------------------------
 
+  /**
+   * After a `send` 504 (see `SEND_TIMEOUT_PROBES`): the run id of the host
+   * still live for `sessionId`, or `""` when none answers within the probes.
+   * `want`, when given, must be the id that answers — a follow-up only counts
+   * as delivered into the run it was sent to. No session means nothing to ask
+   * about, and `""` at once: this page's own loop still running is no evidence
+   * the message ARRIVED, so callers treat that case as not sent.
+   */
+  async function liveAfterSendTimeout(sessionId: string, want?: string): Promise<string> {
+    if (!sessionId) return "";
+    for (let i = 0; i < SEND_TIMEOUT_PROBES; i++) {
+      if (i) await sleep(SEND_TIMEOUT_PROBE_MS);
+      if (disposed) return "";
+      try {
+        const res = (await run("live_host", { file: FILE || "", session_id: sessionId })) as RunIdResponse;
+        const id = res && res.run_id ? String(res.run_id) : "";
+        if (id && (!want || id === want)) return id;
+      } catch {
+        // A probe that cannot reach the server is one more "not yet".
+      }
+    }
+    return "";
+  }
+
+  /**
+   * After a `start` 504 of type `"Timeout"` (Bugbot, PR #1409): the handler
+   * RAN and may still spawn its host, so handing the words back for a resend
+   * would start a SECOND host (or be refused as folder-busy). Same posture as
+   * `liveAfterSendTimeout`, but asked through `live_run`, because a fresh chat
+   * has no session id yet — and even a resume's start may mint a NEW one the
+   * page never received. With no session, the probe asks for the file as a
+   * whole and takes the newest live run there; the folder gate makes that
+   * this start's run in practice. A run this frame already streamed is never
+   * it. `""` after the probes: nothing live, the Timeout stands.
+   */
+  async function liveAfterStartTimeout(sessionId: string): Promise<string> {
+    for (let i = 0; i < SEND_TIMEOUT_PROBES; i++) {
+      if (i) await sleep(SEND_TIMEOUT_PROBE_MS);
+      if (disposed) return "";
+      try {
+        const res = (await run("live_run", { file: FILE || "", session_id: sessionId || "" })) as RunIdResponse;
+        const id = res && res.run_id ? String(res.run_id) : "";
+        if (id && !shownRuns.has(id)) return id;
+      } catch {
+        // A probe that cannot reach the server is one more "not yet".
+      }
+    }
+    return "";
+  }
+
   async function pollLoop(
     runId: string,
     gen: number,
@@ -1291,17 +1398,35 @@ export function createChatController(deps: ControllerDeps): ChatController {
      */
     let adoptFirstSeam = !!opts.ownTurn;
     let tick = 0;
+    /** Consecutive transient poll failures (see `POLL_NETWORK_RETRIES`). */
+    let transient = 0;
 
     try {
       for (;;) {
-        const data = (await run(
-          dir,
-          "poll",
-          { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
-          // The controller's own lifetime: `dispose` aborts, so an unmounted
-          // chat's last poll does not run to completion on its own.
-          { key: null, ...(life ? { signal: life.signal } : {}) },
-        )) as PollResponse | { error: string; done: true };
+        let data: PollResponse | { error: string; done: true };
+        try {
+          data = (await run(
+            "poll",
+            { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
+            // The controller's own lifetime: `dispose` aborts, so an unmounted
+            // chat's last poll does not run to completion on its own.
+            { ...(life ? { signal: life.signal } : {}) },
+          )) as PollResponse | { error: string; done: true };
+        } catch (err) {
+          // A 504 or a fetch that never left the machine says nothing about
+          // the RUN — ride it out for a bounded number of laps, keeping the
+          // bubble, before the outer catch draws the card. A disposed or
+          // superseded loop neither retries NOR reports: its abort is not a
+          // failure, and a card would land in whatever transcript replaced it.
+          if (disposed || logGen !== gen) break;
+          if (++transient > transientPollBudget(err)) throw err;
+          await sleep(POLL_MS);
+          // `dispose` during the wait (it aborts `life`, which this sleep does
+          // not take): leave quietly, exactly like the reader-left check below.
+          if (disposed || logGen !== gen || life?.signal.aborted) break;
+          continue;
+        }
+        transient = 0;
         // The reader left; the run continues without this page.
         if (logGen !== gen || disposed) break;
 
@@ -1649,7 +1774,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       //
       // A DISPOSED controller says nothing: the poll we aborted ourselves is
       // not a failure of the run, and there is nobody left to read a card.
-      if (!disposed) {
+      // A SUPERSEDED loop (the reader left: `logGen` moved) is the same: its
+      // bubbles and its card belong to a transcript that is no longer on screen.
+      if (!disposed && logGen === gen) {
         for (const c of chunks.values()) if (c.key) dropTurn(c.key);
         reportTrouble(troubleFromError(err));
       }
@@ -1871,19 +1998,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
         let live: RunIdResponse | null = null;
         try {
           live = (await run(
-            dir,
             "live_host",
             { file: FILE || "", session_id: sessionId },
-            { key: null },
           )) as RunIdResponse;
         } catch {
           live = null; // no host reachable — fall through to start
         }
         if (live && live.run_id) {
           let sent: SendResponse | null = null;
+          let sendErr: unknown = null;
           try {
             sent = (await run(
-              dir,
               "send",
               {
                 run_id: live.run_id,
@@ -1897,83 +2022,106 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 // server gate only looks rather than claiming a second time.
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
               },
-              { key: null },
             )) as SendResponse;
-          } catch {
+          } catch (err) {
             sent = null;
+            sendErr = err;
           }
           // Falsy on a network failure, `{error}` on a dead host, `{respawn}`
           // when the live session cannot honor this message as-is — every one of
           // those means "start fresh", same as no host at all (T:16644-16652).
           if (sent && "sent" in sent && sent.sent) runId = live.run_id;
+          else if (isTimeout(sendErr)) {
+            // …EXCEPT A 504, which may still land (`SEND_TIMEOUT_PROBES`). A
+            // host still live is adopted as this turn's run; none is the
+            // Timeout itself — thrown to the catch below, which rolls the
+            // bubble back and shows it. Never a second `start`.
+            runId = await liveAfterSendTimeout(sessionId);
+            if (!runId) throw sendErr;
+          }
         }
       }
       if (!runId) {
-        const res = (await run(
-          dir,
-          "start",
-          {
-            file: FILE || "",
-            message: outgoing,
-            session_id: sessionId,
-            model: curModel(),
-            effort: curEffort(),
-            permission_mode: opts.permission || curPermission(),
-            // WHETHER THERE IS A PANE IS THIS PAGE'S ANSWER TO GIVE, and it is
-            // sent on every turn (T:16609-16618, agent.py `_has_pane`).
-            has_pane: hasPane(),
-            // Granted for the SESSION, not the turn (Task 6): the process this
-            // starts stays up across every follow-up it sends (T:16657-16668).
-            read_dirs: JSON.stringify(opts.readDirs || []),
-            // THE DRAFT THIS SEND SPENDS, and only when there is no session to
-            // send into — which is exactly the send that CREATES one. A chat
-            // that had been drafting (and carrying its TASK number) under
-            // `new:<file>` hands that number to the session this start mints.
-            // Nothing here can tell afterwards which id that was, so the run is
-            // tagged on the way out and the server reads the tag back off
-            // `meta.json` (`routers/tasks.py::_settle_new_chats`; four earlier
-            // rounds of asking the page instead are in `platform/lib/drafts.ts`).
-            // Omitted on a send into an existing session: that send creates
-            // nothing, and a tag it could not spend would be a claim on a draft
-            // still being typed.
-            //
-            // NO PAGE WRITES `new:<file>` ANY MORE (Akshil, 2026-09-16): a
-            // never-sent chat's Save and its Schedule mint a `draft:<id>` task
-            // draft apiece, because one record per folder meant the second draft
-            // replaced the first. The tag is kept because the shape is still
-            // READ everywhere it was — records written by older builds are still
-            // on disk, still listed, still on their 14-day TTL — and a send that
-            // settles one of those is the only thing that can hand its number
-            // on. It costs one short string on a send that has nothing to spend.
-            ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
-            // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
-            // proof this send is the one already counted, so the server gate
-            // only looks rather than claiming a second time.
-            ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
-          },
-          { key: null },
-        )) as StartResponse;
-        // `StartResponse` is `{run_id, session_id?}` | `{error}`; agent.py
-        // answers exactly one (agent.py:2452, plus main()'s own guards
-        // 5188-5191).
-        const failed = (res as { error?: string }).error;
-        if (failed) throw new Error(failed);
-        runId = (res as { run_id: string }).run_id;
-        // THE SERVER NAMED THE SESSION AT SPAWN, so the url param, the state and
-        // the running mark all land HERE — at the send — instead of on the first
-        // poll two to four seconds later, which is the whole "status in under a
-        // second" of this change. The poll still reports the same id and
-        // `noteSessionId` is a no-op the second time, so an older server that
-        // omits this simply takes the old road.
-        //
-        // GUARDED LIKE THE RUN PARAM BELOW (`logGen === gen`): the id names the
-        // conversation THIS send started, and if the reader left for another
-        // chat while `start` was in flight, writing it to the url and the
-        // state would drag them back into a session they navigated away from
-        // (Bugbot). The run continues server-side and `resumeRun` can
-        // re-attach; the landing simply gains nothing.
-        const named = (res as { session_id?: string }).session_id;
-        if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
+        let res: StartResponse | null = null;
+        try {
+          res = (await run(
+            "start",
+            {
+              file: FILE || "",
+              message: outgoing,
+              session_id: sessionId,
+              model: curModel(),
+              effort: curEffort(),
+              permission_mode: opts.permission || curPermission(),
+              // WHETHER THERE IS A PANE IS THIS PAGE'S ANSWER TO GIVE, and it is
+              // sent on every turn (T:16609-16618, agent.py `_has_pane`).
+              has_pane: hasPane(),
+              // Granted for the SESSION, not the turn (Task 6): the process this
+              // starts stays up across every follow-up it sends (T:16657-16668).
+              read_dirs: JSON.stringify(opts.readDirs || []),
+              // THE DRAFT THIS SEND SPENDS, and only when there is no session to
+              // send into — which is exactly the send that CREATES one. A chat
+              // that had been drafting (and carrying its TASK number) under
+              // `new:<file>` hands that number to the session this start mints.
+              // Nothing here can tell afterwards which id that was, so the run is
+              // tagged on the way out and the server reads the tag back off
+              // `meta.json` (`routers/tasks.py::_settle_new_chats`; four earlier
+              // rounds of asking the page instead are in `platform/lib/drafts.ts`).
+              // Omitted on a send into an existing session: that send creates
+              // nothing, and a tag it could not spend would be a claim on a draft
+              // still being typed.
+              //
+              // NO PAGE WRITES `new:<file>` ANY MORE (Akshil, 2026-09-16): a
+              // never-sent chat's Save and its Schedule mint a `draft:<id>` task
+              // draft apiece, because one record per folder meant the second draft
+              // replaced the first. The tag is kept because the shape is still
+              // READ everywhere it was — records written by older builds are still
+              // on disk, still listed, still on their 14-day TTL — and a send that
+              // settles one of those is the only thing that can hand its number
+              // on. It costs one short string on a send that has nothing to spend.
+              ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
+              // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
+              // proof this send is the one already counted, so the server gate
+              // only looks rather than claiming a second time.
+              ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+            },
+          )) as StartResponse;
+        } catch (startErr) {
+          // A START THAT RAN AND OVERRAN ITS BUDGET (`"Timeout"`, Bugbot PR
+          // #1409) may still spawn its host — handing the words back now
+          // would let the resend spawn a second one. So, like a timed-out
+          // send, ask what is live and ADOPT it as this turn's run (the
+          // bubble stays, no second start). Nothing live: the Timeout is
+          // thrown on to the ordinary hand-back + trouble. `"NotRun"` (the
+          // job never left the queue) and every other failure skip the
+          // probe — that start provably launched nothing.
+          if (!isTimeout(startErr)) throw startErr;
+          runId = await liveAfterStartTimeout(sessionId);
+          if (!runId) throw startErr;
+        }
+        if (res) {
+          // `StartResponse` is `{run_id, session_id?}` | `{error}`; agent.py
+          // answers exactly one (agent.py:2452, plus main()'s own guards
+          // 5188-5191).
+          const failed = (res as { error?: string }).error;
+          if (failed) throw new Error(failed);
+          runId = (res as { run_id: string }).run_id;
+          // THE SERVER NAMED THE SESSION AT SPAWN, so the url param, the state and
+          // the running mark all land HERE — at the send — instead of on the first
+          // poll two to four seconds later, which is the whole "status in under a
+          // second" of this change. The poll still reports the same id and
+          // `noteSessionId` is a no-op the second time, so an older server that
+          // omits this simply takes the old road.
+          //
+          // GUARDED LIKE THE RUN PARAM BELOW (`logGen === gen`): the id names the
+          // conversation THIS send started, and if the reader left for another
+          // chat while `start` was in flight, writing it to the url and the
+          // state would drag them back into a session they navigated away from
+          // (Bugbot). The run continues server-side and `resumeRun` can
+          // re-attach; the landing simply gains nothing.
+          const named = (res as { session_id?: string }).session_id;
+          if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
+        }
       }
       started = true;
       // A run id is in-flight bookkeeping — never a place the reader navigated
@@ -2145,7 +2293,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
     try {
       const res = (await run(
-        dir,
         "send",
         {
           run_id: runId,
@@ -2159,7 +2306,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // only looks rather than claiming a second time.
           ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
         },
-        { key: null },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {
         // The live session cannot honor this message as-is (a new attachment
@@ -2169,7 +2315,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // for a message that was never actually rejected (T:16155-16177).
         const sessionId = deps.params.get("session_id") || "";
         const startedRes = (await run(
-          dir,
           "start",
           {
             file: FILE || "",
@@ -2185,7 +2330,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
           },
-          { key: null },
         )) as StartResponse;
         const failed = (startedRes as { error?: string }).error;
         if (failed) throw new Error(failed);
@@ -2226,6 +2370,32 @@ export function createChatController(deps: ControllerDeps): ChatController {
       entry.landed = true;
       followupSeq++;
     } catch (err) {
+      // A 504 MAY STILL LAND (`SEND_TIMEOUT_PROBES`), so it does not hand the
+      // words back for a second send that would say them twice. A run still
+      // live is taken as having it: the bubble and the queue entry stay, and
+      // the bump below splits the streaming reply around it, exactly as for a
+      // confirmed send. `landed` stays false — nothing CONFIRMED the inbox has
+      // it, which is what `stopRun`'s hand-back rule reads.
+      //
+      // WITH A SESSION TO ASK ABOUT. Without one there is no witness that the
+      // message arrived (the loop still running proves nothing about it), so
+      // that Timeout falls to the ordinary hand-back below, like a `NotRun`.
+      const followSession = deps.params.get("session_id") || "";
+      if (isTimeout(err) && followSession) {
+        const alive = await liveAfterSendTimeout(followSession, runId);
+        if (logGen !== gen) return;
+        // A Stop pressed during the probes already handed this entry back
+        // (`stopRun`): it owns the outcome, and a Timeout card now would be
+        // news about a message the reader has already been given back.
+        if (entry.handedBack) return;
+        if (alive) {
+          followupSeq++;
+          return;
+        }
+        giveBack();
+        reportTrouble(troubleFromError(err));
+        return;
+      }
       // Same guard, same reason as the two roads above: a `send` that rejects
       // after the reader has left must not repaint a transcript it no longer
       // describes.
@@ -2247,10 +2417,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     emit({ status: "stopping" });
     try {
       const result = (await run(
-        dir,
         "cancel",
         { run_id: runId as string, ...(queued.length ? { queued: "1" } : {}) },
-        { key: null },
       )) as CancelResponse;
       // WHAT COMES BACK TO THE COMPOSER, and the rule is deliberately narrow
       // (feedback #11).
@@ -2454,10 +2622,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         return passed;
       }
       const res = (await run(
-        dir,
         "decide",
         { run_id: runId, request_id: id, ...fields } as never,
-        { key: null },
       )) as DecideResponse;
       if (res && res.error) throw new Error(res.error);
       // agent.py answers with what landed on DISK (first writer wins), so the
@@ -2584,13 +2750,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let res: AppStateResponse | null = null;
     try {
       res = (await run(
-        dir,
         "app_state",
         // A JSON string, not a nested object: params cross into python
         // string-shaped, and never the bare `null` a snapshot can be — agent.py
         // reads a non-dict as a permanent failure (T:15819-15825).
         { run_id: runId, request_id: id, state: block },
-        { key: null },
       )) as AppStateResponse;
     } catch {
       // The tool call is still blocked, so this has to be retried — un-claim the
@@ -2862,10 +3026,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
       let live: RunIdResponse | null = null;
       try {
         live = (await run(
-          dir,
           "live_run",
           { file: FILE || "", session_id: sessionId || "" },
-          { key: null },
         )) as RunIdResponse;
       } catch {
         return;
@@ -3002,7 +3164,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Tagged with this attach's seat so only this attach can let it go.
     if (runId) claimingRuns.set(runId, seat);
     try {
-      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
+      let probe = (await run("poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" })) as
         | PollResponse
         | { error: string; done: true };
       if (logGen !== gen || disposed) return;
@@ -3017,7 +3179,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
-        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
+        probe = (await run("poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" })) as
           | PollResponse
           | { error: string; done: true };
         if (logGen !== gen || disposed) return;
@@ -3480,16 +3642,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * transcript, and a send in flight is about to add to it.
    */
   /** The transcript restore's transport: the host's in-process road when it
-   *  gave one (`deps.history`, owner E2E R1, F5), else agent.py through
-   *  `/api/run` — the tests' fake agent, and the pre-F5 behaviour. */
+   *  gave one (`deps.history`, owner E2E R1, F5), else the agent's own
+   *  `history` action — the tests' fake agent. */
   const fetchHistoryVia = (sessionId: string): Promise<HistoryResponse & { error?: string }> =>
     deps.history
       ? deps.history(FILE || "", sessionId)
       : (run(
-          dir,
           "history",
           { file: FILE || "", session_id: sessionId, native: "1", queue: queueEnabled() ? "1" : "0" },
-          { key: null },
         ) as Promise<HistoryResponse & { error?: string }>);
 
   async function refreshHistory(sessionId: string): Promise<void> {

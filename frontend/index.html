@@ -61,6 +61,18 @@
         }
       }
       document.documentElement.setAttribute("data-theme", theme);
+      /* Native macOS window: report the PREFERENCE so the titlebar matches
+         pre-paint (lib/theme.ts re-reports on every change). Top frame only;
+         no handler in a browser. */
+      try {
+        if (window.parent === window) {
+          window.webkit.messageHandlers.fusedTheme.postMessage(
+            pref === "light" || pref === "dark" ? pref : "system"
+          );
+        }
+      } catch (e) {
+        /* not the desktop app */
+      }
     })();
   </script>
   <!-- First-paint placeholder. main.tsx mounts React only after /api/config

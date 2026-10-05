@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.venv
 .venv/
 venv/
 # pip-managed project (pip install -e ".[dev]"); a uv.lock is only ever a
@@ -17,7 +18,7 @@ dist/
 *.egg-info/
 .DS_Store
 scripts/vendor-codemirror/node_modules/
-scripts/vendor-cog/node_modules/
+scripts/vendor-map/node_modules/
 scripts/vendor-sci/node_modules/
 scripts/vendor-three/node_modules/
 .claude/worktrees/

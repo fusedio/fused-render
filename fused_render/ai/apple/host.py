@@ -59,6 +59,9 @@ PROBE_TIMEOUT_S = 15.0
 #: A generation that produces nothing for this long is dead, not slow — the
 #: on-device model answers its first token in well under a second.
 FIRST_FRAME_TIMEOUT_S = 120.0
+#: The helper's stderr file (SPEC §50, D5) is started over past this size —
+#: it only ever has to hold the last few failures' worth of Swift output.
+HELPER_ERR_CAP_BYTES = 2_000_000
 
 
 class AppleError(RuntimeError):
@@ -195,6 +198,51 @@ def _binary() -> str:
 # ------------------------------------------------------------------ requests
 
 
+def _helper_err_path() -> str:
+    from fused_render.logs import log_dir
+
+    return os.path.join(log_dir(), "apple-helper.err.log")
+
+
+def _open_helper_err():
+    """`(file, offset)` for the helper's stderr, or `(None, 0)` on failure.
+
+    A file in the app's log home, not DEVNULL: a helper that crashed (a Swift
+    fatalError, a FoundationModels assertion) used to surface only as "exited
+    without finishing (code N)" with nothing to say why. ONE file shared by
+    every helper in flight — appended, which is safe — so a tail can carry a
+    concurrent helper's lines too; reading from `offset` (this spawn's start)
+    keeps at least the older runs out of it. Capped by truncation, since
+    nothing else prunes it."""
+    path = _helper_err_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.getsize(path) > HELPER_ERR_CAP_BYTES:
+            open(path, "wb").close()
+    except OSError:
+        pass
+    try:
+        f = open(path, "ab")  # noqa: SIM115 — handed to Popen, closed after
+        return f, f.tell()
+    except OSError:
+        return None, 0
+
+
+def _helper_err_since(offset: int, chars: int = 2000) -> str:
+    """The last `chars` of what landed in the helper's stderr file since
+    `offset`, '' when unreadable."""
+    try:
+        with open(_helper_err_path(), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            if end < offset:  # truncated by the cap meanwhile
+                offset = 0
+            f.seek(max(offset, end - chars))
+            return f.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
 def frames(op: str, request: dict | None = None, *, first_timeout: float = FIRST_FRAME_TIMEOUT_S,
            on_spawn=None):
     """Yield the helper's frames for ONE request, until its `done` or its exit.
@@ -208,9 +256,14 @@ def frames(op: str, request: dict | None = None, *, first_timeout: float = FIRST
     exit is the bound — a transcription of a long file legitimately says
     nothing for a while, and the job's row is what a caller watches.
     """
-    proc = subprocess.Popen(
-        [_binary(), op], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL)
+    err_file, err_offset = _open_helper_err()
+    try:
+        proc = subprocess.Popen(
+            [_binary(), op], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=err_file if err_file is not None else subprocess.DEVNULL)
+    finally:
+        if err_file is not None:
+            err_file.close()
     if on_spawn is not None:
         on_spawn(proc)
     finished = False
@@ -260,10 +313,13 @@ def frames(op: str, request: dict | None = None, *, first_timeout: float = FIRST
                 finished = True
                 yield {"type": "done", "ok": True, "cancelled": True, "finishReason": "cancelled"}
                 return
-            raise AppleError("timeout" if code in (-15, 143) else "ai_error",
-                             f"the Apple helper produced nothing for {int(first_timeout)}s"
-                             if code in (-15, 143) else
-                             f"the Apple helper exited without finishing (code {code})")
+            if code in (-15, 143):
+                raise AppleError("timeout",
+                                 f"the Apple helper produced nothing for {int(first_timeout)}s")
+            stderr = _helper_err_since(err_offset)
+            raise AppleError("ai_error",
+                             f"the Apple helper exited without finishing (code {code})"
+                             + (f"\n{stderr}" if stderr else ""))
     finally:
         got_first.set()
         if proc.poll() is None:
@@ -302,6 +358,18 @@ def cancel(proc: subprocess.Popen) -> None:
             proc.terminate()
         except OSError:
             pass
+
+
+def cancel_pid(pid: int) -> bool:
+    """Stop the in-flight text child running as `pid` (the Monitor's Stop),
+    through `cancel` like any other caller. False when no live child has it."""
+    with _lock:
+        match = next((c for c in _text_children
+                      if c.pid == pid and c.poll() is None), None)
+    if match is None:
+        return False
+    cancel(match)
+    return True
 
 
 def cancel_text() -> bool:

@@ -121,7 +121,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlencode
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from fused_render import (
@@ -141,7 +141,40 @@ from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
 from fused_render.shell import prefs as shell_prefs
 
-router = APIRouter()
+
+def _ensure_duties() -> None:
+    """FastAPI dependency, attached to every route below — the one place
+    that brings up everything a `/api/tasks*` request needs to be CORRECT
+    but `lean` skips as a startup hook (create_app's rule: skip only
+    BACKGROUND/WARM-UP work).
+
+    Ensures THIS process's machine-duties waiter thread is running (B2 —
+    scheduler + project-queue resume), lazily, on the first request reaching
+    it. `serve` already starts that waiter from `_startup_queue_manager`, so
+    here it is normally a no-op repeat of a thread this process already
+    has — one lock-guarded `is_alive()` check, nothing else.
+    `queue_manager.ensure_duties_waiter()` itself never blocks: it only
+    starts (or confirms it already started) a dedicated daemon thread that
+    does the actual, potentially long, lease-acquire wait, so calling this
+    on every request's handling thread is cheap and never holds the request
+    up. `open` (lean) runs no startup hooks at all, so this is the only
+    place it ever starts that thread — which is what lets a lean process end
+    up with a waiter parked and ready to take over the moment a `serve` that
+    was holding the lease exits, with no separate retry/polling mechanism of
+    its own.
+
+    Also starts the Tasks page's change watcher (B3 — `tasks_watch.start()`,
+    otherwise only run from `_startup_tasks_watch`): read-only and safe to
+    run in every process at once, unlike the waiter above, so this is a
+    plain idempotent start rather than anything gated. Without it `lean`'s
+    `/api/tasks/changes` had nothing to `wait()` on and always blocked the
+    full 25s with nothing to report — and `generation()`/`live_from_registry`
+    and every other route above read from the same registry this primes."""
+    queue_manager.ensure_duties_waiter()
+    tasks_watch.start()
+
+
+router = APIRouter(dependencies=[Depends(_ensure_duties)])
 
 logger = logging.getLogger(__name__)
 
@@ -249,9 +282,23 @@ _WINDOW_MAX = 16
 def reset_cache() -> None:
     """Forget every cached transcript read. For tests, and for any caller that
     wants the next listing to re-read from disk unconditionally."""
+    global _snapshot, _builder_on, _builder_thread
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
+    # The builder loop ends on the flag, but it is parked in `tasks_watch.wait`
+    # — so bump the watcher to wake it, and JOIN it before the snapshot is
+    # nulled and the watcher reset: a build still in flight would otherwise
+    # publish (and write the stores) into the state this reset makes way for.
+    with _SNAP_COND:
+        _builder_on = False
+        thread, _builder_thread = _builder_thread, None
+        _SNAP_COND.notify_all()
+    if thread is not None and thread.is_alive():
+        tasks_watch.notify()
+        thread.join(5)
+    with _SNAP_COND:
+        _snapshot = None
     tasks_store.reset_cache()
     tasks_watch.reset()
 
@@ -1533,19 +1580,18 @@ def _limit_outvotes_live(messages: list[dict]) -> bool:
 # tail is cut at all) and `project_queue.SCAN_TTL` (why one walk answers both).
 
 def _agent_module():
-    """The claude template's agent.py, loaded once, or None if it will not load.
+    """The chat backend's agent module, or None if it will not import.
 
-    `project_queue.agent_module()` does the loading and the caching — of the
-    FAILURE as well as the success, because `load_agent` execs the whole module
-    on every call and this is on the listing's path. Kept as a name HERE rather
-    than called through at each use because two things depend on it being one:
-    the listing degrades to "nothing is parked" when it answers None, and the
-    router's own suite replaces exactly this name with a stand-in (agent.py is a
-    TEMPLATE outside the import graph, SPEC PY-15).
+    `project_queue.agent_module()` — THE one instance
+    (`fused_render.claude_agent.agent_module()`) behind the one failure cache.
+    Kept as a name HERE rather than called through at each use because two
+    things depend on it being one: the listing degrades to "nothing is parked"
+    when it answers None, and the router's own suite replaces exactly this name
+    with a stand-in.
 
     ONE COPY, not two. This function and the queue's were the same twenty lines
-    with different log lines, and two caches over one exec meant a machine whose
-    agent.py will not load paid for the discovery twice and could answer
+    with different log lines, and two caches over one load meant a machine whose
+    agent will not import paid for the discovery twice and could answer
     differently on the two paths — the listing saying nothing is parked while the
     queue said every folder is free.
     """
@@ -2619,7 +2665,7 @@ def _place(task: dict) -> None:
     if task["path"]:
         cwd, first_ts, prompt, pane, entrypoint = tasks_store.head(task["path"])
     # ENTRYPOINT (2026-09-18): "cli" (interactive terminal) vs "sdk-cli"
-    # (headless/programmatic, what templates/claude/agent.py's spawn
+    # (headless/programmatic, what claude_agent/agent.py's spawn
     # produces) off the same head-parsed record `cwd`/`prompt`/`pane` already
     # come from — see tasks_store.head's own doc comment. Stored UNDEFINED,
     # never a placeholder default, when the transcript has none (an older
@@ -4385,39 +4431,253 @@ def _row_order(row: dict) -> tuple:
     return (rank, -float(row.get("last_active") or 0.0))
 
 
-# One listing at a time. The scan caches above are filled by whichever request
-# first asks; two requests landing on a cold process (the sidebar's pulse and
-# the Tasks page fire within the same second) would otherwise each read every
-# transcript on the machine from byte zero. A warm listing is tens of
-# milliseconds, so serializing them costs nothing anyone can see, and a request
-# that arrives while `warm` is still reading waits for that one scan rather
-# than starting a second.
-_ROWS_LOCK = threading.Lock()
+# --------------------------------------------------------------- the snapshot
+#
+# WHO BUILDS THE LISTING, AND WHEN. The listing is derived from disk — every
+# transcript on the machine, the stores, the runs tree — and that is the right
+# model: the sources of truth are files other processes write, and nothing
+# here can own them, only choose when to read them. What went wrong (the
+# 2026-10-04 diagnostics bundle) was reading them ON THE REQUEST THREAD, once
+# per request, under a lock that serialized without sharing: a build is tens
+# of milliseconds warm, but it is hundreds of small file opens, and when the
+# host was swapping one build took 55 seconds, five request threads queued
+# behind it to each run the SAME build again, and the 4 s health probe timed
+# out behind them — the server looked dead for a listing nobody needed fresh.
+#
+# So the build has ONE owner. `warm` builds the first snapshot at startup and
+# then, when the change watcher is running (tasks_watch), hands the job to a
+# builder thread (`_builder_loop`) that rebuilds on every watcher bump and on a
+# floor timer, coalesced: bumps that land during a build fold into exactly one
+# build after it. Requests read the snapshot — zero I/O on the request path —
+# after waiting a BOUNDED moment for it to catch up with the generation they
+# asked at (`_await_snapshot`): on a healthy machine that is the 65 ms rebuild
+# already in flight, so a listing is never stale by more than one build; on a
+# swapping machine the bound trips and the previous snapshot is served, which
+# is a listing a few seconds old instead of a page that freezes.
+#
+# The build's side effects (settling draft numbers, clearing a revived
+# session's archive record, the day-one read baseline, `current_apps.observe`
+# pruning what it does not see) now run on one thread, which is the other half
+# of the fix: five concurrent builds were five concurrent writers of the same
+# stores.
+#
+# WITHOUT THE WATCHER there is no builder and no snapshot, and `_task_rows`
+# builds fresh under `_BUILD_LOCK` as it always did. A snapshot nobody bumps is
+# a stale listing, and tests build apps that never start the watcher thread
+# (conftest `_no_tasks_watch_thread`) and read a listing right after writing
+# to it.
+
+
+class _Snapshot:
+    __slots__ = ("generation", "rows")
+
+    def __init__(self, generation: int, rows: list[dict]):
+        self.generation = generation
+        self.rows = rows
+
+
+# One build at a time. `_SCAN`, `_FULL` and the rest of the module's caches are
+# plain dicts filled by the build; two builds interleaving would read the same
+# transcript twice from byte zero and race each other's offsets.
+_BUILD_LOCK = threading.Lock()
+# Guards `_snapshot`, `_building`, `_builder_on`; notified on every publish.
+_SNAP_COND = threading.Condition()
+_snapshot: _Snapshot | None = None
+_building = False
+_builder_on = False
+_builder_thread: threading.Thread | None = None
+# How long a request waits for the snapshot to catch up with the generation it
+# asked at before serving the one it has. A warm rebuild is tens of
+# milliseconds, so this is never felt on a healthy machine; it is the ceiling
+# on how long a slow disk can hold a listing request.
+SNAPSHOT_CATCHUP_SEC = 2.0
+# How long a request on a process whose FIRST build has not finished waits for
+# it before building one itself. The warm build reads every transcript on the
+# machine and is seconds on a big ~/.claude; a request that gave up early would
+# only start a second copy of the same read.
+FIRST_BUILD_WAIT_SEC = 60.0
+# The builder rebuilds at least this often with no bump at all. The watcher
+# names registry rows, live transcripts, cards and marks; a transcript growing
+# under a session nobody registered, or a store written by a path that forgot
+# to notify, used to be caught by the page's own 20 s full poll, and this is
+# that net, server-side.
+REBUILD_FLOOR_SEC = 10.0
+# A build slower than this is logged with its breakdown. The first bundle that
+# showed the pile-up needed a thread dump to name it; one warning line with
+# the collect / parked / rows split would have.
+SLOW_BUILD_SEC = 2.0
 
 
 def warm() -> None:
-    """Fill the transcript caches once, so the first real listing is warm.
+    """Build the first snapshot, so the first real listing is warm — then, with
+    the watcher running, start the builder thread that keeps it current.
 
     The process starts with `_SCAN` and the head cache empty, and the first
-    `_task_rows` reads every transcript on the machine from byte zero — close to
-    a gigabyte and three seconds on a busy laptop — synchronously, inside
-    whichever request asked first. Called from the app's startup event on a
-    thread of its own (server/app.py), never from create_app: tests build apps
-    without lifespan and must not read the developer's real ~/.claude.
+    build reads every transcript on the machine from byte zero — close to a
+    gigabyte and three seconds on a busy laptop. Called from the app's startup
+    event on a thread of its own (server/app.py), never from create_app: tests
+    build apps without lifespan and must not read the developer's real
+    ~/.claude. This thread ENDS when the first build does (tests join it to
+    know the warm listing is in); the builder loop is a thread of its own.
     """
+    global _builder_on
     started = time.monotonic()
     try:
-        rows = _task_rows()
+        snap = _rebuild_snapshot()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
         logger.debug("tasks warm failed", exc_info=True)
         return
-    logger.info("tasks warm: %d rows in %.2fs", len(rows), time.monotonic() - started)
+    logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
+    if not tasks_watch.running():
+        return
+    global _builder_thread
+    with _SNAP_COND:
+        if _builder_on:
+            return
+        _builder_on = True
+    _builder_thread = threading.Thread(target=_builder_loop, daemon=True,
+                                       name="fused-tasks-builder")
+    _builder_thread.start()
 
 
-def _task_rows(only: frozenset | set | None = None) -> list[dict]:
-    """`_build_task_rows`, one caller at a time. See `_ROWS_LOCK`."""
-    with _ROWS_LOCK:
-        return _build_task_rows(only)
+def _builder_loop() -> None:
+    """Rebuild the snapshot on every watcher bump, and on `REBUILD_FLOOR_SEC`
+    without one. `tasks_watch.wait` returns the moment the generation passes
+    the one the last snapshot was built at, so bumps that landed DURING a build
+    wake this loop exactly once more — coalescing is free."""
+    last = -1
+    with _SNAP_COND:
+        if _snapshot is not None:
+            last = _snapshot.generation
+    while True:
+        with _SNAP_COND:
+            if not _builder_on:
+                return
+        gen, _ = tasks_watch.wait(max(last, 0), REBUILD_FLOOR_SEC)
+        # Checked AGAIN after the wait: `reset_cache` ends the loop by flipping
+        # the flag and bumping the watcher, and a build that ran anyway would
+        # publish a snapshot — and write the stores — into whatever state the
+        # reset was making way for.
+        with _SNAP_COND:
+            if not _builder_on:
+                return
+        try:
+            snap = _rebuild_snapshot()
+        except Exception:  # noqa: BLE001 — a bad build keeps the last snapshot
+            logger.debug("tasks snapshot rebuild failed", exc_info=True)
+            last = gen
+            continue
+        last = snap.generation
+
+
+def _rebuild_snapshot() -> _Snapshot:
+    """One full build, published as the snapshot — SINGLE-FLIGHT. A caller that
+    arrives while a build is running waits for that build and takes its result
+    rather than starting another: N callers, one build, which is the pile-up
+    the old lock allowed (N callers, N sequential builds) put right.
+
+    The generation is read BEFORE the build, so a bump that lands mid-build
+    reads as newer than the snapshot and the builder goes again. Read after,
+    it would be stamped on rows that predate it and a client polling
+    `/api/tasks/changes` from that number would never hear about the change."""
+    global _snapshot, _building
+    with _SNAP_COND:
+        if _building:
+            before = _snapshot
+            while _building:
+                _SNAP_COND.wait()
+            if _snapshot is not None and _snapshot is not before:
+                return _snapshot
+            # The build we waited on published nothing (it failed): run our own.
+        _building = True
+    try:
+        gen = tasks_watch.generation()
+        with _BUILD_LOCK:
+            rows = _build_task_rows()
+        snap = _Snapshot(gen, rows)
+        with _SNAP_COND:
+            _snapshot = snap
+        return snap
+    finally:
+        with _SNAP_COND:
+            _building = False
+            _SNAP_COND.notify_all()
+
+
+def _await_snapshot(at_least: int, timeout: float) -> _Snapshot | None:
+    """The snapshot once its generation reaches `at_least`, or whatever is held
+    when `timeout` runs out. None only when no build has ever finished."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    with _SNAP_COND:
+        while _snapshot is None or _snapshot.generation < at_least:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _SNAP_COND.wait(remaining)
+        return _snapshot
+
+
+def _listing(at_least: int | None = None) -> tuple[list[dict], int]:
+    """The full rows and the generation they stand for.
+
+    With the builder running: the snapshot, waited for up to
+    `SNAPSHOT_CATCHUP_SEC` to reach `at_least` (the caller's generation, else
+    the watcher's current one). The generation returned is the SNAPSHOT'S, not
+    the watcher's — a client that long-polls `/api/tasks/changes` from it will
+    be told about anything the snapshot had not seen.
+
+    Without it: a fresh build of the caller's OWN, under the build lock — and
+    the generation read before that build, never the watcher's after it
+    (bugbot, PR #1405: the first requests of a process land here while `warm`
+    is in flight, and rows stamped with a generation the watcher has since
+    moved past make a client skip those changes). Not shared with a build
+    already in flight: that build may have started against state this caller
+    has since seen reset (a test's fixture, with the previous test's warm
+    thread still reading), and the lock makes the wait cost the same."""
+    with _SNAP_COND:
+        serving = _builder_on
+    if not serving:
+        gen = tasks_watch.generation()
+        with _BUILD_LOCK:
+            return _build_task_rows(), gen
+    want = tasks_watch.generation() if at_least is None else at_least
+    snap = _await_snapshot(want, SNAPSHOT_CATCHUP_SEC)
+    if snap is None:
+        snap = _await_snapshot(want, FIRST_BUILD_WAIT_SEC) or _rebuild_snapshot()
+    return snap.rows, snap.generation
+
+
+def _narrowed(only: frozenset | set, at_least: int | None = None) -> tuple[list[dict], int]:
+    """The rows under the `only` keys, and the generation they stand for.
+
+    With the builder running: the snapshot filtered (`_listing`). The full rows
+    are the truth every narrowed answer used to re-derive at full cost — one
+    `_collect` and one runs-tree walk per long-poll answer, woken about once a
+    second per open document by transcript writes. The generation is read in
+    the same call as the rows, so a caller comparing it to the one it wanted
+    is judging the rows it holds and not a snapshot published since.
+
+    Without the builder: a narrowed build under the build lock, as it always
+    ran — it builds rows for the named keys alone and runs none of the
+    full listing's side effects (`current_apps.observe` prunes what it does not
+    see, and must never see a partial listing)."""
+    with _SNAP_COND:
+        serving = _builder_on
+    if not serving:
+        gen = tasks_watch.generation()  # before the build, as `_listing`
+        with _BUILD_LOCK:
+            return _build_task_rows(only), gen
+    rows, have = _listing(at_least)
+    return [row for row in rows if row.get("key") in only], have
+
+
+def _task_rows(only: frozenset | set | None = None,
+               at_least: int | None = None) -> list[dict]:
+    """The listing rows — every one (`_listing`), or those under the `only`
+    keys (`_narrowed`)."""
+    if only is None:
+        return _listing(at_least)[0]
+    return _narrowed(only, at_least)[0]
 
 
 def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
@@ -4434,10 +4694,12 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     are built for the named keys alone, and the day-one read initialisation is
     left to the full listing, which is the only caller that knows every count.
     """
+    t0 = time.monotonic()
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
     now = time.time()
     tasks = _collect()
+    t_collect = time.monotonic() - t0
     # ONE READ OF THE FLAG for the whole listing, handed to every row: it is a
     # small JSON read (`prefs.project_queue_enabled`) and asking it per row would
     # pay for it once per task on the machine.
@@ -4461,8 +4723,19 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # is still waiting on. See `_status`.
     busy = schedule.busy_sessions(entries)
     # One scan of the runs tree for every row: which conversations are parked on
-    # a card nobody has answered. See `_parked_runs`.
-    parked = _parked_runs()
+    # a card nobody has answered. See `_parked_runs`. SKIPPED when the watcher
+    # knows nothing is alive — the same gate `tasks_watch.tick` puts before its
+    # own walk of the tree, for the same reason: a card is raised by a live
+    # run, and a live run is registered or inside its send mark. The runs tree
+    # is never pruned, so the walk is 120 directories and a `json.load` each to
+    # learn, in the ordinary case, that nobody is parked. Without the watcher
+    # (tests) the walk is always taken.
+    t1 = time.monotonic()
+    if tasks_watch.running() and not tasks_watch.anything_live():
+        parked = {}
+    else:
+        parked = _parked_runs()
+    t_parked = time.monotonic() - t1
     # ONE read of the drafts store for the whole build, for the same reason
     # `read` and `busy` are read once: it is one small file, the join below
     # asks it per session, and `_draft_rows` asks it again.
@@ -4502,6 +4775,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # Collected across the loop and written once, after it, so the listing is
     # not doing IO in the middle of building rows.
     revived: list[str] = []
+    t2 = time.monotonic()
     for task in listed.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
@@ -4510,6 +4784,16 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
+    t_rows = time.monotonic() - t2
+    total = time.monotonic() - t0
+    if total >= SLOW_BUILD_SEC:
+        # The breakdown names the slow half without a thread dump: `collect`
+        # is the transcript glob and the stores, `parked` the runs-tree walk,
+        # `rows` the per-transcript incremental read.
+        logger.warning(
+            "slow tasks build: %.1fs for %d rows (collect %.1fs, parked %.1fs, "
+            "rows %.1fs)%s", total, len(rows), t_collect, t_parked, t_rows,
+            "" if only is None else " [narrowed]")
     for session_id in revived:
         # THE WAY OUT OF ARCHIVE IS ACTIVITY, and it has to be a real way out:
         # the row already reads as its derived lane above, and leaving the
@@ -4659,8 +4943,12 @@ def api_tasks(under: str = Query(""), scope: str = Query(""),
     scope_dir, refusal = _scope_dir(under, scope, x_fused_page)
     if refusal is not None:
         return refusal
-    rows = _scoped(_task_rows(), scope_dir)
-    return {"tasks": rows, "generation": tasks_watch.generation()}
+    # The generation is the one the rows STAND FOR (the snapshot's, with the
+    # builder running), never the watcher's current one: a client long-polling
+    # `/api/tasks/changes` from it must be told about everything these rows
+    # have not seen.
+    rows, gen = _listing()
+    return {"tasks": _scoped(rows, scope_dir), "generation": gen}
 
 
 def _draft_changes(keys) -> dict:
@@ -4733,7 +5021,17 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     # now files under its run's session is not a task that went away, it is a
     # row that changed its name (`_rekeyed_pendings`, 2026-09-16).
     rekeyed = _rekeyed_pendings(keys)
-    rows = _task_rows(only=set(keys) | set(rekeyed.values()))
+    # Off the snapshot, once it has caught up with `gen` (`_task_rows`). If it
+    # cannot within the catch-up bound — a build stuck on a slow disk — the
+    # rows held would predate the change this answer is about, and stamping
+    # them `gen` would make the client skip it for good. So the answer is
+    # "nothing yet" at the client's OWN generation: it polls again, the watcher
+    # answers at once, and it waits out another bound for the build.
+    wanted = set(keys) | set(rekeyed.values())
+    rows, have = _narrowed(wanted, at_least=gen)
+    if have < gen:
+        return {"generation": since, "rows": [], "gone": [],
+                "drafts": {"changed": [], "gone": []}}
     listed = {row["key"] for row in rows}
     # A rung key whose translation IS listed still answers `gone` — and that is
     # a SWAP, not the deletion this endpoint used to do: the row it re-keys to
@@ -4831,7 +5129,7 @@ _PULSE_FIELDS = (
     # one. A single integer on a row that is already being built.
     "queue_waiting",
     # "cli" (interactive terminal) / "sdk-cli" (headless — what
-    # templates/claude/agent.py's spawn produces) / `None` (unknown, e.g. no
+    # claude_agent/agent.py's spawn produces) / `None` (unknown, e.g. no
     # transcript yet) — see `_place`'s own comment. task-status-notify.ts's
     # finished-task notice gates on this: only an exact "cli" is treated as
     # "started outside our own template", and anything else, including
@@ -6525,7 +6823,7 @@ def api_queue_admit(body: dict = Body(...),
         resp: dict = {"run": True}
         # THE CLAIM TOKEN RIDES ALONG (2026-09-17, Bugbot PR #1194): the client
         # echoes it back on the run request as `queue_claim`, and
-        # `routers/run.py::_folder_busy` consuming it there is the proof this
+        # `claude_agent/gate.py::_folder_busy` consuming it there is the proof this
         # send is the one `claim_for_send` just counted, so the gate looks
         # rather than claiming a second time. `claim_for_send` only fails to
         # mint one when `ok` is False, which never reaches here.
@@ -6535,7 +6833,7 @@ def api_queue_admit(body: dict = Body(...),
             # A NAMELESS SEND GETS ITS NAME BACK. The client is untouched in
             # this PR and ignores the field; the run it is about to start
             # replaces the placeholder through the spawn site
-            # (`routers/run._file_owner` → `queue_manager.started`), and the
+            # (`claude_agent/gate._file_owner` → `queue_manager.started`), and the
             # token is here so the composer can eventually say "that owner is
             # me" without waiting for a run id.
             resp["owner_token"] = owner_token
@@ -7022,7 +7320,7 @@ def api_queue_force(body: dict = Body(...),
     # MARKED BEFORE THE DISPATCH, under every name this chat answers to — the
     # row's key and each waiting message's own `pending:` key. The dispatch
     # below mints a session, and the two doors this send is about to walk
-    # through (`api_queue_admit`, `routers/run._folder_busy`) ask under
+    # through (`api_queue_admit`, `claude_agent/gate._folder_busy`) ask under
     # whichever name they happen to hold; the session and the run are added the
     # moment they exist, below.
     pending_keys = [tasks_store.pending_key(i) for i in pending_ids]

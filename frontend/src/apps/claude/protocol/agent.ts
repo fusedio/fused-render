@@ -1,12 +1,11 @@
-// The chat's transport to `templates/claude/agent.py`: POST /api/run with the
-// template folder's `agent.py` and string-shaped params. Pure TS, no React.
+// The chat's transport to the in-process agent (`fused_render/claude_agent/`):
+// POST /api/claude/agent with `{action, ...fields}`, every field string-shaped
+// exactly as the handlers take them. Pure TS, no React.
 //
-// Two runtime.js behaviours the template leaned on are re-provided here
-// (R:2539-2580): per-key SUPERSEDE — a newer call on the same `key` aborts the
-// older one, whose promise then never settles so its stale continuation never
-// runs (`key: null` opts out, which is what every chat call does, T:16620) —
-// and `needs_install` surfaced as a typed error instead of a loader flow.
-import { runPy, statPath, type NeedsInstall } from "@platform/lib/api";
+// No folder, no script path: the server owns the one agent module, so a call
+// names only the action. The two siblings — the folder's app entry and the
+// artifacts reader — have routes of their own beside it.
+import { postJson, runHeaders, type HttpError } from "@platform/lib/api";
 import type {
   Action,
   AgentRequests,
@@ -15,13 +14,15 @@ import type {
   ArtifactsListResponse,
 } from "./types";
 
-/** A run that raised in Python (`/api/run` `ok:false`, D69). */
+/** A handler that raised, or ran out of its budget, on the server: the route's
+ *  non-2xx `{error: {type, message, traceback}}` (504 is `type: "Timeout"`).
+ *  A handler's own `{error: "..."}` is a 200 and comes back as the result. */
 export class AgentError extends Error {
   readonly type: string | undefined;
   readonly traceback: string | undefined;
   readonly stdout: string | undefined;
   constructor(err: { type?: string; message?: string; traceback?: string } | undefined, stdout?: string) {
-    super(err?.message || "agent.py failed");
+    super(err?.message || "the chat agent failed");
     this.name = "AgentError";
     this.type = err?.type;
     this.traceback = err?.traceback;
@@ -29,41 +30,22 @@ export class AgentError extends Error {
   }
 }
 
-/** The project venv is not built yet (engine.py `_needs_install_dict`). The
- *  chat shows this as a trouble card rather than running the installer. */
-export class AgentNeedsInstall extends Error {
-  readonly needs: NeedsInstall;
-  constructor(needs: NeedsInstall, message: string | undefined) {
-    super(message || `${needs.name} declares dependencies that are not installed yet`);
-    this.name = "AgentNeedsInstall";
-    this.needs = needs;
-  }
-}
-
 export interface RunOpts {
-  /** Supersede channel. `undefined` = the script path; `null` = no channel. */
-  key?: string | null;
   signal?: AbortSignal;
-  /** What the chat is open ON (`_file`) — `X-Fused-Target`. The PAGE half is
-   *  derived from the script's own dir, so only this needs handing in. */
+  /** What the chat is open ON (`_file`) — `X-Fused-Target`. */
   target?: string | null;
 }
 
-const inflightByKey = new Map<string, AbortController>();
-const superseded = new WeakSet<AbortController>();
-
 // ---- call-log attribution (SPEC CL-5, `fused_render/calls.py`) --------------
 //
-// FLAG-ON, A CHAT'S CALLS WERE ANONYMOUS. `runtime.js` builds these headers
-// (R:1434-1448) off the EMBEDDED PAGE's own URL — `ownQuery("path")` and
-// `ownQuery("_file")` — and the native chat has no such URL, so nothing set
-// them: `fused-render calls`, `--page <chat template>` and the `.calls.jsonl`
-// viewer all showed an empty history for a conversation, and the failed-call
-// digests for the chat went with it. Observability only; no behaviour depends
-// on it, which is exactly why it was easy to lose.
-//
-// The page is the template's own `template.html`, which is what `--page` names
-// and what a reader looking for "the chat's calls" would type.
+// A native page has no URL of its own for `runtime.js`'s header builder to
+// read, so the chat says who it is: one constant page id for every chat call
+// (`fused_render.claude_agent.CLAUDE_PAGE_ID`, which `calls.is_first_party`
+// recognises), plus the target and a per-call correlation id. Observability
+// only; no behaviour depends on it, which is exactly why it is easy to lose.
+
+/** `X-Fused-Page` for every chat call. */
+export const CLAUDE_PAGE_ID = "fused-render://claude";
 
 /** The correlation id, `runtime.js`'s shape (R:1442's `newCallId`). */
 function newCallId(): string {
@@ -72,160 +54,58 @@ function newCallId(): string {
     : String(Date.now()) + "-" + Math.random().toString(36).slice(2);
 }
 
-/**
- * Ids abandoned since the last call went out, waiting to ride the next one.
- *
- * ON THE SUPERSEDING REQUEST, and `calls.py:80-85` explains why that and not a
- * POST of its own: the superseding request "leaves in the same task as the
- * abort, so the mark lands before the abandoned call's record is written — a
- * separate POST measured ~19 ms later, and anything that finished inside that
- * window was recorded `ok`."
- */
-let pendingSupersedes: string[] = [];
-
-/** The call id a controller was given, so an abort can name what it cancelled. */
-const callIds = new WeakMap<AbortController, string>();
-
-function takePendingSupersedes(): string {
-  if (!pendingSupersedes.length) return "";
-  const out = pendingSupersedes.join(",");
-  pendingSupersedes = [];
-  return out;
-}
-
-/** Test-only: the queue is page-lifetime state in production. */
-export function resetSupersedesForTests(): void {
-  pendingSupersedes = [];
-}
-
-/** Never settles — the runtime's spelling for "a newer call owns the result". */
-function hang<T>(): Promise<T> {
-  return new Promise<T>(() => {});
-}
-
-/** Low-level: run any script under the template dir with the supersede rule. */
-export async function runScript<T>(py: string, params: Record<string, unknown>, opts: RunOpts = {}): Promise<T> {
-  const key = opts.key === undefined ? py : opts.key;
-  const controller = new AbortController();
-  const callId = newCallId();
-  callIds.set(controller, callId);
-  if (key !== null) {
-    const prev = inflightByKey.get(key);
-    if (prev) {
-      superseded.add(prev);
-      // The abandoned call names itself, so the mark can ride the request that
-      // caused it (see `pendingSupersedes`).
-      const was = callIds.get(prev);
-      if (was) pendingSupersedes.push(was);
-      prev.abort();
-    }
-    inflightByKey.set(key, controller);
-  }
-  let detach: (() => void) | null = null;
-  if (opts.signal) {
-    if (opts.signal.aborted) controller.abort();
-    else {
-      const onAbort = () => controller.abort();
-      opts.signal.addEventListener("abort", onAbort);
-      detach = () => opts.signal?.removeEventListener("abort", onAbort);
-    }
-  }
-  const cleanup = () => {
-    detach?.();
-    if (key !== null && inflightByKey.get(key) === controller) inflightByKey.delete(key);
-  };
+/** POST one of the chat routes. A 2xx body IS the result. A non-2xx whose
+ *  `error` is the structured `{type, message, traceback}` becomes an
+ *  `AgentError`; a string `error` (400 bad action/params, 403) stays the
+ *  platform's `HttpError`; an abort rethrows untouched. */
+async function post<T>(url: string, body: Record<string, unknown>, opts: RunOpts = {}): Promise<T> {
   try {
-    const data = await runPy(py, params, {
-      signal: controller.signal,
-      attribution: {
-        // `<templateDir>/template.html` — the page `--page` names, derived from
-        // the script's own dir so every script under a template attributes to
-        // one page rather than to itself.
-        page: py.replace(/\/[^/]+$/, "") + "/template.html",
+    return await postJson<T>(url, body, {
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      headers: runHeaders({
+        page: CLAUDE_PAGE_ID,
         ...(opts.target ? { target: opts.target } : {}),
-        callId,
-        ...(() => {
-          const abandoned = takePendingSupersedes();
-          return abandoned ? { supersedes: abandoned } : {};
-        })(),
-      },
+        callId: newCallId(),
+      }),
     });
-    cleanup();
-    if (superseded.has(controller)) return hang<T>();
-    if (data.needs_install) throw new AgentNeedsInstall(data.needs_install, data.error?.message);
-    if (!data.ok) throw new AgentError(data.error, data.stdout);
-    return data.result as T;
   } catch (err) {
-    cleanup();
-    // The caller's own abort wins (their finally must run); a supersede hangs.
-    if (opts.signal?.aborted) throw err;
-    if (superseded.has(controller)) return hang<T>();
+    const said = (err as HttpError | null)?.body as { error?: unknown } | null | undefined;
+    const e = said?.error;
+    if (e && typeof e === "object") {
+      throw new AgentError(e as { type?: string; message?: string; traceback?: string });
+    }
     throw err;
   }
 }
 
-/** One `agent.py` action, typed by name (`04-core-chat.md §B`). */
+/** One agent action, typed by name (`04-core-chat.md §B`). */
 export function runAgent<K extends Action>(
-  dir: string,
   action: K,
   fields: AgentRequests[K],
   opts: RunOpts = {},
 ): Promise<AgentResponses[K]> {
-  return runScript<AgentResponses[K]>(`${dir}/agent.py`, { action, ...fields }, opts);
+  return post<AgentResponses[K]>("/api/claude/agent", { action, ...fields }, opts);
 }
 
-/** `./app.py {dir}` — the folder's entry html, if it is an app (T:5417). */
-export function runAppEntry(dir: string, target: string, opts: RunOpts = {}): Promise<AppEntryResponse> {
-  return runScript<AppEntryResponse>(`${dir}/app.py`, { dir: target }, opts);
+/** The agent's `terminal_command` action, which already returns a full
+ *  `cd '<dir>' && claude ...` line — the one fetch every "continue this
+ *  session in a terminal" caller shares (`apps/claude/ui/Kebab.tsx`'s
+ *  "Continue in terminal", `shell/TaskPeek.tsx`'s own), so neither re-derives
+ *  it and there is exactly one `cd` in the string either ends up sending. */
+export async function fetchTerminalCommand(file: string, sessionId: string): Promise<string> {
+  const out = await runAgent("terminal_command", { file, session_id: sessionId });
+  if ("error" in out && out.error) throw new Error(out.error);
+  if (!("command" in out)) throw new Error("the chat agent returned no command");
+  return out.command;
 }
 
-/** `./artifacts.py` (T:18482). */
-export function runArtifacts(
-  dir: string,
-  fields: Record<string, string>,
-  opts: RunOpts = { key: null },
-): Promise<ArtifactsListResponse> {
-  return runScript<ArtifactsListResponse>(`${dir}/artifacts.py`, fields, opts);
+/** The folder's entry html, if it is an app (`{entry: null}` when not). */
+export function runAppEntry(target: string, opts: RunOpts = {}): Promise<AppEntryResponse> {
+  return post<AppEntryResponse>("/api/claude/app-entry", { dir: target }, opts);
 }
 
-// ---- template dir resolution (TaskCards.tsx:90-118 idiom) ------------------
-
-/** `null` = asked, and this path has no claude template (kept, so a folder
- *  without one is not re-stat'd per mount). Honors user template overrides. */
-const dirCache = new Map<string, string | null>();
-const dirInFlight = new Map<string, Promise<string | null>>();
-
-function dirname(p: string): string {
-  const i = p.lastIndexOf("/");
-  return i <= 0 ? p : p.slice(0, i);
-}
-
-/** The folder holding `agent.py` for `file`'s claude template, via
- *  `statPath(file).templates.find(mode === "claude").path` (00-shell-infra §1d). */
-export function resolveAgentDir(file: string): Promise<string | null> {
-  if (dirCache.has(file)) return Promise.resolve(dirCache.get(file) ?? null);
-  const running = dirInFlight.get(file);
-  if (running) return running;
-  const p = statPath(file)
-    .then((st) => {
-      const tpl = st.templates?.find((t) => t.mode === "claude")?.path ?? null;
-      const dir = tpl ? dirname(tpl) : null;
-      dirCache.set(file, dir);
-      return dir;
-    })
-    .catch(() => {
-      // Not cached: a failed stat is not an answer about the folder.
-      return null;
-    })
-    .finally(() => {
-      dirInFlight.delete(file);
-    });
-  dirInFlight.set(file, p);
-  return p;
-}
-
-/** Test-only. */
-export function resetAgentDirCacheForTests(): void {
-  dirCache.clear();
-  dirInFlight.clear();
+/** The artifacts reader: `{action: "list", file}` or `{action: "live",
+ *  session_id, file}`. */
+export function runArtifacts(fields: Record<string, string>, opts: RunOpts = {}): Promise<ArtifactsListResponse> {
+  return post<ArtifactsListResponse>("/api/claude/artifacts", fields, opts);
 }

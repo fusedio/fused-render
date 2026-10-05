@@ -60,6 +60,9 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # test_shell_routes.py derives this list from the shell's own route table rather
 # than trusting the next page to remember.
 @router.get("/tasks")
+# Monitor — every process on the machine, live (frontend shell/monitor),
+# the System chip's "Open Monitor".
+@router.get("/monitor")
 # The first-run setup wizard (frontend shell/onboarding): its own page, so
 # the client lands on it with a plain navigation and leaves it the same way,
 # and Help › Setup wizard is an ordinary link. A refresh mid-wizard stays on it.

@@ -402,7 +402,7 @@ def test_failed_operation_toast_offers_fix_with_ai_not_explain():
     # The button's click handler is the new function, not the deleted one.
     toast = src[src.index("if (!flash.ok && !flash.noAsk && resolving === null"):]
     toast = toast[:toast.index("\n    }")]
-    assert "onClick: () => askClaudeOnError(flash.message)" in toast
+    assert "onClick: () => askClaudeOnError(flash.message, flash)" in toast
 
 
 def test_the_fix_with_ai_button_stays_gated_on_this_panes_own_ai_state():
@@ -427,7 +427,7 @@ def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
     and hands them to the ancestor-window hop instead of calling `fused.ai`
     itself."""
     src = _view_source()
-    fn = src[src.index("function askClaudeOnError(message)"):]
+    fn = src[src.index("function askClaudeOnError(message, details)"):]
     fn = fn[:fn.index("\n}")]
     assert "repo.branch" in fn
     assert "repo.upstream" in fn
@@ -442,8 +442,15 @@ def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
     # (already resolved by log.py) is unambiguous across all of those shapes.
     assert "const workingDir = (repo && repo.root) || file || " in fn
     assert "workingDir" in fn
-    # It asks for a fix, not just an explanation.
-    assert "fix it" in fn
+    # It carries the action, the command and git's complete output, and the
+    # confirm-first protocol: overview, approval, apply, ask before pushing.
+    assert '"Action taken: "' in fn
+    assert '"Git command: "' in fn
+    assert "Git's complete output:" in fn
+    assert "OVERVIEW FIRST" in fn
+    assert "keep mine / keep theirs / combine / new from remote / new locally" in fn
+    assert "Make no change to the repository before I approve" in fn
+    assert "Never push without my explicit yes" in fn
     # And it leaves via the ancestor hop — checking the CALL'S RETURN VALUE
     # (review #804 round 2 finding 4), not whether the export merely exists:
     # the runtime installs `window._fusedAskClaude` unconditionally on every
@@ -485,7 +492,7 @@ def test_a_missing_ancestor_hook_is_a_visible_failure_not_a_silent_one():
     passed too. Nothing was changed for that half.
     """
     src = _view_source()
-    fn = src[src.index("function askClaudeOnError(message)"):]
+    fn = src[src.index("function askClaudeOnError(message, details)"):]
     fn = fn[:fn.index("\n}")]
     guard = fn[fn.index("if (!delivered) {"):]
     guard = guard[:guard.index("\n  }")]

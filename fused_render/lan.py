@@ -56,6 +56,7 @@ from starlette.responses import (
     FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
 )
 
+from fused_render.logs import uvicorn_log_config
 from fused_render.shell.seed import fused_dir
 
 logger = logging.getLogger("fused_render.lan")
@@ -1117,8 +1118,11 @@ class _Controller:
             self.error = "no free port among " + ", ".join(map(str, PORT_CANDIDATES))
             self.port = None
             return
+        # `log_config` routes uvicorn's records into the app log (logs.py)
+        # instead of uvicorn's default stderr handlers, invisible when packaged.
         config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.port,
-                                log_level="warning", lifespan="on")
+                                log_level="warning", lifespan="on",
+                                log_config=uvicorn_log_config())
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},
                                   daemon=True, name="fused-lan")
@@ -1264,6 +1268,7 @@ class _Controller:
             return
         config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.tls_port,
                                 log_level="warning", lifespan="on",
+                                log_config=uvicorn_log_config(),
                                 ssl_certfile=cert, ssl_keyfile=key)
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},

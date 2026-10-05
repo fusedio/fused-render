@@ -18,13 +18,40 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
+from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import MountGuard, norm
 from fused_render.shell import storage
 
 WORKER_MODULE = "fused_render.index.worker"
+
+#: run_id -> the worker Popen THIS process spawned (SPEC §50, D5). The handle
+#: used to be discarded at spawn, so a worker that died — SIGSEGV out of duckdb,
+#: a memory kill — was only ever noticed by `_with_liveness`'s 90 s heartbeat,
+#: which can say "no activity" but never how it ended. Keeping it lets a status
+#: poll read the real exit code at once (and `poll()` reaps the zombie the
+#: discarded handle used to leave behind). Bounded at `_PROCS_KEEP`, oldest
+#: first: a run old enough to fall off has long since been reported or is
+#: covered by the heartbeat fallback, which is still what judges a run some
+#: other server process spawned.
+_PROCS: dict[str, subprocess.Popen] = {}
+#: run_ids whose death has already been logged, so a page polling `status`
+#: twice a second logs it once. Bounded the same way.
+_REPORTED: set[str] = set()
+_PROCS_KEEP = 20
+_procs_lock = threading.Lock()
+
+
+def _remember_proc(run_id: str, proc: subprocess.Popen) -> None:
+    with _procs_lock:
+        _PROCS[run_id] = proc
+        while len(_PROCS) > _PROCS_KEEP:
+            oldest = next(iter(_PROCS))
+            del _PROCS[oldest]
+            _REPORTED.discard(oldest)
 
 
 def canonical_root(root: str) -> str:
@@ -260,11 +287,12 @@ def start(cfg: IndexConfig, root: str, full: bool = False,
     with open(os.path.join(run_dir, "spec.json"), "w") as f:
         json.dump(run_spec, f)
     with open(os.path.join(run_dir, "worker.log"), "w") as logf:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, "-m", WORKER_MODULE, run_dir],
             stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             **_detach_kwargs(),
         )
+    _remember_proc(run_id, proc)
     # Recorded at START, not at completion: the debounce this feeds exists to
     # stop a restart loop from queueing scan after scan, and a scan that is
     # still running should suppress the next one just as firmly as one that
@@ -361,15 +389,63 @@ def derive_state(events) -> dict:
     return st
 
 
+def _exit_of_own_worker(run_dir: str):
+    """The exit code of this run's worker when THIS process spawned it and it
+    has exited without writing `run_end`; None otherwise (still running, not
+    ours, or it ended properly).
+
+    The `run_end` re-check is what keeps this from racing a clean finish: the
+    caller folded the log BEFORE this `poll()`, and a worker that wrote
+    `run_end` and exited in between would otherwise read as dead mid-scan."""
+    run_id = os.path.basename(run_dir)
+    with _procs_lock:
+        proc = _PROCS.get(run_id)
+    poll = getattr(proc, "poll", None)
+    if poll is None:
+        return None
+    try:
+        code = poll()
+    except OSError:
+        return None
+    # Only a real int is an exit code — the same rule as ai/supervisor's
+    # `_exited`: a stand-in handle (tests plant fakes here) is never "dead".
+    if not isinstance(code, int) or isinstance(code, bool):
+        return None
+    if has_ended(run_dir)[0]:
+        return None
+    return code
+
+
 def _with_liveness(state: dict, run_dir: str, now: float) -> dict:
-    """Cross-check a `running` log against the run directory's mtimes.
+    """Cross-check a `running` log against the worker's real exit, then
+    against the run directory's mtimes.
 
     The log alone cannot distinguish "still walking" from "the worker died
     without a run_end" (killed, OOM, spawn crash): both just stop appending.
-    A live worker touches its run dir at least every half second, so an
-    unfinished run untouched for ABANDONED_RUN_S is dead — report it as such,
-    or the status endpoint says `scanning` (and the UI says "indexing…", with
-    the scan buttons disabled) until the dir is eventually pruned."""
+    When this process spawned the worker, its Popen answers that at once and
+    says HOW it ended (D5) — logged once, with worker.log's tail. Otherwise
+    (a run another server process started) the heartbeat decides: a live
+    worker touches its run dir at least every half second, so an unfinished
+    run untouched for ABANDONED_RUN_S is dead — report it as such, or the
+    status endpoint says `scanning` (and the UI says "indexing…", with the
+    scan buttons disabled) until the dir is eventually pruned."""
+    if state["running"]:
+        code = _exit_of_own_worker(run_dir)
+        if code is not None:
+            run_id = os.path.basename(run_dir)
+            with _procs_lock:
+                first = run_id not in _REPORTED
+                _REPORTED.add(run_id)
+                proc = _PROCS.get(run_id)
+            if first:
+                desc = report_child_exit(
+                    "index-worker", proc.pid if proc is not None else None, code,
+                    os.path.join(run_dir, "worker.log"))
+            else:
+                desc = describe_exit(code)
+            state["running"] = False
+            state["error"] = state["error"] or f"the scan worker {desc}"
+            return state
     if state["running"] and _looks_abandoned(run_dir, now, ABANDONED_RUN_S):
         state["running"] = False
         state["error"] = state["error"] or (

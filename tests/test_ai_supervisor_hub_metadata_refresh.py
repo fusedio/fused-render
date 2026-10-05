@@ -69,7 +69,7 @@ def test_start_hub_metadata_refresh_is_idempotent(monkeypatch):
             return self._alive
 
     monkeypatch.setattr(supervisor.threading, "Thread", _FakeThread)
-    monkeypatch.setattr(supervisor, "_hub_metadata_refresh_thread", None)
+    supervisor._hub_metadata_refresh_starter.reset_for_tests()
 
     _real_start_hub_metadata_refresh()
     _real_start_hub_metadata_refresh()
@@ -77,7 +77,7 @@ def test_start_hub_metadata_refresh_is_idempotent(monkeypatch):
     assert len(started) == 1
     assert started[0].name == "ai-hub-metadata-refresh"
 
-    monkeypatch.setattr(supervisor, "_hub_metadata_refresh_thread", None)
+    supervisor._hub_metadata_refresh_starter.reset_for_tests()
 
 
 def test_start_hub_metadata_refresh_starts_a_new_thread_once_the_old_one_died(monkeypatch):
@@ -95,7 +95,7 @@ def test_start_hub_metadata_refresh_starts_a_new_thread_once_the_old_one_died(mo
             return self._alive
 
     monkeypatch.setattr(supervisor.threading, "Thread", _FakeThread)
-    monkeypatch.setattr(supervisor, "_hub_metadata_refresh_thread", None)
+    supervisor._hub_metadata_refresh_starter.reset_for_tests()
 
     _real_start_hub_metadata_refresh()
     started[0]._alive = False
@@ -103,4 +103,4 @@ def test_start_hub_metadata_refresh_starts_a_new_thread_once_the_old_one_died(mo
 
     assert len(started) == 2
 
-    monkeypatch.setattr(supervisor, "_hub_metadata_refresh_thread", None)
+    supervisor._hub_metadata_refresh_starter.reset_for_tests()

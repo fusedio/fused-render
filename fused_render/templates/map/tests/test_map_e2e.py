@@ -1,60 +1,49 @@
-"""End-to-end behaviour of the Map Viewer in a real browser.
+"""The Map Viewer end to end, in a real browser, against a running server.
 
-The unit tests around this template cover Python helpers in isolation, which is
-exactly why a string of regressions reached the user anyway: a raster that never
-paints, a descriptor read before it exists, a code panel with nothing in it, and
-a style control that silently stopped applying are all *page* behaviour. Those
-only show up by opening the page.
+Everything the viewer does happens in the page — COGs streamed by range read,
+vectors tiled by DuckDB-WASM, Zarr chunks, the document reconciler — so the
+page is what is tested: data of every kind is generated locally, loaded
+through `window.fusedMap`, and checked for what actually reached the map.
 
-Needs a fused-render server on 127.0.0.1:1777 and network access to the public
-Maxar bucket; every test skips if either is missing.
+Needs a fused-render server serving THIS checkout's templates, Playwright, and
+the geo stack to generate data (this folder's environment):
 
-Run explicitly:
-  PYTHONPATH=<checkout> python -m pytest \
-    fused_render/templates/map/tests/test_map_e2e.py -o addopts="" -q
+  FUSED_RENDER_CORE_TEMPLATES=$PWD/fused_render/templates fused-render serve --port 1778
+  FUSED_RENDER_URL=http://127.0.0.1:1778 /tmp/mapvenv/bin/python -m pytest \\
+      fused_render/templates/map/tests/test_map_e2e.py -o addopts=""
+
+DuckDB-WASM and its spatial extension load from a CDN the first time; the
+vector cases skip when it is unreachable.
 """
 from __future__ import annotations
 
+import functools
+import json
 import os
+import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
-playwright_api = pytest.importorskip("playwright.sync_api")
-from playwright.sync_api import sync_playwright  # noqa: E402
+sync_api = pytest.importorskip("playwright.sync_api")
+np = pytest.importorskip("numpy")
+rasterio = pytest.importorskip("rasterio")
+gpd = pytest.importorskip("geopandas")
+xr = pytest.importorskip("xarray")
+pytest.importorskip("h5netcdf")
+from rasterio.transform import from_bounds  # noqa: E402
+from shapely.geometry import box  # noqa: E402
 
-SERVER = os.environ.get("FUSED_RENDER_URL", "http://127.0.0.1:1777")
-TEMPLATE = os.environ.get(
-    "MAP_TEMPLATE",
-    os.path.join(os.path.expanduser("~"), ".fused-render", ".core-templates", "map", "template.html"),
-)
-REMOTE_COG = (
-    "https://maxar-opendata.s3.amazonaws.com/events/Belize-Wildfires-June24/ard/16/"
-    "033131012100/2024-01-09/10400100905FFC00-visual.tif"
-)
-REMOTE_CAM = "16.9711,-89.0473,12.2"
-LOCAL_RASTER = os.environ.get("MAP_LOCAL_RASTER", "")
-# Same product, one band instead of three — the case that caught the viewer
-# claiming "RGB composite (bands 1, 2, 3)" over a greyscale image.
-SINGLE_BAND_COG = (
-    "https://maxar-opendata.s3.amazonaws.com/events/Cyclone-Ditwah-Sri-Lanka-Nov-2025/ard/44/"
-    "033313300310/2025-12-05/102001011D2F3500-visual.tif"
-)
-SINGLE_BAND_CAM = "7.0308,79.8416,12.9"
-# NASA HLS on Azure: the storage account has anonymous access disabled, so this
-# URL answers 409 until it is signed with a Planetary Computer read token. Its
-# blob endpoint sends no CORS headers either, so the browser reader can never
-# take it — this is the server path, end to end.
-AZURE_COG = (
-    "https://hls2euwest.blob.core.windows.net/hls2/L30/43/P/GS/2026/08/14/"
-    "HLS.L30.T43PGS.2026226T051556.v2.0/HLS.L30.T43PGS.2026226T051556.v2.0.B10.tif"
-)
-AZURE_CAM = "14.8730,76.9960,9.5"
-
-SETTLE_MS = 90000
+MAP = Path(__file__).resolve().parents[1]
+SERVER = os.environ.get("FUSED_RENDER_URL", "http://127.0.0.1:1778")
+TEMPLATE = os.environ.get("MAP_TEMPLATE", str(MAP / "template.html"))
+CHROMIUM = os.environ.get("MAP_E2E_CHROMIUM")  # optional explicit executable
 
 
 def _reachable(url: str) -> bool:
@@ -65,472 +54,356 @@ def _reachable(url: str) -> bool:
         return False
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def server():
     if not _reachable(f"{SERVER}/api/config"):
         pytest.skip(f"no fused-render server on {SERVER}")
+    if not _reachable(f"{SERVER}/template-assets/map.bundle.mjs"):
+        pytest.skip("the server does not serve this checkout's map.bundle.mjs")
     return SERVER
 
 
-@pytest.fixture(scope="session")
-def network():
-    request = urllib.request.Request(REMOTE_COG, headers={"Range": "bytes=0-1023"})
-    try:
-        urllib.request.urlopen(request, timeout=15).close()
-    except (urllib.error.URLError, OSError):
-        pytest.skip("public Maxar bucket is not reachable")
+@pytest.fixture(scope="module")
+def cdn():
+    if not _reachable("https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/package.json"):
+        pytest.skip("DuckDB-WASM's CDN is unreachable")
 
 
-def render_url(server: str, target: str, cam: str = "") -> str:
-    query = {"path": TEMPLATE, "open": urllib.parse.quote(target, safe="")}
-    if cam:
-        query["cam"] = cam
-    return f"{server}/render?" + urllib.parse.urlencode(query)
+@pytest.fixture(scope="module")
+def data(tmp_path_factory):
+    d = tmp_path_factory.mktemp("mapdata")
+    size = 1024
+    yy, xx = np.mgrid[0:size, 0:size]
+    dem = (np.sin(xx / 90) * np.cos(yy / 120) * 400 + 1000).astype("float32")
+    with rasterio.open(d / "dem.tif", "w", driver="COG", width=size, height=size, count=1,
+                       dtype="float32", crs="EPSG:32633", nodata=-9999,
+                       transform=from_bounds(500000, 5000000, 510000, 5010000, size, size)) as out:
+        out.write(dem, 1)
+    rgb = np.stack([xx % 256, yy % 256, (xx + yy) % 256]).astype("uint8")
+    with rasterio.open(d / "striped.tif", "w", driver="GTiff", width=size, height=size, count=3,
+                       dtype="uint8", crs="EPSG:4326", transform=from_bounds(10, 45, 11, 46, size, size)) as out:
+        out.write(rgb)
+    rng = np.random.default_rng(1)
+    n = 20000
+    cx, cy = rng.uniform(-122.5, -122.3, n), rng.uniform(37.7, 37.8, n)
+    frame = gpd.GeoDataFrame({"height": rng.uniform(3, 80, n).round(1),
+                              "use": rng.choice(["res", "com", "ind"], n)},
+                             geometry=[box(x, y, x + 3e-4, y + 2e-4) for x, y in zip(cx, cy)], crs=4326)
+    frame.to_parquet(d / "buildings.parquet")
+    frame.iloc[:500].to_crs(3857).to_file(d / "small.shp")
+    frame.iloc[:500].to_file(d / "small.geojson", driver="GeoJSON")
+    t = np.array(["2024-01-01", "2024-02-01", "2024-03-01"], dtype="datetime64[ns]")
+    lat, lon = np.linspace(-60, 60, 61), np.linspace(-180, 178, 180)
+    cube = (np.cos(np.radians(lat))[None, :, None] * 30 + np.arange(3)[:, None, None] * 5
+            + 0 * lon[None, None, :]).astype("float32")
+    xr.Dataset({"temp": (("time", "lat", "lon"), cube)},
+               coords={"time": t, "lat": lat, "lon": lon}).to_netcdf(d / "temp.nc", engine="h5netcdf")
+    return d
 
 
-class Viewer:
-    """One opened Map Viewer page, with the traffic it generated."""
+@pytest.fixture(scope="module")
+def browser():
+    with sync_api.sync_playwright() as p:
+        options = {"args": ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]}
+        if CHROMIUM:
+            options["executable_path"] = CHROMIUM
+        try:
+            instance = p.chromium.launch(**options)
+        except Exception as error:  # no browser downloaded
+            pytest.skip(f"no Chromium for Playwright: {error}")
+        yield instance
+        instance.close()
 
-    def __init__(self, page):
-        self.page = page
-        self.errors: list[str] = []
-        self.s3: list[int] = []
-        self.tiles: list[int] = []
-        self.tile_urls: list[str] = []
-        self.tile_bytes: list[int] = []
-        self.last_read = time.monotonic()
-        page.on("pageerror", lambda e: self.errors.append(str(e)[:300]))
-        page.on(
-            "console",
-            lambda m: self.errors.append("console: " + m.text[:200])
-            if m.type == "error" and "GL Driver" not in m.text
-            else None,
-        )
-        page.on("response", self._response)
 
-    def _response(self, response):
-        if "maxar-opendata" in response.url:
-            self.s3.append(response.status)
-            self.last_read = time.monotonic()
-        if "/tiles/" in response.url and ".png" in response.url:
-            self.tiles.append(response.status)
-            self.tile_urls.append(response.url)
-            self.last_read = time.monotonic()
-            self.tile_bytes.append(int(response.header_value("content-length") or 0))
-
-    def open(self, url: str):
-        """Open the viewer and wait until its layers have settled.
-
-        A fixed sleep here made the suite flaky the moment the bucket got slow:
-        the assertions ran against a page still loading. Wait on the page's own
-        state instead, then give the GPU a moment to paint what it has.
-        """
+class Page:
+    def __init__(self, browser, server, **params):
+        self.errors = []
+        self.page = browser.new_page(viewport={"width": 1280, "height": 800})
+        self.page.on("pageerror", lambda e: self.errors.append(str(e)))
+        url = f"{server}/render?" + urllib.parse.urlencode({"path": TEMPLATE, **params})
         self.page.goto(url, wait_until="domcontentloaded")
-        # The template's `state` lives in module scope, out of reach of
-        # evaluate(), so settle on what the page actually shows: a layer card
-        # exists and none of them is still spinning.
-        self.page.wait_for_function(
-            """() => document.querySelectorAll('.lc').length > 0
-                     && !document.querySelector('.lc .spin')""",
-            timeout=SETTLE_MS,
-        )
-        return self.quiesce()
-
-    def quiesce(self, quiet_ms: int = 4000, timeout_ms: int = SETTLE_MS):
-        """Wait until the source has stopped being read.
-
-        A layer card stops spinning as soon as the raster is open and drawing,
-        which is well before deck has finished refining tiles. Measuring "a
-        restyle fetches nothing" from that moment charges the tail of the
-        initial load to the restyle instead — measured as 1 and 7 stray requests
-        against a restyle that really does cost zero.
-        """
-        deadline = time.monotonic() + timeout_ms / 1000
-        while time.monotonic() < deadline:
-            if (time.monotonic() - self.last_read) * 1000 >= quiet_ms:
-                break
-            self.page.wait_for_timeout(500)
-        return self
-
-    def wait_for_tiles(self, timeout_ms: int = 60000):
-        """Wait until the Python engine has served a tile, or give up."""
-        deadline = timeout_ms
-        while deadline > 0 and not self.tiles:
-            self.page.wait_for_timeout(1000)
-            deadline -= 1000
-        return self.tiles
-
-    @property
-    def text(self) -> str:
-        return self.page.inner_text("body")
-
-    def layer_names(self) -> list[str]:
-        return self.page.locator(".lc .lc-nm").all_inner_texts()
-
-    def open_style_dock(self):
-        """Select the first layer and open the style dock over it."""
-        self.page.click(".lc .lc-h")
-        self.page.wait_for_timeout(400)
-        if "hidden" in (self.page.get_attribute("#stylepanel", "class") or ""):
-            self.page.click("#btn-style")
-        self.page.wait_for_timeout(800)
-
-    def contrast_inputs(self):
-        return self.page.locator("#sp-body .ctl-pair input")
-
-    def colormap_select(self):
-        return self.page.locator("#sp-body select").first
-
-    def canvas_patch(self):
-        """Mean RGB of the map canvas, to prove a restyle actually repainted."""
-        return self.page.evaluate(
-            """() => {
-              const c = document.querySelector('#deckgl-overlay') || document.querySelector('canvas');
-              const g = document.createElement('canvas');
-              g.width = 120; g.height = 120;
-              const ctx = g.getContext('2d');
-              ctx.drawImage(c, 0, 0, 120, 120);
-              const d = ctx.getImageData(0, 0, 120, 120).data;
-              let r = 0, gg = 0, b = 0, n = 0;
-              for (let i = 0; i < d.length; i += 4) { r += d[i]; gg += d[i+1]; b += d[i+2]; n++; }
-              return [r/n, gg/n, b/n];
-            }"""
-        )
-
-    def canvas_coverage(self) -> float:
-        """Fraction of the map canvas actually painted by a layer."""
-        return self.page.evaluate(
-            """() => {
-              const c = document.querySelector('#deckgl-overlay') || document.querySelector('canvas');
-              if (!c) return -1;
-              const g = document.createElement('canvas');
-              g.width = 200; g.height = 200;
-              const ctx = g.getContext('2d');
-              ctx.drawImage(c, 0, 0, 200, 200);
-              const d = ctx.getImageData(0, 0, 200, 200).data;
-              let opaque = 0;
-              for (let i = 3; i < d.length; i += 4) if (d[i] > 16) opaque++;
-              return opaque / (200 * 200);
-            }"""
-        )
-
-
-@pytest.fixture
-def viewer(server, network):
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
-        yield Viewer(page)
-        browser.close()
-
-
-# --------------------------------------------------------------- remote COG
-
-
-@pytest.fixture
-def remote(viewer, server):
-    return viewer.open(render_url(server, REMOTE_COG, REMOTE_CAM))
-
-
-def test_remote_cog_reads_straight_from_the_object_store(remote):
-    assert remote.s3, "no requests reached the bucket at all"
-    assert set(remote.s3) <= {200, 206}, f"bad statuses: {set(remote.s3)}"
-
-
-def test_remote_cog_actually_paints_imagery(remote):
-    # A layer that loads its metadata but draws nothing looks identical to a
-    # working one in the DOM, so assert on the canvas itself.
-    covered = remote.canvas_coverage()
-    assert covered > 0.02, f"raster canvas is effectively empty (opaque fraction {covered})"
-
-
-# ------------------------------------------------------------- the code panel
-
-
-def test_code_panel_describes_a_raster_instead_of_calling_it_binary(remote):
-    remote.page.click("#btn-code")
-    remote.page.wait_for_timeout(1500)
-    panel = remote.page.inner_text("#cp-body")
-    assert "Binary dataset" not in panel, (
-        "the code panel still refuses to say anything about a raster the viewer "
-        "is currently drawing"
-    )
-    assert REMOTE_COG in panel, "the panel does not show where the raster came from"
-    assert "EPSG:32616" in panel, "the panel does not show the raster's CRS"
-
-
-# ------------------------------------------------------------ styling controls
-
-
-def test_opacity_control_reaches_the_layer(remote):
-    # Drive the real slider and look at the canvas: reading deck's internals
-    # would pass even if the layer never got the new value.
-    remote.open_style_dock()
-    slider = remote.page.locator("#sp-body input[type=range]").first
-    assert slider.count() > 0, "the style dock has no opacity slider"
-    before = remote.canvas_coverage()
-    slider.fill("0")
-    slider.dispatch_event("input")
-    slider.dispatch_event("change")
-    remote.page.wait_for_timeout(1200)
-    after = remote.canvas_coverage()
-    assert before > 0.02, f"nothing was drawn to begin with ({before})"
-    assert after < before / 2, (
-        f"opacity 0 left the raster on screen (coverage {before} -> {after})"
-    )
-
-
-def test_changing_contrast_costs_no_network(remote):
-    # The whole point of styling on the GPU: a stretch is a shader uniform, so
-    # it must not refetch a single byte.
-    remote.open_style_dock()
-    remote.quiesce()
-    before_requests = len(remote.s3)
-    before_pixels = remote.canvas_patch()
-    minimum = remote.contrast_inputs().first
-    minimum.fill("120")
-    minimum.dispatch_event("change")
-    remote.page.wait_for_timeout(2500)
-    assert len(remote.s3) == before_requests, (
-        f"a contrast change fetched {len(remote.s3) - before_requests} times"
-    )
-    assert remote.tiles == [], "a contrast change went to the Python engine"
-    assert remote.canvas_patch() != before_pixels, "the raster did not actually repaint"
-
-
-def test_clearing_contrast_returns_to_the_automatic_window(remote):
-    # Reversibility: emptying a field means "auto" again, not 0.
-    remote.open_style_dock()
-    minimum = remote.contrast_inputs().first
-    minimum.fill("120")
-    minimum.dispatch_event("change")
-    remote.page.wait_for_timeout(2000)
-    remote.open_style_dock()
-    remote.contrast_inputs().first.fill("")
-    remote.contrast_inputs().first.dispatch_event("change")
-    remote.page.wait_for_timeout(2000)
-    remote.open_style_dock()
-    # The "auto 25-136" label is rendered whether or not auto is in force, so
-    # assert on the note, which only appears while the window really is
-    # automatic.
-    assert "contrast auto" in remote.page.inner_text("#sp-body")
-    assert remote.errors == []
-
-
-# ------------------------------------------------------- the server-side path
-
-
-@pytest.mark.skipif(not LOCAL_RASTER, reason="set MAP_LOCAL_RASTER to a local raster path")
-def test_a_local_raster_still_renders_through_the_python_engine(viewer, server):
-    local = viewer.open(render_url(server, LOCAL_RASTER))
-    assert local.errors == []
-    assert local.tiles, "the local raster produced no tiles from the Python engine"
-    assert set(local.tiles) <= {200, 204}, f"bad tile statuses: {set(local.tiles)}"
-
-
-# ------------------------------------------------- sources that need a token
-
-
-@pytest.fixture(scope="session")
-def azure():
-    request = urllib.request.Request(AZURE_COG, headers={"Range": "bytes=0-1023"})
-    try:
-        urllib.request.urlopen(request, timeout=15).close()
-    except urllib.error.HTTPError as denied:
-        if denied.code in (401, 403, 409):
-            return  # exactly the state this fixture is here to set up
-        pytest.skip(f"HLS on Azure answered {denied.code}")
-    except OSError:
-        pytest.skip("HLS on Azure is not reachable")
-    pytest.skip("HLS on Azure now allows anonymous reads; nothing to sign")
-
-
-def test_a_source_that_refuses_anonymous_reads_is_signed_and_rendered(
-    viewer, server, azure
-):
-    # Before this, the user got "409" and an empty map. The viewer now asks
-    # Planetary Computer for a read token and opens the scene with it.
-    page = viewer.open(render_url(server, AZURE_COG, AZURE_CAM))
-    assert "409" not in page.text, page.text[:400]
-    assert page.wait_for_tiles(), "the signed raster produced no tiles"
-    assert set(page.tiles) <= {200, 204}, f"bad tile statuses: {set(page.tiles)}"
-    # This one is drawn by maplibre, not deck, so canvas_coverage (which reads
-    # deck's canvas) says nothing here. An empty tile is a 334-byte transparent
-    # PNG served with a 200, so size is what separates imagery from nothing.
-    assert max(page.tile_bytes) > 1000, (
-        f"every tile came back empty: {sorted(set(page.tile_bytes))}"
-    )
-
-
-def test_tiles_ride_the_stable_server_origin(viewer, server, azure):
-    # The old descriptor pointed MapLibre at the daemon's ephemeral port; any
-    # daemon death then broke every tile the page held, invisibly.
-    page = viewer.open(render_url(server, AZURE_COG, AZURE_CAM))
-    assert page.wait_for_tiles(), "the raster produced no tiles"
-    stray = [u for u in page.tile_urls if not u.startswith(f"{server}/api/engines/map/proxy/tiles/")]
-    assert not stray, f"tiles bypassed the server origin: {stray[:3]}"
-
-
-def _server_pid(server: str) -> int | None:
-    """The pid listening on the server's port, so the kill can be scoped to
-    THIS server's own daemon rather than every map daemon on the machine."""
-    import subprocess
-
-    port = urllib.parse.urlparse(server).port
-    if not port:
-        return None
-    if os.name == "nt":
-        script = (f"(Get-NetTCPConnection -LocalPort {port} -State Listen "
-                  "-ErrorAction SilentlyContinue | Select-Object -First 1)"
-                  ".OwningProcess")
-        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                             capture_output=True, text=True, encoding="utf-8")
-        pid = out.stdout.strip()
-        return int(pid) if pid.isdigit() else None
-    out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-s", "TCP:LISTEN"],
-                         capture_output=True, text=True, encoding="utf-8")
-    pids = out.stdout.split()
-    return int(pids[0]) if pids else None
-
-
-def _kill_map_daemons(server: str) -> int:
-    """Kill only THIS server's managed map daemon(s) — its own children — never
-    an unrelated fused-render app's daemon that happens to be running too."""
-    import subprocess
-
-    ppid = _server_pid(server)
-    if ppid is None:
-        return 0
-    if os.name == "nt":
-        script = (
-            f"Get-CimInstance Win32_Process -Filter \"ParentProcessId = {ppid}\" | "
-            "Where-Object { $_.CommandLine -match 'map[\\\\/]daemon\\.py' } | "
-            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
-        )
-        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                             capture_output=True, text=True, encoding="utf-8")
-        return len(out.stdout.split())
-    out = subprocess.run(["pkill", "-P", str(ppid), "-f", "map/daemon.py"],
-                         capture_output=True)
-    return 1 if out.returncode == 0 else 0
-
-
-def test_the_same_tile_url_survives_an_engine_restart(viewer, server, azure):
-    # The assertion the old architecture could not pass: the daemon dies and
-    # the URL the page holds keeps answering, because the server restarts the
-    # child and replays its described sources underneath it.
-    page = viewer.open(render_url(server, AZURE_COG, AZURE_CAM))
-    assert page.wait_for_tiles(), "the raster produced no tiles"
-    url = next(u for u in page.tile_urls if "/api/engines/map/proxy/tiles/" in u)
-    with urllib.request.urlopen(url, timeout=120) as before:
-        assert before.status == 200
-    if not _kill_map_daemons(server):
-        pytest.skip("could not locate the managed map daemon process")
-    with urllib.request.urlopen(url, timeout=180) as healed:
-        assert healed.status == 200
-        assert healed.read().startswith(b"\x89PNG")
-    page.quiesce()
-    # The browser-side reader's CORS probe against the blob endpoint is
-    # expected noise on this source; what must stay clean is the tile path.
-    assert not [e for e in page.errors if "/api/map" in e], page.errors
-
-
-# ----------------------------------------------------------------- fallback
-
-
-def test_a_remote_tiff_the_browser_cannot_read_falls_back_to_python(viewer, server):
-    # An ordinary (non-cloud-optimized, non-CORS) TIFF URL must not leave the
-    # user with a dead layer: the Python engine has to pick it up.
-    unreadable = "https://127.0.0.1:1/not-a-real.tif"
-    page = viewer.open(render_url(server, unreadable))
-    text = page.text
-    assert "Binary dataset" not in text
-    # Either it errored honestly, or Python took it; what it must not do is
-    # silently show an empty map with no explanation.
-    assert any(word in text for word in ("Couldn't render", "error", "Error", "unavailable")), (
-        "an unreadable raster produced no message at all"
-    )
-
-
-# --------------------------------------------- what the viewer says it drew
-
-
-def test_band_count_is_reported_from_the_file_not_assumed(viewer, server):
-    # This raster has one band. Describing it as an RGB composite is a lie the
-    # user has no way to check against the (grey) picture in front of them.
-    page = viewer.open(render_url(server, SINGLE_BAND_COG, SINGLE_BAND_CAM))
-    page.open_style_dock()
-    dock = page.page.inner_text("#sp-body")
-    assert "RGB composite" not in dock, dock
-    assert "1-band source" in dock, dock
-
-
-def test_a_single_band_photograph_is_grey_not_false_colour(viewer, server):
-    # A colour ramp on a panchromatic photograph reads as a heat map. Greyscale
-    # is the convention (QGIS singleband gray, GDAL MINISBLACK, rio-tiler's
-    # opt-in colormaps) and here it is simply the `gray` ramp.
-    page = viewer.open(render_url(server, SINGLE_BAND_COG, SINGLE_BAND_CAM))
-    page.open_style_dock()
-    assert page.colormap_select().input_value() == "gray"
-
-
-def test_changing_the_colormap_costs_no_network(viewer, server):
-    page = viewer.open(render_url(server, SINGLE_BAND_COG, SINGLE_BAND_CAM))
-    page.open_style_dock()
-    page.quiesce()
-    before_requests = len(page.s3)
-    before_pixels = page.canvas_patch()
-    page.colormap_select().select_option("viridis")
-    page.page.wait_for_timeout(2500)
-    assert len(page.s3) == before_requests, (
-        f"a colormap change fetched {len(page.s3) - before_requests} times"
-    )
-    assert page.tiles == [], "a colormap change went to the Python engine"
-    after = page.canvas_patch()
-    assert after != before_pixels, "the colormap did not actually repaint"
-    # grey means the channels match; a ramp separates them.
-    assert abs(after[0] - after[2]) > abs(before_pixels[0] - before_pixels[2]), (
-        f"still looks greyscale after switching to viridis: {before_pixels} -> {after}"
-    )
-    assert page.errors == []
-
-
-# ------------------------------------------------------ antimeridian rasters
-
-
-# A MODIS sinusoidal granule near 180°: it describes with west > east
-# ([172.62, -20, -168.45, -10]). Such bounds used to leave the camera wherever
-# the URL said (the user was looking at South America), draw a world-spanning
-# extent box, and — because `bounds: undefined` fails MapLibre's source
-# validation silently — never add the raster source at all, so no tile was
-# ever requested.
-ANTIMERIDIAN_COG = (
-    "https://modiseuwest.blob.core.windows.net/modis-061-cogs/MYD09Q1/35/10/"
-    "2026209/MYD09Q1.A2026209.h35v10.061.2026218164904_sur_refl_b01.tif"
-)
-
-
-def test_an_antimeridian_raster_fits_to_its_data_and_paints(viewer, server):
-    page = viewer.open(render_url(server, ANTIMERIDIAN_COG, "-10.0,-60.0,3.0"))
-    page.page.wait_for_function(
-        """() => {
-            const cam = new URLSearchParams(location.search).get('cam');
-            if (!cam) return false;
-            const [lat, lng] = cam.split(',').map(Number);
-            const wrapped = ((lng % 360) + 540) % 360 - 180;
-            return Math.abs(lat + 15) < 5 && Math.abs(Math.abs(wrapped) - 178) < 12;
-        }""",
-        timeout=60000,
-    )
-    tiles = page.wait_for_tiles()
-    assert tiles and set(tiles) <= {200, 204}, f"tile statuses: {set(tiles)}"
-    # The first tiles back are the blank ones outside the footprint; the
-    # imagery tiles wait on the first remote reads.
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline and max(page.tile_bytes, default=0) <= 2000:
-        page.page.wait_for_timeout(1000)
-    assert max(page.tile_bytes, default=0) > 2000, (
-        "every served tile is blank; the imagery never painted"
-    )
-    # The unsigned browser probe against the Azure blob answers 409 by design.
-    assert [e for e in page.errors if "409" not in e] == []
+        self.page.wait_for_function("() => window.fusedMap", timeout=60000)
+
+    def js(self, body, arg=None):
+        return self.page.evaluate(f"async (arg) => {{ const fm = window.fusedMap; {body} }}", arg)
+
+    def idle(self, timeout_ms=180000):
+        return self.js("return await fm.whenIdle(arg);", timeout_ms)
+
+    def close(self):
+        self.page.close()
+
+
+@pytest.fixture()
+def page(browser, server):
+    opened = []
+
+    def open_page(**params):
+        p = Page(browser, server, **params)
+        opened.append(p)
+        return p
+    yield open_page
+    for p in opened:
+        assert not p.errors, p.errors
+        p.close()
+
+
+def by_id(facts):
+    return {f["id"]: f for f in facts}
+
+
+def test_rasters_stream_in_the_browser_and_a_striped_tiff_is_converted_once(page, data):
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/dem.tif', id: 'dem', style: {colormap: 'terrain'}});"
+         "fm.execute({op: 'add_layer', source: arg + '/striped.tif', id: 'rgb'});", str(data))
+    facts = by_id(p.idle())
+    assert facts["dem"]["status"] == "ready" and facts["dem"]["loaded_as"] == "raster"
+    assert facts["dem"]["bands"] == 1 and facts["dem"]["rendered"]["colormap"] == "terrain"
+    west, south, east, north = facts["dem"]["bounds"]
+    assert 14.9 < west < east < 15.2 and 45.1 < south < north < 45.3, "UTM bounds reprojected to degrees"
+    assert facts["rgb"]["status"] == "ready" and facts["rgb"]["bands"] == 3
+    assert "Cloud-Optimized" in facts["rgb"]["note"], "the striped TIFF went through prepare.py"
+    assert facts["rgb"]["rendered"]["mode"] == "rgb"
+    # A restyle is a uniform change, not a reload: the same layer, new state.
+    p.js("fm.execute({op: 'update_layer', id: 'dem', style: {colormap: 'magma', rescale: [700, 1300]}});")
+    time.sleep(0.5)
+    assert p.js("return fm.describeLayer('dem').rendered.colormap;") == "magma"
+
+
+def test_vectors_of_every_format_load_and_big_ones_tile_in_the_browser(page, data, cdn):
+    p = page()
+    p.js("for (const f of ['buildings.parquet', 'small.shp', 'small.geojson'])"
+         "  fm.execute({op: 'add_layer', source: arg + '/' + f});", str(data))
+    facts = p.idle()
+    assert all(f["status"] == "ready" and f["loaded_as"] == "vector" for f in facts), facts
+    big = by_id(facts)["buildings"]
+    assert big["features"] == 20000 and set(big["fields"]) >= {"height", "use"}
+    shp = by_id(facts)["small"]
+    assert shp["features"] == 500
+    west, south, east, north = shp["bounds"]
+    assert -123 < west < east < -122 and 37 < south < north < 38, "the .prj sidecar was honoured"
+    p.js("fm.execute({op: 'update_layer', id: 'buildings', style: {color_by: 'use'}});")
+    p.page.wait_for_function("() => (fusedMap.describeLayer('buildings').legend || {}).type === 'cats'", timeout=30000)
+    p.js("fm.execute({op: 'update_layer', id: 'buildings', style: {color_by: 'height'}});")
+    p.page.wait_for_function("() => (fusedMap.describeLayer('buildings').legend || {}).type === 'ramp'", timeout=30000)
+
+
+def test_netcdf_is_converted_to_zarr_and_time_steps_through_the_selector(page, data):
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/temp.nc', id: 't'});", str(data))
+    f = by_id(p.idle())["t"]
+    assert f["status"] == "ready" and f["loaded_as"] == "zarr", f
+    assert f["variables"] == ["temp"]
+    time_dim = next(d for d in f["dims"] if d["name"] == "time")
+    assert time_dim["size"] == 3 and time_dim["labels"] == ["2024-01-01", "2024-03-01"]
+    p.js("fm.execute({op: 'update_layer', id: 't', options: {selector: {time: 2}}, style: {clim: [0, 40]}});")
+    assert p.js("return fm.getDocument().layers[0].options.selector.time;") == 2
+
+
+def _clouds(d):
+    """A LAS 1.2 in longitude/latitude (the browser reads it whole, as is) and
+    a LAS 1.4 in UTM (the browser reader refuses 1.4; Python rewrites it)."""
+    laspy = pytest.importorskip("laspy")
+    from pyproj import CRS, Transformer
+    rng = np.random.default_rng(2)
+    for name, fmt, version in (("plain.las", 3, "1.2"), ("modern.las", 6, "1.4")):
+        header = laspy.LasHeader(point_format=fmt, version=version)
+        x, y = rng.uniform(500000, 500800, 20000), rng.uniform(5000000, 5000800, 20000)
+        if version == "1.2":
+            header.scales, header.offsets = [1e-7, 1e-7, 0.01], [15, 45, 0]
+            x, y = Transformer.from_crs(32633, 4326, always_xy=True).transform(x, y)
+        else:
+            header.scales, header.offsets = [0.01] * 3, [500000, 5000000, 0]
+            header.add_crs(CRS.from_epsg(32633))
+        cloud = laspy.LasData(header)
+        cloud.x, cloud.y, cloud.z = x, y, rng.uniform(100, 160, x.size)
+        cloud.classification = np.where(cloud.z > 130, 5, 2).astype(np.uint8)
+        cloud.write(str(d / name))
+
+
+def test_point_clouds_load_in_the_browser_and_las_14_through_python(page, data):
+    _clouds(data)
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/plain.las', id: 'plain'});"
+         "fm.execute({op: 'add_layer', source: arg + '/modern.las', id: 'modern'});", str(data))
+    facts = by_id(p.idle())
+    for key in ("plain", "modern"):
+        f = facts[key]
+        assert f["status"] == "ready" and f["loaded_as"] == "pointcloud", f
+        assert f["points"] == 20000 and f["has_classification"]
+        west, south, east, north = f["bounds"]
+        assert 14.99 < west < east < 15.02 and 45.1 < south < north < 45.2
+        assert f["classes"] == [2, 5]
+    assert facts["plain"]["note"] == "" and "Python" in facts["modern"]["note"]
+    p.js("fm.execute({op: 'update_layer', id: 'plain', style: {color_scheme: 'classification', "
+         "hidden_classes: [5], point_size: 4, clim: [100, 120]}});")
+    f = p.js("return fm.describeLayer('plain');")
+    assert f["color_scheme"] == "classification" and f["style"]["hidden_classes"] == [5]
+    # The class list in the style panel follows the document.
+    p.js("fm.select('plain');")
+    p.page.locator("#btn-style").click()
+    p.page.wait_for_selector(".pc-classes .chk")
+    assert p.page.locator(".pc-classes input:checked").count() == 1
+
+
+def test_a_point_cloud_without_a_crs_takes_one_from_the_style_panel(page, data):
+    laspy = pytest.importorskip("laspy")
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.offsets = [500000, 5000000, 0]
+    cloud = laspy.LasData(header, points=laspy.ScaleAwarePointRecord.zeros(200, header=header))
+    cloud.x, cloud.y = np.linspace(500000, 500100, 200), np.linspace(5000000, 5000100, 200)
+    cloud.z = np.linspace(10, 20, 200)
+    cloud.write(str(data / "bare.las"))
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/bare.las', id: 'bare'});", str(data))
+    f = by_id(p.idle())["bare"]
+    assert f["status"] == "error" and "coordinate system" in f["message"]
+    p.js("fm.select('bare');")
+    p.page.locator("#btn-style").click()
+    p.page.locator("#sp-body input[type=text]").fill("EPSG:32633")
+    p.page.locator("#sp-body input[type=text]").dispatch_event("change")
+    p.page.wait_for_function("() => fusedMap.describeLayer('bare').status === 'ready'", timeout=120000)
+    assert p.js("return fm.getDocument().layers[0].options.crs;") == "EPSG:32633"
+
+
+def test_zarr_stores_place_themselves_and_every_slice_dimension_gets_a_control(page, data):
+    lat, lon = np.arange(89.5, -90, -1.0), np.arange(0.5, 360, 1.0)
+    cube = np.broadcast_to(np.cos(np.radians(lat))[None, None, :, None] * 30, (2, 3, 180, 360)).astype("float32")
+    xr.Dataset({"t": (("time", "depth", "lat", "lon"), cube)},
+               coords={"time": np.array(["2024-01-01", "2024-02-01"], dtype="datetime64[ns]"),
+                       "depth": [0, 10, 50], "lat": lat, "lon": lon}) \
+        .to_zarr(data / "v3.zarr", zarr_format=3, consolidated=False, mode="w")
+    from pyproj import CRS
+    x, y = np.arange(500050, 510000, 100.0), np.arange(5009950, 5000000, -100.0)
+    xr.Dataset({"elev": (("band", "y", "x"), np.zeros((2, y.size, x.size), "float32") + [[[1.0]], [[50.0]]],
+                         {"grid_mapping": "spatial_ref"})},
+               coords={"band": ["low", "high"], "x": x, "y": y,
+                       "spatial_ref": ((), 0, {"crs_wkt": CRS.from_epsg(32633).to_wkt()})}) \
+        .to_zarr(data / "utm.zarr", zarr_format=2, consolidated=True, mode="w")
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/v3.zarr', id: 'cube'});"
+         "fm.execute({op: 'add_layer', source: arg + '/utm.zarr', id: 'utm'});", str(data))
+    facts = by_id(p.idle())
+    cube, utm = facts["cube"], facts["utm"]
+    assert cube["status"] == "ready" and utm["status"] == "ready", (cube, utm)
+    assert cube["bounds"] == [-180, -90, 180, 90]
+    west, south, east, north = utm["bounds"]
+    assert 14.99 < west < east < 15.2 and 45.1 < south < north < 45.3
+    assert next(d for d in utm["dims"] if d["name"] == "band")["labels"] == ["low", "high"]
+    # A labelled dimension moves the automatic colour range with it.
+    assert utm["auto_clim"][1] < 10
+    p.js("fm.execute({op: 'update_layer', id: 'utm', options: {selector: {band: 1}}});")
+    p.page.wait_for_function("() => fusedMap.describeLayer('utm').auto_clim[0] > 10", timeout=30000)
+    p.js("fm.select('cube');")
+    p.page.locator("#btn-style").click()
+    p.page.wait_for_selector(".md-dim")
+    assert p.page.locator(".md-dim").count() == 2  # time and depth; lat/lon are the map
+
+
+def test_document_order_is_the_drawing_order_across_engines(page, data):
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/small.geojson', id: 'v'});"
+         "fm.execute({op: 'add_layer', source: arg + '/dem.tif', id: 'r'});"
+         "fm.execute({op: 'add_layer', source: arg + '/temp.nc', id: 'z'});", str(data))
+    p.idle()
+
+    def drawn():
+        order = p.js("return window.__map.getLayersOrder();")
+        first = lambda prefix: min(i for i, name in enumerate(order) if name.startswith(prefix))
+        return first("v-v-"), first("deck-layer-group"), first("z-z-")
+    vector, raster, zarr = drawn()
+    assert vector < raster < zarr, "bottom-to-top must follow the document"
+    p.js("fm.execute({op: 'move_layer', id: 'v', to: 'top'});")
+    time.sleep(0.5)
+    vector, raster, zarr = drawn()
+    assert raster < zarr < vector
+
+
+def test_an_open_map_file_follows_agent_edits_and_writes_its_own(page, data, tmp_path):
+    if str(MAP) not in sys.path:
+        sys.path.insert(0, str(MAP))
+    import map_tools
+
+    path = str(tmp_path / "live.fmap")
+    assert map_tools.create_map(path, title="Live")["status"] == "ok"
+    map_tools.add_layer(path, str(data / "small.geojson"), name="Small")
+    p = page(_file=path)
+    p.idle()
+    assert p.js("return fm.documentPath;") == path
+    # An agent edits the file while the page shows it.
+    map_tools.add_layer(path, str(data / "dem.tif"), name="DEM", style={"colormap": "viridis"})
+    map_tools.set_basemap(path, "dark")
+    p.page.wait_for_function("() => fusedMap.getDocument().layers.length === 2"
+                             " && fusedMap.getDocument().basemap === 'dark'", timeout=15000)
+    assert [f["id"] for f in p.idle()] == ["dem", "small"]
+    # The page edits; the file follows.
+    p.js("fm.execute({op: 'update_layer', id: 'dem', opacity: 0.4});")
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        on_disk = json.loads(Path(path).read_text())
+        if on_disk["layers"][1]["opacity"] == 0.4:
+            break
+        time.sleep(0.3)
+    assert on_disk["layers"][1]["opacity"] == 0.4
+
+
+def test_refused_commands_throw_and_change_nothing(page):
+    p = page()
+    before = p.js("return JSON.stringify(fm.getDocument());")
+    message = p.js("try { fm.execute({op: 'set_basemap', basemap: 'neon'}); return null; }"
+                   " catch (e) { return e.message; }")
+    assert "basemap must be one of" in message
+    assert p.js("return JSON.stringify(fm.getDocument());") == before
+
+
+def test_the_postmessage_bridge_answers_a_parent_frame(page):
+    p = page()
+    reply = p.js("""
+      return await new Promise(resolve => {
+        window.addEventListener('message', e => { if (e.data && e.data.type === 'fused-map:result') resolve(e.data); });
+        window.postMessage({type: 'fused-map:command', requestId: 7, method: 'execute',
+                            params: [{op: 'set_title', title: 'From a parent'}]}, location.origin);
+      });""")
+    assert reply == {"type": "fused-map:result", "requestId": 7, "ok": True, "result": {"title": "From a parent"}}
+
+
+class _CorsHandler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        super().end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture()
+def remote(data):
+    """`data` over plain HTTP, standing in for a remote bucket."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_CorsHandler, directory=str(data)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_a_remote_layer_downloads_to_a_chosen_folder(page, remote, tmp_path):
+    dest = tmp_path / "saved"
+    dest.mkdir()
+    p = page()
+    assert p.page.locator("#btn-save").count() == 0, "the map has no Save button"
+    p.js("fm.execute({op: 'add_layer', source: arg + '/small.geojson', id: 'web'});", remote)
+    assert by_id(p.idle())["web"]["status"] == "ready"
+    # The layer menu offers a download for a remote source...
+    p.page.locator(".lc[data-id='web'] .lc-dots").click()
+    assert "Download…" in p.page.locator("#lmenu").inner_text()
+    # ...and choosing it opens the file browser as a folder picker.
+    p.page.locator("#lmenu button", has_text="Download…").click()
+    p.page.wait_for_function("() => document.querySelector('#fb-open').textContent === 'Download here'", timeout=30000)
+    assert p.page.locator("#fb-title").inner_text() == "Download small.geojson"
+    p.page.locator("#fb-cancel").click()
+    # The same download through the API (the path an agent takes).
+    result = p.js("return await fm.download('web', arg);", str(dest))
+    assert result["path"] == str(dest / "small.geojson")
+    assert json.loads((dest / "small.geojson").read_text())["type"] == "FeatureCollection"
+    local = p.js("fm.execute({op: 'add_layer', source: arg, id: 'local'}); return (await fm.whenIdle()).map(f => f.status);",
+                 result["path"])
+    assert local == ["ready", "ready"]

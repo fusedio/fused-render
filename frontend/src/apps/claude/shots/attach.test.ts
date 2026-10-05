@@ -65,7 +65,7 @@ let headOk = true;
 let objectUrls = 0;
 let revoked: string[] = [];
 
-/** One `fetch` for every route this module reaches: the upload, `/api/run` and
+/** One `fetch` for every route this module reaches: the upload, `/api/claude/agent` and
  *  the receipt's HEAD probe. */
 function installFetch(): void {
   Object.assign(globalThis, {
@@ -78,14 +78,14 @@ function installFetch(): void {
         uploads.push({ path, bytes: file.size });
         return json({ path, name: path, is_dir: false, size: file.size, mtime: 0 });
       }
-      if (href === "/api/run") {
-        const body = JSON.parse(String(init?.body)) as { params: Record<string, unknown> };
-        runs.push(body.params);
-        if (body.params.action === "shots_dir") return json({ ok: true, result: { dir: "/shots" } });
-        if (body.params.action === "image_to_png") {
-          return json({ ok: true, result: convert ?? { error: "no" } });
+      if (href === "/api/claude/agent") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        runs.push(body);
+        if (body.action === "shots_dir") return json({ dir: "/shots" });
+        if (body.action === "image_to_png") {
+          return json(convert ?? { error: "no" });
         }
-        return json({ ok: true, result: {} });
+        return json({});
       }
       if (init?.method === "HEAD") {
         heads.push(href);
@@ -347,7 +347,7 @@ describe("shotNoun / shotAlt", () => {
 
 describe("attachPaths", () => {
   test("no upload, no size, an image still gets a rawUrl thumb (T:11680)", () => {
-    const out = attachPaths("/tpl", ["/w/a.png", "/w/b.csv"]);
+    const out = attachPaths(["/w/a.png", "/w/b.csv"]);
     expect(uploads).toEqual([]);
     expect(out[0]).toMatchObject({
       kind: "image",
@@ -433,7 +433,7 @@ describe("revoke", () => {
 
 describe("attachFile", () => {
   test("a small picture goes up whole, with a thumb and no size (T:11597)", async () => {
-    const att = await attachFile("/tpl", fileOf("a.png", "image/png", 1000));
+    const att = await attachFile(fileOf("a.png", "image/png", 1000));
     expect(uploads.length).toBe(1);
     expect(uploads[0].path).toMatch(/^\/shots\/\d{14}-[0-9a-f]{8}\.png$/);
     expect(att.thumb).toBe("blob:fake/1");
@@ -450,7 +450,7 @@ describe("attachFile", () => {
     Object.assign(globalThis, {
       createImageBitmap: () => Promise.resolve({ width: 8000, height: 6000, close: () => {} }),
     });
-    const att = await attachFile("/tpl", fileOf("huge.png", "image/png", 80 * 1024 * 1024));
+    const att = await attachFile(fileOf("huge.png", "image/png", 80 * 1024 * 1024));
     expect(uploads.length).toBe(1);
     // The FILE'S own extension, because the file itself is what was copied.
     expect(uploads[0].path).toMatch(/\.png$/);
@@ -464,7 +464,7 @@ describe("attachFile", () => {
   });
 
   test("A 60 MB ZIP is attached like anything else — no type gate either (P2-6)", async () => {
-    const att = await attachFile("/tpl", fileOf("dump.zip", "application/zip", 60 * 1024 * 1024));
+    const att = await attachFile(fileOf("dump.zip", "application/zip", 60 * 1024 * 1024));
     expect(att.kind).toBe("file");
     expect(att.view).toBe(uploads[0].path);
     expect(uploads[0].path).toMatch(/\.zip$/);
@@ -492,7 +492,7 @@ describe("attachFile", () => {
           },
         }),
     });
-    const att = await attachFile("/tpl", fileOf("a.png", "image/png", 9 * 1024 * 1024));
+    const att = await attachFile(fileOf("a.png", "image/png", 9 * 1024 * 1024));
     expect(closed).toBe(1);
     expect(att.view).toBe(uploads[0].path);
   });
@@ -511,7 +511,7 @@ describe("attachFile", () => {
         }
       },
     });
-    const att = await attachFile("/tpl", fileOf("a.png", "image/png", 9 * 1024 * 1024));
+    const att = await attachFile(fileOf("a.png", "image/png", 9 * 1024 * 1024));
     expect(revoked).toEqual(["blob:fake/1"]);
     expect(att.view).toBe(uploads[0].path);
     expect(uploads[0].bytes).toBe(1);
@@ -519,7 +519,7 @@ describe("attachFile", () => {
 
   test("an upload that FAILS is still the one refusal — a chip, never a throw", async () => {
     Object.assign(globalThis, { fetch: () => Promise.reject(new Error("readonly")) });
-    const att = await attachFile("/tpl", fileOf("a.png", "image/png", 1000));
+    const att = await attachFile(fileOf("a.png", "image/png", 1000));
     expect(att.view).toBeNull();
     expect(att.why).toBe("could not be saved");
     expect(att.viewNote).toBe("not attached: it could not be saved (readonly)");
@@ -528,7 +528,7 @@ describe("attachFile", () => {
   test("an undecodable picture is converted server-side, and becomes drawable (T:11574)", async () => {
     undecodable();
     convert = { path: "/shots/a.png", width: 800, height: 600, source_w: 4032, source_h: 3024 };
-    const att = await attachFile("/tpl", fileOf("IMG.HEIC", "image/heic", 5000));
+    const att = await attachFile(fileOf("IMG.HEIC", "image/heic", 5000));
     expect(runs.some((r) => r.action === "image_to_png")).toBe(true);
     expect(att.view).toBe("/shots/a.png");
     expect(att.thumb).toBe("/api/fs/raw?path=%2Fshots%2Fa.png");
@@ -542,7 +542,7 @@ describe("attachFile", () => {
     // The Safari drag: no MIME at all, so only the extension says "picture".
     undecodable();
     convert = { path: "/shots/a.png", width: 800, height: 600, source_w: 4032, source_h: 3024 };
-    const att = await attachFile("/tpl", fileOf("IMG_4031.HEIC", "", 5000));
+    const att = await attachFile(fileOf("IMG_4031.HEIC", "", 5000));
     expect(att.kind).toBe("image");
     // The copy on disk keeps the extension the bytes actually are…
     expect(uploads[0].path).toMatch(/\.heic$/);
@@ -557,7 +557,7 @@ describe("attachFile", () => {
   test("a conversion that also fails says the true thing, with bytes and a size (T:11588)", async () => {
     undecodable();
     convert = null;
-    const att = await attachFile("/tpl", fileOf("IMG.HEIC", "image/heic", 5000));
+    const att = await attachFile(fileOf("IMG.HEIC", "image/heic", 5000));
     expect(att.kind).toBe("image");
     expect(att.size).toBe(5000);
     expect(att.thumb).toBeUndefined();
@@ -567,7 +567,7 @@ describe("attachFile", () => {
   });
 
   test("a file rides whole, with a size and no thumb, and no size refusal (D615)", async () => {
-    const att = await attachFile("/tpl", fileOf("dump.parquet", "", 40 * 1024 * 1024));
+    const att = await attachFile(fileOf("dump.parquet", "", 40 * 1024 * 1024));
     expect(att.kind).toBe("file");
     expect(att.size).toBe(40 * 1024 * 1024);
     expect(att.thumb).toBeUndefined();
@@ -578,7 +578,7 @@ describe("attachFile", () => {
     Object.assign(globalThis, {
       fetch: () => Promise.reject(new Error("readonly")),
     });
-    const att = await attachFile("/tpl", fileOf("a.png", "image/png", 10));
+    const att = await attachFile(fileOf("a.png", "image/png", 10));
     expect(att.view).toBeNull();
     expect(att.why).toBe("could not be saved");
     expect(att.viewNote).toBe("not attached: it could not be saved (readonly)");

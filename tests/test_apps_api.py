@@ -777,37 +777,36 @@ def test_home_falls_back_when_stale_recents_do_not_fill_the_row(
     assert [a["path"] for a in apps] == [str(discovered)]
 
 
-# ---------------------------------------------------- the fork-safe spawn seam
+# ---------------------------------------------------- the in-process spawn seam
 
-def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
+class _StartAgent:
+    """Stands in for the agent module `claude_spawn.spawn_helper` calls
+    `_start` on. The spawn used to cross a `python -c` helper subprocess (the
+    server could not fork with libproj resident); `_start` is posix_spawn-safe
+    now and runs in-process (test_claude_agent_forksafe.py pins its Popen), so
+    the seam these tests stub is the module, not `subprocess.run`."""
+
+    def __init__(self, seen, result=None, raises=None):
+        self._seen, self._result, self._raises = seen, result, raises
+
+    def _start(self, file, message, session_id, model, effort, **kw):
+        self._seen.update(file=file, message=message, session_id=session_id,
+                          model=model, effort=effort, **kw)
+        if self._raises is not None:
+            raise self._raises
+        return self._result if self._result is not None else {"run_id": "r-1"}
+
+def test_spawn_runs_agent_start_with_the_apps_api_policy(
         tmp_path, workspace, monkeypatch):
-    """The live-bug regression: calling agent._start inside the server process
-    fork()s with libproj resident and SIGSEGVs the child before exec (PROJ's
-    pthread_atfork handler; same crash test_worker_forksafe.py pins for the
-    executor). The spawn must therefore happen via a helper subprocess — and
-    that helper's own Popen must stay on the posix_spawn path (close_fds=False,
-    no cwd, no start_new_session) with the prompt on stdin, not argv.
-
-    The spawn itself now lives in fused_render/claude_spawn.py — shared with
-    scheduled messages, which need the identical discipline — so the subprocess
-    stub goes there. What stays this module's own is the policy asserted below:
-    permission mode "auto", and a fresh session."""
+    """The spawn lives in fused_render/claude_spawn.py — shared with scheduled
+    messages — and runs `agent._start` in-process. What stays this module's own
+    is the policy asserted below: permission mode "auto", a fresh session, no
+    picker values, and the prompt reaching `_start` as the message."""
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
     entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     seen = {}
-
-    def fake_run(cmd, **kwargs):
-        # Scheduling also shells out (launchctl, for the wake stub), and that
-        # call lands here too — the one this test is about is the fork-safe
-        # python helper, so match it rather than keeping whatever came last.
-        if cmd and cmd[0] == claude_spawn.sys.executable:
-            seen["cmd"] = cmd
-            seen["kwargs"] = kwargs
-        return type("R", (), {"returncode": 0,
-                              "stdout": '{"run_id": "r-1"}', "stderr": ""})()
-
-    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: _StartAgent(seen))
     watched = []
     monkeypatch.setattr(schedule, "_watch_turn",
                         lambda entry, run_id: watched.append(run_id))
@@ -815,37 +814,20 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     run_id, err = apps_mod._create_app_task(str(entry), "secret prompt $(boom)")
     assert err is None and run_id["run_id"] == "r-1"
 
-    # a real python -c helper, not claude itself, and prompt over stdin only
-    assert seen["cmd"][0] == claude_spawn.sys.executable
-    assert "secret prompt" not in " ".join(seen["cmd"])
-    import json as jsonlib
-    req = jsonlib.loads(seen["kwargs"]["input"])
     # Prefixed with the scheduler's `<live-app-state>` block (schedule._outgoing),
-    # so the user's words are the tail — what matters here is that they travel
-    # over stdin and never through argv.
-    assert req["message"].endswith("secret prompt $(boom)")
-    assert req["file"] == str(entry)
+    # so the user's words are the tail.
+    assert seen["message"].endswith("secret prompt $(boom)")
+    assert seen["file"] == str(entry)
     # unattended: nobody polls `decide` for a session started from a POST, so
     # the strict default mode would park the first tool call until the
     # permission timeout denied it — boilerplate, silently.
-    assert req["permission_mode"] == "auto"
+    assert seen["permission_mode"] == "auto"
     # an app is being scaffolded: there is no prior conversation to resume
-    assert req["session_id"] == ""
-    # no pickers used: both empty, which the helper turns into NO --model /
+    assert seen["session_id"] == ""
+    # no pickers used: both empty, which `_start` turns into NO --model /
     # --effort flag rather than into a hardcoded default
-    assert (req["model"], req["effort"]) == ("", "")
-    # posix_spawn preconditions on the helper spawn (the crash was fork+exec)
-    assert seen["kwargs"]["close_fds"] is False
-    assert "cwd" not in seen["kwargs"]
-    assert "start_new_session" not in seen["kwargs"]
-    # text=True alone decodes stdout/stderr with locale.getpreferredencoding —
-    # ASCII on a GUI-launched server with no LANG/LC_ALL — so the first em dash
-    # or curly quote in the helper's JSON result (echoed prompt, app name/title,
-    # model output) raised UnicodeDecodeError instead of returning a run_id.
-    assert seen["kwargs"]["encoding"] == "utf-8"
-    assert seen["kwargs"]["errors"] == "replace"
+    assert (seen["model"], seen["effort"]) == ("", "")
     assert watched  # the scheduler's turn watcher was kicked off for the run
-
 
 
 def _an_entry(tmp_path) -> str:
@@ -861,18 +843,12 @@ def _an_entry(tmp_path) -> str:
     entry.write_text("<!doctype html>", encoding="utf-8")
     return str(entry)
 
-def test_the_picked_model_and_effort_reach_the_helper_request(tmp_path, workspace,
-                                                             monkeypatch):
-    """The other half: the pickers' values have to survive the fork-safe hop
-    into the helper, which is where agent._start turns them into --model /
-    --effort."""
-    def fake_run(cmd, **kwargs):
-        seen.update(json.loads(kwargs["input"]))
-        return type("R", (), {"returncode": 0,
-                              "stdout": '{"run_id": "r-1"}', "stderr": ""})()
-
+def test_the_picked_model_and_effort_reach_the_start(tmp_path, workspace,
+                                                    monkeypatch):
+    """The other half: the pickers' values have to reach agent._start, which
+    is where they become --model / --effort."""
     seen = {}
-    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: _StartAgent(seen))
     monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
 
     run_id, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi", "haiku", "low")
@@ -884,32 +860,24 @@ def test_the_picked_model_and_effort_reach_the_helper_request(tmp_path, workspac
 
 
 def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
-    def fake_run(cmd, **kwargs):
-        return type("R", (), {"returncode": 1, "stdout": "",
-                              "stderr": "boom\nFileNotFoundError: claude"})()
-
-    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: _StartAgent(
+        {}, raises=RuntimeError("boom\nhost would not start")))
     entry, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi")
     assert err is None          # the task stored fine; the SEND is what failed
     assert not entry["run_id"]
-    assert "FileNotFoundError: claude" in entry["error"]
+    assert "host would not start" in entry["error"]
 
 
 def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
         tmp_path, workspace, monkeypatch):
-    """_claude_bin's FileNotFoundError is a multi-line message, so the helper's
-    last-stderr-line report used to surface its "Also looked in: ..." tail —
-    accurate, but with the actual instruction cut off. The mapped message says
-    what to do and where the guide is."""
-    def fake_run(cmd, **kwargs):
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr":
-                              "Traceback (most recent call last):\n"
-                              "FileNotFoundError: claude CLI not found — "
-                              "install Claude Code, put `claude` on the PATH\n"
-                              "of the environment that launched fused-render. "
-                              "Also looked in: /opt/foo"})()
-
-    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    """_claude_bin's FileNotFoundError is a multi-line message whose last line
+    is an "Also looked in: ..." tail — accurate, but with the actual
+    instruction cut off. The mapped message says what to do and where the
+    guide is."""
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: _StartAgent(
+        {}, raises=FileNotFoundError(
+            "claude CLI not found — install Claude Code, put `claude` on the PATH\n"
+            "of the environment that launched fused-render. Also looked in: /opt/foo")))
     entry, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi")
     assert err is None          # stored fine; the reason rides the entry
     assert not entry["run_id"]
@@ -976,6 +944,10 @@ class _HostProc:
     `main()` would go on to read it."""
     pid = 4242
 
+    def wait(self, timeout=None):
+        # `_start` parks a daemon reaper thread in wait() on the host.
+        return 0
+
     class _Stdin:
         def __init__(self, seen):
             self._seen = seen
@@ -1000,7 +972,7 @@ def test_agent_start_always_keeps_the_message_out_of_argv(tmp_path, monkeypatch)
     string must appear nowhere in the CLI's argv either way."""
     import importlib.util
 
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    path = os.path.join("fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent_stdin", path)
     agent = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(agent)
@@ -1074,22 +1046,6 @@ def test_claude_is_the_selectable_chat_mode_for_html():
     registry = json.loads(_repo_text("fused_render", "templates", "registry.json"))
     assert registry[".html"].count("claude") == 1
     assert registry["/"].count("claude") == 1
-
-
-def test_claude_template_boots_into_chat_from_a_bare_run_param():
-    """The page must resume a run it did not start itself: its boot reads the
-    `run` param, enters chat, and polls — no session_id needed (the id lands in
-    the run dir seconds later, once claude reports it).
-
-    Retargeted from the deleted plain chat template to the split view (which now
-    carries the `claude` name): the POST always spawned through the chat agent on
-    the FOLDER, so this was already pinning the wrong page's boot."""
-    page = _repo_text("fused_render", "templates", "claude", "template.html")
-    assert 'fused.params.get("run")' in page
-    # The CALL, not its argument list: `resumeRun` grew an options object
-    # (`{ retryUnknown: true }`, #610) and this test is about the boot resuming
-    # the run at all, so it must not break every time an opt is added.
-    assert "await resumeRun(run_id" in page
 
 
 def test_run_param_survives_the_shell_runtime():

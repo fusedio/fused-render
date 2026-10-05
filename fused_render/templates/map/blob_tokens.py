@@ -18,7 +18,7 @@ import json
 import threading
 import time
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 
 BLOB_HOST_SUFFIX = ".blob.core.windows.net"
@@ -31,6 +31,10 @@ REFUSAL_MARKERS = (
     "response code: 409",
     "public access is not permitted",
 )
+SAS_KEYS = frozenset({
+    "sv", "ss", "srt", "sp", "se", "st", "spr", "sig", "sr", "si", "sdd", "ses",
+    "skoid", "sktid", "skt", "ske", "sks", "skv", "saoid", "suoid", "scid",
+})
 REFRESH_MARGIN = 300.0
 ASSUMED_LIFETIME = 1800.0
 
@@ -50,6 +54,15 @@ def container_of(url: str) -> tuple[str, str] | None:
 
 def is_signed(url: str) -> bool:
     return "sig=" in urlsplit(url).query
+
+
+def unsigned(url: str) -> str:
+    if not is_signed(url):
+        return url
+    parts = urlsplit(url)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k.lower() not in SAS_KEYS]
+    return parts._replace(query=urlencode(kept)).geturl()
 
 
 def refused_access(message: str) -> bool:
@@ -90,6 +103,7 @@ class TokenStore:
         key = container_of(url)
         if key is None:
             return url
+        url = unsigned(url)
         token = self._token(key)
         separator = "&" if urlsplit(url).query else "?"
         return url + separator + token

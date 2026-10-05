@@ -1,54 +1,29 @@
-// Whether chat embeds render the native React chat (`apps/claude`) instead of
-// the legacy `templates/claude` iframe — the `native_chat_enabled` pref
-// (shell/prefs.py), env override `FUSED_RENDER_NATIVE_CHAT` applied server-side.
-// DEFAULT ON since 2026-09-17: the pref reads `!== false` on both sides, so the
-// switch is an escape hatch back to the iframe rather than an opt-in beta.
-// Clone of apps/canvases/feature-flag.ts: one shared GET, a generation guard so
-// a publish beats a slower in-flight read, and `null` meaning "not asked yet".
+// The project queue switch — one task in progress per folder
+// (`prefs.queue.enabled`, shell/prefs.py `project_queue_enabled`). Clone of
+// apps/canvases/feature-flag.ts: one shared GET, a generation guard so a
+// publish or a re-read beats a slower in-flight read.
 //
-// THE TRI-STATE IS THE POINT FOR A MOUNT (`useNativeChatFlag`). Canvases only
-// hides a menu entry while the answer is in flight, so `null` there reads as OFF
-// and costs nothing; here a premature `false` mounts a whole `/render` template
-// DOCUMENT, which boots, restores a session, drains
-// `window._fusedClaudeAskTake` and starts a poll — and is then thrown away the
-// instant the GET lands, taking the pending "Fix with AI" ask with it. So a
-// MOUNT waits for a real answer (ChatMount covers the box meanwhile) and only a
-// host asking a side question — "is a legacy iframe the thing owning params
-// here?" — takes the boolean, where "not asked yet" genuinely does read as off.
+// Here rather than in a module of its own: every chat embed already causes
+// exactly one `/api/prefs` GET through this read, and the composer asks this on
+// the keystroke that sends — a second reader would be a second round trip per
+// mount for one boolean.
 //
-// WHICH MAKES A FAILED READ AN ANSWER, NOT AN ABSENCE: `null` is only ever
-// "in flight", so `read()` retries once and then settles on `false` (see the
-// `catch`). A tri-state that could stick at `null` would hold a skeleton over
-// every embed on the page forever.
-//
-// A SEPARATE MODULE FROM index.ts on purpose: the barrel re-exports ClaudeChat,
-// and a host reading the flag through it would pull the whole chat (and the
-// markdown chunk) into its bundle for one boolean.
+// A SEPARATE MODULE FROM index.ts on purpose: the barrel re-exports ChatMount,
+// and a host reading the flag through it would pull the chat's mount into its
+// bundle for one boolean.
 import { useEffect, useState } from "react";
 import { getPrefs } from "@platform/lib/api";
 import { GATE_FALLBACK_MS } from "@platform/lib/clock";
 
-let enabled: boolean | null = null;
 let reading: Promise<void> | null = null;
 let generation = 0;
-const listeners = new Set<(v: boolean | null) => void>();
 
 /**
- * THE SECOND SWITCH THIS ONE PREFS READ ANSWERS: `prefs.queue.enabled`, the
- * project queue — one task in progress per folder (shell/prefs.py
- * `project_queue_enabled`).
- *
- * Here rather than in a module of its own: every chat embed already causes
- * exactly one `/api/prefs` GET, and the composer asks this on the keystroke
- * that sends — a second reader would be a second round trip per mount for one
- * boolean.
- *
- * NOT a tri-state, and the argument is the opposite of the native flag's. `null`
- * up there exists because a premature `false` MOUNTS the wrong implementation;
- * this one mounts nothing. It gates ONE extra call in front of a send, it
- * DEFAULTS OFF, and off is exactly what every send did before the feature
- * existed — so "not asked yet" and "off" are the same answer, and the worst a
- * send inside the first read's window can do is behave like today.
+ * NOT a tri-state. It gates ONE extra call in front of a send, it DEFAULTS
+ * OFF, and off is exactly what every send did before the feature existed — so
+ * "not asked yet" and "off" are the same answer, and the worst a send inside
+ * the first read's window can do is behave like today (and `queueFlagReady`
+ * closes even that window for a send).
  */
 let queue = false;
 const queueListeners = new Set<(v: boolean) => void>();
@@ -57,12 +32,6 @@ const queueListeners = new Set<(v: boolean) => void>();
  *  another round trip (Bugbot: a failed GET used to null `reading`, so every
  *  send and decide waited up to 8 s until one succeeded). */
 let settledOnce = false;
-
-function set(next: boolean | null) {
-  if (enabled === next) return;
-  enabled = next;
-  for (const listener of listeners) listener(next);
-}
 
 function setQueue(next: boolean) {
   if (queue === next) return;
@@ -77,20 +46,19 @@ function setQueue(next: boolean) {
  * `getPrefs` rejects on a refused connection, and the retry and the `catch`
  * below both handle that. What neither handles is a request the server ACCEPTS
  * and never answers — a wedged worker, a machine that went to sleep mid-flight,
- * a paused process — where the promise simply never settles. `enabled` then sits
- * at `null` for the life of the page, and `null` is the state every chat MOUNT
- * holds a placeholder over: no iframe, no chat, no error, for ever.
+ * a paused process — where the promise simply never settles, and every send
+ * awaiting `queueFlagReady` would wait with it.
  *
  * So the read is raced with the same 8 s backstop every other gate in this app
- * has (`platform/lib/clock.GATE_FALLBACK_MS`, `ChatFrame`'s original). Losing
- * the race is treated exactly as a failed read is — `false`, the default the
- * pref itself has — and `reading` is cleared either way, so the next mount asks
- * again rather than inheriting a verdict taken while the server was away.
+ * has (`platform/lib/clock.GATE_FALLBACK_MS`). Losing the race is treated
+ * exactly as a failed read is — the default the pref itself has — and
+ * `reading` is cleared either way, so the next ask goes again rather than
+ * inheriting a verdict taken while the server was away.
  */
 /** The budget itself, as a variable only so a test can make it small: eight
  *  seconds of real time per case is not a test anyone runs. Production never
  *  moves it — `setPrefsDeadlineForTests` is the only writer, and
- *  `resetNativeChatFlagForTests` puts it back. */
+ *  `resetFlagsForTests` puts it back. */
 let prefsDeadlineMs: number = GATE_FALLBACK_MS;
 
 /** Test seam — see `prefsDeadlineMs`. Pass nothing to restore the real budget. */
@@ -130,13 +98,9 @@ function read(): Promise<void> {
   //
   // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
   // told it had failed, and was asked a second time for another 8 s: sixteen
-  // seconds of placeholder over every chat embed on the page, twice the number
-  // this constant names and twice what `ChatFrame` gives the frame beside it.
-  // Worse, the first attempt was ABANDONED at 8 s, so a GET that landed at 8.1 s
-  // — which is exactly what a slow cold start looks like — was thrown away in
-  // favour of a fresh request, and if that one also ran out the answer settled
-  // on `false` and every embed on the page mounted legacy over a server whose
-  // real answer had already arrived.
+  // seconds, twice the number this constant names. Worse, the first attempt was
+  // ABANDONED at 8 s, so a GET that landed at 8.1 s — which is exactly what a
+  // slow cold start looks like — was thrown away in favour of a fresh request.
   //
   // So the budget goes around BOTH attempts. The retry is still there and still
   // worth one round trip — a prefs GET that REJECTS is usually a single dropped
@@ -150,33 +114,16 @@ function read(): Promise<void> {
   )
     .then((p) => {
       if (generation !== departed) return;
-      // `!== false`, matching the pref's own default (shell/prefs.py
-      // `native_chat_enabled`): the native chat is what a server that has never
-      // been told otherwise runs, so an absent field is ON, not off.
-      set(p.chat?.native !== false);
-      // `=== true`, the opposite polarity from the native flag above: this one
-      // is OPT-IN, so a server with no such field is a server whose sends are
-      // not admitted through anything.
+      // `=== true`: the queue is OPT-IN, so a server with no such field is a
+      // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
     })
     .catch(() => {
-      // STILL NO ANSWER — so a real boolean, not `null`. `null` is "not asked
-      // yet" and every MOUNT holds a placeholder over it (ChatMount), so
-      // leaving it there after a failed read turns every chat embed on the page
-      // into a permanent skeleton: no iframe, no chat, no error.
-      //
-      // AND THE BOOLEAN IS THE PREF'S OWN DEFAULT, which is now `true`
-      // (2026-09-17). It used to be `false` because legacy was what an un-asked
-      // server ran; the native chat is what it runs now, so guessing `false`
-      // here would put a reader on the iframe for a dropped request — the same
-      // mismatch, pointing the other way.
+      // A failed read keeps whatever answer the page already has (the default,
+      // off, on a first read): a blind write here on one refused GET after a
+      // laptop wake would flip a live switch. And `reading` is cleared only by
+      // the read that owns it, never by a superseded one.
       if (generation !== departed) return;
-      // ONLY A FIRST READ SETTLES ON THE DEFAULT (review, 2026-09-16). A re-read
-      // — a tab coming back into view — that fails keeps the answer the page
-      // already has: a blind write here remounted every live chat on one refused
-      // GET after a laptop wake. And `reading` is cleared only by the read that
-      // owns it, never by a superseded one.
-      if (!settledOnce) set(true);
       reading = null;
     })
     .then(() => {
@@ -185,10 +132,6 @@ function read(): Promise<void> {
   return reading;
 }
 
-/** Hand over a known-fresh answer for the project queue (the prefs payload a
- *  PUT returned). No `generation` bump: this is not the value `read()` retries
- *  for, and taking the native flag's answer away would put every mount back on
- *  a skeleton for a click that was not about it. */
 /**
  * THE FLAG IS READ, NOT GUESSED, BEFORE A SEND ASKS IT (Akshil's QA, 2026-09-16).
  *
@@ -214,10 +157,7 @@ export function queueFlagReady(): Promise<void> {
  * into view — the moment a reader who toggled the pref elsewhere returns.
  */
 export function rereadFlags(): Promise<void> {
-  // A NEW GENERATION, so the read this replaces cannot speak after it (Bugbot):
-  // without the bump an older GET that later timed out still matched
-  // `generation`, called `set(false)`, and remounted every native chat embed as
-  // the legacy iframe over a newer read that had already succeeded.
+  // A NEW GENERATION, so the read this replaces cannot speak after it (Bugbot).
   generation += 1;
   reading = null;
   return read();
@@ -228,6 +168,7 @@ export function rereadFlags(): Promise<void> {
  *  keeping the answer it read at load. */
 export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 
+/** Hand over a known-fresh answer (the prefs payload a PUT returned). */
 export function publishProjectQueueEnabled(next: boolean) {
   setQueue(next);
   try {
@@ -262,8 +203,8 @@ export function queueEnabled(): boolean {
   return queue;
 }
 
-/** Subscribe to the project queue switch. Triggers the same one prefs read the
- *  native flag uses, so a chat that is already mounted pays nothing for asking. */
+/** Subscribe to the project queue switch. Triggers the one prefs read, so a
+ *  chat that is already mounted pays nothing for asking. */
 export function useProjectQueueEnabled(): boolean {
   const [current, setCurrent] = useState<boolean>(queueEnabled);
   useEffect(() => {
@@ -277,59 +218,22 @@ export function useProjectQueueEnabled(): boolean {
   return current;
 }
 
-/** Hand over a known-fresh answer (the prefs payload a PUT returned). */
-export function publishNativeChatEnabled(next: boolean) {
-  generation += 1;
-  reading = Promise.resolve();
-  set(next);
-}
-
-/** Current answer without subscribing; `null` until the first read lands. */
-export function nativeChatEnabledNow(): boolean | null {
-  return enabled;
-}
-
 /** Test-only: how many components are currently subscribed. `bun test` runs
- *  every suite in ONE process, so these Sets are shared globally for the run —
+ *  every suite in ONE process, so this Set is shared globally for the run —
  *  a tree a test forgets to unmount leaves its subscription here forever,
  *  which is exactly the bug this exists to make loud (see sched-block.test.tsx's
  *  `afterEach`, and DECISIONS.md's "bun test heap leak" entry). */
 export function listenerCountsForTests() {
-  return { listeners: listeners.size, queueListeners: queueListeners.size };
+  return { queueListeners: queueListeners.size };
 }
 
 /** Test-only: forget the cached answer so a suite starts from "not asked".
  *  NOTIFIES, like every other write: a component already mounted would
  *  otherwise keep the answer the suite just took away. */
-export function resetNativeChatFlagForTests() {
+export function resetFlagsForTests() {
   reading = null;
   settledOnce = false;
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
-  set(null);
   setQueue(false);
-}
-
-/**
- * Subscribe, tri-state: `null` until the one prefs read lands. THE HOOK A MOUNT
- * USES — see the header for why "not asked yet" may not render either branch.
- */
-export function useNativeChatFlag(): boolean | null {
-  const [current, setCurrent] = useState<boolean | null>(nativeChatEnabledNow);
-  useEffect(() => {
-    listeners.add(setCurrent);
-    setCurrent(nativeChatEnabledNow());
-    void read();
-    return () => {
-      listeners.delete(setCurrent);
-    };
-  }, []);
-  return current;
-}
-
-/** The same subscription, flattened to "is the native chat on RIGHT NOW". For a
- *  host's side question only (a param-boundary flag, an ask ledger): those want
- *  a boolean and "not asked yet" is honestly "no" for them. */
-export function useNativeChatEnabled(): boolean {
-  return useNativeChatFlag() === true;
 }

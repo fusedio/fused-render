@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "../styles/pane.css";
 import { statPath, type StatResult } from "@platform/lib/api";
-import { runAppEntry, resolveAgentDir } from "../protocol/agent";
+import { runAppEntry } from "../protocol/agent";
 import type { ParamsStore } from "../params/store";
 import { LeftModePicker, leftBarShown } from "./LeftModePicker";
 import type { NarrowViewState } from "./useNarrowView";
@@ -139,9 +139,6 @@ export interface UsePaneStateOptions {
   /** `_file`. `null` (no target) resolves to no pane. */
   file: string | null;
   chatOnly: boolean;
-  /** The claude template's folder, for `./app.py`. Resolved from `file` when
-   *  absent (protocol/agent `resolveAgentDir`). */
-  agentDir?: string | null;
   /** Shell-mounted framing flags for the iframe src. */
   flags?: PaneSrcFlags;
   /** `leftmode` at decision time — which offerable view a FILE target opens in.
@@ -214,7 +211,7 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
   //
   // Hosts that remount per file never saw this (the explorer's `ChatMount` is
   // keyed, and PreviewSidebar remounts on every hop); one that swaps `file` in
-  // place — `agentDir` already cached, so the tree is not rebuilt either — does.
+  // place — the tree is not rebuilt — does.
   //
   // RESET IN THE RENDER that first sees the new `file`, not in the effect: an
   // effect lands after a paint, and that paint is exactly the stale frame.
@@ -240,7 +237,7 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const { agentDir, flags, initialLeftMode, noPaneSteps, watcher } = live.current;
+      const { flags, initialLeftMode, noPaneSteps, watcher } = live.current;
       const flag = live.current.noPaneFlag ?? ownFlag;
       const setNoPane = () => {
         flag.current = true;
@@ -272,10 +269,9 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
         const stat: StatResult = await statPath(file);
         let appEntry = null;
         if (stat.is_dir) {
-          const dir = agentDir ?? (await resolveAgentDir(file));
-          // No claude template folder means no `./app.py` to ask — which reads
-          // as "not an app folder", the same answer an empty entry gives.
-          appEntry = dir ? await runAppEntry(dir, file, { key: null }).catch(() => null) : null;
+          // A failed ask reads as "not an app folder", the same answer an
+          // empty entry gives.
+          appEntry = await runAppEntry(file).catch(() => null);
         }
         const decision = decidePane({ file, chatOnly, stat, appEntry, leftMode: initialLeftMode, flags });
         if (cancelled) return;

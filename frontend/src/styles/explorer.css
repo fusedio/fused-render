@@ -750,7 +750,10 @@
    to its trigger's width (inline min-width from useMenuAnchor) so the menu
    never reads wider than the control that opened it. The overflow menu keeps
    a small floor so a one-item menu stays a comfortable click target. */
-.bar-overflow .bar-menu-popup {
+/* Keyed on the popup's OWN modifier, not `.bar-overflow` as an ancestor: the
+   popup is portaled to <body> (BarMenu.tsx), so it has no `.bar-overflow`
+   ancestor any more. */
+.bar-menu-popup.bar-overflow-popup {
   min-width: 120px;
 }
 
@@ -1692,6 +1695,17 @@ table.listing-table tr.skel-row:hover {
   flex: 1 1 auto;
   min-width: 0;
   container-type: inline-size;
+  /* A stacking context of its own, ABOVE the listing. On WebKit before Safari
+     18.4 (macOS 14 and 15.0–15.3 native windows) `container-type` still
+     applies layout containment, which forces a stacking context here — and
+     then `.listing-completion`'s own z-index only counts INSIDE this box,
+     while `.listing-scroll` (position: relative, later in the DOM) paints
+     over it: the completion dropdown showed its rows through the listing with
+     no card behind them. Giving the box an explicit z-index makes it a
+     stacking context everywhere, on purpose, and ranks it above the scroller
+     in every engine. 5 = the dropdown's own tier, well under the 200/9000
+     overlays. */
+  z-index: 5;
   --chip-inset: 28px;
   --completion-row-pad-y: 6px;
 }

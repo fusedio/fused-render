@@ -24,6 +24,7 @@ import {
   type ClaudeLoginStatus,
 } from "./api";
 import type { ClaudeIssue } from "./claude-health";
+import { useTerminalDockOpen } from "./terminalDockStore";
 
 // The last snapshot seen, so walking between Home and /apps — which both render
 // the strip — starts from what we already know instead of flashing an empty
@@ -304,6 +305,25 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
       document.removeEventListener("visibilitychange", onFocus);
     };
   }, [watching, load]);
+
+  // The drawer's close is this hook's OTHER "they may have gone and fixed it"
+  // signal, alongside the window-focus one above. `curl … | bash` or `claude
+  // update` now often runs in the status-bar drawer rather than a separate
+  // terminal app (CommandLine's Run button, the health strip's own install
+  // command) — a DOCKED PANEL, not another window, so it never blurs the
+  // page and the focus/visibilitychange listener above never fires for it.
+  // Closing it is the nearest equivalent of "came back to the tab": the same
+  // FOCUS_RECHECK_MS throttle applies, so a drawer opened and closed with
+  // nothing run in it does not spend a second forced check right behind a
+  // just-finished one.
+  const dockOpen = useTerminalDockOpen();
+  const wasDockOpen = useRef(false);
+  useEffect(() => {
+    if (watching && wasDockOpen.current && !dockOpen && Date.now() - lastCheck.current >= FOCUS_RECHECK_MS) {
+      load(true);
+    }
+    wasDockOpen.current = dockOpen;
+  }, [watching, dockOpen, load]);
 
   return {
     health,

@@ -326,4 +326,34 @@ describe("buildTerminalCommand", () => {
       "cd '/tmp/foo'\r",
     );
   });
+
+  test("execute: false types the command without a trailing Enter", () => {
+    expect(buildTerminalCommand({ command: "ls -la", execute: false })).toBe("ls -la");
+  });
+
+  test("execute: false still combines cwd and command, just without Enter", () => {
+    expect(buildTerminalCommand({ cwd: "/tmp/foo", command: "ls -la", execute: false })).toBe(
+      "cd '/tmp/foo' && ls -la",
+    );
+  });
+
+  test("execute: false with nothing to send is still empty", () => {
+    expect(buildTerminalCommand({ execute: false })).toBe("");
+  });
+
+  test("execute defaulting to true is the same as omitting it", () => {
+    expect(buildTerminalCommand({ command: "ls -la", execute: true })).toBe("ls -la\r");
+  });
+
+  test("execute: false with a multi-line command wraps it in bracketed paste", () => {
+    expect(buildTerminalCommand({ command: "cd foo\n./build.sh", execute: false })).toBe(
+      "\x1b[200~cd foo\n./build.sh\x1b[201~",
+    );
+  });
+
+  test("execute: false with cwd and a multi-line command wraps the whole composed line", () => {
+    expect(
+      buildTerminalCommand({ cwd: "/tmp/foo", command: "echo a\necho b", execute: false }),
+    ).toBe("\x1b[200~cd '/tmp/foo' && echo a\necho b\x1b[201~");
+  });
 });

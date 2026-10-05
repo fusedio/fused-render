@@ -43,12 +43,6 @@ const SAID: Partial<Record<TroubleKind, { title: string; explain: string }>> = {
       "Claude Code is installed, but running it failed. The message below is " +
       "what it printed on the way out.",
   },
-  "needs-install": {
-    title: "This app hasn't finished installing",
-    explain:
-      "The chat needs a piece of the app that is still being set up. Nothing " +
-      "is broken — try again once the install finishes.",
-  },
   engine: {
     title: "The app's engine didn't answer",
     explain:
@@ -178,10 +172,10 @@ export function TroubleView({
         <pre className="trouble-error">{trouble.detail}</pre>
       ) : null}
       {/* NO INSTALL BOX HERE. T:13681-13691 draws exactly one, inside the card,
-          and `platform/ui/TroubleCard.tsx` is that one — complete with the "Run
-          it in a terminal, then quit Fused Render and open it again" hint this
-          copy never had. Drawing our own as well put the same `curl … | bash`
-          box with its own Copy button on screen TWICE in a single card. */}
+          and `platform/ui/TroubleCard.tsx` is that one — complete with its own
+          "no need to restart Fused Render" hint. Drawing our own as well would
+          put the same `curl … | bash` box with its own Copy button on screen
+          TWICE in a single card. */}
     </div>
   );
 }

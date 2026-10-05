@@ -181,7 +181,8 @@ def download(model_id):
     catch, because `Cancelled` is an ordinary `Exception` and order is the whole
     of the distinction.
     """
-    snapshot = worker_base.download_snapshot(model_id)
+    snapshot = worker_base.download_snapshot(
+        model_id, allow_patterns=list(formats.MLX_WHISPER_FILES))
     try:
         import vad as vad_module
 

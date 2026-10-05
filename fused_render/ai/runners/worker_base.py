@@ -44,7 +44,9 @@ import hashlib
 import http.client
 import http.server
 import importlib.util
+import inspect
 import json
+import logging
 import os
 import queue
 import re
@@ -60,6 +62,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+# Runner venvs have this directory, but do not install the app package.
+# Load the sibling by path, also supporting tests that import us by path.
+_marker_spec = importlib.util.spec_from_file_location(
+    "fused_job_marker", os.path.join(os.path.dirname(__file__), "job_marker.py"))
+job_marker = importlib.util.module_from_spec(_marker_spec)
+_marker_spec.loader.exec_module(job_marker)
 
 # ------------------------------------------------------------------- the state
 #
@@ -328,6 +337,15 @@ JOB_ID = ""
 JOB_URL = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/") + "/api/jobs"
 
 JOB_TIMEOUT_S = 3.0
+
+#: Defined in `job_marker` (follow-up review finding 3), not here — the
+#: supervisor process reads this same constant and must not import this
+#: whole module to get it (importing it starts `_GENERATE_TASKS`'s daemon
+#: thread, a fork-after-thread risk in a process that spawns children). Kept
+#: as a module attribute here too (`worker_base.JOB_ERROR_MARKER` still
+#: resolves) so nothing WITHIN a worker process — which already imports this
+#: module for everything else — needs to change.
+JOB_ERROR_MARKER = job_marker.JOB_ERROR_MARKER
 
 
 def set_state(**fields):
@@ -3951,10 +3969,25 @@ def _recorded_files(folder, commit, allow, ignore):
         return None
     if record.get("commit") != commit:
         return None
-    if record.get("scope") != _scope_key(allow, ignore):
-        return None
     files = record.get("files")
-    return files if isinstance(files, list) and files else None
+    if not isinstance(files, list) or not files:
+        return None
+    if record.get("scope") == _scope_key(allow, ignore):
+        return files
+    # A DIFFERENT scope still answers when what was recorded is a SUPERSET of what
+    # is asked for: the record lists every file that fetch selected, so the names
+    # this request would select out of them are on disk exactly when they were
+    # then. That is what keeps a repo fetched in full before a runner learned to
+    # skip its redundant formats from being fetched again. A superset means the
+    # recorded fetch had no allow list and ignored nothing the new one keeps —
+    # anything else could hide files the old fetch never listed.
+    old = record.get("scope")
+    if (isinstance(old, dict) and not old.get("allow")
+            and set(old.get("ignore") or ()) <= set(ignore or ())):
+        chosen = [name for name in files
+                  if isinstance(name, str) and selects(name, allow=allow, ignore=ignore)]
+        return chosen or None
+    return None
 
 
 def _all_present(snapshot, names):
@@ -4783,6 +4816,32 @@ def _adopt_spawn_shape():
             pass
 
 
+def _enable_faulthandler() -> None:
+    """Native-crash stacks for this child (SPEC §50, D4), stdlib only.
+
+    Not `fused_render.crashlog.install`: this module is stdlib only and runs on
+    the runner's own interpreter, where the package is not installed (see the
+    module docstring). So faulthandler goes to fd 2 instead, and that is the
+    right place anyway: the supervisor points every worker's stderr at
+    `_log_path(worker)` and tails it when the process is gone, so a SIGSEGV out
+    of native code leaves its Python stack in the very output the parent
+    already reads after a death.
+
+    No SIGTERM registration, unlike `crashlog.install`: a deliberate stop is
+    routine for this process, and a stack dump on every one would bury the
+    real failures in that same stderr. Uncaught Python exceptions need
+    nothing here — the default hooks already print them to stderr. Never
+    raises: a child must not fail to start over diagnostics.
+    """
+    try:
+        import faulthandler
+
+        if sys.stderr is not None:
+            faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
          release=None, footprint=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
@@ -4810,6 +4869,7 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     """
     global JOB_ID, _measure, _measure_peak, _release, _footprint
 
+    _enable_faulthandler()
     _adopt_spawn_shape()
     _measure = memory
     _measure_peak = peak_memory
@@ -4822,13 +4882,26 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     parser.add_argument("--status", default="")
     parser.add_argument("--job", default="")
     parser.add_argument("--download-only", action="store_true")
+    # Item A (per-variant download): only meaningful to a runner whose own
+    # `download` declares a `file` parameter (currently `llama_text.download`
+    # alone) — see the dispatch just below for how every other runner is
+    # kept unaware of it entirely, rather than erroring on an argument its
+    # `download(model_id)` signature has no place for.
+    parser.add_argument("--file", default="")
     args = parser.parse_args(argv)
     JOB_ID = args.job
     set_state(model=args.model)
 
     if args.download_only:
         try:
-            download(args.model)
+            if args.file and "file" in inspect.signature(download).parameters:
+                download(args.model, file=args.file)
+            else:
+                if args.file:
+                    logging.getLogger(__name__).debug(
+                        "worker %s ignores --file %r: its download() has no "
+                        "'file' parameter", args.model, args.file)
+                download(args.model)
         except Cancelled:
             # Still non-zero — the weights are not on the disk and a zero would
             # report the download DONE — but not a traceback: `_fetch_only`
@@ -4840,7 +4913,19 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
             sys.exit(1)
         except BaseException as e:  # noqa: BLE001 - stderr is the supervisor's report
             traceback.print_exc(file=sys.stderr)
-            sys.stderr.write(f"\n{e.__class__.__name__}: {e}\n")
+            # Finding 6 of the follow-up review: a runner's OWN `download()`
+            # raises `RuntimeError("some written sentence")` specifically to
+            # put that sentence, verbatim, on the job row — the whole reason
+            # `JOB_ERROR_MARKER` exists (see its own docstring). Prefixing it
+            # with "RuntimeError: " defeated half of that intent: the row
+            # read "RuntimeError: this model needs the Diffusers engine"
+            # instead of the bare sentence it was written as. An UNEXPECTED
+            # exception type — one nothing here deliberately raised as a
+            # row-facing message — still gets its class name, since the bare
+            # `str(e)` of, say, a `KeyError` is often just the missing key
+            # and unreadable without it.
+            marker_line = str(e) if isinstance(e, RuntimeError) else f"{e.__class__.__name__}: {e}"
+            sys.stderr.write(f"\n{JOB_ERROR_MARKER}{marker_line}\n")
             sys.exit(1)
         sys.exit(0)
 

@@ -1185,37 +1185,20 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
 # at worst one suppressed-then-allowed push, which the debounce tolerates.
 AGENT_LIVE_CACHE_S = 3.0
 
-_AGENT_MOD = None
-_AGENT_MOD_TRIED = False
-_AGENT_MOD_LOCK = threading.Lock()
-
-
 def _agent_module():
-    """The claude template's agent.py, loaded once, or None if it won't load.
+    """The chat backend's agent module, or None if it will not import.
 
-    Reached through `claude_spawn.load_agent()`, which is the sanctioned seam for
-    in-process READ paths — canvases.py must not import agent.py directly (it is
-    a template, outside the package's import graph by design, SPEC PY-15).
-
-    Cached because `load_agent` execs the whole module on every call, and this is
-    on a once-a-second loop. A failure is cached too: if it cannot load now it
-    will not load on the next tick either, and retrying it 60 times a minute
-    would turn one broken import into a busy loop.
+    `project_queue.agent_module()` — THE one instance and its one failure
+    cache. This used to exec agent.py into a cache of its own (a second copy of
+    the module's state in the server, beside the queue's), back when the agent
+    was a template reachable only through `claude_spawn.load_agent()`. Kept as
+    a name here because the canvases suite replaces exactly this one with a
+    stand-in, and None is still an answer the sync handles (no liveness signal,
+    the watcher keeps pushing).
     """
-    global _AGENT_MOD, _AGENT_MOD_TRIED
-    with _AGENT_MOD_LOCK:
-        if not _AGENT_MOD_TRIED:
-            _AGENT_MOD_TRIED = True
-            try:
-                from fused_render import claude_spawn
+    from fused_render import project_queue
 
-                _AGENT_MOD = claude_spawn.load_agent()
-            except Exception:  # noqa: BLE001 — no agent module is an answer
-                logger.warning("could not load the claude agent module; canvas "
-                               "sync cannot tell whether a session is live",
-                               exc_info=True)
-                _AGENT_MOD = None
-        return _AGENT_MOD
+    return project_queue.agent_module()
 
 
 class _SyncManager:

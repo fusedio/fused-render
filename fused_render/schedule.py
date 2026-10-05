@@ -99,6 +99,7 @@ module; keep it acyclic.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -107,7 +108,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import claude_spawn, cron, recur
+from fused_render import _startonce, claude_spawn, cron, recur, tasks_store
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -272,6 +273,36 @@ _events_lock = threading.Lock()
 # across THOSE would drop a cancel or resurrect a fired entry.
 _lock = threading.RLock()
 
+# The same read-modify-write, across PROCESSES. `_lock` only serialises threads
+# of one process, but several `fused-render open` processes (and `serve`) share
+# one store, and only the machine-duties leader ticks: a non-leader's cancel
+# racing the leader's claim would be overwritten by whichever wrote last with a
+# snapshot taken before the other's change — a cancelled message that still
+# fires. Every RMW therefore runs under `_store_lock()`, which takes `_lock`
+# first and a sibling flock on the store second (never the reverse), and
+# RE-READS inside it. `flock` is not reentrant, so nesting is counted: the depth
+# is only touched while `_lock` is held, i.e. by one thread at a time.
+_store_depth = 0
+
+
+@contextlib.contextmanager
+def _store_lock():
+    global _store_depth
+    with _lock:
+        if _store_depth:
+            _store_depth += 1
+            try:
+                yield
+            finally:
+                _store_depth -= 1
+            return
+        with tasks_store.locked_path(store_path() + ".lock"):
+            _store_depth = 1
+            try:
+                yield
+            finally:
+                _store_depth = 0
+
 # Serialises the wake stub's launchctl pair. Separate from `_lock` because
 # `_sync_wake` must not hold the store lock across two subprocesses; see there for
 # why it also has to RE-READ rather than take a snapshot from its caller.
@@ -287,8 +318,7 @@ _wake_lock = threading.Lock()
 _watched: set[str] = set()
 _watched_lock = threading.Lock()
 
-_thread: threading.Thread | None = None
-_thread_lock = threading.Lock()
+_starter = _startonce.StartOnceThread()
 
 # THE LOOP'S DOORBELL — how work that is due NOW gets sent now.
 #
@@ -881,12 +911,12 @@ def shots_dir() -> str:
 
 
 #: The claude page's wire tag for a message's attachments — a SECOND COPY of
-#: `PANE_SHOT_TAG` in fused_render/templates/claude/template.html, which is the
-#: canonical one. It cannot be imported in either direction (a template may not
-#: import fused_render, SPEC PY-15 / D166), and it is already spelled a third
+#: `PANE_SHOT_TAG` in frontend/src/apps/claude/protocol/wire.ts, which is the
+#: canonical one. It cannot be imported (TypeScript on one side, Python on the
+#: other), and it is already spelled a third
 #: time in `tasks_store._MACHINERY_STRIP` and a fourth in `agent.py`'s. The
 #: parity test in tests/test_schedule_images.py reads the page's constant out of
-#: template.html and compares this one to it.
+#: frontend/src/apps/claude/protocol/wire.ts and compares this one to it.
 _PANE_SHOT_TAG = "pane-shot"
 
 
@@ -1282,11 +1312,119 @@ def _watching(entry_id: str, on: bool) -> None:
             _watched.add(entry_id)
         else:
             _watched.discard(entry_id)
+            _beats.pop(entry_id, None)
 
 
 def _is_watched(entry_id: str) -> bool:
     with _watched_lock:
         return entry_id in _watched
+
+
+# A watch is proven by `watcher_pid` + a heartbeat (`watcher_at`) on the stored
+# entry, because `_watched` is per-process and the sweep runs in whichever
+# process holds the machine-duties lease — which is often NOT the one that sent
+# the message (a lean `open` process sends a page's message; the leader may be
+# another process, or the desktop `serve`). Without a stamp the leader's sweep
+# reads every such entry as "nobody is watching" and closes a live turn.
+#
+# The heartbeat is what makes a pid trustworthy: a pid alone is reused by the
+# OS. `_turn_tick` refreshes it every `_WATCH_BEAT_S`; a watcher silent for
+# `_WATCH_STALE_S` is treated as gone even if its pid still answers.
+_WATCH_BEAT_S = 30.0
+_WATCH_STALE_S = 120.0
+_beats: dict[str, float] = {}
+
+
+def _watcher_stamp() -> dict:
+    return {"watcher_pid": os.getpid(), "watcher_at": _now().isoformat()}
+
+
+def _pid_running(pid: int) -> bool:
+    """POSIX probe only. `os.kill(pid, 0)` on Windows is CTRL_C_EVENT, so there
+    the heartbeat alone decides."""
+    if os.name != "posix":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _watcher_alive(entry: dict, now: datetime) -> bool:
+    """Is ANOTHER process still watching this entry's turn? This process's own
+    answer is `_is_watched` and is authoritative: our own pid on an entry we
+    are not watching means the watch thread is gone."""
+    try:
+        pid = int(entry.get("watcher_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not pid or pid == os.getpid():
+        return False
+    try:
+        beat = parse_due(entry.get("watcher_at"))
+    except ValueError:
+        return False
+    if (now - beat).total_seconds() > _WATCH_STALE_S:
+        return False
+    return _pid_running(pid)
+
+
+def _heartbeat(entry_id: str) -> None:
+    """Refresh this watch's stamp, at most every `_WATCH_BEAT_S`."""
+    t = time.monotonic()
+    if t - _beats.get(entry_id, 0.0) < _WATCH_BEAT_S:
+        return
+    _beats[entry_id] = t
+    _update(entry_id, **_watcher_stamp())
+
+
+_INTERRUPTED = "interrupted: the app stopped while this message's turn was running"
+
+
+def _followable(run_id: str) -> bool:
+    """Can this run still be followed to a verdict? The run is a detached
+    process that outlives whoever started it, and `agent._poll` reads its own
+    files, so a run that is still going — or that finished while nobody
+    watched — answers. One that left no files at all says `unknown run_id`."""
+    try:
+        data = claude_spawn.load_agent()._poll(run_id)
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(data, dict) and data.get("error") != "unknown run_id"
+
+
+def _resolve_orphan(entry: dict) -> None:
+    """A `sent` entry with no live watcher anywhere. Follow its run if it can
+    still be followed (the previous leader died, its Claude child did not);
+    otherwise it really was interrupted."""
+    run_id = str(entry.get("run_id") or "")
+    if run_id and _followable(run_id):
+        _adopt_watch(entry)
+    else:
+        _close_unwatched(entry, _INTERRUPTED)
+
+
+def _adopt_watch(entry: dict) -> None:
+    """Take over the watch of a sent turn whose watcher is gone. The run is a
+    detached process that outlives whoever started it, and `_poll(run_id)`
+    reads the run's own files, so ANY process can follow it to its verdict."""
+    entry_id = str(entry.get("id") or "")
+    with _watched_lock:
+        if entry_id in _watched:
+            return
+        _watched.add(entry_id)
+    try:
+        _update(entry_id, **_watcher_stamp())
+        _beats[entry_id] = time.monotonic()
+        threading.Thread(
+            target=_watch_turn, args=(dict(entry), str(entry["run_id"])),
+            daemon=True, name="fused-schedule-session-adopt").start()
+    except Exception:  # noqa: BLE001
+        logger.debug("could not adopt a turn's watch", exc_info=True)
+        _watching(entry_id, False)
 
 
 def _sync_wake() -> None:
@@ -1812,7 +1950,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
                     f"target: {target} exists and is not a folder") from None
         except OSError as exc:
             raise ValueError(f"target: could not create {target}: {exc}") from exc
-    with _lock:
+    with _store_lock():
         entries = _read()
         entries.append(entry)
         _write(entries)
@@ -1842,7 +1980,7 @@ def cancel(entry_id: str) -> dict | None:
     opposite — skip this one, keep the schedule (the next materialization pass
     picks up from the skipped time)."""
     cancelled = None
-    with _lock:
+    with _store_lock():
         entries = _read()
         for entry in entries:
             if entry.get("id") != entry_id:
@@ -1917,7 +2055,7 @@ def restore(entry_id: str) -> dict | None:
     the firing loop handles each at its own time, which is exactly what
     "unskip" means."""
     restored = None
-    with _lock:
+    with _store_lock():
         entries = _read()
         templates = {str(e.get("id")): e for e in entries
                      if e.get("state") == RECURRING}
@@ -2072,7 +2210,7 @@ def cancel_queued(entry_ids=None, all_queued: bool = False,
     cancelled: list[str] = []
     refused: list[str] = []
     reasons: dict[str, str] = {}
-    with _lock:
+    with _store_lock():
         entries = _read()
         by_id = {str(e.get("id") or ""): e for e in entries}
         if all_queued:
@@ -2147,7 +2285,7 @@ def set_priority(entry_ids: list[str], value: bool) -> dict:
     updated: list[str] = []
     refused: list[str] = []
     keys: set[str] = set()
-    with _lock:
+    with _store_lock():
         entries = _read()
         by_id = {str(e.get("id") or ""): e for e in entries}
         changed = False
@@ -2184,7 +2322,7 @@ def _update(entry_id: str, **fields) -> None:
     """Merge `fields` into one entry, re-reading under the lock so a concurrent
     cancel or create is not clobbered by a stale copy."""
     written = False
-    with _lock:
+    with _store_lock():
         entries = _read()
         for entry in entries:
             if entry.get("id") == entry_id:
@@ -2229,7 +2367,28 @@ def _queue_due(entry: dict, when: datetime) -> datetime:
     return min(when, asked)
 
 
-def _claim_due(now: datetime) -> list[dict]:
+def _claim_due(now: datetime) -> list[str]:
+    """`_sweep_due` plus the orphan resolution it leaves out, as one step for
+    callers that only want the sweep (tests, mostly). `tick` composes the two
+    itself."""
+    due, orphans = _sweep_due(now)
+    _resolve_orphans(orphans)
+    return due
+
+
+def _resolve_orphans(orphans: list[dict]) -> None:
+    """Resolve each orphan on its own: a failure on one (`_close_unwatched`
+    reports and rings, and any of that can raise OSError) is logged and must
+    not stop the rest, nor the dispatch that follows."""
+    for entry in orphans:
+        try:
+            _resolve_orphan(entry)
+        except Exception:  # noqa: BLE001
+            logger.warning("could not resolve orphaned turn %s", entry.get("id"),
+                           exc_info=True)
+
+
+def _sweep_due(now: datetime) -> tuple[list[str], list[dict]]:
     """Move every entry that should act now out of `pending`, and return the
     ones to actually send.
 
@@ -2250,7 +2409,8 @@ def _claim_due(now: datetime) -> list[dict]:
     (`_emit` takes its own), so the two locks are never nested."""
     due: list[tuple[datetime, str, dict]] = []
     announce: list[tuple[str, dict, str]] = []
-    with _lock:
+    orphans: list[dict] = []
+    with _store_lock():
         entries = _read()
         changed = False
         for entry in entries:
@@ -2288,13 +2448,12 @@ def _claim_due(now: datetime) -> list[dict]:
                 # `state` stays SENT because that is true — the message did go —
                 # and `turn` becomes `unknown`, the same verdict and the same word
                 # `_close_unwatched` uses for a watch that ended without one.
-                if not _is_watched(str(entry.get("id") or "")):
-                    entry["turn"] = "unknown"
-                    entry["turn_at"] = now.isoformat()
-                    entry["error"] = ("interrupted: the app stopped while this "
-                                      "message's turn was running")
-                    announce.append((EVENT_FAILED, dict(entry), entry["error"]))
-                    changed = True
+                if (_is_watched(str(entry.get("id") or ""))
+                        or _watcher_alive(entry, now)):
+                    continue
+                # Decided AFTER the lock: following a run means polling it, and
+                # nothing slow belongs under the store's flock.
+                orphans.append(dict(entry))
                 continue
             if state != PENDING:
                 continue
@@ -2335,9 +2494,16 @@ def _claim_due(now: datetime) -> list[dict]:
         if changed:
             _write(entries)
     for kind, entry, detail in announce:
-        _emit(kind, entry, detail)
+        try:
+            _emit(kind, entry, detail)
+        except Exception:  # noqa: BLE001 - a verdict's announcement never blocks a send
+            logger.warning("could not announce %s for %s", kind, entry.get("id"),
+                           exc_info=True)
     if changed:
-        _sync_wake()
+        try:
+            _sync_wake()
+        except Exception:  # noqa: BLE001
+            logger.warning("wake sync failed after the sweep", exc_info=True)
     # BY DUE TIME, not by store order. The store is in creation order, and the two
     # disagree the moment a catch-up pass finds several messages overdue at once:
     # something scheduled this morning for tonight would go before something
@@ -2350,7 +2516,10 @@ def _claim_due(now: datetime) -> list[dict]:
     # offers the due entries in due order and the queue manager's index is what
     # puts a skipped one at the head of its folder's line (`_tick_queued`).
     due.sort(key=lambda item: (item[0], item[1]))
-    return [entry_id for _, entry_id, _ in due]
+    # ORPHANS ARE NOT RESOLVED HERE, under no lock and not between the claim
+    # and the return: following a run polls it (`_followable`) and closing one
+    # reports and rings, all of which can be slow or raise. The caller does it.
+    return [entry_id for _, entry_id, _ in due], orphans
 
 
 def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
@@ -2370,7 +2539,7 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
     ("resume this one"), and a row that resumed a conversation without recording
     which one would read afterwards as a fresh send. `session_learned` goes with
     it, because the system worked this id out from a run — nobody chose it."""
-    with _lock:
+    with _store_lock():
         entries = _read()
         for entry in entries:
             if entry.get("id") != entry_id:
@@ -2467,7 +2636,7 @@ def _attachments_block(entry: dict) -> str:
     opening the viewer). Same files, two presentations, and the one the user
     could not read was the one they never chose.
 
-    The block the chat writes is the block that renders. `template.html` reads
+    The block the chat writes is the block that renders. The React chat reads
     it back on restore (`paneShotIn` → `shotRestoreReceipt`) and every reader of
     a transcript already strips it from a row title (`tasks_store`,
     `agent.py::_strip_machinery`, `sessionTitle`), because `pane-shot` has been
@@ -2483,8 +2652,9 @@ def _attachments_block(entry: dict) -> str:
     not import fused_render and fused_render may not import a template (SPEC
     PY-15 / D166), so `_PANE_SHOT_TAG` is a second copy of the page's
     `PANE_SHOT_TAG` and the entries are hand-written to the shape `paneShotIn`
-    parses. A parity test reads the page's constant out of template.html and
-    compares (D146: the duplicated rule gets a test, not a comment).
+    parses. A parity test reads the page's constant out of
+    frontend/src/apps/claude/protocol/wire.ts and compares (D146: the
+    duplicated rule gets a test, not a comment).
 
     What the payload leaves out, and why that is safe: `viewNote` is "" (there
     is nothing this picture fails to show — nobody cropped it), and there is no
@@ -2537,7 +2707,7 @@ def _composed(entry: dict) -> str:
     """Everything the scheduler prepends to the user's words, in the claude
     page's own reading order — state block, attachments block, message.
 
-    The inverse of `composeOutgoing` in template.html, and the order is that
+    The inverse of `composeOutgoing` in the React chat (protocol/wire.ts), and the order is that
     function's: the machinery first, the words last. It matters for more than
     tidiness — `tasks_store`'s and `agent.py`'s strips only peel a LEADING
     block, so a block wedged after the message would be read as something the
@@ -2728,12 +2898,11 @@ def _send(entry: dict) -> None:
     # SECOND, placeholder row beside it (`tasks._collect`) for the same message,
     # and the reader would watch two rows collapse into one.
     #
-    # (`_start` cannot mark on its own behalf either, whoever calls it: it runs
-    # in `claude_spawn.SESSION_HELPER`'s bare python, or in the executor's
-    # worker for a page send — never in this process, and a template may not
-    # import `fused_render` at all. The mark is always made by the server-side
-    # caller that knows it wants one, which for a page send is the page, through
-    # `POST /api/tasks/running`.)
+    # (`_start` cannot mark on its own behalf either, whoever calls it: agent.py
+    # never imports `fused_render` — `session_host.py` loads it by path in a
+    # child that cannot import the package. The mark is always made by the
+    # server-side caller that knows it wants one, which for a page send is the
+    # page, through `POST /api/tasks/running`.)
     # Registered BEFORE the store says `sent`, and that order is the point: the
     # sweep treats a `sent` entry with nothing watching it as abandoned, so a
     # window where this one is already `sent` but not yet registered is a window in
@@ -2745,7 +2914,9 @@ def _send(entry: dict) -> None:
     # downstream needs and cannot re-derive: the run id on this entry is a
     # session host the CHAT owns, not a process this send started.
     _update(entry["id"], state=SENT, run_id=str(run_id), error="",
+            **_watcher_stamp(),
             **({"host_sent": True} if host_sent else {}))
+    _beats[entry["id"]] = time.monotonic()
     if host_sent:
         entry["host_sent"] = True
     # §5's "scheduled run started" moment — emitted right after the spawn is
@@ -2835,6 +3006,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     and for an unattended session that is the single most likely way to be
     stuck."""
     entry_id = entry["id"]
+    _heartbeat(entry_id)
     # CAPTURE THE SESSION THE TURN RAN IN, on whichever tick first reports it.
     # `session_id` on the entry is an INPUT — "resume this one", empty meaning
     # "start a fresh one" — so it cannot double as the answer without retroactively
@@ -2989,7 +3161,7 @@ def _chain_session(template_id: str, ran: str) -> None:
     """
     if not template_id or not ran:
         return
-    with _lock:
+    with _store_lock():
         entries = _read()
         template = next((e for e in entries
                          if str(e.get("id") or "") == template_id), None)
@@ -3422,7 +3594,7 @@ def _coalesce(now: datetime) -> None:
     what keeps this from resurrecting anything: an entry the old bound already
     called `missed` is terminal and invisible here."""
     announce: list[tuple[str, dict, str]] = []
-    with _lock:
+    with _store_lock():
         entries = _read()
         templates = {str(e.get("id")): e for e in entries
                      if e.get("state") == RECURRING}
@@ -3599,7 +3771,7 @@ def _materialize(now: datetime) -> None:
     to `error` and announced — silently never firing again is the one outcome
     this feature must not have."""
     announce: list[tuple[str, dict, str]] = []
-    with _lock:
+    with _store_lock():
         entries = _read()
         occurrences: dict[str, list[dict]] = {}
         for entry in entries:
@@ -4081,7 +4253,12 @@ def tick(now: datetime | None = None) -> list[dict]:
     # ignored below until its own time comes.
     _coalesce(now)
     _materialize(now)
-    due = _claim_due(now)
+    due, orphans = _sweep_due(now)
+    # Orphans are settled HERE, before the busy-session map is read below: an
+    # abandoned turn closed this pass frees its session for a follower due in
+    # the same pass. Each is isolated (`_resolve_orphans`), so one that raises
+    # can no longer abort the dispatch of `due`.
+    _resolve_orphans(orphans)
     # THE MANAGER'S PASS, and it is a different shape rather than a smaller one.
     # With the flag on and a manager built, this loop is not the dispatcher any
     # more: there are no folder gates here, no holder map to move forward by
@@ -4607,15 +4784,11 @@ def _loop() -> None:
 
 
 def start() -> None:
-    """Start the background loop. Idempotent — safe to call once at server
-    startup; a redundant call while the thread is alive is a no-op.
+    """Start the background loop. Idempotent (via `_starter`, a
+    `StartOnceThread`) — safe to call once at server startup; a redundant
+    call while the thread is alive is a no-op.
 
     The FIRST tick is what catches up anything that came due while the app was
     closed, so this deliberately does not sleep before its first pass."""
-    global _thread
-    with _thread_lock:
-        if _thread is not None and _thread.is_alive():
-            return
-        _thread = threading.Thread(target=_loop, daemon=True,
-                                   name="fused-schedule")
-        _thread.start()
+    _starter.ensure(
+        lambda: threading.Thread(target=_loop, daemon=True, name="fused-schedule"))

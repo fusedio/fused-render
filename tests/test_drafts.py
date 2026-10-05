@@ -1259,7 +1259,7 @@ def test_a_new_chat_key_still_settles_beside_a_held_task_draft(
 
 
 def _load_agent_template():
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    path = os.path.join("fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent_drafts", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -1271,6 +1271,10 @@ class _FakeHost:
     writes BEFORE the spawn, and a real host would go looking for a CLI."""
 
     pid = 4242
+
+    def wait(self, timeout=None):
+        # `_start` parks a daemon reaper thread in wait() on the host.
+        return 0
 
     def __init__(self):
         self.stdin = io.BytesIO()

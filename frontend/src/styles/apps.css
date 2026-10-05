@@ -283,6 +283,37 @@
   inset: 0;
 }
 
+/* The stand-in thumbnail (ThumbPlaceholder.tsx) for a card that may not show
+   the live app — live previews turned off in Preferences — and has no still:
+   the brand mark, muted, centred. Fills whatever positioned box holds it
+   (`.app-pcard-thumb`, `.fhb-preview`), so one component serves both card
+   families. Same mark size and opacity as `.fhb-empty-mark`
+   (preferences.css); theme pair by the same rule — dark is the default,
+   light takes over under the [data-theme="light"] stamp on <html>. */
+.thumb-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.thumb-placeholder-mark {
+  width: 40px;
+  height: 40px;
+  opacity: 0.35;
+}
+
+.thumb-placeholder-mark-light,
+:root[data-theme="light"] .thumb-placeholder-mark-dark {
+  display: none;
+}
+
+:root[data-theme="light"] .thumb-placeholder-mark-light {
+  display: block;
+}
+
 /* Hover-revealed Share button (SPEC §43 AF-4, D391): hidden until the CARD
    is hovered so the grid stays quiet, revealed as a small bordered chip in
    the thumb's bottom-right corner. The one chip on the card — the sheet
@@ -412,4 +443,11 @@
 .app-pcard-ago {
   flex: 0 0 auto;
   margin-left: auto;
+}
+
+/* The fold's auto-extend sentinel (Apps.tsx): one pixel after the grid for
+   an IntersectionObserver to watch, never visible, never a gap. */
+.apps-more-sentinel {
+  height: 1px;
+  margin-top: -1px;
 }
