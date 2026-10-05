@@ -40,14 +40,15 @@ def install(port: int, environ=None, platform: str | None = None) -> bool:
 
     def apply(on: bool) -> None:
         try:
-            ipc.request(sock, {"cmd": "set_enabled", "on": bool(on)}, timeout=2.0)
+            ipc.request(sock, {"cmd": "set_enabled", "on": bool(on)}, timeout=ipc.CALLER_TIMEOUT_S)
         except ipc.HostUnavailable as error:
             logger.info("window host did not take the windows preference: %s", error)
 
     def open_app(fs_path: str) -> None:
         url = f"http://127.0.0.1:{port}" + window_policy.app_window_path(fs_path)
         try:
-            shown = bool(ipc.request(sock, {"cmd": "open", "url": url}, timeout=5.0).get("ok"))
+            shown = bool(ipc.request(sock, {"cmd": "open", "url": url},
+                                     timeout=ipc.CALLER_TIMEOUT_S).get("ok"))
         except ipc.HostUnavailable as error:
             logger.info("window host unavailable (%s); opening a browser tab", error)
             shown = False

@@ -38,6 +38,11 @@ MAX_LINE = 64 * 1024
 _CLIENT_DEADLINE_S = 5.0
 _SELECT_TICK_S = 0.25
 
+#: How long every caller waits for one `request()` to answer. Kept above the
+#: host's main-thread budget (`window_host._MAIN_DEADLINE_S`) so a caller never
+#: gives up before the host has answered.
+CALLER_TIMEOUT_S = 5.0
+
 
 class HostUnavailable(OSError):
     """The window host could not be reached or did not answer in time."""
@@ -86,10 +91,13 @@ def ping(path, timeout: float = 0.3) -> bool:
 
 def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
     """Listen on ``path`` until ``stop`` is set, answering each connection with
-    ``handler(command_dict) -> reply_dict`` on the accept thread. A handler that
-    raises, or a client that sends junk or stalls, yields an ``ok: false``
-    reply for that client only — never a dead accept loop. The socket is
-    created 0600 (the runtime dir is 0700 already; this is belt and braces)."""
+    ``handler(command_dict) -> reply_dict`` on a thread per connection, so a
+    ``ping`` gets through while an ``open`` or ``set_enabled`` waits on the GTK
+    main thread. Window state stays single-threaded: handlers that touch a
+    window go through ``backend.run_on_main``. A handler that raises, or a client that sends junk or stalls, yields an
+    ``ok: false`` reply for that client only — never a dead accept loop. The
+    socket is created 0600 (the runtime dir is 0700 already; this is belt and
+    braces)."""
     path = os.fspath(path)
     try:
         os.unlink(path)  # a crashed predecessor's leftover; bind would EADDRINUSE
@@ -113,10 +121,8 @@ def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
                     continue
                 except OSError:
                     break
-                try:
-                    _serve_client(client, handler, log)
-                finally:
-                    client.close()
+                threading.Thread(target=_serve_and_close, args=(client, handler, log),
+                                 daemon=True, name="fused-render-window-host-client").start()
         finally:
             listener.close()
             try:
@@ -127,6 +133,13 @@ def serve(path, handler, stop: threading.Event, log=None) -> threading.Thread:
     thread = threading.Thread(target=loop, daemon=True, name="fused-render-window-host-ipc")
     thread.start()
     return thread
+
+
+def _serve_and_close(client: socket.socket, handler, log) -> None:
+    try:
+        _serve_client(client, handler, log)
+    finally:
+        client.close()
 
 
 def _serve_client(client: socket.socket, handler, log) -> None:

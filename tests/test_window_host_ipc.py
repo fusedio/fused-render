@@ -124,6 +124,41 @@ def test_silent_host_times_out_as_unavailable(sock_path):
         srv.close()
 
 
+def test_a_slow_request_does_not_block_a_concurrent_ping(sock_path):
+    # Preferences treats a 0.3s ping as "is the host up"; a one-connection-at-
+    # a-time accept loop would starve that ping while an `open` or
+    # `set_enabled` is still in flight (e.g. waiting on the GTK main thread),
+    # making the Native windows section flicker away for no reason.
+    stop = threading.Event()
+    gate = threading.Event()
+
+    def handler(cmd):
+        if cmd.get("cmd") == "slow":
+            gate.wait(3)
+        return {"ok": True}
+
+    thread = ipc.serve(sock_path, handler, stop)
+    deadline = time.monotonic() + 3
+    while not os.path.exists(sock_path) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        result = {}
+
+        def slow_client():
+            result["reply"] = ipc.request(sock_path, {"cmd": "slow"}, timeout=3)
+
+        slow = threading.Thread(target=slow_client)
+        slow.start()
+        time.sleep(0.2)  # let the slow request be accepted and start blocking
+        assert ipc.ping(sock_path, timeout=0.5) is True
+        gate.set()
+        slow.join(timeout=3)
+        assert result["reply"] == {"ok": True}
+    finally:
+        stop.set()
+        thread.join(timeout=3)
+
+
 def test_serve_replaces_a_stale_socket_file(sock_path):
     s = socket.socket(socket.AF_UNIX)
     s.bind(sock_path)

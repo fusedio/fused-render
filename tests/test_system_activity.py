@@ -29,7 +29,9 @@ class FakeBackend:
         self.args = {203: ["/usr/bin/python3", "-m", "some.tool"], 204: ["/bin/sleep", "5"]}
         self.ticks = (0, 0, 0)
         self.pstart: dict[int, int] = {}   # kernel start stamp; 1 unless a test recycles a pid
-        self.uid = os.getuid()
+        # os.getuid is POSIX-only; this fixture fakes process ownership, not real
+        # OS identity, so any stable, platform-independent value does the same job.
+        self.uid = os.getuid() if hasattr(os, "getuid") else 0
         self.idents = {p: ProcIdent(p, self.tree.get(p, 1), self.uid, 1_700_000_000.0 + p,
                                     f"proc{p}", False) for p in self.cpu_ns}
         self.idents[1] = ProcIdent(1, 0, 0, 1_600_000_000.0, "launchd", False)

@@ -183,7 +183,10 @@ class Host:
         for handle in self._windows:
             live = self.backend.current_url(handle)
             if key is None:
-                if window_policy.window_key_of(live) is None and _is_home(live):
+                # Only Home reuses a keyless window; other keyless pages
+                # (/tasks, /preferences) always open fresh, as on macOS.
+                if (_is_home(url) and window_policy.window_key_of(live) is None
+                        and _is_home(live)):
                     return handle
             elif (window_policy.window_key_of(live) == key
                   and window_policy.window_view_of(live) == view):
@@ -262,8 +265,8 @@ class _Win:
         self.window, self.view, self.frame_name = window, view, frame_name
 
 
-# Strictly below every client's request timeout (5s), so when the host gives up
-# the client is still waiting and hears the refusal before it falls back.
+# Strictly below window_host_ipc.CALLER_TIMEOUT_S, so when the host gives up
+# the caller is still waiting and hears the refusal before it falls back.
 _MAIN_DEADLINE_S = 3.0
 
 
@@ -354,9 +357,18 @@ class GtkBackend:
         return win.view.get_uri()
 
     def open_external(self, url: str) -> None:
+        # Called on the GTK thread; `ui.open_url` can block up to 5s and raise
+        # OSError, so run it on a worker and log failures.
         from fused_render.supervisor._linux import ui
 
-        ui.open_url(url)
+        def worker() -> None:
+            try:
+                ui.open_url(url)
+            except OSError as error:
+                self._log(f"could not open external link ({error}): {url}")
+
+        threading.Thread(target=worker, daemon=True,
+                         name="fused-render-window-host-open-external").start()
 
     def _save_frame(self, win: _Win) -> bool:
         try:

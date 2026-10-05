@@ -187,8 +187,11 @@ def _xdg_open(target: str) -> None:
     # within the wait window, so a timeout is treated as success (the open is
     # underway). Raises OSError if xdg-open is absent (FileNotFoundError), which
     # core's _safe_call / _safe_open already log-and-ignore.
+    # Its own session, so a killpg of our group (supervisor exit, window-host
+    # teardown) cannot take down a browser it exec'd.
     proc = subprocess.Popen(
-        ["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     try:
         returncode = proc.wait(timeout=_XDG_OPEN_WAIT_S)

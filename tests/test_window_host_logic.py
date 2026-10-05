@@ -123,6 +123,19 @@ def test_blank_popups_neither_open_nor_focus_a_window(host):
     assert b.external == []
 
 
+def test_keyless_non_home_url_does_not_reuse_the_home_window(host):
+    # /tasks and /preferences have no window key, same as Home, but they are
+    # not Home: ctrl-click / target=_blank on one must show that page, not
+    # just raise whatever Home window is already open.
+    h, b = host
+    h.dispatch({"cmd": "open", "url": BASE + "/"})
+    b.urls[1] = BASE + "/home"
+    h.dispatch({"cmd": "open", "url": BASE + "/tasks"})
+    assert b.created == 2
+    assert b.urls[2] == BASE + "/tasks"
+    assert b.presented == [1, 2]
+
+
 def test_closed_windows_are_forgotten(host):
     h, b = host
     h.dispatch({"cmd": "open", "url": BASE + "/"})
@@ -320,7 +333,58 @@ def test_timed_out_main_thread_request_never_runs_later(monkeypatch):
 
 
 def test_host_deadline_is_shorter_than_every_client_timeout():
+    from fused_render import window_host_ipc as ipc
     from fused_render.supervisor._linux import windows
 
     assert wh._MAIN_DEADLINE_S < windows._OPEN_TIMEOUT_S
-    assert wh._MAIN_DEADLINE_S < 5.0  # linux_windows.open_app's request timeout
+    assert wh._MAIN_DEADLINE_S < ipc.CALLER_TIMEOUT_S
+
+
+def test_open_external_never_raises_and_runs_off_the_gtk_thread(monkeypatch):
+    """`open_external` is called straight from a GTK signal handler
+    (`decide-policy`) and from `run_on_main`-marshalled IPC `open`s: a slow or
+    failing `xdg-open` must neither block that thread nor unwind an
+    exception into it."""
+    import threading
+    import time
+
+    logged = []
+    seen_from_main_thread = []
+
+    def fake_open_url(url):
+        seen_from_main_thread.append(threading.current_thread() is threading.main_thread())
+        raise OSError(f"xdg-open exited with status 1 for {url}")
+
+    monkeypatch.setattr("fused_render.supervisor._linux.ui.open_url", fake_open_url)
+
+    backend = wh.GtkBackend.__new__(wh.GtkBackend)
+    backend._log = logged.append
+
+    backend.open_external("https://example.com/x")  # must return immediately
+
+    deadline = time.monotonic() + 3
+    while not logged and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert logged and "example.com/x" in logged[0]
+    assert seen_from_main_thread == [False]
+
+
+def test_xdg_open_runs_detached_so_host_teardown_cannot_kill_it(monkeypatch):
+    """`windows.WindowHost.stop`/`_give_up` `killpg` the host's whole process
+    group; an opener spawned without its own session would die with it,
+    taking a still-running (non-daemonizing) browser down too."""
+    from fused_render.supervisor._linux import ui
+
+    captured = {}
+
+    class FakeProcess:
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(ui.subprocess, "Popen", fake_popen)
+    ui.open_url("https://example.com")
+    assert captured.get("start_new_session") is True

@@ -111,6 +111,30 @@ def test_apply_forwards_the_preference(sock, host):
 
 
 @needs_unix
+def test_apply_and_open_app_use_the_shared_caller_timeout(sock, host, tmp_path, monkeypatch):
+    """`apply` (the preference toggle) used to time out at 2s, shorter than
+    the host's own 3s main-thread deadline — the caller could give up on a
+    `set_enabled` the host was still about to carry out, desyncing the two.
+    Both calls must use the same timeout as `open_app`, and it must stay
+    above the host's deadline."""
+    from fused_render.supervisor._linux import window_host as wh
+
+    seen = []
+    real_request = ipc.request
+
+    def spy(path, payload, timeout=2.0):
+        seen.append(timeout)
+        return real_request(path, payload, timeout)
+
+    monkeypatch.setattr(ipc, "request", spy)
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    window_policy.native_hooks["apply"](True)
+    window_policy.native_hooks["open_app"](str(tmp_path))
+    assert seen == [ipc.CALLER_TIMEOUT_S, ipc.CALLER_TIMEOUT_S]
+    assert ipc.CALLER_TIMEOUT_S > wh._MAIN_DEADLINE_S
+
+
+@needs_unix
 def test_apply_never_raises_when_the_host_is_gone(sock):
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
     window_policy.native_hooks["apply"](False)  # must not raise: the pref still stores

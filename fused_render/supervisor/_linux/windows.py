@@ -20,7 +20,7 @@ from fused_render.supervisor._linux.tree import Job
 from fused_render.supervisor.paths import DesktopPaths
 
 _START_TIMEOUT_S = 10.0
-_OPEN_TIMEOUT_S = 5.0
+_OPEN_TIMEOUT_S = ipc.CALLER_TIMEOUT_S
 _HOST_MODULE = "fused_render.supervisor._linux.window_host"
 
 
