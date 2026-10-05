@@ -313,6 +313,19 @@ def _enable_faulthandler() -> None:
 
 def main() -> None:
     _enable_faulthandler()
+    # Detach FIRST. `_start` spawns this host from inside the server with a
+    # posix_spawn-safe Popen (no start_new_session — see `_HOST_SPAWN` in
+    # agent.py for why the server must never fork), so the host arrives in the
+    # server's own session and process group. setsid() here puts it in a
+    # session of its own, as the old start_new_session did: a server restart,
+    # a terminal hangup or a killpg aimed at the server never reaches a live
+    # chat. EPERM means this process is already a session leader (Windows
+    # has no setsid; the detach flags on its Popen did the job).
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()
+        except OSError:
+            pass
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     agent = _load_agent(req["agent"])
     run_dir = req["run_dir"]

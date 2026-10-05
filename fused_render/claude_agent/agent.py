@@ -81,14 +81,19 @@ import urllib.parse
 import urllib.request
 import uuid
 
-# The fused engine execs this script without setting __file__; it puts the
-# script's own directory first on sys.path, so rebuild __file__ from it. Under
-# the built-in executor __file__ is already set, so this is a no-op.
-if "__file__" not in globals():
-    __file__ = os.path.join(sys.path[0], "agent.py")
-
+# This module lives in the `fused_render.claude_agent` package and is imported
+# in-process by the server (one instance, `fused_render.claude_agent.agent_module`).
+# It is ALSO loaded by file path from processes that cannot import the package
+# by design — `session_host.py` (a child run by path) and the test suite — so it
+# keeps the sibling-import-by-path idiom for `templates/shared` and never
+# imports `fused_render` itself. The shared helpers sit beside the templates:
+# `<package>/templates/shared`, one level above this folder.
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+_SHARED = os.path.join(os.path.dirname(HERE), "templates", "shared")
+# Guarded insert: the same interpreter may load this file more than once (the
+# package import plus a by-path load in a test), and sys.path must not grow.
+if _SHARED not in sys.path:
+    sys.path.insert(0, _SHARED)
 from appenv import canvases_root as _canvases_root
 from appenv import fused_cli_dir as _fused_cli_dir
 from appenv import origin as _origin
@@ -1228,10 +1233,12 @@ def _sips_to_png(path: str) -> str | None:
     except OSError:
         return None
     try:
+        # close_fds=False + absolute argv[0]: this runs INSIDE the server now,
+        # where any fork() dies in PROJ's atfork handler (see `_HOST_SPAWN`).
         proc = subprocess.run(
             ["/usr/bin/sips", "-s", "format", "png", path, "--out", tmp],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=SHOT_SIPS_TIMEOUT, check=False)
+            timeout=SHOT_SIPS_TIMEOUT, check=False, close_fds=False)
         if proc.returncode == 0 and os.path.getsize(tmp) > 0:
             return tmp
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -2298,6 +2305,23 @@ _DETACH = (
     if os.name == "nt" else {"start_new_session": True}
 )
 
+# How `_start` launches the session host FROM THE SERVER PROCESS. `_DETACH`
+# above is for the CLI spawn inside session_host.py (its own process, where a
+# fork is harmless, and `_cancel`'s killpg needs the CLI as a group leader).
+# The server itself must never fork: libproj is resident with a live proj.db
+# SQLite handle, and fork() runs PROJ's pthread_atfork child handler, which
+# closes that handle and SIGSEGVs the child before exec (test_worker_forksafe,
+# claude_spawn's old SESSION_HELPER note). CPython reaches posix_spawn only
+# with close_fds=False, cwd=None, no start_new_session, no preexec_fn and an
+# absolute argv[0] — exactly these kwargs. The host then detaches ITSELF with
+# os.setsid() as its first act, so it still outlives a server restart and
+# never shares the server's session. Windows has no fork; the detach flags
+# stay.
+_HOST_SPAWN = (
+    {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    if os.name == "nt" else {"close_fds": False}
+)
+
 
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
@@ -2761,13 +2785,20 @@ def _start(file: str, message: str, session_id: str, model: str,
             [sys.executable, _SESSION_HOST],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=host_err, env=_spawn_env(),
-            **_DETACH)
+            **_HOST_SPAWN)
     finally:
         os.close(host_err)
     try:
         proc.stdin.write(json.dumps(req).encode("utf-8"))
     finally:
         proc.stdin.close()
+    # The host is now a child of THIS (long-lived) process rather than of a
+    # 60 s executor subprocess that exited and left it to init. Nobody else
+    # waits on it, so without a waiter every finished host would sit as a
+    # zombie until the server exits. One daemon thread per host, parked in
+    # wait(): the cheapest reaper, and it dies with the host.
+    threading.Thread(target=proc.wait, name=f"claude-host-wait-{run_id}",
+                     daemon=True).start()
     # WHAT THIS CHAT RUNS WITH — the app's own answer to "which model is this
     # conversation on?", which every surface reads first (`_defaults`). Here
     # rather than only in the composer because this is the one point every send
@@ -3596,15 +3627,20 @@ _echo_cache: dict = {}
 # run_dir -> the newest `inbox/done/` name PROVEN fully echoed. Once that is the
 # newest name there is, nothing is waiting and nothing needs reading at all.
 _echoed_done: dict = {}
+# One module instance now serves every poller in the server (two windows on one
+# run poll concurrently on pool threads), so the two dicts are guarded. The
+# values are immutable tuples; the lock covers the dict operations only.
+_ECHO_LOCK = threading.Lock()
 
 
 def _remember_capped(cache: dict, key: str, value) -> None:
     """Store, with a ceiling: a full cache is emptied rather than aged, because
     the entry worth keeping is the run being polled right now and it is about to
     be written again."""
-    if len(cache) >= _ECHO_CACHE_MAX and key not in cache:
-        cache.clear()
-    cache[key] = value
+    with _ECHO_LOCK:
+        if len(cache) >= _ECHO_CACHE_MAX and key not in cache:
+            cache.clear()
+        cache[key] = value
 
 
 def _echo_texts(run_dir: str) -> tuple:
