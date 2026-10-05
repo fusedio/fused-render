@@ -102,6 +102,28 @@ export function useTerminalDockOpen(): boolean {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
+// How many terminals the drawer currently holds — written by
+// `TerminalDrawer` (the only owner of the tab list), read by the chip, which
+// shows it once there is more than one. 0 until the drawer has verified or
+// created its first terminal this page load.
+let terminalCount = 0;
+const countListeners = new Set<() => void>();
+
+export function setTerminalCount(next: number): void {
+  if (next === terminalCount) return;
+  terminalCount = next;
+  for (const listener of countListeners) listener();
+}
+
+function subscribeCount(listener: () => void): () => void {
+  countListeners.add(listener);
+  return () => countListeners.delete(listener);
+}
+
+export function useTerminalCount(): number {
+  return useSyncExternalStore(subscribeCount, () => terminalCount);
+}
+
 /** A "open the drawer in this folder / run this command in it" request from
  * outside the drawer/chip (the explorer's "Open in Terminal" menu item,
  * `fused.terminal.open`/`.run` via the page-API bridge). `cwd`/`command` are
@@ -183,4 +205,6 @@ export function resetTerminalDockForTests(): void {
   pendingListeners.clear();
   mounted = false;
   mountListeners.clear();
+  terminalCount = 0;
+  countListeners.clear();
 }

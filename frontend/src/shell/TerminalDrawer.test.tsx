@@ -41,6 +41,7 @@ const TerminalDrawerModule = await import("@shell/TerminalDrawer");
 const TerminalDrawer = TerminalDrawerModule.default;
 const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny, TerminalBusyError } =
   TerminalDrawerModule;
+const { parseState, reconcileTabs, removeTab, programLabel, stateFor } = await import("@shell/terminalTabs");
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
 // (viewstate.test.ts's own header) — scoped to this file only and restored
@@ -215,10 +216,10 @@ test("the toggle actually flips the shared open store (not just preventDefault)"
 
 // ---- clearExitedSession (the localStorage+store half of exit-hides-drawer) -
 
-test("clearExitedSession drops the cached session id and closes an open drawer", () => {
+test("clearExitedSession drops every cached session id and closes an open drawer", () => {
   localStorage.setItem(
     "fused-render:terminal-drawer",
-    JSON.stringify({ height: 300, sessionId: "dead-session" }),
+    JSON.stringify({ height: 300, sessionIds: ["dead-session"], activeId: "dead-session" }),
   );
   act(() => toggleTerminalDock()); // drawer open
   let open = true;
@@ -238,13 +239,13 @@ test("clearExitedSession drops the cached session id and closes an open drawer",
   });
   expect(open).toBe(false);
   const stored = JSON.parse(localStorage.getItem("fused-render:terminal-drawer") as string);
-  expect(stored).toEqual({ height: 300, sessionId: null });
+  expect(stored).toEqual({ height: 300, sessionIds: [], activeId: null, meta: {} });
 });
 
 test("clearExitedSession while the drawer is already closed still clears the cached id, without throwing", () => {
   localStorage.setItem(
     "fused-render:terminal-drawer",
-    JSON.stringify({ height: 260, sessionId: "dead-session" }),
+    JSON.stringify({ height: 260, sessionIds: ["dead-session"], activeId: "dead-session" }),
   );
   // Drawer already closed (default store state) — closeTerminalDock() is a
   // no-op here, but the id still has to go so the next open doesn't try to
@@ -261,7 +262,7 @@ test("clearExitedSession while the drawer is already closed still clears the cac
   });
   expect(open).toBe(false);
   const stored = JSON.parse(localStorage.getItem("fused-render:terminal-drawer") as string);
-  expect(stored).toEqual({ height: 260, sessionId: null });
+  expect(stored).toEqual({ height: 260, sessionIds: [], activeId: null, meta: {} });
 });
 
 // ---- createSessionOrAbandon (cancelled-create leaks no live shell) --------
@@ -457,4 +458,185 @@ test("closeTerminalDock stays idempotent when called on an already-closed drawer
   // no-op close — terminalDockStore.ts's own `set()` bails when the value
   // doesn't actually change.
   expect(calls).toBe(before);
+});
+
+// ---- the busy (409) fix: a long-running opener gets its OWN terminal -------
+
+function busy(): Error {
+  return Object.assign(new Error("terminal is busy"), { status: 409 });
+}
+
+test("REGRESSION: a second `claude --resume` for a different task opens a NEW terminal instead of copying to the clipboard", async () => {
+  const sent: Array<[string, string]> = [];
+  const copied: string[] = [];
+  const adopted: Array<[string, unknown]> = [];
+  const created: Array<string | undefined> = [];
+  // sidA's terminal is owned by Claude's TUI after the first continue.
+  const send = async (id: string, data: string) => {
+    sent.push([id, data]);
+    if (id === "term-1" && data.includes("sidB")) throw busy();
+    return { ok: true };
+  };
+  const create = async (cwd?: string) => {
+    created.push(cwd);
+    return "term-2";
+  };
+  const adopt = (id: string, tab: unknown) => adopted.push([id, tab]);
+  const copy = async (t: string) => {
+    copied.push(t);
+    return true;
+  };
+
+  await sendPendingRequestIfAny("term-1", {}, {
+    take: () => ({ cwd: "/work/a", command: "claude --resume sidA" }),
+    send, copy, create, adopt,
+  });
+  await sendPendingRequestIfAny("term-1", {}, {
+    take: () => ({ cwd: "/work/b", command: "claude --resume sidB" }),
+    send, copy, create, adopt,
+  });
+
+  expect(created).toEqual(["/work/b"]);
+  expect(adopted).toEqual([["term-2", { label: "claude", cwd: "/work/b" }]]);
+  // sidA once, to the first terminal; sidB tried on the busy one, then sent
+  // to the new one — created in /work/b, so no `cd`.
+  expect(sent).toEqual([
+    ["term-1", "cd '/work/a' && claude --resume sidA\r"],
+    ["term-1", "cd '/work/b' && claude --resume sidB\r"],
+    ["term-2", "claude --resume sidB\r"],
+  ]);
+  expect(copied).toEqual([]);
+});
+
+test("busy terminal and the create hits the server cap (409): copies, and the error says the limit was reached", async () => {
+  const copied: string[] = [];
+  const attempt = sendPendingRequestIfAny("t1", {}, {
+    take: () => ({ cwd: "/w", command: "claude" }),
+    send: async () => { throw busy(); },
+    copy: async (t) => { copied.push(t); return true; },
+    create: async () => { throw busy(); },
+    adopt: () => { throw new Error("must not adopt"); },
+  });
+  const err = await attempt.then(() => null, (e) => e);
+  expect(err).toBeInstanceOf(TerminalBusyError);
+  expect((err as InstanceType<typeof TerminalBusyError>).reason).toBe("limit");
+  expect(copied).toEqual(["cd '/w' && claude"]);
+});
+
+test("busy terminal and the create fails another way: copies with the plain busy reason", async () => {
+  const copied: string[] = [];
+  const err = await sendPendingRequestIfAny("t1", {}, {
+    take: () => ({ command: "claude" }),
+    send: async () => { throw busy(); },
+    copy: async (t) => { copied.push(t); return true; },
+    create: async () => { throw Object.assign(new Error("down"), { status: 500 }); },
+    adopt: () => {},
+  }).then(() => null, (e) => e);
+  expect((err as InstanceType<typeof TerminalBusyError>).reason).toBe("busy");
+  expect(copied).toEqual(["claude"]);
+});
+
+test("a cd-only request on a busy terminal creates a terminal in that cwd and sends nothing more", async () => {
+  const sent: string[] = [];
+  const adopted: unknown[] = [];
+  await sendPendingRequestIfAny("t1", {}, {
+    take: () => ({ cwd: "/only/cd" }),
+    send: async (id, d) => {
+      sent.push(id + ":" + d);
+      if (id === "t1") throw busy();
+      return { ok: true };
+    },
+    create: async () => "t2",
+    adopt: (id, tab) => adopted.push([id, tab]),
+  });
+  expect(sent).toEqual(["t1:cd '/only/cd'\r"]);
+  expect(adopted).toEqual([["t2", { label: "Terminal", cwd: "/only/cd" }]]);
+});
+
+test("the fresh terminal itself reporting busy copies instead of looping into a third terminal", async () => {
+  let creates = 0;
+  const copied: string[] = [];
+  const err = await sendPendingRequestIfAny("t1", {}, {
+    take: () => ({ cwd: "/w", command: "claude" }),
+    send: async () => { throw busy(); },
+    copy: async (t) => { copied.push(t); return true; },
+    create: async () => { creates += 1; return "t2"; },
+    adopt: () => {},
+  }).then(() => null, (e) => e);
+  expect(creates).toBe(1);
+  expect(err).toBeInstanceOf(TerminalBusyError);
+  expect(copied).toEqual(["cd '/w' && claude"]);
+});
+
+// ---- terminalTabs: persistence, restore, neighbour rules, labels ----------
+
+test("programLabel: first word, path and env assignments stripped", () => {
+  expect(programLabel("claude --resume abc")).toBe("claude");
+  expect(programLabel("/usr/local/bin/claude")).toBe("claude");
+  expect(programLabel("FOO=1 BAR=2 npm run dev")).toBe("npm");
+  expect(programLabel("")).toBeNull();
+  expect(programLabel(undefined)).toBeNull();
+});
+
+test("parseState migrates the old single-sessionId shape", () => {
+  expect(parseState(JSON.stringify({ height: 300, sessionId: "old" }))).toEqual({
+    height: 300, sessionIds: ["old"], activeId: "old", meta: {},
+  });
+});
+
+test("parseState: new shape round-trips; junk and unknown active fall back sanely", () => {
+  const st = stateFor(
+    400,
+    [{ id: "a", label: "zsh", cwd: "/x" }, { id: "b", label: "claude" }],
+    "b",
+  );
+  expect(parseState(JSON.stringify(st))).toEqual(st);
+  expect(parseState("not json").sessionIds).toEqual([]);
+  expect(parseState(null).height).toBe(260);
+  expect(parseState(JSON.stringify({ sessionIds: ["a", "a", 5], activeId: "zzz" }))).toMatchObject({
+    sessionIds: ["a"], activeId: null,
+  });
+});
+
+test("reconcileTabs keeps alive ids in cached order, drops dead and vanished, restores the active one", () => {
+  const cached = parseState(
+    JSON.stringify({ sessionIds: ["a", "b", "c", "d"], activeId: "c", meta: { b: { label: "claude" } } }),
+  );
+  const r = reconcileTabs(cached, [
+    { id: "d", alive: true, shell: "zsh" },
+    { id: "b", alive: true, shell: "zsh" },
+    { id: "c", alive: false },
+    { id: "a", alive: true, shell: "zsh", cwd: "/home" },
+  ]);
+  expect(r.tabs).toEqual([
+    { id: "a", label: "zsh", cwd: "/home" },
+    { id: "b", label: "claude" },
+    { id: "d", label: "zsh" },
+  ]);
+  // the cached active tab (c) died -> first survivor
+  expect(r.activeId).toBe("a");
+  expect(reconcileTabs({ ...cached, activeId: "d" }, [{ id: "d", alive: true }]).activeId).toBe("d");
+});
+
+test("reconcileTabs: nothing survives -> empty (caller creates a fresh terminal)", () => {
+  expect(reconcileTabs(parseState(JSON.stringify({ sessionId: "x" })), [])).toEqual({ tabs: [], activeId: null });
+});
+
+const T = (id: string) => ({ id, label: id });
+
+test("removeTab: closing the active middle tab activates its right neighbour", () => {
+  const r = removeTab([T("a"), T("b"), T("c")], "b", "b");
+  expect(r).toEqual({ tabs: [T("a"), T("c")], activeId: "c", empty: false });
+});
+
+test("removeTab: closing the active LAST tab activates the left neighbour", () => {
+  expect(removeTab([T("a"), T("b")], "b", "b").activeId).toBe("a");
+});
+
+test("removeTab: closing an inactive tab keeps the active one", () => {
+  expect(removeTab([T("a"), T("b")], "a", "b")).toEqual({ tabs: [T("a")], activeId: "a", empty: false });
+});
+
+test("removeTab: the only tab leaves nothing -> empty (drawer closes)", () => {
+  expect(removeTab([T("a")], "a", "a")).toEqual({ tabs: [], activeId: null, empty: true });
 });
