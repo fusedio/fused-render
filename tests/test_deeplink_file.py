@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import appfile, deeplink
-from fused_render._view_url_codec import canonical_fs_path
+from fused_render._view_url_codec import canonical_fs_path, view_url_path
 from fused_render.deeplink import (
     EDIT_APPFILE_PARAM,
     DeeplinkError,
@@ -107,8 +107,7 @@ def test_an_existing_copy_lands_on_its_entry_page_with_the_file(tmp_path):
     fused = export(tmp_path)
     _client(tmp_path).post("/api/appfile/clone", json={"file": str(fused)}, headers=FUSED)
     path, q = _redirect(tmp_path, link(fused))
-    assert path == "/explorer/view" + canonical_fs_path(
-        str(tmp_path / "workspace" / "local" / "demo" / "index.html"))
+    assert path == view_url_path(str(tmp_path / "workspace" / "local" / "demo" / "index.html"))
     assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(fused))}
 
 
@@ -118,7 +117,7 @@ def test_a_copy_without_an_entry_page_lands_on_the_folder(tmp_path):
     dest.mkdir(parents=True)
     (dest / "notes.txt").write_text("not an app any more")
     path, q = _redirect(tmp_path, link(fused))
-    assert path == "/explorer/view" + canonical_fs_path(str(dest))
+    assert path == view_url_path(str(dest))
 
 
 def test_a_missing_file_still_lands_on_home_for_the_shell_to_report(tmp_path):

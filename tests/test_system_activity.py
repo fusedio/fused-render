@@ -307,6 +307,7 @@ ALL_ROW_KEYS = {"pid", "ppid", "user", "command", "args", "cpuPct", "memBytes",
                 "startedAt", "fused", "kind", "label"}
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="owner names come from pwd, POSIX only")
 def test_scope_all_lists_every_process_with_identity(client, fake):
     backend, clock, s = fake
     body = client.get("/api/system/activity?scope=all").json()
@@ -391,6 +392,7 @@ def test_kill_requires_x_fused(client, fake, killed):
     assert killed == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is POSIX only")
 def test_kill_signals_term_then_kill_when_forced(client, fake, killed):
     client.get("/api/system/activity?scope=all")
     assert client.post("/api/system/activity/kill", json=at(900),
