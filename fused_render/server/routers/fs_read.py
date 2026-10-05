@@ -314,8 +314,15 @@ def api_fs_list(path: str, cursor: str | None = None):
     # nothing, so a folder outside a repo — or a machine without git — pays two
     # cheap negatives and renders exactly as it did before either existed.
     statuses = git_status.listing_statuses(path, names)
+    # A plain fact, independent of the dirty mark (the frontend shows the badge
+    # only on clean rows): commits made locally but not yet on the branch's
+    # upstream, counted per entry. Absent unless > 0.
+    ahead = git_status.listing_unpushed(path, names)
     for e in entries:
         e["ignored"] = e["name"] in ignored
+        n_ahead = ahead.get(e["name"])
+        if n_ahead:
+            e["git_ahead"] = n_ahead
         status = statuses.get(e["name"])
         # Absent rather than null when there is nothing to say: the field is
         # optional on the wire, and an older shell that has never heard of it
