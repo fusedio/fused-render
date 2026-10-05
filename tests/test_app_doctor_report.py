@@ -221,9 +221,28 @@ def test_a_missing_pyproject_fails_its_row_and_the_report(workspace):
     """pyproject.toml is now required — absent, not just unparseable, is a
     FAIL, unlike icon (see the contrast test below)."""
     d = _app(workspace, pyproject=False)
+    (d / "serve.py").write_text("print('hi')\n")
     report = app_doctor.report(str(d))
     assert _state(report, "pyproject") == "fail"
     assert report["ok"] is False
+
+
+def test_an_app_with_no_python_skips_the_pyproject_row(workspace):
+    """Nothing to declare: a pure-HTML app has no dependencies to pin. Python
+    under `.venv`/`node_modules`/`.fused` is not the app's own."""
+    d = _app(workspace, pyproject=False)
+    (d / ".venv").mkdir()
+    (d / ".venv" / "site.py").write_text("x = 1\n")
+    (d / "node_modules").mkdir()
+    (d / "node_modules" / "gen.py").write_text("x = 1\n")
+    report = app_doctor.report(str(d))
+    row = _rows(report)["pyproject"]
+    assert row["state"] == "skip"
+    assert "no Python" in row["detail"]
+    assert report["ok"] is True
+    # A broken pyproject still fails even with no .py around.
+    (d / "pyproject.toml").write_text("[project\nbroken\n")
+    assert _state(app_doctor.report(str(d)), "pyproject") == "fail"
 
 
 def test_a_missing_icon_still_skips_its_row(workspace):
@@ -1444,6 +1463,7 @@ def test_a_missing_pyproject_produces_a_fix_prompt(workspace):
     in `doctor_prompt_all`'s blocks — mirrors how `readme`/`preview` are
     covered."""
     d = _app(workspace, pyproject=False)
+    (d / "serve.py").write_text("print('hi')\n")
     row = _rows(app_doctor.report(str(d)))["pyproject"]
     assert row["state"] == "fail"
     prompt = app_doctor.doctor_prompt(str(d / "index.html"), "pyproject",

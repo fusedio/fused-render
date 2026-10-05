@@ -608,6 +608,32 @@ def _optional_file_check(app_dir: str, cid: str, name: str, kind: str, label: st
                  f"{name} parses" if ok else f"{name}: {reason}")
 
 
+def _has_python(app_dir: str) -> bool:
+    """Whether the app tree holds any `.py` of its own. Bounded like
+    `_generated_paths`; an exhausted budget answers True (assume Python — the
+    conservative read for a row that asks for a declaration)."""
+    seen = 0
+    stack = [app_dir]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > _MAX_ENTRIES:
+                return True
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in _SKIP_DIRS:
+                        stack.append(entry.path)
+                elif entry.name.endswith(".py"):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def _pyproject_check(app_dir: str) -> dict:
     # NOT `_optional_file_check` — icon keeps that skip-when-absent shape,
     # but a folder's dependencies live only here (D230), so absence is a
@@ -616,6 +642,9 @@ def _pyproject_check(app_dir: str) -> dict:
     label = "pyproject.toml is valid TOML"
     path = os.path.join(app_dir, "pyproject.toml")
     if not os.path.isfile(path):
+        if not _has_python(app_dir):
+            return _check("pyproject", label, SKIP,
+                          "no Python in this app — nothing to declare")
         return _check(
             "pyproject", label, FAIL,
             "no pyproject.toml — without it this app's dependencies are "
