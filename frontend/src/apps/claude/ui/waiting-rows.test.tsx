@@ -37,6 +37,7 @@ const PERM = readFileSync(join(HERE, "PermCard.tsx"), "utf8");
 const ASK_CARD = readFileSync(join(HERE, "QuestionCard.tsx"), "utf8");
 const PLAN_CARD = readFileSync(join(HERE, "PlanCard.tsx"), "utf8");
 const SCHED_CSS = readFileSync(join(HERE, "../styles/sched.css"), "utf8");
+const TRANSCRIPT = readFileSync(join(HERE, "Transcript.tsx"), "utf8");
 
 /** Everything the render put on screen, as one string. */
 function textOf(node: ReactTestRenderer): string {
@@ -978,8 +979,17 @@ describe("a follow-up the live run is still holding", () => {
     // dashed edge, no delete — the transcript's own user turn, full strength.
     // Drawn only under the flag (review, 2026-09-16): flag off, a mid-turn
     // reload paints exactly what main paints.
-    const at = CHAT.indexOf("{queueOn &&\n              inboxRows.map((row) => (");
+    const at = CHAT.search(/\{queueOn &&\s+inboxRows\.map\(\(row\) => \(/);
     expect(at).toBeGreaterThan(-1);
+    // INSIDE THE LOG (Akshil, 2026-10-04): the rows ride Transcript's
+    // `trailing` slot, after the last turn and the recap, so they scroll with
+    // the conversation. Outside the scroller they sat under it, never moved,
+    // and read as a ghost of a message the reply above had already answered.
+    const trailing = CHAT.indexOf("trailing={");
+    expect(trailing).toBeGreaterThan(-1);
+    expect(trailing).toBeLessThan(at);
+    expect(CHAT.indexOf("waiting.map((row) => (")).toBeGreaterThan(trailing);
+    expect(TRANSCRIPT).toContain("{recap ?? null}\n            {trailing ?? null}");
     const block = CHAT.slice(at, CHAT.indexOf("))}", at));
     expect(block).toContain('<div className="c-inbox" key={row.id}>');
     expect(block).toContain('<div className="bubble">{row.text}</div>');

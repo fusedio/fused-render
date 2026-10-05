@@ -112,6 +112,13 @@ export interface TranscriptProps {
    *  it scrolls with the conversation — Claude Code prints its `※ recap:` as
    *  the last line of the transcript, and so does this. */
   recap?: ReactNode;
+  /** THE READER'S OWN LINES THE RUN HAS NOT ANSWERED YET (ClaudeChat's inbox
+   *  and waiting rows), drawn after the recap and INSIDE the log, so they are
+   *  the last turns of the conversation and scroll with it. They used to sit
+   *  outside the scroller, under it: a bubble that never moved, sat on top of
+   *  whatever the reader scrolled to, and read as a ghost of a message already
+   *  answered above it (Akshil, 2026-10-04). */
+  trailing?: ReactNode;
   /** The chat's working folder (ClaudeChat `chatWorkdir`), threaded down to
    *  every `Turn` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first instead of running wherever the terminal drawer happens to
@@ -135,6 +142,7 @@ export const Transcript = memo(function Transcript({
   comebackPending,
   followRef,
   recap,
+  trailing,
   cwd,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
@@ -750,6 +758,7 @@ export const Transcript = memo(function Transcript({
                 what happened while the reader was away is the newest thing
                 said, so it goes where the newest thing goes. */}
             {recap ?? null}
+            {trailing ?? null}
             {/* THE TAIL PIN (#17). An OPEN card sticks to the bottom of the
                 scrollport for as long as it is open, because the run cannot
                 continue without it and a reader who has scrolled up to re-read
