@@ -146,6 +146,23 @@ def test_the_shallow_plan_is_stale_only_for_a_new_folder_under_the_root(tmp_path
                                 str(root / "Downloads" / "node_modules"))
 
 
+def test_a_whole_tree_session_never_goes_stale(tmp_path):
+    """The darwin watch is `[root]` recursive with `replan=False`: the same
+    shape a planned, nothing-pruned root has, so the opt-out is explicit and
+    an ignored folder appearing inside it must not end the session."""
+    root = tmp_path
+    _tree(root, "proj/node_modules")
+    pruner = _pruner(root)
+    whole = _Session([norm(str(root))], [], pruner, out=None, replan=False)
+    planned = _Session([norm(str(root))], [], pruner, out=None)
+    added = str(root / "proj" / "node_modules")
+
+    assert whole._filter(Change.added, added) is False  # still pruned
+    assert not whole.done.is_set()
+    assert planned._filter(Change.added, added) is False
+    assert planned.done.is_set()
+
+
 # --------------------------------------------------------------- the plumbing
 
 

@@ -4496,6 +4496,63 @@
     });
   }
 
+  function aiSpeech(opts) {
+    opts = opts || {};
+    const speechKeys = ["text", "model", "provider", "voice", "instruct", "refAudio", "refText", "language"];
+    const unknownErr = rejectUnknownOptions(opts, speechKeys, ["onProgress", "abortSignal"], "fused.ai.speech");
+    if (unknownErr) return Promise.reject(unknownErr);
+    if (typeof opts.text !== "string" || !opts.text.trim()) {
+      const err = new Error("fused.ai.speech({text}): text must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of speechKeys) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
+    const signal = abortSignalOf(opts);
+    return startJob("/api/ai/speech", body, signal, "the speech").then((started) => {
+      const watcher = watchJob(started.jobId);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          watcher.stop();
+          cancelJob(started.jobId);
+        }, { once: true });
+      }
+      const done = () => resultFrame(
+        { audio: [{ path: started.path, url: rawUrl(started.path), mediaType: "audio/wav" }] },
+        { provider: started.provider, modelId: started.model, id: started.jobId,
+          warnings: started.warnings, usage: { audioGenerated: 1 },
+          metadata: { text: started.text, language: started.language, voice: started.voice,
+                      instruct: started.instruct, refAudio: started.refAudio,
+                      refText: started.refText } });
+      const tick = onProgress ? (job) => onProgress({ ...job }) : null;
+      return watcher.watch(tick).then((record) => {
+        if (signal && signal.aborted) throw cancelledError("the speech", started.jobId);
+        if (!record) {
+          return stat(started.path).then(done, () => {
+            const err = new Error("the speech job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the speech was cancelled"
+            : record.message || "the speech failed to generate",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
   // fused.ai.transcribe({path, ...}) -> Promise<{output, url, text, segments, ...}>
   //
   // The other call that resolves with a FILE, and the same waiting as
@@ -5143,6 +5200,7 @@
     models: aiModels,
     image: aiImage,
     video: aiVideo,
+    speech: aiSpeech,
     transcribe: aiTranscribe,
     embed: aiEmbed,
     decide: aiDecide,

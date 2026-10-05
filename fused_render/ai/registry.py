@@ -144,6 +144,7 @@ VIDEO_GENERATION = "text-to-video"
 #:   runner's family tag (`laya`) — never on the pipeline tag alone, which is
 #:   how HS-0 ("everything on this tab is runnable here") keeps holding.
 DECISIONS = "text-classification"
+TEXT_TO_SPEECH = "text-to-speech"
 
 # --------------------------------------------------------------- SPEC AI-28
 #: Orthogonal TAGS, not capabilities — `tool-use` and `vision` describe a
@@ -1910,6 +1911,17 @@ _RUNNERS: tuple[Runner, ...] = (
         family_label="Laya",
         note="Answers typed questions about a state with calibrated "
              "probabilities. Under 1 GB of RAM.",
+        _available=_apple_silicon,
+    ),
+    Runner(
+        code="mlx-audio-tts",
+        capability=TEXT_TO_SPEECH,
+        folder=os.path.join(RUNNERS_DIR, "mlx_audio_tts"),
+        label="MLX Audio (Apple Silicon)",
+        short_label="MLX Audio",
+        family_label="MLX Audio",
+        note="Reads text aloud with Qwen3-TTS. 2.5 to 4.5 GB per model.",
+        hub_filter_tags=("qwen3_tts",),
         _available=_apple_silicon,
     ),
 )

@@ -61,7 +61,7 @@ from fused_render.server.common import (
 # nothing from here.
 from fused_render.ai.hub_cache import (
     CachedModel, cached_capability, cached_models, embed_family, has_cached_snapshot,
-    has_vision_tower, is_downloaded,
+    has_vision_tower, is_downloaded, speech_traits,
 )
 from fused_render.ai import hub_metadata
 
@@ -143,6 +143,9 @@ _VIDEO_OPTIONS = frozenset({
 # documents — video had no way to resolve a page-relative path at all until
 # `image` needed one, so this is also where `base` first reaches this route.
 _VIDEO_SERVER_OPTIONS = _VIDEO_OPTIONS | {"base"}
+_SPEECH_OPTIONS = frozenset({
+    "text", "model", "provider", "voice", "instruct", "refAudio", "refText", "language"})
+_SPEECH_SERVER_OPTIONS = _SPEECH_OPTIONS | {"base"}
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
     "speakers", "words", "provider"})
@@ -282,6 +285,7 @@ def _provider_rejection(body: dict, verb: str):
 _APPLE_VERB_CAPABILITY = {
     "image": registry.IMAGE_GENERATION,
     "video": registry.VIDEO_GENERATION,
+    "speech": registry.TEXT_TO_SPEECH,
     "transcribe": registry.SPEECH_TO_TEXT,
     "embed": registry.EMBEDDINGS,
     "decide": registry.DECISIONS,
@@ -295,6 +299,7 @@ _APPLE_VERB_REFUSALS = {
     "image": ("provider 'apple' does not serve image: Apple ships no programmatic image "
               "model (ImageCreator was removed in macOS 27); use a local model"),
     "video": "provider 'apple' does not serve video; use a local model",
+    "speech": "provider 'apple' does not serve speech in this build; use a local model",
     "embed": ("provider 'apple' does not serve embed in this build yet ('afm-embedding' "
               "is reserved for it); use a local model"),
     "decide": ("provider 'apple' does not serve decide: Apple ships no typed-decision "
@@ -459,38 +464,28 @@ def _edit_default_size(image_path: str) -> tuple[int, int] | None:
     return fitted_w, fitted_h
 
 
-def _resolve_reference_image(value, base, *, caller: str, verb: str):
-    """Resolve an `image` option to `(path, None)`, or `(None, error)`.
+def _resolve_reference_file(value, base, *, caller: str, verb: str,
+                            option: str = "image", noun: str = "base image"):
+    """Resolve one input-file option to `(path, None)`, or `(None, error)`.
 
-    Shared by `/api/ai/image`'s edit image and `/api/ai/video`'s reference
-    image — the page-relative-to-`base` rule `/api/ai/transcribe`'s `path`
-    already follows (RH-1), factored out here because a third copy of it
-    for video would otherwise be exactly the kind of drift D413 keeps
-    catching: two routes independently retyping "absolute, or relative to a
-    page named by `base`" and one of them eventually getting it slightly
-    wrong.
-
-    `caller` names the bridge function in the one message that mentions it
-    (`fused.ai.image` or `fused.ai.video`); `verb` names what that call DOES
-    with the image (`"edits exactly one image"` for the image route,
-    `"conditions on exactly one image"` for video — a render conditioned on
-    a reference is not an edit of it). Every other word in every message
-    here is shared VERBATIM between the two routes, so the image route's
-    wording (pinned by tests and by SPEC) stays byte-identical and the video
-    route's reads naturally instead of borrowing "edits" for a call that
-    does not edit anything.
+    Shared by `/api/ai/image`'s edit image, `/api/ai/video`'s reference image
+    and `/api/ai/speech`'s voice sample, so all three follow the one
+    page-relative-to-`base` rule `/api/ai/transcribe`'s `path` uses (RH-1).
+    `option` and `noun` name the field and what it holds; `caller` and `verb`
+    name the bridge call and what it does with the file. The defaults keep
+    the image route's wording byte-identical.
     """
     if not isinstance(value, str) or not value.strip():
         return None, _error(
-            "'image' must be the path to one base image, as a single "
-            f"string — {caller}({{image}}) {verb}, so an "
+            f"'{option}' must be the path to one {noun}, as a single "
+            f"string — {caller}({{{option}}}) {verb}, so an "
             "array or any other type is rejected rather than guessed at",
             status=400)
     path = os.path.expanduser(value.strip())
     if not os.path.isabs(path):
         if not isinstance(base, str) or not os.path.isabs(base):
             return None, _error(
-                "'image' must be absolute, or relative to a page named by "
+                f"'{option}' must be absolute, or relative to a page named by "
                 "'base'", status=400)
         path = os.path.join(os.path.dirname(base), path)
     path = os.path.abspath(path)
@@ -580,6 +575,14 @@ def _videos_dir() -> str:
     from fused_render.shell.storage import home_dir
 
     directory = os.path.join(home_dir(), "ai", "videos")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def _speech_dir() -> str:
+    from fused_render.shell.storage import home_dir
+
+    directory = os.path.join(home_dir(), "ai", "speech")
     os.makedirs(directory, exist_ok=True)
     return directory
 
@@ -1162,6 +1165,11 @@ def _catalog_with_downloads() -> list[dict]:
                                                    entry["id"])
             entry["promptScheme"] = _prompt_scheme(row["capability"],
                                                    entry["id"])
+            traits = (speech_traits(entry["id"])
+                      if row["capability"] == registry.TEXT_TO_SPEECH else None)
+            if traits:
+                entry.update(voiceMode=traits["mode"], voices=traits["voices"],
+                             languages=traits["languages"])
     return rows
 
 
@@ -1788,7 +1796,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
                     "but not edit an existing image with it. Try "
                     "mlx-community/FLUX.2-Klein-4B-4bit.", status=400)
         # Page-relative, the same rule `/api/ai/transcribe`'s `path` follows
-        # (RH-1) — see `_resolve_reference_image`, shared with `/api/ai/
+        # (RH-1) — see `_resolve_reference_file`, shared with `/api/ai/
         # video`'s own `image` option. No allowlist, for the identical
         # reason `api_ai_transcribe` gives: `/api/fs/raw` already serves any
         # absolute path on this machine, so the only checks are the ones a
@@ -1796,7 +1804,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # here (the array/type check above), so this only re-derives the
         # PATH resolution — the shared function's own type check is a no-op
         # for a value that already passed it.
-        image_path, rejection = _resolve_reference_image(
+        image_path, rejection = _resolve_reference_file(
             image, body.get("base"), caller="fused.ai.image",
             verb="edits exactly one image")
         if rejection is not None:
@@ -2025,7 +2033,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     image = body.get("image")
     image_path = None
     if image is not None:
-        image_path, rejection = _resolve_reference_image(
+        image_path, rejection = _resolve_reference_file(
             image, body.get("base"), caller="fused.ai.video",
             verb="conditions on exactly one image")
         if rejection is not None:
@@ -2128,7 +2136,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     # this only changes the DEFAULT either falls back to. A base image this
     # reader cannot parse falls back to the engine's own default silently —
     # this is a convenience default, not a validation the request already
-    # passed (`_resolve_reference_image`, above).
+    # passed (`_resolve_reference_file`, above).
     default_width, default_height = traits.default_width, traits.default_height
     if image_path is not None:
         derived = _video_default_size(image_path, traits)
@@ -2189,6 +2197,69 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # relative path can see what it resolved to.
         reply["image"] = canonical_fs_path(image_path)
     return reply
+
+
+@router.post("/api/ai/speech")
+def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                  x_fused_page: str | None = Header(default=None),
+                  x_fused_source: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    page = unquote(x_fused_page) if x_fused_page else ""
+    source = unquote(x_fused_source) if x_fused_source else page
+
+    rejection = _reject_unknown(body, _SPEECH_SERVER_OPTIONS, "/api/ai/speech")
+    if rejection is not None:
+        return rejection
+    tier = _provider_rejection(body, "speech")
+    if tier is not None:
+        return _error(tier[1], status=tier[2])
+
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return _error("'text' must be a non-empty string", status=400)
+    fields = {}
+    for key in ("voice", "instruct", "refText", "language"):
+        value = body.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            return _error(f"'{key}' must be a non-empty string", status=400)
+        fields[key] = value.strip()
+    if body.get("refAudio") is not None:
+        fields["refAudio"], rejection = _resolve_reference_file(
+            body["refAudio"], body.get("base"), caller="fused.ai.speech",
+            verb="clones exactly one voice", option="refAudio", noun="voice sample")
+        if rejection is not None:
+            return rejection
+
+    model = _model_of(body) or catalog.default_for(registry.TEXT_TO_SPEECH)
+    if not model:
+        return _error(registry.unavailable_reason(registry.TEXT_TO_SPEECH)
+                      or "no speech model is configured", status=409)
+    curated = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
+    traits = speech_traits(model) or (
+        {"mode": curated["voiceMode"]} if curated.get("voiceMode") else None)
+    if traits is not None:
+        try:
+            fields = formats.speech_options(model, traits, fields)
+        except ValueError as e:
+            return _error(str(e), status=400)
+    fields.setdefault("language", "auto")
+
+    uid = secrets.token_hex(6)
+    job = supervisor.speech_job_id(uid)
+    path = os.path.join(_speech_dir(), f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.wav")
+    request = {"text": text.strip(), "out": path, **fields}
+    try:
+        supervisor.start_speech(model, request, job, page=page, source=source)
+    except supervisor.SupervisorError as e:
+        return _error(str(e), status=409)
+    if "refAudio" in fields:
+        fields["refAudio"] = canonical_fs_path(fields["refAudio"])
+    return {"jobId": job, "path": canonical_fs_path(path), "model": model,
+            "provider": "local", "warnings": [], "text": request["text"], **fields}
 
 
 #: Whisper's two directions. One flag to the model, so leaving `translate` out

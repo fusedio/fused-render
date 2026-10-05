@@ -172,7 +172,11 @@ class DesktopPaths:
         return {
             "FUSED_RENDER_HOME": str(self.state),
             "FUSED_RENDER_CACHE_DIR": str(self.cache),
-            "FUSED_RENDER_LOG_DIR": str(self.logs),
+            # `logs/app`, not `logs`: the per-pid app logs and the crash/
+            # folder sit in their own subdirectory beside supervisor.log and
+            # server-console.log (SPEC CL-7): the app-log home then holds
+            # only what logs.py and crashlog.py write and prune.
+            "FUSED_RENDER_LOG_DIR": str(self.logs / "app"),
             # Explicit baseline opt-out (bugbot #5): desktop state is a flat
             # root, never nested under a branch subfolder — _branch.py treats
             # an explicitly-set empty FUSED_RENDER_BRANCH as "no isolation".
@@ -194,7 +198,9 @@ class DesktopPaths:
             "FUSED_RENDER_CACHE_DIR": str(self.cache),
             "FUSED_RENDER_RUNTIME_DIR": str(self.runtime),
             "FUSED_RENDER_TEMP_DIR": str(self.temp),
-            "FUSED_RENDER_LOG_DIR": str(self.logs),
+            # Same `logs/app` as self_environment — the server and the
+            # supervisor must agree on one app-log home.
+            "FUSED_RENDER_LOG_DIR": str(self.logs / "app"),
             "FUSED_RENDER_BRANCH": "",
             # Explicit production opt-out, mirroring self_environment: the
             # supervisor's children must not inherit dev-shell iteration flags

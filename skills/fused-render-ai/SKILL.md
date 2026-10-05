@@ -1,11 +1,11 @@
 ---
 name: fused-render-ai
-description: Use when page or .py calls fused.ai (text/image/video/transcribe/embed/decide), picks model/provider, or AI call rejects.
+description: Use when page or .py calls fused.ai (text/image/video/speech/transcribe/embed/decide), picks model/provider, or AI call rejects.
 ---
 
 # fused.ai
 
-Six verbs, one options object each, one shared result frame. `fused.ai(prompt)` / `fused.ai.text("hi")` don't exist — always `fused.ai.text({prompt})`.
+Seven verbs, one options object each, one shared result frame. `fused.ai(prompt)` / `fused.ai.text("hi")` don't exist — always `fused.ai.text({prompt})`.
 
 Result frame, every verb: `{<payload>, provider, finishReason, warnings, usage, response: {id, modelId, timestamp}, providerMetadata}`. Read `response.modelId` (no top-level `model`), `usage.inputTokens` (camelCase, or null), `providerMetadata.local` for seed/sizes/paths. Never echo own request as caption.
 
@@ -14,6 +14,7 @@ Result frame, every verb: `{<payload>, provider, finishReason, warnings, usage, 
 | `text({prompt})` | prompt | `text` |
 | `image({prompt})` | prompt | `images: [{path, url, mediaType}]` |
 | `video({prompt})` | prompt | `videos: [...]` |
+| `speech({text})` | text | `audio: [{path, url, mediaType: "audio/wav"}]` |
 | `transcribe({path})` | path | `text`, `segments: [{text, startSecond, endSecond, speaker?, words?}]`, `language`, `durationInSeconds` |
 | `embed({texts})` | texts or paths | `embeddings: number[][]` (unit-length → cosine = dot) |
 | `decide({state, questions})` | state, questions | `answers: {[id]: {type, confidence, ...}}` (probabilities, zero output tokens) |
@@ -21,19 +22,19 @@ Result frame, every verb: `{<payload>, provider, finishReason, warnings, usage, 
 Universal rules:
 
 - **Options closed** — unknown key rejects `bad_request` before any request.
-- `provider`, `model`, `abortSignal` everywhere; `onChunk` = streaming (text, transcribe); `onProgress(job)` = job row (image, video, transcribe).
+- `provider`, `model`, `abortSignal` everywhere; `onChunk` = streaming (text, transcribe); `onProgress(job)` = job row (image, video, speech, transcribe).
 - Relative file paths resolve beside page.
 - Rejections: Error with `.type` (+ `.jobId` when job existed) — table below.
-- Calls run concurrent — disable buttons in flight (image/video/transcribe serialize silently server-side).
+- Calls run concurrent — disable buttons in flight (image/video/speech/transcribe serialize silently server-side).
 - Needs a local runtime, so it depends on WHICH export. **Hosted** export refuses any page containing the literal text `fused.ai.text(` — `fused.env` guard does NOT help; other verbs pass the check, then fail served. Only there is a local-only companion page the answer. A **`.fused` app file** deliberately allows `fused.ai.text(` (D388): it opens inside the recipient's own fused-render, and one without claude or a local model just gets the `ai_unavailable` rejection you already handle.
 
 ## Provider / model
 
-Three tiers. `provider: "local" | "apple" | "claude"` pins; omitted → model decides: pinned apple ids (`afm-text`, `afm-speech`, `afm-embedding`) → apple; id with `/` or `.gguf` → local; `"sonnet"`/`"opus"`/`claude-*`/omitted → Claude CLI (text only; default tier haiku unless configured). `{provider: "apple"}` with no model = the tier's one id for the verb; a pinned id under another provider = `bad_request`. image/video = local-only (apple rejects `unavailable`: no programmatic image model on macOS). transcribe = local or apple. embed = local (apple `unavailable` in this build). decide = local-only (claude/apple `unavailable`). **Take local ids from `fused.ai.models.catalog()`, treat as opaque** — never hardcode, never `split("/")`; apple ids are the three literals above and never appear in the catalog.
+Three tiers. `provider: "local" | "apple" | "claude"` pins; omitted → model decides: pinned apple ids (`afm-text`, `afm-speech`, `afm-embedding`) → apple; id with `/` or `.gguf` → local; `"sonnet"`/`"opus"`/`claude-*`/omitted → Claude CLI (text only; default tier haiku unless configured). `{provider: "apple"}` with no model = the tier's one id for the verb; a pinned id under another provider = `bad_request`. image/video/speech = local-only (apple rejects `unavailable`: no programmatic image model on macOS). `afm-speech` is Apple's speech-TO-text id, not `fused.ai.speech`. transcribe = local or apple. embed = local (apple `unavailable` in this build). decide = local-only (claude/apple `unavailable`). **Take local ids from `fused.ai.models.catalog()`, treat as opaque** — never hardcode, never `split("/")`; apple ids are the three literals above and never appear in the catalog.
 
 **apple tier** = macOS 26+, Apple Silicon, Apple Intelligence ON (System Settings) — else `ai_unavailable`/`unavailable` with the reason; OS still downloading the model → `model_loading` + `err.jobId` to watch. Nothing to download, nothing leaves the Mac. Small model (~3B on 26), ~4k-token context incl. history/systemPrompt → keep prompts short or `ai_error` on overflow. Guardrails refuse arbitrarily → `finishReason: "content-filter"` with the text so far, not an error; reword and retry. `usage` null on macOS 26. `providerMetadata.apple: {os, modelGeneration, refusal?, restarted?}` (text), `{locale}` (speech, also in the transcript file).
 
-`catalog()` → `{capabilities: [{capability, available, reason, default, models[], videoTraits?}], unsupported, ramGb}`. Capabilities: `text-generation`, `text-to-image`, `text-to-video`, `automatic-speech-recognition`, `embeddings`, `text-classification` (decide). Model flags: `downloaded, loaded, recommended, size_gb, acceptsImage, acceptsPaths, promptScheme`.
+`catalog()` → `{capabilities: [{capability, available, reason, default, models[], videoTraits?}], unsupported, ramGb}`. Capabilities: `text-generation`, `text-to-image`, `text-to-video`, `text-to-speech`, `automatic-speech-recognition`, `embeddings`, `text-classification` (decide). Model flags: `downloaded, loaded, recommended, size_gb, acceptsImage, acceptsPaths, promptScheme`; speech models add `voiceMode` and, once downloaded, `voices`/`languages`.
 
 `fused.ai.models`: `list()`, `load(id, {capability})` / `download(id, {capability})` → `{jobId}` (**always pass capability** — wrong runner otherwise), `unload({capability})` (by capability, not id), `fused.ai.cancel(capability?)` (default text-generation — name capability to stop anything else).
 
@@ -43,7 +44,7 @@ Three tiers. `provider: "local" | "apple" | "claude"` pins; omitted → model de
 
 **`thinking`** (boolean, local text models only — mlx and llama.cpp/GGUF): tri-state, unset/`true`/`false`. **Local models default to thinking ON.** Most models don't need this touched. Set `thinking: false` when a model's own card says thinking must be off to get usable output — `mlx-community/S1-mini-MLX-4bit` (a transcript normalizer) is the live example: leave `thinking` unset and it degenerates into repeating filler; pass `{thinking: false}` and it answers correctly. Dropped with a `warnings[]` entry on Claude and Apple (they have no such flag) — the call still succeeds, it just did not honour the setting. **Neither local runner strips `<think>…</think>`** — a reasoning model's `result.text` now starts with a visible think block by default, and reasoning tokens count against `maxTokens` (1024 default), so a long think can hit `finishReason: "length"` before the answer. Strip the block, raise `maxTokens`, or pass `thinking: false`.
 
-**Cold start**: first text/embed/decide call naming non-resident local model rejects `model_loading` — download already started, `err.jobId` = it. `fused.watchJob(err.jobId)`, then retry. Not a failure. Image/video/transcribe load inside own job instead (`done`/`total` null while weights arrive — guard division).
+**Cold start**: first text/embed/decide call naming non-resident local model rejects `model_loading` — download already started, `err.jobId` = it. `fused.watchJob(err.jobId)`, then retry. Not a failure. Image/video/speech/transcribe load inside own job instead (`done`/`total` null while weights arrive — guard division).
 
 ## Images: `fused.ai.image({prompt, ...})`
 
@@ -57,6 +58,12 @@ Apple Silicon only, no fallback — before drawing UI check `catalog()` `text-to
 
 Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerated: 1}`, `response.id` = job id, `providerMetadata.local: {seed, width, height, frames, steps, prompt, image?}`. Up to 2 h; serializes; `fused.ai.cancel("text-to-video")` keeps model warm.
 
+## Speech: `fused.ai.speech({text, ...})`
+
+Qwen3-TTS, Apple Silicon only; check the `text-to-speech` row's `available`. Options depend on the model's `voiceMode`: `preset` = `voice` (from `voices`; default and echo = first listed) + optional `instruct` style; `clone` = `refAudio` (page-relative or absolute, 10-30 s) + `refText` (its words), both required; `design` = `instruct` describing the voice, required. Wrong option → `bad_request`. `language`: Qwen names (`english`, `chinese`, ...), not ISO codes; default `"auto"`. Also `model`, `provider`, `onProgress`, `abortSignal`.
+
+Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated: 1}`, `response.id` = job id, `providerMetadata.local: {text, language, voice?, instruct?, refAudio?, refText?}`. Long text is made in parts (paragraphs at blank lines, at most 600 characters each); `onProgress` `done/total` counts parts. Switching between models reloads, so group lines by model.
+
 ## Transcribe, embed and decide
 
 **transcribe** — `language, task ("transcribe"|"translate"), initialPrompt, vad, diarize, speakers, words, onChunk (per segment), onProgress (seconds)`. Default model = smallest; pass bigger for accuracy. Output persisted under `~/.fused-render/ai/transcripts/` (paths in `providerMetadata.local`). Failed long run keeps `err.outputPartial` (.partial.jsonl) — rows there are RAW `{start, end, text}`, not the resolved `startSecond`/`endSecond` shape. Word timings ±200 ms — don't cut clips on them; `translate` returns no words. One at a time, second queues. **apple** (`provider: "apple"` / `model: "afm-speech"`): `language` = ISO code or BCP-47 tag, mapped to Apple's ~30 locales (unsupported → `bad_request` listing them; absent → system locale, no auto-detect); `task: "translate"` and `diarize` → `bad_request`; `initialPrompt`/`vad` → warnings; `words` honoured; first use of a locale downloads its model (row shows it). Segments are utterance-sized, often one per sentence. Fast: 2-3× Whisper.
@@ -67,7 +74,7 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 
 ## From Python
 
-`import fused_ai` works in any server-run `.py`, no path setup. Same option names, blocking; all verbs except video. `fused_ai.text(prompt, ...)` → str; `stream(...)` yields; `decide(state, questions, model=, provider=)` and the rest return frame (dict). `wait=False`, `on_progress=`, `timeout=` on job-backed calls. Catch `ServerNotRunning`, `AiError` (`.type`). Outside server: `sys.path.insert(0, server.json["shared"])`. No live UI through it — `runPython` returns once, no streaming.
+`import fused_ai` works in any server-run `.py`, no path setup. Same option names, blocking; all verbs except video (speech: `ref_audio=`, `ref_text=`). `fused_ai.text(prompt, ...)` → str; `stream(...)` yields; `decide(state, questions, model=, provider=)` and the rest return frame (dict). `wait=False`, `on_progress=`, `timeout=` on job-backed calls. Catch `ServerNotRunning`, `AiError` (`.type`). Outside server: `sys.path.insert(0, server.json["shared"])`. No live UI through it — `runPython` returns once, no streaming.
 
 ## Errors
 
@@ -75,7 +82,7 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 |---|---|
 | `model_loading` | Not resident; load started — watch `err.jobId`, retry |
 | `ai_unavailable` | claude CLI missing / local worker won't start — friendly state, not overlay |
-| `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb, apple on image/video/embed/decide or below macOS 26 / Apple Intelligence off) |
+| `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb, apple on image/video/speech/embed/decide or below macOS 26 / Apple Intelligence off) |
 | `bad_request` | Call wrong — read `.message` |
 | `ai_error` | Ran, failed (bad id, OOM, crash, render past cap) |
 | `timeout` | Text: 600 s on Claude, 900 s local (image 900 s, video 2 h, transcribe far longer) — size a UI timeout off the tier you're calling, not off 600 |

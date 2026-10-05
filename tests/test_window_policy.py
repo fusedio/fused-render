@@ -101,6 +101,24 @@ def test_download_attribute_wins_over_everything():
 def test_other_schemes_are_left_to_webkit():
     assert _nav("about:blank", has_target_frame=False) == "allow"
     assert _nav(f"blob:{APP}/x") == "allow"
+    assert _nav("data:text/plain,hi") == "allow"
+    assert _nav("javascript:void(0)") == "allow"
+
+
+@pytest.mark.parametrize("url", [
+    "fused-render://relaunch",            # the update dialog's Restart
+    "fused-render://relaunch?reason=fda",  # FdaStrip / FdaStep / IndexFdaCta
+    "fused-render://launch",              # the down card
+    "mailto:someone@example.com",
+])
+def test_deep_links_go_out_through_launch_services(url):
+    # WKWebView fails these in-view ("unsupported URL") instead of asking
+    # LaunchServices, so a native window must bounce them out itself —
+    # otherwise the Restart button does nothing and the page waits out its cap.
+    assert wp.needs_launch_services(url) is True
+    assert _nav(url) == "open_external"
+    # A sub-frame has no business launching apps.
+    assert _nav(url, is_main_frame=False) == "allow"
 
 
 def _resp(**kw):

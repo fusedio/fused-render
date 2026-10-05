@@ -63,7 +63,12 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from fused_render.ai.runners import job_marker
+# Runner venvs have this directory, but do not install the app package.
+# Load the sibling by path, also supporting tests that import us by path.
+_marker_spec = importlib.util.spec_from_file_location(
+    "fused_job_marker", os.path.join(os.path.dirname(__file__), "job_marker.py"))
+job_marker = importlib.util.module_from_spec(_marker_spec)
+_marker_spec.loader.exec_module(job_marker)
 
 # ------------------------------------------------------------------- the state
 #
@@ -4796,6 +4801,32 @@ def _adopt_spawn_shape():
             pass
 
 
+def _enable_faulthandler() -> None:
+    """Native-crash stacks for this child (SPEC §50, D4), stdlib only.
+
+    Not `fused_render.crashlog.install`: this module is stdlib only and runs on
+    the runner's own interpreter, where the package is not installed (see the
+    module docstring). So faulthandler goes to fd 2 instead, and that is the
+    right place anyway: the supervisor points every worker's stderr at
+    `_log_path(worker)` and tails it when the process is gone, so a SIGSEGV out
+    of native code leaves its Python stack in the very output the parent
+    already reads after a death.
+
+    No SIGTERM registration, unlike `crashlog.install`: a deliberate stop is
+    routine for this process, and a stack dump on every one would bury the
+    real failures in that same stderr. Uncaught Python exceptions need
+    nothing here — the default hooks already print them to stderr. Never
+    raises: a child must not fail to start over diagnostics.
+    """
+    try:
+        import faulthandler
+
+        if sys.stderr is not None:
+            faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
          release=None, footprint=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
@@ -4823,6 +4854,7 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     """
     global JOB_ID, _measure, _measure_peak, _release, _footprint
 
+    _enable_faulthandler()
     _adopt_spawn_shape()
     _measure = memory
     _measure_peak = peak_memory

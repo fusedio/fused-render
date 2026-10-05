@@ -1945,12 +1945,12 @@ def test_a_repo_id_can_never_become_a_path(hub):
 @requires_symlinks
 def test_an_unreadable_cached_repo_reports_what_it_looks_like(client, hub):
     """The sentence the load route refuses with is built from this."""
-    repo = _repo(hub, "models--org--tts", blobs={"w": 10},
+    repo = _repo(hub, "models--org--sfx", blobs={"w": 10},
                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: text-to-speech\n---\n")
-    reading = ai_models_mod.cached_capability("org/tts")
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: text-to-audio\n---\n")
+    reading = ai_models_mod.cached_capability("org/sfx")
     assert reading.cached is True and reading.capability is None
-    assert reading.looks_like == "a text to speech model"
+    assert reading.looks_like == "an audio generation model"
 
 
 @requires_symlinks

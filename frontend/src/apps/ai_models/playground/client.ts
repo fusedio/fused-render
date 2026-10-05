@@ -429,6 +429,34 @@ export function startVideo(request: VideoRequest): Promise<VideoStarted> {
   return postJson<VideoStarted>("/api/ai/video", request, { headers: sourceHeader() });
 }
 
+export interface SpeechRequest {
+  text: string;
+  model?: string;
+  voice?: string;
+  instruct?: string;
+  refAudio?: string;
+  refText?: string;
+  language?: string;
+}
+
+export interface SpeechStarted {
+  jobId: string;
+  path: string;
+  model: string;
+  provider: "local";
+  warnings: { type: string; setting?: string; message: string }[];
+  text: string;
+  language: string;
+  voice?: string;
+  instruct?: string;
+  refAudio?: string;
+  refText?: string;
+}
+
+export function startSpeech(request: SpeechRequest): Promise<SpeechStarted> {
+  return postJson<SpeechStarted>("/api/ai/speech", request, { headers: sourceHeader() });
+}
+
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
 
 /** `/api/ai/embed`'s result — the same frame as every other verb (D632)

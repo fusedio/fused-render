@@ -252,6 +252,57 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
+// -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------
+/** What a bundle WOULD contain, without building it — cheap. */
+export interface DiagnosticsPlan {
+  files: number;
+  bytes: number;
+  /** Epoch seconds: the oldest log/sample the bundle reaches back to. */
+  window_start: number;
+  crash_reports: number;
+}
+
+/** The zip that was written (to the Desktop). */
+export interface DiagnosticsResult {
+  path: string;
+  bytes: number;
+}
+
+/** `sinceS` is ABSOLUTE epoch seconds (not a duration); omitted = the
+ *  server's default window (the larger of a day and since it booted). */
+export function fetchDiagnosticsPlan(sinceS?: number): Promise<DiagnosticsPlan> {
+  const q = sinceS ? `?since_s=${encodeURIComponent(sinceS)}` : "";
+  return getJson<DiagnosticsPlan>(`/api/diagnostics/plan${q}`);
+}
+
+export interface DiagnosticsOptions {
+  /** Absolute epoch seconds; omitted = server default window. */
+  since_s?: number;
+  /** Include the macOS unified log (`log show`): memory kills and App Nap,
+   *  but it is the ONE slow step — 15-45 s. Off unless the user ticks it. */
+  system_log?: boolean;
+}
+
+/** Builds the bundle. Sub-second without `system_log`, 15-45 s with it.
+ *  postJson carries the `X-Fused: 1` write guard the endpoint requires. */
+export function buildDiagnostics(opts: DiagnosticsOptions = {}): Promise<DiagnosticsResult> {
+  return postJson<DiagnosticsResult>("/api/diagnostics", opts);
+}
+
+/** `GET /api/health` (SPEC §50): the running server's identity. `started_at`
+ *  is what the Diagnostics "since app started" window preset reads. */
+export interface ServerHealth {
+  boot_id: string;
+  pid: number;
+  started_at: number;
+  uptime_s: number;
+  version: string;
+}
+
+export function fetchServerHealth(): Promise<ServerHealth> {
+  return getJson<ServerHealth>("/api/health");
+}
+
 // -- Full Disk Access nudge (fused_render/shell/fda.py) ----------------------
 // Both are packaged-mac-only mutations: X-Fused via postJson, 404 elsewhere.
 export function openFdaSettings(): Promise<{ ok: boolean }> {
@@ -5162,6 +5213,9 @@ export interface AiCatalogModel {
    *  a name heuristic (`registry.use_cases`) on a cached one; `[]` on every
    *  non-text capability. Optional for an older payload. */
   useCases?: string[];
+  voiceMode?: "preset" | "clone" | "design";
+  voices?: string[];
+  languages?: string[];
 }
 
 export interface AiCatalogCapability {

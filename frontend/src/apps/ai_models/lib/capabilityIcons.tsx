@@ -84,6 +84,13 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M12 17.5V21" />
     </svg>
   ),
+  "text-to-speech": (
+    <svg {...base}>
+      <path d="M4 9.5h3l4-3.5v12l-4-3.5H4z" />
+      <path d="M15 9.5a3.5 3.5 0 0 1 0 5" />
+      <path d="M17.5 7a7 7 0 0 1 0 10" />
+    </svg>
+  ),
   // Decisions (Laya): a fork — one input line splitting into two branches,
   // with a dot marking the branch that was picked.
   "text-classification": (

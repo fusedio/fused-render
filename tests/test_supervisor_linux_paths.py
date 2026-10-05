@@ -119,6 +119,9 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
     ):
         assert key in env, key
     assert env["FUSED_RENDER_DESKTOP_INSTANCE_ID"] == "inst-id"
+    # App logs get their own subdir beside supervisor.log (SPEC CL-7).
+    assert env["FUSED_RENDER_LOG_DIR"] == str(p.logs / "app")
+    assert p.self_environment()["FUSED_RENDER_LOG_DIR"] == str(p.logs / "app")
 
 
 def test_child_environment_leaves_the_claude_config_dir_alone(monkeypatch, tmp_path):

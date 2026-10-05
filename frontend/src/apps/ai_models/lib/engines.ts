@@ -36,6 +36,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "text-generation": "Text generation",
   "text-to-image": "Image generation",
   "automatic-speech-recognition": "Speech to text",
+  "text-to-speech": "Text to speech",
   "embeddings": "Search & similarity",
   "text-to-video": "Video generation",
   // Laya (`laya-mlx`): the Hub tag is `text-classification`, but the model

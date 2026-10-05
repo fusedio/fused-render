@@ -58,7 +58,7 @@ def test_ruled_out_and_unknown_are_tellable_apart():
     """The distinction the format fallbacks branch on (`hub_cache._engine`,
     `cached_capability`). Both answer `capability is None`; only one of them may
     be rescued by what the weight files look like."""
-    assert tasks.classify("text-to-speech").ruled_out
+    assert tasks.classify("text-to-audio").ruled_out
     assert not tasks.classify("nonsense-tag").ruled_out
 
 
@@ -85,6 +85,7 @@ def test_ruled_out_and_unknown_are_tellable_apart():
     # `ltx-video` serves this one prompt-only; its image-conditioned siblings
     # (image-to-video, image-text-to-video) stay unmapped below.
     ("text-to-video", registry.VIDEO_GENERATION),
+    ("text-to-speech", registry.TEXT_TO_SPEECH),
 ])
 def test_the_tags_a_runner_serves(tag, capability):
     assert tasks.classify(tag).capability == capability
@@ -120,7 +121,7 @@ def test_the_two_text_embedding_tags_carry_no_withheld_reason_any_more():
 
 
 @pytest.mark.parametrize("tag", [
-    "image-to-video", "text-to-speech", "text-to-audio",
+    "image-to-video", "text-to-audio",
     "reinforcement-learning", "robotics", "tabular-regression", "any-to-any",
 ])
 def test_a_task_we_do_not_serve_says_so_in_words(tag):
@@ -289,3 +290,7 @@ def test_two_supported_claims_resolve_in_menu_order_not_hub_order():
     assert first == second
     assert first.capability == registry.TEXT_GENERATION
 
+
+
+def test_text_to_speech_is_format_gated():
+    assert tasks.is_format_gated("text-to-speech")
