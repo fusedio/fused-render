@@ -1851,6 +1851,25 @@ def test_drive_oauth_502_when_rclone_missing(client, monkeypatch):
     assert r.status_code == 502
 
 
+def test_drive_oauth_502_names_the_macos_version_reason(client, monkeypatch):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
+    monkeypatch.setattr(rcd_mod, "_resolve_rclone", lambda: (
+        None, "Cloud mounts need macOS 15 or later (this Mac runs 14.6)."))
+    r = client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert r.status_code == 502
+    assert "macOS 15" in r.json()["error"]
+
+
+def test_ensure_rcd_error_names_the_macos_version_reason(monkeypatch):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda **k: None)
+    monkeypatch.setattr(mounts_mod, "reap_stale_rcd", lambda: None)
+    monkeypatch.setattr(rcd_mod, "_resolve_rclone", lambda: (
+        None, "Cloud mounts need macOS 15 or later (this Mac runs 14.6)."))
+    with pytest.raises(RuntimeError, match="macOS 15"):
+        mounts_mod.ensure_rcd()
+
+
 def test_drive_oauth_status_idle_before_any_attempt(client):
     s = client.get("/api/mounts/remotes/oauth/status").json()
     assert s == {"in_flight": False, "name": None, "provider": None,

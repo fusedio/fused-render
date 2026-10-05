@@ -235,7 +235,7 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     OAuth backends have no keys to paste and go through the browser sign-in
     instead (POST /api/mounts/remotes/oauth). Credentials go straight into
     rclone's own config, never through the store."""
-    from fused_render.shell.mounts import _rc, ensure_rcd, rclone_bin
+    from fused_render.shell.mounts import _rc, ensure_rcd, rclone_bin, rclone_missing_message
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -248,7 +248,7 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
         return JSONResponse({"error": "invalid remote name"}, status_code=400)
     bin_ = rclone_bin()
     if not bin_:
-        return JSONResponse({"error": "rclone is not installed"}, status_code=502)
+        return JSONResponse({"error": rclone_missing_message()}, status_code=502)
     p = body.get("params") or {}
     parameters = {
         "provider": p.get("provider") or "Other",
@@ -785,7 +785,7 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
     for backwards compatibility with the pre-registry client. `client_id` /
     `client_secret` are the user's own OAuth client — REQUIRED for Drive, and
     accepted-but-unnecessary for Dropbox/Box."""
-    from fused_render.shell.mounts import rclone_bin
+    from fused_render.shell.mounts import rclone_bin, rclone_missing_message
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -822,7 +822,7 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
         return JSONResponse({"error": "'replace' must be true or false"}, status_code=400)
     bin_ = rclone_bin()
     if not bin_:
-        return JSONResponse({"error": "rclone is not installed"}, status_code=502)
+        return JSONResponse({"error": rclone_missing_message()}, status_code=502)
     # config/create OVERWRITES a same-named remote, and re-signing in under the
     # name you already use is the natural thing to do — so the collision has to
     # be caught HERE. The page's own check is a snapshot from when the dialog
@@ -905,13 +905,13 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     env_auth=true means no keys are written. Idempotent: an already-created
     remote is returned as-is — but a detected (env_auth) one is re-probed
     first, since its creds may have expired since creation."""
-    from fused_render.shell.mounts import _credential_suggestions, rclone_bin
+    from fused_render.shell.mounts import _credential_suggestions, rclone_bin, rclone_missing_message
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     bin_ = rclone_bin()
     if not bin_:
-        return JSONResponse({"error": "rclone is not installed"}, status_code=502)
+        return JSONResponse({"error": rclone_missing_message()}, status_code=502)
     sid = (body.get("id") or "").strip()
     sugg = next((s for s in _credential_suggestions() if s["id"] == sid), None)
     if sugg is None:

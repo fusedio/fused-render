@@ -212,9 +212,15 @@ def run_automount() -> None:
     never blocks startup."""
     # Drop retired builtin-mount records BEFORE the snapshot below, so a
     # stale record from an older version never reaches the attach loop.
-    from fused_render.shell.mounts import list_mounts, mounted_paths
+    from fused_render.shell.mounts import _live_rcd_port, list_mounts, mounted_paths, rclone_bin
     prune_builtin_mounts()
     mounts = list_mounts()
+    if mounts and not rclone_bin() and _live_rcd_port() is None:
+        # No runnable rclone (e.g. the bundled one needs a newer macOS): mounts
+        # are an optional feature here, so skip quietly instead of logging a
+        # failed attach per saved mount on every launch.
+        logger.info("automount skipped: no runnable rclone")
+        return
     if mounts:
         live = mounted_paths()
         for m in mounts:

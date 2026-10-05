@@ -146,6 +146,8 @@ from .rcd import (
     mounted_paths,
     rcd_mount_map,
     rclone_bin,
+    rclone_missing_message,
+    rclone_unavailable_reason,
     reap_stale_rcd,
     stop_local_rcd,
     write_rcd_state,

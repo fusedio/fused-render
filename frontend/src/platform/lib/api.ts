@@ -2010,6 +2010,8 @@ export interface RcloneRemote {
 export interface MountsResult {
   rclone: {
     available: boolean;
+    // Set when rclone is unavailable for a specific reason (e.g. macOS too old for the bundled binary).
+    reason?: string | null;
     version: string | null;
     remotes: RcloneRemote[];
     suggested: RemoteSuggestion[];
