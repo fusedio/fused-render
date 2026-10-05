@@ -6,38 +6,60 @@
 // direct prop path — they connect through `terminalDockStore.ts` — so this
 // file reads `useTerminalDockOpen()` itself rather than being told.
 //
-// OWNS THE SESSION ID'S LIFECYCLE, not `TerminalView` (which only owns the
+// MANY TERMINALS, VS Code style: a slim tab strip (`TerminalTabStrip.tsx`)
+// over one terminal view. The backend already runs up to 8 ptys; this file
+// owns the ordered tab list and which tab is active. The model and its pure
+// rules (persisted shape + migration, restore, which tab becomes active when
+// one goes away, labels) live in `terminalTabs.ts`.
+//
+// ONLY THE ACTIVE TAB'S `TerminalView` IS MOUNTED, keyed by its id. The
+// alternative — keeping every xterm mounted but hidden — would need each one
+// refitted when shown (a `display: none` container measures 0x0, and a
+// headless test cannot see layout), while a reattach is something the stack
+// already does on every page reload: the server replays the pty's scrollback
+// on every attach and `TerminalView` resets xterm first. Switching tabs is
+// therefore exactly a reload of one terminal. Inactive tabs keep running
+// server-side; their exits are only observed once switched to (the replay
+// carries the exit frame), which then drops the tab.
+//
+// OWNS THE SESSION IDS' LIFECYCLE, not `TerminalView` (which only owns the
 // xterm instance for whatever id it is handed): create-or-reattach happens
-// here, once, the first time the drawer opens, and the id is cached to
-// localStorage so a page reload rejoins the same shell (PLAN's "How we'll
+// here, once, the first time the drawer opens, and the ids are cached to
+// localStorage so a page reload rejoins the same shells (PLAN's "How we'll
 // know it works": "Reload the page: the same shell is still there with its
-// history"). A cached id is verified against `GET /api/terminal`'s live list
-// before reuse — a dev-server restart invalidates the server's registry but
-// not this page's localStorage, and this check just avoids a needless
-// open-then-exit flash: the WS route now accepts even an unknown/reaped id,
+// history"). EVERY cached id is verified against `GET /api/terminal`'s live
+// list before reuse — a dev-server restart invalidates the server's registry
+// but not this page's localStorage, and this check just avoids a needless
+// open-then-exit flash: the WS route accepts even an unknown/reaped id,
 // sends it the same `{"exit": null}` frame a normally-dying session sends,
 // and closes, so `TerminalSession`'s ordinary exit handling would recover
-// on its own either way.
+// on its own either way. Alive ones keep their order and the cached active
+// tab is restored; if none survive, one fresh terminal is created.
 //
 // STAYS MOUNTED WHILE CLOSED (App.tsx renders it unconditionally, guarded
-// only by `!IS_EMBED`): closing the drawer must not kill the pty session
+// only by `!IS_EMBED`): closing the drawer must not kill any pty session
 // (PLAN: "Navigate to another folder... the shell keeps running"), and the
-// simplest way to keep the created/cached session id across an open->close->
-// open cycle in the SAME page load is to never unmount the component that
-// holds it. Only the visible `TerminalView` (and the xterm/session pair it
-// owns) mounts and unmounts with `open`.
+// simplest way to keep the tab list across an open->close->open cycle in the
+// SAME page load is to never unmount the component that holds it. Only the
+// visible `TerminalView` (and the xterm/session pair it owns) mounts and
+// unmounts with `open`.
 //
-// EXIT HIDES THE DRAWER: `TerminalView`'s `onExit` fires once, when the
-// pty's child process dies (server-side `{"exit": code}` frame). Leaving
-// that dead shell on screen would read as something users had to notice and
-// dismiss, so an exit closes the drawer AND clears the cached session id
-// (both the React state and the persisted `sessionId` in localStorage),
-// so the next open — via the chip or the keyboard shortcut below — finds
-// `sessionId === null` and runs the verify-or-create effect fresh, minting a
-// brand new shell rather than trying to reattach to the one that just died.
-// `clearExitedSession` is the localStorage+store half of that, factored out
-// so it is directly testable without mounting `TerminalView` (deliberately
-// untested — see that component's own header).
+// EXIT REMOVES THE TAB: `TerminalView`'s `onExit` fires once, when the pty's
+// child process dies (server-side `{"exit": code}` frame). That tab goes
+// away and the neighbour becomes active; only the LAST one's exit clears the
+// cached ids and closes the drawer (both the React state and the persisted
+// list in localStorage), so the next open — via the chip or the keyboard
+// shortcut below — finds the tab list `null` and runs the verify-or-create
+// effect fresh, minting a brand new shell rather than trying to reattach to
+// the one that just died. `clearExitedSession` is the localStorage+store half
+// of that, factored out so it is directly testable without mounting
+// `TerminalView` (deliberately untested — see that component's own header).
+// The tab's × does the same after killing the pty.
+//
+// REQUESTS GET A TERMINAL THAT CAN TAKE THEM: an `openTerminal({cwd,
+// command})` request is typed into the ACTIVE terminal; if that one is busy
+// (a Claude TUI owns its pty -> 409) a NEW terminal is created in the
+// request's cwd and made active, see `sendPendingRequestIfAny`.
 //
 // TOGGLE SHORTCUT: bound once, here, because this component stays mounted
 // whether the drawer is open or closed (see above) — a listener registered
@@ -48,6 +70,22 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
+import TerminalTabStrip from "@shell/TerminalTabStrip";
+import {
+  DEFAULT_LABEL,
+  MAX_HEIGHT,
+  MIN_HEIGHT,
+  STORAGE_KEY,
+  cachedTabs,
+  parseState,
+  programLabel,
+  reconcileTabs,
+  removeTab,
+  stateFor,
+  type DrawerState,
+  type LiveSession,
+  type TerminalTab,
+} from "@shell/terminalTabs";
 import {
   buildTerminalCommand,
   createTerminalSession,
@@ -62,6 +100,7 @@ import {
   closeTerminalDock,
   peekPendingTerminalRequest,
   registerTerminalDrawerMounted,
+  setTerminalCount,
   takePendingTerminalRequest,
   toggleTerminalDock,
   usePendingTerminalRequestVersion,
@@ -69,33 +108,15 @@ import {
   type TerminalRequest,
 } from "@platform/lib/terminalDockStore";
 
-const STORAGE_KEY = "fused-render:terminal-drawer";
-const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 720;
-const DEFAULT_HEIGHT = 260;
-
-interface DrawerState {
-  height: number;
-  sessionId: string | null;
-}
-
 // Same defensive, best-effort localStorage pattern as
 // `platform/lib/sidebarstate.ts`: private-mode/quota/malformed JSON all just
-// fall back to the default rather than throwing.
+// fall back to the default rather than throwing. The shape and its migration
+// from the old single-`sessionId` blob live in terminalTabs.ts.
 function loadState(): DrawerState {
-  const fallback: DrawerState = { height: DEFAULT_HEIGHT, sessionId: null };
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Partial<DrawerState>;
-    const height =
-      typeof parsed.height === "number" && Number.isFinite(parsed.height)
-        ? Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, parsed.height))
-        : DEFAULT_HEIGHT;
-    const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId : null;
-    return { height, sessionId };
+    return parseState(localStorage.getItem(STORAGE_KEY));
   } catch {
-    return fallback;
+    return parseState(null);
   }
 }
 
@@ -107,15 +128,16 @@ function saveState(state: DrawerState): void {
   }
 }
 
-/** The localStorage+store half of "a process exit hides the drawer": drops
- * the cached session id (so the next open's verify-or-create effect mints a
- * fresh shell instead of reattaching to the one that just died) and closes
- * the drawer. `closeTerminalDock()` is idempotent — safe to call even if the
- * drawer is somehow already closed by the time this runs — so this needs no
- * `open` check of its own. Exported so it is directly testable without
- * mounting `TerminalView` to fire a real `onExit`. */
+/** The localStorage+store half of "the LAST terminal's exit (or close) hides
+ * the drawer": drops every cached session id (so the next open's
+ * verify-or-create effect mints a fresh shell instead of reattaching to the
+ * one that just died) and closes the drawer. `closeTerminalDock()` is
+ * idempotent — safe to call even if the drawer is somehow already closed by
+ * the time this runs — so this needs no `open` check of its own. Exported so
+ * it is directly testable without mounting `TerminalView` to fire a real
+ * `onExit`. */
 export function clearExitedSession(height: number): void {
-  saveState({ height, sessionId: null });
+  saveState(stateFor(height, [], null));
   closeTerminalDock();
 }
 
@@ -149,34 +171,56 @@ export async function createSessionOrAbandon(
   return id;
 }
 
-/** Consumes the pending "open the drawer in a folder / run a command in it"
- * request (`terminalDockStore.ts`) and types the resulting string into
- * `sessionId`'s pty via `sendTerminalInput` — exactly once per request,
- * since `takePendingTerminalRequest()` clears the slot on its way out. A
- * no-op if there is no pending request, or the request (once the `cd` is
- * dropped, see below) has nothing left to send. When `opts.createdCwd`
- * matches the request's own `cwd`, the session was just CREATED in that
- * directory (see the effect below) — it already starts there, so re-sending
- * `cd '<cwd>' && ...` would be a redundant, visible extra line, and only the
- * command (if any) is sent. Exported and dependency-injectable so a
- * test can drive it without a real store slot or a real POST, the same
- * shape `createSessionOrAbandon` uses. */
-/** The `data` bracketed-paste/`\r` framing strippped back to plain text — what
- * a person would actually want on the clipboard when the pty refuses it
+/** The `data` bracketed-paste/`\r` framing stripped back to plain text — what
+ * a person would actually want on the clipboard when no terminal can take it
  * (below), rather than the raw control bytes sent over the wire. */
 function plainCommandText(data: string): string {
   return data.replace(/^\x1b\[200~/, "").replace(/\x1b\[201~$/, "").replace(/\r$/, "");
 }
 
 /** An error `sendPendingRequestIfAny` throws once it has ALREADY copied the
- * command to the clipboard as a fallback — the caller's catch just needs to
- * show the notice, not do the copy itself. */
+ * command to the clipboard as a last-resort fallback — the caller's catch
+ * just needs to show the notice, not do the copy itself. `reason` is "limit"
+ * when the fallback was a new terminal that the server's session cap refused,
+ * "busy" for every other way no terminal could take the command. */
 export class TerminalBusyError extends Error {
-  constructor() {
-    super("terminal is busy — command copied");
+  readonly reason: "busy" | "limit";
+  constructor(reason: "busy" | "limit" = "busy") {
+    super(reason === "limit" ? "terminal limit reached — command copied" : "terminal is busy — command copied");
+    this.reason = reason;
   }
 }
 
+function errStatus(err: unknown): unknown {
+  return err && typeof err === "object" && "status" in err ? (err as { status?: unknown }).status : undefined;
+}
+
+/** Consumes the pending "open the drawer in a folder / run a command in it"
+ * request (`terminalDockStore.ts`) and types the resulting string into
+ * `sessionId`'s pty — the ACTIVE terminal — via `sendTerminalInput`, exactly
+ * once per request, since `takePendingTerminalRequest()` clears the slot on
+ * its way out. A no-op if there is no pending request, or the request (once
+ * the `cd` is dropped, see below) has nothing left to send. When
+ * `opts.createdCwd` matches the request's own `cwd`, the session was just
+ * CREATED in that directory (see the effect below) — it already starts
+ * there, so re-sending `cd '<cwd>' && ...` would be a redundant, visible
+ * extra line, and only the command (if any) is sent.
+ *
+ * BUSY (409): the server refuses input when the pty's foreground process
+ * isn't the shell itself (fused_render/server/routers/terminal.py) — a Claude
+ * TUI or any other program has it, so `cd ... && ...\r` would go to IT as
+ * keystrokes. Typing into it is never an option, and neither is leaving the
+ * reader looking at the task they already had: when `deps.create` is given,
+ * a NEW terminal is created in the request's cwd, handed to `deps.adopt`
+ * (which adds the tab and makes it active) and the command is sent there.
+ * Only when that create fails (the server's 8-session cap answers 409;
+ * anything else is some other failure) does it fall back to the clipboard
+ * and throw `TerminalBusyError`. Without `deps.create` the clipboard-only
+ * behaviour applies. A brand-new terminal that is itself busy (its rc files
+ * still running) also copies — no third terminal.
+ *
+ * Exported and dependency-injectable so a test can drive it without a real
+ * store slot or a real POST, the same shape `createSessionOrAbandon` uses. */
 export async function sendPendingRequestIfAny(
   sessionId: string,
   // `createdCwd`: the cwd the session was ACTUALLY created with, if this call
@@ -186,11 +230,16 @@ export async function sendPendingRequestIfAny(
   // request (terminalDockStore.ts) during the `await create(...)` this
   // follows; comparing against the stale peeked value would skip `cd` for a
   // request the session was never actually started in.
-  opts: { createdCwd?: string } = {},
+  // `fallbackCwd`: where the busy-path's NEW terminal starts when the request
+  // names no cwd of its own (a command-only `fused.terminal.run`) — the
+  // drawer's cwd, rather than the server's `$HOME`.
+  opts: { createdCwd?: string; fallbackCwd?: string } = {},
   deps: {
     take?: () => TerminalRequest | null;
     send?: (id: string, data: string) => Promise<{ ok: boolean }>;
     copy?: (text: string) => Promise<boolean>;
+    create?: (cwd?: string) => Promise<string>;
+    adopt?: (id: string, tab: { label: string; cwd?: string }) => void;
   } = {},
 ): Promise<void> {
   const take = deps.take ?? takePendingTerminalRequest;
@@ -204,20 +253,36 @@ export async function sendPendingRequestIfAny(
   if (!data) return;
   try {
     await send(sessionId, data);
+    return;
   } catch (err) {
-    // 409: the pty's foreground process isn't the shell itself (server-side
-    // check, fused_render/server/routers/terminal.py, reusing pty_session.py's
-    // `wait_shell_foreground`) — a Claude TUI or any other foreground program
-    // is running, so `cd ... && ...\r` would go to IT as keystrokes instead of
-    // starting the thing the reader actually asked for. Atomically fall back
-    // to the clipboard rather than typing into whatever has the pty, and let
-    // the caller surface the notice.
-    const status = err && typeof err === "object" && "status" in err ? (err as { status?: unknown }).status : undefined;
-    if (status === 409) {
-      await copy(plainCommandText(data));
-      throw new TerminalBusyError();
-    }
-    throw err;
+    if (errStatus(err) !== 409) throw err;
+  }
+  const fullText = plainCommandText(buildTerminalCommand(req));
+  if (!deps.create) {
+    await copy(fullText);
+    throw new TerminalBusyError();
+  }
+  let newId: string;
+  try {
+    newId = await deps.create(req.cwd ?? opts.fallbackCwd);
+  } catch (err) {
+    await copy(fullText);
+    throw new TerminalBusyError(errStatus(err) === 409 ? "limit" : "busy");
+  }
+  // The new tab goes in BEFORE the send: the command's output should land in
+  // a terminal the reader can already see.
+  const newCwd = req.cwd ?? opts.fallbackCwd;
+  deps.adopt?.(newId, { label: programLabel(req.command) ?? DEFAULT_LABEL, ...(newCwd ? { cwd: newCwd } : {}) });
+  // Created in `req.cwd` (or the request had none), so only the command is
+  // sent; a cd-only request is done once the terminal exists.
+  const own = buildTerminalCommand({ command: req.command, execute: req.execute });
+  if (!own) return;
+  try {
+    await send(newId, own);
+  } catch (err) {
+    if (errStatus(err) !== 409) throw err;
+    await copy(fullText);
+    throw new TerminalBusyError();
   }
 }
 
@@ -228,51 +293,143 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // does not mount this on the onboarding route).
   useEffect(() => registerTerminalDrawerMounted(), []);
   const open = useTerminalDockOpen();
+  const openRef = useRef(open);
+  openRef.current = open;
   const [height, setHeight] = useState(() => loadState().height);
-  // Deliberately NOT seeded from `loadState().sessionId`: doing that made
-  // this state non-null on first render whenever a cached id existed, which
-  // made the effect below bail out on its OWN guard (`sessionId !== null`)
-  // before the cached id was ever checked against the live registry — a
-  // stale id from a dev-server restart would then be handed straight to
-  // `TerminalView`, which would only find out it is dead after opening a
-  // socket (the server does accept it and send an exit frame, but only
-  // after that round trip — a needless flash this file's own verify step
-  // above avoids). Starting at `null` guarantees the verify-or-create
-  // effect always runs once per drawer open.
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  // `createTerminalSession` can reject (server down, 501 on Windows, the
-  // session cap). Surfaced here instead of an unhandled rejection that
-  // would leave the drawer open and permanently empty.
+  // Deliberately NOT seeded from the cached list: doing that made this state
+  // non-null on first render whenever cached ids existed, which made the
+  // effect below bail out on its OWN guard (`tabs !== null`) before the
+  // cached ids were ever checked against the live registry — a stale id from
+  // a dev-server restart would then be handed straight to `TerminalView`,
+  // which would only find out it is dead after opening a socket (the server
+  // does accept it and send an exit frame, but only after that round trip —
+  // a needless flash this file's own verify step avoids). Starting at `null`
+  // guarantees the verify-or-create effect always runs once per drawer open.
+  const [tabs, setTabs] = useState<TerminalTab[] | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  // The same two values, readable synchronously from async callbacks and
+  // updated BEFORE React re-renders: a request that arrives right after an
+  // `adopt` must route to the tab that was just made active, not the stale
+  // one a closure captured. Every write goes through `commit` below.
+  const stateRef = useRef<{ tabs: TerminalTab[] | null; activeId: string | null }>({ tabs: null, activeId: null });
+  // The shell name the server reports (`zsh`), learned from the list route;
+  // labels a terminal opened with no command.
+  const shellRef = useRef<string | null>(null);
+  // `createTerminalSession` can reject (server down, 501 on Windows). The
+  // session cap has its own toast. Surfaced here instead of an unhandled
+  // rejection that would leave the drawer open and permanently empty.
   const [createError, setCreateError] = useState<string | null>(null);
   // Bumped by the retry affordance to re-run the effect below even though
-  // `sessionId` and `open` haven't changed.
+  // `tabs` and `open` haven't changed.
   const [retryTick, setRetryTick] = useState(0);
   // Bumps on every `openTerminal({ cwd/command })` call, including a repeat
-  // one while the drawer (and this session) is already open — the effect
+  // one while the drawer (and its terminals) is already open — the effect
   // below depends on it so a second "Open in Terminal" click on an already-
   // running drawer still gets typed in, not just the very first one that
   // happened to also mint the session.
   const pendingVersion = usePendingTerminalRequestVersion();
-  // `sendPendingRequestIfAny`'s three call sites below all funnel their
-  // rejection here instead of swallowing it: a `TerminalBusyError` — the
-  // server (fused_render/server/routers/terminal.py) 409'd because the pty's
-  // foreground process isn't the shell itself, so `sendPendingRequestIfAny`
-  // has already copied the command to the clipboard instead — gets a toast
+  const heightRef = useRef(height);
+  heightRef.current = height;
+  // Current `cwd` prop for async callbacks (the verify effect deliberately
+  // does not re-run on it, so its closure would otherwise go stale).
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+  // Bumped by `forget()`: an in-flight create that started in an earlier
+  // epoch is abandoned (killed) even if the drawer has been reopened since —
+  // `openRef` alone cannot tell "still open" from "closed and reopened".
+  const epochRef = useRef(0);
+  // The terminal whose view should take keyboard focus when it mounts: one the
+  // reader just created or clicked. Cleared with the rest on `forget()`, so a
+  // plain reopen restores tabs without grabbing focus.
+  const [focusId, setFocusId] = useState<string | null>(null);
+
+  function commit(nextTabs: TerminalTab[], nextActive: string | null): void {
+    stateRef.current = { tabs: nextTabs, activeId: nextActive };
+    setTabs(nextTabs);
+    setActiveId(nextActive);
+    setTerminalCount(nextTabs.length);
+    saveState(stateFor(heightRef.current, nextTabs, nextActive));
+  }
+
+  /** Back to "unverified": the next open re-runs verify-or-create. */
+  function forget(): void {
+    stateRef.current = { tabs: null, activeId: null };
+    epochRef.current += 1;
+    setTabs(null);
+    setActiveId(null);
+    setFocusId(null);
+  }
+
+  function relabel(id: string, label: string): void {
+    const st = stateRef.current;
+    if (!st.tabs?.some((t) => t.id === id)) return;
+    commit(st.tabs.map((t) => (t.id === id ? { ...t, label } : t)), st.activeId);
+  }
+
+  /** Learn the shell's name for a terminal opened with no command of its own
+   * — the create route returns only an id. Best-effort: "Terminal" stays if
+   * the list route is unreachable. */
+  function refineLabel(id: string): void {
+    getJson<{ sessions: LiveSession[] }>("/api/terminal")
+      .then(({ sessions }) => {
+        const row = sessions.find((s) => s.id === id);
+        if (!row?.shell) return;
+        shellRef.current = row.shell;
+        const tab = stateRef.current.tabs?.find((t) => t.id === id);
+        if (tab && tab.label === DEFAULT_LABEL) relabel(id, row.shell);
+      })
+      .catch(() => {});
+  }
+
+  /** Add a tab for a terminal that now exists and make it active. */
+  function adopt(id: string, tab: { label: string; cwd?: string }, base?: TerminalTab[]): void {
+    // While the list is unverified (`tabs === null`: closed-and-reopened, the
+    // verify still in flight) merge into the PERSISTED list instead of
+    // starting from empty — committing `[newId]` alone would overwrite every
+    // cached id and orphan their ptys. Only the verify effect's own create
+    // branch passes `base: []`, because there the cache is known dead/absent.
+    const cur = stateRef.current.tabs ?? base ?? cachedTabs(loadState());
+    if (cur.some((t) => t.id === id)) return;
+    const label = tab.label === DEFAULT_LABEL && shellRef.current ? shellRef.current : tab.label;
+    commit([...cur, { id, label, ...(tab.cwd ? { cwd: tab.cwd } : {}) }], id);
+    setFocusId(id);
+    if (label === DEFAULT_LABEL) refineLabel(id);
+  }
+
+  // `sendPendingRequestIfAny`'s call sites below all funnel their rejection
+  // here instead of swallowing it: a `TerminalBusyError` — no terminal could
+  // take the command, so it is already on the clipboard — gets a toast
   // instead of typing into whatever program is actually running; anything
   // else (a dropped connection, a dead session the list check missed) still
   // surfaces in the drawer's existing error line rather than vanishing with
   // nothing typed and no explanation.
   function reportPendingSendFailure(err: unknown): void {
     if (err instanceof TerminalBusyError) {
-      notify({ title: "Terminal is busy — command copied", tone: "info" });
+      notify({
+        title: err.reason === "limit" ? "Terminal limit reached — command copied" : "Terminal is busy — command copied",
+        tone: "info",
+      });
       return;
     }
     setCreateError(
       "Couldn't send the pending terminal request: " + (err instanceof Error ? err.message : String(err))
     );
   }
-  const heightRef = useRef(height);
-  heightRef.current = height;
+
+  function routeDeps() {
+    return {
+      // A create that resolves after the drawer closed is killed by
+      // `createSessionOrAbandon`; the request then falls back to the clipboard.
+      create: async (c?: string) => {
+        const epoch = epochRef.current;
+        const id = await createSessionOrAbandon(c, () => !openRef.current || epochRef.current !== epoch);
+        if (id === null) throw new Error("terminal drawer closed");
+        return id;
+      },
+      adopt,
+    };
+  }
+
   const drag = useRef<{ startY: number; startHeight: number } | null>(null);
   // Drag resize is coalesced to at most one `setHeight` per animation frame:
   // uncoalesced, every single `pointermove` triggered a re-render -> layout
@@ -293,50 +450,62 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     };
   }, []);
 
-  // Re-verify the held id on every closed->open transition, not just once
-  // per page load: the shell can die (or the dev server restart, reaping its
+  // Re-verify the held ids on every closed->open transition, not just once
+  // per page load: a shell can die (or the dev server restart, reaping its
   // whole registry) while the drawer is CLOSED, when there is no mounted
-  // `TerminalView` to observe an exit frame and clear the cached id. Without
-  // this, the verify-or-create effect below bails out on its own
-  // `sessionId !== null` guard on the next open, handing `TerminalView` a
-  // dead id straight away (an open-then-flash-closed round trip the guard
-  // below exists to avoid in the first place). Resetting to `null` here
-  // costs nothing: `loadState().sessionId` still holds the cached id (this
-  // never touches localStorage), so the effect below re-reads it and
-  // reattaches if the live check says it is still alive.
+  // `TerminalView` to observe an exit frame and drop its tab. Without this,
+  // the verify-or-create effect below bails out on its own `tabs !== null`
+  // guard on the next open, handing `TerminalView` a dead id straight away
+  // (an open-then-flash round trip the guard exists to avoid in the first
+  // place). Resetting to `null` here costs nothing: localStorage still holds
+  // the cached ids (this never touches it), so the effect below re-reads them
+  // and reattaches to whichever the live check says are still alive.
   const wasOpenRef = useRef(open);
   useEffect(() => {
-    if (wasOpenRef.current && !open) setSessionId(null);
+    if (wasOpenRef.current && !open) forget();
     wasOpenRef.current = open;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
-    if (!open || sessionId !== null) return;
+    if (!open || tabs !== null) return;
     let cancelled = false;
     (async () => {
       setCreateError(null);
-      const cached = loadState().sessionId;
-      if (cached !== null) {
+      const cached = loadState();
+      if (cached.sessionIds.length > 0) {
         try {
-          const { sessions } = await getJson<{
-            sessions: { id: string; alive: boolean }[];
-          }>("/api/terminal");
+          const { sessions } = await getJson<{ sessions: LiveSession[] }>("/api/terminal");
           if (cancelled) return;
-          // A dead session can still be in the list for one tick (the
-          // registry only reaps on the next create()/list() call) — filter
-          // on `alive`, not just presence, or this can reattach to a
-          // session that is about to vanish.
-          if (sessions.some((s) => s.id === cached && s.alive)) {
-            setSessionId(cached);
-            // Reattaching to an already-running shell — it did not just
-            // start in the request's `cwd`, so a `cd` (not just the
+          const shell = sessions.find((s) => s.shell)?.shell;
+          if (shell) shellRef.current = shell;
+          // `reconcileTabs` filters on `alive`, not just presence: a dead
+          // session can still be in the list for one tick (the registry only
+          // reaps on the next create()/list() call), and reattaching to one
+          // that is about to vanish is the flash this verify exists to avoid.
+          const restored = reconcileTabs(cached, sessions);
+          if (restored.tabs.length > 0 && restored.activeId !== null) {
+            commit(restored.tabs, restored.activeId);
+            // Reattaching to already-running shells — none of them just
+            // started in the request's `cwd`, so a `cd` (not just the
             // command) is still needed.
-            sendPendingRequestIfAny(cached).catch(reportPendingSendFailure);
+            sendPendingRequestIfAny(restored.activeId, { fallbackCwd: cwdRef.current ?? undefined }, routeDeps()).catch(reportPendingSendFailure);
             return;
           }
         } catch {
-          // couldn't reach the list route — fall through and mint a new
-          // session rather than getting stuck with neither.
+          if (cancelled) return;
+          // Couldn't reach the list route. Do NOT fall through to a create:
+          // that would commit a one-tab list over the cached one and orphan
+          // every live shell in it. Trust the cache; a dead id just shows its
+          // exit frame and drops itself (TerminalView's onExit).
+          const tabsFromCache = cachedTabs(cached);
+          const active =
+            cached.activeId !== null && tabsFromCache.some((t) => t.id === cached.activeId)
+              ? cached.activeId
+              : tabsFromCache[0].id;
+          commit(tabsFromCache, active);
+          sendPendingRequestIfAny(active, { fallbackCwd: cwdRef.current ?? undefined }, routeDeps()).catch(reportPendingSendFailure);
+          return;
         }
       }
       try {
@@ -355,14 +524,22 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         // returns must not leak a live shell nothing will ever attach to.
         const id = await createSessionOrAbandon(createCwd, () => cancelled);
         if (id !== null) {
-          setSessionId(id);
-          saveState({ height: heightRef.current, sessionId: id });
-          // `createdCwd: createCwd` lets `sendPendingRequestIfAny` skip the
-          // `cd` ONLY if the request it actually `take()`s (which can be a
-          // newer one than `pending` above, replaced during the `await`
-          // just finished) carries that same cwd — i.e. this session really
-          // was created in it.
-          sendPendingRequestIfAny(id, { createdCwd: createCwd }).catch(reportPendingSendFailure);
+          // `sendPendingRequestIfAny` TAKES the request synchronously before
+          // its first await, so it is started BEFORE `adopt`: adopting changes
+          // `activeId`, which re-runs the pending-request effect below, and if
+          // that render flushed first it would take the request and route it
+          // with `routeDeps()` — letting a 409 from this brand-new shell chain
+          // a second terminal.
+          //
+          // `createdCwd: createCwd` lets it skip the `cd` ONLY if the request
+          // it actually `take()`s (which can be a newer one than `pending`
+          // above, replaced during the `await` just finished) carries that
+          // same cwd — i.e. this session really was created in it. No
+          // `create` dep: a brand-new terminal that 409s (rc files still
+          // running) copies to the clipboard, it never mints a second one.
+          const sent = sendPendingRequestIfAny(id, { createdCwd: createCwd }, {});
+          adopt(id, { label: programLabel(pending?.command) ?? DEFAULT_LABEL, ...(createCwd ? { cwd: createCwd } : {}) }, []);
+          sent.catch(reportPendingSendFailure);
         }
       } catch (err) {
         if (!cancelled) {
@@ -373,31 +550,66 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     return () => {
       cancelled = true;
     };
-    // `cwd` intentionally excluded: it is only consulted the first time a
-    // session is created for this page load, not on every folder navigation
-    // (the whole point is that the shell keeps running when you navigate).
+    // `cwd` intentionally excluded: it is only consulted when a terminal is
+    // created for this page load, not on every folder navigation (the whole
+    // point is that the shells keep running when you navigate).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, sessionId, retryTick]);
+  }, [open, tabs === null, retryTick]);
 
-  // A pending request that arrives while a session is ALREADY resolved
+  // A pending request that arrives while a terminal is ALREADY resolved
   // (drawer already open, another "Open in Terminal" click on a different
-  // folder) — the effect above only ever runs when `sessionId` transitions
-  // away from null, so it never sees this case. This session was not just
-  // created in the request's cwd, so a full `cd` is always needed here.
+  // folder) — the effect above only ever runs when the tab list transitions
+  // away from null, so it never sees this case. The active terminal was not
+  // just created in the request's cwd, so a full `cd` is always needed here.
   useEffect(() => {
-    if (sessionId === null) return;
-    sendPendingRequestIfAny(sessionId).catch(reportPendingSendFailure);
-  }, [sessionId, pendingVersion]);
+    const id = stateRef.current.activeId;
+    if (id === null) return;
+    sendPendingRequestIfAny(id, { fallbackCwd: cwdRef.current ?? undefined }, routeDeps()).catch(reportPendingSendFailure);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, pendingVersion]);
 
-  // `TerminalView`'s exit callback: clears the cached session id (React
-  // state + localStorage, via `clearExitedSession`) and closes the drawer,
-  // so the next open mints a fresh shell instead of trying to reattach to
-  // the one that just died. `TerminalView` is only ever mounted while
-  // `open` is true (see below), so this always runs with a live drawer —
-  // `clearExitedSession` itself stays safe to call regardless.
-  function handleExit(): void {
-    setSessionId(null);
-    clearExitedSession(heightRef.current);
+  /** A terminal is gone (its shell exited, or its tab was closed): drop the
+   * tab, activate the neighbour, and if that was the last one clear the cache
+   * and close the drawer so the next open mints a fresh shell. */
+  function dropTab(id: string): void {
+    const st = stateRef.current;
+    if (st.tabs === null) return;
+    const next = removeTab(st.tabs, st.activeId, id);
+    if (next.empty) {
+      forget();
+      setTerminalCount(0);
+      clearExitedSession(heightRef.current);
+      return;
+    }
+    commit(next.tabs, next.activeId);
+  }
+
+  function closeTab(id: string): void {
+    // Best-effort: a 404 means the shell is already gone, which is the goal.
+    killTerminalSession(id).catch(() => {});
+    dropTab(id);
+  }
+
+  function selectTab(id: string): void {
+    const st = stateRef.current;
+    if (st.tabs === null || st.activeId === id) return;
+    commit(st.tabs, id);
+    setFocusId(id);
+  }
+
+  async function newTab(): Promise<void> {
+    try {
+      const epoch = epochRef.current;
+      const id = await createSessionOrAbandon(cwd ?? undefined, () => !openRef.current || epochRef.current !== epoch);
+      if (id === null) return;
+      adopt(id, { label: DEFAULT_LABEL, ...(cwd ? { cwd } : {}) });
+    } catch (err) {
+      if (errStatus(err) === 409) {
+        notify({ title: "Terminal limit reached", tone: "info" });
+      } else {
+        setCreateError(err instanceof Error ? err.message : String(err));
+      }
+    }
   }
 
   // Toggle the drawer: the user's requested chord (Cmd+Shift+` on macOS,
@@ -461,7 +673,15 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // last pointermove, before that frame's rAF callback runs.
     setHeight(dragHeightRef.current);
     e.currentTarget.releasePointerCapture(e.pointerId);
-    saveState({ height: dragHeightRef.current, sessionId });
+    const st = stateRef.current;
+    // While the tab list is unverified (null) keep the cached ids and only
+    // change the height, so a drag cannot erase what the verify is about to
+    // restore.
+    saveState(
+      st.tabs !== null
+        ? stateFor(dragHeightRef.current, st.tabs, st.activeId)
+        : { ...loadState(), height: dragHeightRef.current },
+    );
   }
 
   if (!open) return null;
@@ -477,7 +697,10 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         onPointerMove={onHandlePointerMove}
         onPointerUp={onHandlePointerUp}
       />
-      {sessionId !== null && <TerminalView id={sessionId} onExit={handleExit} />}
+      {tabs !== null && tabs.length > 0 && (
+        <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} />
+      )}
+      {activeId !== null && <TerminalView key={activeId} id={activeId} autoFocus={focusId === activeId} onExit={() => dropTab(activeId)} />}
       {createError !== null && (
         <div className="term-drawer-exit">
           {`Couldn't start a terminal: ${createError} — `}

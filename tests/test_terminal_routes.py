@@ -66,6 +66,15 @@ def test_create_attach_type_and_receive_output(client, scratch_registry):
         _read_until(ws, b"hi")
 
 
+def test_list_reports_shell_name_and_cwd(client, scratch_registry, tmp_path):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    rows = client.get("/api/terminal").json()["sessions"]
+    row = next(r for r in rows if r["id"] == sid)
+    assert row["shell"] == "sh"
+    assert row["cwd"] == str(tmp_path)
+    assert row["alive"] is True
+
+
 def test_detach_and_reattach_replays_scrollback(client, scratch_registry):
     sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
 

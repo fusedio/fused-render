@@ -188,6 +188,94 @@
   touch-action: none;
 }
 
+/* Tab strip — one tab per terminal, VS Code style. A slim row between the
+   drag handle and the xterm surface; `flex: 0 0 auto` so it keeps its own
+   height while `.term-view` takes the rest. Tabs scroll sideways rather than
+   wrapping (8 is the server's cap). The active tab reads through the same
+   selected-row wash the lists use; the close glyph shows on the active tab
+   and on hover, so a row of idle tabs stays quiet. */
+.term-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  height: 26px;
+  overflow-x: auto;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+.term-tab {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  max-width: 180px;
+  color: var(--fg-muted);
+  border-right: 1px solid var(--border);
+}
+
+.term-tab:hover {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+.term-tab.is-active {
+  background: var(--row-bg-selected);
+  color: var(--fg);
+}
+
+.term-tab-label,
+.term-tab-close,
+.term-tab-new {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.term-tab-label {
+  min-width: 0;
+  margin: 0;
+  padding: 0 4px 0 10px;
+  height: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-tab-close {
+  margin: 0;
+  padding: 0 6px;
+  height: 100%;
+  line-height: 1;
+  opacity: 0;
+}
+
+.term-tab:hover .term-tab-close,
+.term-tab.is-active .term-tab-close,
+.term-tab-close:focus-visible {
+  opacity: 0.7;
+}
+
+.term-tab-close:hover {
+  opacity: 1;
+}
+
+.term-tab-new {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 10px;
+  font-size: 15px;
+  color: var(--fg-muted);
+}
+
+.term-tab-new:hover {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
 /* Padding lives HERE, not on `.term-view-surface` (the element xterm.js
    actually opens into): `box-sizing: border-box` is global (base.css:65), so
    `FitAddon.proposeDimensions()` (@xterm/addon-fit) reads

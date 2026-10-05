@@ -217,7 +217,7 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # the HOST's OS version and MACOSX_DEPLOYMENT_TARGET does not steer it (see step
 # 4f). numpy 2.x publishes both `macosx_14_0_arm64` (Accelerate, minos 14.0) and
 # `macosx_11_0_arm64` (OpenBLAS, minos 11.0) wheels; the host gets the 14.0 one,
-# which would raise the whole bundle's floor to macOS 14 (D1319).
+# which would raise the whole bundle's floor to macOS 14 (D1320).
 # The version is NOT hardcoded: it is whatever the main install above resolved,
 # so extras/pins in pyproject.toml stay the single source. We then swap just
 # that distribution's files for the same version's older-tagged wheel
@@ -1035,7 +1035,7 @@ fi
 #     13 (Ventura) is the oldest macOS the bundle is meant to run on in
 #     practice. numpy 2.x's default arm64 wheel is `macosx_14_0_arm64`, which
 #     would force 14, so step 2 swaps in the same version's older-tagged wheel
-#     (`macosx_11_0_arm64`, OpenBLAS; D1319). `LC_BUILD_VERSION`'s minos is what
+#     (`macosx_11_0_arm64`, OpenBLAS; D1320). `LC_BUILD_VERSION`'s minos is what
 #     dyld compares against the running OS; older linkers wrote
 #     `LC_VERSION_MIN_MACOSX` instead, read the same.
 #     Exempt, and listed rather than hidden:

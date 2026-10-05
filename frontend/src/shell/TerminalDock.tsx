@@ -10,16 +10,14 @@
 // header describes for the identical reason: no store subscription, so
 // `TerminalDock.test.tsx` can render the view directly with fixed props.
 //
-// NO SESSION-COUNT/FOREGROUND-COMMAND LABEL: PLAN-status-bar-terminal.md's
-// Task 5 text mentions "the running foreground command or shell name when
-// open, count from 2 sessions" as an eventual chip label, but
-// TerminalDrawer.tsx owns a single session id — there is no multi-session
-// list to count or a foreground command to read off. The label here is
-// "Terminal" in both states; the tone flips on/off with `open` so the chip
-// still visibly tracks the drawer. Revisit once multi-session support
-// exists.
+// SESSION COUNT: the label stays "Terminal" in both states and the tone flips
+// on/off with `open`; once the drawer holds more than one terminal the chip
+// also shows how many (`StatusChip`'s own grey count pill, which hides a
+// count of 0 — and a lone terminal is passed as 0, since one terminal needs
+// no number). `TerminalDrawer.tsx` owns the tab list and publishes the
+// count through `terminalDockStore.ts`.
 import StatusChip from "@platform/ui/StatusChip";
-import { toggleTerminalDock, useTerminalDockOpen } from "@platform/lib/terminalDockStore";
+import { toggleTerminalDock, useTerminalCount, useTerminalDockOpen } from "@platform/lib/terminalDockStore";
 
 // The tooltip advertises VS Code's own Ctrl+` binding, not the user's
 // Cmd/Ctrl+Shift+` chord (TerminalDrawer.tsx's own header) — that one is a
@@ -30,18 +28,23 @@ const SHORTCUT_HINT = "⌃`";
 export function TerminalDockView({
   open,
   onToggle,
+  count = 0,
 }: {
   open: boolean;
   onToggle: () => void;
+  /** Terminals held by the drawer; shown only from 2. */
+  count?: number;
 }) {
+  const shown = count > 1 ? count : 0;
   return (
     <div className="dl-host">
       <StatusChip
         label="Terminal"
+        count={shown}
         tone={open ? "on" : "idle"}
         open={open}
         title={open ? `Hide terminal (${SHORTCUT_HINT})` : `Show terminal (${SHORTCUT_HINT})`}
-        ariaLabel={open ? "Terminal, open" : "Terminal"}
+        ariaLabel={(open ? "Terminal, open" : "Terminal") + (shown > 0 ? `, ${shown} terminals` : "")}
         onClick={onToggle}
       />
     </div>
@@ -50,5 +53,6 @@ export function TerminalDockView({
 
 export default function TerminalDock() {
   const open = useTerminalDockOpen();
-  return <TerminalDockView open={open} onToggle={toggleTerminalDock} />;
+  const count = useTerminalCount();
+  return <TerminalDockView open={open} onToggle={toggleTerminalDock} count={count} />;
 }
