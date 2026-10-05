@@ -200,11 +200,7 @@ def test_input_route_409s_while_a_child_holds_the_foreground(client, scratch_reg
     instead of sending `cd ... && cmd\\r` into it."""
     sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
     session = scratch_registry.get(sid)
-    # A fresh session reads as "not the shell" until the child's setsid()
-    # lands and its rc files finish (see shell_is_foreground). Wait for the
-    # shell to actually own the terminal first, otherwise the loop below
-    # exits before `sleep` has even been read and the route sees an idle
-    # shell by the time it checks.
+    # A fresh pty reads as "not the shell" until setsid() lands; wait for it first.
     assert session.wait_shell_foreground(timeout=5)
     session.write(b"sleep 30\n")
 
