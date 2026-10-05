@@ -9,7 +9,9 @@ View = sibling pair: `.html` (UI) + `.py` (data). Explorer renders html in ifram
 
 ## Build order: html first
 
-When free to start on either side, write the `.html` first. User sees layout + controls within minutes; a `.py` is invisible until wired.
+**Rule:** new view or new app → first file written is the `.html`, and it renders before any `.py` exists. No `.py`, no `main()`, no exploration script saved into the app until the html renders standalone. Inspecting user's data to decide what to show is fine; writing Python files is not. User sees layout + controls within minutes; a `.py` is invisible until wired.
+
+Only exceptions: user explicitly asks for Python only, or task edits an existing `.py` behind an html that already renders.
 
 - First pass need NOT be complete, but MUST render standalone: controls → params → `draw()` over stub/placeholder data, no `runPython` yet. Calling a `.py` that doesn't exist = traceback overlay or blank view — opposite of feedback.
 - As soon as it renders, tell user the embed URL (`/explorer/embed/<path>`, see Testing) so they can watch it grow.
