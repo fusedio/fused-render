@@ -976,3 +976,18 @@ describe("resolveSide with a remembered tab", () => {
     expect(reconcileSideSearch("?_side=git", o)).toBe(null);
   });
 });
+
+// Only an EXPLICIT pick writes the remembered tab (mirroring Listing): the toggle
+// reopen/close/reconcile go through `setSide(next)` with no `tab`, so reopening on
+// a file lacking the remembered companion cannot overwrite the real pick with the
+// fallback it landed on.
+describe("Preview records the remembered tab only on an explicit pick", () => {
+  it("setSideTab is called once, guarded by the explicit `tab` argument", async () => {
+    const src = await Bun.file(new URL("../Preview.tsx", import.meta.url).pathname).text();
+    expect(src.match(/setSideTab\(/g)?.length).toBe(1);
+    expect(src).toContain("if (tab) setSideTab(tab);");
+    expect(src).toContain("onSelect={(m) => setSide(m, m ?? undefined)}");
+    // the toggle reopen passes no tab
+    expect(src).toContain("else if (sideTarget) setSide(sideTarget);");
+  });
+});

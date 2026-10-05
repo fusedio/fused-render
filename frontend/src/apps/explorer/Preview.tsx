@@ -1321,11 +1321,15 @@ function TemplatePreview({
   // Also the one place that records a close/reopen into the session's shared
   // hidden flag (`lib/side-hidden-store.ts`) — a close here must be visible to
   // the folder pane's later mounts too, same store either surface writes.
-  const applySide = (next: string | null) => {
+  //
+  // `tab` is the companion the user EXPLICITLY picked (the switcher, App Doctor's
+  // Open Git) and is the ONLY thing that writes the remembered tab
+  // (`lib/side-tab-store.ts`), mirroring Listing. A toggle reopen, a close and the
+  // reconcile pass none: reopening on a file that lacks the remembered companion
+  // lands on a fallback, and recording that would overwrite the real pick.
+  const applySide = (next: string | null, tab?: string) => {
     setSideHidden(next === null);
-    // An explicit pick is the remembered tab (`lib/side-tab-store.ts`); a close
-    // is not a pick, so it leaves the memory as it was.
-    if (next !== null) setSideTab(next);
+    if (tab) setSideTab(tab);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
     // does not survive a click either way.
@@ -1356,13 +1360,13 @@ function TemplatePreview({
    * Only when CLAUDE is what is going away: every other companion has nothing to
    * lose, and a question in front of a git panel's ✕ is a dialog nobody earned.
    */
-  const setSide = (next: string | null) => {
+  const setSide = (next: string | null, tab?: string) => {
     if (activeSide !== "claude" || next === "claude") {
-      applySide(next);
+      applySide(next, tab);
       return;
     }
     void confirmLeave().then((ok) => {
-      if (ok) applySide(next);
+      if (ok) applySide(next, tab);
     });
   };
   const toggleSide = () => {
@@ -2699,7 +2703,7 @@ function TemplatePreview({
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
               />
             }
-            onSelect={setSide}
+            onSelect={(m) => setSide(m, m ?? undefined)}
             onClose={() => setSide(null)}
           />,
           sideSlot
