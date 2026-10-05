@@ -76,6 +76,10 @@ def _clean_git_upstream_state(monkeypatch):
     check."""
     monkeypatch.setattr(git_upstream, "_checked", {})
     monkeypatch.setattr(git_upstream, "_state", {})
+    monkeypatch.setattr(git_upstream, "_sync_failures", {})
+    # The pre-auto-sync rules (unpushed / behind FAIL the row) are what these
+    # tests pin; the auto-sync variants opt back in with `_auto_sync(True)`.
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
 
 PAGE = ('<html><head><meta name="fused-app" />'
         '<meta name="fused-api-version" content="{v}" /></head><body>hi</body></html>')
@@ -802,6 +806,91 @@ def test_pull_is_not_offered_over_a_dirty_tree_and_the_row_says_why(workspace):
         "1 uncommitted path, 1 commit behind origin — "
         "commit or stash your changes to pull so what you share matches what you tested"
     )
+
+
+def _repo_with_remote(workspace):
+    d = _app(workspace)
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+    return d, repo, remote
+
+
+def _commit_here(repo, name="more.txt", sub=None):
+    (repo / sub / name if sub else repo / name).write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "local")
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_makes_unpushed_commits_pass_the_git_row(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _commit_here(repo, sub="demo")
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "pass"
+    assert "pushed automatically" in row["detail"]
+    assert "1 unpushed commit" in row["detail"]
+    assert row["gitRoot"] and row["clean"] is True
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_makes_behind_origin_pass_the_git_row(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, remote = _repo_with_remote(workspace)
+    other = workspace.parent / "other-clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True,
+                   capture_output=True, close_fds=False)
+    _commit_here(other, "elsewhere.txt")
+    _git(other, "push", "-q")
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "pass"
+    assert row["behind"] == 1
+    assert "automatically" in row["detail"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_does_not_excuse_uncommitted_paths(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    (d / "wip.txt").write_text("x\n")
+    _warm(d)
+    assert _state(app_doctor.report(str(d)), "git") == "fail"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_standing_auto_sync_failure_fails_the_git_row(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _commit_here(repo, sub="demo")
+    _warm(d)
+    git_upstream._record_failure(
+        git_upstream.repo_root(str(d)), "rejected", action="push",
+        command="git push", output="rejected", push=True)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert "the push was rejected" in row["detail"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_is_ignored_off_the_default_branch(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _git(repo, "push", "-q", "-u", "origin", "feature")
+    _commit_here(repo, sub="demo")
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["onDefault"] is False
+    assert row["state"] == "fail"
 
 
 def test_repo_health_advice_names_only_what_actually_failed_no_git_needed():

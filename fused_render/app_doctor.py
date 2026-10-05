@@ -726,25 +726,62 @@ def _repo_health_check(app_dir: str) -> dict:
     # function's docstring).
     behind_target = "origin" if on_default else (default_branch or "the default branch")
 
+    # AUTO-SYNC TAKES OVER push and pull. With the pref on (default) and the
+    # repo on its default branch — the only branch auto-sync acts on — unpushed
+    # commits and "behind origin" resolve themselves, so they are not a
+    # finding; a STANDING auto-sync failure for this repo (it tried and could
+    # not) is, and names why. Uncommitted paths stay a FAIL: nothing
+    # auto-commits edits made outside Claude.
+    auto = (root is not None and on_default is not False
+            and git_upstream.auto_sync_enabled())
+    sync_fail = None
+    if auto:
+        for rec in git_upstream.sync_failures():
+            if _same_path(rec.get("root"), root):
+                sync_fail = rec
+                break
+    push_fail = p_state == FAIL and not auto
+    behind_fail = bool(behind) and not auto
+
     failing_bits = []
     if g_state == FAIL:
         failing_bits.append(
             f"{len(g_pending)} uncommitted path{'' if len(g_pending) == 1 else 's'}")
-    if p_state == FAIL:
+    if push_fail:
         failing_bits.append(
             f"{len(p_subjects)} unpushed commit{'' if len(p_subjects) == 1 else 's'}")
-    if behind:
+    if behind_fail:
         failing_bits.append(
             f"{behind} commit{'' if behind == 1 else 's'} behind {behind_target}")
+    if sync_fail is not None:
+        failing_bits.append(
+            f"automatic sync is failing: {sync_fail.get('title') or 'git reported an error'}")
+
+    auto_bits = []
+    if auto and p_state == FAIL:
+        auto_bits.append(
+            f"{len(p_subjects)} unpushed commit{'' if len(p_subjects) == 1 else 's'}"
+            " — they will be pushed automatically")
+    if auto and behind:
+        auto_bits.append(
+            f"{behind} commit{'' if behind == 1 else 's'} behind {behind_target}"
+            " — this will be updated automatically")
 
     if failing_bits:
         state = FAIL
-        detail = ", ".join(failing_bits) + " — " + _repo_health_advice(
-            commit=g_state == FAIL, push=p_state == FAIL, behind=behind,
-            can_pull=can_pull, on_default=on_default, clean=clean,
-            default_branch=(cached.get("default_branch") if cached is not None
-                             else None),
-        )
+        advice_bits = [g_state == FAIL, push_fail, behind if behind_fail else 0]
+        if any(advice_bits):
+            detail = ", ".join(failing_bits) + " — " + _repo_health_advice(
+                commit=g_state == FAIL, push=push_fail,
+                behind=behind if behind_fail else 0,
+                can_pull=can_pull, on_default=on_default, clean=clean,
+                default_branch=(cached.get("default_branch") if cached is not None
+                                 else None),
+            )
+        else:
+            detail = ", ".join(failing_bits) + " — open the git panel to resolve it"
+        if sync_fail is not None and auto_bits:
+            detail += "; " + "; ".join(auto_bits)
     elif p_skip_reason == _SKIP_NO_UPSTREAM:
         # `behind`/`ahead` may still be a confirmed number here (git_upstream
         # compares HEAD against the DEFAULT branch's origin ref regardless of
@@ -756,6 +793,9 @@ def _repo_health_check(app_dir: str) -> dict:
         # regressed it — B2 in FIXES-round-1.md).
         state = SKIP
         detail = "no upstream remote configured for this folder — nothing to compare against"
+    elif auto_bits:
+        state = PASS
+        detail = "the working tree is clean; " + "; ".join(auto_bits)
     elif behind is not None:
         state = PASS
         detail = f"the working tree is clean, nothing to push, and up to date with {behind_target}"
@@ -781,6 +821,15 @@ def _repo_health_check(app_dir: str) -> dict:
     row["onDefault"] = on_default
     row["clean"] = clean
     return row
+
+
+def _same_path(a, b) -> bool:
+    if not a or not b:
+        return False
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return a == b
 
 
 def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,

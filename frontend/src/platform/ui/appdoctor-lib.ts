@@ -324,6 +324,9 @@ export function failingCount(checks: AppCheck[]): number {
 export function showsPullAction(check: AppCheck): boolean {
   return (
     check.id === "git" &&
+    // A passing row with a behind count is auto-sync's to resolve (the server
+    // folds that into PASS); a manual Pull there would just race it.
+    check.state === "fail" &&
     !!check.behind &&
     check.behind > 0 &&
     check.onDefault === true &&

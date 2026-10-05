@@ -392,6 +392,10 @@ test("showsPullAction is true only for the git row with a confirmed nonzero behi
   expect(
     showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
   ).toBe(true);
+  // Behind but the row passes (auto-sync will fast-forward it): no button.
+  expect(
+    showsPullAction(check("git", "pass", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(false);
   // Confirmed up to date — 0 is a real answer, not "unknown".
   expect(
     showsPullAction(check("git", "pass", { behind: 0, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
