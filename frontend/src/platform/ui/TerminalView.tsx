@@ -31,6 +31,7 @@ import {
   terminalFontFamily,
   terminalFontSettled,
 } from "@platform/ui/terminalTheme";
+import { rememberTerminalSize } from "@platform/ui/terminalSizeHint";
 import { isMod } from "@platform/lib/platform";
 
 // The drawer's toggle chord (TerminalDrawer.tsx): Cmd/Ctrl+Shift+` or the
@@ -231,10 +232,16 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
 
       const dataSub = term.onData((data) => session.write(data));
       teardown.push(() => dataSub.dispose());
-      const resizeSub = term.onResize(({ rows, cols }) => session.resize(rows, cols));
+      // Every fitted size is remembered so the NEXT terminal's create request
+      // can start its pty at it (terminalSizeHint.ts).
+      const resizeSub = term.onResize(({ rows, cols }) => {
+        rememberTerminalSize(rows, cols);
+        session.resize(rows, cols);
+      });
       teardown.push(() => resizeSub.dispose());
 
       fit.fit();
+      rememberTerminalSize(term.rows, term.cols);
 
       // Coalesced to at most one `fit.fit()` per animation frame: a resize
       // drag (TerminalDrawer.tsx) can hand this observer a burst of
