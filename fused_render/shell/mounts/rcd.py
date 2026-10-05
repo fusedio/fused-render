@@ -679,6 +679,8 @@ def _macho_min_os(path: str) -> tuple[int, int] | None:
                 if len(lc) < 8:
                     return None
                 cmd, cmdsize = struct.unpack("<II", lc)
+                if cmdsize < 8:
+                    return None
                 if cmd in (_LC_BUILD_VERSION, _LC_VERSION_MIN_MACOSX):
                     body = f.read(16)
                     # BUILD_VERSION: platform, minos, sdk, ntools; VERSION_MIN: version, sdk.

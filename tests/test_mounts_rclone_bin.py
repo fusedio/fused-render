@@ -147,3 +147,40 @@ def test_missing_message_is_generic_without_skip(monkeypatch):
     monkeypatch.setattr(mounts_mod.shutil, "which", lambda name: None)
     assert mounts_mod.rclone_unavailable_reason() is None
     assert mounts_mod.rclone_missing_message() == "rclone is not installed"
+
+
+@pytest.mark.parametrize("bad_size", [0, 1, 4, 7])
+def test_macho_load_command_smaller_than_its_header_is_rejected(tmp_path, monkeypatch, bad_size):
+    # cmdsize < 8 would seek backwards/in place and re-read bytes; a real
+    # LC_BUILD_VERSION follows, but the parser must give up, not wander.
+    bad = struct.pack("<II", 0x1, bad_size)
+    good = struct.pack("<IIIIII", 0x32, 24, 1, (15 << 16), 0, 0)
+    hdr = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 2, len(bad + good), 0, 0)
+    p = tmp_path / "rclone"
+    p.write_bytes(hdr + bad + good)
+    # No byte pattern can make the re-read decode as a version command, so
+    # also pin the mechanism: the parser must never seek backwards.
+    real_open = open
+    back = []
+
+    class Spy:
+        def __init__(self, f):
+            self._f = f
+
+        def seek(self, off, whence=0):
+            if whence == 1 and off < 0:
+                back.append(off)
+            return self._f.seek(off, whence)
+
+        def __getattr__(self, name):
+            return getattr(self._f, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return self._f.__exit__(*a)
+
+    monkeypatch.setattr("builtins.open", lambda *a, **k: Spy(real_open(*a, **k)))
+    assert mounts_mod.rcd._macho_min_os(str(p)) is None
+    assert back == []
