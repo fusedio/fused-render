@@ -10070,7 +10070,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   text pane and the Playground sidebar draw one section per use case (Writing &
   chat, Coding, Deep reasoning; empty ones hidden), rows in their existing
   order, the Playground's as top-level sections like Image generation. A model
-  sits in the section of its first use case.
+  sits in the section of its first use case, so each curated text list keeps at
+  least one row leading with each id (the recommended all-round row leads
+  `writing`, the larger generalists lead `reasoning`).
 - **AI-29** **Path-hardening audit of the download paths** (`runners/
   worker_base.py`, `runners/mirror.py`, and items 13/14's own additions)
   **(D533).** Findings:

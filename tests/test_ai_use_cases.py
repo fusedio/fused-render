@@ -39,3 +39,11 @@ def test_lists_stay_sorted_smallest_first(code):
     sizes = [e["size_gb"] for e in catalog.SUGGESTIONS[code]]
     assert sizes == sorted(sizes)
 
+
+
+@pytest.mark.parametrize("code", TEXT_LISTS)
+def test_every_section_has_a_curated_row_leading_with_it(code):
+    # a row sits in the section of its FIRST use case; a section with no
+    # row leading with it stays hidden on a typical install
+    firsts = {e["useCases"][0] for e in catalog.SUGGESTIONS[code]}
+    assert firsts >= set(registry.USE_CASES)

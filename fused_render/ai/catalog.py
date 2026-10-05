@@ -354,7 +354,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # carries a Google family row.
         {
             "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
-            "useCases": ["writing", "coding", "reasoning"],
+            # the FIRST tag picks the UI section: the recommended 4B leads
+            # `writing`, the larger generalists lead `reasoning`
+            "useCases": ["reasoning", "writing", "coding"],
             "params": "9B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
@@ -393,7 +395,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # into swap is not something to suggest on one machine's evidence.
         {
             "id": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
-            "useCases": ["writing", "coding", "reasoning"],
+            # first tag picks the UI section (see the 9B row)
+            "useCases": ["reasoning", "writing", "coding"],
             "params": "27B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
@@ -571,7 +574,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
-            "useCases": ["writing", "coding", "reasoning"],
+            # first tag picks the UI section: the recommended 4B leads
+            # `writing`, the larger generalist leads `reasoning`
+            "useCases": ["reasoning", "writing", "coding"],
             "params": "27B",
             "quantization": "GGUF UD-Q3_K_XL",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
