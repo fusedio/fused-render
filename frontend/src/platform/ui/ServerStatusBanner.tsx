@@ -3,7 +3,8 @@
 // positions nothing). Unlike a toast it has no auto-dismiss: it stays until
 // the server answers again, which is why it sits below the transient entries
 // rather than shuffling among them.
-// Probes /api/health every 5s (4s abort) — async and cheap on the server, so a
+// Probes /api/health every 5s (4s abort; `probeHealth` in server-status.ts,
+// which also copes with an OLDER server that has no such route) — async and cheap on the server, so a
 // busy sync threadpool no longer reads as an outage (SPEC §50). Each failure
 // is classified (timeout / refused / http-5xx / http-other / parse) and the
 // latency of each healthy probe is kept. The VERSION facts (version,
@@ -58,53 +59,21 @@ import {
   updateDialogMode,
   updateDialogPreview,
   UPDATE_DIALOG_KEY,
+  PROBE_TIMEOUT_MS,
+  probeHealth,
+  versionFactsFrom,
   type OutageRecord,
   type ProbeResult,
   type ServerBanner,
   type StatusState,
+  type VersionFacts,
 } from "@platform/lib/server-status";
 
 const POLL_MS = 5000;
-const PROBE_TIMEOUT_MS = 4000;
 const RECONNECT_DISMISS_MS = 5000;
 /** /api/config is re-read every this many probes (~60s at POLL_MS). */
 const CONFIG_EVERY = 12;
 const OUTAGE_URL = "/api/health/outage";
-
-/** One liveness probe against /api/health, classified. Never throws. */
-async function probeHealth(): Promise<ProbeResult> {
-  const ctrl = new AbortController();
-  const timeout = window.setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
-  const t0 = performance.now();
-  try {
-    let res: Response;
-    try {
-      res = await fetch("/api/health", { cache: "no-store", signal: ctrl.signal });
-    } catch (e) {
-      // An abort is OUR timeout firing; anything else the fetch throws
-      // (TypeError "Failed to fetch", "Load failed") is nothing answering.
-      return { ok: false, kind: (e as Error)?.name === "AbortError" ? "timeout" : "refused" };
-    }
-    if (!res.ok) return { ok: false, kind: res.status >= 500 ? "http-5xx" : "http-other" };
-    let body: { boot_id?: unknown };
-    try {
-      body = await res.json();
-    } catch (e) {
-      // The abort can also land while the body is still streaming in.
-      return { ok: false, kind: (e as Error)?.name === "AbortError" ? "timeout" : "parse" };
-    }
-    if (!body || typeof body !== "object") return { ok: false, kind: "parse" };
-    return {
-      ok: true,
-      bootId: typeof body.boot_id === "string" ? body.boot_id : undefined,
-      latencyMs: Math.round(performance.now() - t0),
-    };
-  } finally {
-    window.clearTimeout(timeout);
-  }
-}
-
-type VersionFacts = Pick<ProbeResult, "version" | "installedVersion" | "dev">;
 
 /** The version facts from /api/config; null when that read fails (the caller
  *  keeps its last cached copy — liveness is /api/health's call, not this). */
@@ -115,11 +84,7 @@ async function fetchVersionFacts(): Promise<VersionFacts | null> {
     const res = await fetch("/api/config", { cache: "no-store", signal: ctrl.signal });
     if (!res.ok) return null;
     const body = await res.json();
-    return {
-      version: typeof body.version === "string" ? body.version : undefined,
-      installedVersion: typeof body.installed_version === "string" ? body.installed_version : null,
-      dev: body.dev === true,
-    };
+    return versionFactsFrom(body);
   } catch {
     return null;
   } finally {

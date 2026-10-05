@@ -94,6 +94,95 @@ export interface OutageRecord {
   recovered: boolean;
 }
 
+/** The probe's abort window; also the fallback's, each request on its own. */
+export const PROBE_TIMEOUT_MS = 4000;
+
+export type VersionFacts = Pick<ProbeResult, "version" | "installedVersion" | "dev">;
+
+/** The version facts out of a /api/config body. */
+export function versionFactsFrom(body: {
+  version?: unknown;
+  installed_version?: unknown;
+  dev?: unknown;
+}): VersionFacts {
+  return {
+    version: typeof body.version === "string" ? body.version : undefined,
+    installedVersion: typeof body.installed_version === "string" ? body.installed_version : null,
+    dev: body.dev === true,
+  };
+}
+
+/**
+ * ONE LIVENESS PROBE, classified. Never throws. `GET /api/health` (SPEC §50),
+ * and the one answer that is NOT a failure although it is not a 2xx: a 404.
+ *
+ * A NEW FRONTEND CAN BE TALKING TO AN OLD SERVER. The static files are read
+ * from disk per request, so an update that replaces the bundle under a running
+ * process makes the window load the NEW shell from the OLD server — which has
+ * no /api/health (2026-10-05: a 0.6.2 process under a 0.6.5 bundle; every probe
+ * 404'd, the restart dialog walked to "Reconnecting…" and then to "isn't
+ * running", while the same server answered /api/config 200 throughout). A 404
+ * therefore means "up, but older than this page", and the probe falls back to
+ * /api/config, which every release has and which carries the version. The
+ * result is an ordinary healthy probe with no boot id (an older server has
+ * none, and the reducers read that as "no claim"). ONLY a 404: a 5xx is the
+ * server saying it is broken, and a refused/aborted request is nothing
+ * answering — neither may be softened into "healthy".
+ */
+export async function probeHealth(
+  fetchFn: typeof fetch = (...a) => fetch(...a),
+): Promise<ProbeResult> {
+  const t0 = performance.now();
+  const latency = () => Math.round(performance.now() - t0);
+  const statusKind = (status: number): ProbeFailKind => (status >= 500 ? "http-5xx" : "http-other");
+  const abortKind = (e: unknown, other: ProbeFailKind): ProbeFailKind =>
+    // An abort is OUR timeout firing (also while a body is still streaming in);
+    // anything else (TypeError "Failed to fetch", "Load failed") is `other`.
+    (e as Error)?.name === "AbortError" ? "timeout" : other;
+
+  /** GET `url` and parse its JSON body; one abort window per request. */
+  async function getJson(
+    url: string,
+  ): Promise<{ status: number; body: Record<string, unknown> | null } | ProbeResult> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+    try {
+      let res: Response;
+      try {
+        res = await fetchFn(url, { cache: "no-store", signal: ctrl.signal });
+      } catch (e) {
+        return { ok: false, kind: abortKind(e, "refused") };
+      }
+      if (!res.ok) return { status: res.status, body: null };
+      try {
+        const body = await res.json();
+        if (!body || typeof body !== "object") return { ok: false, kind: "parse" };
+        return { status: res.status, body: body as Record<string, unknown> };
+      } catch (e) {
+        return { ok: false, kind: abortKind(e, "parse") };
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const health = await getJson("/api/health");
+  if ("ok" in health) return health;
+  if (health.body) {
+    return {
+      ok: true,
+      bootId: typeof health.body.boot_id === "string" ? health.body.boot_id : undefined,
+      latencyMs: latency(),
+    };
+  }
+  if (health.status !== 404) return { ok: false, kind: statusKind(health.status) };
+
+  const config = await getJson("/api/config");
+  if ("ok" in config) return config;
+  if (!config.body) return { ok: false, kind: statusKind(config.status) };
+  return { ok: true, latencyMs: latency(), ...versionFactsFrom(config.body) };
+}
+
 /** Three, not two: two 4 s timeouts in a row are a busy server more often
  *  than a dead one, and the first misses now draw the quieter "slow" line
  *  rather than the "isn't running" card. */
