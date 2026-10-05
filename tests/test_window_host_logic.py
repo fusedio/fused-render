@@ -112,6 +112,17 @@ def test_home_matches_the_spa_home_rewrite(host):
     assert b.presented == [1, 1, 1]
 
 
+def test_blank_popups_neither_open_nor_focus_a_window(host):
+    h, b = host
+    h.dispatch({"cmd": "open", "url": BASE + "/"})
+    b.urls[1] = BASE + "/home"
+    for blank in ("about:blank", "about:srcdoc", "", None):
+        h.popup(blank, "new_window")
+    assert b.created == 1
+    assert b.presented == [1]
+    assert b.external == []
+
+
 def test_closed_windows_are_forgotten(host):
     h, b = host
     h.dispatch({"cmd": "open", "url": BASE + "/"})
@@ -203,7 +214,9 @@ def test_map_navigation(url, nav, button, ctrl, expected):
 def test_new_window_request_for_app_url_opens_a_window_external_goes_out():
     assert wh.map_new_window(BASE + "/x", PORT) == "new_window"
     assert wh.map_new_window("https://example.com", PORT) == "open_external"
-    assert wh.map_new_window("about:blank", PORT) == "new_window"
+    assert wh.map_new_window("about:blank", PORT) == "ignore"
+    assert wh.map_new_window("", PORT) == "ignore"
+    assert wh.map_new_window(None, PORT) == "ignore"
 
 
 def test_response_mapping_downloads_what_cannot_be_shown():

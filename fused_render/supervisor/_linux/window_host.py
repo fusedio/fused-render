@@ -71,7 +71,10 @@ def map_navigation(url: str | None, port: int, nav_type: str, *,
 
 
 def map_new_window(url: str | None, port: int) -> str:
-    """new_window | open_external for `window.open` / ``target=_blank``."""
+    """new_window | open_external | ignore for `window.open` / ``target=_blank``.
+    Blank / ``about:`` targets are ignored: they must neither open nor focus a window."""
+    if _is_blank(url):
+        return "ignore"
     return "open_external" if window_policy.classify(url, port) == "external" else "new_window"
 
 
@@ -201,10 +204,16 @@ class Host:
     def popup(self, url: str, kind: str) -> None:
         """A `new_window` / `open_external` decision from a window's own policy
         (`map_navigation` / `map_new_window`)."""
+        if _is_blank(url):
+            return
         if kind == "open_external":
             self.backend.open_external(url)
         elif kind == "new_window":
             self.focus_or_open(url)
+
+
+def _is_blank(url: str | None) -> bool:
+    return not url or url.strip().lower().startswith("about:")
 
 
 def _is_home(url: str | None) -> bool:
@@ -414,8 +423,10 @@ class GtkBackend:
         # window.open() / target=_blank that did not pass through decide-policy:
         # route it by the same rule, never hand WebKit a second web view.
         url = navigation_action.get_request().get_uri()
-        if url and url != "about:blank":
-            self._host().popup(url, map_new_window(url, self._host().port))
+        host = self._host()
+        verdict = map_new_window(url, host.port)
+        if verdict != "ignore":
+            host.popup(url, verdict)
         return None
 
     def _on_permission(self, view, request) -> bool:
