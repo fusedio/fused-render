@@ -76,7 +76,11 @@ def api_terminal_list():
     if _windows():
         return _error(_UNSUPPORTED, status=501)
     return {"sessions": [
-        {"id": s.id, "alive": s.alive, "exitCode": s.exit_code}
+        {"id": s.id, "alive": s.alive, "exitCode": s.exit_code,
+         # What the client labels a tab with when it has no better name
+         # (the shell's basename) and the tooltip's directory. Additive.
+         "shell": os.path.basename(s.profile.shell),
+         "cwd": s.profile.cwd}
         for s in pty_session.REGISTRY.list()
     ]}
 

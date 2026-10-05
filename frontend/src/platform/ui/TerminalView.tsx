@@ -48,9 +48,14 @@ export interface TerminalViewProps {
    * "press Enter to start a new shell" affordance (Task 6), not this view. */
   onExit?: (code: number | null) => void;
   onStatus?: (status: TerminalStatus) => void;
+  /** Move keyboard focus into the terminal once it is opened. Read at mount
+   * only (the view is keyed by session id, so a new terminal is a new mount):
+   * the drawer asks for it on a terminal the reader just created or picked,
+   * never on a plain reopen. */
+  autoFocus?: boolean;
 }
 
-export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps) {
+export default function TerminalView({ id, onExit, onStatus, autoFocus }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   // `useResolvedTheme()` (platform/lib/theme.ts) is the same live signal
@@ -98,6 +103,7 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(el);
+      if (autoFocus) term.focus();
       term.attachCustomKeyEventHandler((e) => !isDrawerToggleChord(e));
 
       // Repaint watchdog: guards against a pane that stays black after
