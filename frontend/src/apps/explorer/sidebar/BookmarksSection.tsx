@@ -366,8 +366,8 @@ export default function BookmarksSection() {
   const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
 
-  // A new bookmark is appended to the end of the top-level list, which on a
-  // tree of any size sits below the fold — so scroll it into view once the row
+  // A new bookmark opens the top-level list (lib/bookmarks `addBookmark`), and
+  // the section may be scrolled past it — so scroll it into view once the row
   // has rendered. Keyed off the bookmark-store version (the same signal that
   // rendered the row), and the id is consumed once by the store, so unrelated
   // later mutations don't re-scroll.

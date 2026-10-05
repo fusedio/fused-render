@@ -1000,7 +1000,7 @@ function TaskPeek({
               type="button"
               className="btn btn-secondary modal-head-act"
               disabled={acting}
-              title={filing.title}
+              data-hint={filing.title}
               onClick={refile}
             >
               {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}

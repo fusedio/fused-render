@@ -2760,11 +2760,12 @@ export function filingIntent(task: Task): FilingIntent | null {
       kind: "archive",
       lane: "archived",
       label: "Archive",
-      // Three clauses because a person reaching for Delete is asking all three:
-      // where does it go, what happens to work already booked, and can I get it
-      // back.
-      title:
-        "Archive — files this away and calls off any run still booked; the conversation is kept, and you can bring the task back",
+      // ONE WORD (Akshil, 2026-10-05: "tooltip on archive is too busy — just
+      // say archive"). The three-clause version answered where it goes, what
+      // happens to booked work and whether it comes back — a paragraph over a
+      // 24px button that the row's own Archive lane and the Unarchive button
+      // already answer in place.
+      title: "Archive",
     };
   // BACK OUT. Asked of the row itself, NOT the drag matrix: Archive's exits are
   // locked (Akshil, 2026-08-19 — the way out is this button, not a gesture), so
@@ -2777,10 +2778,8 @@ export function filingIntent(task: Task): FilingIntent | null {
     kind: "unarchive",
     lane: null,
     label: "Unarchive",
-    // Says the one thing a person cannot see before pressing: the card is about
-    // to appear somewhere they are not looking, and nothing is going to run.
-    title:
-      "Unarchive — takes this back out of Archive and into whatever lane its work is in; nothing is re-run",
+    // Same rule as Archive above: the verb is the whole caption.
+    title: "Unarchive",
   };
 }
 
