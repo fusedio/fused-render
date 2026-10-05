@@ -1,6 +1,7 @@
-"""`noteAskClaude`/`pullClaudeAsk` (static/runtime.js), the ancestor-window hop
-the git template's "Fix with AI" button uses to hand its prompt to a Claude
-sidebar, and the claude template's own half that collects it.
+"""`noteAskClaude` (static/runtime.js), the ancestor-window hop the git
+template's "Fix with AI" button uses to hand its prompt to a Claude sidebar.
+The collecting half (`pullClaudeAsk`, the retired iframe chat page's boot pull)
+went with that page: the native chat takes the ask from its host directly.
 
 review #804 round 1 finding 6: `noteSnapshotSelected` (the `_snapshot` sibling
 of this hop) deliberately calls its hook on EVERY same-origin ancestor that has one,
@@ -52,11 +53,6 @@ def _extract(source: str, signature: str) -> str:
 @pytest.fixture(scope="module")
 def note_ask_claude_src(runtime_source: str) -> str:
     return _extract(runtime_source, "function noteAskClaude(text)")
-
-
-@pytest.fixture(scope="module")
-def pull_claude_ask_src(runtime_source: str) -> str:
-    return _extract(runtime_source, "function pullClaudeAsk()")
 
 
 def _run(script: str):
@@ -173,47 +169,4 @@ console.log(JSON.stringify({ calls, results }));
 
 # -------------------------------------------------------------- pullClaudeAsk
 
-def test_pull_returns_the_nearest_ancestors_answer(pull_claude_ask_src):
-    harness = """
-const top = { parent: null, location: { href: "http://x/top" },
-              _fusedClaudeAskTake: () => "top's answer" };
-const mid = { parent: top, location: { href: "http://x/mid" },
-              _fusedClaudeAskTake: () => "mid's answer" };
-top.parent = top;
-const window = { parent: mid, location: { href: "http://x/leaf" } };
-%s
-console.log(JSON.stringify(pullClaudeAsk()));
-""" % pull_claude_ask_src
-    assert _run(harness) == "mid's answer"
 
-
-def test_pull_stops_at_the_first_ancestor_even_when_it_answers_null(pull_claude_ask_src):
-    """A nearer ancestor that HAS the hook but has nothing pending (its own
-    `_fusedClaudeAskTake` returns null) is still the answer — this is a query
-    to ONE listener, not a search for the first non-null one across several."""
-    harness = """
-let topCalled = false;
-const top = { parent: null, location: { href: "http://x/top" },
-              _fusedClaudeAskTake: () => { topCalled = true; return "top's answer"; } };
-const mid = { parent: top, location: { href: "http://x/mid" },
-              _fusedClaudeAskTake: () => null };
-top.parent = top;
-const window = { parent: mid, location: { href: "http://x/leaf" } };
-%s
-const answer = pullClaudeAsk();
-console.log(JSON.stringify({ answer, topCalled }));
-""" % pull_claude_ask_src
-    result = _run(harness)
-    assert result["answer"] is None
-    assert result["topCalled"] is False
-
-
-def test_pull_with_no_ancestor_hook_answers_null(pull_claude_ask_src):
-    harness = """
-const top = { parent: null, location: { href: "http://x/top" } };
-top.parent = top;
-const window = { parent: top, location: { href: "http://x/leaf" } };
-%s
-console.log(JSON.stringify(pullClaudeAsk()));
-""" % pull_claude_ask_src
-    assert _run(harness) is None

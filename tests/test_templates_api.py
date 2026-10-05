@@ -582,6 +582,15 @@ def test_export_zip_contains_folders_only(ctx):
     assert not any("registry.json" in n for n in names)
 
 
+def test_export_refuses_a_native_template(ctx):
+    """`claude` is native (PT-6): a folder with a marker and no page. A zip of
+    it would import elsewhere as a broken template, so the export says why it
+    will not rather than shipping one."""
+    resp = ctx.client.get("/api/templates/export", params={"names": ["claude"]})
+    assert resp.status_code == 400
+    assert "served by the shell" in resp.json()["error"]
+
+
 def test_export_excludes_the_templates_own_venv(ctx):
     """A template folder now holds an in-tree `.venv` once it has been
     installed (D630). Exporting it must not zip the venv into an in-memory

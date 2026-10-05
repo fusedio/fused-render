@@ -42,6 +42,13 @@ def render(
     _noopen: str | None = None,
     referer: str | None = Header(default=None),
 ):
+    # A native template (PT-6 amendment, e.g. `claude`) is implemented by the
+    # shell: its folder holds a `native` marker instead of a page. Neither the
+    # marker nor the folder is ever served as html. Checked first so the
+    # folder form never falls into the index.html redirect below.
+    from fused_render.server import templates as _server_templates
+    if _server_templates.is_native_template_path(path):
+        return _error("served by the shell", status=404)
     if not _is_file_mount_safe(path):
         # An app FOLDER names its entry page: redirect (not serve inline) so
         # the page's own URL carries the .html path — the runtime resolves

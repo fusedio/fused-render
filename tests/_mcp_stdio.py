@@ -1,7 +1,7 @@
 """A live stdio MCP server subprocess, spoken to the way the Claude Code CLI does.
 
-Shared by the two suites that drive the chat template's `permission_server.py`
-over its own JSON-RPC (test_claude_permission_bridge.py for the approval wire
+Shared by the two suites that drive the chat backend's `permission_server.py`
+(fused_render/claude_agent) over its own JSON-RPC (test_claude_permission_bridge.py for the approval wire
 shape and the decision latch, test_claude_app_state.py for approvals +
 `app_state`). Both point at `claude` now — they were split across the two
 chat templates until the plain one was deleted (D235). Kept in a non-test module

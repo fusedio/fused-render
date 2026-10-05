@@ -75,6 +75,19 @@ def _resolve_name(name):
     unusable. A user
     folder shadows a built-in of the same name — the deliberate override
     channel. Returns (abs template.html path | None, error | None).
+
+    PT-6 amendment (native templates): a folder with no `template.html` but a
+    `native` marker file also resolves, to `<folder>/native`. Such a template's
+    UI is implemented by the React shell, not an iframe page (`claude`: the
+    chat is frontend/src/apps/claude, its backend fused_render/claude_agent);
+    the folder exists only for registry identity, the condition.py gate
+    (CT-12) and icon.svg (PT-11). The resolved path stays a FILE inside the
+    folder on purpose: `_icon_for` / `_condition_file` take dirname() of it,
+    so both keep working unchanged, and the shell gets a truthy `path`. Order
+    is user template.html, user native, core template.html, core native — so
+    within one folder the html wins, and a user folder (either form) still
+    shadows core. `/render` refuses a native template (404 "served by the
+    shell"); see `is_native_template_path`.
     """
     # The name is joined into a filesystem path, so it must be one plain
     # segment — a stray "../x" must not stat arbitrary locations. Correctness
@@ -95,13 +108,48 @@ def _resolve_name(name):
             "for shell sentinel modes (SPEC PT-12); the only referenceable "
             "sentinel is '_render'"
         )
-    user = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
-    if os.path.isfile(user):
-        return user, None
-    builtin = os.path.join(TEMPLATES_DIR, name, "template.html")
-    if os.path.isfile(builtin):
-        return builtin, None
+    for base in (USER_TEMPLATES_DIR, TEMPLATES_DIR):
+        folder = os.path.join(base, name)
+        html = os.path.join(folder, "template.html")
+        if os.path.isfile(html):
+            return html, None
+        marker = os.path.join(folder, NATIVE_MARKER)
+        if os.path.isfile(marker):
+            return marker, None
     return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and core {TEMPLATES_DIR}/{name}/)"
+
+
+# Marker file naming a shell-implemented ("native") template folder (PT-6
+# amendment): present instead of template.html.
+NATIVE_MARKER = "native"
+
+
+def _is_native(template_path) -> bool:
+    """True when a resolved template path is a native marker (PT-6)."""
+    return bool(template_path) and os.path.basename(template_path) == NATIVE_MARKER
+
+
+def _native_folder(folder: str) -> bool:
+    """`folder` is a native template folder: a `native` marker, no template.html."""
+    return (os.path.isfile(os.path.join(folder, NATIVE_MARKER))
+            and not os.path.isfile(os.path.join(folder, "template.html")))
+
+
+def is_native_template_path(path) -> bool:
+    """True when `path` is a native template folder, or its `native` marker,
+    directly under a template root (user, staged core, or the packaged tree).
+    /render uses it to refuse such paths: there is no page to serve. The
+    root prefix test is pure string work, so a mount path is never stat'd."""
+    if not isinstance(path, str) or not path:
+        return False
+    p = os.path.abspath(path).rstrip(os.sep)
+    folder = os.path.dirname(p) if os.path.basename(p) == NATIVE_MARKER else p
+    from fused_render.core_templates import PACKAGE_TEMPLATES_DIR
+    bases = (USER_TEMPLATES_DIR, TEMPLATES_DIR, PACKAGE_TEMPLATES_DIR)
+    roots = {os.path.abspath(r) for r in bases} | {os.path.realpath(r) for r in bases}
+    if os.path.dirname(folder) not in roots:
+        return False
+    return _native_folder(folder)
 
 
 def _icon_for(template_path: str):
@@ -556,7 +604,10 @@ def _resolve_mode_list(names):
             if error is None:
                 error = err
             continue
-        entries.append({"mode": name, "path": path, "icon": _icon_for(path)})
+        entry = {"mode": name, "path": path, "icon": _icon_for(path)}
+        if _is_native(path):
+            entry["native"] = True
+        entries.append(entry)
     return entries, error
 
 

@@ -2414,7 +2414,7 @@ def test_the_cli_prompt_note_no_longer_forbids_pushing_in_a_clone():
     import importlib.util
 
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "fused_render", "templates", "claude", "agent.py")
+                        "fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent_for_cli_note", path)
     agent = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(agent)

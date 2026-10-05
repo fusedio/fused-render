@@ -44,6 +44,15 @@ PERMISSION_SERVER_PATH = os.path.join(HERE, "permission_server.py")
 #: Path of agent.py itself, for the few callers that load it by path.
 AGENT_PATH = os.path.join(HERE, "agent.py")
 
+#: The `X-Fused-Page` the React chat sends with every backend call. The call
+#: log needs a page to attribute a record to, and the chat used to synthesise
+#: `<templateDir>/template.html` for that — a file that no longer exists. A
+#: constant id instead of a path: `calls.is_first_party` files it as
+#: first-party (the chat is the app's own surface, not the user's work) and
+#: `calls._partition_for_record` gives it a fixed partition rather than
+#: hashing a "directory" that is really a URI scheme.
+CLAUDE_PAGE_ID = "fused-render://claude"
+
 _MOD: ModuleType | None = None
 _LOCK = threading.Lock()
 

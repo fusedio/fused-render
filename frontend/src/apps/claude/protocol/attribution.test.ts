@@ -1,48 +1,47 @@
-// THE CALL LOG'S FOUR HEADERS (SPEC CL-5, `fused_render/calls.py:75-86`).
+// THE CHAT'S TRANSPORT: the three routes it posts to, the call log's headers
+// on every one of them (SPEC CL-5, `fused_render/calls.py:75-86`), and how an
+// answer maps onto a result or a thrown error.
 //
-// Flag-on, a chat's calls were anonymous: `runtime.js` builds these off the
-// EMBEDDED PAGE's own URL (R:1434-1448 — `ownQuery("path")`,
-// `ownQuery("_file")`), and a native chat has no such URL, so nothing set them.
-// `fused-render calls`, `--page <chat template>` and the `.calls.jsonl` viewer
-// all showed an empty history for a conversation, and the chat's failed-call
-// digests went with it.
-//
-// Observability only, which is precisely why it needed a test: nothing else
-// would ever notice it break. The names are a CONTRACT with `calls.py`, which
-// reads them lower-cased, and both path values are percent-encoded because
-// `_header_path` decodes them on the way in.
+// The headers are observability only, which is precisely why they need a
+// test: nothing else would ever notice them break. The names are a CONTRACT
+// with `calls.py`, which reads them lower-cased, and both path values are
+// percent-encoded because `_header_path` decodes them on the way in.
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { installDomShim } from "@platform/lib/testDomShim";
 
 installDomShim();
 
 const { runHeaders } = await import("@platform/lib/api");
-const { runAgent, resetSupersedesForTests } = await import("./agent");
+const { AgentError, CLAUDE_PAGE_ID, runAgent, runAppEntry, runArtifacts, fetchTerminalCommand } =
+  await import("./agent");
 
 interface Sent {
   url: string;
   headers: Record<string, string>;
+  body: unknown;
 }
 let sent: Sent[] = [];
+let reply: { status: number; body: unknown } = { status: 200, body: {} };
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   sent = [];
-  resetSupersedesForTests();
+  reply = { status: 200, body: {} };
   (globalThis as { fetch: unknown }).fetch = async (
     input: unknown,
-    init?: { headers?: Record<string, string> },
+    init?: { headers?: Record<string, string>; body?: string },
   ): Promise<Response> => {
     sent.push({
       url: String(typeof input === "string" ? input : (input as { url: string }).url),
       headers: { ...(init?.headers ?? {}) },
+      body: init?.body ? JSON.parse(init.body) : undefined,
     });
-    return { ok: true, status: 200, json: async () => ({ ok: true, result: {} }) } as unknown as Response;
+    const { status, body } = reply;
+    return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response;
   };
 });
 afterEach(() => {
   globalThis.fetch = realFetch;
-  resetSupersedesForTests();
 });
 
 // ---- the builder ----------------------------------------------------------
@@ -79,19 +78,17 @@ test("the optional three are omitted rather than sent empty", () => {
   });
 });
 
-// ---- what an actual agent.py call sends -----------------------------------
+// ---- what an actual agent call sends ----------------------------------------
 
-test("a poll carries the page, the target and a call id", async () => {
-  await runAgent("/w/p/.claude", "poll", { run_id: "r1" } as never, {
-    key: null,
-    target: "/w/p",
-  });
+test("a poll posts {action, ...fields} and carries the page, the target and a call id", async () => {
+  await runAgent("poll", { run_id: "r1" } as never, { target: "/w/p" });
   expect(sent).toHaveLength(1);
+  expect(sent[0]!.url).toBe("/api/claude/agent");
+  expect(sent[0]!.body).toEqual({ action: "poll", run_id: "r1" });
   const h = sent[0]!.headers;
-  expect(sent[0]!.url).toBe("/api/run");
-  // The PAGE is the template's own html, derived from the script's dir — what
-  // `--page` names, and what a reader looking for "the chat's calls" types.
-  expect(h["X-Fused-Page"]).toBe(encodeURIComponent("/w/p/.claude/template.html"));
+  // ONE constant page for every chat call — `fused_render.claude_agent.CLAUDE_PAGE_ID`.
+  expect(CLAUDE_PAGE_ID).toBe("fused-render://claude");
+  expect(h["X-Fused-Page"]).toBe(encodeURIComponent(CLAUDE_PAGE_ID));
   expect(h["X-Fused-Target"]).toBe(encodeURIComponent("/w/p"));
   expect(h["X-Fused-Call"]).toBeTruthy();
   expect(h["X-Fused-Supersedes"]).toBeUndefined();
@@ -101,37 +98,67 @@ test("a poll carries the page, the target and a call id", async () => {
 });
 
 test("every call gets its OWN id", async () => {
-  await runAgent("/w/p/.claude", "poll", {} as never, { key: null });
-  await runAgent("/w/p/.claude", "poll", {} as never, { key: null });
+  await runAgent("poll", {} as never);
+  await runAgent("poll", {} as never);
   expect(sent[0]!.headers["X-Fused-Call"]).not.toBe(sent[1]!.headers["X-Fused-Call"]);
 });
 
-test("a SUPERSEDED call is named on the request that superseded it", async () => {
-  // `calls.py:80-85` — the mark rides the superseding request because that
-  // request "leaves in the same task as the abort, so the mark lands before the
-  // abandoned call's record is written".
-  //
-  // Both on one key, so the second aborts the first. The first's promise never
-  // settles by design (the supersede rule hangs it), so it is not awaited.
-  void runAgent("/w/p/.claude", "poll", {} as never, { key: "poll" });
-  const firstId = sent[0]!.headers["X-Fused-Call"];
-  expect(firstId).toBeTruthy();
-
-  await runAgent("/w/p/.claude", "poll", {} as never, { key: "poll" });
-  expect(sent).toHaveLength(2);
-  expect(sent[1]!.headers["X-Fused-Supersedes"]).toBe(firstId);
-});
-
-test("the supersede mark is spent once, not carried onto later calls", async () => {
-  void runAgent("/w/p/.claude", "poll", {} as never, { key: "poll" });
-  await runAgent("/w/p/.claude", "poll", {} as never, { key: "poll" });
-  expect(sent[1]!.headers["X-Fused-Supersedes"]).toBeTruthy();
-  await runAgent("/w/p/.claude", "poll", {} as never, { key: null });
-  expect(sent[2]!.headers["X-Fused-Supersedes"]).toBeUndefined();
-});
-
 test("no target given: the page still attributes the call", async () => {
-  await runAgent("/w/p/.claude", "snapshots", {} as never, { key: null });
+  await runAgent("snapshots", {} as never);
   expect(sent[0]!.headers["X-Fused-Page"]).toBeTruthy();
   expect(sent[0]!.headers["X-Fused-Target"]).toBeUndefined();
+});
+
+test("the app entry and the artifacts reader have routes of their own", async () => {
+  reply = { status: 200, body: { entry: "/w/p/index.html" } };
+  expect(await runAppEntry("/w/p")).toEqual({ entry: "/w/p/index.html" });
+  reply = { status: 200, body: { artifacts: [] } };
+  expect(await runArtifacts({ action: "list", file: "/w/p" })).toEqual({ artifacts: [] });
+  expect(sent.map((s) => s.url)).toEqual(["/api/claude/app-entry", "/api/claude/artifacts"]);
+  expect(sent[0]!.body).toEqual({ dir: "/w/p" });
+  expect(sent[1]!.body).toEqual({ action: "list", file: "/w/p" });
+  for (const s of sent) expect(s.headers["X-Fused-Page"]).toBe(encodeURIComponent(CLAUDE_PAGE_ID));
+});
+
+// ---- what an answer maps to -------------------------------------------------
+
+test("a 200 IS the result — a handler's own {error} comes back, not thrown", async () => {
+  reply = { status: 200, body: { error: "folder is busy" } };
+  expect(await runAgent("start", {} as never)).toEqual({ error: "folder is busy" } as never);
+});
+
+test("a 500's structured error becomes an AgentError with its fields", async () => {
+  reply = {
+    status: 500,
+    body: { error: { type: "KeyError", message: "'run_id'", traceback: "Traceback…" } },
+  };
+  const err = await runAgent("poll", {} as never).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(AgentError);
+  expect((err as InstanceType<typeof AgentError>).type).toBe("KeyError");
+  expect((err as Error).message).toBe("'run_id'");
+  expect((err as InstanceType<typeof AgentError>).traceback).toBe("Traceback…");
+});
+
+test("a 504 is an AgentError of type Timeout", async () => {
+  reply = { status: 504, body: { error: { type: "Timeout", message: "poll exceeded 20 s" } } };
+  const err = await runAgent("poll", {} as never).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(AgentError);
+  expect((err as InstanceType<typeof AgentError>).type).toBe("Timeout");
+  expect((err as Error).message).toBe("poll exceeded 20 s");
+});
+
+test("a string error (400 bad action, 403) stays the platform's HttpError", async () => {
+  reply = { status: 400, body: { error: "unknown action: nope" } };
+  const err = await runAgent("poll", {} as never).catch((e: unknown) => e);
+  expect(err).not.toBeInstanceOf(AgentError);
+  expect((err as Error).message).toBe("unknown action: nope");
+  expect((err as { status?: number }).status).toBe(400);
+});
+
+test("fetchTerminalCommand returns the command, and throws a handler's error", async () => {
+  reply = { status: 200, body: { command: "cd '/w/p' && claude --resume s1", cwd: "/w/p" } };
+  expect(await fetchTerminalCommand("/w/p", "s1")).toBe("cd '/w/p' && claude --resume s1");
+  expect(sent[0]!.body).toEqual({ action: "terminal_command", file: "/w/p", session_id: "s1" });
+  reply = { status: 200, body: { error: "no claude on PATH" } };
+  await expect(fetchTerminalCommand("/w/p", "s1")).rejects.toThrow("no claude on PATH");
 });

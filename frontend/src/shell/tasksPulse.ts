@@ -260,15 +260,14 @@ export function pokeTasks() {
   void poll();
 }
 
-/** The localStorage key the chat template (templates/claude/template.html)
+/** The localStorage key the chat (apps/claude ClaudeChat `stampChatActivity`)
  *  stamps when an interactive turn starts or ends. Interactive turns create no
  *  sys:schedule job and no schedule event — neither producer above fires for
  *  them — so a follow-up typed into a chat left every tasks surface stale until
  *  its next slow poll (Akshil, 2026-08-19: "the task's unread status does not
  *  update"). Every same-origin document EXCEPT the writer receives a `storage`
- *  event for the stamp, and the chat runs in its own iframe document, so the
- *  shell around it — and a Tasks page open in another window entirely — hears
- *  the turn for free, with no postMessage and no new endpoint. */
+ *  event for the stamp, so a Tasks page open in another window hears the turn
+ *  for free, with no postMessage and no new endpoint. */
 export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
 
 /** The storage half of that poke: App forwards every storage event's key here,

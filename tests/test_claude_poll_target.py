@@ -17,35 +17,25 @@ these tests still cover is the SECOND half, which is not selection-shaped and
 so is untouched by D460: the agent refuses an attach outright when the
 caller's target provably is not the run's, whatever put a stale `run` on the
 url in the first place (a bookmark, a shared link, a bug not yet imagined).
+
+D1308: the page half of this file (source pins and node probes over the
+retired iframe chat page, templates/claude/template.html) went with that
+page; the native chat under frontend/src/apps/claude owns it now. What
+stays is the backend half.
 """
 import importlib.util
 import json
 import os
-import re
 
 import pytest
 
 
 def _load_agent():
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    path = os.path.join("fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-TEMPLATE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "fused_render", "templates", "claude", "template.html")
-
-
-@pytest.fixture(scope="module")
-def html_pane():
-    """The template with `// …` comments stripped, so a source pin cannot be
-    satisfied by prose that merely NAMES the call it is looking for. Same guard
-    as test_claude_kind.py's _pane_code."""
-    with open(TEMPLATE, encoding="utf-8") as f:
-        return re.sub(r"(?m)^\s*//.*$", "", f.read())
 
 
 @pytest.fixture()
@@ -123,22 +113,6 @@ def test_an_unreadable_meta_is_not_refused(agent, target):
 
 
 # ---- the page's half ---------------------------------------------------------
-
-def test_every_poll_call_names_the_page_s_target(html_pane):
-    """All of the page's polls carry `file: FILE`, or the agent's check never
-    runs for the very caller it exists for."""
-    calls = re.findall(r'action:\s*"poll"[^}]*', html_pane)
-    assert calls, "no poll calls found — did the action move?"
-    for call in calls:
-        assert "file: FILE" in call, call
-
-
-def test_the_page_recovers_from_a_mismatch_like_a_stale_param(html_pane):
-    """resumeRun's unknown-run branch — clear the `run` param, no error banner —
-    is the recovery for a refused target too."""
-    assert re.search(
-        r'probe\.error === "unknown run_id" \|\| probe\.error === "run is for another target"',
-        html_pane)
 
 
 def test_a_folders_run_polled_by_its_ENTRY_FILE_is_not_another_target(

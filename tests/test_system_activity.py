@@ -571,7 +571,7 @@ def test_a_claude_run_pid_file_naming_a_recycled_pid_is_not_claude(tmp_path):
     written = _os.path.getmtime(tmp_path / "pid")
     run = str(tmp_path)
     assert labels._is_run_process(B(["/u/.local/bin/claude", "--session-id", "x"], written - 10), 4242, run)
-    assert labels._is_run_process(B(["/py", "-m", "fused_render.session_host"], written - 10), 4242, run)
+    assert labels._is_run_process(B(["/py", "/site/fused_render/claude_agent/session_host.py"], written - 10), 4242, run)
     # Same pid, but now some other program: not Claude.
     assert not labels._is_run_process(B(["/bin/zsh", "-l"], written - 10), 4242, run)
     # A claude that started after the pid file was written reused the pid.

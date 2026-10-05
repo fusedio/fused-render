@@ -33,7 +33,7 @@ interface Recorded {
 function fakeAgent(handlers: Record<string, Handler>) {
   const calls: Recorded[] = [];
   const counts: Record<string, number> = {};
-  const run = ((_dir: string, action: string, fields: Record<string, unknown>) => {
+  const run = ((action: string, fields: Record<string, unknown>) => {
     calls.push({ action, fields });
     const n = (counts[action] = (counts[action] || 0) + 1) - 1;
     const h = handlers[action];
@@ -117,7 +117,6 @@ function makeController(
   const controller = createChatController({
     ...over,
     file: "/proj/app.py",
-    agentDir: "/tpl/claude",
     params,
     run: agent.run,
     sleep: () => Promise.resolve(),
@@ -325,7 +324,6 @@ describe("start → poll → done", () => {
     });
     const controller = createChatController({
       file: "/proj/app.py",
-      agentDir: "/tpl/claude",
       params: createMemoryParamsStore(),
       run: agent.run,
       sleep: () => Promise.resolve(),
@@ -352,7 +350,6 @@ describe("start → poll → done", () => {
     });
     const controller = createChatController({
       file: "/proj/app.py",
-      agentDir: "/tpl/claude",
       params: createMemoryParamsStore(),
       run: agent.run,
       sleep: () => Promise.resolve(),

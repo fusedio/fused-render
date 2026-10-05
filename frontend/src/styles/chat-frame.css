@@ -1,26 +1,15 @@
-/* ---- the chat frame and its one placeholder (platform/ui/ChatFrame.tsx) ----
-   Three surfaces frame the Claude chat template — the Cards wall, that wall's
-   popup, and the explorer's companion sidebar — and all three used to show the
-   iframe's own cold document before the template's first paint. These rules are
-   the cover: a box that fills whatever the consumer gives it, an iframe that is
-   invisible until the framed document says it is painted, and one skeleton laid
-   over it in the meantime, shaped like the skeleton the template itself draws.
+/* ---- the chat placeholder (apps/claude/ChatPlaceholder.tsx) ----
+   The one skeleton every chat embed shows before the chat is on screen: the
+   `lazy` chunk loading, and a tasks-wall tile still resolving its folder.
+   Shaped like the chat's own transcript so the swap moves nothing.
 
-   ORDER IS LOAD-BEARING, twice, which is why this file sits exactly here in the
-   barrel (shell.css):
-     * AFTER explorer.css, whose `.skel-bar` and `@keyframes skel-shimmer` the
-       placeholder's bars are;
-     * AFTER preview.css, so `.chat-frame-iframe`'s size wins over
-       `.preview-side-frame`'s `height: auto` — that height was flex-derived
-       and the frame is no longer a flex item, it is a child of this box;
-     * BEFORE task-cards.css, so the card's `.task-card-frame` fit (133% drawn
-       at 0.75) still overrides the plain 100% here. */
+   ORDER IS LOAD-BEARING, which is why this file sits exactly here in the
+   barrel (shell.css): AFTER explorer.css, whose `.skel-bar` and
+   `@keyframes skel-shimmer` the placeholder's bars are. */
 
 /* The box. Fills its parent whether that parent is a block with a resolved
    height (the card's body) or a flex line (the popup's body, the sidebar
-   column) — hence both the percentages and the flex shorthand. `overflow:
-   hidden` because the card's frame is deliberately larger than this box and
-   scaled back into it. */
+   column) — hence both the percentages and the flex shorthand. */
 .chat-frame {
   position: relative;
   flex: 1 1 auto;
@@ -32,34 +21,9 @@
   background: var(--bg);
 }
 
-/* Invisible until ready, then a fade of the same length as the placeholder's —
-   the two cross, they do not queue. No `visibility`/`display` games: the
-   document must be laid out and painting the whole time, or revealing it would
-   be its own reflow. */
-.chat-frame-iframe {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  opacity: 0;
-  /* Invisible AND unreachable: an opacity-0 frame still takes the wheel and
-     the click, so a wall scrolled over a loading card lost the scroll to a
-     document nobody could see, and a pane could be focused before it was
-     shown (Bugbot, #1024). */
-  pointer-events: none;
-  transition: opacity 160ms ease;
-}
-
-.chat-frame-iframe.is-ready {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* The cover. On top of the frame, the page's own background under it so the
-   iframe's cold document never shows through. It TAKES pointer input (the
-   default) rather than passing it through: nothing here is clickable, and a
-   wheel over it bubbles to the host — the wall scrolls — instead of being
-   eaten by the hidden frame underneath. */
+/* The cover, on the page's own background. It TAKES pointer input (the
+   default): nothing here is clickable, and a wheel over it bubbles to the
+   host — the wall scrolls. */
 .chat-frame-placeholder {
   position: absolute;
   top: 0;
@@ -70,13 +34,6 @@
   overflow: hidden;
   background: var(--bg);
   transition: opacity 160ms ease;
-}
-
-/* Fading out over a frame that is now live: step aside so the first click
-   lands in the chat, not on a ghost. */
-.chat-frame-placeholder.is-out {
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* The transcript column, in the template's own measurements (#log: 720px max,
@@ -135,11 +92,9 @@
   border-radius: 4px;
 }
 
-/* Reduced motion: the reveal is a state change, not a movement. reduced-motion.css
-   already collapses every transition to nothing, and this states the intent at
-   the rule that has it — the placeholder still unmounts, it just does not fade. */
+/* Reduced motion: reduced-motion.css already collapses every transition to
+   nothing, and this states the intent at the rule that has it. */
 @media (prefers-reduced-motion: reduce) {
-  .chat-frame-iframe,
   .chat-frame-placeholder {
     transition: none;
   }

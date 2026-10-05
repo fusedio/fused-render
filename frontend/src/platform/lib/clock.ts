@@ -9,9 +9,9 @@
 // next poll happened to land.
 //
 // `useFallbackAfter` is the BACKSTOP: "this wait has gone on too long to still
-// be a wait". Lifted from `platform/ui/ChatFrame.tsx`, which has held a timer
-// over its own skeleton since the framed chat existed (CHAT_FRAME_FALLBACK_MS)
-// — the same shape, wanted in three more places, and a covered pane that never
+// be a wait". Lifted from the framed chat's old cover, which held a timer over
+// its own skeleton (apps/claude `CHAT_FRAME_FALLBACK_MS` keeps the number) —
+// the same shape, wanted in three more places, and a covered pane that never
 // uncovers is the worst failure any of them has.
 import { useEffect, useState } from "react";
 
@@ -83,8 +83,8 @@ export function useNow(intervalMs: number = 60_000): number {
 }
 
 /** The wait every gate in this app is allowed before it must show something.
- *  The same 8 s `ChatFrame` has always given a booting frame, and the same
- *  constant, so the covers over one pane cannot come off at two times. */
+ *  The same 8 s as the chat's `CHAT_FRAME_FALLBACK_MS`, so the covers over
+ *  one pane cannot come off at two times. */
 export const GATE_FALLBACK_MS = 8000;
 
 /**

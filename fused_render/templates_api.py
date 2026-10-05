@@ -118,12 +118,15 @@ def _template_obj(name: str) -> dict:
     path, _err = _server_templates._resolve_name(name)
     if path is None:
         return {"name": name, "source": None, "exists": False, "hasIcon": False}
-    return {
+    obj = {
         "name": name,
         "source": _source_of_resolved(path),
         "exists": True,
         "hasIcon": _server_templates._icon_for(path) is not None,
     }
+    if _server_templates._is_native(path):
+        obj["native"] = True
+    return obj
 
 
 def _load_registries():
@@ -282,8 +285,9 @@ def _sweep_registry_name(reg: dict, name: str) -> list:
 def _folders_with_template(base: str) -> dict:
     """name -> {hasIcon, hasCondition} for every immediate subdir of `base` that
     contains a template.html (a template folder; SPEC §0 — folder name =
-    identity). Dirs without template.html (vendor/, shared/) are naturally
-    excluded. hasCondition reports the optional condition.py gate (SPEC CT-12)
+    identity) or, failing that, a `native` marker (PT-6 amendment: a
+    shell-implemented template such as `claude`, reported `native: true`).
+    Dirs with neither (vendor/, shared/) are naturally excluded. hasCondition reports the optional condition.py gate (SPEC CT-12)
     so the management UI can flag templates that only show for some files."""
     out = {}
     try:
@@ -294,11 +298,15 @@ def _folders_with_template(base: str) -> dict:
         folder = os.path.join(base, name)
         if not os.path.isdir(folder):
             continue
-        if not os.path.isfile(os.path.join(folder, "template.html")):
+        has_html = os.path.isfile(os.path.join(folder, "template.html"))
+        native = not has_html and os.path.isfile(
+            os.path.join(folder, _server_templates.NATIVE_MARKER))
+        if not has_html and not native:
             continue
         out[name] = {
             "hasIcon": os.path.isfile(os.path.join(folder, "icon.svg")),
             "hasCondition": os.path.isfile(os.path.join(folder, "condition.py")),
+            "native": native,
         }
     return out
 
@@ -363,6 +371,8 @@ def _inventory_payload() -> dict:
                 "path": folder_path,
             }
         )
+        if meta["native"]:
+            templates[-1]["native"] = True
 
     return {"sources": _sources_payload(), "templates": templates}
 
@@ -585,6 +595,16 @@ def api_export_templates(names: list[str] = Query(default=[])):
             "no such template: "
             + ", ".join(repr(n) for n in bad)
             + f" (looked in {_server_templates.USER_TEMPLATES_DIR} and {_server_templates.TEMPLATES_DIR})"
+        )
+
+    # A native template (PT-6 amendment) has no page — its UI is the shell's —
+    # so a zip of it would import elsewhere as a broken folder. Refuse loudly.
+    native = [n for n, f in folders.items() if _server_templates._native_folder(f)]
+    if native:
+        return _error(
+            "cannot export "
+            + ", ".join(repr(n) for n in native)
+            + ": served by the shell (native template, no template.html to export)"
         )
 
     buf = io.BytesIO()

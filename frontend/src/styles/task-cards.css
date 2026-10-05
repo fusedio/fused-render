@@ -504,7 +504,7 @@
    at 3/4 (the fit above), so a host skeleton at 1:1 would be a third too big and
    the crossfade would jump. Same trick, same numbers, on the cover — which is
    why the two are one geometry rather than two similar pictures.
-   (platform/ui/ChatFrame.tsx, styles/chat-frame.css.) */
+   (apps/claude/ChatPlaceholder.tsx, styles/chat-frame.css.) */
 .task-card-body .chat-frame-placeholder {
   width: 133.3334%;
   height: 133.3334%;

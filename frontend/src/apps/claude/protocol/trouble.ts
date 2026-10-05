@@ -5,11 +5,8 @@
 // that only count when the message is ABOUT Claude), the copy blocks and the
 // deep links, and `tests/test_trouble_parity.py` pins those strings against
 // T:13511-13602's copy of them. This file only maps that verdict onto the chat's
-// own kinds and adds the two failures the template surfaces separately:
+// own kinds and adds the failure the template surfaced separately:
 //
-//   * `needs-install` — the project venv is not built yet. The chat shows this
-//     as a card rather than running the installer (protocol/agent.ts's
-//     `AgentNeedsInstall`, design.md §4).
 //   * `unknown-run` — the poll refused the run id: a bookmarked mid-run URL, a
 //     pruned tmp, or a run that belongs to another target (T:17788-17796,
 //     agent.py:3802/3824).
@@ -26,7 +23,7 @@ import {
   type TroubleKind as PlatformTroubleKind,
 } from "@platform/lib/trouble";
 
-import { AgentError, AgentNeedsInstall } from "./agent";
+import { AgentError } from "./agent";
 import type { Trouble, TroubleKind } from "./controller-api";
 
 export { CLAUDE_INSTALL_COMMAND, troubleHelpUrl };
@@ -105,13 +102,10 @@ export function troubleFromMessage(message: string, fromAgent = false, detail?: 
 }
 
 /**
- * Classify a THROWN failure: `AgentNeedsInstall`, `AgentError` (agent.py raised
- * — `ok:false` with a traceback, D69), an abort, or anything else.
+ * Classify a THROWN failure: `AgentError` (the agent raised or timed out on
+ * the server, with a traceback when it raised), an abort, or anything else.
  */
 export function troubleFromError(err: unknown): Trouble {
-  if (err instanceof AgentNeedsInstall) {
-    return troubleOf("needs-install", err.message, err.needs.requirements.join("\n") || undefined);
-  }
   if (err instanceof AgentError) {
     return troubleFromMessage(err.message, true, err.traceback);
   }

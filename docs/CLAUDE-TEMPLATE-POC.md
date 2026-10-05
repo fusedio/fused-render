@@ -23,6 +23,11 @@ subprocess + stream-json log + poll loop).
 >   shape described below (and the `<file>.json` file it lived in, which **D205**
 >   had already moved under `home_dir()`) no longer exists anywhere: the surviving
 >   template's session list is a scan of `~/.claude/projects` alone.
+> - **D1308** retired the iframe chat page altogether. The chat is the shell's
+>   own (`frontend/src/apps/claude`), its backend is the in-process package
+>   `fused_render/claude_agent/` behind `POST /api/claude/agent`, and
+>   `fused_render/templates/claude/` holds only `condition.py`, `icon.svg` and a
+>   `native` registry marker.
 >
 > What below is still **true of the surviving template**, because it was inherited
 > rather than rewritten: the `_file` param contract, `cwd = dirname(target)` and

@@ -231,17 +231,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** WHAT TIME IT IS, as opposed to how long something took (review #9). See
    *  `ControllerDeps.wallClock`. */
   const wallClock = deps.wallClock || Date.now;
-  const dir = deps.agentDir;
   const FILE = deps.file;
-  // Every `agent.py` call this controller makes carries the chat's own target
-  // as `X-Fused-Target`, so `fused-render calls` can be filtered by the file a
-  // conversation is about (SPEC CL-5; `protocol/agent.ts` derives the PAGE half
-  // from the script's own dir). A wrapper rather than a change at each of the
-  // ~17 call sites, and it leaves `deps.run` — the tests' seam — untouched.
+  // Every agent call this controller makes carries the chat's own target as
+  // `X-Fused-Target`, so `fused-render calls` can be filtered by the file a
+  // conversation is about (SPEC CL-5; `protocol/agent.ts` sends the constant
+  // PAGE half). A wrapper rather than a change at each of the ~17 call sites,
+  // and it leaves `deps.run` — the tests' seam — untouched.
   const run =
     deps.run ||
-    ((d, action, fields, opts = {}) =>
-      runAgent(d, action, fields, { ...opts, ...(FILE ? { target: FILE } : {}) })) as typeof runAgent;
+    ((action, fields, opts = {}) =>
+      runAgent(action, fields, { ...opts, ...(FILE ? { target: FILE } : {}) })) as typeof runAgent;
 
   let state = emptyState(FILE);
   const listeners = new Set<() => void>();
@@ -503,7 +502,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *
    * `announceTasksChanged` below is a message between documents on this origin;
    * this is the other half, and it is needed because the turn does not start in
-   * the server at all — a chat here runs `claude -p` through `/api/run`, out of
+   * the server at all — a chat here runs `claude -p` in a session host, out of
    * process, and the CLI publishes the fact two to four seconds later. Until
    * then the listing read the row as done, so every turn sent from this app
    * wore a done ring for its first seconds and a short turn for all of it
@@ -1295,12 +1294,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     try {
       for (;;) {
         const data = (await run(
-          dir,
           "poll",
           { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
           // The controller's own lifetime: `dispose` aborts, so an unmounted
           // chat's last poll does not run to completion on its own.
-          { key: null, ...(life ? { signal: life.signal } : {}) },
+          { ...(life ? { signal: life.signal } : {}) },
         )) as PollResponse | { error: string; done: true };
         // The reader left; the run continues without this page.
         if (logGen !== gen || disposed) break;
@@ -1871,10 +1869,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         let live: RunIdResponse | null = null;
         try {
           live = (await run(
-            dir,
             "live_host",
             { file: FILE || "", session_id: sessionId },
-            { key: null },
           )) as RunIdResponse;
         } catch {
           live = null; // no host reachable — fall through to start
@@ -1883,7 +1879,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
           let sent: SendResponse | null = null;
           try {
             sent = (await run(
-              dir,
               "send",
               {
                 run_id: live.run_id,
@@ -1897,7 +1892,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 // server gate only looks rather than claiming a second time.
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
               },
-              { key: null },
             )) as SendResponse;
           } catch {
             sent = null;
@@ -1910,7 +1904,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
       if (!runId) {
         const res = (await run(
-          dir,
           "start",
           {
             file: FILE || "",
@@ -1951,7 +1944,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
           },
-          { key: null },
         )) as StartResponse;
         // `StartResponse` is `{run_id, session_id?}` | `{error}`; agent.py
         // answers exactly one (agent.py:2452, plus main()'s own guards
@@ -2145,7 +2137,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
     try {
       const res = (await run(
-        dir,
         "send",
         {
           run_id: runId,
@@ -2159,7 +2150,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // only looks rather than claiming a second time.
           ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
         },
-        { key: null },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {
         // The live session cannot honor this message as-is (a new attachment
@@ -2169,7 +2159,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // for a message that was never actually rejected (T:16155-16177).
         const sessionId = deps.params.get("session_id") || "";
         const startedRes = (await run(
-          dir,
           "start",
           {
             file: FILE || "",
@@ -2185,7 +2174,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
           },
-          { key: null },
         )) as StartResponse;
         const failed = (startedRes as { error?: string }).error;
         if (failed) throw new Error(failed);
@@ -2247,10 +2235,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     emit({ status: "stopping" });
     try {
       const result = (await run(
-        dir,
         "cancel",
         { run_id: runId as string, ...(queued.length ? { queued: "1" } : {}) },
-        { key: null },
       )) as CancelResponse;
       // WHAT COMES BACK TO THE COMPOSER, and the rule is deliberately narrow
       // (feedback #11).
@@ -2454,10 +2440,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         return passed;
       }
       const res = (await run(
-        dir,
         "decide",
         { run_id: runId, request_id: id, ...fields } as never,
-        { key: null },
       )) as DecideResponse;
       if (res && res.error) throw new Error(res.error);
       // agent.py answers with what landed on DISK (first writer wins), so the
@@ -2584,13 +2568,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let res: AppStateResponse | null = null;
     try {
       res = (await run(
-        dir,
         "app_state",
         // A JSON string, not a nested object: params cross into python
         // string-shaped, and never the bare `null` a snapshot can be — agent.py
         // reads a non-dict as a permanent failure (T:15819-15825).
         { run_id: runId, request_id: id, state: block },
-        { key: null },
       )) as AppStateResponse;
     } catch {
       // The tool call is still blocked, so this has to be retried — un-claim the
@@ -2862,10 +2844,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
       let live: RunIdResponse | null = null;
       try {
         live = (await run(
-          dir,
           "live_run",
           { file: FILE || "", session_id: sessionId || "" },
-          { key: null },
         )) as RunIdResponse;
       } catch {
         return;
@@ -3002,7 +2982,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Tagged with this attach's seat so only this attach can let it go.
     if (runId) claimingRuns.set(runId, seat);
     try {
-      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
+      let probe = (await run("poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" })) as
         | PollResponse
         | { error: string; done: true };
       if (logGen !== gen || disposed) return;
@@ -3017,7 +2997,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
-        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
+        probe = (await run("poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" })) as
           | PollResponse
           | { error: string; done: true };
         if (logGen !== gen || disposed) return;
@@ -3480,16 +3460,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * transcript, and a send in flight is about to add to it.
    */
   /** The transcript restore's transport: the host's in-process road when it
-   *  gave one (`deps.history`, owner E2E R1, F5), else agent.py through
-   *  `/api/run` — the tests' fake agent, and the pre-F5 behaviour. */
+   *  gave one (`deps.history`, owner E2E R1, F5), else the agent's own
+   *  `history` action — the tests' fake agent. */
   const fetchHistoryVia = (sessionId: string): Promise<HistoryResponse & { error?: string }> =>
     deps.history
       ? deps.history(FILE || "", sessionId)
       : (run(
-          dir,
           "history",
           { file: FILE || "", session_id: sessionId, native: "1", queue: queueEnabled() ? "1" : "0" },
-          { key: null },
         ) as Promise<HistoryResponse & { error?: string }>);
 
   async function refreshHistory(sessionId: string): Promise<void> {

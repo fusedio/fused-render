@@ -61,7 +61,6 @@ async function mount(recent: unknown[] | null) {
     // `useSnapshots` and `useArtifacts` are reached through `useLandingReads`,
     // which is the unit under test; their own reads are the seams.
     out = useLandingReads(
-      "/tpl",
       FILE,
       p.recent,
       0,

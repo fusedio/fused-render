@@ -17,6 +17,11 @@ row the CLI already writes to out.jsonl (captured from real runs, 2026-08-28):
 
 Fixtures are shared with test_claude_stream.py by shape, not import: one file
 per concern keeps each self-contained.
+
+D1308: the page half of this file (source pins and node probes over the
+retired iframe chat page, templates/claude/template.html) went with that
+page; the native chat under frontend/src/apps/claude owns it now. What
+stays is the backend half.
 """
 import importlib.util
 import json
@@ -24,11 +29,11 @@ import os
 
 import pytest
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
+AGENT_DIR = os.path.join("fused_render", "claude_agent")
 
 
 def _load(name):
-    path = os.path.join(TEMPLATE_DIR, name + ".py")
+    path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("claude_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -190,25 +195,6 @@ def test_the_finalized_row_fills_in_the_detail(agent, run_dir):
     assert data["activity"]["tool"] == {"id": "toolu_1", "name": "Bash",
                                         "detail": "Wait for the deploy"}
     assert data["phase"] == "tooling"
-
-
-@pytest.mark.parametrize("name, inp, detail", [
-    ("Bash", {"command": "ls -la\npwd"}, "ls -la"),
-    ("Read", {"file_path": "/x/y/agent.py"}, "agent.py"),
-    ("Edit", {"file_path": "/x/template.html", "old_string": "a"}, "template.html"),
-    ("Write", {"file_path": "/x/new.md"}, "new.md"),
-    ("Grep", {"pattern": "def _poll"}, "def _poll"),
-    ("Task", {"description": "Map the phase machine", "subagent_type": "Explore"}, "Map the phase machine"),
-    ("Agent", {"subagent_type": "Explore"}, "Explore"),
-    ("Skill", {"skill": "brainstorming"}, "brainstorming"),
-    ("WebFetch", {"url": "https://example.com"}, "https://example.com"),
-    ("mcp__cmux__screenshot", {"x": 1}, ""),
-    ("Bash", {"description": "  spaces   and\nnewlines  "}, "spaces and newlines"),
-    ("Bash", {"description": "d" * 200}, "d" * 77 + "…"),
-    ("Bash", "not a dict", ""),
-])
-def test_tool_detail_is_one_short_line(agent, name, inp, detail):
-    assert agent._tool_detail(name, inp) == detail
 
 
 def test_a_finished_tool_clears_the_line(agent, run_dir):

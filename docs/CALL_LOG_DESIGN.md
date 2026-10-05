@@ -722,10 +722,11 @@ that works. The call log closes that loop with a file it can read.
   tool, no API client, no schema negotiation: `tail -5`, `jq`, or the `duckdb`
   template. The `fused-render calls --failed --json` subcommand (§5.5) is a
   one-line health check an agent can run unprompted.
-- **Working inside the app.** The `claude/` chat template — the single chat mode,
+- **Working inside the app.** The `claude` chat — the single chat mode,
   offered on files and directories alike since D237 — already runs Claude Code
   with cwd set to the target's directory (the target itself, when it *is* a
-  directory): `templates/claude/agent.py`. Point its system prompt at the call log and the
+  directory): `fused_render/claude_agent/agent.py` (it lived at
+  `templates/claude/agent.py` until D1308). Point its system prompt at the call log and the
   in-app agent can answer "why did that just fail?" about the very page it is
   sitting next to — with the record, not with speculation.
 - **Honest handoffs.** "I couldn't reproduce it" becomes "the log shows zero

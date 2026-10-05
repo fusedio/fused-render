@@ -426,8 +426,10 @@ def _plan_envinstall(plan: _Plan) -> None:
 
 
 def _claude_runs_root() -> str:
-    """Mirror of `templates/claude/agent.py::_runs_root` — that module imports
-    template-local siblings by path and cannot be imported from here."""
+    """Mirror of `claude_agent/agent.py::_runs_root`. A mirror rather than an
+    import on purpose: the diagnostics bundle must still collect the runs'
+    logs when the agent module itself will not import, which is one of the
+    failures a bundle exists to explain."""
     geteuid = getattr(os, "geteuid", None)
     suffix = "-%d" % geteuid() if geteuid is not None else ""
     return os.path.join(tempfile.gettempdir(), "fused_render_claude" + suffix, "runs")

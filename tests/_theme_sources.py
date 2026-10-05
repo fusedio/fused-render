@@ -30,7 +30,6 @@ TIER_ONE_TEMPLATES = (
     "annotate",
     "api",
     "bundle",
-    "claude",
     "code",
     "duckdb",
     "fusedapp",

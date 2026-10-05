@@ -15,6 +15,11 @@ selector tells the user nothing, and neither does a neighbour's model.
 
 A chat that names a session is a different question and is answered from that
 conversation alone (tests/test_claude_sessions_merged.py).
+
+D1308: the page half of this file (source pins and node probes over the
+retired iframe chat page, templates/claude/template.html) went with that
+page; the native chat under frontend/src/apps/claude owns it now. What
+stays is the backend half.
 """
 import importlib.util
 import json
@@ -24,7 +29,7 @@ import pytest
 
 
 def _load_agent():
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    path = os.path.join("fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -196,30 +201,6 @@ def test_short_model_collapses_every_spelling(tmp_path, monkeypatch):
     assert agent._short_model("claude-haiku-4-5-20251001") == "haiku"
     assert agent._short_model("gpt-42") == ""
     assert agent._short_model("") == ""
-
-
-def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
-    html = open(os.path.join("fused_render", "templates", "claude",
-                             "template.html"), encoding="utf-8").read()
-    assert '{ action: "defaults", file: FILE }' in html
-    # explicit pane param > detected config > user preference > hardcoded
-    # fallback. Detection is this chat's own record and transcript when it names
-    # a session, and ~/.claude/settings.json when it does not; the app's own
-    # preference is what fills the gap when neither says anything.
-    assert (
-        'fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL' in html
-    )
-    assert 'fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT' in html
-    # detected values are validated against the selector's own lists — the
-    # model through `shortModel` first, so a transcript still naming the retired
-    # pinned Fable id preselects the alias that replaced it instead of nothing.
-    assert "const dm = d && shortModel(d.model);" in html
-    assert "MODELS.includes(dm)" in html
-    assert "EFFORTS.includes(d.effort)" in html
-    # …and so is the preference, for the same reason: a name this build's
-    # selector doesn't have cannot be shown as selected.
-    assert 'fetch("/api/prefs")' in html
-    assert "MODELS.includes(m)" in html
 
 
 # ── THE WRITE HALF: `PUT /api/claude-sessions/defaults` ──────────────────────

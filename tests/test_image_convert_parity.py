@@ -1,7 +1,7 @@
 """The image ladder is written TWICE. This pins the two copies to one answer.
 
 `fused_render/server/image_convert.py` transcodes an upload for the New task
-modal; `fused_render/templates/claude/agent.py`'s `image_to_png` action
+modal; `fused_render/claude_agent/agent.py`'s `image_to_png` action
 transcodes a chat attachment (D614). Same job, same reason — a picture neither
 the browser nor the agent can decode — and deliberately two implementations,
 because SPEC PY-15 / D166 forbid a template importing `fused_render`: the claude
@@ -37,7 +37,7 @@ from fused_render.server import image_convert
 
 AGENT_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "fused_render", "templates", "claude", "agent.py")
+    "fused_render", "claude_agent", "agent.py")
 
 
 def _pillow():

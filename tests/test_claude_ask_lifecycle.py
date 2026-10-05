@@ -20,6 +20,13 @@ gap a pure take cannot close by itself — a SECOND ask arriving while the
 sidebar/pane is ALREADY on claude, where nothing about the mode or the
 folder/file changes to force a remount — is closed by an explicit instance
 bump folded into the remount key.
+
+D1308 retired the iframe chat page, and with it the PULL at that page's boot
+(`window._fusedClaudeAskTake`, runtime.js `pullClaudeAsk`). The host-side state
+and the shared take primitive survive: each host now takes the pending ask
+itself, once per `claudeAskInstance`, and hands it to the native chat it mounts
+(`setAskDelivery`). There is no iframe to remount, so the remount-key cases are
+now the once-per-instance delivery cases.
 """
 import os
 
@@ -82,11 +89,12 @@ def test_the_seed_module_and_its_cache_type_are_deleted():
 def test_both_hosts_install_and_use_the_shared_take_primitive(preview, listing):
     """Both call into `takeClaudeAsk` (lib/claude-ask.ts) rather than each
     hand-rolling its own read-and-clear — one implementation, not two that can
-    drift."""
+    drift. The take happens in the HOST now; the window hook the iframe page
+    pulled through is gone with that page."""
     for label, src in [("Preview.tsx", preview), ("Listing.tsx", listing)]:
         assert '"@apps/explorer/lib/claude-ask"' in src, label
-        assert "takeClaudeAsk" in src, label
-        assert "window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);" in src, label
+        assert "const text = takeClaudeAsk(claudeSeedRef);" in src, label
+        assert "_fusedClaudeAskTake" not in src, label
 
 
 def test_both_hosts_use_the_shared_readiness_check(preview, listing):
@@ -146,19 +154,15 @@ def test_the_shared_take_primitive_reads_and_clears_in_one_step():
 
 # ------------------------------------------------ forcing a remount to pull
 
-def test_preview_keys_the_claude_iframe_separately_from_the_mode(preview, preview_sidebar):
-    """A second ask while the sidebar is ALREADY on claude changes neither
-    `activeSide` nor `fsPath` — the ordinary `key={active}` a mode switch uses
-    would not remount, and the claude template would never reboot to pull the
-    new text. `claudeFrameKey` closes that gap; `PreviewSidebar` must actually
-    use it for the iframe's key."""
-    assert "const claudeFrameKey = (m: string) => (m === \"claude\" ? `claude:${claudeAskInstance}` : m);" in preview
-    assert "frameKey={claudeFrameKey(activeSide)}" in preview
-    assert "key={frameKey}" in preview_sidebar
-    # And PreviewSidebar's prop must actually be read from a variable frameKey
-    # defaults to `active`, not hardcoded — ordinary mode switches still key
-    # off the mode alone when the caller passes nothing special.
-    assert "frameKey = active" in preview_sidebar
+def test_each_host_delivers_an_ask_to_the_chat_once_per_instance(preview, listing):
+    """A second ask while the chat is ALREADY open changes neither the mode nor
+    the path, so nothing remounts; `claudeAskInstance` is what moves, and the
+    delivery is keyed on it so one ask reaches the chat exactly once — a
+    re-render must not hand the same text over again."""
+    for label, src in [("Preview.tsx", preview), ("Listing.tsx", listing)]:
+        assert "if (pulledFor.current === claudeAskInstance) return;" in src, label
+        assert "pulledFor.current = claudeAskInstance;" in src, label
+        assert "if (text) setAskDelivery({ text, seq: claudeAskInstance });" in src, label
 
 
 def test_preview_bumps_the_claude_instance_on_every_incoming_ask(preview):
@@ -196,20 +200,27 @@ def test_preview_never_stores_a_seed_it_has_not_confirmed_can_be_shown(preview):
     assert action.index("if (claudeAskRoute === null) return false;") < action.index("claudeSeedRef.current = text;")
 
 
-def test_listing_folds_the_claude_instance_into_the_pane_key(listing):
-    """The folder pane's key already includes `fsPath` (`paneKey`), so a
-    folder change already forces a remount. The gap `Preview.tsx` closes with
-    `claudeFrameKey` exists here too, for the SAME folder: a second ask while
-    already open on claude, same folder, changes neither `paneSide` nor
-    `fsPath`."""
+def test_a_delivered_ask_remounts_the_chat_and_nothing_else(preview, listing):
+    """A second ask while the chat is already open must start a FRESH chat
+    with it, so the chat's mount key carries the delivery's `seq`. Only the
+    chat's key does: the other modes keep keying on the mode alone, so an ask
+    never remounts a git or mcp pane beside it."""
+    assert ("m === CHAT_MODE ? `claude:${askDelivery ? askDelivery.seq : 0}` : m;"
+            in preview)
+    assert "key={claudeMountKey(m)}" in preview          # the content pane
+    assert "key={claudeMountKey(CHAT_MODE)}" in preview  # the sidebar mount
+    assert "claudeFrameKey" not in preview
+    assert "`${paneKey(paneSide, fsPath)}:${askDelivery ? askDelivery.seq : 0}`" in listing
+
+
+def test_listing_bumps_the_claude_instance_on_every_incoming_ask(listing):
+    """The folder pane's copy of the same gap: a second ask while already open
+    on claude, same folder, changes neither `paneSide` nor `fsPath` — the bump
+    is what makes the delivery above run again."""
     assert "const [claudeAskInstance, setClaudeAskInstance] = useState(0);" in listing
     action = listing[listing.index("claudeAskActionRef.current = (text: string) => {"):]
     action = action[:action.index("\n    };")]
     assert "setClaudeAskInstance((n) => n + 1);" in action
-    key_site = listing[listing.index("<ListingPreviewPane"):]
-    key_site = key_site[:key_site.index("/>")]
-    assert 'paneSide === "claude"' in key_site
-    assert "claudeAskInstance" in key_site
 
 
 def test_listing_never_stores_a_seed_it_has_not_confirmed_can_be_shown(listing):

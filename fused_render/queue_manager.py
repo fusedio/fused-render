@@ -74,7 +74,7 @@ SPAWN_GRACE = 10.0
 # zero; counting neither let two ungated sends into one free folder. A token
 # is the receipt: admit hands it to the client, the client hands it back on
 # the run request, and `consume_claim` removing it is what tells the gate
-# "look, don't claim" — see `routers/run.py::_folder_busy`. Capped, because an
+# "look, don't claim" — see `claude_agent/gate.py::_folder_busy`. Capped, because an
 # admission a page never sent (a stale card, a reload) leaves an unconsumed
 # token behind for ever otherwise.
 CLAIM_CAP = 16
@@ -1173,7 +1173,7 @@ class QueueManager:
         Admit is the one caller: the token travels in its answer, the client
         echoes it back on the run request as `queue_claim`, and
         `consume_claim` removing it there is what tells
-        `routers/run.py::_folder_busy` this send is the one already counted,
+        `claude_agent/gate.py::_folder_busy` this send is the one already counted,
         not a second claim to make. A SEPARATE METHOD rather than widening
         `claim_took`'s return, because that tuple's shape is `schedule.py`'s
         contract (see its docstring) and a second element on every call site
@@ -1354,7 +1354,7 @@ class QueueManager:
         `consume_claim` marks the owner the instant that happens
         (`owner["consumed"]`); this refuses (logs, does nothing) rather than
         replace a live, unconsumed placeholder on a guess. The run gate
-        (`routers/run.py::_folder_busy`) is the real fix — `is_free` no longer
+        (`claude_agent/gate.py::_folder_busy`) is the real fix — `is_free` no longer
         calls a live placeholder free to a stranger, so that send is refused
         before it ever reaches a spawn — this is the backstop for a caller
         that reaches `started` some other way. An EXPIRED placeholder still

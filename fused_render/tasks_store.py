@@ -964,7 +964,7 @@ def first_text(content) -> str:
 # below. Claude Code writes some ON the user's behalf: a finished subagent
 # reporting back, a slash command's envelope, the stdout it captured. The
 # fused-render Claude page writes others IN FRONT OF what the user typed
-# (`composeOutgoing` in templates/claude/template.html: the app-state snapshot,
+# (`composeOutgoing` in frontend/src/apps/claude/protocol/wire.ts: the app-state snapshot,
 # then the pane screenshots, then the annotation notes, then the words).
 #
 # The corpus says the two groups behave OPPOSITELY. Over 219 transcripts / 2519
@@ -1486,7 +1486,7 @@ def _parse_head(path: str,
                 # `isMeta` is the caveat Claude Code writes FOR the user;
                 # `isSidechain` is a prompt written for a SUBAGENT, which the
                 # user never typed and which can be a whole task brief. Both
-                # skipped — templates/claude/agent.py's sibling reader has
+                # skipped — claude_agent/agent.py's sibling reader has
                 # always skipped both, and this one having only half the pair
                 # was how a subagent's brief came to name a task.
                 if (not prompt and obj.get("type") == "user"
@@ -1529,7 +1529,7 @@ def _parse_head(path: str,
                 # `type: "user"` record Claude Code writes carries an
                 # `entrypoint` — "cli" for an interactive terminal session,
                 # "sdk-cli" for a headless/programmatic one (what
-                # templates/claude/agent.py's print-mode spawn produces). It
+                # claude_agent/agent.py's print-mode spawn produces). It
                 # is a PROXY for "started by our own template", not proof —
                 # an unrelated SDK-driven session also reports "sdk-cli" — so
                 # a reader of this field must fail open on anything that

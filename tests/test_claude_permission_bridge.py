@@ -1,6 +1,6 @@
 """The chat template's approval bridge: headless `claude -p` has no terminal
 to prompt on, so `--permission-prompt-tool` routes each request to
-`templates/claude/permission_server.py`, which parks it as a file until the
+`claude_agent/permission_server.py`, which parks it as a file until the
 chat window answers through `agent.py`'s `decide` action.
 
 Retargeted, not deleted, when the plain chat template it was written against was
@@ -35,6 +35,11 @@ be injected into a child) show up as covered. Measuring the child properly would
 mean a coverage bootstrap in the spawn path for one template helper; the number
 is not a gate, so it is left honest-but-understated rather than gamed with
 tests written for the metric.
+
+D1308: the page half of this file (source pins and node probes over the
+retired iframe chat page, templates/claude/template.html) went with that
+page; the native chat under frontend/src/apps/claude owns it now. What
+stays is the backend half.
 """
 import ast
 import builtins
@@ -42,8 +47,6 @@ import importlib.util
 import inspect
 import json
 import os
-import re
-import shutil
 import subprocess
 import stat
 import sys
@@ -56,29 +59,16 @@ import pytest
 
 from _mcp_stdio import MCPServer
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
-SERVER = os.path.join(TEMPLATE_DIR, "permission_server.py")
+AGENT_DIR = os.path.join("fused_render", "claude_agent")
+SERVER = os.path.join(AGENT_DIR, "permission_server.py")
 
 
 def _load(name):
-    path = os.path.join(TEMPLATE_DIR, name + ".py")
+    path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("claude_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def _const_block(html, start, end):
-    """The text between one source marker and the next, for scraping a JS
-    const out of the shipping page. Asserts the marker is actually THERE before
-    slicing — `html.split(start)[1]` on a marker that moved or was renamed
-    raises a bare IndexError, which reads as the harness being broken rather
-    than as the two sides having drifted apart, which is the thing this is
-    for."""
-    assert start in html, f"marker not found in template.html: {start!r}"
-    after = html.split(start, 1)[1]
-    assert end in after, f"end marker not found after {start!r}: {end!r}"
-    return after.split(end, 1)[0]
 
 
 @pytest.fixture
@@ -93,6 +83,10 @@ class _HostProc:
     that wants the argv has to capture the request and rebuild it, the same
     call session_host.py's own `main()` makes."""
     pid = 4242
+
+    def wait(self, timeout=None):
+        # `_start` parks a daemon reaper thread in wait() on the host.
+        return 0
 
     class _Stdin:
         def __init__(self, seen):
@@ -1536,11 +1530,9 @@ def test_an_expired_plan_card_still_says_the_reply_ended(agent, tmp_path):
     assert on_disk == {"decision": "expired"}, on_disk
 
 
-def test_the_two_sides_agree_on_which_tool_carries_a_plan(agent):
-    """D146: the page branches on this name too, so nothing may drift."""
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+def test_the_backend_names_the_tool_that_carries_a_plan(agent):
+    """The native chat branches on this name too (frontend/src/apps/claude)."""
     assert agent.PLAN_TOOL == "ExitPlanMode"
-    assert 'const PLAN_TOOL = "ExitPlanMode";' in html
 
 
 # ------------------------------------------------------------ agent.py side
@@ -2046,42 +2038,6 @@ def test_the_mcp_config_forces_utf8_stdio_on_the_server(agent, tmp_path):
     assert env["PYTHONUTF8"] == "1"
 
 
-def test_the_server_path_resolves_when_the_engine_execs_us_without_dunder_file(tmp_path):
-    """The optional fused engine (D69) `exec`s this module into a namespace
-    with no `__file__` — it only puts the script's dir first on sys.path. A
-    bare `os.path.dirname(__file__)` is therefore a NameError for anyone with
-    the `fused` extra installed, which is how a live chat answered a first
-    message with "name '__file__' is not defined".
-    """
-    template_dir = os.path.abspath(TEMPLATE_DIR)
-    source = open(os.path.join(template_dir, "agent.py"), encoding="utf-8").read()
-
-    ns = {"__name__": "__fused_engine__"}
-    assert "__file__" not in ns, "the point of this test is that it is absent"
-
-    sys.path.insert(0, template_dir)  # the engine's preamble, verbatim in spirit
-    try:
-        exec(compile(source, os.path.join(template_dir, "agent.py"), "exec"), ns)
-    finally:
-        sys.path.remove(template_dir)
-
-    run_dir = tmp_path / "run"
-    os.makedirs(run_dir / "perm")
-    config = json.loads(open(ns["_write_mcp_config"](str(run_dir))).read())
-    server = config["mcpServers"][ns["PERMISSION_SERVER"]]["args"][0]
-    assert os.path.isfile(server), f"resolved to a non-existent path: {server}"
-    assert os.path.basename(server) == "permission_server.py"
-
-
-def test_the_card_and_the_backend_agree_on_who_may_be_granted(agent):
-    """D146: a rule duplicated across two implementations needs a test that
-    asserts they agree, not a comment saying they should."""
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    listed = html.split("const WHOLE_TOOL_GRANTABLE = new Set([")[1].split("]);")[0]
-    in_page = {t.strip().strip('"') for t in listed.split(",") if t.strip()}
-    assert in_page == set(agent.WHOLE_TOOL_GRANTABLE)
-
-
 def test_session_scope_is_refused_server_side_for_an_ungrantable_tool(agent, tmp_path):
     """The card only offers "allow all" for the file tools, but that is a view
     — and a view is the wrong place for the only copy of the rule. A `decide`
@@ -2126,26 +2082,13 @@ def test_only_a_switchable_mode_is_recorded_and_only_alongside_an_allow(
 
 
 def test_every_switchable_mode_list_agrees(agent):
-    """agent.py validates it, permission_server re-validates it, and the page
-    both offers it (the approval card's choice table) and picks from it (the plan
-    card's landing mode) — so a test holds every copy together (D146)."""
+    """agent.py validates it and permission_server re-validates it, so a test
+    holds both copies together (D146)."""
     assert set(agent.SWITCHABLE_MODES) == set(_load("permission_server").SWITCHABLE_MODES)
     # every switchable mode must also be a mode the picker can spawn with,
     # or a card could leave the session somewhere the next turn cannot
     assert set(agent.SWITCHABLE_MODES) <= set(agent.PERMISSION_MODES)
     assert "bypassPermissions" not in agent.SWITCHABLE_MODES
-
-    # Every non-empty mode the card's choice table can send.
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    offered = {m for m in re.findall(r'"(?:allow|deny)", "(?:once|session)", "(\w*)"', html) if m}
-    assert offered, "the card no longer offers a mode switch at all"
-    assert offered <= set(agent.SWITCHABLE_MODES), offered
-
-    # …and the set the plan card filters the picker through, which is the only
-    # place the page names these modes as a list of its own.
-    listed = _const_block(html, "const SWITCHABLE_MODES = new Set([", "]);")
-    in_page = {m.strip().strip('"') for m in listed.split(",") if m.strip()}
-    assert in_page == set(agent.SWITCHABLE_MODES), in_page
 
 
 def test_an_unreadable_request_cannot_win_a_session_grant(agent, tmp_path):
@@ -2162,19 +2105,10 @@ def test_a_whole_tool_grant_is_not_offered_for_bash_and_friends(agent):
     close to switching approvals off. Only the repeat-heavy file tools carry
     the whole-tool grant; anything unlisted (Bash, the web tools, MCP tools)
     gets Allow/Deny."""
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    listed = html.split("const WHOLE_TOOL_GRANTABLE = new Set([")[1].split("]);")[0]
-    granted = {t.strip().strip('"') for t in listed.split(",") if t.strip()}
+    granted = set(agent.WHOLE_TOOL_GRANTABLE)
     assert granted == {"Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit"}
     for tool in ("Bash", "WebFetch", "WebSearch", "Task", "mcp__other__thing"):
         assert tool not in granted
-    # That the button is actually *gated* on this set — rather than the set
-    # merely being declared nearby — is asserted by running the page's own
-    # `permChoices`, in
-    # test_the_page_offers_allow_all_only_where_the_backend_would_honour_it.
-    # It used to be a substring check here, which broke the moment the gate was
-    # extracted to a function: the code was still correct, the assertion was
-    # just reading the wrong thing.
 
 
 @pytest.mark.parametrize("env,expected", [
@@ -2253,125 +2187,7 @@ def test_the_approvals_mode_reaches_the_cli_and_cannot_be_widened(
     assert "--permission-prompt-tool" in cmd
 
 
-def _perm_choices(tool, live_mode):
-    """Run the card's real `permChoices` and return the button texts."""
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    consts = "\n".join([
-        html[html.index("const DEFAULT_PERMISSION = "):].split("\n")[0],
-        html[html.index("const WHOLE_TOOL_GRANTABLE = new Set(["):
-             html.index("]);", html.index("const WHOLE_TOOL_GRANTABLE")) + 3],
-    ])
-    start = html.index("function permChoices(")
-    fn = html[start:html.index("function buildPermCard(", start)]
-    script = consts + "\n" + fn + (
-        "\nconsole.log(JSON.stringify(permChoices(%s, 'X', %s).map((c) => c[0])));"
-        % (json.dumps(tool), json.dumps(live_mode)))
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout)
-
-
 _SWITCH = "Allow, and let Claude decide from here"
-
-
-@pytest.mark.parametrize("live_mode", ["prompt", "acceptEdits", "", None])
-def test_the_mode_switch_is_offered_while_the_run_is_still_strict(live_mode):
-    """Gated on the mode the RUN is in, not the picker's param.
-
-    Changing the picker to "Claude decides" mid-turn does not touch the running
-    process — it applies to the next spawn — so the session keeps carding in
-    the strict mode it was started in. Reading the param here hid this button
-    at exactly that moment, which is when it is the only control that can
-    deliver what the user just asked for. An absent/unknown mode still offers
-    it: a needless button is a no-op click, a missing one is the bug.
-    """
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own button builder")
-    assert _SWITCH in _perm_choices("Bash", live_mode)
-
-
-def test_the_mode_switch_is_dropped_once_the_run_is_already_auto():
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own button builder")
-    choices = _perm_choices("Bash", "auto")
-    assert _SWITCH not in choices
-    assert choices == ["Allow", "Deny"]
-
-
-def test_the_mode_switch_is_never_offered_on_an_ordinary_card_while_planning():
-    """The plan card is the intended exit from plan mode — an ordinary tool
-    card's escalation button loosening the mode via `setMode` would be a second,
-    side, door out of the same state, opened by a click that never looked at a
-    plan at all."""
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own button builder")
-    choices = _perm_choices("Bash", "plan")
-    assert _SWITCH not in choices
-    assert choices == ["Allow", "Deny"]
-
-
-@pytest.mark.parametrize("tool,grantable", [
-    ("Edit", True), ("Write", True), ("Read", True), ("Glob", True),
-    ("Grep", True), ("NotebookEdit", True),
-    ("Bash", False), ("WebFetch", False), ("mcp__x__y", False),
-])
-def test_the_page_offers_allow_all_only_where_the_backend_would_honour_it(
-        agent, tool, grantable):
-    """The card's allowlist and `agent.py`'s must agree (D146) — asserted by
-    running the page's own gate rather than by re-reading its source."""
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own button builder")
-    offered = any(c.startswith("Allow all ") for c in _perm_choices(tool, "prompt"))
-    assert offered == grantable
-    assert offered == (tool in agent.WHOLE_TOOL_GRANTABLE)
-
-
-def test_the_selector_and_the_backend_offer_the_same_modes(agent):
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    listed = html.split("const PERMISSION_MODES = [")[1].split("];")[0]
-    in_page = [m.strip().strip('"') for m in listed.split(",") if m.strip()]
-    assert set(in_page) == set(agent.PERMISSION_MODES)
-    assert "plan" in in_page, "the picker no longer offers planning first"
-    assert agent.DEFAULT_PERMISSION_MODE == "prompt"
-    assert 'const DEFAULT_PERMISSION = "prompt"' in html
-    # Every option needs a label, or `fillSelect` renders the word "undefined"
-    # as a permission mode the user is being asked to choose.
-    labels = _const_block(html, "const PERMISSION_LABELS = {", "};")
-    labelled = set(re.findall(r"(\w+):", labels))
-    assert labelled == set(in_page), labelled
-
-
-def test_the_note_field_cannot_type_past_what_the_server_will_keep(agent):
-    """The server-side cap (`NOTE_LIMIT`) is bounded either way (D248's
-    truncation marker), but an honest user should never even reach it — the
-    textarea's own `maxLength` is the first line of defence, and a test holds
-    the two numbers together (D146) so one cannot drift from the other."""
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    listed = _const_block(html, "const PLAN_NOTE_LIMIT = ", ";")
-    assert int(listed.strip()) == agent.NOTE_LIMIT
-    assert "note.maxLength = PLAN_NOTE_LIMIT" in html
-
-
-def _summarize(tool, tool_input):
-    """Run the card's real `summarizePermission` over one tool input.
-
-    Extracted and executed rather than asserted about: what matters is the
-    text a user actually reads before clicking Allow, and that is the output
-    of this function, not the shape of its source.
-
-    The extraction window opens at `formatEditDiff` (the function immediately
-    above it in the template), not at `summarizePermission` itself: the Edit
-    case renders its `-`/`+` body through that helper now, because the
-    transcript's Edit chip shows the same diff and one formatter serves both.
-    """
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    start = html.index("function formatEditDiff(")
-    fn = html[start:html.index("function buildPermCard(", start)]
-    script = fn + "\nconsole.log(JSON.stringify(summarizePermission(%s, %s)));" % (
-        json.dumps(tool), json.dumps(tool_input))
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout)
 
 
 # (tool, input, the substance the user must be able to SEE before allowing)
@@ -2391,83 +2207,6 @@ _MUST_SHOW = [
 ]
 
 
-@pytest.mark.parametrize("tool,tool_input,needle", _MUST_SHOW,
-                         ids=[t for t, _, _ in _MUST_SHOW])
-def test_the_card_shows_what_is_being_authorised(tool, tool_input, needle):
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    summary = _summarize(tool, tool_input)
-    shown = (summary["sub"] or "") + "\n" + (summary["body"] or "")
-    assert needle in shown, (
-        f"{tool} card would not show {needle!r} — the user would be approving "
-        f"something they cannot see. Card text was: {shown!r}")
-
-
-@pytest.mark.parametrize("tool,field", [
-    ("Bash", "command"),
-    ("Write", "content"),
-    ("Edit", "new_string"),
-    ("NotebookEdit", "new_source"),
-])
-def test_a_long_payload_is_shown_whole_not_truncated(tool, field):
-    """The card must not render a prefix of what will run.
-
-    permission_server hands the tool its `updatedInput` unchanged, so anything
-    the card cut off would still execute. The input is model-authored, so a
-    prompt-injected model that knows where the cut falls can put something
-    benign in front of it and the real payload behind it — the user clicks
-    Allow on the part they can read. The <pre> scrolls; it does not elide.
-    """
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    buried = "rm -rf ~/Documents  # THE PART YOU WERE NOT SHOWN"
-    payload = ("echo benign\n" * 400) + buried          # ~5k chars, past any cut
-    summary = _summarize(tool, {"file_path": "/a", "notebook_path": "/n", field: payload})
-    shown = (summary["sub"] or "") + "\n" + (summary["body"] or "")
-    assert buried in shown, f"{tool}.{field} was truncated before the payload"
-    assert "…" not in shown, "an ellipsis means something was hidden"
-
-
-@pytest.mark.parametrize("tool,tool_input", [
-    # `a || b` renders one side and used to mark BOTH covered, so the loser was
-    # skipped by the leftover dump too — invisible on the card, authorised by
-    # updatedInput all the same. Which side wins does not matter; that every
-    # value reaches the card one way or the other does.
-    ("Read", {"file_path": "/shown.txt", "path": "/etc/shadow"}),
-    ("WebFetch", {"url": "https://shown.test", "query": "exfiltrate", "prompt": "p"}),
-    ("WebSearch", {"query": "shown", "url": "https://hidden.test"}),
-    ("Grep", {"pattern": "p", "path": "/a", "glob": "*.pem"}),
-])
-def test_both_sides_of_an_alternation_reach_the_card(tool, tool_input):
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    summary = _summarize(tool, tool_input)
-    shown = (summary["sub"] or "") + "\n" + (summary["body"] or "")
-    for key, value in tool_input.items():
-        rendered = value in shown
-        left_over = key not in summary["covered"]  # buildPermCard prints these
-        assert rendered or left_over, (
-            f"{tool}.{key}={value!r} is claimed as covered but never rendered — "
-            "it would vanish from the card while updatedInput still authorises it")
-
-
-def _leftover(raw_input_json, covered):
-    """Run the card's real `leftoverInput` over one tool input.
-
-    The input is handed over as a JSON *string* parsed inside node rather than
-    as a JS literal, because the bug this guards against only exists for keys
-    the JSON parser DEFINES — a literal would go through assignment and hide it.
-    """
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    start = html.index("function leftoverInput(")
-    fn = html[start:html.index("function buildPermCard(", start)]
-    script = fn + "\nconsole.log(JSON.stringify(leftoverInput(JSON.parse(%s), %s)));" % (
-        json.dumps(raw_input_json), json.dumps(covered))
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout)
-
-
 _EVERY_SURFACE = [
     # An empty value is the case that motivated this: buildPermCard emits a
     # <pre> only for a truthy body, so a key claimed as "covered" while
@@ -2485,123 +2224,6 @@ _EVERY_SURFACE = [
     ("Read", {"file_path": "/shown.txt", "path": "/etc/shadow"}),
     ("mcp__x__y", {"secret_arg": "visible", "empty_arg": ""}),
 ]
-
-
-@pytest.mark.parametrize("tool,tool_input", _EVERY_SURFACE,
-                         ids=["%s-%s" % (t, "-".join(i)) for t, i in _EVERY_SURFACE])
-def test_every_input_value_reaches_one_surface_or_the_other(tool, tool_input):
-    """The whole disclosure contract in one assertion.
-
-    Allow hands the tool its input verbatim, so every key must be visible
-    somewhere: rendered by the curated summary, or printed by the leftover
-    dump. `covered` is what routes between the two, and each way it has been
-    wrong has produced the same bug — hand-listed (the `a || b` loser),
-    then claimed-for-empty (a `Write` whose empty `content` truncates the file
-    while the card shows a bare path).
-
-    Note the `bool(text)` guard: `"" in shown` is always True, which is exactly
-    why the earlier alternation test could not catch the empty case.
-    """
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    summary = _summarize(tool, tool_input)
-    shown = (summary["sub"] or "") + "\n" + (summary["body"] or "")
-    leftover = _leftover(json.dumps(tool_input), summary["covered"]) or {}
-    for key, value in tool_input.items():
-        text = value if isinstance(value, str) else json.dumps(value)
-        # An empty value carries no text to look for, so the only way to
-        # disclose it is to NAME it — either in the leftover dump or in the
-        # verbatim JSON the unknown-tool branch renders as its body.
-        disclosed = (key in leftover
-                     or '"%s"' % key in shown
-                     or (bool(text) and text in shown))
-        assert disclosed, (
-            f"{tool}.{key}={value!r} appears on neither surface — the user "
-            "would approve it without ever seeing it, and permission_server "
-            "returns updatedInput unchanged")
-
-
-def test_an_empty_write_is_not_shown_as_a_bare_path():
-    """The sharp end of the rule above.
-
-    `Write` with `content: ""` truncates the file. Marking `content` covered
-    while rendering nothing made that card identical to an ordinary path-only
-    approve — no body, no leftover dump, nothing to distinguish "write this
-    text" from "empty this file".
-    """
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    summary = _summarize("Write", {"file_path": "/notes.md", "content": ""})
-    assert "content" not in summary["covered"], (
-        "an unrendered key must not be claimed as covered")
-    assert _leftover(json.dumps({"file_path": "/notes.md", "content": ""}),
-                     summary["covered"]) == {"content": ""}
-
-
-def test_no_input_key_is_dropped_from_the_card():
-    """Allow authorises the whole input, so a key the curated summary has no
-    case for must still be visible rather than assumed unimportant."""
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    # `covered` is the contract buildPermCard uses to render the leftovers.
-    summary = _summarize("Bash", {"command": "ls", "description": "d",
-                                  "run_in_background": True, "timeout": 900})
-    assert set(summary["covered"]) == {"command", "description"}
-    extra = _leftover(json.dumps({"command": "ls", "description": "d",
-                                  "run_in_background": True, "timeout": 900}),
-                      summary["covered"])
-    assert extra == {"run_in_background": True, "timeout": 900}
-
-
-def test_a_proto_key_is_not_swallowed_by_the_prototype_setter():
-    """A model-authored input may carry an own `__proto__` key.
-
-    It reaches the page through res.json(), which — like JSON.parse — defines
-    that key as an ordinary own property, so Object.keys lists it and the
-    leftover dump is on the hook for showing it. Building the dump by
-    ASSIGNING it into `{}` instead hits Object.prototype's legacy `__proto__`
-    setter: no own property is created, the field renders as `{}`, and the
-    user approves a payload the card told them was empty — permission_server
-    returns updatedInput unchanged, so the field is authorised regardless.
-    """
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    raw = '{"command": "ls", "__proto__": {"evil": "rm -rf ~/Documents"}}'
-    extra = _leftover(raw, ["command"])
-    assert extra is not None, "the __proto__ field vanished from the card entirely"
-    assert extra.get("__proto__") == {"evil": "rm -rf ~/Documents"}, (
-        "the card would render an empty object while updatedInput still "
-        f"authorises the field; got {extra!r}")
-
-
-@pytest.mark.parametrize("raw,covered,expected", [
-    # `__proto__` is the only name the setter actually swallows, and it does so
-    # for an object AND for a primitive — the latter is the quieter half, since
-    # the setter simply ignores it without even changing a prototype. Both of
-    # these render as `{}` before the fix.
-    ('{"__proto__": "a string"}', [], {"__proto__": "a string"}),
-    ('{"__proto__": {"o": 1}, "k": 2}', ["k"], {"__proto__": {"o": 1}}),
-    # Controls. These pass under the assignment form too — kept so the fix is
-    # pinned to preserving ordinary behaviour rather than only to the bug:
-    # other Object.prototype names are plain data properties that shadow fine…
-    ('{"toString": "shadowed", "b": 2}', ["b"], {"toString": "shadowed"}),
-    ('{"constructor": {"x": 1}}', [], {"constructor": {"x": 1}}),
-    # …and a fully covered input must still yield no second <pre>.
-    ('{"a": 1}', ["a"], None),
-    ('{}', [], None),
-])
-def test_the_leftover_dump_survives_prototype_named_keys(raw, covered, expected):
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    assert _leftover(raw, covered) == expected
-
-
-def test_grep_still_shows_its_scope_alongside_the_pattern():
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the card's own summariser")
-    summary = _summarize("Grep", {"pattern": "TODO", "path": "/src", "glob": "*.py"})
-    assert "TODO" in summary["body"]
-    assert "/src" in summary["sub"] and "*.py" in summary["sub"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
@@ -2814,87 +2436,6 @@ def test_a_parked_request_file_is_private(tmp_path, server):
     # readline, and the EOF surfaces as PytestUnhandledThreadExceptionWarning.
     (perm_dir / (req["id"] + ".res.json")).write_text(json.dumps({"decision": "deny"}))
     assert _result_payload(pending.result(10))["behavior"] == "deny"
-
-
-def test_template_wires_the_decide_action(agent):
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    assert 'action: "decide"' in html
-    assert "syncPermissions(data.permissions" in html
-    # A tool input is model-authored text; rendering it as markup would be an
-    # injection straight into the approval prompt the user is reading. The ONE
-    # exception is the plan card, whose `input.plan` genuinely IS markdown — and
-    # it goes through `renderMd`, the sanitize-safe funnel, never anywhere else.
-    # Asserted as the exhaustive list of innerHTML writes in the card region, so
-    # a second one cannot be added without this test naming it.
-    region = html.split("function buildPermCard")[1] \
-        .split("function syncPermissions")[0]
-    assert re.findall(r"\.innerHTML\s*=\s*([^;]+);", region) == ["renderMd(plan)"]
-
-
-def test_the_question_card_always_offers_an_other_box(agent):
-    """D407. Claude Code's own prompt appends "Other" to every AskUserQuestion,
-    and a card that can only echo the model's two-to-four options back forces
-    the user to pick the nearest wrong answer — which the model then acts on.
-    The row is not conditional on anything the model sent, so this asserts it is
-    built unconditionally inside the per-question loop, and that what it
-    produces leaves on the SEPARATE `custom` param rather than being passed off
-    as one of the labels.
-    """
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    card = html.split("function buildQuestionCard")[1] \
-        .split("function buildPlanCard")[0]
-    assert "qother" in card and "Other…" in card
-    # Both shapes of the card: the click-to-answer button and the tickable row.
-    assert "oneShot" in card and "multiSelect" in card
-    # The typed text leaves as its own param, keyed the same way as `answers`.
-    assert "custom: JSON.stringify(custom" in card
-
-
-def test_the_drawn_tick_never_paints_the_other_rows_text_field():
-    """The bug this card shipped with, asserted as the rule that prevents it.
-
-    The option rows draw their own checkbox/radio (`appearance: none`, a 14px
-    box, a drawn border and background) because Chrome's native one is unreadable
-    on a dark card. That rule was written as `.perm .qopt input` — "any input in
-    an option row" — which was true of exactly one thing until the "Other" row
-    put a TEXT field in one. At (0,2,1) it out-specifies `.perm .qtype` (0,2,0),
-    so the field inherited the 14px square, the tick border and the background:
-    what reached the user was an empty grey row with a tiny white box in it and
-    nowhere visible to type.
-
-    A DOM probe cannot see this — the tree was always right, only the paint was
-    wrong — so the guard is on the stylesheet: every rule that dresses a tick
-    says which input types it means, and the field's own rules sit under `.qopt`
-    so they cannot lose the race again.
-    """
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    # Comments out first: this file's CSS narrates itself, and the prose talks
-    # about the very selectors being scanned for.
-    naked = re.sub(r"/\*.*?\*/", "", html, flags=re.S)
-    selectors = re.findall(r"^\s*([^{}\n][^{}]*?)\s*\{", naked, re.M)
-    dressing = [s for s in selectors if re.search(r"\.qopt\s+input", s)]
-    assert dressing, "the drawn-tick rules moved; this guard is asserting nothing"
-    for sel in dressing:
-        for part in sel.split(","):
-            if ".qopt" not in part:
-                continue
-            assert 'input[type="checkbox"]' in part or 'input[type="radio"]' in part, (
-                "%r dresses every input inside an option row, including the "
-                "\"Other\" row's text field" % part.strip())
-    # …and the field is selected through the row, so it outranks anything that
-    # reaches it by way of `.qopt`.
-    assert ".perm .qopt .qtype {" in html
-    assert not re.search(r"^\s*\.perm \.qtype\s*[,{]", html, re.M)
-    # By CLASS, never by element type. The field started as an <input> and is a
-    # <textarea> now (so a long answer wraps instead of scrolling off the side);
-    # a `textarea.qtype` or `input.qtype` anywhere would mean the next such
-    # change silently drops the styling rather than failing loudly.
-    for sel in selectors:
-        for part in sel.split(","):
-            if ".qtype" not in part:
-                continue
-            assert not re.search(r"(input|textarea)\s*(\[|\.qtype)", part), (
-                "%r ties the Other row's field to one element type" % part.strip())
 
 
 def monkey_runs(agent, tmp_path):
