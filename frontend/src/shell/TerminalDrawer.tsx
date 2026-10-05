@@ -76,6 +76,7 @@ import {
   MAX_HEIGHT,
   MIN_HEIGHT,
   STORAGE_KEY,
+  cachedTabs,
   parseState,
   programLabel,
   reconcileTabs,
@@ -229,7 +230,10 @@ export async function sendPendingRequestIfAny(
   // request (terminalDockStore.ts) during the `await create(...)` this
   // follows; comparing against the stale peeked value would skip `cd` for a
   // request the session was never actually started in.
-  opts: { createdCwd?: string } = {},
+  // `fallbackCwd`: where the busy-path's NEW terminal starts when the request
+  // names no cwd of its own (a command-only `fused.terminal.run`) — the
+  // drawer's cwd, rather than the server's `$HOME`.
+  opts: { createdCwd?: string; fallbackCwd?: string } = {},
   deps: {
     take?: () => TerminalRequest | null;
     send?: (id: string, data: string) => Promise<{ ok: boolean }>;
@@ -260,14 +264,15 @@ export async function sendPendingRequestIfAny(
   }
   let newId: string;
   try {
-    newId = await deps.create(req.cwd);
+    newId = await deps.create(req.cwd ?? opts.fallbackCwd);
   } catch (err) {
     await copy(fullText);
     throw new TerminalBusyError(errStatus(err) === 409 ? "limit" : "busy");
   }
   // The new tab goes in BEFORE the send: the command's output should land in
   // a terminal the reader can already see.
-  deps.adopt?.(newId, { label: programLabel(req.command) ?? DEFAULT_LABEL, ...(req.cwd ? { cwd: req.cwd } : {}) });
+  const newCwd = req.cwd ?? opts.fallbackCwd;
+  deps.adopt?.(newId, { label: programLabel(req.command) ?? DEFAULT_LABEL, ...(newCwd ? { cwd: newCwd } : {}) });
   // Created in `req.cwd` (or the request had none), so only the command is
   // sent; a cd-only request is done once the terminal exists.
   const own = buildTerminalCommand({ command: req.command, execute: req.execute });
@@ -325,6 +330,18 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const pendingVersion = usePendingTerminalRequestVersion();
   const heightRef = useRef(height);
   heightRef.current = height;
+  // Current `cwd` prop for async callbacks (the verify effect deliberately
+  // does not re-run on it, so its closure would otherwise go stale).
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+  // Bumped by `forget()`: an in-flight create that started in an earlier
+  // epoch is abandoned (killed) even if the drawer has been reopened since —
+  // `openRef` alone cannot tell "still open" from "closed and reopened".
+  const epochRef = useRef(0);
+  // The terminal whose view should take keyboard focus when it mounts: one the
+  // reader just created or clicked. Cleared with the rest on `forget()`, so a
+  // plain reopen restores tabs without grabbing focus.
+  const [focusId, setFocusId] = useState<string | null>(null);
 
   function commit(nextTabs: TerminalTab[], nextActive: string | null): void {
     stateRef.current = { tabs: nextTabs, activeId: nextActive };
@@ -337,8 +354,10 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   /** Back to "unverified": the next open re-runs verify-or-create. */
   function forget(): void {
     stateRef.current = { tabs: null, activeId: null };
+    epochRef.current += 1;
     setTabs(null);
     setActiveId(null);
+    setFocusId(null);
   }
 
   function relabel(id: string, label: string): void {
@@ -363,11 +382,17 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   }
 
   /** Add a tab for a terminal that now exists and make it active. */
-  function adopt(id: string, tab: { label: string; cwd?: string }): void {
-    const cur = stateRef.current.tabs ?? [];
+  function adopt(id: string, tab: { label: string; cwd?: string }, base?: TerminalTab[]): void {
+    // While the list is unverified (`tabs === null`: closed-and-reopened, the
+    // verify still in flight) merge into the PERSISTED list instead of
+    // starting from empty — committing `[newId]` alone would overwrite every
+    // cached id and orphan their ptys. Only the verify effect's own create
+    // branch passes `base: []`, because there the cache is known dead/absent.
+    const cur = stateRef.current.tabs ?? base ?? cachedTabs(loadState());
     if (cur.some((t) => t.id === id)) return;
     const label = tab.label === DEFAULT_LABEL && shellRef.current ? shellRef.current : tab.label;
     commit([...cur, { id, label, ...(tab.cwd ? { cwd: tab.cwd } : {}) }], id);
+    setFocusId(id);
     if (label === DEFAULT_LABEL) refineLabel(id);
   }
 
@@ -396,7 +421,8 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
       // A create that resolves after the drawer closed is killed by
       // `createSessionOrAbandon`; the request then falls back to the clipboard.
       create: async (c?: string) => {
-        const id = await createSessionOrAbandon(c, () => !openRef.current);
+        const epoch = epochRef.current;
+        const id = await createSessionOrAbandon(c, () => !openRef.current || epochRef.current !== epoch);
         if (id === null) throw new Error("terminal drawer closed");
         return id;
       },
@@ -463,12 +489,23 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
             // Reattaching to already-running shells — none of them just
             // started in the request's `cwd`, so a `cd` (not just the
             // command) is still needed.
-            sendPendingRequestIfAny(restored.activeId, {}, routeDeps()).catch(reportPendingSendFailure);
+            sendPendingRequestIfAny(restored.activeId, { fallbackCwd: cwdRef.current ?? undefined }, routeDeps()).catch(reportPendingSendFailure);
             return;
           }
         } catch {
-          // couldn't reach the list route — fall through and mint a new
-          // session rather than getting stuck with neither.
+          if (cancelled) return;
+          // Couldn't reach the list route. Do NOT fall through to a create:
+          // that would commit a one-tab list over the cached one and orphan
+          // every live shell in it. Trust the cache; a dead id just shows its
+          // exit frame and drops itself (TerminalView's onExit).
+          const tabsFromCache = cachedTabs(cached);
+          const active =
+            cached.activeId !== null && tabsFromCache.some((t) => t.id === cached.activeId)
+              ? cached.activeId
+              : tabsFromCache[0].id;
+          commit(tabsFromCache, active);
+          sendPendingRequestIfAny(active, { fallbackCwd: cwdRef.current ?? undefined }, routeDeps()).catch(reportPendingSendFailure);
+          return;
         }
       }
       try {
@@ -487,13 +524,22 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         // returns must not leak a live shell nothing will ever attach to.
         const id = await createSessionOrAbandon(createCwd, () => cancelled);
         if (id !== null) {
-          adopt(id, { label: programLabel(pending?.command) ?? DEFAULT_LABEL, ...(createCwd ? { cwd: createCwd } : {}) });
-          // `createdCwd: createCwd` lets `sendPendingRequestIfAny` skip the
-          // `cd` ONLY if the request it actually `take()`s (which can be a
-          // newer one than `pending` above, replaced during the `await`
-          // just finished) carries that same cwd — i.e. this session really
-          // was created in it.
-          sendPendingRequestIfAny(id, { createdCwd: createCwd }, routeDeps()).catch(reportPendingSendFailure);
+          // `sendPendingRequestIfAny` TAKES the request synchronously before
+          // its first await, so it is started BEFORE `adopt`: adopting changes
+          // `activeId`, which re-runs the pending-request effect below, and if
+          // that render flushed first it would take the request and route it
+          // with `routeDeps()` — letting a 409 from this brand-new shell chain
+          // a second terminal.
+          //
+          // `createdCwd: createCwd` lets it skip the `cd` ONLY if the request
+          // it actually `take()`s (which can be a newer one than `pending`
+          // above, replaced during the `await` just finished) carries that
+          // same cwd — i.e. this session really was created in it. No
+          // `create` dep: a brand-new terminal that 409s (rc files still
+          // running) copies to the clipboard, it never mints a second one.
+          const sent = sendPendingRequestIfAny(id, { createdCwd: createCwd }, {});
+          adopt(id, { label: programLabel(pending?.command) ?? DEFAULT_LABEL, ...(createCwd ? { cwd: createCwd } : {}) }, []);
+          sent.catch(reportPendingSendFailure);
         }
       } catch (err) {
         if (!cancelled) {
@@ -518,7 +564,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   useEffect(() => {
     const id = stateRef.current.activeId;
     if (id === null) return;
-    sendPendingRequestIfAny(id, {}, routeDeps()).catch(reportPendingSendFailure);
+    sendPendingRequestIfAny(id, { fallbackCwd: cwdRef.current ?? undefined }, routeDeps()).catch(reportPendingSendFailure);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, pendingVersion]);
 
@@ -548,11 +594,13 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     const st = stateRef.current;
     if (st.tabs === null || st.activeId === id) return;
     commit(st.tabs, id);
+    setFocusId(id);
   }
 
   async function newTab(): Promise<void> {
     try {
-      const id = await createSessionOrAbandon(cwd ?? undefined, () => !openRef.current);
+      const epoch = epochRef.current;
+      const id = await createSessionOrAbandon(cwd ?? undefined, () => !openRef.current || epochRef.current !== epoch);
       if (id === null) return;
       adopt(id, { label: DEFAULT_LABEL, ...(cwd ? { cwd } : {}) });
     } catch (err) {
@@ -652,7 +700,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
       {tabs !== null && tabs.length > 0 && (
         <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} />
       )}
-      {activeId !== null && <TerminalView key={activeId} id={activeId} onExit={() => dropTab(activeId)} />}
+      {activeId !== null && <TerminalView key={activeId} id={activeId} autoFocus={focusId === activeId} onExit={() => dropTab(activeId)} />}
       {createError !== null && (
         <div className="term-drawer-exit">
           {`Couldn't start a terminal: ${createError} — `}

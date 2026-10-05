@@ -102,6 +102,16 @@ export function stateFor(height: number, tabs: TerminalTab[], activeId: string |
   return { height, sessionIds: tabs.map((t) => t.id), activeId, meta };
 }
 
+/** The cached list as tabs, UNVERIFIED — for when the live list cannot be
+ * reached (trust the cache rather than orphan every shell in it) and for
+ * merging a new terminal into what is persisted. */
+export function cachedTabs(cached: DrawerState): TerminalTab[] {
+  return cached.sessionIds.map((id) => {
+    const m = cached.meta[id];
+    return { id, label: m?.label ?? DEFAULT_LABEL, ...(m?.cwd ? { cwd: m.cwd } : {}) };
+  });
+}
+
 /** Verify every cached id against the server's live list: keep the alive ones
  * in their cached order, restore the cached active tab (else the first
  * survivor). Dead-but-listed sessions (the registry reaps lazily) are dropped. */

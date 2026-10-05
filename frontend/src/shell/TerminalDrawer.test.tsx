@@ -27,6 +27,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 import { isMac } from "@platform/lib/platform";
 import {
   closeTerminalDock,
+  openTerminal,
   resetTerminalDockForTests,
   toggleTerminalDock,
   useTerminalDockOpen,
@@ -42,6 +43,7 @@ const TerminalDrawer = TerminalDrawerModule.default;
 const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny, TerminalBusyError } =
   TerminalDrawerModule;
 const TerminalTabStrip = (await import("@shell/TerminalTabStrip")).default;
+const TerminalView = (await import("@platform/ui/TerminalView")).default;
 const { parseState, reconcileTabs, removeTab, programLabel, stateFor } = await import("@shell/terminalTabs");
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
@@ -675,4 +677,141 @@ test("tab strip: clicking a label selects, × closes that tab, + asks for a new 
   act(() => byClass("term-tab-close")[1].props.onClick());
   act(() => byClass("term-tab-new")[0].props.onClick());
   expect(calls).toEqual(["select:a", "close:b", "new"]);
+});
+
+
+// ---- mounted drawer: focus, cache preservation, routing ---------------------
+// react-test-renderer gives `TerminalView` no DOM node (its mount effect bails
+// on a null ref), so the drawer can be mounted for real with `fetch` faked and
+// the `autoFocus` prop it hands the view inspected. The xterm `focus()` call
+// itself is NOT exercised here.
+
+type Call = { method: string; url: string; body?: string };
+function fakeServer(opts: {
+  live?: Array<{ id: string; alive?: boolean; shell?: string }>;
+  listFails?: boolean;
+  creates?: Array<string | Promise<string>>;
+  inputStatus?: number;
+}) {
+  const calls: Call[] = [];
+  const creates = [...(opts.creates ?? [])];
+  const real = globalThis.fetch;
+  const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body }) as Response;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    calls.push({ method, url: String(url), body: init?.body as string | undefined });
+    if (method === "GET") {
+      if (opts.listFails) throw new Error("network down");
+      return json(200, { sessions: (opts.live ?? []).map((s) => ({ alive: true, shell: "zsh", ...s })) });
+    }
+    if (method === "DELETE") return json(200, { ok: true });
+    if (String(url).endsWith("/input")) {
+      return opts.inputStatus ? json(opts.inputStatus, { error: "busy" }) : json(200, { ok: true });
+    }
+    return json(200, { id: await (creates.shift() ?? "created") });
+  }) as unknown as typeof fetch;
+  return { calls, restore: () => (globalThis.fetch = real) };
+}
+
+const tick = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+const stored = () => JSON.parse(localStorage.getItem("fused-render:terminal-drawer") ?? "{}");
+function seed(ids: string[], activeId = ids[0]) {
+  localStorage.setItem("fused-render:terminal-drawer", JSON.stringify({ height: 260, sessionIds: ids, activeId, meta: {} }));
+}
+async function mountOpen(cwd: string | null = null) {
+  const r = renderTracked(<TerminalDrawer cwd={cwd} />);
+  act(() => toggleTerminalDock());
+  await tick();
+  await tick();
+  return r;
+}
+const view = (r: ReactTestRenderer) => r.root.findByType(TerminalView).props as { id: string; autoFocus?: boolean };
+const stripProps = (r: ReactTestRenderer) => r.root.findByType(TerminalTabStrip).props;
+
+test("focus: the first terminal created when the drawer opens is focused", async () => {
+  const srv = fakeServer({ creates: ["n1"] });
+  try {
+    const r = await mountOpen();
+    expect(view(r)).toMatchObject({ id: "n1", autoFocus: true });
+  } finally { srv.restore(); }
+});
+
+test("focus: reopening onto restored tabs does not grab focus; '+' and clicking a tab do", async () => {
+  seed(["a"]);
+  const srv = fakeServer({ live: [{ id: "a" }, { id: "b" }], creates: ["b"] });
+  try {
+    const r = await mountOpen();
+    expect(view(r)).toMatchObject({ id: "a", autoFocus: false });
+    await act(async () => { await stripProps(r).onNew(); });
+    await tick();
+    expect(view(r)).toMatchObject({ id: "b", autoFocus: true });
+    act(() => stripProps(r).onSelect("a"));
+    expect(view(r)).toMatchObject({ id: "a", autoFocus: true });
+  } finally { srv.restore(); }
+});
+
+test("focus: a busy terminal's request lands in a NEW terminal that is focused", async () => {
+  seed(["a"]);
+  const srv = fakeServer({ live: [{ id: "a" }], creates: ["b"], inputStatus: 409 });
+  try {
+    const r = await mountOpen();
+    act(() => openTerminal({ cwd: "/w", command: "claude --resume x" }));
+    await tick(); await tick();
+    // 409 on every input: the new terminal exists and is focused even though
+    // its own send also 409s (copied, no third terminal).
+    expect(view(r)).toMatchObject({ id: "b", autoFocus: true });
+  } finally { srv.restore(); }
+});
+
+test("a failed list on reopen keeps every cached id instead of replacing them with one new tab", async () => {
+  seed(["a", "b", "c"], "b");
+  const srv = fakeServer({ listFails: true });
+  try {
+    const r = await mountOpen();
+    expect(stored().sessionIds).toEqual(["a", "b", "c"]);
+    expect(view(r).id).toBe("b");
+    expect(srv.calls.some((c) => c.method === "POST")).toBe(false);
+  } finally { srv.restore(); }
+});
+
+test("'+' resolving after close+reopen is killed, and the restored tabs are not overwritten", async () => {
+  seed(["a", "b"]);
+  let release!: (id: string) => void;
+  const slow = new Promise<string>((res) => { release = res; });
+  const srv = fakeServer({ live: [{ id: "a" }, { id: "b" }], creates: [slow] });
+  try {
+    const r = await mountOpen();
+    let pending!: Promise<void>;
+    act(() => { pending = stripProps(r).onNew(); });
+    act(() => closeTerminalDock());
+    act(() => toggleTerminalDock());
+    release("z");
+    await act(async () => { await pending; });
+    await tick(); await tick();
+    expect(srv.calls.some((c) => c.method === "DELETE" && c.url.endsWith("/z"))).toBe(true);
+    expect(stored().sessionIds).toEqual(["a", "b"]);
+  } finally { srv.restore(); }
+});
+
+test("a brand-new terminal that 409s the request copies; it does not create a second terminal", async () => {
+  const srv = fakeServer({ creates: ["n1", "n2"], inputStatus: 409 });
+  try {
+    const r = renderTracked(<TerminalDrawer cwd={null} />);
+    act(() => openTerminal({ command: "claude" }));
+    await tick(); await tick(); await tick();
+    expect(srv.calls.filter((c) => c.method === "POST" && !c.url.endsWith("/input")).length).toBe(1);
+    expect(view(r).id).toBe("n1");
+  } finally { srv.restore(); }
+});
+
+test("busy fallback: a command-only request creates its terminal in the fallback cwd", async () => {
+  const created: Array<string | undefined> = [];
+  await sendPendingRequestIfAny("t1", { fallbackCwd: "/drawer" }, {
+    take: () => ({ command: "claude" }),
+    send: async (id) => { if (id === "t1") throw busy(); return { ok: true }; },
+    copy: async () => true,
+    create: async (c) => { created.push(c); return "t2"; },
+    adopt: (_id, tab) => created.push((tab as { cwd?: string }).cwd),
+  });
+  expect(created).toEqual(["/drawer", "/drawer"]);
 });
