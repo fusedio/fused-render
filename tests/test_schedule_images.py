@@ -499,22 +499,24 @@ def test_a_recurring_occurrence_carries_the_attachments_and_their_names(tmp_path
 # ---- the duplicated wire constants --------------------------------------------
 
 
-def _template_html() -> str:
+def _chat_wire() -> str:
+    # The native chat's wire vocabulary (the iframe chat page that used to
+    # spell this tag is retired).
     return open(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "fused_render", "templates", "claude",
-        "template.html"), encoding="utf-8").read()
+        os.path.abspath(__file__))), "frontend", "src", "apps", "claude",
+        "protocol", "wire.ts"), encoding="utf-8").read()
 
 
 def test_the_tag_matches_the_page_that_reads_it():
-    """D146 / PY-15. `schedule.py` may not import a template and a template may
-    not import `fused_render`, so the tag is spelled twice. This is the test the
-    comment is not: rename `PANE_SHOT_TAG` in the page and the scheduler starts
-    writing a block nothing renders — silently, because every reader answers an
-    unparseable block with an empty list rather than a throw."""
-    page = _template_html()
+    """D146. `schedule.py` (Python) and the chat (TypeScript) cannot share a
+    constant, so the tag is spelled twice. This is the test the comment is not:
+    rename `PANE_SHOT_TAG` in the chat and the scheduler starts writing a block
+    nothing renders — silently, because every reader answers an unparseable
+    block with an empty list rather than a throw."""
+    page = _chat_wire()
     written = [line.strip() for line in page.splitlines()
-               if line.strip().startswith('const PANE_SHOT_TAG = "')]
-    assert len(written) == 1, "one writer of the tag in the page, or this is stale"
+               if line.strip().startswith('export const PANE_SHOT_TAG = "')]
+    assert len(written) == 1, "one writer of the tag in the chat, or this is stale"
     tag = written[0].split('"')[1]
     assert schedule._PANE_SHOT_TAG == tag
     # And the tag is in the strip lists, which is what keeps the block out of a
@@ -540,21 +542,18 @@ def test_the_kind_guess_matches_the_cards_own_drawable_list():
 def test_spawn_helper_ships_extra_read_dirs_to_the_agent(monkeypatch):
     seen = {}
 
-    class _Res:
-        returncode = 0
-        stdout = "{}"
-        stderr = ""
+    class _Agent:
+        def _start(self, file, message, session_id, model, effort, **kw):
+            seen.update(kw)
+            return {}
 
-    def fake_run(cmd, *, input, **kw):
-        seen.update(json.loads(input))
-        return _Res()
-
-    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: _Agent())
     claude_spawn.spawn_helper("/tmp/t", "hi", "auto",
                               extra_read_dirs=["/x/task-shots"])
     assert seen["extra_read_dirs"] == ["/x/task-shots"]
     claude_spawn.spawn_helper("/tmp/t", "hi", "auto")
-    assert seen["extra_read_dirs"] == []
+    # Nothing to read: no directory rule at all, not an empty list.
+    assert seen["extra_read_dirs"] is None
 
 
 def test_a_send_without_images_keeps_the_old_call_shape(tmp_path, monkeypatch):
@@ -642,7 +641,7 @@ def test_agent_start_turns_extra_dirs_into_read_rules():
     # request field must land in the run's --allowed-tools as a Read rule,
     # exactly the SHOTS mechanism (agent._read_rule).
     src = open(os.path.join(os.path.dirname(__file__), "..", "fused_render",
-                            "templates", "claude", "agent.py"),
+                            "claude_agent", "agent.py"),
                 encoding="utf-8").read()
     assert "extra_read_dirs: list | None = None" in src
     assert "[_read_rule(d) for d in (extra_read_dirs or [])]" in src

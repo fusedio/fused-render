@@ -1,5 +1,6 @@
-"""runPython target for claude/template.html's Artifacts section: the pages
-Claude PUBLISHED while working on this target.
+"""The native chat's Artifacts section, run IN the server through
+`POST /api/claude/artifacts` (D1310): the pages Claude PUBLISHED while working
+on this target.
 
 An artifact is the one thing a chat produces that outlives the chat and does not
 live on disk — a hosted page on claude.ai. The transcript records it and then
@@ -56,16 +57,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# The fused engine execs this script without setting __file__; it puts the
-# script's own directory first on sys.path, so rebuild __file__ from it. Under
-# the built-in executor __file__ is already set, so this is a no-op. (Same
-# preamble as agent.py, for the same reason.)
-if "__file__" not in globals():
-    __file__ = os.path.join(sys.path[0], "artifacts.py")
-
+# Lives in `fused_render.claude_agent`, imported in-process by the server; the
+# shared helpers sit at `<package>/templates/shared`. Same preamble as agent.py.
 HERE = os.path.dirname(os.path.abspath(__file__))
-_SHARED = os.path.join(os.path.dirname(HERE), "shared")
-# Guarded insert: /api/run may exec this module repeatedly in one worker.
+_SHARED = os.path.join(os.path.dirname(HERE), "templates", "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
 from appenv import origin as _origin

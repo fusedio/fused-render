@@ -628,16 +628,16 @@ def _settings_model_options() -> set:
 def api_claude_session_history(file: str, session_id: str, native: str = ""):
     """The chat's transcript restore, IN PROCESS (owner E2E R1, F5).
 
-    The chat used to ask for its history through `/api/run`, which executes
-    `templates/claude/agent.py` in a fresh Python subprocess per call: a cold
-    interpreter plus the module's imports, several hundred milliseconds, before
-    `_history` itself — which reads and parses a 300 KB transcript in about
-    30 ms. On the path between "click a chat" and "see the conversation" the
-    spawn WAS the wait. Here the same function runs on the agent module the
-    tasks listing already keeps loaded (`tasks._agent_module`, cached once), on
-    a worker thread because it reads a file. Same shape, same bytes: the page's
-    `historyToTurns` cannot tell the two roads apart, and `/api/run` stays the
-    fallback when this answers anything but 200."""
+    The chat used to ask for its history through `/api/run`, which executed
+    the agent (then `templates/claude/agent.py`) in a fresh Python subprocess
+    per call: a cold interpreter plus the module's imports, several hundred
+    milliseconds, before `_history` itself — which reads and parses a 300 KB
+    transcript in about 30 ms. On the path between "click a chat" and "see the
+    conversation" the spawn WAS the wait. Here the same function runs on the
+    one in-process agent module (`tasks._agent_module`), on a worker thread
+    because it reads a file. Same shape, same bytes: the page's
+    `historyToTurns` cannot tell the two roads apart. (Every other chat action
+    is in process too now, through `POST /api/claude/agent`.)"""
     from fused_render.server.routers import tasks as _tasks
 
     agent = _tasks._agent_module()

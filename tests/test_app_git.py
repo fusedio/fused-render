@@ -291,9 +291,8 @@ def test_local_monorepo_migration_adopts_per_app_repos(workspace, monkeypatch,
 # ------------------------------------------------- claude template mirror
 
 def _agent_module():
-    from fused_render.server import templates as server_templates
+    from fused_render.claude_agent import AGENT_PATH as path
 
-    path = os.path.join(server_templates.TEMPLATES_DIR, "claude", "agent.py")
     spec = importlib.util.spec_from_file_location("test_claude_agent_git", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

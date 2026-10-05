@@ -3969,10 +3969,25 @@ def _recorded_files(folder, commit, allow, ignore):
         return None
     if record.get("commit") != commit:
         return None
-    if record.get("scope") != _scope_key(allow, ignore):
-        return None
     files = record.get("files")
-    return files if isinstance(files, list) and files else None
+    if not isinstance(files, list) or not files:
+        return None
+    if record.get("scope") == _scope_key(allow, ignore):
+        return files
+    # A DIFFERENT scope still answers when what was recorded is a SUPERSET of what
+    # is asked for: the record lists every file that fetch selected, so the names
+    # this request would select out of them are on disk exactly when they were
+    # then. That is what keeps a repo fetched in full before a runner learned to
+    # skip its redundant formats from being fetched again. A superset means the
+    # recorded fetch had no allow list and ignored nothing the new one keeps —
+    # anything else could hide files the old fetch never listed.
+    old = record.get("scope")
+    if (isinstance(old, dict) and not old.get("allow")
+            and set(old.get("ignore") or ()) <= set(ignore or ())):
+        chosen = [name for name in files
+                  if isinstance(name, str) and selects(name, allow=allow, ignore=ignore)]
+        return chosen or None
+    return None
 
 
 def _all_present(snapshot, names):

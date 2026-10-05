@@ -106,13 +106,11 @@ export type SubscribeTasks = typeof subscribeTasks;
 
 export function useRecentTasks(
   /**
-   * The template folder holding `agent.py` — read ONLY as "is this landing
-   * showing its lists at all". `ClaudeChat` hands `null` on the way into a
-   * chat, which is what takes the long-poll down for a view that has no lists
-   * (T:18339); the rows themselves come from `/api/tasks`, which knows nothing
-   * about templates.
+   * Is this landing showing its lists at all? `ClaudeChat` hands `false` on
+   * the way into a chat, which is what takes the long-poll down for a view
+   * that has no lists (T:18339).
    */
-  agentDir: string | null,
+  active: boolean,
   file: string | null,
   subscribe: SubscribeTasks = subscribeTasks,
   /**
@@ -141,7 +139,7 @@ export function useRecentTasks(
     //
     // So a torn-down subscription leaves the rows exactly where they were, and
     // the tab bar over them does not flash out and back for the round trip.
-    if (!agentDir) return;
+    if (!active) return;
     // Read through a ref, so a `coverWrite` that flips while the landing is up
     // (the chat it described has since ended) cannot re-subscribe: the answer
     // is about the ARRIVAL, and the arrival has happened.
@@ -180,7 +178,7 @@ export function useRecentTasks(
     // closure every render would re-subscribe on every render, and the identity
     // of the transport is not a fact about the target.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentDir, file]);
+  }, [active, file]);
   /**
    * …AND THE NARROWING IS HERE, not in the subscription (protocol/sessions.ts's
    * header says why): `/api/tasks` is the whole machine's listing, and this list

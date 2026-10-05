@@ -21,6 +21,8 @@ import {
   chipOutput,
   formatEditDiff,
   leftoverInput,
+  planFilePath,
+  PLAN_HIDDEN_INPUT_KEYS,
   PLAN_TOOL,
   prettyToolName,
   toolChipSummary,
@@ -32,6 +34,8 @@ import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockSto
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
+import { activateOnKey } from "./planAffordance";
+import { PlanModal } from "./PlanModal";
 
 function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -183,7 +187,12 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
     case PLAN_TOOL:
       // ...and when `plan` is not a usable string it stays UNUSED, so it falls
       // into the dump: a chip must never imply a plan was read.
-      return typeof inp.plan === "string" && inp.plan ? ["plan"] : [];
+      // `PLAN_HIDDEN_INPUT_KEYS` (`planFilePath`) is hidden from the dump ONLY
+      // when `PlanChipBody` (the sole renderer of the "Saved to" line, mounted
+      // only for a usable plan) actually shows it instead (D890 code review,
+      // finding 4). Without a usable plan nothing renders it, so it must stay
+      // in the dump rather than vanish.
+      return typeof inp.plan === "string" && inp.plan ? ["plan", ...PLAN_HIDDEN_INPUT_KEYS] : [];
     case ANSWERABLE_TOOL:
       return Array.isArray(inp.questions) ? ["questions"] : [];
     default:
@@ -267,7 +276,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: strin
       // record that a plan was ever proposed, so a raw JSON dump would be a
       // record of the bytes rather than of the plan (D248).
       const plan = typeof inp.plan === "string" && inp.plan ? inp.plan : "";
-      return plan ? <MarkdownView className="plan-body chip-plan" text={plan} /> : null;
+      return plan ? <PlanChipBody plan={plan} savedTo={planFilePath(inp)} /> : null;
     }
     case ANSWERABLE_TOOL: {
       // Structured plain text, never markdown: the labels are what the answer
@@ -305,6 +314,43 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: strin
         <CopyPre copy={JSON.stringify(inp, null, 2)}>{JSON.stringify(inp, null, 2)}</CopyPre>
       ) : null;
   }
+}
+
+/** The chip's plan is always historical (see PLAN_TOOL's docblock below) —
+ *  there is no pending decision to share, so this owns its own `open` bit
+ *  rather than reusing PlanCard's state (D890). The modal it opens is
+ *  read-only (`resolved`, no actions) for the same reason: whatever the plan's
+ *  outcome was, a restored transcript has no live row to decide against. */
+function PlanChipBody({ plan, savedTo }: { plan: string; savedTo?: string }) {
+  const [open, setOpen] = useState(false);
+  const openModal = () => setOpen(true);
+  return (
+    <>
+      <div
+        className="plan-open-chip"
+        role="button"
+        tabIndex={0}
+        aria-label="Open plan in full view"
+        onClick={openModal}
+        onKeyDown={activateOnKey(openModal)}
+      >
+        Open ⤢
+      </div>
+      <MarkdownView className="plan-body chip-plan" text={plan} />
+      {savedTo ? <div className="plan-saved-path">Saved to {savedTo}</div> : null}
+      {open ? (
+        <PlanModal
+          onClose={() => setOpen(false)}
+          plan={plan}
+          savedTo={savedTo}
+          status={{ cls: "", text: "" }}
+          resolved
+          posting={false}
+          note=""
+        />
+      ) : null}
+    </>
+  );
 }
 
 function PathLabel({ value }: { value: unknown }) {

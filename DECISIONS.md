@@ -6091,6 +6091,113 @@ Skew: a FusedRender older than this change lands a `file=` link on the
 clone page's error ("unsupported fused-render link"); Render App's button
 does not version-check, so the page's error text is the message.
 
+## D890 — Plan popup: a wide, top-document-portaled modal for the ExitPlanMode plan, sharing PlanCard's own decision state
+
+The React Claude chat (`frontend/src/apps/claude/`, native-chat only — the
+legacy `fused_render/templates/claude/template.html` is untouched) renders a
+pending or resolved plan inside `PlanCard.tsx` (the live row) and
+`ToolChip.tsx` (the historical, resolved chip once a turn folds). Both wrap
+the plan text in `.plan-body` at whatever column width the card's own mount
+site happens to have — comfortable in the full-width transcript, cramped in
+a `Panel`/`Tabs` pane or the canvases workspace's embed. Reading a real plan
+in those narrow contexts was the complaint; the fix is a modal, not a wider
+card, because several genuine mount sites are same-origin iframes with no
+spare width of their own to give.
+
+Decided:
+
+- **Portals to the TOP document, not `document.body`.** `Modal.tsx` (the
+  one shared chassis every dialog in the app already uses) gained an
+  optional `getContainer?: () => Element | null` prop; every internal
+  `document.*` reference (activeElement, add/removeEventListener, the focus
+  trap) now goes through that container's `ownerDocument`, falling back to
+  `document.body` when the prop is omitted — existing callers are
+  unaffected. `PlanModal.tsx` passes `getContainer={topDocumentBody}`, a new
+  `ui/topContainer.ts` that replicates `router.ts`'s own `IS_TOP_EMBED`
+  climb (`window.top`, try/catch, safe-default `null` on any cross-origin or
+  framing ambiguity) — read lazily at open time, not at module init, since
+  framing can't be assumed fixed at import time. A modal that failed to
+  reach the top document still opens, just boxed into its own iframe: never
+  worse than today, only sometimes not wider.
+- **`PlanModal` is purely presentational; there is exactly one instance of
+  the decision state per row.** `PlanCard` already owns `note`/`sent`/
+  `threw`-derived `status`/`posting`/`resolved` in its own `useState`s; the
+  modal receives them as props and calls the SAME `onApprove`/
+  `onKeepPlanning` closures the card's own buttons call. This is what makes
+  the card and the modal agree by construction (one boolean disables both
+  surfaces' buttons at once, so a double-click across card+modal can't
+  double-send) rather than by some second copy kept in sync by hand. The
+  historical `ToolChip` plan has no row to share, so its read-only popup
+  keeps its own local `open` state instead — there is nothing to decide
+  there.
+- **The open affordance is a `role="button"` `div`, not a `<button>`.**
+  Several pinned tests (`cards.test.tsx`) assert `labels(r) === []` — every
+  real `<button>` in the tree — once a plan is resolved, on the strength
+  that a resolved row offers no actions. The new "Open"/"expand" control is
+  offered in EVERY state (resolved included, so a settled plan can still be
+  reread), so it has to be invisible to that assertion; `activateOnKey`
+  (Enter/Space) keeps it keyboard-operable without being a `<button>`.
+- **The modal's wrapper reproduces the card's own two-level class nesting**
+  (`.chat-root` outer, `.perm.plan` inner), not one node wearing all four
+  classes — `transcript.css`'s existing `.chat-root .perm .plan-body` (and
+  the sibling `.perm-status`/`.perm-actions`/`.perm-btn`/`.plan-note` rules)
+  are descendant selectors that only match when `.perm` sits on a
+  DIFFERENT node than `.chat-root`, which is how the live card's own DOM is
+  shaped. Reusing that shape means the modal's typography and plan styling
+  come free from the same rules, nothing duplicated; `composer.css` adds
+  only the popup's own layout (a `min(1100px, 100%)` dialog width, a
+  720px-max centered reading column, letting `.plan-body` grow instead of
+  clipping at the card's usual max-height).
+- **Not verified in this harness**: the test suite
+  (`PlanModal.test.tsx`) mounts with `react-test-renderer` + a DOM shim
+  whose `document.addEventListener`/`removeEventListener` are no-ops by
+  the shim's own design — Esc-to-close and backdrop-click cannot be
+  exercised here at all (the chassis' existing Esc/backdrop wiring is
+  unchanged by this feature; only WHICH document it listens on changed).
+  Visual width at each real mount site (Panel pane, Tabs, the canvases
+  embed — genuine same-origin iframes), focus moving into the dialog and
+  back out on close, and native click/drag are likewise a manual, in-browser
+  to-verify list, not something this suite claims to have exercised.
+
+**Addendum (code review):** four findings against the above landed as two
+follow-up commits, no new D-number:
+
+- The plan body's click/key wrapper sat around content with its own real
+  interactive children — a code block's copy button, added imperatively by
+  `enhanceCodeBlocks` as a plain DOM `<button>` (not a React one). A click
+  bubbling up from that button opened the modal on top of the copy; a
+  focused button's Enter/Space was worse, since the wrapper's key handler
+  called `preventDefault` unconditionally, which also killed the button's
+  own native activation. Selecting plan text to copy it ends the drag with
+  a `mouseup`, which is a `click` too, and that click must not reopen the
+  modal over the selection either. `planAffordance.ts` now holds a shared
+  `guardedOpenOnClick`/`activateOnKey`, using `closest()`-based interactive-
+  descendant detection (not `target === currentTarget` — that identity
+  check would have broken every pre-existing test built on this suite's own
+  `fakeEvent()` helper, whose `target`/`currentTarget` are deliberately two
+  different objects) plus a `window.getSelection()` check, guarded by
+  try/catch since the test DOM shim has no `getSelection` at all.
+- The historical `ToolChip`'s own Enter/Space handling was a second, inline
+  copy of the same logic; it now imports `activateOnKey` from the same
+  module instead of repeating it.
+- ExitPlanMode's input carries a `planFilePath` (the CLI's own scratch
+  path) alongside `plan`. It was already excluded from the leftover-JSON
+  dump, which made it vanish outright rather than disclosed at all — now
+  rendered as a quiet "Saved to \<path\>" line (`.plan-saved-path`) in the
+  card, the popup, and the historical chip alike; the disclosure rule for
+  every OTHER unknown input key is unchanged. Fixed a latent bug alongside
+  this: the historical chip's own dump-exclusion list never covered
+  `planFilePath`, unlike the live card's.
+- **Still not verified in this harness** (same limitation as above, same
+  cause — `react-test-renderer` mounts no real DOM node, so `ref.current`
+  stays `null` and `enhanceCodeBlocks` never actually runs in these tests):
+  a real click or focused Enter/Space on the ACTUAL imperative copy button,
+  and a real text-selection drag ending in a click, are simulated via a
+  fake `target`/`currentTarget` carrying just a `closest()` method — the
+  guard's logic is exercised, but never against a genuine DOM button or a
+  genuine `Selection` object. Both remain a manual, in-browser to-verify
+  item.
+
 ## fused pin bumped to 2.9.3b10: `fused[aws,mcp]` + direct `anthropic` (2026-09-25)
 
 fused 2.9.3b10 (https://github.com/fusedio/fused/releases/tag/fused-py-v2.9.3b10)
@@ -6274,3 +6381,54 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
 | D1305 | **Ranking prefers the ACTIVE engine's native format: flat `_ENGINE_MATCH_BONUS = 5.0`, shaped like `_ON_DISK_BONUS`.** None of fit/capability/speed/recency/popularity depends on format, and speed is a machine-wide guess, so an MLX and a GGUF build of one model scored identically. A row earns the bonus when `_row_native_format(row)` equals `Runner.native_format` of `for_capability(row.capability)` (the Preferences choice, not merely an available runner). The mapping is data: `Runner.native_format` (`mlx-text` -> `mlx`, both llama.cpp rows -> `gguf`); `_row_native_format` reads `library == "mlx"` for MLX (`_file_format` returns `safetensors` for MLX and plain transformers alike, so it cannot) and a resolved `file`/`format == "gguf"`/`fileFormat == "gguf"` for GGUF. The breakdown gets `{"axis": "engineMatch", "gained": 5.0, "lost": 0.0}`, omitted when it does not apply, read once in `_axis_scores` (`engine_match`). **Size:** 5 points equals a ~14-point gap on the fit axis (weight 0.35), so it breaks a tie between two builds of one model but a materially better-fitting or larger model in another format still wins (pinned: fit 100 vs 20); it is below `_ON_DISK_BONUS` (6) so a downloaded model still beats a not-yet-downloaded native build. **Cache:** match scores are computed per request from the cached rows (`_scored_pool` caches rows, not scores) and the active format is resolved once per request per capability (`_engine_formats_for`), never cached across requests, so a live engine switch re-ranks immediately; `_scored_pool_cache_key` already carries the active runner code and is unchanged. Pinned by `test_switching_the_active_engine_reranks_the_cached_pool` with the pool warm between the two requests. Frontend: `HubMatchAxis.axis` gains `"engineMatch"`; the tooltip's loss line already ignores zero-loss entries, and `hubTableView.ts` now excludes it explicitly beside `onDisk`. No label table needed. |
 | D1306 | **Text to speech is a seventh capability (`text-to-speech`, `fused.ai.speech`), served by Qwen3-TTS through `mlx-audio` (SPEC AI-32).** A capability rather than an app-private worker, so models share the supervisor slot, downloads and Playground. Separate from speech-to-text because one capability holds one resident model (AI-4). Format-gated because many TTS families wear the tag. One `speech_traits` and one `speech_options` for route and worker, so the rules cannot drift. The worker splits long text into parts itself, because mlx-audio caps one pass at 4096 tokens and drops the rest. Job-backed because output is a file and runs can be long. Default is the smallest model (AI-7d). |
 | D1307 | **Diagnostics: a persistent app-log home, a dependency-free `GET /api/health` with a stamped `boot_id`, a client-side outage record, crash hooks in every Python process, parents that record how a child died, a server-thread watchdog, a 20 s resource trail, and a one-click diagnostics zip (SPEC §50, DG-1..DG-23). Supersedes D68's temp-dir default and its claim that uvicorn output reaches the root logger.** | Symptom: the shell's red "fused-render isn't running" card shows for 2–3 s on some installs while apps are busy, and the reporter has nothing to send. **No platform self-restarts a dead server** (macOS: uvicorn on a daemon thread inside the AppKit process, nothing watches it; Windows/Linux: the supervisor turns `SERVER_DIED` into a dialog and exits 1), **so a card that clears by itself is the banner's own down→reconnected cycle, not a restart**; and the "Python quit unexpectedly" dialogs are children, since every process runs as `Contents/MacOS/python`. The logging therefore has to tell three causes apart: **(A) the server was slow, (B) the probe sat queued in the browser** (HTTP/1.1's 6-connection cap), **(C) a child died**. **(1) Health route:** `GET /api/health`, `async`, no dependencies, returns `{boot_id, pid, started_at, uptime_s, version}`; `boot_id` is minted once per process (`fused_render/health.py`) and stamped into the app log's boot line and `server.json` (D472). The banner probes it instead of `/api/config`, which is sync, takes the update-manager `RLock` and may fork the FDA probe — a probe that can itself be the slow thing measures the wrong thing. `/api/config` is still fetched about every 60 s for `version`/`installed_version`/`dev`. **(2) Client classification + outage record:** each failure is tagged `timeout`/`refused`/`http-5xx`/`http-other`/`parse`; `FAIL_THRESHOLD` 3 (was 2); an amber "slow" line after the first timeout; on recovery the shell `POST`s `/api/health/outage` `{t_down, t_up, strikes, kinds, boot_id_before, boot_id_after, visible, page, latencies_ms, recovered}`, appended to `<log home>/outages.jsonl`; `pagehide` flushes a partial record by `sendBeacon`, which sends no custom headers, so the route accepts a bare JSON body. **`boot_id` changed ⇒ restart; unchanged ⇒ slow or the probe never arrived**, and the app log's access lines decide which. **(3) uvicorn propagation:** uvicorn's default `LOGGING_CONFIG` gives the `uvicorn` logger `propagate=False` plus its own stderr handler, so ASGI tracebacks, bind errors and lifespan failures were lost on a Finder launch — D68's docstring said otherwise. `logs.uvicorn_log_config()` is passed at every `uvicorn.Config` site (`app.py`, `cli.py`, `lan.py` ×2): `uvicorn`/`uvicorn.error` propagate to root, `uvicorn.access` stays silent because `server/common.py`'s middleware already writes one request line with its duration. **(4) Crash hooks:** `crashlog.install(kind)` enables `faulthandler` on a dedicated `<log home>/crash/<kind>-<pid>.log`, routes `sys`/`threading` excepthooks to the root logger and registers `SIGTERM` with `chain=True`. The file is created empty and removed on clean exit (`quit_teardown` calls `release()`, because `os._exit` skips `atexit`). **Reading rule: non-empty = native stack; empty at collection = did not exit cleanly** (SIGKILL/jetsam are invisible to any handler, so the leftover file is the only trace). Children that cannot import the package by design (env-install worker per D152, the stdlib-only AI worker base, the by-path session host / runpy child / engine worker) call `faulthandler.enable()` on their own stderr instead, which their parent already captures to a file. Installed in the app, `cli serve`, the index worker and watcher, `_child.py`, the AI `worker_base`, `engine_worker`, the claude `session_host`, the env-install worker and the desktop supervisor. **(5) Parents record child exit:** `crashlog.describe_exit(returncode)` names the signal (−9 → "killed by SIGKILL … memory pressure (jetsam)", SIGSEGV, SIGABRT …), and `report_child_exit(kind, pid, code, log_path)` logs a WARNING with a 2000-char stderr tail. Three blind sites fixed: `index/runner.py` keeps the `Popen` and polls `returncode` beside the 90 s mtime check; `ai/supervisor.py`'s `_drop_gone` reads code and tail before deleting the log; `engine_host.py` logs the dead daemon before respawning it. `session_host` and the Swift Apple helper get stderr files instead of `DEVNULL`. **(6) Watchdog:** `app.watch_server_thread` checks the uvicorn thread every 3 s after readiness; dead ⇒ CRITICAL log line + an `outages.jsonl` `server-thread-died` event + the normal quit, so the user relaunches into a known state. **(7) Log home + retention:** `~/Library/Logs/fused-render/` on macOS (Console.app shows it), `<home>/logs/app/` elsewhere (the supervisor sets `FUSED_RENDER_LOG_DIR` to that subdirectory); `FUSED_RENDER_LOG_DIR` still overrides. `prune_log_home` at boot keeps the newest 10 sessions within 150 MB, both caps evicting the OLDEST session first (150 MB holds two full 30 MB sessions, so the one that just crashed survives its own relaunch). Rotation 10 MB × 3 files (current + 2 backups; was 2 MB × 2) so one session holds a 24 h window — a visible tab writes one health access line per 5 s, about 1.5 MB/day. The formatter adds `[pid threadName]`. Lines stay text (the grep recipes depend on it); JSONL stays on the SV-3 backlog. "Open app logs" / "Show App Logs in Finder" reveal the directory, not the current pid's file. **(8) Resource trail:** `health.ResourceTrail` appends one JSON line per 20 s to `<log home>/resources.jsonl` — server RSS/footprint, children's RSS grouped by sysmon kind (index/engine/model/claude/…), host total/used, swap used, load, thread count — as a ~24 h ring (4400 lines). It runs regardless of the Monitor pref, which only gates UI; cost is one process-tree walk per 20 s. **(9) Diagnostics bundle:** `diagnostics.build_bundle(since_s, out_dir, *, reveal)` reads files only and needs no server. Three callers: menu-bar "Save Diagnostics…" (in-process, so it works with the server thread dead), `POST /api/diagnostics` from Preferences → Diagnostics (with a `GET /api/diagnostics/plan` preview "N files · M MB · K crash reports"), and `fused-render diagnose [--since 2h] [--out DIR]` (the bundle has no wrapper on PATH: `/Applications/FusedRender.app/Contents/MacOS/python -m fused_render.cli diagnose`). Writes `~/Desktop/fused-render-diagnostics-<timestamp>.zip`; window = max(24 h, since boot); tails 512 KB for unbounded logs, 64 MB total. Layout, redaction list and the reader's recipe are SPEC DG-20..DG-22. **Never collected:** openfused secrets/credentials, `rclone.conf`, `lan_tls/`, `claude-config/`, drafts, held answers, claude `out.jsonl`. Paths are kept as evidence. **Deferred (not this change):** index worker memory/Pool hang, AI worker orphans, the 6-connection cap and OpenBot's HEAD poll, App Nap, the ~40 fork-path spawns, a JSONL app log, pruning claude run dirs and capping template `daemon.log`. | Owner-directed 2026-10-05 after reporters could describe the red card but not send anything that explained it. **A dedicated health route** over new fields on `/api/config` (the config handler's lock and FDA fork are exactly what makes a probe report "down" under load) and over reusing `/api/desktop/ready` (sync, and bound to the supervisor-token handshake). **An outage record on the user's disk** over a `localStorage`-only trail (a reporter cannot hand it over and it dies with the profile) and over a general telemetry endpoint (D421's posture: nothing leaves the machine except inside a zip the user chooses to send). **`log_config` per `uvicorn.Config`** over `dup2` of fd 2 onto the log (fights `RotatingFileHandler`'s rename-and-reopen). **faulthandler on its own file** over the rotating log (needs a stable fd that rotation would pull out from under it) and over `PYTHONFAULTHANDLER=1` (writes to the inherited stderr, which is `/dev/null` under Finder). **Each parent reporting its own child** over a central child registry (one more piece of state to keep correct across ~a dozen spawn sites; the parent already holds the `Popen`). **Watchdog quits** over re-running `server.run()` in-process (app state after an uncaught exception on that thread is unknown). **A persistent log home** over staying in `$TMPDIR` (erased by the reboot every reporter does before reporting), and **a per-platform path** over one path everywhere (Console.app visibility on macOS is worth the split); D68's reason for temp — nothing prunes the folder — is answered by `prune_log_home`. **An always-on 20 s trail** over asking reporters to turn the Monitor pref on (1 s cadence, 120 s memory-only history) and over sampling only once slow (the minute before is the part that matters). **A menu/CLI/Preferences bundle** over a button in the down card (that card cannot reach a dead server, and in the false-positive case the moment has already passed by the time a user clicks) |
+
+## Sidebar state: open/closed persisted, tab per document, width unchanged (2026-10-05)
+
+At the owner's request ("lets globally remember the sidebar open/close state.
+just the size and selected tab (git/claude) will be remembered until the user
+refreshes the page"), then a follow-up (the width must keep surviving a
+refresh, as before), the explorer's companion sidebar (file view and folder
+pane, one shared set of stores) splits its memory like this:
+
+- **Open/closed is persisted across reloads.** `lib/side-hidden-store.ts`
+  seeds from `localStorage` (`fused-render:explorer-side-hidden`) at module
+  load and writes through on every set; every storage access is in try/catch
+  and the module variable stays the live answer if storage throws. An explicit
+  `_side` (or legacy `_mode`) in the URL still wins over the stored flag, and a
+  deep link that opens still clears it (`sideReopenedByUrl` /
+  `paneReopenedByUrl`, unchanged).
+- **Width is unchanged: still persisted.** `lib/side-store.ts` keeps reading and
+  writing `localStorage` (`SIDE_WIDTH_KEY`) exactly as on main; the R1 (#29)
+  decision to persist it stands. (A first cut of this branch made it memory
+  only; that was reverted before merge.)
+- **Selected tab is memory only and shared.** New `lib/side-tab-store.ts` holds
+  the last tab the user explicitly picked (written by the file sidebar's
+  `applySide` and the folder pane's `applySide`, never by a close, a deep link
+  or the default resolving). Where `_side` names no mode, `resolveSide`
+  (`lib/preview-side.ts`) and `activePaneSide` (`listing/pane-side.ts`) use it
+  if that companion is ready on the current subject (`SideSplit.ready`: settled,
+  not pending, not a disabled row; for the pane, present in the offered list,
+  which is empty while undecided); a remembered tab that is offered but still
+  PENDING resolves to "not yet" (file: `null`, folder pane: undecided skeleton)
+  rather than the default, so the column never swaps when its verdict lands;
+  otherwise (known unavailable) the existing default applies and the
+  memory is kept for a subject that does offer it. Explicit `_side=<mode>` wins.
+  The URL spelling rule is unchanged and still measured against the file's real
+  default, but only for an explicit pick: a tab that resolves ONLY from the
+  remembered store (URL silent, nobody picked on this file) is NOT written into
+  `_side` by the file view's reconcile (`sideFromMemory` / `fromMemory`, the same
+  treatment as the hidden-flag-only closed state). Writing it made a reload keep
+  Git, a copied link carry an unchosen `_side=git`, and Back restore a stale tab
+  (an explicit `_side` beats memory). The silent URL + memory-derived tab is a
+  stable state (no loop). The folder pane has no reconcile writer, so nothing
+  there leaks.
+- **A fresh page from Home starts on the default companion.** Mounting the Home
+  page (`/home`) or the file-explorer homepage (`/explorer`) clears the
+  remembered tab (`setSideTab(null)`, in `shell/App.tsx`), so the next file or
+  app opened from there lands on Claude. The open/closed flag and the width are
+  global and untouched.
+
+| D1308 | **Every runner's `download()` fetches only what its engine opens; the scopes live once in `formats.py`.** Hub repos publish one set of weights in several formats (`pytorch_model.bin` beside `model.safetensors`, `original/consolidated.pth`, `flax_model.msgpack`, `tf_model.h5`, `onnx/`, `*.gguf`) and a bare `download_snapshot(id)` fetched all of them. **Open-ended file set -> IGNORE list; closed set -> ALLOW list.** `formats.MLX_IGNORE` (pickles `pytorch_model*.bin`/`*.pt`/`*.pth`/`training_args.bin`, Flax/TF/Rust, ONNX/OpenVINO, GGUF, `original/*`) goes to `mlx_text`, `mlx_embed`, `mflux_image`, `laya_mlx`, `mlx_audio_tts` and the Gemma-3 phase of `ltx_video`'s `download_plan`: MLX loaders glob safetensors only, so those can never be the only usable copy. `formats.MLX_WHISPER_FILES` (config.json + the three weight spellings) -> `mlx_whisper`; `formats.CT2_FILES` (faster-whisper's own allow list, includes `model.bin`) -> `faster_whisper`; `formats.DIFFUSERS_IGNORE` (msgpack/h5/ot/onnx/gguf/openvino; torch weights untouched) -> non-curated repos in `torch_image.download`. **A bare `*.bin` is NEVER a pattern** (CT2 weights are `model.bin`); the PyTorch spellings are named. **Already at the minimum, no change:** `llama_text` (both llama.cpp builds: one GGUF via `download_file`), `onnx_embed` (all four builds: `allow_patterns` of graphs + sidecars + metadata), curated `torch_image` recipes (`keep` allow list), and the auxiliary components (`vad`, `diarize`, GGUF FLUX transformer: one `download_file` each). **Cache compatibility:** `worker_base._recorded_files` now answers a request from a record at a different scope when the record is a SUPERSET (no allow list, ignore set a subset of the request's) - filtered through `selects` and every selected name still has to be present - so repos cached in full before this change are recognised offline instead of re-listed. The reverse (an ignore-scoped record answering an unscoped request) stays closed. **Not done, for the next builder:** dropping `.bin` when `.safetensors` exists in the same folder (torch/diffusers repos, 2x) and `.fp16` variants needs the repo LISTING, which the offline cache check cannot reproduce from a static scope - it would need a listing-derived scope stored in the record. Root-level single-file bundles (`sd-v1-5.safetensors` beside `unet/`) are likewise unreachable with `fnmatch` (`*` crosses `/`). Laya and mflux got `MLX_IGNORE` rather than an allow list because their file layouts could not be verified against an installed library here. Tests: `tests/test_ai_download_scopes.py`, plus superset cases in `tests/test_ai_worker_base.py`. |
+
+| D1309 | **A restart through a version-skewed app: the health probe falls back to `/api/config` on a 404, and a press the old app never acted on ends as its own `stuck` stage after 20 s.** Diagnosed 2026-10-05 from real logs: the desktop process was v0.6.2 (up since the day before), an update replaced `/Applications/FusedRender.app` with v0.6.5, and the old Python server — which serves the frontend from disk — handed the window the **0.6.5 frontend**. That frontend probes `GET /api/health` (D1307), a route 0.6.2 does not have, so every probe 404'd and counted as a failure: the restart dialog walked to "Reconnecting…", hit the 120 s cap and the page said "fused-render isn't running" while the same server answered `/api/config` and `/api/jobs` 200. Second half of the same skew: "Restart now" navigates to `fused-render://relaunch`, which the 0.6.2 window code did not route (`mac_window: navigation failed: unsupported URL`), so nothing ever quit and the page cannot see a dropped press. **Decision 1 (`probeHealth` in `server-status.ts`, called by `ServerStatusBanner`):** a 404 — only a 404 — from `/api/health` means "up, but older than this page"; the probe reads `/api/config` (the pre-D1307 probe, which carries the version) and returns an ordinary healthy `ProbeResult` with no boot id, so `reduceProbe` and `reduceRestart` read it as the same process still up. 5xx stays `http-5xx`, other statuses `http-other`, an abort `timeout`, a refused fetch `refused`; a 404 whose fallback also fails reports the fallback's failure. `Preferences` calls `/api/health` only for `started_at`, not liveness, and is left alone. **Decision 2 (`restart-flow.ts`):** a new terminal stage `stuck` — the server answered healthy on the SAME version at least once and never failed a probe since the press, for `RESTART_STUCK_MS` (20 s, far under `RESTART_GIVE_UP_MS`). Two flags on `RestartState` (`outage`, `answered`) carry that; any failed probe sets `outage` for good, so a press after a real outage keeps today's long wait and `gave-up`. Copy is a sentence (terminal states get sentences, stage words stay one word): the running app couldn't restart itself, quit from the menu-bar icon or ⌘Q and open it again. The overlay shows it with Dismiss only and the notification card with no "Restart now" (a second press is dropped the same way); the record dies with the flow like `back`/`gave-up`. Rejected: fixing it in the Python server — the point is that a NEW frontend copes with an OLD server, and the old process cannot be patched. |
+| D1310 | **The chat's backend runs IN the server: `templates/claude/agent.py` and its siblings move to the package `fused_render/claude_agent/`, reached through `POST /api/claude/agent` (plus `/api/claude/app-entry` and `/api/claude/artifacts`) instead of `/api/run`; the iframe chat page (`template.html`, `vendor/`, `app.py`) and the `native_chat_enabled` switch are deleted; `templates/claude/` keeps only `condition.py`, `icon.svg` and a `native` registry marker (PT-6).** One module instance (`claude_agent.agent_module()`; `claude_spawn.load_agent`, `project_queue.agent_module` and canvases all delegate to it). One router, an allowlist of the 17 actions `agent.main` dispatches, bound by `_binding.bind_params` (lenient, the binder `/api/run`'s child used); answers are the handler's dict verbatim (a handler's `{"error"}` is a 200), 400 for an unknown action or an unbindable param, 500 `{"error": {type, message, traceback}}` when it raised, 504 `{"error": {type: "Timeout"}}` past a per-action budget counted from submit (reads 30 s, cancel 15 s, else 60 s — poll included, since its turn-end `_commit_turn` can run three 30 s git calls) — the shapes the page's AgentError mapping already read. Handlers run on their own 8-thread pool (`claude_agent/pool.py`), never anyio's default, with `cancel`/`decide`/`app_state` on a separate 2-thread control lane so a Stop never spends its budget queued behind polls. The folder-busy gate moved verbatim to `claude_agent/gate.py` (same names, same refusal string, still a 200). `agent._start` now spawns the session host from the server itself with exactly `close_fds=False` and no `cwd`/`start_new_session`/`preexec_fn` (`_HOST_SPAWN`), so CPython takes posix_spawn and never forks; the host calls `os.setsid()` as its first act to detach, and a daemon thread per host reaps it. Chat calls carry `X-Fused-Page: fused-render://claude` (`CLAUDE_PAGE_ID`), which the call log files as first-party. Pre-D1308 chat call-log rows stay under the old staged `claude/` partition and new rows file under `claude_agent/`, and a stale user fork's `templates/claude/template.html` is ignored with a warning rather than shadowing the core marker. SPEC PT-6, PT-16, PY-15 (scope note). | The chat polled every ~400 ms per open chat, and every poll, send and artifacts tick was a fresh interpreter through `/api/run` — the largest source of interpreter churn the server had — while the server also held several exec'd copies of agent.py, each with its own echo cache and inbox-ordering counter. With the iframe page already behind a flag that defaulted to the native chat (2026-09-17), keeping both transports alive was cost with no user. **The registry entry survives as a marker** because everything keyed on mode `claude` depends on it: D280's `/` lead, the condition.py gate (CT-12, SCH-11), the icon (PT-11) and every frontend mount gate that finds the chat by `templates.find(mode === "claude")`. **agent.py still never imports `fused_render`** although it left `templates/`: `session_host.py` loads it by path in a child that cannot import the package, so PY-15's reason still binds it (test_templates_decoupled pins the three by-path files). **Rejected:** keeping spawn-per-call and adding admission control on `/api/run` (bounds the burst but keeps an interpreter per 400 ms poll, plus the module-copy drift); keeping `claude_spawn.spawn_helper`'s `python -c` helper subprocess for `start` only (an extra interpreter per turn whose sole job was dodging fork — once the host Popen is posix_spawn-safe there is nothing left to dodge, so `spawn_helper` is now an in-process `_start` call under its old name); keeping a stub `template.html` so the registry keeps resolving (a placeholder page keeps `/render`, the iframe mount paths and the flag reachable for a page that renders nothing — the marker gives the registry its identity with no page to serve, and `/render` 404s it); deleting the registry entry outright (breaks the gate and every mount gate above); running handlers on anyio's default threadpool (a chat backlog would share tokens with `/api/health`, which D1307 needs to answer under load); `start_new_session` in the server (forces fork, and PROJ's atfork handler SIGSEGVs the child). **Deferred:** admission control on `/api/run` for user apps, a push channel in place of the 400 ms poll (cheap now, not free), and `_commit_turn`'s self-HTTP to `/api/git-upstream` becoming a direct call. |

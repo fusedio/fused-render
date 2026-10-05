@@ -64,6 +64,8 @@ from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.claude_agent import CLAUDE_PAGE_ID
+from fused_render.claude_agent import HERE as _CLAUDE_AGENT_DIR
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -219,13 +221,25 @@ def _partition_name_cached(app_dir: str) -> str:
     return f"{slug}-{digest}" if slug else digest
 
 
+def _page_dir(page: str) -> str:
+    """The folder a page's records are filed under: its dirname — except the
+    native chat's page id (`CLAUDE_PAGE_ID`), which is a URI, not a path.
+    Its dirname is the bare scheme, which `partition_name` would realpath
+    against the server's CWD — a partition whose identity moves with wherever
+    the server was launched from. The chat's calls are the agent backend's,
+    so they file under its folder."""
+    if page == CLAUDE_PAGE_ID:
+        return _CLAUDE_AGENT_DIR
+    return os.path.dirname(page)
+
+
 def _partition_for_record(rec: dict) -> str:
     """Where a record lives: its page's folder. `page` is already canonical
     here (record() canonicalizes before queueing), so dirname is stable."""
     page = rec.get("page")
     if not isinstance(page, str) or not page:
         return UNATTRIBUTED
-    return partition_name(os.path.dirname(page))
+    return partition_name(_page_dir(page))
 
 
 def _index_read() -> dict:
@@ -600,9 +614,15 @@ def is_first_party(page: str | None) -> bool:
     are real records attributed to the template's own template.html. Correct,
     but "my app's calls" then needs a deliberate filter rather than an
     accident: this flag is it (design §4.6).
+
+    The native chat's calls carry `CLAUDE_PAGE_ID` rather than a path (its
+    backend is a server module now, with no template.html to name), and they
+    are first-party for the same reason a template's are.
     """
     if not page:
         return False
+    if page == CLAUDE_PAGE_ID:
+        return True
     try:
         real = os.path.realpath(page)
     except OSError:
@@ -895,7 +915,7 @@ def _append_to(partition: str, records: list[dict]) -> None:
         # what the user recognises. Advisory — failures cost the lookup only.
         page = next((r.get("page") for r in records if r.get("page")), "")
         if page:
-            _index_add(partition, os.path.dirname(page))
+            _index_add(partition, _page_dir(page))
     lines = []
     for rec in records:
         try:

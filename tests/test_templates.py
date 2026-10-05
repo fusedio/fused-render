@@ -86,7 +86,137 @@ def test_builtin_html_default_is_render_sentinel():
     # separators — this internal field is never run through the app's
     # canonical_fs_path), so normalize before a forward-slash suffix check.
     assert entries[1]["path"].replace(os.sep, "/").endswith("code/template.html")
-    assert entries[2]["path"].replace(os.sep, "/").endswith("claude/template.html")
+    # `claude` is a NATIVE template (PT-6 amendment): the shell renders the
+    # chat, so its folder holds a `native` marker instead of a page and the
+    # entry's path is that marker. Tolerant of the folder form too, so the
+    # assertion pins "it resolves inside templates/claude", not the filename.
+    claude_path = entries[2]["path"].replace(os.sep, "/")
+    assert claude_path.endswith(("claude", "claude/native")), claude_path
+    assert entries[2].get("native") is True
+    assert "native" not in entries[1]
+
+
+# --------------------------------------------------- native templates (PT-6)
+#
+# A native template's UI is the React shell's (the chat: frontend/src/apps/
+# claude), so its folder has no template.html — only a `native` marker, plus
+# the condition.py gate and icon.svg that still make it a registry citizen.
+
+def test_the_claude_template_resolves_through_its_native_marker():
+    path, err = server._resolve_name("claude")
+    assert err is None
+    assert os.path.basename(path) == server.NATIVE_MARKER
+    assert os.path.basename(os.path.dirname(path)) == "claude"
+    assert server._is_native(path)
+    folder = os.path.dirname(path)
+    assert not os.path.exists(os.path.join(folder, "template.html")), \
+        "the iframe chat page is retired; the shell renders mode 'claude'"
+    # The registry citizenship the marker exists for: the gate and the icon
+    # both hang off dirname(path), unchanged from a template.html folder.
+    assert os.path.isfile(os.path.join(folder, "condition.py"))
+    assert server._icon_for(path) == os.path.join(folder, "icon.svg")
+
+
+def test_only_a_native_template_carries_the_native_flag():
+    entries, error = server._templates_for("/x/somedir", True)
+    assert error is None
+    by_mode = {e["mode"]: e for e in entries}
+    assert by_mode["claude"].get("native") is True
+    assert all("native" not in e for m, e in by_mode.items() if m != "claude")
+
+
+def test_a_user_native_folder_resolves_on_its_own(user_dir):
+    folder = user_dir.path / "mine"
+    folder.mkdir()
+    (folder / "native").write_text("shell-rendered\n")
+    path, err = server._resolve_name("mine")
+    assert err is None and server._is_native(path)
+    assert path == str(folder / "native")
+    # For a name core does not ship natively, within one folder the page still
+    # wins over the marker.
+    (folder / "template.html").write_text("<html></html>")
+    path, err = server._resolve_name("mine")
+    assert err is None and path == str(folder / "template.html")
+
+
+def test_a_stale_user_page_cannot_shadow_a_core_native_template(user_dir, caplog,
+                                                                monkeypatch):
+    """A user who forked the old iframe chat still has
+    `~/.fused-render/templates/claude/template.html`. Letting it win would
+    resurrect the retired page under /render and hand its folder's gate and
+    icon to the mode (D1310), so the core marker wins and the stale file is
+    named in a warning, once."""
+    import logging
+
+    monkeypatch.setattr(server, "_WARNED_STALE", set())
+    core, _ = server._resolve_name("claude")
+    stale = user_dir.path / "claude" / "template.html"
+    stale.parent.mkdir()
+    stale.write_text("<html>old chat</html>")
+    with caplog.at_level(logging.WARNING, logger=server.logger.name):
+        first, err = server._resolve_name("claude")
+        second, _ = server._resolve_name("claude")
+    assert err is None
+    assert first == second == core and server._is_native(first)
+    warned = [r for r in caplog.records if str(stale) in r.getMessage()]
+    assert len(warned) == 1, "warned once per process, not once per call"
+
+
+def test_render_refuses_a_stale_user_fork_of_a_native_name(user_dir):
+    """`_resolve_name` ignores `~/.fused-render/templates/claude/template.html`,
+    and a hand-typed /render of that file — or anything else in that folder —
+    must not serve the retired page either: the same 404 as the marker."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    fork = user_dir.path / "claude"
+    (fork / "vendor").mkdir(parents=True)
+    (fork / "template.html").write_text("<html>old chat</html>")
+    (fork / "vendor" / "x.js").write_text("1")
+    assert server.is_native_template_path(str(fork / "template.html"))
+    assert server.is_native_template_path(str(fork / "vendor" / "x.js"))
+    assert server.is_native_template_path(str(fork))
+    # A user folder for a name core does NOT ship natively stays servable.
+    mine = user_dir.path / "mine"
+    mine.mkdir()
+    (mine / "template.html").write_text("<html></html>")
+    assert not server.is_native_template_path(str(mine / "template.html"))
+    client = TestClient(create_app(start_dir=str(user_dir.path)))
+    r = client.get("/render", params={"path": str(fork / "template.html")})
+    assert r.status_code == 404
+    assert "served by the shell" in r.text
+
+
+def test_render_refuses_a_native_folder_by_any_spelling(tmp_path):
+    """A symlink to the native folder, or (on a case-insensitive volume) a
+    differently-cased path to it, is the same folder: refused the same way."""
+    path, _ = server._resolve_name("claude")
+    folder = os.path.dirname(path)
+    link = tmp_path / "chat-link"
+    link.symlink_to(folder, target_is_directory=True)
+    assert server.is_native_template_path(str(link))
+    assert server.is_native_template_path(str(link / "native"))
+    upper = os.path.join(os.path.dirname(folder), "CLAUDE")
+    if os.path.isdir(upper) and os.path.samefile(upper, folder):
+        # Case-insensitive volume (the macOS default) — the same folder.
+        assert server.is_native_template_path(upper)
+        assert server.is_native_template_path(os.path.join(upper, "NATIVE"))
+
+
+def test_render_refuses_a_native_template():
+    """There is no page to serve: `/render` on the folder or its marker is a
+    404 saying who renders it, never the marker's bytes or an index redirect."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    path, _ = server._resolve_name("claude")
+    client = TestClient(create_app(start_dir=os.path.dirname(path)))
+    for target in (path, os.path.dirname(path)):
+        r = client.get("/render", params={"path": target})
+        assert r.status_code == 404, target
+        assert "served by the shell" in r.text
 
 
 def test_builtin_parquet_default_is_duckdb():

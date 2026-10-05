@@ -160,41 +160,36 @@ export function resetSnapshotTargetCacheForTests(): void {
  * gone stale?" flag against. Storing the invalidation the entry was read under
  * turns that into a question the cache can answer on its own, on any mount.
  *
- * AND ON THE AGENT DIR TOO (batch review F4). `loadSnapshots` is a function of
- * BOTH arguments — the template folder holding `agent.py` decides which store
- * answers — so a key of `file` alone let two chats on the same file with
- * different template folders repaint each other's chain with no read of their
- * own, and `invalidateSnapshots(file)` dropped every folder's entry for it. The
- * composite key is the shape `useArtifacts` already uses.
+ * The FILE alone keys it: there is one agent, in the server, so a file has one
+ * timeline. (Batch review F4 keyed it on the template folder too, back when a
+ * user fork of the claude template ran its own `agent.py`.)
  */
 const timelines = new Map<string, { inv: unknown; timeline: SnapshotsTimeline }>();
 
 /** The one spelling of the key, so the four accessors cannot disagree. */
-const cacheKey = (agentDir: string, file: string) => agentDir + "\u0000" + file;
+const cacheKey = (file: string) => file;
 
 /** The cached timeline for this target, but only if it was read under the same
  *  invalidation value the caller is asking under. */
 export function cachedSnapshots(
-  agentDir: string,
   file: string,
   invalidation: unknown,
 ): SnapshotsTimeline | null {
-  const hit = timelines.get(cacheKey(agentDir, file));
+  const hit = timelines.get(cacheKey(file));
   return hit && hit.inv === invalidation ? hit.timeline : null;
 }
 
 export function cacheSnapshots(
-  agentDir: string,
   file: string,
   invalidation: unknown,
   timeline: SnapshotsTimeline,
 ): void {
-  timelines.set(cacheKey(agentDir, file), { inv: invalidation, timeline });
+  timelines.set(cacheKey(file), { inv: invalidation, timeline });
 }
 
 /** What the heading's retry spends, and what a revert's own repaint replaces. */
-export function invalidateSnapshots(agentDir: string, file: string): void {
-  timelines.delete(cacheKey(agentDir, file));
+export function invalidateSnapshots(file: string): void {
+  timelines.delete(cacheKey(file));
 }
 
 /** Test seam, beside `resetSnapshotTargetCacheForTests` — page scope means one
@@ -205,14 +200,11 @@ export function resetSnapshotCacheForTests(): void {
 
 /** T:19124 `loadSnapshots`. Neither knob — see the module note. */
 export async function loadSnapshots(
-  agentDir: string,
   file: string,
 ): Promise<SnapshotsTimeline> {
   const out = await runAgent(
-    agentDir,
     "snapshots",
     { file, deltas: "0" },
-    { key: null },
   );
   if ("error" in out && out.error) throw new Error(out.error);
   return out as SnapshotsTimeline;
@@ -222,15 +214,12 @@ export async function loadSnapshots(
  *  cached: it is a statement about the file as it is right now, and a stale one
  *  is exactly how a user confirms one diff and gets a different one. */
 export function snapshotPlan(
-  agentDir: string,
   file: string,
   versionId: string,
 ): Promise<SnapshotPlanResponse> {
   return runAgent(
-    agentDir,
     "snapshot_plan",
     { file, version_id: versionId },
-    { key: null },
   );
 }
 
@@ -239,18 +228,15 @@ export function snapshotPlan(
  *  case the user was actually shown the loss for: a token passed on every call
  *  is a token nobody reads. */
 export function snapshotRevert(
-  agentDir: string,
   file: string,
   plan: SnapshotPlanOk,
 ): Promise<SnapshotRevertResponse> {
   return runAgent(
-    agentDir,
     "snapshot_revert",
     {
       file,
       version_id: plan.id,
       confirm_unique: plan.unique_current ? "1" : "",
     },
-    { key: null },
   );
 }

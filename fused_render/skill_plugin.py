@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 # The assembled root's name under home_dir(), and the shape the CLI's plugin
 # loader requires inside it. Named constants because both the templates that
-# pass `--plugin-dir` (templates/claude/agent.py, which cannot import this
+# pass `--plugin-dir` (claude_agent/agent.py, which cannot import this
 # module — SPEC PY-15) and the tests hard-code the same strings.
 PLUGIN_SUBDIR = "skill-plugin"
 MANIFEST_DIR = ".claude-plugin"
@@ -209,7 +209,7 @@ def _is_loadable(root: str, expected=()) -> bool:
 # tombstoned with an `.orphaned_at` marker the scan knew nothing about, and the
 # plugin the user removed came back. Second, discovery made the root a fact about
 # the MACHINE, which invited handing it to every session; these skills belong to
-# canvas clones alone (the gate lives in `templates/claude/agent.py:_plugin_argv`,
+# canvas clones alone (the gate lives in `claude_agent/agent.py:_plugin_argv`,
 # which is where the target path is known). A clone we fetch is the opposite on
 # both counts: its presence means we put it there, and its lifetime is ours.
 #

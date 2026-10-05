@@ -9,7 +9,7 @@
 //
 // So this file mounts the REAL component over a stubbed `fetch` and a patched
 // `ATTACH_API`, exactly as `ClaudeChat.attach.test.tsx` does, and asserts through
-// what reaches `/api/run` or what the chip row renders — because that is where
+// what reaches `/api/claude/agent` or what the chip row renders — because that is where
 // getting any of it wrong actually lands.
 //
 // A NOTE IS MADE BY A CLICK INSIDE THE FRAMED APP, and that click is DISPATCHED
@@ -34,7 +34,6 @@ const { NAV_LOCKED_REASON } = await import("./ann");
 const { isNativeOff, resetNativeOffForTests } = await import("./shots");
 const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
-const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { ANN_TAG, PANE_SHOT_TAG } = await import("./protocol/wire");
 const { publishProjectQueueEnabled } = await import("./feature-flag");
 const { isMac } = await import("@platform/lib/platform");
@@ -73,7 +72,7 @@ let sendCount = 0;
 /** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
 let prefsBody: Record<string, unknown> = {};
 /** Every body `/api/tasks/queue/admit` was asked with, and what it answers. The
- *  queue is the one road on which a send does not reach `/api/run` at all, so
+ *  queue is the one road on which a send does not reach `/api/claude/agent` at all, so
  *  the ENTRY is where a queued round of notes has to be looked for. */
 const admits: Array<Record<string, unknown>> = [];
 let admitAnswer: Record<string, unknown> = { run: true };
@@ -120,53 +119,47 @@ function stubFetch(): void {
       });
     }
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
-    if (url === "/api/run") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        py: string;
-        params: Record<string, string>;
-      };
+    if (url === "/api/claude/agent" || url === "/api/claude/app-entry") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
       // The pane's own decision: an entry makes this a PROJECT and gives the
       // chat a frame to annotate; `null` makes it an ordinary folder, which is
       // `enterNoPane`'s road (D239).
-      if (String(body.py).endsWith("/app.py")) {
-        return jsonRes({
-          ok: true,
-          result: appEntry ? { entry: appEntry, noun: "project" } : { entry: "" },
-        });
+      if (url === "/api/claude/app-entry") {
+        return jsonRes(appEntry ? { entry: appEntry, noun: "project" } : { entry: "" });
       }
-      const action = String(body.params?.action ?? "");
-      runs.push({ action, params: body.params ?? {} });
+      const action = String(body.action ?? "");
+      runs.push({ action, params: body });
       if (action === "start") {
         // HOLDABLE, so a test can act inside the window between "the controller
         // took the message" and "the run is live" — where `status` is still
         // idle and PR #1074's lost follow-up lived.
-        if (holdStart) return holdStart.then(() => jsonRes({ ok: true, result: { run_id: "r1" } }));
-        return jsonRes({ ok: true, result: startError ? { error: startError } : { run_id: "r1" } });
+        if (holdStart) return holdStart.then(() => jsonRes({ run_id: "r1" }));
+        return jsonRes(startError ? { error: startError } : { run_id: "r1" });
       }
       if (action === "poll") {
         // `pollLive` keeps the run OPEN (a long reply streaming), so a line can
         // drain into it as a follow-up and a stop can land before the host
         // confirms it.
         if (pollLive && (!cancelled || stickyLive)) {
-          return jsonRes({ ok: true, result: { done: false, session_id: "s1", text: "" } });
+          return jsonRes({ done: false, session_id: "s1", text: "" });
         }
-        return jsonRes({ ok: true, result: { done: true, session_id: "s1", text: "ok" } });
+        return jsonRes({ done: true, session_id: "s1", text: "ok" });
       }
-      if (pollLive && action === "live_host") return jsonRes({ ok: true, result: { run_id: "r1" } });
+      if (pollLive && action === "live_host") return jsonRes({ run_id: "r1" });
       if (pollLive && action === "send") {
-        if (failSend) return jsonRes({ ok: true, result: {} });
+        if (failSend) return jsonRes({});
         // HOLDABLE like `start`: the window between the inbox taking the bytes
         // and `{sent: true}` coming back is where an unconfirmed follow-up lives.
         sendCount += 1;
         const hold = holdSend && (holdSendNth === null || holdSendNth === sendCount);
-        if (hold) return holdSend!.then(() => jsonRes({ ok: true, result: { sent: true } }));
-        return jsonRes({ ok: true, result: { sent: true } });
+        if (hold) return holdSend!.then(() => jsonRes({ sent: true }));
+        return jsonRes({ sent: true });
       }
       if (action === "cancel") {
         cancelled = true;
-        return jsonRes({ ok: true, result: { cancelled: "r1", still_queued: [] } });
+        return jsonRes({ cancelled: "r1", still_queued: [] });
       }
-      return jsonRes({ ok: true, result: {} });
+      return jsonRes({});
     }
     return jsonRes({});
   };
@@ -269,7 +262,6 @@ beforeEach(() => {
   publishProjectQueueEnabled(false);
   keydowns.length = 0;
   asFound = { ...API };
-  resetAgentDirCacheForTests();
   stubFetch();
   TARGET = targetRig();
   POP = popRig();
@@ -295,7 +287,7 @@ beforeEach(() => {
     flash: () => () => {},
     filesFromPaste: (ev) =>
       (ev as { clipboardData?: unknown }).clipboardData ? [{ name: "shot.png" } as File] : [],
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       for (const f of files) {
         yield {
           id: "f1",
@@ -1741,7 +1733,7 @@ test("the transcript's words make the mark sendable, walkthrough or no", async (
 
 // ---- the project queue: a send the folder was too busy to take -------------
 //
-// A queued send never reaches `/api/run`. It becomes a scheduler entry that
+// A queued send never reaches `/api/claude/agent`. It becomes a scheduler entry that
 // fires minutes later with WHATEVER IS WRITTEN ON IT — so everything the live
 // wire composes has to be composed before the admission, or it is simply not in
 // the message that eventually runs. The pictures already travelled

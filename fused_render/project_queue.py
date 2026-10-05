@@ -278,25 +278,29 @@ def _repo_root(path: str) -> str:
 
 
 def agent_module():
-    """The claude template's agent.py, loaded once, or None if it will not load.
+    """The chat backend's agent module, or None if it will not import.
 
-    Loaded through `claude_spawn.load_agent()` and never imported at module
-    import time: agent.py is a TEMPLATE, outside the package's import graph by
-    design (SPEC PY-15), and `load_agent` execs the whole file. The FAILURE is
-    cached with the success for the same reason the tasks router caches it — a
-    module that will not load now will not load on the next tick either, and
-    retrying it once a second would turn one broken import into a busy loop.
-    With no agent module the runs tree cannot be read at all, which is the same
-    answer this gave before the feature existed.
+    THE one instance (`fused_render.claude_agent.agent_module()`), reached
+    lazily rather than imported at module import time so this module stays
+    importable when the agent's own imports are broken. The None-on-failure
+    answer and its cache stay, though `claude_agent.agent_module()` itself
+    raises: every caller here and in the tasks router / canvases treats None
+    as "nothing is running" (and the suites stand in `lambda: None` for this
+    name), and a failed `import_module` is not cached by Python — the module is
+    dropped from `sys.modules` — so without this flag the once-a-second
+    callers would re-exec agent.py and log the same traceback every tick, one
+    broken import turned into a busy loop. With no agent module the runs tree
+    cannot be read at all, which is the same answer this gave before the
+    feature existed.
     """
     global _AGENT_MOD, _AGENT_MOD_TRIED
     with _AGENT_MOD_LOCK:
         if not _AGENT_MOD_TRIED:
             _AGENT_MOD_TRIED = True
             try:
-                from fused_render import claude_spawn
+                from fused_render import claude_agent
 
-                _AGENT_MOD = claude_spawn.load_agent()
+                _AGENT_MOD = claude_agent.agent_module()
             except Exception:  # noqa: BLE001 — no agent module is an answer
                 logger.warning("could not load the claude agent module; the "
                                "project queue cannot tell which folders are "

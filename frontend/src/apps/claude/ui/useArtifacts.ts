@@ -26,7 +26,7 @@ import { loadArtifacts, type Artifact } from "../protocol/artifacts";
  */
 const lastRows = new Map<string, Artifact[]>();
 
-const key = (agentDir: string, file: string | null) => agentDir + "\u0000" + (file ?? "");
+const key = (file: string | null) => file ?? "";
 
 /** Test seam: page scope means one suite's rows are visible to the next. */
 export function resetArtifactsMemoryForTests(): void {
@@ -34,7 +34,6 @@ export function resetArtifactsMemoryForTests(): void {
 }
 
 export function useArtifacts(
-  agentDir: string | null,
   file: string | null,
   /** The read, injectable for the reason every other seam in this app is: one
    *  process, every suite. */
@@ -47,15 +46,9 @@ export function useArtifacts(
    */
   enabled = true,
 ): Artifact[] | null {
-  const [rows, setRows] = useState<Artifact[] | null>(() =>
-    agentDir ? (lastRows.get(key(agentDir, file)) ?? null) : null,
-  );
+  const [rows, setRows] = useState<Artifact[] | null>(() => lastRows.get(key(file)) ?? null);
   useEffect(() => {
-    if (!agentDir) {
-      setRows(null);
-      return;
-    }
-    const seat = key(agentDir, file);
+    const seat = key(file);
     if (!enabled) {
       // Still seeded from the memory, so the tab bar's count is whatever it
       // last honestly was while the two reads ahead of this one run.
@@ -66,7 +59,7 @@ export function useArtifacts(
     // The previous answer for THIS target stands while the fresh one is in
     // flight; a target we have never read is the only `null` (see above).
     setRows(lastRows.get(seat) ?? null);
-    void read(agentDir, file)
+    void read(file)
       .then((out) => {
         lastRows.set(seat, out);
         if (live) setRows(out);
@@ -84,6 +77,6 @@ export function useArtifacts(
     return () => {
       live = false;
     };
-  }, [agentDir, file, enabled]);
+  }, [file, enabled]);
   return rows;
 }

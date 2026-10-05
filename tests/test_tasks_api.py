@@ -252,7 +252,7 @@ def test_a_cli_session_carries_its_entrypoint_on_the_row_and_the_pulse(
 
 
 def test_an_sdk_cli_session_carries_its_entrypoint(client, projects_dir, state_dir):
-    """"sdk-cli" — what templates/claude/agent.py's headless spawn writes. A
+    """"sdk-cli" — what claude_agent/agent.py's headless spawn writes. A
     proxy for "started by our own template", not proof (an unrelated
     SDK-driven session can also report this) — see task-status-notify.ts."""
     _already_using(state_dir)
@@ -3446,7 +3446,7 @@ def test_history_of_an_erased_task_says_so(client, projects_dir, state_dir,
     import os as _os
     spec = importlib.util.spec_from_file_location(
         "claude_agent_deleted",
-        _os.path.join("fused_render", "templates", "claude", "agent.py"))
+        _os.path.join("fused_render", "claude_agent", "agent.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     monkeypatch.setattr(mod, "PROJECTS", str(projects_dir))

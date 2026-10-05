@@ -71,7 +71,7 @@ def fresh_cache():
 def agent(tmp_path, monkeypatch):
     """The claude template's agent.py, with its stores redirected at tmp_path,
     installed as the module the router reads through."""
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    path = os.path.join("fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent_recap", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

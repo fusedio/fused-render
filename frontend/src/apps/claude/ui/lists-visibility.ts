@@ -105,15 +105,15 @@ export function nextTab(
  * split pane in ONE document, so a single variable meant picking "Artifacts" in
  * one tile changed what a DIFFERENT tile showed on its next landing — and the
  * memory also survived a target change, which T's `listTab` could not. The key
- * is `agentDir + file`, the shape `useArtifacts` and the snapshots cache both
+ * is the target `file`, the shape `useArtifacts` and the snapshots cache both
  * use. `computeLists` still saves an emptied tab from being a blank panel; it
  * cannot save it from being the wrong one.
  */
 const rememberedListTabs = new Map<string, ListName>();
 
 /** The one spelling of the key, so the two accessors cannot disagree. */
-export function listTabKey(agentDir: string | null, file: string | null): string {
-  return (agentDir ?? "") + "\u0000" + (file ?? "");
+export function listTabKey(file: string | null): string {
+  return file ?? "";
 }
 
 export function rememberedTab(key: string): ListName {

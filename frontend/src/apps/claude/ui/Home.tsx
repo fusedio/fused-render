@@ -18,9 +18,6 @@ export interface HomeProps extends HomeCardProps {
   onFillDraft?(task: Task): void;
   /** Rows dim and go inert while a comment mode holds the reader (PR3). */
   listsDisabled?: boolean;
-  /** The chat's template folder: the terminal hand-off in the landing kebab,
-   *  and the `agent.py` behind the artifacts and snapshots reads below. */
-  agentDir?: string | null;
   /** T:19078 `snapInvalidate` — bumped by the chat every time a run ends, so a
    *  turn that edited the file leaves a stale checkpoint chain behind it rather
    *  than a cached one (`useSnapshots`'s third argument). */
@@ -36,7 +33,6 @@ export function Home({
   onOpenSession,
   onFillDraft,
   listsDisabled,
-  agentDir,
   snapInvalidation,
   heldKey,
   ...cardProps
@@ -55,7 +51,6 @@ export function Home({
   // reads in a stated sequence and native had fired them as independent effects
   // on one commit. `useLandingReads` is that sequence — see its module note.
   const { artifacts, snaps } = useLandingReads(
-    agentDir ?? null,
     cardProps.file,
     recent,
     snapInvalidation,
@@ -79,7 +74,6 @@ export function Home({
           <HomeCard {...cardProps} heldKey={heldKey ?? null} />
           <Lists
             file={cardProps.file}
-            agentDir={agentDir ?? null}
             recent={shown}
             artifacts={artifacts}
             snaps={snaps}

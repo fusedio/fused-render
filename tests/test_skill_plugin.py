@@ -394,7 +394,7 @@ def test_the_build_hook_discovers_the_same_skills_as_the_runtime():
 
 
 def _agent(template):
-    path = os.path.join(REPO_ROOT, "fused_render", "templates", template,
+    path = os.path.join(REPO_ROOT, "fused_render", "claude_agent",
                         "agent.py")
     spec = importlib.util.spec_from_file_location("_agent_" + template, path)
     mod = importlib.util.module_from_spec(spec)
@@ -420,6 +420,10 @@ class _HostProc:
     that wants the argv has to capture the request and rebuild it, the same
     call session_host.py's own `main()` makes."""
     pid = 4242
+
+    def wait(self, timeout=None):
+        # `_start` parks a daemon reaper thread in wait() on the host.
+        return 0
 
     class _Stdin:
         def __init__(self, seen):
@@ -548,7 +552,7 @@ def test_a_template_reads_the_root_through_appenv_only(template):
     and only the server knows the resolved answer, so re-deriving is how a build
     syncs one dir and loads another — i.e. loads nothing. The one legal route is
     the appenv reader, which returns the server's already-made decision."""
-    src = open(os.path.join(REPO_ROOT, "fused_render", "templates", template,
+    src = open(os.path.join(REPO_ROOT, "fused_render", "claude_agent",
                             "agent.py"), encoding="utf-8").read()
     assert "from appenv import skill_plugin_dir as _skill_plugin_dir" in src
     # No second spelling of the subdir name, and no home-dir arithmetic for it.
@@ -591,7 +595,7 @@ def _load_agent():
     """The claude template's agent.py as a module (it is not importable as part
     of the package — SPEC PY-15 — so it is loaded from its path, the same way
     every other test of it does)."""
-    path = os.path.join(REPO_ROOT, "fused_render", "templates", "claude", "agent.py")
+    path = os.path.join(REPO_ROOT, "fused_render", "claude_agent", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent_for_plugins", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -947,7 +951,7 @@ def test_the_claude_template_passes_the_workbench_root_to_canvases_only(
 def test_both_callers_pass_their_target_to_the_gate():
     """A caller that forgets the argument silently withholds the skills from
     every canvas session — the gate defaults to "no", so the failure is quiet."""
-    src = open(os.path.join(REPO_ROOT, "fused_render", "templates", "claude",
+    src = open(os.path.join(REPO_ROOT, "fused_render", "claude_agent",
                             "agent.py"), encoding="utf-8").read()
     assert "_plugin_argv()" not in src
     assert src.count("_plugin_argv(file)") == 2
@@ -958,7 +962,7 @@ def test_appenv_names_the_workbench_var_and_the_canvases_root():
                                "appenv.py"), encoding="utf-8").read()
     assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV in appenv
     assert "FUSED_RENDER_CANVASES_DIR" in appenv
-    src = open(os.path.join(REPO_ROOT, "fused_render", "templates", "claude",
+    src = open(os.path.join(REPO_ROOT, "fused_render", "claude_agent",
                             "agent.py"), encoding="utf-8").read()
     assert "from appenv import workbench_plugin_dir as _workbench_plugin_dir" in src
     assert "from appenv import canvases_root as _canvases_root" in src

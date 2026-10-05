@@ -3,7 +3,7 @@
 // these tests are about the mapping and the two kinds the chat adds.
 import { describe, expect, test } from "bun:test";
 
-import { AgentError, AgentNeedsInstall } from "./agent";
+import { AgentError } from "./agent";
 import {
   isUnknownRun,
   OTHER_TARGET_ERROR,
@@ -62,23 +62,6 @@ describe("the chat's own kinds", () => {
     expect(troubleFromMessage(UNKNOWN_RUN_ERROR).kind).toBe("unknown-run");
   });
 
-  test("a venv that is not built is `needs-install`, never the installer flow", () => {
-    const err = new AgentNeedsInstall(
-      {
-        key: "k",
-        requirements: ["pandas", "numpy"],
-        py: "/p/app.py",
-        project: "/p",
-        name: "proj",
-        pyproject: "/p/pyproject.toml",
-      },
-      undefined,
-    );
-    const t = troubleFromError(err);
-    expect(t.kind).toBe("needs-install");
-    expect(t.detail).toBe("pandas\nnumpy");
-  });
-
   test("an AgentError carries its traceback as the detail", () => {
     const t = troubleFromError(new AgentError({ message: "boom", traceback: "Traceback…" }));
     expect(t.kind).toBe("engine");
@@ -99,7 +82,6 @@ describe("rendering + copy blocks", () => {
     expect(platformKindOf("limit")).toBe("limit");
     expect(platformKindOf("engine")).toBe("raw");
     expect(platformKindOf("unknown-run")).toBe("raw");
-    expect(platformKindOf("needs-install")).toBe("raw");
   });
 
   test("`what` reads as the template's own sentence (T:13692)", () => {

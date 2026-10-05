@@ -410,7 +410,7 @@ our own Claude template" from "any transcript this machine happens to have."
 
 Every Claude Code transcript's `type: "user"` records carry an `entrypoint`
 field — `"cli"` for an interactive terminal, `"sdk-cli"` for a headless or
-programmatic spawn, which is what `templates/claude/agent.py`'s own spawn
+programmatic spawn, which is what `claude_agent/agent.py`'s own spawn
 produces. That is the entire signal available: there is no field that says
 "opened from fused-render" directly. An unrelated SDK-driven session (some
 other tool's own headless Claude spawn) also reports `"sdk-cli"`, so this

@@ -104,9 +104,9 @@ export interface PaneSideState {
 const OPEN_UNCHOSEN: PaneSideState = { open: true, mode: null };
 
 // The folder-view half of `lib/preview-side.ts`'s `unchosenOrHidden` — same
-// rule, same store (`lib/side-hidden-store.ts`), same reason it is a function
-// and not a constant: only a SILENT `_side` may fall to the session's hidden
-// flag, never an explicit one (`off`, a named companion, or the garbage/legacy
+// rule, same store (`lib/side-hidden-store.ts`, persisted across reloads), same
+// reason it is a function and not a constant: only a SILENT `_side` may fall to
+// the stored hidden flag, never an explicit one (`off`, a named companion, or the garbage/legacy
 // values that already resolve to "no choice" below).
 function unchosenOrHidden(hidden: boolean): PaneSideState {
   return hidden ? { open: false, mode: null } : OPEN_UNCHOSEN;
@@ -166,6 +166,12 @@ export function parsePaneSide(raw: string | null, hidden = false): PaneSideState
     : unchosenOrHidden(hidden);
 }
 
+// WHAT IS REMEMBERED BEYOND THE URL (owner's request): the open/closed flag is
+// PERSISTED across reloads (`lib/side-hidden-store.ts`), as is the width
+// (`lib/side-store.ts`); the selected tab (`lib/side-tab-store.ts`) lives in
+// memory for the document and is cleared by a reload — all three shared with the
+// file sidebar. `lib/preview-side.ts`'s header has the full account.
+//
 // What to write back — null means DELETE the param.
 //
 // A shut pane records only that it is shut, not what it last showed: the mode it
@@ -260,7 +266,10 @@ export interface PaneSideEntries {
 // arrow-keying between file rows afterwards never re-enters it. The one visible case
 // is a `?sel=` deep link straight to a file row, which now shows the skeleton for
 // that one window instead of the file's preview.
-export function paneSideList(entries: PaneSideEntries): PaneSide[] {
+export function paneSideList(
+  entries: PaneSideEntries,
+  remembered: string | null = null
+): PaneSide[] {
   // **THE LEADING COMPANION IS ALSO A WAIT, not just an offer** (D326). `claude`
   // leads this order, and `activePaneSide` resolves an absent `_side` to
   // `offered[0]` on every render — so a list that offered Git while Claude's probe
@@ -274,6 +283,12 @@ export function paneSideList(entries: PaneSideEntries): PaneSide[] {
   // A DENIAL is not a wait: once Claude's probe has answered no, Git leads whatever
   // is left, and that is a decision the pane can act on.
   if (entries.claudePending) return [];
+  // **A PENDING REMEMBERED TAB IS ALSO A WAIT** (`lib/side-tab-store.ts`; the caller
+  // passes it only where `_side` names no mode). Offering the default meanwhile
+  // would put the pane on it and then remount — respawning `agent.py` — when the
+  // remembered companion's verdict lands. Only a remembered mode known NOT to be
+  // on offer (answered, no entry) falls to the default below.
+  if (remembered === "git" && entries.gitPending && !entries.git) return [];
   const companions: PaneSide[] = [];
   if (entries.claude) companions.push("claude");
   if (entries.git) companions.push("git");
@@ -384,14 +399,32 @@ export function paneSideIconEntry(
 // rendering it is precisely the bug — a chat under a pill reading "Preview" — so
 // this function cannot be the only guard, and the caller's check is what makes it
 // safe (see Listing's `paneUndecided`).
-export function activePaneSide(offered: PaneSide[], want: PaneSideChoice | null): PaneSide {
+//
+// **THE REMEMBERED TAB** (`lib/side-tab-store.ts`, memory only, shared with the
+// file sidebar) slots in where the request names NO mode (`want` null — an absent
+// `_side`): the last tab the user explicitly picked this document leads over the
+// first on offer, provided it IS on offer. A remembered companion whose probe is
+// still out is not "absent": `paneSideList(entries, remembered)` answers EMPTY
+// (undecided) for it, so the pane holds its skeleton instead of falling back to
+// the first on offer and swapping when the verdict lands. Only a remembered mode
+// known not to be offered reaches the fallback here. A named `want` always wins, including one that is not
+// offered (which lands on the first, as before — the memory is for silence).
+export function activePaneSide(
+  offered: PaneSide[],
+  want: PaneSideChoice | null,
+  remembered: string | null = null
+): PaneSide {
   if (want !== null && offered.includes(want)) return want;
+  if (want === null) {
+    const r = offered.find((m) => m === remembered && m !== PANE_SIDE_FALLBACK);
+    if (r) return r;
+  }
   return offered[0] ?? PANE_SIDE_FALLBACK;
 }
 
 // The folder half of `lib/preview-side.ts`'s `sideReopenedByUrl` — same D495
 // correction, same reasoning: a `?_side=<companion>` deep link that OPENS the
-// pane wins over the session's hidden flag (`parsePaneSide`'s explicit branch
+// pane wins over the stored hidden flag (`parsePaneSide`'s explicit branch
 // never consults `hidden`), and that observable "the pane is open" has to
 // clear the flag too, or the very next silent-URL hop shuts it again. `hidden`
 // is the flag's value from BEFORE this mount; the answer is yes only when the

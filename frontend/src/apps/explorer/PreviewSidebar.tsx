@@ -67,10 +67,10 @@ import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
 // reached through the portal — is the only container this ever needs to find.
 const SPLIT_SEL = ".stat-split";
 
-// The one companion whose document is a CHAT, and so the one that reports when
-// its transcript is painted (`data-chat-ready`, platform/ui/ChatFrame). Named
-// here rather than compared inline so the gate below reads as a fact about that
-// mode and not as a string that happened to match.
+// The one companion that is a CHAT rather than a framed document — mounted by
+// the caller (`chat`). Named here rather than compared inline so the branch
+// below reads as a fact about that mode and not as a string that happened to
+// match.
 const CHAT_MODE = "claude";
 
 // The page-level split's right-hand slot, rendered by StatView beside the left
@@ -111,7 +111,6 @@ export interface SidebarEntry {
 export default function PreviewSidebar({
   entries,
   active,
-  frameKey = active,
   src,
   onSelect,
   onClose,
@@ -123,27 +122,20 @@ export default function PreviewSidebar({
   // The one being shown — always one of the SELECTABLE entries, never a disabled
   // placeholder (Preview resolves `_side` against the short list; lib/preview-side).
   active: string;
-  // What actually keys the iframe below, defaulting to `active` (an ordinary
-  // mode switch is already the right moment for a fresh document). Distinct
-  // from `active` for exactly one caller's one case: the claude companion,
-  // where a second "Fix with AI" ask can arrive while claude is ALREADY
-  // showing — the mode never changes, so `active` alone never would force the
-  // remount that lets the new document's boot pull the fresh prompt
-  // (Preview.tsx's `claudeFrameKey`/`claudeAskInstance`).
-  frameKey?: string;
-  // Its /render URL, or null while its gate is still resolving.
+  // Its /render URL, or null while its gate is still resolving. For the chat
+  // there is no URL: any non-null answer (Preview.tsx sends "") means its gate
+  // has resolved and `chat` may show.
   src: string | null;
   onSelect: (mode: string) => void;
   // Clears `_side`. The title bar's opener is hidden while this column is up
   // (SideChrome writes the split down), so this is the only way out of it.
   onClose: () => void;
   /**
-   * THE CHAT COMPANION, mounted by the caller. It is the one companion that is
-   * no longer necessarily an iframe (`apps/claude/ChatMount` decides on the
-   * flag), and the caller is the only place that knows the rest of what the
-   * native chat needs — the target, the params source, the pending "Fix with
-   * AI" ask. This column still owns WHERE it goes and its remount `key`, which
-   * is the whole of what this component ever did for it.
+   * THE CHAT COMPANION, mounted by the caller (`apps/claude/ChatMount`). It
+   * is the one companion that is not an iframe, and the caller is the only
+   * place that knows what the chat needs — the target, the params source, the
+   * pending "Fix with AI" ask, its remount `key`. This column owns WHERE it
+   * goes.
    */
   chat?: ReactNode;
 }) {
@@ -348,27 +340,18 @@ export default function PreviewSidebar({
           /* Keyed on the mode, so a switch replaces the document outright. No
              held-frame cross-fade here (unlike the content pane): the sidebar is
              a narrow column of chrome-heavy tools, and the two of them look
-             nothing alike — there is no illusion of continuity to protect.
-
-             THE CLAUDE COMPANION IS THE ONE MODE THAT COVERS ITS OWN BOOT
-             (platform/ui/ChatFrame): it is the only one of the three that
-             restores a transcript before it has anything to show, so it is the
-             only one whose cold document was a visible black pane. The cover
-             waits on `data-chat-ready`, which only the chat template stamps —
-             the gate is the MODE and not the 8s fallback, because a `git` or
-             `mcp` column revealed by a timeout would be a whole new bug in
-             exchange for a fix nobody asked for there. The key stays on the
-             outer component, so a mode switch still replaces the document. */
+             nothing alike — there is no illusion of continuity to protect. */
           active === CHAT_MODE ? (
             // Rendered as GIVEN, with no box of its own: the caller's
-            // `ChatMount` carries both the remount `key` and the
-            // `.preview-side-frame` class, so the flag-off path is the exact
-            // iframe this branch used to build and the flag-on path fills the
-            // same parent (`.chat-mount`, apps/claude/styles/chat.css).
+            // `ChatMount` carries the remount `key` and fills this parent
+            // (`.chat-mount`, apps/claude/styles/chat.css), its own skeleton
+            // covering its boot.
             chat
           ) : (
             <iframe
-              key={frameKey}
+              // Keyed on the mode: a switch is the right moment for a fresh
+              // document.
+              key={active}
               className="preview-side-frame"
               src={src}
               title={modeTitle(active)}

@@ -74,7 +74,7 @@ SPAWN_GRACE = 10.0
 # zero; counting neither let two ungated sends into one free folder. A token
 # is the receipt: admit hands it to the client, the client hands it back on
 # the run request, and `consume_claim` removing it is what tells the gate
-# "look, don't claim" — see `routers/run.py::_folder_busy`. Capped, because an
+# "look, don't claim" — see `claude_agent/gate.py::_folder_busy`. Capped, because an
 # admission a page never sent (a stale card, a reload) leaves an unconsumed
 # token behind for ever otherwise.
 CLAIM_CAP = 16
@@ -1173,7 +1173,7 @@ class QueueManager:
         Admit is the one caller: the token travels in its answer, the client
         echoes it back on the run request as `queue_claim`, and
         `consume_claim` removing it there is what tells
-        `routers/run.py::_folder_busy` this send is the one already counted,
+        `claude_agent/gate.py::_folder_busy` this send is the one already counted,
         not a second claim to make. A SEPARATE METHOD rather than widening
         `claim_took`'s return, because that tuple's shape is `schedule.py`'s
         contract (see its docstring) and a second element on every call site
@@ -1275,7 +1275,34 @@ class QueueManager:
             # job.
             if owner is not None:
                 owner["consumed"] = True
+                # WHICH token was spent, beside the bare mark (D1310): a start
+                # that 504'd has to give back the placeholder its own admission
+                # minted, and `consumed` alone cannot say whose spend it was.
+                # Transient like the mark (`_owner_rec` never loads it).
+                spent = owner.setdefault("spent", [])
+                spent.append(text_token)
+                del spent[:-CLAIM_CAP]
             return True
+
+    def release_spent_placeholder(self, folder: str, token: str) -> bool:
+        """Free `folder` when its owner is still the `admit:` placeholder whose
+        claim `token` was spent on — the admission of a `start` that then
+        timed out (D1310). Without this the placeholder holds the folder until
+        `PLACEHOLDER_TTL` against the user's own retry. True when released;
+        False for anything else (a real owner, a different admission's
+        placeholder, an unspent token), which is left exactly as it is."""
+        text_token = _text(token)
+        if not folder or not text_token:
+            return False
+        with self._txn():
+            rec = self._state["folders"].get(folder)
+            owner = rec["owner"] if rec else None
+            if (owner is None or not _is_placeholder(_text(owner.get("task")))
+                    or text_token not in (owner.get("spent") or [])):
+                return False
+            task = owner["task"]
+        self.remove(task)
+        return True
 
     def restore_claim(self, folder: str, token: str, run_id: str = "",
                       session_id: str = "") -> bool:
@@ -1354,7 +1381,7 @@ class QueueManager:
         `consume_claim` marks the owner the instant that happens
         (`owner["consumed"]`); this refuses (logs, does nothing) rather than
         replace a live, unconsumed placeholder on a guess. The run gate
-        (`routers/run.py::_folder_busy`) is the real fix — `is_free` no longer
+        (`claude_agent/gate.py::_folder_busy`) is the real fix — `is_free` no longer
         calls a live placeholder free to a stranger, so that send is refused
         before it ever reaches a spawn — this is the backstop for a caller
         that reaches `started` some other way. An EXPIRED placeholder still

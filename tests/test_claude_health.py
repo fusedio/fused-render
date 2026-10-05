@@ -154,7 +154,7 @@ def test_path_beats_the_candidate_list(tmp_path, monkeypatch):
     # against PATHEXT (.COM;.EXE;...) and returns it with THAT extension's
     # case, e.g. "claude.EXE", regardless of the actual on-disk filename's
     # case ("claude.exe" here) — a case difference on a filesystem where it is
-    # not a different file. Same idiom as templates/claude/agent.py's
+    # not a different file. Same idiom as claude_agent/agent.py's
     # containment check.
     assert os.path.normcase(resolved) == os.path.normcase(bin_path)
     assert source == "path"

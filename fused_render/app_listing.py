@@ -410,20 +410,78 @@ def workspace_apps(root: str) -> list[dict]:
     isn't listable (no workspace yet, on a first run) — a listing degrades, it
     never fails. Names are sorted at every level, so a partial result is stable.
     """
+    return _walk_workspace(root, app_dict)
+
+
+def _walk_workspace(root: str, make: "RowFactory") -> list[dict]:
     apps: list[dict] = []
     guard = MountGuard()
     if guard.blocks(root):
         # A workspace pointed at a mount is not walked at all, rather than
         # walked carefully: see the guard's own docstring.
         return apps
-    _walk_apps(root, root, 1, apps, guard)
+    _walk_apps(root, root, 1, apps, guard, make)
     return apps
 
 
+# What the walk builds for each app it finds: `(path, name, tag, entry_html)`
+# to one listing dict. `app_dict` is the exhaustive shape; `light_app_dict`
+# below is the paged listing's discovery row.
+RowFactory = "Callable[[str, str, str, str | None], dict]"
+
+
+def light_app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
+    """The paged listing's DISCOVERY row: everything the server needs to
+    filter, sort and draw the chips for an app, and nothing a card needs only
+    once it is on screen.
+
+    Filter and chips need `tag` and `category`; search needs `name`, `title`,
+    `tag`, `category`; the sort needs `updated_at` (the recents store supplies
+    `opened_at` to the caller). `icon`/`icon_mtime`/`preview_image` are the
+    card's own concern and are added by `hydrate_app` for the page slice
+    only. Measured on a 157-app workspace the two halves are both a few
+    milliseconds warm, so the split buys little by itself — the point of the
+    light row is that it is what the snapshot (routers/apps.py) HOLDS, and a
+    snapshot of card-only fields would go stale for nothing.
+    """
+    return {
+        "name": name,
+        "tag": tag,
+        "path": os.path.realpath(path),  # see app_dict for why realpath
+        "entry": entry_html,
+        "entry_html": entry_html,
+        "category": app_category(path),
+        "title": entry_title(entry_html) if entry_html else None,
+        "updated_at": dir_updated_at(path),
+    }
+
+
+def hydrate_app(row: dict) -> dict:
+    """Complete a `light_app_dict` row into the full `app_dict` shape, in
+    place, for a card that is about to be drawn. A row that already carries
+    an `icon` key (a linked folder's or an exported file's, both built whole
+    by their own modules) is returned untouched."""
+    if "icon" in row:
+        return row
+    path = row["path"]
+    icon = app_icon(path)
+    row["icon"] = icon["icon"] if icon else None
+    row["icon_mtime"] = icon["mtime"] if icon else None
+    row["preview_image"] = app_preview_image(path)
+    return row
+
+
+def discover_workspace_apps(root: str) -> list[dict]:
+    """`workspace_apps` with `light_app_dict` rows — the same walk, the same
+    rules, the discovery half of the paged listing."""
+    return _walk_workspace(root, light_app_dict)
+
+
 def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict],
-               guard: MountGuard) -> None:
+               guard: MountGuard, make: "RowFactory" = app_dict) -> None:
     """Collect the apps among `dir_path`'s children, which sit at `depth`, and
-    recurse where the rules in `workspace_apps` allow."""
+    recurse where the rules in `workspace_apps` allow. `make` builds each
+    emitted row (see RowFactory)."""
     try:
         names = os.listdir(dir_path)
     except OSError:
@@ -462,7 +520,7 @@ def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict],
         # shelf the apps sit on, and it is still WALKED (below, depth
         # permitting) — that is how the apps under it are found.
         if entry_html is not None:
-            apps.append(app_dict(path, name, tag, entry_html))
+            apps.append(make(path, name, tag, entry_html))
         if depth >= MAX_APP_DEPTH:
             continue  # the walk never looks past depth 3
         # Descent is a separate question from emission. A symlink and a package
@@ -471,7 +529,7 @@ def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict],
         if is_link or is_package:
             continue
         if depth == 1 or entry_html is None:
-            _walk_apps(path, root, depth + 1, apps, guard)
+            _walk_apps(path, root, depth + 1, apps, guard, make)
 
 
 def is_workspace_app_entry(fs_path: str, root: str) -> bool:
