@@ -1822,6 +1822,23 @@ def test_a_cursor_outside_the_filter_still_stops_the_walk(store):
     assert [r["call_id"] for r in got["records"]] == ["mine-1"]
 
 
+def test_a_page_id_with_a_scheme_is_matched_as_written(store, monkeypatch, capsys):
+    """`--page fused-render://claude` (the native chat's X-Fused-Page, D1310) is
+    an id, not a path: abspath would glue it to the cwd and match nothing."""
+    from fused_render import calls as call_log
+
+    seen = []
+    real = call_log.query
+
+    def spy(*a, **kw):
+        seen.append(kw.get("page"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(call_log, "query", spy)
+    run_cli(monkeypatch, capsys, "--page", "fused-render://claude", "--since", "all")
+    assert seen and set(seen) == {"fused-render://claude"}, seen
+
+
 def test_the_cli_omits_the_cursor_line_when_there_is_none(store, monkeypatch, capsys):
     """`cursor: None` invites passing it back verbatim."""
     os.makedirs(store, exist_ok=True)

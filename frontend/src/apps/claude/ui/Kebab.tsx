@@ -230,7 +230,6 @@ export function knownTaskId(sessionId: string): string | undefined {
 }
 
 export interface KebabProps {
-  agentDir: string | null;
   file: string | null;
   sessionId: string;
   /** The trigger, so the erase dialog can put focus back where it came from on
@@ -286,7 +285,6 @@ export interface KebabProps {
 }
 
 export function Kebab({
-  agentDir,
   file,
   sessionId,
   btnRef,
@@ -426,8 +424,8 @@ export function Kebab({
   const restingArchive = filed ? "Unarchive this task" : "Archive this task";
 
   const fetchTerminalCommand = useCallback(
-    (): Promise<string> => fetchAgentTerminalCommand(agentDir!, file ?? "", sessionId),
-    [agentDir, file, sessionId],
+    (): Promise<string> => fetchAgentTerminalCommand(file ?? "", sessionId),
+    [file, sessionId],
   );
 
   /** THE PRIMARY ITEM. Where the status-bar drawer exists (canRunInTerminal()),
@@ -439,7 +437,6 @@ export function Kebab({
    *  drawer already opened for a different item elsewhere — the row still has
    *  to tell the reader something happened. */
   const onTerminal = useCallback(async () => {
-    if (!agentDir) return;
     busy.current = true;
     try {
       const command = await fetchTerminalCommand();
@@ -469,14 +466,13 @@ export function Kebab({
         );
       }, 2500);
     }
-  }, [agentDir, fetchTerminalCommand, sessionId, later]);
+  }, [fetchTerminalCommand, sessionId, later]);
 
   /** THE SECONDARY ITEM, only offered where the primary one no longer copies —
    *  a reader with their own terminal should not have to fight the drawer for
    *  the string. Hidden (not shown at all) where canRunInTerminal() is false,
    *  because there the primary item already does exactly this. */
   const onCopyTerminalCommand = useCallback(async () => {
-    if (!agentDir) return;
     busy.current = true;
     try {
       const command = await fetchTerminalCommand();
@@ -495,7 +491,7 @@ export function Kebab({
         setCopyLabel("Copy command");
       }, 2500);
     }
-  }, [agentDir, fetchTerminalCommand, later]);
+  }, [fetchTerminalCommand, later]);
 
   /**
    * THE MENU GOES FIRST (R2-8). This used to hold the dropdown open through the

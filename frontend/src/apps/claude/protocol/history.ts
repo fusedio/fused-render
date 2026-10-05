@@ -40,7 +40,6 @@
 //     carries as a message `anchor`, which is what makes `?msg=` resolvable
 //     (T:18030). Optional: a payload without it simply cannot be anchored to.
 import { getJson } from "@platform/lib/api";
-import { runAgent } from "./agent";
 import type { Turn } from "./controller-api";
 import { troubleFromMessage } from "./trouble";
 import type { HistoryResponse, HistoryTurn, SessionRow } from "./types";
@@ -193,16 +192,6 @@ export function paneSlashes(path: string): string {
 export { ANN_TAG };
 
 /**
- * The transcript restore, in process (owner E2E R1, F5). `/api/run` executes
- * agent.py in a fresh Python subprocess per call — several hundred ms of
- * interpreter start-up in front of a 30 ms read — and that spawn was most of
- * the wait between opening a chat and seeing it. `/api/claude-sessions/history`
- * runs the same `_history` on the server's own loaded agent module. Anything
- * but a 200 (an older server, a module that did not load) falls back to the
- * `/api/run` road, byte-for-byte the same answer, so the page never loses the
- * conversation to the optimisation.
- */
-/**
  * THE LAST HISTORY ANSWER PER CONVERSATION, page-wide (controller-api
  * `historyCache`). Keyed by target + session because the same session id can
  * exist under several project dirs with divergent content (`_history`'s own
@@ -240,20 +229,15 @@ export const sharedHistoryCache = {
   },
 };
 
+/**
+ * The transcript restore (owner E2E R1, F5): `/api/claude-sessions/history`,
+ * the server's own GET over the agent's `_history`. A failure throws; the
+ * callers already treat a thrown restore as a failed one.
+ */
 export async function fetchHistory(
-  agentDir: string,
   file: string,
   sessionId: string,
 ): Promise<HistoryResponse & { error?: string }> {
-  try {
-    const q = new URLSearchParams({ file, session_id: sessionId, native: "1" });
-    return await getJson<HistoryResponse>(`/api/claude-sessions/history?${q}`);
-  } catch {
-    return (await runAgent(
-      agentDir,
-      "history",
-      { file, session_id: sessionId, native: "1" },
-      { key: null },
-    )) as HistoryResponse & { error?: string };
-  }
+  const q = new URLSearchParams({ file, session_id: sessionId, native: "1" });
+  return await getJson<HistoryResponse>(`/api/claude-sessions/history?${q}`);
 }

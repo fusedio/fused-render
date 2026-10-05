@@ -39,7 +39,7 @@ const {
   shotsDirSeen,
 } = await import("./dir");
 
-/** One `/api/run` answer per call, so the cache's own behaviour is measurable. */
+/** One `/api/claude/agent` answer per call, so the cache's own behaviour is measurable. */
 function stubRun(answers: unknown[]): { calls: number } {
   const state = { calls: 0 };
   Object.assign(globalThis, {
@@ -106,25 +106,25 @@ describe("shotBase / shotDirOf", () => {
 });
 
 describe("shotsDir", () => {
-  test("one round trip per agent dir, and readable synchronously after (T:9019)", async () => {
+  test("one round trip per page, and readable synchronously after (T:9019)", async () => {
     resetShotsDirForTests();
-    const run = stubRun([{ ok: true, result: { dir: "/tmp/shots" } }]);
-    expect(shotsDirSeen("/tpl")).toBe("");
-    expect(await shotsDir("/tpl")).toBe("/tmp/shots");
-    expect(await shotsDir("/tpl")).toBe("/tmp/shots");
+    const run = stubRun([{ dir: "/tmp/shots" }]);
+    expect(shotsDirSeen()).toBe("");
+    expect(await shotsDir()).toBe("/tmp/shots");
+    expect(await shotsDir()).toBe("/tmp/shots");
     expect(run.calls).toBe(1);
-    expect(shotsDirSeen("/tpl")).toBe("/tmp/shots");
+    expect(shotsDirSeen()).toBe("/tmp/shots");
   });
 
   test("a failure is NOT cached: the next attach tries again (T:9034)", async () => {
     resetShotsDirForTests();
     const run = stubRun([
-      { ok: true, result: { error: "nope" } },
-      { ok: true, result: { dir: "/tmp/shots" } },
+      { error: "nope" },
+      { dir: "/tmp/shots" },
     ]);
-    await expect(shotsDir("/tpl")).rejects.toThrow("nope");
-    expect(shotsDirSeen("/tpl")).toBe("");
-    expect(await shotsDir("/tpl")).toBe("/tmp/shots");
+    await expect(shotsDir()).rejects.toThrow("nope");
+    expect(shotsDirSeen()).toBe("");
+    expect(await shotsDir()).toBe("/tmp/shots");
     expect(run.calls).toBe(2);
   });
 });

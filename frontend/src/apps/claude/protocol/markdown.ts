@@ -165,25 +165,28 @@ export function enhanceCodeBlocks(root: ParentNode, opts: { cwd?: string | null 
       }
     }
   });
+  // Build the controls in the document the nodes live in: a plan popup
+  // portals into the TOP document while this module runs in an iframe.
+  const doc = (root as Node).ownerDocument ?? document;
   root.querySelectorAll<HTMLElement>("pre").forEach((pre) => {
     if (pre.querySelector(".copywrap")) return;
     // Read BEFORE the buttons join the tree, or the label rides along.
     const text = copyText(pre);
-    const wrap = document.createElement("span");
+    const wrap = doc.createElement("span");
     wrap.className = "copywrap";
     // The model's own suggestion, typed rather than run outright: `execute:
     // false` leaves it sitting at the prompt for the reader to look over and
     // press Enter on, the same review step Copy-then-paste always gave them.
     const runCommand = canRunInTerminal() ? shellRunCommand(pre, text) : null;
     if (runCommand !== null) {
-      const r = document.createElement("button");
+      const r = doc.createElement("button");
       r.className = "runbtn";
       r.textContent = "run";
       r.type = "button";
       r.onclick = () => openTerminal({ cwd: opts.cwd ?? undefined, command: runCommand, execute: false });
       wrap.appendChild(r);
     }
-    const b = document.createElement("button");
+    const b = doc.createElement("button");
     b.className = "copybtn";
     b.textContent = "copy";
     b.type = "button";

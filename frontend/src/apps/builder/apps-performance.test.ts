@@ -15,36 +15,59 @@ const apps = () => readFileSync(join(import.meta.dir, "Apps.tsx"), "utf8");
 const card = () =>
   readFileSync(join(import.meta.dir, "../../platform/ui/AppPreviewCard.tsx"), "utf8");
 
-test("the hub draws the recent row while the exhaustive catalog loads", () => {
+test("the hub asks the server for one page, never the whole catalog", () => {
   const src = apps();
-  expect(src).toContain("getHomeApps(FAST_ROW)");
-  expect(src).toContain('status: "partial"');
-  // The fast row must never be awaited in front of the catalog: for a user with
-  // a thin recents store the server answers it with the same workspace walk.
-  expect(src).not.toMatch(/await\s+getHomeApps/);
+  expect(src).toContain("getAppsPage({ offset: 0, limit");
+  expect(src).toContain("const PAGE_SIZE = 24;");
+  // The order is the server's: pages are appended as they arrive, and a
+  // client-side sort would interleave page 2 into page 1 under the reader.
+  expect(src).not.toContain("sortApps(");
+  expect(src).not.toContain("getApps()");
 });
 
-test("the catalog is what the chips, the count and the empty state speak for", () => {
+test("the chips, the count and the empty state speak for the whole catalog", () => {
   const src = apps();
-  expect(src).toContain('const all = apps.status === "ok" ? apps.data : [];');
-  expect(src).toContain('const cards = apps.status === "loading" ? [] : apps.data;');
-  // A "no apps match" verdict during the partial phase would be a claim about
-  // a catalog that has not arrived.
-  expect(src).toContain('apps.status === "partial" ? null : (');
+  // Chip rows ride on every page from the server rather than being derived
+  // from the cards the client holds, which would lose options as pages came.
+  expect(src).toContain("const tags = page?.tags ?? lastChips.tags;");
+  expect(src).toContain("orderCategories(page?.categories ?? lastChips.categories)");
+  // The count is the FILTER's, never the page's.
+  expect(src).toContain("`${page.total} of ${page.total_all} apps`");
 });
 
-test("a failed catalog fetch keeps the partial grid instead of replacing it", () => {
+test("a filter change drops the old pages during render, not after paint", () => {
   const src = apps();
-  expect(src).toContain("(e: Error) => alive && setError(e.message)");
-  // The error is its own state, so the grid's phase type has no error member to
+  // setState-during-render: an effect would commit one frame of the old
+  // list's pages under the new filter first.
+  expect(src).toContain("if (loaded.key !== filterKey) {");
+  expect(src).toContain("setLoaded({ key: filterKey, page: firstPages.get(filterKey) ?? null });");
+});
+
+test("a failed page fetch keeps the grid instead of replacing it", () => {
+  const src = apps();
+  expect(src).toContain("if (!ctl.signal.aborted) setError(e.message);");
+  // The error is its own state, so the page state has no error member to
   // blank the cards with.
   expect(src).not.toContain('status: "error"');
 });
 
-test("a revisit paints from the previous catalog instead of a skeleton", () => {
+test("a revisit paints from the previous first page instead of a skeleton", () => {
   const src = apps();
-  expect(src).toContain("let catalogCache: AppInfo[] | null = null;");
-  expect(src).toContain('catalogCache ? { status: "ok", data: catalogCache }');
+  expect(src).toContain("const firstPages = new Map<string, AppsPage>();");
+  expect(src).toContain("page: firstPages.get(filterKey) ?? null,");
+});
+
+test("the next page is requested once and appended in server order", () => {
+  const src = apps();
+  expect(src).toContain("if (!page || !hasMore || moreCtl.current) return;");
+  // A failed next page stops the auto-load; the pill becomes the retry.
+  expect(src).toContain("if (!hasMore || moreFailed || !el) return;");
+  expect(src).toContain("apps: [...cur.apps, ...res.apps]");
+  // A page-1 request (filter change or refetch) aborts an in-flight next
+  // page at its source: an offset check alone passes when a refetch asked for
+  // the same count, and would append a page of the old snapshot.
+  expect(src).toContain("moreCtl.current?.abort();");
+  expect(src).toContain("cur.apps.length !== res.offset");
 });
 
 test("preview cards rank their queued start by being on screen", () => {
@@ -68,15 +91,4 @@ test("the on-screen rank costs no render", () => {
   expect(src).toContain("const visible = useRef(false);");
   expect(src).toContain("const isVisible = useCallback(() => visible.current, []);");
   expect(src).not.toContain("setVisible");
-});
-
-// The head start is for a skeleton, not for a grid that is already drawn: on a
-// thin recents store /api/apps/home runs the same workspace walk as the
-// catalog, so a revisit or a `nonce` refetch would pay it twice for an answer
-// the setApps guard discards.
-test("the fast row is skipped once a full catalog is on screen", () => {
-  const src = apps();
-  expect(src).toContain("const cold = useRef(catalogCache === null);");
-  expect(src).toContain("if (cold.current) {");
-  expect(src).toContain("cold.current = false;");
 });

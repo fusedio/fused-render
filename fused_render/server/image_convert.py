@@ -162,6 +162,44 @@ def sips_to_png(path: str, out_dir: str | None = None) -> str | None:
     return None
 
 
+#: The most pixels this ladder will DECODE (D1310). It runs inside the server
+#: now, not a throwaway child, so a decoded picture is server RSS: Pillow's own
+#: `MAX_IMAGE_PIXELS` (~89 MP) only WARNS up to twice that, and a 170 MP TIFF
+#: is ~0.5 GB of RGB before the first resize. Measured on the size actually
+#: decoded, so a big JPEG that `draft()` shrinks at decode time still converts.
+MAX_DECODE_PIXELS = 80_000_000
+
+
+class _TooLarge(Exception):
+    """A picture over `MAX_DECODE_PIXELS`, refused before a pixel is decoded."""
+
+
+def open_bounded(Image, src: str):
+    """`Image.open(src)` + `load()`, bounded: returns `(img, (w, h))`, the size
+    being the SOURCE's, before any draft.
+
+    `draft()` first: for a JPEG it asks libjpeg to decode at 1/2, 1/4 or 1/8
+    scale (DCT scaling, nearly free), toward twice the fitted size, which is
+    the target and reducing gap `Image.thumbnail` itself picks on an unloaded
+    image, so the LANCZOS pass after it still has headroom. Every other format
+    ignores it. Then the pixel ceiling on what will actually be decoded.
+    Mirrored in the other ladder (test_image_convert_parity pins the bytes)."""
+    img = Image.open(src)
+    source = img.size
+    w, h = source
+    if w and h and max(w, h) > PNG_EDGE:
+        r = PNG_EDGE / max(w, h)
+        try:
+            img.draft(None, (max(1, round(w * r)) * 2, max(1, round(h * r)) * 2))
+        except Exception:
+            pass
+    dw, dh = img.size
+    if dw * dh > MAX_DECODE_PIXELS:
+        raise _TooLarge("%dx%d is too large to convert" % (w, h))
+    img.load()
+    return img, source
+
+
 def transcode(path: str, dest_base: str) -> dict:
     """Write a PNG (or JPEG) copy of the picture at `path` to `dest_base` + the
     extension the format ends up being, and report it.
@@ -192,15 +230,22 @@ def transcode(path: str, dest_base: str) -> dict:
         tmp = None
         try:
             try:
-                img = Image.open(path)
-                img.load()
+                img, source = open_bounded(Image, path)
+            except _TooLarge as big:
+                return {"error": str(big)}
+            except Image.DecompressionBombError as big:
+                # Over twice Pillow's own limit: refused at open. Not a format
+                # problem, so the OS decoder below would only make a bigger file.
+                return {"error": str(big)}
             except Exception as first:
                 # HEIC without pillow-heif lands here.
                 tmp = sips_to_png(path, os.path.dirname(dest_base) or None)
                 if tmp is None:
                     return {"error": "could not decode: %s" % first}
-                img = Image.open(tmp)
-                img.load()
+                try:
+                    img, source = open_bounded(Image, tmp)
+                except (_TooLarge, Image.DecompressionBombError) as big:
+                    return {"error": str(big)}
             # A multi-frame TIFF (a fax, a scanned stack) or an animated GIF has
             # one frame the user means by "the picture", and it is the first.
             try:
@@ -208,7 +253,7 @@ def transcode(path: str, dest_base: str) -> dict:
                     img.seek(0)
             except Exception:
                 pass
-            source_w, source_h = img.size
+            source_w, source_h = source
             if not source_w or not source_h:
                 return {"error": "the picture has no pixels"}
             # Alpha is kept where it exists (a diagram with a transparent

@@ -426,8 +426,10 @@ def _plan_envinstall(plan: _Plan) -> None:
 
 
 def _claude_runs_root() -> str:
-    """Mirror of `templates/claude/agent.py::_runs_root` — that module imports
-    template-local siblings by path and cannot be imported from here."""
+    """Mirror of `claude_agent/agent.py::_runs_root`. A mirror rather than an
+    import on purpose: the diagnostics bundle must still collect the runs'
+    logs when the agent module itself will not import, which is one of the
+    failures a bundle exists to explain."""
     geteuid = getattr(os, "geteuid", None)
     suffix = "-%d" % geteuid() if geteuid is not None else ""
     return os.path.join(tempfile.gettempdir(), "fused_render_claude" + suffix, "runs")
@@ -618,8 +620,7 @@ def _run(argv: list[str], timeout: float = CMD_TIMEOUT_S) -> str:
     """One command's output as a text section; failure is described inline."""
     head = "$ " + " ".join(argv) + "\n"
     try:
-        r = subprocess.run(argv, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace",
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=timeout, check=False)
     except FileNotFoundError:
         return head + "(not found)\n"
@@ -655,8 +656,7 @@ def _ps_text() -> str | None:
         return None
     try:
         r = subprocess.run(["ps", "-axo", "pid,ppid,user,%cpu,%mem,rss,lstart,command"],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace",
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=CMD_TIMEOUT_S, check=False)
     except (OSError, subprocess.SubprocessError) as e:
         return f"ps failed: {e}\n"
@@ -779,8 +779,7 @@ def _machine() -> dict:
     if sys.platform == "darwin":
         try:
             r = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
-                               text=True, encoding="utf-8", errors="replace",
-                               timeout=CMD_TIMEOUT_S, check=False)
+                               text=True, encoding="utf-8", errors="replace", timeout=CMD_TIMEOUT_S, check=False)
             ram = int(r.stdout.strip())
         except (OSError, ValueError, subprocess.SubprocessError):
             pass

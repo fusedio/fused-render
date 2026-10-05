@@ -58,7 +58,7 @@ test("a chip is the title, the favicon and the way out", () => {
 function store() {
   let api: ArtStripStore | null = null;
   const H = () => {
-    api = useArtStrip("/tpl", "/proj", "s1", read);
+    api = useArtStrip("/proj", "s1", read);
     return null;
   };
   act(() => {
@@ -131,7 +131,7 @@ test("no session is no read: nothing has been written to look for", async () => 
   rows = [{ remote_url: "https://x.test/a" }];
   let api: ArtStripStore | null = null;
   const H = () => {
-    api = useArtStrip("/tpl", "/proj", "", read);
+    api = useArtStrip("/proj", "", read);
     return null;
   };
   act(() => {
@@ -152,7 +152,7 @@ test("A TICK THAT BEAT THE SESSION ID is replayed when the id lands", async () =
   let api: ArtStripStore | null = null;
   let sid = "";
   const H = () => {
-    api = useArtStrip("/tpl", "/proj", sid, read);
+    api = useArtStrip("/proj", sid, read);
     return null;
   };
   let tree: ReactTestRenderer;
@@ -186,7 +186,7 @@ function crossing(startInChat: boolean, sid = "s1") {
   let inChat = startInChat;
   let session = sid;
   const H = () => {
-    api = useArtStrip("/tpl", "/proj", session, read, inChat);
+    api = useArtStrip("/proj", session, read, inChat);
     return null;
   };
   let tree: ReactTestRenderer;

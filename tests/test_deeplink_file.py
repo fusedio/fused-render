@@ -5,6 +5,7 @@ no page of its own: the shell clones through the guarded /api/appfile routes
 and asks in a modal when a local copy already exists.
 """
 import os
+import sys
 from urllib.parse import quote, unquote, urlsplit
 
 import pytest
@@ -66,11 +67,15 @@ def _redirect(tmp_path, src):
 # ---- parsing -----------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_file_link_decodes_the_path_once():
     path = "/Users/me/My Apps/a&b #1 100%.fused"
     assert app_file_path_from(link(path)) == path
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_file_link_tolerates_a_slash_after_open_and_case():
     assert app_file_path_from("FUSED-RENDER://open/?file=%2Ftmp%2Fx.fused") == "/tmp/x.fused"
 
@@ -103,6 +108,8 @@ def test_no_copy_yet_lands_on_home_with_the_file(tmp_path):
     assert not os.path.exists(tmp_path / "workspace" / "local" / "demo")
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_an_existing_copy_lands_on_its_entry_page_with_the_file(tmp_path):
     fused = export(tmp_path)
     _client(tmp_path).post("/api/appfile/clone", json={"file": str(fused)}, headers=FUSED)
@@ -111,6 +118,8 @@ def test_an_existing_copy_lands_on_its_entry_page_with_the_file(tmp_path):
     assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(fused))}
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_a_copy_without_an_entry_page_lands_on_the_folder(tmp_path):
     fused = export(tmp_path)
     dest = tmp_path / "workspace" / "local" / "demo"

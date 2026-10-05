@@ -1116,12 +1116,18 @@ def test_the_mirrored_row_accepts_a_pathlib_project_dir(monkeypatch):
 
     key = "0123456789abcdef"
     envinstall._mirror_into_jobs(key, Path(r"C:\Users\runner\app"))
+    # The mirror thread's FIRST upsert is the one that carries `page`; a
+    # progress-poll upsert (`server=True` alone) can land ahead of it when the
+    # thread is scheduled oddly, so wait for the row with a page rather than
+    # for any row (the ordering is what flaked under xdist on CI).
     deadline = time.monotonic() + 5.0
-    while not captured and time.monotonic() < deadline:
+    while not any("page" in kw for kw in captured) and time.monotonic() < deadline:
         time.sleep(0.01)
 
     assert captured, "the mirror thread never reported (crashed uncoercing the Path?)"
-    assert captured[0].get("page") == "C:/Users/runner/app"
+    paged = [kw for kw in captured if "page" in kw]
+    assert paged, f"no upsert carried a page: {captured!r}"
+    assert paged[0]["page"] == "C:/Users/runner/app"
 
 
 def test_the_mirrored_row_canonicalizes_a_windows_shaped_project_dir(monkeypatch):

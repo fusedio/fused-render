@@ -10,7 +10,7 @@
 //
 // So this file mounts the REAL component over a stubbed `fetch` and a patched
 // `ATTACH_API`, and drives the props it hands out. Everything is asserted
-// through what reaches `/api/run` or what the chip row renders, because that is
+// through what reaches `/api/claude/agent` or what the chip row renders, because that is
 // where getting any of it wrong actually lands.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
@@ -21,7 +21,6 @@ const { ClaudeChat } = await import("./ClaudeChat");
 const { ShotViewer } = await import("./ui/ShotViewer");
 const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
-const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { PANE_SHOT_TAG } = await import("./protocol/wire");
 const { inFlightSizeForTests } = await import("./ClaudeChat");
 type Attachment = import("./shots/types").Attachment;
@@ -64,21 +63,18 @@ function stubFetch(): void {
     // spins the loop inside `act` and the test never returns. Held open, which
     // is what the real endpoint does.
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
-    if (url === "/api/run") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        py: string;
-        params: Record<string, string>;
-      };
-      const action = String(body.params?.action ?? "");
-      runs.push({ action, params: body.params ?? {} });
+    if (url === "/api/claude/agent" || url === "/api/claude/app-entry") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
+      const action = String(body.action ?? "");
+      runs.push({ action, params: body });
       if (action === "start") {
         if (holdStart) return new Promise<Response>(() => {});
-        return jsonRes({ ok: true, result: startError ? { error: startError } : { run_id: "r1" } });
+        return jsonRes(startError ? { error: startError } : { run_id: "r1" });
       }
       if (action === "poll") {
-        return jsonRes({ ok: true, result: { done: true, session_id: "s1", text: "ok" } });
+        return jsonRes({ done: true, session_id: "s1", text: "ok" });
       }
-      return jsonRes({ ok: true, result: {} });
+      return jsonRes({});
     }
     return jsonRes({});
   };
@@ -132,7 +128,6 @@ beforeEach(() => {
   holdStart = false;
   pathIds = 0;
   asFound = { ...API };
-  resetAgentDirCacheForTests();
   stubFetch();
   patchApi({
     flash: () => () => {},
@@ -140,7 +135,7 @@ beforeEach(() => {
     // an ordinary attached image rather than a refusal.
     filesFromPaste: (ev) =>
       (ev as { clipboardData?: unknown }).clipboardData ? [{ name: "shot.png" } as File] : [],
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       for (const f of files) {
         yield {
           id: "f" + ++pathIds,
@@ -392,7 +387,7 @@ test("nothing is sent while a chip is still attaching", async () => {
     release = done;
   });
   patchApi({
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       await landed;
       for (const f of files) {
         yield {
@@ -599,7 +594,7 @@ test("a send that LANDED re-points its receipts at the copy on disk and drops th
     },
     // A PASTED PICTURE WITH PIXELS: `attachFile`'s drawable road mints an object
     // URL for the thumbnail and saves the bytes under `view` (shots/attach.ts).
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       for (const f of files) {
         yield {
           id: "f" + ++pathIds,
@@ -658,7 +653,7 @@ test("a send that never launched keeps its blob thumbnails alive", async () => {
     revoke: (att: Attachment | null | undefined) => {
       if (att) revoked.push(att.id);
     },
-    attachFiles: async function* (_dir, files) {
+    attachFiles: async function* (files) {
       for (const f of files) {
         yield {
           id: "f" + ++pathIds,

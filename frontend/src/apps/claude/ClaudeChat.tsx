@@ -41,7 +41,6 @@ import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
-import { resolveAgentDir } from "./protocol/agent";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
@@ -81,10 +80,6 @@ import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { composeOutgoing, formatAnnotations, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
-  CHAT_FRAME_FALLBACK_MS,
-  ChatFramePlaceholder,
-} from "@platform/ui/ChatFrame";
-import {
   AppPane,
   createAppStateWatcher,
   homePlaceholderFor,
@@ -98,6 +93,7 @@ import {
   ViewToggle,
   type PaneNoun,
   type PaneSrcFlags,
+  type TargetNoun,
 } from "./pane";
 import {
   AnnStrip,
@@ -285,6 +281,20 @@ export interface ClaudeChatProps {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/**
+ * THE FOLDER THE READER IS WORKING IN, for a shell fence's or a Bash chip's
+ * "run" button to `cd` into first: the target itself when it is a folder, its
+ * parent when it is a file — agent.py's `_workdir` rule, the same cwd the CLI
+ * runs in. `null` while the pane has not said which kind the target is (the
+ * noun is decided off the same stat), and for no target at all.
+ */
+export function chatWorkdir(file: string | null, noun: TargetNoun): string | null {
+  if (!file || !noun) return null;
+  if (noun !== "file") return file;
+  const cut = file.replace(/[\\/]+$/, "").search(/[\\/][^\\/]*$/);
+  return cut > 0 ? file.slice(0, cut) : cut === 0 ? file.slice(0, 1) : file;
+}
+
 /** T:16435 `noteChatActivity` — best-effort: a blocked store (private mode, a
  *  locked-down webview) costs the poke, never the turn. */
 function stampChatActivity(): void {
@@ -364,44 +374,13 @@ export function annotationsForTests(): AnnotationsApi | null {
 }
 
 /**
- * Resolve the two things every hook below needs — the claude template's folder
- * and the param store — before the chat itself mounts, so the body's hook list
- * never has to branch. A null `agentDir` is the one hard stop: with no `agent.py`
- * there is nothing to talk to, and saying so is better than an inert composer
- * (T:4653-4656 replaced the body for the same reason).
+ * Resolve the param store before the chat itself mounts, so the body's hook
+ * list never has to branch. A missing target is the one hard stop: with no
+ * `_file` there is nothing to talk about, and saying so is better than an
+ * inert composer (T:4653-4656 replaced the body for the same reason).
  */
 export function ClaudeChat(props: ClaudeChatProps) {
   const { file } = props;
-  const [agentDir, setAgentDir] = useState<string | null | undefined>(undefined);
-
-  useEffect(() => {
-    if (!file) {
-      setAgentDir(null);
-      return;
-    }
-    let live = true;
-    setAgentDir(undefined);
-    // AND A BACKSTOP, which legacy had as `CHAT_FRAME_FALLBACK_MS` (8 s) on the
-    // frame's own cover: a `statPath` that never settles — a stalled server, a
-    // request the browser never answers — left the box blank FOR EVER, with no
-    // road to the `TroubleView` branch below that exists to explain exactly
-    // this. Losing the race resolves to `null`, which is that branch.
-    //
-    // The same 8 s, and the same constant, so the two waits cannot drift apart.
-    const backstop = setTimeout(() => {
-      if (live) setAgentDir(null);
-    }, CHAT_FRAME_FALLBACK_MS);
-    void resolveAgentDir(file).then((dir) => {
-      if (live) {
-        clearTimeout(backstop);
-        setAgentDir(dir);
-      }
-    });
-    return () => {
-      live = false;
-      clearTimeout(backstop);
-    };
-  }, [file]);
 
   // ONE store per mount. A card's params must not survive its remount —
   // `key={cardKey(task)}` is the host's remount rule (TaskCards.tsx:339) — and
@@ -427,25 +406,7 @@ export function ClaudeChat(props: ClaudeChatProps) {
   }, [urlStore]);
   const params: ParamsStore = props.params === "url" ? urlStore! : props.params;
 
-  if (agentDir === undefined) {
-    // THE TEMPLATE LOOKUP IS IN FLIGHT, and this branch used to be an EMPTY BOX
-    // on the argument that "the host is still holding its own cover over this
-    // box (ChatFrame's skeleton)". That is true flag-OFF, where the host really
-    // does frame a booting document — but flag-on there is no frame and no
-    // cover: `ChatMount`'s `Suspense` fallback covers only the CHUNK LOAD, and
-    // it has already resolved by the time this component is running its own
-    // stat. So a first mount for a folder drew a bare `.chat-root` on the host
-    // background for the length of one `/api/fs/stat`, and a cold cards wall of
-    // six drew six empty tiles where legacy drew six skeletons.
-    //
-    // `placeholderFor`'s node — the SAME `ChatFramePlaceholder` that
-    // `Suspense` shows and that `ChatFrame` holds over a booting frame — so the
-    // two waits look like one wait, which is what 00 §1e's "one wait, one look"
-    // actually asks for. The reader sees the chunk's skeleton become the stat's
-    // skeleton with no flash of an empty box between them.
-    return <ChatFramePlaceholder className={rootClass(props)} />;
-  }
-  if (agentDir === null) {
+  if (!file) {
     return (
       <div className={rootClass(props)} data-variant={variantOf(props)}>
         <div className="chat-logwrap">
@@ -478,17 +439,15 @@ export function ClaudeChat(props: ClaudeChatProps) {
                 that sentence would be a door back to the same empty room. */}
             <TroubleView
               trouble={{ kind: "boot", message: "" }}
-              {...(file
-                ? { onRetry: () => location.reload(), retryLabel: "Reload the page" }
-                : { said: NO_TARGET_SAID })}
-              what={file ? "opening the chat on " + file : "opening the chat"}
+              said={NO_TARGET_SAID}
+              what="opening the chat"
             />
           </div>
         </div>
       </div>
     );
   }
-  return <ChatBody {...props} agentDir={agentDir} params={params} />;
+  return <ChatBody {...props} params={params} />;
 }
 
 /** What the page outbox keeps beside a parked line's words (ui/outbox.ts):
@@ -515,12 +474,11 @@ interface OutboxPayload {
 const NO_TAKEN: OutboxPayload["taken"] = { opts: {}, items: [] };
 
 interface ChatBodyProps extends ClaudeChatProps {
-  agentDir: string;
   params: ParamsStore;
 }
 
 function ChatBody(props: ChatBodyProps) {
-  const { agentDir, params, file, chatOnly, compact, peek } = props;
+  const { params, file, chatOnly, compact, peek } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -618,7 +576,7 @@ function ChatBody(props: ChatBodyProps) {
       // screenshot directory` on EVERY send — so the CLI re-read the whole
       // outline on every later turn, which is the exact cost T:5177-5218 exists
       // to avoid.
-      shotsDir: () => shotsDir(agentDir),
+      shotsDir: () => shotsDir(),
     }),
   );
   // The framed document's console stays the app's own once we are gone.
@@ -660,7 +618,6 @@ function ChatBody(props: ChatBodyProps) {
   const pane = usePaneState({
     file,
     chatOnly,
-    agentDir,
     flags,
     initialLeftMode: params.get("leftmode"),
     noPaneFlag,
@@ -1139,12 +1096,10 @@ function ChatBody(props: ChatBodyProps) {
     () =>
       createChatController({
         file,
-        agentDir,
         params,
-        // The transcript restore takes the in-process road (owner E2E R1, F5):
-        // `/api/claude-sessions/history`, with agent.py through `/api/run`
-        // behind it. See `fetchHistory`.
-        history: (f, s) => fetchHistory(agentDir, f, s),
+        // The transcript restore takes its own road (owner E2E R1, F5):
+        // `/api/claude-sessions/history`. See `fetchHistory`.
+        history: (f, s) => fetchHistory(f, s),
         historyCache: sharedHistoryCache,
         model: () => liveModel.current,
         effort: () => liveEffort.current,
@@ -1266,7 +1221,7 @@ function ChatBody(props: ChatBodyProps) {
           attachBack.current?.(back);
         },
       }),
-    [agentDir, file, params, strand, strandAll],
+    [file, params, strand, strandAll],
   );
   // For `strand`, which the controller itself calls (see `controllerRef`).
   controllerRef.current = controller;
@@ -1308,7 +1263,6 @@ function ChatBody(props: ChatBodyProps) {
   // in the transcript and the send that empties it is the controller's — four
   // places, one list.
   const attach = useAttachments({
-    agentDir,
     // THE FRAME WHOSE DOCUMENT IS THE APP, read at gesture time: ours when we
     // have a pane, the HOST's marked one when we do not (`appFrame`). A capture
     // aimed at the element as it was when this callback was made would
@@ -1680,9 +1634,7 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   // ── the three pills ────────────────────────────────────────────────────────
-  const defaults = useComposerDefaults(
-    agentDir, file, params, !!props.hostSeededSettings,
-  );
+  const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings);
   // WHAT THE RUN IS ACTUALLY LAUNCHED WITH (`run-controller`'s `curModel` /
   // `curEffort`, read at send time on every `start` and `send`) — and it is ""
   // for as long as the pills have not resolved.
@@ -1765,8 +1717,8 @@ function ChatBody(props: ChatBodyProps) {
   // SPENT IS SPENT. The re-arm below runs on every render, and the host keeps
   // `initialAsk` on its props until its own one-shot derivation flips it — so a
   // boot that cleared the latch inside its async walk found it re-armed by the
-  // very next render, and a controller rebuild (a `file` swap with `agentDir`
-  // already cached) fired the same "Fix with AI" prompt at the new target
+  // very next render, and a controller rebuild (a `file` swapped in place)
+  // fired the same "Fix with AI" prompt at the new target
   // (QA, PR #1061). Once the one dispatch has happened, the prop is history.
   const askSpent = useRef(false);
   if (props.initialAsk && !askSpent.current) askRef.current = props.initialAsk;
@@ -1823,10 +1775,9 @@ function ChatBody(props: ChatBodyProps) {
   // ── boot (T:19178-19296, inventory 05 §G) ──────────────────────────────────
   //
   // THE LATCH IS PER CONTROLLER, not per mount (Bugbot, PR #1061). It was a
-  // bare boolean, and `ChatBody` is not keyed on `file`: switching to a target
-  // whose `agentDir` is already cached rebuilds the controller WITHOUT the
-  // `agentDir === undefined` round trip that would have remounted this tree, so
-  // the effect re-ran, found the latch set, and the new controller never got its
+  // bare boolean, and `ChatBody` is not keyed on `file`: switching to another
+  // target rebuilds the controller WITHOUT remounting this tree, so the effect
+  // re-ran, found the latch set, and the new controller never got its
   // `openSession` / `resumeRun` / ask at all — a live conversation replaced by
   // an empty transcript that boots nothing.
   const bootedFor = useRef<object | null>(null);
@@ -1843,8 +1794,7 @@ function ChatBody(props: ChatBodyProps) {
     bootDispatched.current = false;
     // CANCELLED ON THE WAY OUT, and checked after every await. The boot is an
     // async walk over a controller and a piece of React state that both belong
-    // to THIS mount: `agentDir` going back to `undefined` (a new `_file`), a
-    // StrictMode remount, or a card leaving the wall all dispose the controller
+    // to THIS mount: a new `_file`, a StrictMode remount, or a card leaving the wall all dispose the controller
     // under it, and a `sendMessage` / `openSession` / `resumeRun` landing after
     // that is a run started on a corpse — plus a `setEntered` / `markReady` for
     // a tree that is gone. The controller no-ops after `dispose()` as well
@@ -1897,9 +1847,8 @@ function ChatBody(props: ChatBodyProps) {
         bootDispatched.current = true;
         // SPENT ON THE LATCH, NOT ON THE BOOT. `bootDispatched` deliberately
         // re-arms with a new controller (`bootedFor` above), and the controller
-        // memo's deps include `file` — so a host that swaps `file` in place for
-        // an `agentDir` already in the resolver cache rebuilds the controller
-        // WITHOUT remounting this tree, and a sticky `askRef` would take this
+        // memo's deps include `file` — so a host that swaps `file` in place
+        // rebuilds the controller WITHOUT remounting this tree, and a sticky `askRef` would take this
         // `if (ask)` branch a second time: `session_id`/`run` cleared (disowning
         // the conversation on screen) and the same "Fix with AI" prompt fired at
         // a DIFFERENT file. Cleared here, the moment the one dispatch is
@@ -2208,7 +2157,7 @@ function ChatBody(props: ChatBodyProps) {
    */
   const [leftLive, setLeftLive] = useState(false);
   const recent = useRecentTasks(
-    inChat ? null : agentDir,
+    !inChat,
     file,
     undefined,
     leftLive,
@@ -2348,14 +2297,12 @@ function ChatBody(props: ChatBodyProps) {
    * `await loadRecent()` for exactly that reason. Idempotent, so a boot that
    * already fired it on another branch pays nothing here.
    *
-   * AND NEVER WAITS FOR A LIST THAT WILL NOT COME. Two roads reach that: a
-   * target with no `agentDir` (which never subscribes), and a reader who enters
-   * a chat before the first read lands — a recent row clicked on the skeleton,
-   * or a deep link resolving late. `useRecentTasks` is handed a null
-   * `agentDir` while in a chat, so `recent` would sit at `null` for ever and
-   * the pane would stay covered for the life of the page. Entering a chat is
-   * itself a reason to uncover it, and a target with no list has answered "no
-   * list" — so both count.
+   * AND NEVER WAITS FOR A LIST THAT WILL NOT COME: a reader who enters a chat
+   * before the first read lands — a recent row clicked on the skeleton, or a
+   * deep link resolving late. `useRecentTasks` is handed `active: false` while
+   * in a chat, so `recent` would sit at `null` for ever and the pane would stay
+   * covered for the life of the page. Entering a chat is itself a reason to
+   * uncover it.
    *
    * AND NEVER FOR EVER (2026-09-15), which is the third road. `recent` stays
    * `null` while the listing is in flight, and a listing that never answers — a
@@ -2368,8 +2315,8 @@ function ChatBody(props: ChatBodyProps) {
   const recentLate = useFallbackAfter(GATE_FALLBACK_MS, landingReady && recent === null);
   useEffect(() => {
     if (!landingReady) return;
-    if (recent !== null || recentLate || inChat || !agentDir) markReady();
-  }, [landingReady, recent, recentLate, inChat, agentDir, markReady]);
+    if (recent !== null || recentLate || inChat) markReady();
+  }, [landingReady, recent, recentLate, inChat, markReady]);
 
   /**
    * WHAT THE TRAY PUTS ON THE WIRE, on both send roads: the `<pane-shot>` block,
@@ -2418,14 +2365,14 @@ function ChatBody(props: ChatBodyProps) {
     if (overview) {
       // A failed upload is a chip that says so, not a lost message: the same
       // degradation the capture itself already has (`attachOverview`).
-      shot = await ATTACH_API.attachOverview(agentDir, overview.capture).catch(() => null);
+      shot = await ATTACH_API.attachOverview(overview.capture).catch(() => null);
     }
     return {
       block: formatAnnotations(notes as AnnotationWire[], pane.noun),
       notes,
       overview: shot,
     };
-  }, [agentDir, pane.noun]);
+  }, [pane.noun]);
 
   /**
    * BOTH SEND ROADS GO THROUGH HERE, and they MERGE rather than spread: T's wire
@@ -2837,7 +2784,7 @@ function ChatBody(props: ChatBodyProps) {
              * opened one, so a second line typed into a brand-new chat that is
              * still starting queued behind its own run — the reader watched
              * their own message wait for themselves (Akshil, browser QA
-             * 2026-09-12). `runId` is minted by `POST /api/run` and is live from
+             * 2026-09-12). `runId` is minted by the agent's `start` and is live from
              * the first keystroke of the first turn (`api.admitQueueSend`).
              *
              * OR THE LAST RUN THIS CHAT HAD, and that was round two's finding.
@@ -4225,7 +4172,6 @@ function ChatBody(props: ChatBodyProps) {
    *  emptied on BOTH crossings, read on the way into a chat (P4-01/P4-02) — are
    *  facts about the strip, and the hook is where they can be tested. */
   const art = useArtStrip(
-    agentDir ?? null,
     file,
     state.sessionId ?? "",
     undefined,
@@ -4829,7 +4775,6 @@ function ChatBody(props: ChatBodyProps) {
                 entering a chat. On the landing it is the one item that can mean
                 anything without a session (T:13415). */}
             <Kebab
-              agentDir={agentDir}
               file={file}
               sessionId={inChat ? (state.sessionId ?? "") : ""}
               btnRef={kebabBtn}
@@ -4898,10 +4843,10 @@ function ChatBody(props: ChatBodyProps) {
             ) : null}
             <Transcript
               followRef={transcriptFollow}
+              cwd={chatWorkdir(file, pane.noun)}
               state={state}
               comebackPending={sched.blocked}
               actions={actions}
-              cwd={agentDir}
               liveMode={state.permissionMode}
               tail={tail}
               pickerMode={defaults.permission}
@@ -5019,7 +4964,6 @@ function ChatBody(props: ChatBodyProps) {
           </>
         ) : (
           <Home
-            agentDir={agentDir}
             snapInvalidation={snapNonce}
             {...card}
             name={name}

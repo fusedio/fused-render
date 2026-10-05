@@ -311,11 +311,65 @@ def _enable_faulthandler() -> None:
         pass
 
 
+# Upper bound for `_close_inherited_fds` when the OS reports no limit (-1) or
+# an absurd one (RLIM_INFINITY on some macOS setups): closerange over 2**63
+# descriptors would be a CPU burn, not a cleanup.
+_FD_CLOSE_CAP = 65536
+
+
+def _close_inherited_fds() -> None:
+    """Close every descriptor above stdio this host inherited (D1310).
+
+    `_start` spawns the host with `close_fds=False` — the only form CPython
+    takes posix_spawn for, and the server must never fork (PROJ's atfork
+    handler). The price is that every non-CLOEXEC fd the SERVER holds (duckdb
+    files, the PROJ sqlite handle, WebKit/IPC sockets, a watcher's kqueue)
+    lands in this process too, and would then ride on into the CLI and the MCP
+    server for the whole life of a chat — keeping files open the server has
+    since closed and sockets the server thinks it owns. 0-2 stay: stdin is the
+    request pipe, stderr is `host.err.log`. Posix only; Windows' Popen already
+    passed no extra handles."""
+    if os.name != "posix":
+        return
+    try:
+        limit = os.sysconf("SC_OPEN_MAX")
+    except (AttributeError, ValueError, OSError):
+        limit = -1
+    if limit is None or limit < 0 or limit > _FD_CLOSE_CAP:
+        limit = _FD_CLOSE_CAP
+    os.closerange(3, limit)
+
+
 def main() -> None:
     _enable_faulthandler()
+    # Detach FIRST. `_start` spawns this host from inside the server with a
+    # posix_spawn-safe Popen (no start_new_session — see `_HOST_SPAWN` in
+    # agent.py for why the server must never fork), so the host arrives in the
+    # server's own session and process group. setsid() here puts it in a
+    # session of its own, as the old start_new_session did: a server restart,
+    # a terminal hangup or a killpg aimed at the server never reaches a live
+    # chat. EPERM means this process is already a session leader (Windows
+    # has no setsid; the detach flags on its Popen did the job).
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()
+        except OSError:
+            pass
+    _close_inherited_fds()
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-    agent = _load_agent(req["agent"])
     run_dir = req["run_dir"]
+    # A STOP THAT LANDED BEFORE setsid() (D1310). Until the line above ran,
+    # this process sat in the SERVER's process group, so `_cancel`'s killpg on
+    # our pid (not yet a group leader) missed us and `_kill_tree`'s fallback
+    # kill may have too, if it raced interpreter startup. `_cancel` drops a
+    # `cancelled` marker before it signals; seeing it here means the user
+    # already pressed Stop on a run whose CLI does not exist yet — so it never
+    # will. Checked after the stdin read (the request is what names run_dir)
+    # and before anything is spawned.
+    if os.path.exists(os.path.join(run_dir, "cancelled")):
+        sys.stderr.write("session_host: run cancelled before the CLI spawned\n")
+        return
+    agent = _load_agent(req["agent"])
 
     argv = agent._claude_argv(
         run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],

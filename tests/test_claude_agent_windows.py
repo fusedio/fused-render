@@ -1,5 +1,5 @@
 """Windows coverage for the chat template's backend
-(fused_render/templates/claude/agent.py): finding the CLI when it isn't on
+(fused_render/claude_agent/agent.py): finding the CLI when it isn't on
 PATH, plus the win32 route for detach / liveness / cancel and the id guards
 that only a Windows path separator can slip past.
 
@@ -24,7 +24,7 @@ import pytest
 
 AGENT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "fused_render", "templates", "claude", "agent.py")
+    "fused_render", "claude_agent", "agent.py")
 
 
 def _load_agent():
@@ -162,6 +162,10 @@ def test_start_detaches_with_the_platform_kwargs(tmp_path, monkeypatch):
 
     class FakeProc:
         pid = 4242
+
+        def wait(self, timeout=None):
+            # `_start` parks a daemon reaper thread in wait() on the host.
+            return 0
         stdin = FakeStdin()
 
     def fake_popen(cmd, **kwargs):

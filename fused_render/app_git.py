@@ -5,7 +5,7 @@ every app folder under it (D626; local_monorepo.py migrates the old
 one-repo-per-app layout into it). Every app scaffolded by POST /api/apps/new
 lands in that shared repo as one scoped boilerplate commit; after that, each
 completed Claude turn lands as its own small commit
-(templates/claude/agent.py mirrors the commit helper here, since templates
+(claude_agent/agent.py mirrors the commit helper here, since templates
 must not import fused_render, D166). Manual edits made through the editor's
 /api/fs endpoints are NOT committed (D245) — the user's own commits and
 Claude's turns are the whole history.

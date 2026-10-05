@@ -18,7 +18,7 @@ type Handler = (fields: Record<string, unknown>, call: number) => unknown;
 function fakeAgent(handlers: Record<string, Handler>) {
   const calls: { action: string; fields: Record<string, unknown> }[] = [];
   const counts: Record<string, number> = {};
-  const run = ((_dir: string, action: string, fields: Record<string, unknown>) => {
+  const run = ((action: string, fields: Record<string, unknown>) => {
     calls.push({ action, fields });
     const n = (counts[action] = (counts[action] || 0) + 1) - 1;
     const h = handlers[action];
@@ -64,7 +64,6 @@ function makeController(
   const abandoned: number[] = [];
   const controller = createChatController({
     file: "/proj/app.py",
-    agentDir: "/tpl/claude",
     params,
     run: agent.run,
     sleep: () => Promise.resolve(),
@@ -187,7 +186,6 @@ describe("the run-clock hooks", () => {
     const agent = fakeAgent({ poll: () => ({ error: "unknown run_id", done: true }) });
     const controller = createChatController({
       file: "/proj/app.py",
-      agentDir: "/tpl/claude",
       params: createMemoryParamsStore(),
       run: agent.run,
       sleep: () => Promise.resolve(),
@@ -1136,7 +1134,6 @@ test("isBusy() covers a send INSIDE the gate, which no ChatState field does", as
   });
   const controller = createChatController({
     file: "/proj/app.py",
-    agentDir: "/tpl/claude",
     params: createMemoryParamsStore(),
     run: agent.run,
     sleep: () => Promise.resolve(),

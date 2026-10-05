@@ -155,8 +155,7 @@ def _swap_used_bytes() -> int | None:
     if sys.platform == "darwin":
         try:
             out = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True,
-                                 text=True, encoding="utf-8", errors="replace",
-                                 timeout=2, check=False).stdout
+                                 text=True, encoding="utf-8", errors="replace", timeout=2, check=False).stdout
             # "total = 2048.00M  used = 1034.50M  free = 1013.50M  (encrypted)"
             for part in out.split("  "):
                 part = part.strip()
