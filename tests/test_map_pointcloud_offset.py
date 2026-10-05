@@ -13,7 +13,8 @@ def _run_js(script):
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required to drive the template's JS")
-    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=15)
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True,
+                            encoding="utf-8", timeout=15)
     assert result.returncode == 0, result.stderr
 
 
