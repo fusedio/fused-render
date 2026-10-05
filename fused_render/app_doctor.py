@@ -767,7 +767,7 @@ def _repo_health_check(app_dir: str) -> dict:
     # finding; a STANDING auto-sync failure for this repo (it tried and could
     # not) is, and names why. Uncommitted paths stay a FAIL: nothing
     # auto-commits edits made outside Claude.
-    auto = (root is not None and on_default is not False
+    auto = (root is not None and on_default is True
             and git_upstream.auto_sync_enabled())
     sync_fail = None
     if auto:

@@ -934,6 +934,17 @@ def test_auto_sync_is_ignored_off_the_default_branch(workspace, monkeypatch):
     assert row["state"] == "fail"
 
 
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_auto_sync_is_not_assumed_when_the_default_branch_answer_is_unknown(workspace, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    d, repo, _ = _repo_with_remote(workspace)
+    _commit_here(repo, sub="demo")
+    # no _warm: the background fetch has not landed, so on_default is None
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["onDefault"] is None
+    assert row["state"] == "fail"
+
+
 def test_repo_health_advice_names_only_what_actually_failed_no_git_needed():
     """G2 (FIXES-round-3.md): the bug was clause duplication — "commit or
     commit or stash your changes to pull..." — introduced when both the
