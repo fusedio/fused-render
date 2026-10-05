@@ -493,3 +493,14 @@ describe("activePaneSide with a remembered tab", () => {
     expect(activePaneSide(paneSideList(ALL), null, null)).toBe("claude");
   });
 });
+
+describe("Listing reads the remembered tab only where it owns the pane", () => {
+  test("passes null (not getSideTab()) on a snapshot/panel pane", async () => {
+    const src = await Bun.file(
+      new URL("../Listing.tsx", import.meta.url).pathname
+    ).text();
+    expect(src).toContain("const rememberedTab = () => (paneEnabled ? getSideTab() : null);");
+    // no reader may bypass the guard
+    expect(src.match(/getSideTab\(\)/g)?.length).toBe(1);
+  });
+});

@@ -1034,12 +1034,16 @@ export default function Listing({
   // rendered under it regardless, and would then remount — and respawn
   // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
-  const paneSide = activePaneSide(paneSides, sideState.mode, getSideTab());
+  // The remembered tab is consulted only where this surface OWNS the pane: a
+  // snapshot/panel pane never writes it (`applySide`), so reading it there would
+  // pin the pane to a tab its own clicks cannot change.
+  const rememberedTab = () => (paneEnabled ? getSideTab() : null);
+  const paneSide = activePaneSide(paneSides, sideState.mode, rememberedTab());
   // The two facts `setSide`'s guard above needs, written on every render (see
   // its own comment for why they are refs and not values).
   showingClaude.current = paneOpen && paneSide === "claude";
   wouldShowClaude.current = (next, tab) =>
-    next.open && activePaneSide(paneSides, next.mode, tab ?? getSideTab()) === "claude";
+    next.open && activePaneSide(paneSides, next.mode, tab ?? rememberedTab()) === "claude";
 
   // Picking the mode that is ALREADY first on offer records NO choice (`mode: null`),
   // so the leading companion keeps the clean URL (PT-9, D285): a click on Claude
