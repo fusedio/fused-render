@@ -444,3 +444,10 @@
   flex: 0 0 auto;
   margin-left: auto;
 }
+
+/* The fold's auto-extend sentinel (Apps.tsx): one pixel after the grid for
+   an IntersectionObserver to watch, never visible, never a gap. */
+.apps-more-sentinel {
+  height: 1px;
+  margin-top: -1px;
+}
