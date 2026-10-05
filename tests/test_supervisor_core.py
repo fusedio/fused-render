@@ -11,6 +11,7 @@ convention in tests/test_supervisor_linux_instance.py.
 """
 import queue
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -521,13 +522,16 @@ def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(m
 
 @pytest.fixture(autouse=True)
 def _reset_host_globals():
-    """`_host_paths`/`_host_port`/`_host_starting` are module-level state a
-    lazy start writes to outside of `run()` — reset around every test in this
-    file so one test's host-start attempt can't leak into the next."""
+    """`_host_paths`/`_host_port`/`_host_starting`/`_host_start_failed`/
+    `_host_stopping` are module-level state a lazy start writes to outside of
+    `run()` — reset around every test in this file so one test's host-start
+    attempt can't leak into the next."""
     yield
     core._host_paths = None
     core._host_port = None
     core._host_starting = False
+    core._host_start_failed = False
+    core._host_stopping = False
     core._host_attempt_done.set()
     core._window_host = None
 
@@ -683,3 +687,121 @@ def test_resolve_window_host_falls_back_without_waiting_forever(tmp_path, monkey
 
     monkeypatch.setattr(core, "_start_window_host", fake_start)
     assert core._resolve_window_host() is None
+
+
+def test_resolve_window_host_remembers_a_failed_start_and_stops_retrying(tmp_path, monkeypatch):
+    """Once a start has concluded with no host to show for it, later opens
+    must not re-spawn one — each re-spawn would also make the open wait out
+    `_HOST_WAIT_S` again for nothing."""
+    class _P:
+        state = tmp_path
+        logs = tmp_path
+
+        def log(self, message):
+            pass
+
+    core._host_paths, core._host_port = _P(), 9000
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(preference_enabled=lambda state: True),
+                        raising=False)
+    attempts = []
+
+    def fake_start(paths, port):
+        attempts.append(1)
+        core._host_start_failed = True  # what a failed worker concludes with
+
+    monkeypatch.setattr(core, "_start_window_host", fake_start)
+    assert core._resolve_window_host() is None
+    assert core._resolve_window_host() is None
+    assert core._resolve_window_host() is None
+    assert attempts == [1]
+
+
+def test_resolve_window_host_clears_the_failure_once_the_preference_goes_off(
+        tmp_path, monkeypatch):
+    """Turning the preference off and back on is a deliberate user action and
+    must get a fresh attempt, even after an earlier failure this session."""
+    class _P:
+        state = tmp_path
+        logs = tmp_path
+
+        def log(self, message):
+            pass
+
+    core._host_paths, core._host_port = _P(), 9000
+    core._host_start_failed = True
+    enabled = [False]
+    monkeypatch.setattr(core._backend, "windows",
+                        types.SimpleNamespace(preference_enabled=lambda state: enabled[0]),
+                        raising=False)
+    attempts = []
+    monkeypatch.setattr(core, "_start_window_host", lambda *a: attempts.append(1))
+
+    assert core._resolve_window_host() is None  # pref off: clears the stale failure
+    assert core._host_start_failed is False
+
+    enabled[0] = True
+    assert core._resolve_window_host() is None
+    assert attempts == [1]  # fresh attempt allowed
+
+
+def test_maybe_start_window_host_resets_a_stale_failure_before_starting(
+        tmp_path, monkeypatch):
+    import json
+
+    class _P:
+        state = tmp_path
+        logs = tmp_path
+
+        def log(self, message):
+            pass
+
+    (tmp_path / "prefs.json").write_text(json.dumps({"native_windows_enabled": True}))
+    core._host_start_failed = True
+    started = []
+    monkeypatch.setattr(core, "_start_window_host", lambda *a: started.append(a))
+    core._maybe_start_window_host(_P(), 9000)
+    assert started and core._host_start_failed is False
+
+
+def test_start_window_host_does_nothing_once_stopping(monkeypatch):
+    paths = _Paths()
+    constructed = []
+    monkeypatch.setattr(
+        core._backend, "windows",
+        types.SimpleNamespace(WindowHost=lambda *a: constructed.append(a)),
+        raising=False)
+    core._host_stopping = True
+    core._start_window_host(paths, 9000)
+    assert constructed == [] and core._host_starting is False
+
+
+def test_stop_window_host_waits_for_an_in_flight_start_and_never_orphans_it(
+        monkeypatch):
+    """A host that finishes starting while `_stop_window_host` is already
+    tearing things down must be stopped by the worker itself — publishing it
+    into `_window_host` after that point would leave it running with nobody
+    left tracking it."""
+    paths = _Paths()
+    stop_calls = []
+
+    class FakeHost:
+        def start(self):
+            time.sleep(0.05)
+            return True
+
+        def stop(self):
+            stop_calls.append(1)
+
+    monkeypatch.setattr(
+        core._backend, "windows",
+        types.SimpleNamespace(WindowHost=lambda *a: FakeHost()),
+        raising=False)
+
+    core._start_window_host(paths, 9000)
+    assert core._host_starting is True  # the start is still in flight
+
+    core._stop_window_host()
+
+    assert core._window_host is None  # never published
+    assert stop_calls == [1]  # the worker stopped it itself instead

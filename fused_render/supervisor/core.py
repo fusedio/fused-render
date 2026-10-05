@@ -47,6 +47,12 @@ _window_host = None
 _host_paths: DesktopPaths | None = None
 _host_port: int | None = None
 _host_starting = False  # guarded by _host_start_lock: a background start is in flight
+#: A start ended with no host: later opens go straight to the browser until
+#: the preference is seen OFF, which allows one fresh attempt.
+_host_start_failed = False  # guarded by _host_start_lock
+#: Shutdown has begun: no new start, and a start that finishes now stops its
+#: own host instead of publishing it.
+_host_stopping = False  # guarded by _host_start_lock
 #: Cleared the instant a start is kicked off, set once it concludes (success
 #: or failure) — what `_resolve_window_host` actually waits on. (`Event.wait`
 #: returns as soon as the event is SET, which is why "is starting" itself
@@ -609,18 +615,30 @@ def _resolve_window_host():
     """Bridges a host that is still starting — or hasn't been asked to start
     at all yet — with an open that arrives before `_window_host` is set.
     `_host_paths` is None only when a caller drives `_open_browser` without
-    going through `run()`; that open goes straight to the browser."""
+    going through `run()`; that open goes straight to the browser. Once a
+    start has failed (`_host_start_failed`) every later open skips straight
+    to the browser too, instead of re-spawning a host that already failed and
+    making the open wait out `_HOST_WAIT_S` again for nothing."""
     if _host_paths is None:
         return None
     module = getattr(_backend, "windows", None)
     if module is None:
         return None
+    if not module.preference_enabled(_host_paths.state):
+        _reset_host_start_failed()
+        return None  # pref is off: nothing starts until it flips back on
     if _window_host is None and not _host_starting:
-        if not module.preference_enabled(_host_paths.state):
-            return None  # pref is off: nothing starts until it flips back on
+        if _host_start_failed:
+            return None  # already failed this session: straight to the browser
         _start_window_host(_host_paths, _host_port)
     _host_attempt_done.wait(_HOST_WAIT_S)
     return _window_host
+
+
+def _reset_host_start_failed() -> None:
+    global _host_start_failed
+    with _host_start_lock:
+        _host_start_failed = False
 
 
 def _maybe_start_window_host(paths: DesktopPaths, port: int) -> None:
@@ -629,11 +647,14 @@ def _maybe_start_window_host(paths: DesktopPaths, port: int) -> None:
     the preference is already on — off means nothing is spawned until the
     first enabled open (`_resolve_window_host`) or a Preferences PUT flips it
     back on and the next open follows (same lazy path; no separate signal is
-    needed, since every real open already goes through `_open_browser`)."""
+    needed, since every real open already goes through `_open_browser`). Also
+    the preference-flip-on path: resets `_host_start_failed` so a host that
+    failed earlier gets one fresh attempt."""
     global _host_paths, _host_port
     _host_paths, _host_port = paths, port
     module = getattr(_backend, "windows", None)
     if module is not None and module.preference_enabled(paths.state):
+        _reset_host_start_failed()
         _start_window_host(paths, port)
 
 
@@ -641,42 +662,61 @@ def _start_window_host(paths: DesktopPaths, port: int) -> None:
     """Construct the host and hand its (blocking, up to ~10s) `start()` to a
     background thread — never fatal, and never something `run()` or an open
     waits out past `_HOST_WAIT_S`. Idempotent: a second call while one start
-    is already in flight, or after `_window_host` is already set, is a
-    no-op. Any failure (construction or `start()`) leaves `_window_host`
-    unset and every open keeps going to the browser, exactly as before native
-    windows existed."""
-    global _host_starting
+    is already in flight, after `_window_host` is already set, or once a
+    shutdown is underway (`_host_stopping`), is a no-op. Any failure
+    (construction or `start()`) leaves `_window_host` unset, sets
+    `_host_start_failed`, and every open keeps going to the browser for the
+    rest of the session, exactly as before native windows existed."""
+    global _host_starting, _host_start_failed
     module = getattr(_backend, "windows", None)
     if module is None:
         return
     with _host_start_lock:
-        if _window_host is not None or _host_starting:
+        if _window_host is not None or _host_starting or _host_stopping:
             return
         try:
             host = module.WindowHost(paths, port)
         except Exception as error:  # noqa: BLE001 - windows are an enhancement
             paths.log(f"native windows unavailable, using browser tabs: {error}")
+            _host_start_failed = True
             return
         _host_starting = True
         _host_attempt_done.clear()
 
     def worker():
-        global _window_host, _host_starting
+        global _window_host, _host_starting, _host_start_failed
+        started_host = None
         try:
             if host.start():
-                _window_host = host
+                started_host = host
         except Exception as error:  # noqa: BLE001 - windows are an enhancement
             paths.log(f"native windows unavailable, using browser tabs: {error}")
         finally:
             with _host_start_lock:
                 _host_starting = False
+                orphan = started_host if _host_stopping else None
+                if started_host is None:
+                    _host_start_failed = True
+                elif orphan is None:
+                    _window_host = started_host
             _host_attempt_done.set()
+            if orphan is not None:
+                orphan.stop()  # ready after shutdown began: nobody else will stop it
 
     threading.Thread(target=worker, daemon=True, name="fused-render-window-host").start()
 
 
 def _stop_window_host() -> None:
-    global _window_host
+    """Waits out a start already in flight (bounded by `_HOST_WAIT_S`) before
+    taking `_window_host`, so a host that finishes starting during shutdown
+    is stopped by `worker` itself (above) rather than published and then
+    orphaned here with nothing left to stop."""
+    global _window_host, _host_stopping
+    with _host_start_lock:
+        _host_stopping = True
+        starting = _host_starting
+    if starting:
+        _host_attempt_done.wait(_HOST_WAIT_S)
     host, _window_host = _window_host, None
     if host is not None:
         host.stop()

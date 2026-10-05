@@ -926,16 +926,18 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'native_windows_enabled' must be a boolean"}, status_code=400)
         # Applied live BEFORE the write: the app builds (or closes) its
         # windows on the main thread a tick after this returns. No hook =
-        # nothing to apply, and the preference just stores. A host that IS
-        # reachable but refuses (`apply` -> False) must not be saved as a
-        # clean switch — prefs.json and the live host would then disagree for
-        # as long as that host keeps running — so the write is skipped and
-        # the PUT fails instead (the page's existing error banner for this
-        # toggle covers it; an unreachable host is not this case, see `apply`).
+        # nothing to apply, and the preference just stores. Only an explicit
+        # `False` is a refusal: macOS's `apply` returns None (it only queues
+        # work on the main thread). A host that IS reachable but refuses
+        # (`apply` -> False) must not be saved as a clean switch —
+        # prefs.json and the live host would then disagree for as long as
+        # that host keeps running — so the write is skipped and the PUT fails
+        # instead (the page's existing error banner for this toggle covers
+        # it; an unreachable host is not this case, see `apply`).
         from fused_render import window_policy
 
         apply_windows = window_policy.native_hooks.get("apply")
-        if apply_windows is not None and not apply_windows(value):
+        if apply_windows is not None and apply_windows(value) is False:
             return JSONResponse(
                 {"error": "the window host refused the native-windows preference; try again"},
                 status_code=409,

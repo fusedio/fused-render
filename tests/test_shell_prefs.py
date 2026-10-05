@@ -245,6 +245,22 @@ def test_native_windows_enabled_rejects_the_put_when_the_host_refuses(tmp_path, 
         window_policy.native_hooks.clear()
 
 
+def test_native_windows_enabled_saves_when_the_hook_returns_none(tmp_path, monkeypatch):
+    """macOS's `apply` hops to the main thread via `AppHelper.callAfter`,
+    which returns None no matter what the applied callback does. None is not
+    a refusal, so the toggle must still save."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render import window_policy
+
+    window_policy.native_hooks["apply"] = lambda on: None
+    try:
+        resp = client.put("/api/prefs", json={"native_windows_enabled": False}, headers=FUSED)
+        assert resp.status_code == 200
+        assert json.loads((home / "prefs.json").read_text())["native_windows_enabled"] is False
+    finally:
+        window_policy.native_hooks.clear()
+
+
 def test_native_windows_enabled_saves_when_the_host_is_unreachable(tmp_path, monkeypatch):
     """A host that isn't reachable at all (not started yet, lazy-start
     design) is not a failure — it reads this same preference for itself at
