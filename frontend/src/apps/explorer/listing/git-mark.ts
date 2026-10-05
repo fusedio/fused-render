@@ -41,6 +41,21 @@ export function gitRowClass(status: string | undefined): string {
   return gitMarkFor(status) ? ` git-${status}` : "";
 }
 
+/**
+ * The `↑N` badge for an entry touched by N commits not yet on the branch's
+ * upstream, or null when N is absent or not a positive integer. Independent of
+ * `gitMarkFor`: an entry can be dirty AND ahead, and wears both.
+ */
+export function gitAheadMark(
+  count: number | undefined,
+): { text: string; label: string } | null {
+  if (typeof count !== "number" || !Number.isInteger(count) || count < 1) return null;
+  return {
+    text: `↑${count}`,
+    label: `${count} unpushed commit${count === 1 ? "" : "s"}`,
+  };
+}
+
 /** The mark for an entry, or null when git has nothing to say about it. */
 export function gitMarkFor(status: string | undefined): GitMark | null {
   if (!status) return null;

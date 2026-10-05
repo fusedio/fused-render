@@ -84,6 +84,7 @@ import {
   skeletonRows,
   ClipMark,
   GitMark,
+  GitAheadMark,
   renderHighlightPath,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
@@ -1768,6 +1769,7 @@ export default function Listing({
               <span className="name-text">{entry.name}</span>
             </span>
             <GitMark status={entry.git} />
+            <GitAheadMark count={entry.git_ahead} />
             {/* Guaranteed sweep-start strip — see explorer.css's
                 .sweep-anchor comment. Before ClipMark in the DOM so a
                 cut/copied badge, when present, still wins the overlap at

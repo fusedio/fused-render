@@ -74,6 +74,10 @@ export interface FsEntry {
   // field — all three render undecorated, which is the same true statement:
   // there is nothing to point at.
   git?: GitEntryStatus;
+  // Number of local commits not yet on the branch's upstream that touched this
+  // entry (for a folder: anything beneath it). Independent of `git`. Absent
+  // when zero, no upstream, or not in a repo.
+  git_ahead?: number;
 }
 
 export type GitEntryStatus = "conflicted" | "modified" | "untracked" | "staged";

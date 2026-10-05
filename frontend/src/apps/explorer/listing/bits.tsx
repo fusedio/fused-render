@@ -2,7 +2,7 @@
 // pill, the git status badge, and search-match highlighting.
 import { highlightSegments } from "@platform/lib/fuzzy";
 import { FLIP_KEY_ATTR } from "@platform/lib/flip";
-import { gitMarkFor } from "./git-mark";
+import { gitAheadMark, gitMarkFor } from "./git-mark";
 
 // Shimmering placeholder rows shown while the listing fetch is in flight —
 // same column shape as the real rows (icon + name + size + mtime), just with
@@ -59,6 +59,18 @@ export function GitMark({ status }: { status?: string }) {
     // status dot.
     <span className="git-mark" role="img" title={mark.label} aria-label={mark.label}>
       {mark.letter}
+    </span>
+  );
+}
+
+// The `↑N` unpushed-commits badge. Separate from GitMark: it does not follow the
+// row's dirty tint, and an entry can wear both. Renders nothing when N is absent.
+export function GitAheadMark({ count }: { count?: number }) {
+  const mark = gitAheadMark(count);
+  if (!mark) return null;
+  return (
+    <span className="git-ahead-mark" role="img" title={mark.label} aria-label={mark.label}>
+      {mark.text}
     </span>
   );
 }
