@@ -29,8 +29,8 @@ test("the chips, the count and the empty state speak for the whole catalog", () 
   const src = apps();
   // Chip rows ride on every page from the server rather than being derived
   // from the cards the client holds, which would lose options as pages came.
-  expect(src).toContain("const tags = page?.tags ?? [];");
-  expect(src).toContain("orderCategories(page?.categories ?? [])");
+  expect(src).toContain("const tags = page?.tags ?? lastChips.tags;");
+  expect(src).toContain("orderCategories(page?.categories ?? lastChips.categories)");
   // The count is the FILTER's, never the page's.
   expect(src).toContain("`${page.total} of ${page.total_all} apps`");
 });
@@ -59,10 +59,14 @@ test("a revisit paints from the previous first page instead of a skeleton", () =
 
 test("the next page is requested once and appended in server order", () => {
   const src = apps();
-  expect(src).toContain("if (!page || !hasMore || loadingMore) return;");
+  expect(src).toContain("if (!page || !hasMore || moreCtl.current) return;");
+  // A failed next page stops the auto-load; the pill becomes the retry.
+  expect(src).toContain("if (!hasMore || moreFailed || !el) return;");
   expect(src).toContain("apps: [...cur.apps, ...res.apps]");
-  // A refetch that changed the grid under an in-flight page drops that page
-  // rather than appending it at a stale offset.
+  // A page-1 request (filter change or refetch) aborts an in-flight next
+  // page at its source: an offset check alone passes when a refetch asked for
+  // the same count, and would append a page of the old snapshot.
+  expect(src).toContain("moreCtl.current?.abort();");
   expect(src).toContain("cur.apps.length !== res.offset");
 });
 

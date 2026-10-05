@@ -49,6 +49,13 @@ const PAGE_SIZE = 24;
 // same as one deleted while the page sat open.
 const firstPages = new Map<string, AppsPage>();
 
+// The chip rows from the most recent answer, whatever filter it was for.
+// Chips speak for the WHOLE catalog, so any page's rows are valid for every
+// filter — and a filter the reader has not visited yet has no `page` to read
+// them from until its request returns. Without this the toolbar collapsed on
+// every new chip or search for one round trip.
+let lastChips: { tags: string[]; categories: string[] } = { tags: [], categories: [] };
+
 // Which facet the chips filter by. "category" reads each app's authored
 // metadata.json category; "repo" is the top-level workspace folder (tag):
 // all / examples / local / showcase in a stock workspace.
@@ -238,11 +245,13 @@ export default function Apps({ config }: { config: Config }) {
 
   // Page 1 (and the refetch). One request per filter key / nonce, the previous
   // one aborted: a fast typist's intermediate queries never land out of order
-  // over the one they meant. A `nonce` refetch asks for as many cards as are
-  // already on screen (never fewer than a page) with `fresh`, so the snapshot
-  // behind it is rebuilt and the reader keeps their place; a filter change
-  // asks for the first page. A failed fetch keeps whatever grid is drawn —
-  // the error is its own state, not a phase that blanks the cards.
+  // over the one they meant. It asks for as many cards as the cache already
+  // holds for this filter (never fewer than a page): a revisit to a grid the
+  // reader had grown to three pages re-requests three pages and replaces the
+  // cache like for like, rather than writing 24 cards over it and snapping
+  // the reader to the top. A `nonce` refetch adds `fresh`, so the snapshot
+  // behind it is rebuilt. A failed fetch keeps whatever grid is drawn — the
+  // error is its own state, not a phase that blanks the cards.
   //
   // "Is this a refetch" is "did `nonce` change since this effect last ran",
   // held in a ref — NOT `nonce > 0`. After the first create or sync that
@@ -252,16 +261,24 @@ export default function Apps({ config }: { config: Config }) {
   // remove.
   const seenNonce = useRef(nonce);
   useEffect(() => {
+    // A next page still in flight belongs to the list this request replaces.
+    // Abort it here, where the replacement starts, rather than trusting an
+    // offset check at its arrival: a refetch that asked for the same count
+    // would pass that check and append a page of the OLD snapshot onto the
+    // new list.
+    moreCtl.current?.abort();
+    moreCtl.current = null;
+    setLoadingMore(false);
+    setMoreFailed(false);
     const ctl = new AbortController();
     const refetch = nonce !== seenNonce.current;
     seenNonce.current = nonce;
-    const limit = refetch
-      ? Math.max(PAGE_SIZE, firstPages.get(filterKey)?.apps.length ?? 0)
-      : PAGE_SIZE;
+    const limit = Math.max(PAGE_SIZE, firstPages.get(filterKey)?.apps.length ?? 0);
     getAppsPage({ offset: 0, limit, tag, category, q, fresh: refetch }, ctl.signal).then(
       (res) => {
         if (ctl.signal.aborted) return;
         firstPages.set(filterKey, res);
+        lastChips = { tags: res.tags, categories: res.categories };
         setError(null);
         setLoaded({ key: filterKey, page: res });
       },
@@ -273,28 +290,48 @@ export default function Apps({ config }: { config: Config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tag/category/q are inside filterKey
   }, [filterKey, nonce]);
 
-  // The next page, appended. Guarded by `loadingMore` (one in flight) and by
-  // there being more: the sentinel below asks for this on every intersect and
-  // a tall viewport asks several times in a row. The appended result is also
-  // stored as the filter's first-page answer so a revisit paints the whole
-  // grown grid, not just its first page.
+  // The next page, appended. One in flight at a time, guarded by the REF
+  // (`moreCtl`), not by `loadingMore` state: the sentinel's observer calls
+  // this from a closure that may predate the state update, and a tall
+  // viewport asks several times in a row. The appended result is also stored
+  // as the filter's first-page answer so a revisit paints the whole grown
+  // grid, not just its first page.
+  //
+  // A failure stops the AUTO-load (`moreFailed` unmounts the sentinel's
+  // observer) and leaves the pill as a Retry. Without that, the effect that
+  // re-observes on every state change would see the still-visible sentinel,
+  // call this again, fail again — a persistent error as a tight request loop.
   const [loadingMore, setLoadingMore] = useState(false);
+  const [moreFailed, setMoreFailed] = useState(false);
+  const moreCtl = useRef<AbortController | null>(null);
   const hasMore = page !== null && page.apps.length < page.total;
   const loadMore = () => {
-    if (!page || !hasMore || loadingMore) return;
+    if (!page || !hasMore || moreCtl.current) return;
+    const ctl = new AbortController();
+    moreCtl.current = ctl;
     setLoadingMore(true);
+    setMoreFailed(false);
     const key = filterKey;
-    getAppsPage({ offset: page.apps.length, limit: PAGE_SIZE, tag, category, q }).then(
+    getAppsPage(
+      { offset: page.apps.length, limit: PAGE_SIZE, tag, category, q },
+      ctl.signal,
+    ).then(
       (res) => {
+        if (ctl.signal.aborted) return; // the page-1 effect replaced this list
+        moreCtl.current = null;
         setLoadingMore(false);
         const cur = firstPages.get(key);
-        if (!cur || cur.apps.length !== res.offset) return; // a refetch moved under us
+        if (!cur || cur.apps.length !== res.offset) return;
         const grown = { ...res, offset: 0, apps: [...cur.apps, ...res.apps] };
         firstPages.set(key, grown);
+        lastChips = { tags: res.tags, categories: res.categories };
         setLoaded((l) => (l.key === key ? { key, page: grown } : l));
       },
       (e: Error) => {
+        if (ctl.signal.aborted) return;
+        moreCtl.current = null;
         setLoadingMore(false);
+        setMoreFailed(true);
         setError(e.message);
       },
     );
@@ -315,7 +352,7 @@ export default function Apps({ config }: { config: Config }) {
   const shownCount = page?.apps.length ?? 0;
   useEffect(() => {
     const el = sentinelRef.current;
-    if (!hasMore || !el) return;
+    if (!hasMore || moreFailed || !el) return;
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) loadMore();
@@ -324,8 +361,8 @@ export default function Apps({ config }: { config: Config }) {
     );
     io.observe(el);
     return () => io.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMore reads current state
-  }, [hasMore, shownCount, loadingMore]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMore guards itself through moreCtl
+  }, [hasMore, shownCount, moreFailed]);
 
   const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1));
   const runningPaths = useRunningBackgroundApps();
@@ -341,8 +378,8 @@ export default function Apps({ config }: { config: Config }) {
   // puts the curated running order (starters, local-ai, productivity,
   // geospatial) first, then locale-alphabetical for anything else a workspace
   // turns up. Card order in the grid is unaffected.
-  const tags = page?.tags ?? [];
-  const categories = orderCategories(page?.categories ?? []);
+  const tags = page?.tags ?? lastChips.tags;
+  const categories = orderCategories(page?.categories ?? lastChips.categories);
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
 
@@ -456,7 +493,9 @@ export default function Apps({ config }: { config: Config }) {
                     <button type="button" className="fhb-more" onClick={loadMore} disabled={loadingMore}>
                       {loadingMore
                         ? "Loading…"
-                        : `Show more (${page.total - page.apps.length} remaining)`}
+                        : moreFailed
+                          ? "Retry loading more"
+                          : `Show more (${page.total - page.apps.length} remaining)`}
                     </button>
                   </>
                 )}
