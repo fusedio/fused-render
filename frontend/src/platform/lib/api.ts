@@ -2764,9 +2764,17 @@ export interface AppEntryInfo {
   migration_task?: { id: string; state: string; run_id: string | null } | null;
 }
 
-export function getAppEntry(path: string): Promise<AppEntryInfo> {
+// `opened` is the explorer saying "this folder was just opened": the server
+// then also notes the git auto-sync check for it. Only the listing sets it —
+// every other caller is a probe, not an open.
+export function getAppEntry(
+  path: string,
+  opts?: { opened?: boolean },
+): Promise<AppEntryInfo> {
   return getJson<AppEntryInfo>(
-    `/api/apps/entry?path=${encodeURIComponent(path)}`,
+    `/api/apps/entry?path=${encodeURIComponent(path)}${
+      opts?.opened ? "&opened=1" : ""
+    }`,
   );
 }
 

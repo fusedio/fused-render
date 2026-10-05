@@ -30,6 +30,7 @@ def _clean_state(monkeypatch):
     next."""
     monkeypatch.setattr(git_upstream, "_checked", {})
     monkeypatch.setattr(git_upstream, "_state", {})
+    monkeypatch.setattr(git_upstream, "_pending", {})
     # This file pins the pre-auto-sync behaviour (the Update card, silent
     # failures); tests/test_git_auto_sync.py covers the setting-on side.
     monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)

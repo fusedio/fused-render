@@ -568,13 +568,20 @@ def api_app_remove_icon(
 
 
 @router.get("/api/apps/entry")
-def api_app_entry(path: str):
+def api_app_entry(path: str, opened: bool = False):
     """The folder's app entry (its first tagged top-level page — the one rule,
     `app_listing.app_entry`) or null. The explorer's "Open app" button asks
     THIS instead of re-deriving the rule from filenames client-side: under the
     marker rule (D301) a name tells the client nothing, and a second copy of
     the rule in the shell is a copy that drifts. Any folder may be asked,
-    workspace or not; an unreadable or entry-less one is `entry: null`."""
+    workspace or not; an unreadable or entry-less one is `entry: null`.
+
+    `opened=1` says "the explorer just opened this folder": a folder that
+    resolves an entry is an app being opened, so the git auto-sync check is
+    noted for it (throttled, off-thread, best-effort) — the listing never
+    renders the entry page, so /render's own trigger never fires for a folder
+    visit. Recency is NOT recorded (that stays render-only). The probes that
+    also ask this endpoint (menus, thumbnails, the app page) omit it."""
     from fused_render.index.ignore import MountGuard
 
     entry = None
@@ -584,6 +591,13 @@ def api_app_entry(path: str):
                 entry = app_listing.app_entry(path)
         except OSError:
             entry = None
+    if opened and entry:
+        try:
+            from fused_render import git_upstream
+
+            git_upstream.note_app_opened(os.path.dirname(entry))
+        except Exception:  # noqa: BLE001 — housekeeping must not fail the probe
+            logger.warning("git auto-sync note failed for %s", path, exc_info=True)
     return {
         "entry": entry,
         # The fused page API version the entry declares (`<meta
