@@ -6,11 +6,13 @@ import base64
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -581,16 +583,124 @@ def rclone_bin() -> str | None:
     2. The packaged macOS app bundle (py2app sets sys.frozen = "macosx_app",
        same check as fusedcli.setup_cli_hint): rclone at
        Contents/Resources/bin/rclone (D103, build_dmg.sh).
+       Skipped when this Mac is older than the binary's own minimum macOS
+       (read from its Mach-O header): dyld would refuse to launch it, so the
+       resolution falls through to 3 and a self-installed rclone still works.
     3. The system rclone on PATH (dev checkout, or a host that installed it)."""
+    return _resolve_rclone()[0]
+
+
+def _resolve_rclone() -> tuple[str | None, str | None]:
+    """(path, skip_reason). skip_reason is set only when the bundled macOS
+    binary was passed over because this Mac is too old for it; it stays set
+    even when PATH then supplies a rclone (callers show it only when path is
+    None)."""
     override = os.environ.get("FUSED_RENDER_RCLONE_BIN")
     if override and os.path.isfile(override):
-        return override
+        return override, None
+    reason = None
     if getattr(sys, "frozen", None) == "macosx_app":
         contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
         bundled = os.path.join(contents, "Resources", "bin", "rclone")
         if os.path.isfile(bundled):
-            return bundled
-    return shutil.which("rclone")
+            reason = _too_old_for_macos(bundled)
+            if reason is None:
+                return bundled, None
+    return shutil.which("rclone"), reason
+
+
+def rclone_unavailable_reason() -> str | None:
+    """Why there is no runnable rclone when the cause is the macOS version
+    (bundled binary needs a newer OS and nothing else is on PATH); None when
+    rclone resolves or is simply not installed."""
+    path, reason = _resolve_rclone()
+    return None if path else reason
+
+
+def rclone_missing_message() -> str:
+    """The one user-facing sentence for 'no rclone', shared by every mount
+    surface so the macOS-version reason is never replaced by a generic one."""
+    return rclone_unavailable_reason() or "rclone is not installed"
+
+
+def _macos_version() -> tuple[int, int] | None:
+    """Running macOS as (major, minor), None when unknown. A 10.x answer is
+    treated as unknown: Python built against an old SDK reports 10.16 on
+    macOS 11+ (compat mode), and gating on that would wrongly skip rclone."""
+    parts = platform.mac_ver()[0].split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return None
+    return None if major <= 10 else (major, minor)
+
+
+_LC_VERSION_MIN_MACOSX = 0x24
+_LC_BUILD_VERSION = 0x32
+_FAT_CPU = {"arm64": 0x0100000C, "x86_64": 0x01000007}
+
+
+def _macho_min_os(path: str) -> tuple[int, int] | None:
+    """The minimum macOS a Mach-O binary declares (LC_BUILD_VERSION minos, or
+    the older LC_VERSION_MIN_MACOSX), parsed from the file header in pure
+    Python so the end-user Mac needs no otool / Xcode CLT. None when the file
+    is not a readable Mach-O we understand."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+            base = 0
+            if head[:4] in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):
+                wide = head[3] == 0xBF
+                n = struct.unpack(">I", head[4:8])[0]
+                if not 0 < n <= 16:
+                    return None
+                size = 32 if wide else 20
+                archs = []
+                for _ in range(n):
+                    ent = f.read(size)
+                    cpu = struct.unpack(">I", ent[:4])[0]
+                    off = struct.unpack(">Q", ent[8:16])[0] if wide else struct.unpack(">I", ent[8:12])[0]
+                    archs.append((cpu, off))
+                want = _FAT_CPU.get(platform.machine())
+                pick = [a for a in archs if a[0] == want] or archs[:1]
+                base = pick[0][1]
+                f.seek(base)
+                head = f.read(8)
+            magic = head[:4]
+            if magic == b"\xcf\xfa\xed\xfe":
+                f.seek(base)
+                hdr = f.read(32)
+                ncmds = struct.unpack("<I", hdr[16:20])[0]
+            else:
+                return None
+            for _ in range(min(ncmds, 512)):
+                lc = f.read(8)
+                if len(lc) < 8:
+                    return None
+                cmd, cmdsize = struct.unpack("<II", lc)
+                if cmd in (_LC_BUILD_VERSION, _LC_VERSION_MIN_MACOSX):
+                    body = f.read(16)
+                    # BUILD_VERSION: platform, minos, sdk, ntools; VERSION_MIN: version, sdk.
+                    v = struct.unpack("<I", body[4:8] if cmd == _LC_BUILD_VERSION else body[0:4])[0]
+                    return (v >> 16, (v >> 8) & 0xFF)
+                f.seek(cmdsize - 8, os.SEEK_CUR)
+    except (OSError, struct.error):
+        return None
+    return None
+
+
+def _too_old_for_macos(binary: str) -> str | None:
+    """The user-facing reason when this Mac is older than `binary`'s minimum
+    macOS, else None (including whenever either side is unknown, so an
+    unreadable header keeps the pre-gate behaviour of using the binary)."""
+    have = _macos_version()
+    need = _macho_min_os(binary)
+    if have is None or need is None or have >= need:
+        return None
+    return (f"Cloud mounts need macOS {need[0]} or later (this Mac runs "
+            f"{platform.mac_ver()[0]}). Install rclone yourself "
+            "(`brew install rclone`) to use mounts on this Mac.")
 
 
 WINFSP_DOWNLOAD_URL = "https://winfsp.dev/rel/"
@@ -676,7 +786,7 @@ def _ensure_rcd_locked() -> int:
         logger.warning("reap_stale_rcd failed", exc_info=True)
     bin_ = rclone_bin()
     if not bin_:
-        raise RuntimeError("rclone is not installed")
+        raise RuntimeError(rclone_missing_message())
     # Pick the port ourselves (parsing rcd's stderr for a :0 bind is brittle).
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

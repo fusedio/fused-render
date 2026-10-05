@@ -1006,6 +1006,10 @@ fi
 #         already broken in the shipping DMG. Pinning rclone back is a
 #         product call (the NFS handle-cache and rcd-auth tests pin 1.74's
 #         behaviour), so it is exempted here and printed, not fixed.
+#         At runtime mounts/rcd.py rclone_bin() reads this same minos from the
+#         binary's Mach-O header and skips the bundle on an older Mac (D1318),
+#         so a macOS 14 Mac falls back to a PATH rclone or a clear "needs
+#         macOS 15" message instead of a dyld launch error.
 # ---------------------------------------------------------------------------
 MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-14.0}"
 MINOS_EXEMPT=("Contents/MacOS/fused-apple-ai" "Contents/Resources/bin/rclone")
