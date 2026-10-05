@@ -37,4 +37,5 @@ Page-only reporting freezes row when user navigates. Detached worker outlives pa
 
 - No terminal call → stalled row lying about closed page.
 - Page-only reporting; two rows from mismatched ids; one row per file.
+- Worker POSTs without `X-Fused-Page` → orphan rows: no caption, never grouped with the app's other jobs, click opens nothing of the app.
 - Job started under `_preview=1` → every listing card starts work (gate boot — `fused-render-authoring`).
