@@ -200,6 +200,8 @@ def test_input_route_409s_while_a_child_holds_the_foreground(client, scratch_reg
     instead of sending `cd ... && cmd\\r` into it."""
     sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
     session = scratch_registry.get(sid)
+    # A fresh pty reads as "not the shell" until setsid() lands; wait for it first.
+    assert session.wait_shell_foreground(timeout=5)
     session.write(b"sleep 30\n")
 
     deadline = time.time() + 5
