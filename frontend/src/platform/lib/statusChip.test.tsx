@@ -2,7 +2,7 @@
 // pins, second click / Escape / outside closes, and one chip open at a time.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useStatusChip, type StatusChipState } from "./statusChip";
+import { requestOpenSection, useStatusChip, type StatusChipState } from "./statusChip";
 import type { SectionKey } from "./exclusiveSection";
 
 const ZERO = { openMs: 0, closeMs: 0 };
@@ -123,4 +123,17 @@ test("hovering a second chip closes a pinned first one — one panel at a time",
   expect(a.open).toBe(false);
   expect(a.pinned).toBe(false);
   renderer.unmount();
+});
+
+// D1316: a notification row with nowhere else to go opens the Activity panel.
+test("requestOpenSection pins the matching chip and leaves the others alone", async () => {
+  const activity = harness("activity");
+  const models = harness("models");
+  act(() => requestOpenSection("activity"));
+  await settle();
+  expect(activity.state.pinned).toBe(true);
+  expect(activity.state.open).toBe(true);
+  expect(models.state.pinned).toBe(false);
+  activity.renderer.unmount();
+  models.renderer.unmount();
 });
