@@ -64,9 +64,10 @@ export function GitMark({ status }: { status?: string }) {
 }
 
 // The `↑N` unpushed-commits badge. Separate from GitMark: it does not follow the
-// row's dirty tint, and an entry can wear both. Renders nothing when N is absent.
-export function GitAheadMark({ count }: { count?: number }) {
-  const mark = gitAheadMark(count);
+// row's dirty tint, and shows only on clean rows (no `status`). Renders nothing
+// when N is absent.
+export function GitAheadMark({ count, status }: { count?: number; status?: string }) {
+  const mark = gitAheadMark(count, status);
   if (!mark) return null;
   return (
     <span className="git-ahead-mark" role="img" title={mark.label} aria-label={mark.label}>

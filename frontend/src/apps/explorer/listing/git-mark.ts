@@ -43,12 +43,15 @@ export function gitRowClass(status: string | undefined): string {
 
 /**
  * The `↑N` badge for an entry touched by N commits not yet on the branch's
- * upstream, or null when N is absent or not a positive integer. Independent of
- * `gitMarkFor`: an entry can be dirty AND ahead, and wears both.
+ * upstream, or null when N is absent or not a positive integer. Shown only on
+ * clean rows: any dirty `status` (the `gitMarkFor` input) suppresses it, so a
+ * row wears the dirty mark or the badge, never both.
  */
 export function gitAheadMark(
   count: number | undefined,
+  status: string | undefined,
 ): { text: string; label: string } | null {
+  if (status) return null;
   if (typeof count !== "number" || !Number.isInteger(count) || count < 1) return null;
   return {
     text: `↑${count}`,

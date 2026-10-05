@@ -8,15 +8,21 @@ import { GIT_MARKS, gitAheadMark, gitMarkFor, gitRowClass } from "./git-mark";
 
 describe("gitAheadMark", () => {
   it("is null when nothing is unpushed", () => {
-    expect(gitAheadMark(undefined)).toBeNull();
-    expect(gitAheadMark(0)).toBeNull();
-    expect(gitAheadMark(-1)).toBeNull();
-    expect(gitAheadMark(Number.NaN)).toBeNull();
+    expect(gitAheadMark(undefined, undefined)).toBeNull();
+    expect(gitAheadMark(0, undefined)).toBeNull();
+    expect(gitAheadMark(-1, undefined)).toBeNull();
+    expect(gitAheadMark(Number.NaN, undefined)).toBeNull();
   });
 
-  it("shows the count with a singular/plural tooltip", () => {
-    expect(gitAheadMark(1)).toEqual({ text: "↑1", label: "1 unpushed commit" });
-    expect(gitAheadMark(3)).toEqual({ text: "↑3", label: "3 unpushed commits" });
+  it("shows the count with a singular/plural tooltip on a clean row", () => {
+    expect(gitAheadMark(1, undefined)).toEqual({ text: "↑1", label: "1 unpushed commit" });
+    expect(gitAheadMark(3, undefined)).toEqual({ text: "↑3", label: "3 unpushed commits" });
+  });
+
+  it("is null on any dirty row", () => {
+    for (const status of ["M", "U", "S", "!", "A", "D"]) {
+      expect(gitAheadMark(2, status)).toBeNull();
+    }
   });
 });
 

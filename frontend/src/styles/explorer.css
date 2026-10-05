@@ -2899,8 +2899,8 @@ table.listing-table td.name .git-mark {
   user-select: none;
 }
 /* The unpushed-commits badge (up-arrow plus count). Coloured from the staged
-   blue family, independent of the row's dirty tint, so a dirty row can carry
-   both without the two reading as one signal. Same flex rule as .git-mark. */
+   blue family, independent of the row's dirty tint; it renders only on clean
+   rows, so it never sits beside a .git-mark. Same flex rule as .git-mark. */
 table.listing-table td.name .git-ahead-mark {
   flex: 0 0 auto;
   color: var(--git-staged);
