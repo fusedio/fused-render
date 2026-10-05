@@ -290,7 +290,9 @@ def download(model_id):
     """
     recipe = _recipe(model_id)
     if not recipe:
-        return {"snapshot": worker_base.download_snapshot(model_id), "gguf": None}
+        return {"snapshot": worker_base.download_snapshot(
+            model_id, ignore_patterns=list(formats.DIFFUSERS_IGNORE)),
+                "gguf": None}
 
     snapshot = worker_base.download_snapshot(
         model_id, allow_patterns=list(recipe["keep"]))

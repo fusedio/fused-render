@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import threading
 
+import formats  # noqa: E402 - the shared download scopes; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded (model, tokenizer). One per process — see the module docstring.
@@ -117,10 +118,13 @@ def _pin_stream():
 
 
 def download(model_id):
-    """The whole repo. MLX reads a directory of safetensors plus the tokenizer,
-    so there is no single file to pick out — unlike the image runner, which
-    swaps one quantized checkpoint into an otherwise-normal pipeline."""
-    return worker_base.download_snapshot(model_id)
+    """The repo MINUS the formats MLX cannot open. MLX reads a directory of
+    safetensors plus arbitrary config/tokenizer/processor/template/custom-code
+    files, so the scope is an IGNORE list (`formats.MLX_IGNORE`: pickles, Flax,
+    TF, ONNX, GGUF, `original/`), not an allow list that could drop a file the
+    next architecture reads."""
+    return worker_base.download_snapshot(
+        model_id, ignore_patterns=list(formats.MLX_IGNORE))
 
 
 def _mlx_load():

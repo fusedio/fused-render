@@ -13,6 +13,9 @@
 //                         DuckDB-WASM, tiled in the browser with ST_AsMVT
 //   @carbonplan/zarr-layer Zarr v2/v3 as a MapLibre custom layer (zarrita)
 //   pmtiles               the pmtiles:// protocol
+//   maplibre-gl-lidar     LAS/LAZ/COPC/EPT point clouds through deck.gl's
+//                         PointCloudLayer; COPC and EPT stream by viewport
+//                         (octree nodes by range read), LAS/LAZ load whole
 //
 // deck.gl comes only from here (via maplibre-gl-raster); two copies of luma.gl
 // in one page fail with "This version of luma.gl has already been initialized".
@@ -26,4 +29,7 @@ export { ZarrLayer } from '@carbonplan/zarr-layer';
 // The same zarrita the zarr layer reads with, for the page's own metadata pass
 // (variables, dimension labels) — one copy, and its stores are interchangeable.
 export * as zarr from 'zarrita';
+export { LidarControl } from './pointcloud-gpu.mjs';
+export { getClassificationName, getClassificationColor,
+         COLORMAP_NAMES as LIDAR_COLORMAPS } from 'maplibre-gl-lidar';
 export { Protocol as PMTilesProtocol, PMTiles, FetchSource } from 'pmtiles';
