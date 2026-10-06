@@ -46,6 +46,8 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import shutil
+import stat
 import tempfile
 import time
 from typing import Optional
@@ -179,29 +181,97 @@ _SHIM_FILES = {
 }
 
 
+_FALLBACK_ROOT: Optional[str] = None
+
+
+def _shim_state(root: str, uid: int) -> str:
+    """"ok" (trusted and complete), "missing", "stale" (ours but not usable:
+    incomplete, tampered, wrong type or loose permissions: safe to delete) or
+    "foreign" (owned by someone else: never use, never touch)."""
+    try:
+        st = os.lstat(root)
+    except OSError:
+        return "missing"
+    posix = hasattr(os, "getuid")
+    if posix and st.st_uid != uid:
+        return "foreign"
+    if not stat.S_ISDIR(st.st_mode) or (posix and st.st_mode & 0o022):
+        return "stale"
+    for rel, text in _SHIM_FILES.items():
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8") as fh:
+                if fh.read() != text:
+                    return "stale"
+        except (OSError, ValueError):
+            return "stale"
+    return "ok"
+
+
+def _remove(path: str) -> None:
+    try:
+        if stat.S_ISDIR(os.lstat(path).st_mode):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _write_shims(dest: str) -> None:
+    for rel, text in _SHIM_FILES.items():
+        path = os.path.join(dest, rel)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+
+def _fallback_shim_root(uid: int) -> str:
+    """A private (mkdtemp, 0o700) per-process root, for when the predictable
+    path is occupied by someone else's directory."""
+    global _FALLBACK_ROOT
+    if _FALLBACK_ROOT and _shim_state(_FALLBACK_ROOT, uid) == "ok":
+        return _FALLBACK_ROOT
+    root = tempfile.mkdtemp(prefix="fused-render-shell-")
+    _write_shims(root)
+    _FALLBACK_ROOT = root
+    return root
+
+
 def _shim_root() -> str:
     """The per-user shim directory, written once per content hash. Idempotent
-    and race-tolerant (atomic rename), so two servers starting together agree."""
+    and race-tolerant (atomic rename), so two servers starting together agree.
+
+    The predictable path lives in a shared temp dir on Linux, so an existing
+    root is only trusted if it is a real directory owned by us, not writable
+    by group/other, with every shim file byte-equal to what we would write."""
     digest = hashlib.sha1(
         "".join(f"{k}\0{v}\0" for k, v in sorted(_SHIM_FILES.items())).encode()
     ).hexdigest()[:10]
     uid = os.getuid() if hasattr(os, "getuid") else 0
     root = os.path.join(tempfile.gettempdir(), f"fused-render-shell-{uid}-{digest}")
-    if all(os.path.isfile(os.path.join(root, rel)) for rel in _SHIM_FILES):
+    state = _shim_state(root, uid)
+    if state == "ok":
         return root
+    if state == "foreign":
+        return _fallback_shim_root(uid)
+    if state == "stale":
+        _remove(root)
     staging = f"{root}.tmp{os.getpid()}"
-    for rel, text in _SHIM_FILES.items():
-        path = os.path.join(staging, rel)
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text)
+    _remove(staging)
+    try:
+        os.mkdir(staging, 0o700)
+        _write_shims(staging)
+    except OSError:
+        _remove(staging)
+        return _fallback_shim_root(uid)
     try:
         os.rename(staging, root)
     except OSError:
         # Another process won the race (root now exists and is complete).
-        import shutil
-        shutil.rmtree(staging, ignore_errors=True)
-    return root
+        _remove(staging)
+    if _shim_state(root, uid) == "ok":
+        return root
+    return _fallback_shim_root(uid)
 
 
 def integrate(profile: TerminalProfile) -> TerminalProfile:
