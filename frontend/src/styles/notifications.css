@@ -291,7 +291,7 @@
   opacity: 1;
 }
 
-/* The read-only "what Claude is running" tab (D1326): marked by a left accent,
+/* The read-only "what Claude is running" tab (D1327): marked by a left accent,
    a pulsing dot while a command runs, and a Stop button. */
 .term-tab.is-claude {
   border-left: 2px solid var(--accent, currentColor);

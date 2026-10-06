@@ -193,11 +193,11 @@ same read-only tab after each command completes (not live). Note in report.
 - **Deviation**: Stop kills the wrapper process TREE (ps walk), not the recorded pgid, because the pgid may be the claude CLI own group. `/bin/sh` on macOS makes `source <missing file>` fatal (POSIX mode), so the tests ship a real empty snapshot file; zsh/bash are exercised too.
 - **Log key**: session id (`session_id or new_session_id`, passed from session_host to `_spawn_env`). If the CLI ever mints a new id on `--resume`, the resumed chat gets a second Claude tab.
 - **Server**: `claude_cmd_log.py`, routes in `routers/terminal.py`, tests `tests/test_terminal_claude_kind.py` (includes a real-wrapper Stop test). `terminal_read` works on `claude:<chat>` (the /text route handles it) but is not separately tested through the MCP tool.
-- **Frontend**: `terminalTabs.ts` (`syncClaudeTabs`, claude-aware reconcile/cachedTabs), `TerminalTabStrip` (is-claude, Stop), `TerminalDrawer` 2 s poll, `stopClaudeCommands`, CSS in `notifications.css`. Tests added to `TerminalDrawer.test.tsx`. D1326 in DECISIONS.md.
+- **Frontend**: `terminalTabs.ts` (`syncClaudeTabs`, claude-aware reconcile/cachedTabs), `TerminalTabStrip` (is-claude, Stop), `TerminalDrawer` 2 s poll, `stopClaudeCommands`, CSS in `notifications.css`. Tests added to `TerminalDrawer.test.tsx`. D1327 in DECISIONS.md.
 
 ### Fix with AI / Ask Claude on selection (Builder 4)
 
 - Unit 1: `claude_cmd_log._descendants/_is_wrapper` now spawn `/bin/ps` (or `/usr/bin/ps`) with close_fds=False and no cwd; test pins it for both. No other subprocess call was added on this branch (checked the diff).
-- Unit 2: `terminalAi.ts` (+tests), prompt builders in `terminalFocus.ts`, TerminalView pills and OSC handlers, drawer `askSelection`/`fixFailure`, CSS next to the terminal rules. D1327.
+- Unit 2: `terminalAi.ts` (+tests), prompt builders in `terminalFocus.ts`, TerminalView pills and OSC handlers, drawer `askSelection`/`fixFailure`, CSS next to the terminal rules. D1328.
 - Deviation: pill top gets an 8px offset (`.term-view` padding) because it is positioned against `.term-view`, not the surface. No TerminalDrawer test added (no cheap seam for the TerminalView props beyond `view()`).
 - All visual and click behaviour unverified.

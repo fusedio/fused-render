@@ -16,7 +16,7 @@ export const MAX_HEIGHT = 720;
 export const DEFAULT_HEIGHT = 260;
 export const DEFAULT_LABEL = "Terminal";
 
-/** The server's read-only session kind for a chat's Bash-tool commands (D1326):
+/** The server's read-only session kind for a chat's Bash-tool commands (D1327):
  * its ids are `claude:<chat id>`, which is how a tab is recognised from nothing
  * but the persisted id list. */
 export const CLAUDE_ID_PREFIX = "claude:";

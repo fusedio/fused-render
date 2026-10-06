@@ -212,6 +212,19 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # keep a stale _baked_branch.py from a previous ref/wheel.
 "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${WHEEL_PATH}"
 
+# Bundle numpy's macosx_11_0_arm64 (OpenBLAS) wheel, not the host-tagged 14.0
+# (Accelerate) one pip picks on this runner, so the bundle's minos stays 13.0
+# (D1325). Same version as installed above; --only-binary makes a miss fatal.
+NUMPY_VER="$("$BUILD_VENV/bin/pip" show numpy | awk '/^Version:/{print $2}')"
+NUMPY_WHEELS="$BUILD_DIR/numpy-macos11-wheel"
+rm -rf "$NUMPY_WHEELS"
+"$BUILD_VENV/bin/pip" download --quiet --only-binary=:all: --no-deps \
+    --platform macosx_13_0_arm64 --implementation cp \
+    --python-version "$("$BUILD_VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
+    --dest "$NUMPY_WHEELS" "numpy==${NUMPY_VER}" \
+  || { echo "FATAL: no numpy==${NUMPY_VER} wheel for macOS 13 arm64" >&2; exit 1; }
+"$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "$NUMPY_WHEELS"/numpy-*.whl
+
 # ---------------------------------------------------------------------------
 # 2a-bis. Reconcile the force-list against what [bundled] actually installed.
 #
@@ -904,17 +917,15 @@ fi
 #         here expecting it to. When this trips on a wheel, the fix is per
 #         package (pin a version that ships only the old tag, or build it).
 #
-#     Threshold 14.0, not the Info.plist's LSMinimumSystemVersion (11.0):
-#     numpy 2.x's arm64 wheels are `macosx_14_0_arm64` already, so 11.0 would
-#     fail today on a bundle that has shipped for months. 14 is the floor the
-#     macos-14 runner gave us for free and the one D468 restored; this keeps
-#     it. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
+#     Threshold 13.0, not the Info.plist's LSMinimumSystemVersion (11.0):
+#     numpy's default arm64 wheel is `macosx_14_0_arm64`; its macOS-11 wheel is
+#     forced in step 2 (D1325), so 13.0 holds. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
 #     OS; older linkers wrote `LC_VERSION_MIN_MACOSX` instead, read the same.
 #     Exempt, and listed rather than hidden:
 #       - Contents/MacOS/fused-apple-ai: minos 26 by design, host.py never
 #         spawns it below that (D700).
 # ---------------------------------------------------------------------------
-MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-14.0}"
+MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-13.0}"
 MINOS_EXEMPT=("Contents/MacOS/fused-apple-ai")
 echo "==> bundle sanity: no Mach-O requires a macOS newer than ${MINOS_FLOOR}"
 for rel in "${MINOS_EXEMPT[@]}"; do
