@@ -35,7 +35,7 @@ FORWARDS = ("results", "questions", "errors", "builds", "routines")
 FORWARDS_DEFAULT = ("results", "errors", "builds")
 
 
-LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine"}
+LABELS = {"imessage": "iMessage", "whatsapp": "WhatsApp", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine"}
 
 
 def label(kind: str) -> str:

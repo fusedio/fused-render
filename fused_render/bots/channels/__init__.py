@@ -12,7 +12,7 @@ import sys
 from fused_render.bots.channels import base
 from fused_render.bots.channels.base import WEB_CAPS, Caps
 
-KIND_LABELS = {"imessage": "iMessage", "botsend": "a local script (botsend)", "web": "the web page"}
+KIND_LABELS = {"imessage": "iMessage", "whatsapp": "WhatsApp", "botsend": "a local script (botsend)", "web": "the web page"}
 
 
 def available() -> list:
@@ -21,6 +21,14 @@ def available() -> list:
     if sys.platform == "darwin":
         from fused_render.bots.channels.imessage import ImessageChannel
         out.append(ImessageChannel())
+    from fused_render.bots.channels import whatsapp
+    if whatsapp.enabled():  # POC: FUSED_BOTS_WHATSAPP=1 + `pip install neonize`
+        try:
+            import neonize  # noqa: F401
+            out.append(whatsapp.WhatsappChannel())
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("whatsapp channel wanted but neonize is not importable", exc_info=True)
     return out
 
 
@@ -29,6 +37,9 @@ def caps_for(via) -> Caps:
     kind = (via or {}).get("kind") or base.WEB_KIND
     if kind == "imessage":
         from fused_render.bots.channels.imessage import CAPS
+        return CAPS
+    if kind == "whatsapp":
+        from fused_render.bots.channels.whatsapp import CAPS
         return CAPS
     return WEB_CAPS
 
