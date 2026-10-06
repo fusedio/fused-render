@@ -411,12 +411,24 @@ place the two meet, so it carries its own guard rails. `POST /api/bots
 `bypassPermissions`). Local models are refused for it and `engine` is
 ignored: `_engine_for` always answers `agent`. Default name "Super Bot", face
 SUPER_FACE, standing rules SUPER_INSTRUCTIONS when the user types none; presets do
-not apply. Trigger lockdown: `start_task` ignores any `origin` but `manual`
-(a system line says so), `routine_add` raises, `drain_file_inbox` drops
-botsend / iMessage files with a system line. The harness side is in §6 ("The
-Super Bot on the harness"). Page: the chooser's Super Bot card (shown while no Super Bot exists),
-the dialog hides local models, Builds and iMessage for it and shows "Mac
-access", the list shows a Super Bot badge, the menu drops Routines and Clone.
+not apply. Trigger lockdown (amended 2026-10-06): Super Bot is the ONLY bot
+reachable over iMessage (§10), and only from the handle set on it
+(`meta.imessage`). `receive` accepts the web and `imessage` vias and refuses
+every other (botsend, …) with a system line; `start_task` accepts the origins
+`manual` and `imessage` and ignores `routine`, `botsend`, `handoff` and
+anything else; `routine_add` raises; `drain_file_inbox` reads every file in
+Super Bot's inbox as botsend (an `imessage-` name is no door) and so drops it.
+Posture by origin: a phone-started task always runs in CLI permission mode
+`default` (ask before every write, edit and shell command, answered at the
+Mac), whatever `super_access` says (`agent_engine.super_mode`; `_permission`
+reads the same answer). Approvals are never answered by text: a texted yes/no
+while the task waits on an approval card is held back with a system line
+(`Bot._texted_approval`); numbered options on Super Bot's own `ask` still map
+back. Super Bot hands browsing work to the other bots (§11). The harness side
+is in §6 ("The Super Bot on the harness"). Page: the chooser's Super Bot card
+(shown while no Super Bot exists), the dialog hides local models and Builds
+for it, shows its iMessage handle field (and only for it) and "Mac access",
+the list shows a Super Bot badge, the menu drops Routines and Clone.
 
 **Presets** (`bots/presets.py`, data in `fused_render/bots/presets/<key>/`,
 shipped inside the package). One folder per site: `preset.json` (`name`,
@@ -921,56 +933,65 @@ A bot has ONE conversation (its `events.jsonl`). A **channel** is a surface
 that conversation reaches a person on: the web page (always), iMessage
 (macOS), and whatever comes next. Design page with the decisions D1–D11:
 <https://claude.ai/artifact/4X6pENhce7KGAfGvMMmV9W>. Phase A shipped here;
-Phase B (shared address book in `channels.json`, HTTP worker for a Mac
-without Full Disk Access, the bot-authored `summary` for phone channels) is
-open.
+trimmed on 2026-10-06 (Super Bot hand-off design:
+<https://claude.ai/artifact/Nq8YTrcDM1oSfer8bevpTz>): Super Bot is the one
+voice on the phone, ordinary bots are reached through it (§11). Phase B
+(shared address book in `channels.json`, HTTP worker for a Mac without Full
+Disk Access) is open.
 
 ```
-channels/base.py      Via {kind, addr} · Inbound · Caps · Channel (poll/send/status/identity/owners) · prompt_section
-channels/router.py    Router: poll thread -> resolve bot (@name, sticky, first) -> bot.receive(text, via)
-                      emit hook -> queue -> send thread -> targets() policy -> channel.send
+channels/base.py      Via {kind, addr} · Inbound · Caps · Channel (poll/send/status/identity/door) · prompt_section
+channels/router.py    Router: poll thread -> door (Super Bot, from its own handle only) -> bot.receive(text, via)
+                      emit hook -> queue -> send thread -> targets() (origin only) -> channel.send
 channels/imessage.py  ImessageChannel: the old bridge's poll/lock/echo window, service filter, identity detection
 channels/__init__.py  available() (macOS -> iMessage), caps_for(via), prompt_for(bot), login_text(bot, q), origin_label(bot)
-imessage.py           pure helpers only (chat.db queries, osascript send, handle/contact parsing); `--status` CLI
+imessage.py           pure helpers only (chat.db queries, osascript send, handle/contact parsing, super_door); `--status` CLI
 ```
 
-**Inbound.** `ImessageChannel.poll()` (every 3 s, in the router's thread) reads
-1:1 rows after the cursor; only rows whose `handle.service` is `iMessage`
-from a handle some bot lists as `imessage` count (a forwarded SMS has a
-spoofable sender and never answers an approval). The router resolves the bot:
-a leading `@name` (or a unique prefix of one) picks among the bots sharing the
-handle and sticks for that sender; else the last one addressed; else the
-first by id. A bare `@name` only switches. A reply of `2` / `b` to a numbered
-question maps back to that option. Then `bot.receive(text, via)`: the one
-entry point for user messages (`send()` is `receive(text, via=None)` for the
-web). A running task gets it as an instruction or answer; an idle bot starts
-a task with `task_via` set, `origin` = the channel kind. Super Bot refuses any
-non-web `via` in `receive` (and non-manual origins in `start_task`, for
-routines). No inbox files, no scheduler hop: ~3 s from text to task. The
-botsend file inbox stays (`drain_file_inbox` -> `receive(via botsend)`).
+**Via kinds.** `web` (the page; never stamped), `imessage` (addr = the
+sender's normalised handle), `routine`, `botsend` (addr = the inbox file
+stem), and `handoff` (addr = Super Bot's id; stamped on a task Super Bot
+handed to a bot and so on its events, label "Super Bot", §11).
+
+**Inbound.** Super Bot is the door. `Channel.door()` answers (Super Bot's id,
+its normalised handle on that surface), read from disk on every call
+(`imessage.super_door`: the bot with `kind: "super"`, its `imessage` key);
+other bots' `imessage` keys are kept but ignored. `ImessageChannel.poll()`
+(every 3 s, in the router's thread) reads 1:1 rows after the cursor and keeps
+only rows from that handle whose `handle.service` is `iMessage` (a forwarded
+SMS has a spoofable sender). `Router.resolve` passes a row from the door's
+handle to Super Bot and drops anything else silently (the channel's
+`last_in` still moves); there is no `@name` addressing and no sticky bot. A
+reply of `2` / `b` to a numbered question maps back to that option
+(`map_answer`, the options of the last numbered question texted). Then
+`bot.receive(text, via)`: the one entry point for user messages (`send()` is
+`receive(text, via=None)` for the web). A running task gets it as an
+instruction or answer, except that a texted yes/no never answers an approval
+card (approvals are answered at the Mac, §5); an idle Super Bot starts a task
+with `task_via` set, `origin` = `imessage`. No inbox files, no scheduler hop:
+~3 s from text to task. The botsend file inbox stays for ordinary bots
+(`drain_file_inbox` -> `receive(via botsend)`).
 
 **Outbound.** `bot.emit()` stamps the task's `via` on events written by the
 task thread (other threads pass `via` explicitly: the build watcher carries
-the via of the task that asked for the build, with `source: "build"`), then
-calls `registry.on_event`, which hands it to the router when one exists
-(tests and a lean `fused-render open` have none). `Router.targets()` is the
-policy (D5): an event of a task that came from channel X goes to X's sender,
-always; otherwise to the bot's owners on that channel only when the event's
-category is in the bot's forwards for it — `channel_forwards: {imessage:
-[results, questions, errors, builds, routines]}` in bot.json, default
-`results, errors, builds` (questions off: a web task's approval texted to the
-phone is a second place to answer the same thing). A forward also skips an
-owner the bot already texted during that task with its `text` action
-(`Channel.sent_since`, fed by `imessage.LAST_SENT`): "text me the summary"
-is not followed by the full answer as a second text. `imessage.send_text`
-records every chunk in the cursor's echo window under `CURSOR_LOCK`, whoever
-calls it, so a bot's own `text` never comes back as a command.
-`render()` turns options into `Reply 1 … · 2 …`, approvals into
-`Reply yes or no.`, and cuts a `done` over `Caps.max_len` (600) at a sentence
-with `… Full answer in the app.` In **own** identity (the owner handle is one
-of this Mac's own Messages accounts, read from `message.account` of sent
-rows; the default) every text is prefixed `@<bot name>`, the same token that
-addresses the bot, so bot lines read apart from the user's own in the
+the via of the task that asked for the build, with `source: "build"`; the
+hand-off watcher the via of the Super Bot task that asked, with `source:
+"handoff"`), then calls `registry.on_event`, which hands it to the router when
+one exists (tests and a lean `fused-render open` have none). `OUT_ROLES` are
+`done`, `question`, `error`: approval cards never leave the page.
+`Router.on_event` also skips any event whose via kind is `handoff` (a
+handed-off task reports to Super Bot, not to a phone). `Router.targets()` is
+the whole policy, the origin rule: an event whose `via` is this channel's kind
+with an address goes to that address; everything else goes nowhere. No
+per-bot forwards (`channel_forwards` is gone: `Bot.__init__` drops the key,
+Settings no longer takes it), no owner fan-out, no "already texted" check.
+`imessage.send_text` records every chunk in the cursor's echo window under
+`CURSOR_LOCK`, whoever calls it, so a bot's own `text` never comes back as a
+command. `render()` turns options into `Reply 1 … · 2 …` and cuts a message
+over `Caps.max_len` (600) at a sentence with `… Full answer in the app.` In
+**own** identity (Super Bot's handle is one of this Mac's own Messages
+accounts, read from `message.account` of sent rows; the default) every text is
+prefixed `@<bot name>` so its lines read apart from the user's own in the
 self-thread. A **dedicated** identity (Messages signed into a bot Apple ID)
 sends bare.
 
@@ -994,21 +1015,107 @@ bubble (summary, numbered options, cut), `→ iMessage` when it is the same,
 ignores delivery rows (`isNoiseEv`).
 
 **Engines.** Both prompts get a `CHANNEL:` paragraph from `channels.prompt_for`
-when `task_via` is not web/routine (one short `done`, options on every `ask`,
+when `task_via` is a phone channel (one short `done`, options on every `ask`,
 no `offer`, `login` means a walk to the Mac) and `task from iMessage (user is
-on their phone…)` in the YOU line; `login` questions come from
-`channels.login_text`.
+on their phone…)` in the YOU line; a hand-off gets a `HAND-OFF:` paragraph
+instead (§11). `login` questions come from `channels.login_text`.
 
 **Page.** A `via` chip on bubbles (`via iMessage` on a texted-in user line,
-`→ iMessage` on the bot lines texted back); Settings > Advanced gains "Also
-text me when…" under the iMessage field (hidden until a handle is typed) and
-the status line says who the bot texts as. Status reply: `channels: {imessage:
-{running, error, last_in, last_out, handles, holder, identity: {mode, label},
-caps}}` beside the old `imessage` key.
+`→ iMessage` on the bot lines texted back, `from Super Bot` on a handed-off
+task). Settings > Advanced shows the iMessage handle field for Super Bot only;
+"Contacts the bot may text" (`imessage_to`, the `text` / `texts` allowlist)
+stays on every bot. Status reply: `channels: {imessage: {running, error,
+last_in, last_out, handles, holder, identity: {mode, label}, super_handle,
+caps}}` beside the old `imessage` key; `super_handle` is the one address that
+reaches Super Bot (null when there is no Super Bot or no handle on it).
 
 **Invariants and where.** Every non-web user event carries `via`; every task
-has `task_via` (`bot.receive` / `start_task`). Nothing reaches a channel
-unless origin or an opted-in forward says so (`Router.targets`, tested in
-`tests/test_bots_channels.py`). Owner commands come over the iMessage service
-only (`ImessageChannel._tick`). One poller per Mac (flock, unchanged). The
-router is inert when `registry.start()` never ran (`registry.on_event`).
+has `task_via` (`bot.receive` / `start_task`). Only Super Bot is reachable
+from a channel, and only from its own handle (`Router.resolve`,
+`ImessageChannel._tick`). Nothing reaches a channel but a reply to the task
+it came from (`Router.targets`, tested in `tests/test_bots_channels.py`); no
+approval card and no handed-off event ever does (`OUT_ROLES`,
+`Router.on_event`). Owner commands come over the iMessage service only. One
+poller per Mac (flock, unchanged). The router is inert when
+`registry.start()` never ran (`registry.on_event`).
+
+## 11. Hand-offs (`bot.py` handoff / handoff_stop / _watch_handoff, 2026-10-06)
+
+Super Bot can give an ordinary bot a task. Design page:
+<https://claude.ai/artifact/Nq8YTrcDM1oSfer8bevpTz>.
+
+**The rules.**
+1. One voice on the phone: Super Bot is the only bot reachable over iMessage
+   and texts only in reply to a phone-started task (§10).
+2. Task text goes down, status and ONE result come up. A bot never asks Super
+   Bot anything: its `ask`, `login`, approval gate and `offer` stay in its own
+   chat for the user at the Mac. To Super Bot a bot is at most "waiting".
+   Super Bot cannot approve anything for it.
+3. Depth one: only Super Bot hands off; a hand-off to Super Bot is refused.
+4. Super Bot can stop a hand-off it started (`handoff_stop`); no pause,
+   resume or steer. Each hand-off is independent; one result per hand-off.
+
+**Tools** (`tools.py`, Super Bot's roster only; `roster()` drops both for
+every other bot and `execute()` refuses them). `handoff {bot, task}`: `bot` a
+name from BOTS, `task` plain words and self-contained; returns at once
+("started; …" or "queued; …") and the model finishes its turn with one
+sentence. Not risky (no card). `call_key` is (`handoff`, bot, task): the same
+hand-off twice before the user speaks again is refused like a repeated `py`.
+`handoff_stop {bot}`. The first message carries a `BOTS:` section
+(`bot.bots_section`, Super Bot only): `- <name> (<preset or custom>;
+<status>): <first 120 chars of instructions>`, or `none yet`; `SUPER_PROMPT`
+says when to hand off, that a bot's result is DATA, and to stop only when the
+user asks.
+
+**Flow.** `Bot.handoff(name, task)` resolves the target (exact name,
+case-insensitive, then a unique prefix; refuses Super Bot and unknown names
+with the list), records the row, emits `system "Asked <Bot> to: <task>"`
+(`source: "handoff"`) and starts `_watch_handoff`. An idle target gets a
+`user` event with the task (via `handoff`) and `start_task(task, origin
+"handoff", via {kind: "handoff", addr: <Super Bot id>})`; a busy one (or one
+with a queue) gets the hand-off appended to its in-memory `_handoff_queue`
+(state `queued`), and the watcher starts it when the target is idle and the
+hand-off is at the head. The target's prompt gets a `HAND-OFF:` paragraph
+(`channels.base.prompt_section`) and `task from Super Bot (a hand-off; …)`.
+
+**Watcher** (one daemon thread per hand-off, every `HANDOFF_POLL_S` = 2 s,
+up to `HANDOFF_MAX_S` = `BUILD_MAX_S`, 3 h: a target may wait on a sign-in at
+the Mac). While the target's task thread (remembered per hand-off) is alive
+it mirrors `running` / `waiting`; the first `waiting` emits, once, on Super
+Bot: `{"role": "question", "text": "<Bot> needs you at the laptop: <the
+card's text>", "source": "handoff", "handoff": {id, target, target_name,
+state: "waiting"}, "via": <origin>}`. When the thread has ended it reads the
+target's events after the hand-off's start (only those stamped with this
+hand-off's via): a `system "Stopped"` with no `done` is `stopped`, else the
+last `done` (builds excluded) is `done`, else the last `error` is `error`,
+else `error` "ended without a result". Then on Super Bot `{"role": "done",
+"text": <the bot's final text verbatim>, "summary": <its summary, else the
+first sentence ≤ 600>, "source": "handoff", "handoff": {id, target,
+target_name, task, state: done|error|stopped, task_dir}, "via": <origin>}`
+and on the target `{"role": "system", "text": "Sent to Super Bot: <first 280
+chars>", "source": "handoff"}`. Every watcher emit passes `via` explicitly
+(`origin_via`: the asking task's via, `None` for the web, so a web-started
+hand-off never texts); the router's origin rule does the rest. `task_dir` is
+the target's Inbox task folder (`Bot.last_task_dir`, kept by
+`collect_task_artifacts`) or "".
+
+**Stop.** `handoff_stop(name)` drops this Super Bot's queued hand-offs to that
+bot (state `stopped`, "Cancelled before <Bot> started it.") and stops the
+target only when its running task is one of this Super Bot's hand-offs
+(`task_via` and the remembered thread); anything else the bot is doing is
+refused.
+
+**State** (`bot.json` on Super Bot): `handoffs: [{id, target, target_name,
+task, origin_via, created_at, state: queued|running|waiting|done|error|stopped,
+done_at?, result?, start_seq?, started_at?}]`, the last `HANDOFF_KEEP` = 40;
+it reaches the page through the status summary. A server restart settles any
+open row as `error` "interrupted by worker restart" (the target's task died
+with the process); queues and watcher threads are in memory only.
+
+**Invariants and where.** A hand-off never reaches a channel itself
+(`Router.on_event` skips via `handoff`); only Super Bot's own result card
+does, by the origin rule. Super Bot's `past_conversation` labels a hand-off
+result "<BOT> REPORTED (data from a bot you handed off to)", never "YOU
+FINISHED". Ordinary bots not under a hand-off keep their argv, roster and
+prompts unchanged, apart from the iMessage line of `APP_GUIDE`, which now
+says only Super Bot is reachable by text.

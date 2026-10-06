@@ -126,30 +126,24 @@ def resolve_contact(who, contacts):
     return None
 
 
-def handles_to_bots():
-    """{normalized handle: [bot ids]} for every bot with an iMessage handle set,
-    bots in id order. Read from disk on every call (no Bot objects)."""
-    out = {}
+def super_door():
+    """(Super Bot's id, its normalized iMessage handle) or (None, ""): the one bot
+    a text reaches, and the one sender it takes texts from (docs §10). Other
+    bots' `imessage` keys are ignored. Read from disk on every call (no Bot objects)."""
     bots = bots_dir()
     try:
         ids = sorted(os.listdir(bots))
     except OSError:
-        return out
+        return None, ""
     for bid in ids:
         try:
             with open(os.path.join(bots, bid, "bot.json")) as f:
                 m = json.load(f)
         except (OSError, ValueError):
             continue
-        h = norm_handle(m.get("imessage"))
-        if h:
-            out.setdefault(h, []).append(bid)
-    return out
-
-
-def bots_with_handles():
-    """{normalized handle: first bot id} (the old shape; the channel uses handles_to_bots)."""
-    return {h: bids[0] for h, bids in handles_to_bots().items()}
+        if isinstance(m, dict) and m.get("kind") == "super":
+            return bid, norm_handle(m.get("imessage"))
+    return None, ""
 
 
 def decode_attributed_body(blob):
@@ -277,7 +271,6 @@ def format_texts(label, rows):
 # The cursor file is shared by the channel's poll (router poll thread) and every
 # sender (router send thread, a bot's `text` action on its task thread): one lock.
 CURSOR_LOCK = threading.RLock()
-LAST_SENT = {}   # normalized handle -> ts of the last text this process sent them (router: no double-texting a task)
 
 
 def send_text(handle, text):
@@ -292,7 +285,6 @@ def send_text(handle, text):
         for chunk in chunks(text):
             sent[chunk] = now
         save_cursor(cur)
-        LAST_SENT[norm_handle(handle)] = now
     for chunk in chunks(text):
         r = subprocess.run(["osascript", "-"] + [handle, chunk], input=_SEND_SCRIPT, capture_output=True,
                            text=True, timeout=SEND_TIMEOUT_S, close_fds=False)
@@ -319,8 +311,8 @@ def main(argv):
         print("The iMessage bridge runs inside the fused-render server (bots/channels/imessage.py).\n"
               "  python -m fused_render.bots.imessage --status   # what this Mac can see")
         return 2
-    handles = handles_to_bots()
-    print("bots with a handle: " + (", ".join(f"{h} -> {','.join(b)}" for h, b in handles.items()) or "none"))
+    sid, handle = super_door()
+    print(f"Super Bot: {sid or 'none'}; texts it from: {handle or 'no handle set'}")
     try:
         db = open_db()
         print(f"chat.db: readable, {db.execute('select count(*) from message').fetchone()[0]} messages")
@@ -334,7 +326,7 @@ def main(argv):
         with open(state_path()) as f:
             print(f"bridge state: {f.read().strip()}")
     except OSError:
-        print("bridge state: none written yet (server not running, or no bot has a handle)")
+        print("bridge state: none written yet (server not running, or Super Bot has no handle)")
     return 0
 
 

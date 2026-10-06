@@ -87,16 +87,6 @@ def test_decode_attributed_body():
     assert imessage.decode_attributed_body(b"NSString" + b"\x00" * 20 + b"+\x03abc") == ""  # '+' too far away
 
 
-def test_handles_to_bots():
-    from fused_render.bots import store
-
-    store.write_meta("a", {"id": "a", "imessage": "+1 555 123 4567"})
-    store.write_meta("b", {"id": "b", "imessage": "+15551234567"})  # same handle: both bots, id order (the router picks)
-    store.write_meta("c", {"id": "c", "imessage": ""})
-    store.write_meta("d", {"id": "d", "imessage": "Me@Mail.com"})
-    assert imessage.handles_to_bots() == {"+15551234567": ["a", "b"], "me@mail.com": ["d"]}
-    assert imessage.bots_with_handles() == {"+15551234567": "a", "me@mail.com": "d"}  # the old first-wins shape
-
 
 def test_cursor_round_trip():
     assert imessage.load_cursor() == {"rowid": None, "sent": {}}

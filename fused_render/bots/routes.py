@@ -452,17 +452,10 @@ def _settings(bid, body):
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
     if body.get("imessage_handle") is not None:
+        # Meaningful on Super Bot only (the one bot a text reaches, docs §10); kept and ignored on the others.
         b.meta["imessage"] = imessage.norm_handle(body["imessage_handle"])
     if body.get("imessage_to") is not None:
         b.meta["imessage_to"] = str(body["imessage_to"]).strip()
-    if isinstance(body.get("channel_forwards"), dict):
-        # {kind: [category…]} — what else than its own replies a channel gets (channels/base.py FORWARDS, docs §10)
-        from fused_render.bots.channels.base import FORWARDS
-        fw = {}
-        for kind, cats in body["channel_forwards"].items():
-            if isinstance(cats, list):
-                fw[str(kind)] = [c for c in FORWARDS if c in cats]
-        b.meta["channel_forwards"] = fw
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):

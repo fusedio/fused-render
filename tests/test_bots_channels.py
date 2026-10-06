@@ -19,11 +19,11 @@ class FakeChannel(Channel):
     kind = "fake"
     caps = Caps(options=False, buttons=False, max_len=120, media=False, can_login=False)
 
-    def __init__(self, owners, mode="own"):
-        self._owners, self._mode, self.sent, self.inbox = owners, mode, [], []
+    def __init__(self, door=("b1", "+1"), mode="own"):
+        self._door, self._mode, self.sent, self.inbox = door, mode, [], []
 
-    def owners(self):
-        return self._owners
+    def door(self):
+        return self._door
 
     def poll(self):
         out, self.inbox = self.inbox, []
@@ -62,7 +62,6 @@ class FakeRegistry:
 def test_render_numbers_options_and_shortens():
     assert rmod.render({"role": "question", "text": "Size?", "options": ["Studio", "1br", "2br"]}, CAPS) == \
         ("Size?\n\nReply 1 Studio · 2 1br · 3 2br", ["Studio", "1br", "2br"])
-    assert rmod.render({"role": "approval", "text": "Buy?"}, CAPS) == ("Buy?\n\nReply yes or no.", [])
     assert rmod.render({"role": "question", "text": "Size?", "options": ["A", "B"]}, base.WEB_CAPS) == ("Size?", [])
     long = "First sentence. " * 60
     text, _ = rmod.render({"role": "done", "text": long}, CAPS)
@@ -77,24 +76,8 @@ def test_map_answer():
     assert rmod.map_answer("2", []) == "2"
 
 
-def test_split_at_name():
-    names = {"scout": "s1", "mover": "m1"}
-    assert rmod.split_at_name("@Scout find flats", names) == ("s1", "find flats")
-    assert rmod.split_at_name("@sc: hi", names) == ("s1", "hi")
-    assert rmod.split_at_name("@m, pack", names) == ("m1", "pack")
-    assert rmod.split_at_name("@Scout", names) == ("s1", "")
-    assert rmod.split_at_name("hello @Scout", names) == (None, "hello @Scout")
-    assert rmod.split_at_name("@nobody do it", names) == (None, "@nobody do it")
 
 
-def test_category_and_forwards():
-    assert rmod.category({"role": "done"}) == "results"
-    assert rmod.category({"role": "done", "via": {"kind": "routine", "addr": ""}}) == "routines"
-    assert rmod.category({"role": "done", "source": "build"}) == "builds"
-    assert rmod.category({"role": "question"}) == "questions" and rmod.category({"role": "approval"}) == "questions"
-    assert rmod.category({"role": "error"}) == "errors"
-    assert rmod.forwards_for({}, "imessage") == base.FORWARDS_DEFAULT
-    assert rmod.forwards_for({"channel_forwards": {"imessage": ["errors"]}}, "imessage") == ("errors",)
 
 
 def test_prompt_section_and_login_text():
@@ -113,27 +96,21 @@ def test_prompt_section_and_login_text():
 
 
 # ---- router policy ------------------------------------------------------------------
-def test_targets_reply_to_origin_then_forwards():
-    ch = FakeChannel({"+1": ["b1", "b2"]})
+def test_targets_reply_to_origin_only():
+    ch = FakeChannel()
     b1 = FakeBot("b1", "Scout")
     r = rmod.Router(FakeRegistry(b1))
     r.add(ch)
-    # a texted task answers the sender, whatever the forwards say
-    b1.meta["channel_forwards"] = {"fake": []}
+    # a texted task answers the sender
     assert r.targets(ch, b1, {"role": "done", "text": "ok", "via": {"kind": "fake", "addr": "+1"}}) == ["+1"]
-    # a web task reaches the owners only through forwards
+    # nothing else reaches a channel: no forwards for web tasks, routines or builds
     assert r.targets(ch, b1, {"role": "done", "text": "ok"}) == []
-    b1.meta["channel_forwards"] = {"fake": ["results"]}
-    assert r.targets(ch, b1, {"role": "done", "text": "ok"}) == ["+1"]
-    assert r.targets(ch, b1, {"role": "error", "text": "x"}) == []
-    # routines are off by default
-    del b1.meta["channel_forwards"]
     assert r.targets(ch, b1, {"role": "done", "text": "ok", "via": {"kind": "routine", "addr": ""}}) == []
-    assert r.targets(ch, b1, {"role": "done", "text": "ok", "source": "build"}) == ["+1"]
+    assert r.targets(ch, b1, {"role": "done", "text": "ok", "source": "build"}) == []
 
 
 def test_deliver_prefixes_in_own_identity_and_numbers_options():
-    ch = FakeChannel({"+1": ["b1"]})
+    ch = FakeChannel()
     b1 = FakeBot("b1", "Scout")
     r = rmod.Router(FakeRegistry(b1))
     r.add(ch)
@@ -150,27 +127,12 @@ def test_deliver_prefixes_in_own_identity_and_numbers_options():
         r.dispatch(ch, m)
     assert b1.received[-1] == ("2", {"kind": "fake", "addr": "+1"})
     # a dedicated identity carries no prefix
-    ch2 = FakeChannel({"+1": ["b1"]}, mode="dedicated")
+    ch2 = FakeChannel(mode="dedicated")
     r.add(ch2)
     r.deliver(ch2, b1, {"role": "done", "text": "Done.", "via": {"kind": "fake", "addr": "+1"}})
     assert ch2.sent == [("+1", "Done.")]
 
 
-def test_dispatch_routes_by_name_then_sticky():
-    store.write_meta("b1", {"id": "b1", "name": "Scout"})
-    store.write_meta("b2", {"id": "b2", "name": "Mover"})
-    ch = FakeChannel({"+1": ["b1", "b2"], "+2": ["b2"]})
-    b1, b2 = FakeBot("b1", "Scout"), FakeBot("b2", "Mover")
-    r = rmod.Router(FakeRegistry(b1, b2))
-    r.add(ch)
-    r.dispatch(ch, Inbound(addr="+1", text="first"))          # no history: the first bot
-    r.dispatch(ch, Inbound(addr="+1", text="@mover pack up"))  # @name switches…
-    r.dispatch(ch, Inbound(addr="+1", text="and the boxes"))   # …and sticks
-    r.dispatch(ch, Inbound(addr="+1", text="@Mover"))          # a bare address: sticky, nothing to run
-    r.dispatch(ch, Inbound(addr="+9", text="stranger"))        # not an owner: dropped
-    assert [t for t, _ in b1.received] == ["first"]
-    assert [t for t, _ in b2.received] == ["pack up", "and the boxes"]
-    assert all(v == {"kind": "fake", "addr": "+1"} for _, v in b1.received + b2.received)
 
 
 def test_split_summary_and_summary_render():
@@ -188,7 +150,7 @@ def test_split_summary_and_summary_render():
 
 
 def test_deliver_writes_delivery_rows():
-    ch = FakeChannel({"+1": ["b1"]})
+    ch = FakeChannel()
     b1 = FakeBot("b1", "Scout")
     r = rmod.Router(FakeRegistry(b1))
     r.add(ch)
@@ -199,7 +161,7 @@ def test_deliver_writes_delivery_rows():
     class Broken(FakeChannel):
         def send(self, addr, text, event=None):
             raise RuntimeError("osascript: Messages got an error")
-    bad = Broken({"+1": ["b1"]})
+    bad = Broken()
     r.add(bad)
     rmod.SEND_RETRY_WAIT_S, old = 0, rmod.SEND_RETRY_WAIT_S
     try:
@@ -213,22 +175,10 @@ def test_deliver_writes_delivery_rows():
     assert r._q.empty()
 
 
-def test_forward_skips_an_owner_the_bot_already_texted():
-    ch = FakeChannel({"+1": ["b1"]})
-    b1 = FakeBot("b1", "Scout")
-    b1.task_started = 1000.0
-    r = rmod.Router(FakeRegistry(b1))
-    r.add(ch)
-    ev = {"role": "done", "text": "ok"}
-    assert r.targets(ch, b1, ev) == ["+1"]
-    ch.sent_since = lambda addr, ts: addr == "+1" and ts <= 1500.0  # the bot's `text` action reached +1 at 1500
-    assert r.targets(ch, b1, ev) == []
-    # a reply to the origin is never skipped
-    assert r.targets(ch, b1, {**ev, "via": {"kind": "fake", "addr": "+1"}}) == ["+1"]
 
 
 def test_on_event_ignores_what_no_channel_carries():
-    ch = FakeChannel({"+1": ["b1"]})
+    ch = FakeChannel()
     b1 = FakeBot("b1", "Scout")
     r = rmod.Router(FakeRegistry(b1))
     r.add(ch)
@@ -277,9 +227,9 @@ def test_imessage_poll_filters_and_identity(app_home, tmp_path, monkeypatch):
     dbp = str(tmp_path / "chat.db")
     _fake_chat_db(dbp)
     monkeypatch.setattr(imessage, "CHAT_DB", dbp)
-    store.write_meta("b1", {"id": "b1", "name": "Scout", "imessage": "+1 555 123 4567"})
+    store.write_meta("b1", {"id": "b1", "name": "Scout", "kind": "super", "imessage": "+1 555 123 4567"})
     ch = ImessageChannel()
-    assert ch.owners() == {"+15551234567": ["b1"]}
+    assert ch.door() == ("b1", "+15551234567")
     assert ch.poll() == []                              # first run: cursor set to now, nothing replayed
     assert imessage.load_cursor()["rowid"] == 2
     _add(dbp, 3, 1, "find flats")                       # owner over iMessage

@@ -1,15 +1,15 @@
-"""The router: every channel's inbound becomes `bot.receive(text, via)`, and
-every outbound-worthy event a bot emits is delivered under one policy
-(docs/bots.md §10).
+"""The router: every channel's inbound becomes `bot.receive(text, via)` on
+Super Bot, and every outbound-worthy event a bot emits is delivered under one
+policy (docs/bots.md §10).
 
-    inbound   poll thread, every POLL_S: channel.poll() -> resolve the bot
-              (owners of the sender, `@name` prefix, else the bot last addressed
-              from that sender, else the first) -> map a numbered answer back to
-              its option -> bot.receive(text, via)
+    inbound   poll thread, every POLL_S: channel.poll() -> the channel's door
+              (Super Bot, and only from the address set on it; anything else
+              is dropped) -> map a numbered answer back to its option ->
+              bot.receive(text, via)
     outbound  bot.emit() calls on_event(); a queue + one send thread, so a slow
               osascript never blocks a task thread. targets() is the policy:
-              reply to the channel the task came from, always; otherwise only
-              what the bot's forwards for that channel opt into.
+              reply to the channel the task came from, and nothing else (no
+              forwards; approvals are answered at the Mac, never by text).
 
 The router exists only while `registry.start()` ran (the full server): tests
 and a lean `fused-render open` have none, and `on_event` is a no-op then.
@@ -18,47 +18,22 @@ from __future__ import annotations
 
 import logging
 import queue
-import re
 import threading
 
 from fused_render.bots.channels import base
-from fused_render.bots.channels.base import FORWARDS_DEFAULT, OUT_ROLES, Caps, Channel, Inbound
+from fused_render.bots.channels.base import OUT_ROLES, Caps, Channel, Inbound
 
 logger = logging.getLogger(__name__)
 
 POLL_S = 3
 SEND_RETRIES = 3
 SEND_RETRY_WAIT_S = 5
-_AT_NAME = re.compile(r"^\s*@([\w][\w .-]{0,40}?)\s*[:,]?\s+(.*)\Z", re.S)
-_AT_ONLY = re.compile(r"^\s*@([\w][\w .-]{0,40})\s*[:,]?\s*\Z")
-
-
-def category(ev: dict) -> str:
-    """Which forwarding switch an event falls under."""
-    v = ev.get("via") or {}
-    if ev.get("source") == "build":
-        return "builds"
-    if v.get("kind") == base.ROUTINE_KIND:
-        return "routines"
-    role = ev.get("role")
-    if role == "done":
-        return "results"
-    if role in ("question", "approval"):
-        return "questions"
-    return "errors"
-
-
-def forwards_for(meta: dict, kind: str) -> tuple:
-    fw = (meta.get("channel_forwards") or {}).get(kind)
-    if isinstance(fw, list):
-        return tuple(str(x) for x in fw)
-    return FORWARDS_DEFAULT
 
 
 def render(ev: dict, caps: Caps) -> tuple[str, list[str]]:
     """The text a surface gets for one event, and the options it was numbered
     with (empty when the surface shows buttons itself). A phone has only the
-    reply box, so choices become "Reply 1 … · 2 …" and approvals "Reply yes or no"."""
+    reply box, so choices become "Reply 1 … · 2 …"."""
     text = (ev.get("text") or "").strip()
     if caps.max_len and (ev.get("summary") or "").strip():
         text = str(ev["summary"]).strip()  # D11: the bot wrote the phone-sized version itself
@@ -67,8 +42,6 @@ def render(ev: dict, caps: Caps) -> tuple[str, list[str]]:
     if opts and not caps.options:
         numbered = opts
         text += "\n\nReply " + " · ".join(f"{i + 1} {o}" for i, o in enumerate(opts))
-    elif ev.get("role") == "approval" and not caps.buttons:
-        text += "\n\nReply yes or no."
     if caps.max_len and len(text) > caps.max_len:
         head = text[:caps.max_len]
         cut = max(head.rfind("\n"), head.rfind(". "), head.rfind("! "), head.rfind("? "))
@@ -93,23 +66,6 @@ def map_answer(text: str, options: list[str]) -> str:
     return text
 
 
-def split_at_name(text: str, names: dict[str, str]) -> tuple[str | None, str]:
-    """("@scout do x", {"scout": id}) -> (id, "do x"). The name may be a prefix
-    of a bot's name ("@sc"); no match leaves the text untouched."""
-    m = _AT_NAME.match(text or "") or _AT_ONLY.match(text or "")
-    if not m:
-        return None, text
-    want = m.group(1).strip().lower()
-    rest = m.group(2).strip() if m.lastindex and m.lastindex >= 2 else ""
-    hit = names.get(want)
-    if hit is None:
-        cands = [bid for n, bid in names.items() if n.startswith(want)]
-        hit = cands[0] if len(cands) == 1 else None
-    if hit is None:
-        return None, text
-    return hit, rest
-
-
 class Router:
     def __init__(self, registry):
         self._registry = registry
@@ -117,7 +73,6 @@ class Router:
         self._q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
-        self._sticky: dict[tuple, str] = {}      # (kind, addr) -> bot id last addressed from there
         self._pending: dict[str, list[str]] = {}  # bot id -> options of the last numbered question sent out
         self._errors: dict[str, str] = {}         # kind -> last router-side error for Settings
         self._lock = threading.Lock()
@@ -161,39 +116,19 @@ class Router:
                     self._errors[ch.kind] = str(e).strip()[:300] or e.__class__.__name__
             self._stop.wait(POLL_S)
 
-    def _names(self, bids: list[str]) -> dict[str, str]:
-        from fused_render.bots import store
-        out = {}
-        for bid in bids:
-            try:
-                n = (store.read_meta(bid).get("name") or "").strip().lower()
-            except Exception:  # noqa: BLE001
-                n = ""
-            if n:
-                out.setdefault(n, bid)
-        return out
-
     def resolve(self, ch: Channel, m: Inbound) -> tuple[str | None, str]:
-        """(bot id, text for the bot) for one inbound, or (None, text) when the
-        sender owns no bot on this channel."""
-        bids = ch.owners().get(m.addr) or []
-        if not bids:
+        """(Super Bot's id, text) when the sender is the address set on Super
+        Bot, else (None, text): the message is dropped (the channel's status
+        still shows `last_in`)."""
+        bid, addr = ch.door()
+        if not bid or not addr or m.addr != addr:
             return None, m.text
-        key = (ch.kind, m.addr)
-        bid, text = split_at_name(m.text, self._names(bids))
-        if bid is None:
-            bid = self._sticky.get(key)
-            if bid not in bids:
-                bid = bids[0]
-        self._sticky[key] = bid
-        return bid, text
+        return bid, m.text
 
     def dispatch(self, ch: Channel, m: Inbound) -> None:
         bid, text = self.resolve(ch, m)
-        if bid is None:
+        if bid is None or not (text or "").strip():
             return
-        if not text.strip():
-            return  # a bare "@scout": the address is now sticky, nothing to run
         with self._lock:
             opts = self._pending.pop(bid, [])
         text = map_answer(text, opts)
@@ -205,24 +140,19 @@ class Router:
         """Called by bot.emit() for every event; cheap: enqueue or ignore."""
         if ev.get("role") not in OUT_ROLES or not (ev.get("text") or "").strip():
             return
+        if ((ev.get("via") or {}).get("kind") or "") == base.HANDOFF_KIND:
+            return  # a handed-off task reports to Super Bot, never to a channel (targets() agrees)
         if not self.channels:
             return
         self._q.put((bot, dict(ev)))
 
     def targets(self, ch: Channel, bot, ev: dict) -> list[str]:
-        """Who on `ch` gets this event: the sender it answers, or the bot's owners
-        on that channel when their forwards include the event's category."""
+        """Who on `ch` gets this event: the sender of the task it answers, and
+        only that (the origin rule). Everything else stays on the page."""
         v = ev.get("via") or {}
         if v.get("kind") == ch.kind and v.get("addr"):
             return [v["addr"]]
-        if category(ev) not in forwards_for(bot.meta, ch.kind):
-            return []
-        # A forward is a courtesy copy. Skip an owner the bot already texted during this
-        # task (its `text` action: "send me the summary"): the full answer as a second
-        # text is the noise the owner complained about.
-        since = float(getattr(bot, "task_started", 0) or 0)
-        return [addr for addr, bids in ch.owners().items()
-                if bot.id in bids and not (since and ch.sent_since(addr, since))]
+        return []
 
     def deliver(self, ch: Channel, bot, ev: dict) -> list[str]:
         """Send one event on one channel; returns the addresses it went to."""
@@ -232,7 +162,7 @@ class Router:
         text, numbered = render(ev, ch.caps)
         if ch.identity().get("mode") == "own":
             # The bot speaks through the user's own account: the name in front is
-            # the one token that tells its lines from theirs (and addresses it back).
+            # the one token that tells its lines from theirs.
             text = f"@{(bot.meta.get('name') or 'bot').strip()} {text}"
         sent = []
         for addr in addrs:
@@ -291,6 +221,10 @@ class Router:
             s["identity"] = ch.identity()
         except Exception:  # noqa: BLE001
             s["identity"] = {"mode": "", "label": ""}
+        try:
+            s["super_handle"] = ch.door()[1] or None   # the one address that reaches Super Bot here
+        except Exception:  # noqa: BLE001
+            s["super_handle"] = None
         s["caps"] = ch.caps.__dict__
         return s
 

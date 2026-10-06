@@ -9,9 +9,12 @@ delivery policy, option numbering and prefixes live once, in `router.py`.
     Via      {"kind": "imessage", "addr": "+15551234567"}  where a user message came from;
              stamped on the `user` event and, through `bot.task_via`, on every event
              of the task it started. The web is {"kind": "web", "addr": ""}; a routine's
-             task carries {"kind": "routine", "addr": ""} so policy can tell it apart.
+             task carries {"kind": "routine", "addr": ""} so policy can tell it apart; a
+             task Super Bot handed to a bot carries {"kind": "handoff", "addr": <Super Bot id>}
+             (docs §11).
     Inbound  one message a channel received, before any routing.
     Caps     what the surface can show; the engines and the router read it.
+    Door     Super Bot is the one bot a channel reaches (`Channel.door`, docs §10).
 """
 from __future__ import annotations
 
@@ -21,21 +24,18 @@ import time
 
 WEB_KIND = "web"
 ROUTINE_KIND = "routine"
+HANDOFF_KIND = "handoff"
 WEB = {"kind": WEB_KIND, "addr": ""}
 ROUTINE = {"kind": ROUTINE_KIND, "addr": ""}
 
 # Events a channel may carry out of the conversation. Thoughts, actions and
-# notes are the page's business.
-OUT_ROLES = ("done", "question", "approval", "error")
-
-# Forwarding categories (Settings "Also text me when…") and their default.
-# "questions" is off by default: a web task's approval card texted to the phone
-# while the user sits at the Mac is a second place to answer the same thing.
-FORWARDS = ("results", "questions", "errors", "builds", "routines")
-FORWARDS_DEFAULT = ("results", "errors", "builds")
+# notes are the page's business, and so are approval cards: approvals are
+# answered at the Mac only (docs §10), never by text.
+OUT_ROLES = ("done", "question", "error")
 
 
-LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine"}
+LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine",
+          HANDOFF_KIND: "Super Bot"}
 
 
 def label(kind: str) -> str:
@@ -96,17 +96,12 @@ class Channel:
         """Who the bot speaks as on this surface: {"mode": "own"|"dedicated"|"", "label": str}."""
         return {"mode": "", "label": ""}
 
-    def owners(self) -> dict[str, list[str]]:
-        """{addr: [bot ids]} — who may command which bots from this surface.
-        Resolved from disk on every call so a Settings save takes effect without a restart."""
-        return {}
-
-    def sent_since(self, addr: str, ts: float) -> bool:
-        """True when something already reached `addr` on this surface after `ts`
-        (a bot's own `text` action, say): the router then skips forwarding the
-        task's result there, so "text me the summary" is not followed by the
-        full answer as a second text."""
-        return False
+    def door(self) -> tuple[str | None, str]:
+        """(Super Bot's id, its owner address on this surface) or (None, ""):
+        Super Bot is the one bot a channel reaches (docs §10), and only from the
+        address set on it. Resolved from disk on every call so a Settings save
+        takes effect without a restart."""
+        return None, ""
 
     def start(self) -> None:
         """Called once by the router before the first poll."""
@@ -135,9 +130,14 @@ def split_summary(text: str, summary: str = "") -> tuple[str, str]:
 
 def prompt_section(v: dict | None, caps: Caps, kind_label: str = "") -> str:
     """The CHANNEL paragraph for the model when the task came from a surface
-    other than the web. Empty for web and routine tasks."""
+    other than the web. Empty for web and routine tasks; a hand-off gets its own
+    short paragraph (docs §11)."""
     if is_web(v) or (v or {}).get("kind") == ROUTINE_KIND:
         return ""
+    if (v or {}).get("kind") == HANDOFF_KIND:
+        return ("HAND-OFF: Super Bot (the user's assistant on this Mac) gave you this task for the user. Your final "
+                "message goes back to it as your result, so put the concrete findings in it. The user answers your "
+                "`ask`, `login` and approval cards here at the Mac, in your own chat; that may take a while.\n\n")
     label = kind_label or (v or {}).get("kind") or "another channel"
     lines = [f"CHANNEL: the user sent this task from {label} and is reading your replies there, on a phone, not at the Mac."]
     if caps.max_len:

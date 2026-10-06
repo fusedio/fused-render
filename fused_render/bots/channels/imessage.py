@@ -1,5 +1,6 @@
-"""iMessage as a channel (docs/bots.md §10): texts from a bot's owner handle
-become `bot.receive(...)` calls, the bot's replies go back through Messages.app.
+"""iMessage as a channel (docs/bots.md §10): texts from the handle set on
+Super Bot become `superbot.receive(...)` calls, its replies go back through
+Messages.app. Super Bot is the only bot reachable over iMessage.
 
 The mechanics are the old bridge's (fused_render/bots/imessage.py keeps the
 pure helpers: chat.db queries, osascript send, handle parsing): a 3 s
@@ -8,11 +9,11 @@ an echo window because texting your own number makes every reply come back as
 an incoming row, and one flock per Mac so a second process stands down.
 
 What is new here
-  - `poll()` returns Inbound rows; the router resolves the bot and calls
-    receive(). No inbox files, no scheduler hop.
+  - `poll()` returns Inbound rows from Super Bot's handle only; the router
+    calls receive(). No inbox files, no scheduler hop.
   - Only rows whose handle service is iMessage count as the owner's commands:
-    a forwarded SMS (spoofable sender) never answers an approval.
-  - `identity()`: "own" when the owner handle is one of this Mac's own Messages
+    a forwarded SMS (spoofable sender) never drives Super Bot.
+  - `identity()`: "own" when Super Bot's handle is one of this Mac's own Messages
     accounts (message.account of sent rows), so the router puts `@name` in
     front of every text; "dedicated" when Messages is signed into a separate
     bot Apple ID.
@@ -91,9 +92,9 @@ class ImessageChannel(Channel):
         self.state["running"] = False
         self._publish()
 
-    # --------------------------------------------------------------------- owners
-    def owners(self) -> dict[str, list[str]]:
-        return im.handles_to_bots()
+    # ----------------------------------------------------------------------- door
+    def door(self) -> tuple[str | None, str]:
+        return im.super_door()
 
     # ----------------------------------------------------------------------- poll
     def poll(self) -> list[Inbound]:
@@ -118,9 +119,9 @@ class ImessageChannel(Channel):
             self._publish()
 
     def _tick(self) -> list[Inbound]:
-        owners = self.owners()
-        self.state["handles"] = len(owners)
-        if not owners:
+        _, owner = self.door()
+        self.state["handles"] = 1 if owner else 0
+        if not owner:
             return []
         cur = im.load_cursor()
         if self.db is None:
@@ -135,8 +136,8 @@ class ImessageChannel(Channel):
         out = []
         for rowid, handle, text, service in im.new_messages(self.db, int(cur["rowid"])):
             cur["rowid"] = rowid
-            if handle not in owners:
-                continue
+            if handle != owner:
+                continue  # only Super Bot's handle reaches it; nothing else is read
             if service and service != "iMessage":
                 continue  # SMS / RCS rows: the sender is not authenticated
             if text.strip() in sent or self._is_echo(text, sent):
@@ -157,10 +158,6 @@ class ImessageChannel(Channel):
     def send(self, addr: str, text: str, event: dict | None = None) -> None:
         im.send_text(addr, text)  # records the echo window itself, under CURSOR_LOCK
         self.state["last_out"] = time.time()
-
-    def sent_since(self, addr: str, ts: float) -> bool:
-        """Did anything in this process (a reply, or a bot's `text` action) text `addr` after `ts`?"""
-        return im.LAST_SENT.get(im.norm_handle(addr), 0) >= ts
 
     # ------------------------------------------------------------------- identity
     def _refresh_own_handles(self) -> None:
@@ -191,8 +188,8 @@ class ImessageChannel(Channel):
         own = self._own
         if not own:
             return {"mode": "own", "label": ""}  # unknown yet: the owner said "own, always"; detection only upgrades
-        owners = set(self.owners())
-        if owners & own:
+        _, owner = self.door()
+        if owner and owner in own:
             return {"mode": "own", "label": self._own_label}
         return {"mode": "dedicated", "label": self._own_label}
 
