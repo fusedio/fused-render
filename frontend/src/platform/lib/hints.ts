@@ -172,10 +172,30 @@ const GLOSS = " \u2014 ";
  *
  *  Every line has to qualify. A caption with one glossed line among prose is
  *  prose with a dash in it, and columnising it would strand the rest. */
+/** A PLAIN CAPTION'S NUMBERS KEEP THE PANEL'S WEIGHT AND ITS WORDS GO LIGHTER
+ *  (Akshil, 2026-10-06): `3m ago · ran 4s` is two facts and some grammar, and
+ *  the facts are the digits. A digit run with its unit glued on (`4s`, `22:42`,
+ *  `2026`) stays as is; everything else wears `.hint-word`. Text nodes and
+ *  spans only — the caption is still never parsed as markup. */
+function renderWords(p: HTMLDivElement, text: string): void {
+  for (const part of text.split(/(\d[\d:.]*[a-z]?)/g)) {
+    if (!part) continue;
+    if (/^\d/.test(part)) {
+      p.appendChild(document.createTextNode(part));
+      continue;
+    }
+    const w = document.createElement("span");
+    w.className = "hint-word";
+    w.textContent = part;
+    p.appendChild(w);
+  }
+}
+
 function renderHint(p: HTMLDivElement, text: string): void {
   const lines = text.split("\n");
   if (lines.length < 2 || !lines.every((line) => line.includes(GLOSS))) {
-    p.textContent = text;
+    p.textContent = "";
+    renderWords(p, text);
     return;
   }
   const grid = document.createElement("div");

@@ -137,9 +137,9 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
     const json = r.toJSON() as Json | Json[];
     const trigger = byClass(json, "run-trigger")[0]!;
     const props = trigger.props as WhenProps;
-    // When the first call was made, then the run's own span — first call to
-    // last result, 2m 10s — on the app's one instant tooltip (`data-hint`).
-    expect(props["data-hint"]).toMatch(/^\d{1,2} [A-Z][a-z]{2} \d{4}, \d\d:\d\d:\d\d · ran 2m 10s$/);
+    // How long ago it finished, then the run's own span — first call to last
+    // result, 2m 10s — on the app's one instant tooltip (`data-hint`).
+    expect(props["data-hint"]).toMatch(/^(just now|\d+m ago|\d+h ago|yesterday|\d+d ago) · ran 2m 10s$/);
     // NOT a `title`: the OS tooltip waits a second (Akshil, 2026-10-05).
     expect(props.title).toBeUndefined();
     // And the opened run is the chips alone — no clock line inside it

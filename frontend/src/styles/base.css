@@ -154,6 +154,10 @@ iframe {
 .hint-panel.is-on {
   display: block;
 }
+/* The caption's words, lighter than its numbers (hints.ts `renderWords`). */
+.hint-panel .hint-word {
+  font-weight: 400;
+}
 
 /* The columnised form (hints.ts `renderHint`). `auto 1fr` puts every token in
    one measured column and every meaning in the next, so the reader scans a

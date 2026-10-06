@@ -18,7 +18,6 @@ import { MarkdownView } from "./MarkdownView";
 import { Receipts } from "./Receipts";
 import { SegmentView } from "./SegmentView";
 import { formatStamp, stampTitle } from "./stamp";
-import { StampText } from "./StampText";
 import { TroubleMessage } from "./TroubleView";
 
 /** THE INTERRUPT MARKER, RE-EXPORTED. It now lives in `protocol/wire.ts`
@@ -148,7 +147,7 @@ export const Turn = memo(function Turn({
         <div className="turn-line">
           {stamp ? (
             <span className="turn-stamp" {...(stampTitle(ts) ? { "data-hint": stampTitle(ts)! } : {})}>
-              <StampText text={stamp} />
+              {stamp}
             </span>
           ) : null}
         {/* A WORDLESS SEND'S BUBBLE says what the message carried instead —

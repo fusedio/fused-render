@@ -20,6 +20,7 @@
 // took, not the whole response"). The word folds one stretch of tool calls,
 // and the hover is about that stretch: its first stamp to its last result.
 // A reply with two runs wears two different numbers.
+import { ago } from "../protocol/history";
 import type { Segment, ToolSegment } from "../protocol/types";
 import { stampTitle } from "./stamp";
 
@@ -61,17 +62,22 @@ export function runSpan(segs: readonly (Segment | null | undefined)[]): RunWhen 
   return Number.isFinite(started) ? { started, finished: Math.max(started, finished) } : null;
 }
 
-/** `4 Oct 2026, 22:42:33 · ran 12s` — the hover for ONE run: when its first
- *  call was made, then how long the run took, first call to last result. The
- *  SAME ORDER AS A CHIP'S STAMP HOVER (`chipHint`; Akshil, 2026-10-06: "the
- *  order is not consistent — make it follow the second one"), so the two
- *  hovers a reader meets on one run read as one sentence. */
-export function runWhenWords(segs: readonly (Segment | null | undefined)[]): string | null {
+/** `3m ago · ran 12s` — the hover for ONE run: how long ago it finished,
+ *  then how long it took, first call to last result. TIME FIRST, SPAN SECOND —
+ *  the chip stamp hover's order (`chipHint`; Akshil, 2026-10-06: "the order is
+ *  not consistent, make it follow the second one"), with the relative words
+ *  kept ("show more should have the xm ago thing only"). "ago" is measured
+ *  from the END; `ago`'s bare `now` becomes `just now`, the word the message
+ *  stamp already uses. */
+export function runWhenWords(
+  segs: readonly (Segment | null | undefined)[],
+  now: () => number = Date.now,
+): string | null {
   const span = runSpan(segs);
   if (!span) return null;
-  const title = stampTitle(span.started);
-  if (!title) return null;
-  return span.finished > span.started ? title + " · ran " + spanWords(span.finished - span.started) : title;
+  const when = ago(span.finished, now);
+  const done = when === "now" ? "just now" : when;
+  return span.finished > span.started ? done + " · ran " + spanWords(span.finished - span.started) : done;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
