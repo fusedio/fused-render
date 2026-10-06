@@ -135,6 +135,9 @@ EXPECTED_STARTUP = [
     "_startup_ai_hub_catalog_refresh",
     "_startup_resource_trail",
     "_startup_gc_project_venvs",
+    # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
+    # (fused_render/bots/registry.py), registered beside its router include.
+    "_startup_bots",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
     # every extension but the built-in `.fused` refused to share.
@@ -164,6 +167,8 @@ EXPECTED_SHUTDOWN = [
     # PtySessionRegistry.shutdown_all) so a server restart never leaves an
     # orphaned shell running.
     "_shutdown_terminal_sessions",
+    # Added 2026-10-06: every loaded bot's task and Chrome (bots/registry.py).
+    "_shutdown_bots",
     "_shutdown_index_watch",
 ]
 
@@ -218,6 +223,8 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_shutdown_ai_workers",
     "_shutdown_engines",
     "_shutdown_terminal_sessions",
+    # A request can start a bot's Chrome in a lean app too.
+    "_shutdown_bots",
 ]
 
 

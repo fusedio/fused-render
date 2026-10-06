@@ -43,6 +43,19 @@ const HOME_ICON = (
   </svg>
 );
 
+// Bot head (lucide `bot`) — the Bots page (/bots): browser bots, each driving
+// its own Chrome window.
+const BOTS_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 8V4H8" />
+    <rect width="16" height="12" x="4" y="8" rx="2" />
+    <path d="M2 14h2" />
+    <path d="M20 14h2" />
+    <path d="M15 13v2" />
+    <path d="M9 13v2" />
+  </svg>
+);
+
 // Sliders — the Claude Config app is a settings panel over ~/.claude.
 const CLAUDE_CONFIG_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -458,6 +471,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
+  const botsActive = pathname === "/bots";
   const tasksActive = pathname === "/tasks";
   // Exact, for the reason Home is: /canvases/<name> is a workspace you opened,
   // not the list page, and lighting the row while you are inside a canvas reads
@@ -692,6 +706,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
+    { key: "bots", label: "Bots", icon: BOTS_ICON, href: "/bots", active: botsActive },
     {
       key: "tasks",
       label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
@@ -772,6 +787,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label="Home"
             icon={HOME_ICON}
             active={homeActive}
+          />
+          <NavItem
+            href="/bots"
+            id="bots-link"
+            label="Bots"
+            icon={BOTS_ICON}
+            active={botsActive}
           />
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is

@@ -1,0 +1,13 @@
+[project]
+name = "apple-notes"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.fused-render.bot]
+name = "Apple Notes"
+description = "Reads and searches the user's Apple Notes on this Mac through Notes.app (folders, title or full-text search, full note text, recently edited notes), creates a new note and appends lines to an existing note."
+triggers = ["apple notes", "my notes", "notes app", "find my note", "note about", "recent notes", "checklist in notes", "add a note", "create a note", "add to my note", "append to note"]

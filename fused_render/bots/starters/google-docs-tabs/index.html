@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
+<meta name="fused-app-id" content="google-docs-tabs-5119f8fe" />
+<title>Google Docs Tabs</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1a1f27; --muted: #5f6672;
+    --line: #e1e4e9; --accent: #1a73e8; --accent-text: #ffffff; --ok: #1e8e3e; --err: #d93025;
+    --soft: #eef3fc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #101318; --panel: #171b21; --text: #dce2ea; --muted: #9aa0a6;
+            --line: #2a2f37; --accent: #8ab4f8; --accent-text: #0b1220; --ok: #81c995; --err: #f28b82; --soft: #1c2533; }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1a1f27; --muted: #5f6672;
+    --line: #e1e4e9; --accent: #1a73e8; --accent-text: #ffffff; --ok: #1e8e3e; --err: #d93025; --soft: #eef3fc;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #101318; --panel: #171b21; --text: #dce2ea; --muted: #9aa0a6;
+    --line: #2a2f37; --accent: #8ab4f8; --accent-text: #0b1220; --ok: #81c995; --err: #f28b82; --soft: #1c2533;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; }
+  button, input, select, textarea { font: inherit; color: inherit; margin: 0; }
+  button { background: none; border: 0; padding: 0; cursor: pointer; }
+  ::placeholder { color: var(--muted); opacity: 1; }
+  input, select, textarea, progress { accent-color: var(--accent); }
+  img, svg, video, canvas { display: block; max-width: 100%; }
+
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text); background: var(--bg); min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  .grow { flex: 1; min-width: 0; }
+  .pill { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.on { color: var(--ok); border-color: var(--ok); }
+  .pill.off { color: var(--err); border-color: var(--err); }
+  main { padding: 18px; max-width: 1100px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 8px; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > * { min-width: 0; }
+  input[type=text], textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text);
+  }
+  textarea { min-height: 96px; resize: vertical; font-family: inherit; }
+  textarea.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .btn { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); font-weight: 600; white-space: nowrap; }
+  .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.small { padding: 4px 10px; font-weight: 500; font-size: 13px; }
+  ol.steps { padding-left: 20px; margin: 8px 0; }
+  ol.steps li { margin: 4px 0; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+  .msg { margin-top: 8px; font-size: 13px; }
+  .msg.err { color: var(--err); }
+  .msg.ok { color: var(--ok); }
+  .cols { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+  .tabs { list-style: none; margin: 0; padding: 0; }
+  .tabs li {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; cursor: pointer;
+  }
+  .tabs li.sel { border-color: var(--accent); background: var(--soft); }
+  .tabs li .t { font-weight: 600; }
+  .tabs li .p { font-size: 12px; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .tabs li.d1 { margin-left: 16px; } .tabs li.d2 { margin-left: 32px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  .log { max-height: 320px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .log::-webkit-scrollbar { width: 8px; } .log::-webkit-scrollbar-thumb { background: var(--line); }
+  .log .e { padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .log .e:first-child { border-top: 0; }
+  .log .e .when { color: var(--muted); font-size: 11px; }
+  .log .e.err { color: var(--err); }
+  .log a { color: var(--accent); }
+  .hidden { display: none !important; }
+  .placeholder { padding: 40px; text-align: center; color: var(--muted); }
+  .examples { font-size: 12px; color: var(--muted); }
+  .examples button { color: var(--accent); text-decoration: underline; margin-right: 8px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .acct { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 12px; color: var(--muted); }
+  .acct code { max-width: 38ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+  .docs { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .docs li {
+    display: inline-flex; align-items: center; gap: 4px; padding: 5px 6px 5px 10px; border: 1px solid var(--line);
+    border-radius: 999px; background: var(--panel); font-size: 13px; max-width: 100%;
+  }
+  .docs li.sel { border-color: var(--accent); background: var(--soft); }
+  .docs li.recent { border-style: dashed; }
+  .docs li .n { cursor: pointer; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
+  .docs li .n:hover { color: var(--accent); }
+  .docs li .ic { background: none; border: 0; padding: 2px 4px; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; border-radius: 4px; }
+  .docs li .ic:hover { color: var(--text); background: var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Google Docs Tabs</h1>
+  <span id="pill" class="pill">…</span>
+  <span id="acct" class="acct hidden"><code id="acctEmail"></code><button id="btnCopyEmail" class="btn small" title="Copy the service account email">Copy</button></span>
+  <div class="grow"></div>
+  <button id="btnSetup" class="btn small hidden">Setup</button>
+  <button id="btnDisconnect" class="btn small hidden">Disconnect</button>
+</header>
+
+<main>
+  <div id="preview" class="placeholder hidden">Google Docs Tabs — create and fill tabs in your Google Docs by telling it what you want.</div>
+
+  <!-- 1. Service account key -->
+  <section id="setup" class="card hidden">
+    <h2>One-time setup: give the app a Google service account</h2>
+    <p class="muted">The app writes to Google Docs as a <b>service account</b>, a robot Google identity with its own email. You create it once, paste its key here, and then share any doc you want the app to edit with that email, exactly like sharing with a colleague. No sign-in pop-ups. The key is stored in this app's <code>.fused/data</code> folder and never packed or shared.</p>
+    <ol class="steps">
+      <li>Open <a href="https://console.cloud.google.com/apis/library/docs.googleapis.com" target="_blank" rel="noopener">Google Cloud Console → Google Docs API</a> and click <b>Enable</b> (create a project if asked).</li>
+      <li>Go to <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noopener">IAM &amp; Admin → Service accounts</a> → <b>Create service account</b> (any name; no roles needed) → <b>Done</b>.</li>
+      <li>Open the new account → <b>Keys → Add key → Create new key → JSON</b>. A key file downloads.</li>
+      <li>Paste the contents of that file below.</li>
+    </ol>
+    <textarea id="keyJson" class="mono" placeholder='{"type": "service_account", "project_id": "...", "private_key": "...", "client_email": "...@....iam.gserviceaccount.com", ...}'></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="btnSaveKey" class="btn primary">Save key</button>
+      <button id="btnCancelSetup" class="btn hidden">Cancel</button>
+      <span id="setupMsg" class="msg"></span>
+    </div>
+  </section>
+
+  <!-- 3. Work -->
+  <section id="work" class="hidden">
+    <div class="card">
+      <h2>Document</h2>
+      <div class="row">
+        <input id="docUrl" type="text" class="grow" placeholder="Paste a Google Docs link, or type the name of a saved document" />
+        <button id="btnLoad" class="btn primary">Load</button>
+      </div>
+      <div id="docsRow" class="hidden">
+        <ul id="docs" class="docs"></ul>
+        <p class="muted" style="margin:6px 0 0;font-size:12px">Saved documents. Any link you load is remembered (dashed = cached in this browser only); click a name to switch, ✎ to rename, × to forget. Bots can refer to a doc by its name.</p>
+      </div>
+      <div id="docMsg" class="msg"></div>
+      <p id="shareHint" class="muted" style="margin:8px 0 0">The doc must be shared with <code id="shareEmail"></code> as an Editor. <button id="btnCopyEmail2" class="linkish">Copy email</button></p>
+    </div>
+
+    <div id="docArea" class="cols hidden">
+      <div class="card">
+        <div class="row"><h2 class="grow" id="docTitle">Tabs</h2><button id="btnRefresh" class="btn small">Refresh</button></div>
+        <ul id="tabs" class="tabs"></ul>
+        <p id="tabsEmpty" class="muted hidden">No tabs yet.</p>
+      </div>
+
+      <div>
+        <div class="card">
+          <h2>Tell it what to do</h2>
+          <textarea id="command" placeholder="create a tab called Meeting notes and add: # Agenda, - roadmap, - hiring"></textarea>
+          <div class="row" style="margin-top:8px">
+            <button id="btnRun" class="btn primary">Run</button>
+            <span id="cmdMsg" class="msg"></span>
+          </div>
+          <div class="examples" style="margin-top:6px">Try:
+            <button data-ex="create a tab called Meeting notes and add: # Agenda
+- Roadmap review
+- Hiring update">create a tab with notes</button>
+            <button data-ex="add 'Follow up with the design team on Friday' to the Meeting notes tab">append to a tab</button>
+            <button data-ex="create a tab called Summary and add a short summary of what a Google Doc tab is">have it write the content</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Or fill in the form</h2>
+          <label for="fTitle">Tab title (for a new tab)</label>
+          <input id="fTitle" type="text" placeholder="e.g. Meeting notes" />
+          <label for="fContent">Content (markdown-lite: # headings, - bullets)</label>
+          <textarea id="fContent" placeholder="# Agenda&#10;- Item one&#10;- Item two"></textarea>
+          <div class="row" style="margin-top:8px">
+            <button id="btnCreate" class="btn primary">Create tab</button>
+            <button id="btnAppend" class="btn">Append to selected tab</button>
+            <span id="formMsg" class="msg"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Activity</h2>
+          <div id="log" class="log"><div class="muted">Nothing yet.</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+
+  function isPreview() {
+    if (new URLSearchParams(location.search).get("_preview") === "1") return true;
+    try {
+      let w = window;
+      while (w.parent && w.parent !== w) {
+        w = w.parent;
+        if (new URLSearchParams(w.location.search).get("_preview") === "1") return true;
+      }
+    } catch (e) { /* cross-origin ancestor */ }
+    return false;
+  }
+
+  const state = { status: null, tabs: [], docTitle: "", docId: "", busy: false };
+
+  function api(action, params) {
+    const p = { action };
+    for (const k of Object.keys(params || {})) p[k] = String(params[k] == null ? "" : params[k]);
+    return fused.runPython("docs.py", p, { key: null }).then((r) => {
+      if (r && r.error) { const e = new Error(r.error); e.type = "app"; throw e; }
+      return r;
+    });
+  }
+
+  function show(id, on) { $(id).classList.toggle("hidden", !on); }
+  function setMsg(id, text, kind) { const el = $(id); el.textContent = text || ""; el.className = "msg " + (kind || ""); }
+  function setBusy(on) {
+    state.busy = on;
+    for (const id of ["btnRun", "btnCreate", "btnAppend", "btnLoad", "btnRefresh"]) $(id).disabled = on;
+  }
+  function log(html, isErr) {
+    const box = $("log");
+    if (box.firstElementChild && box.firstElementChild.classList.contains("muted")) box.innerHTML = "";
+    const e = document.createElement("div");
+    e.className = "e" + (isErr ? " err" : "");
+    const when = new Date().toLocaleTimeString();
+    e.innerHTML = '<div class="when">' + when + "</div>" + html;
+    box.prepend(e);
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  // ---------------------------------------------------------------- routing
+  function route() {
+    const s = state.status;
+    const pill = $("pill");
+    show("setup", false); show("work", false);
+    show("btnSetup", !!s.connected); show("btnDisconnect", !!s.connected); show("acct", !!s.connected);
+    if (!s.connected) { pill.textContent = "needs setup"; pill.className = "pill off"; show("setup", true); return; }
+    pill.textContent = "connected"; pill.className = "pill on";
+    $("acctEmail").textContent = s.email || ""; $("acctEmail").title = s.email || "";
+    $("shareEmail").textContent = s.email || "";
+    show("work", true);
+    renderDocs(s.docs || []);
+  }
+
+  async function refreshStatus() {
+    state.status = await api("status");
+    route();
+  }
+
+  function currentDocId() {
+    const m = ($("docUrl").value || "").match(/\/document\/d\/([A-Za-z0-9_-]+)/);
+    return m ? m[1] : state.docId || "";
+  }
+
+  // Browser-side cache of recently loaded doc URLs. Written the moment a doc is
+  // loaded (before Google answers), so the list survives a failed load and shows
+  // up immediately; the Python library (docs.json) is merged in when available.
+  const RECENT_KEY = "gdt.recentDocs";
+  const RECENT_MAX = 20;
+  function docIdFrom(text) {
+    const t = (text || "").trim();
+    const m = t.match(/\/document\/d\/([A-Za-z0-9_-]+)/);
+    if (m) return m[1];
+    return /^[A-Za-z0-9_-]{20,}$/.test(t) ? t : "";
+  }
+  function readRecent() {
+    try { const v = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); return Array.isArray(v) ? v : []; }
+    catch (e) { return []; }
+  }
+  function writeRecent(list) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch (e) { /* storage blocked */ }
+  }
+  function rememberRecent(id, url, title) {
+    if (!id) return;
+    const list = readRecent().filter((r) => r.id !== id);
+    const prev = readRecent().find((r) => r.id === id) || {};
+    list.unshift({ id, url: url || prev.url || ("https://docs.google.com/document/d/" + id + "/edit"),
+                   title: title || prev.title || "", at: Date.now() });
+    writeRecent(list);
+  }
+  function forgetRecent(id) { writeRecent(readRecent().filter((r) => r.id !== id)); }
+  function mergedDocs(saved) {
+    const out = (saved || []).slice();
+    const seen = new Set(out.map((d) => d.id));
+    for (const r of readRecent()) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push({ id: r.id, name: r.title || r.id, title: r.title || "", url: r.url, recent: true });
+    }
+    return out;
+  }
+
+  function renderDocs(docs) {
+    docs = mergedDocs(docs);
+    const row = $("docsRow"); const ul = $("docs");
+    ul.innerHTML = "";
+    if (!docs.length) { row.classList.add("hidden"); return; }
+    row.classList.remove("hidden");
+    const cur = currentDocId();
+    for (const d of docs) {
+      const li = document.createElement("li");
+      if (d.id === cur) li.classList.add("sel");
+      if (d.recent) li.classList.add("recent");
+      const name = document.createElement("span");
+      name.className = "n"; name.textContent = d.name || d.title || d.id;
+      name.title = (d.title && d.title !== d.name ? d.title + "\n" : "") + d.url;
+      name.onclick = () => { $("docUrl").value = d.url; loadDoc(); };
+      const ren = document.createElement("button");
+      ren.className = "ic"; ren.textContent = "✎"; ren.title = "Rename";
+      ren.onclick = async (e) => {
+        e.stopPropagation();
+        const nn = prompt("Name for this document:", d.name || d.title || "");
+        if (nn == null || !nn.trim() || nn.trim() === d.name) return;
+        if (d.recent) { rememberRecent(d.id, d.url, nn.trim()); renderDocs(state.status && state.status.docs || []); return; }
+        try { await api("rename_doc", { doc: d.id, title: nn.trim() }); await refreshStatus(); }
+        catch (err) { setMsg("docMsg", err.message, "err"); }
+      };
+      const rm = document.createElement("button");
+      rm.className = "ic"; rm.textContent = "×"; rm.title = "Forget this document (does not touch the doc itself)";
+      rm.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm("Forget “" + (d.name || d.title) + "”? The Google Doc itself is not changed.")) return;
+        forgetRecent(d.id);
+        if (d.recent) { renderDocs(state.status && state.status.docs || []); return; }
+        try { await api("remove_doc", { doc: d.id }); await refreshStatus(); }
+        catch (err) { setMsg("docMsg", err.message, "err"); }
+      };
+      li.appendChild(name); li.appendChild(ren); li.appendChild(rm);
+      ul.appendChild(li);
+    }
+  }
+
+  // ---------------------------------------------------------------- setup
+  $("btnSaveKey").onclick = async () => {
+    setMsg("setupMsg", "Checking the key with Google…");
+    $("btnSaveKey").disabled = true;
+    try {
+      const r = await api("save_key", { key_json: $("keyJson").value });
+      $("keyJson").value = "";
+      setMsg("setupMsg", "");
+      show("btnCancelSetup", false);
+      await refreshStatus();
+      log("Connected as <b>" + esc(r.email) + "</b>. Share your docs with this email.");
+    } catch (e) { setMsg("setupMsg", e.message, "err"); }
+    finally { $("btnSaveKey").disabled = false; }
+  };
+  $("btnSetup").onclick = () => { show("work", false); show("setup", true); show("btnCancelSetup", true); };
+  $("btnCancelSetup").onclick = () => { show("btnCancelSetup", false); route(); };
+  $("btnDisconnect").onclick = async () => {
+    if (!confirm("Forget the saved service-account key? You can paste it again later.")) return;
+    await api("disconnect"); await refreshStatus();
+  };
+  async function copyEmail(btn) {
+    const email = (state.status && state.status.email) || "";
+    if (!email) return;
+    try { await navigator.clipboard.writeText(email); } catch (e) { /* clipboard blocked: fall through */ }
+    const was = btn.textContent; btn.textContent = "Copied"; setTimeout(() => { btn.textContent = was; }, 1200);
+  }
+  $("btnCopyEmail").onclick = (e) => copyEmail(e.currentTarget);
+  $("btnCopyEmail2").onclick = (e) => copyEmail(e.currentTarget);
+
+  // ---------------------------------------------------------------- document / tabs
+  async function loadDoc() {
+    const doc = $("docUrl").value.trim();
+    if (!doc) { setMsg("docMsg", "Paste a Google Docs link first.", "err"); return; }
+    fused.params.set("doc", doc);
+    // cache the URL right away so it shows in the recent list even if the load fails
+    const earlyId = docIdFrom(doc);
+    if (earlyId) { rememberRecent(earlyId, /^https?:/.test(doc) ? doc : ""); renderDocs(state.status && state.status.docs || []); }
+    setMsg("docMsg", "Loading…");
+    setBusy(true);
+    try {
+      const r = await api("list_tabs", { doc });
+      state.tabs = r.tabs; state.docTitle = r.title; state.docId = r.doc_id;
+      rememberRecent(r.doc_id, r.url, r.title);
+      if (r.url && $("docUrl").value.trim() !== r.url) $("docUrl").value = r.url;
+      $("docTitle").textContent = r.title || "Tabs";
+      setMsg("docMsg", "");
+      show("docArea", true);
+      renderTabs();
+      try { state.status = await api("status"); renderDocs(state.status.docs || []); } catch (e2) { /* library refresh is best-effort */ }
+    } catch (e) { setMsg("docMsg", e.message, "err"); }
+    finally { setBusy(false); }
+  }
+  function renderTabs() {
+    const ul = $("tabs"); ul.innerHTML = "";
+    const sel = fused.params.get("tab") || "";
+    show("tabsEmpty", !state.tabs.length);
+    for (const t of state.tabs) {
+      const li = document.createElement("li");
+      li.className = "d" + Math.min(t.depth, 2) + (t.id === sel ? " sel" : "");
+      li.innerHTML = '<div class="t">' + esc(t.title || "(untitled)") + '</div><div class="p">' + esc(t.preview || "") + "</div>";
+      li.onclick = () => { fused.params.set("tab", t.id); renderTabs(); };
+      ul.appendChild(li);
+    }
+  }
+  $("btnLoad").onclick = loadDoc;
+  $("btnRefresh").onclick = loadDoc;
+  $("docUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") loadDoc(); });
+
+  function selectedTab() {
+    const id = fused.params.get("tab");
+    return state.tabs.find((t) => t.id === id) || null;
+  }
+  function tabLink(url, title) { return '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(title) + "</a>"; }
+
+  // ---------------------------------------------------------------- actions
+  async function doCreate(title, content) {
+    const r = await api("create_tab", { doc: $("docUrl").value, title, content });
+    log("Created tab " + tabLink(r.url, r.tab.title) + (r.inserted ? " and added " + r.inserted + " characters." : "."));
+    fused.params.set("tab", r.tab.id);
+    await loadDoc();
+    return r;
+  }
+  async function doAppend(tabKey, content) {
+    const r = await api("append", { doc: $("docUrl").value, tab: tabKey, content });
+    log("Added " + r.inserted + " characters to " + tabLink(r.url, r.tab.title) + ".");
+    await loadDoc();
+    return r;
+  }
+
+  $("btnCreate").onclick = async () => {
+    const title = $("fTitle").value.trim();
+    if (!title) { setMsg("formMsg", "Give the new tab a title.", "err"); return; }
+    setBusy(true); setMsg("formMsg", "Working…");
+    try { await doCreate(title, $("fContent").value); setMsg("formMsg", "Done.", "ok"); $("fTitle").value = ""; $("fContent").value = ""; }
+    catch (e) { setMsg("formMsg", e.message, "err"); log(esc(e.message), true); }
+    finally { setBusy(false); }
+  };
+  $("btnAppend").onclick = async () => {
+    const t = selectedTab();
+    if (!t) { setMsg("formMsg", "Select a tab on the left first.", "err"); return; }
+    if (!$("fContent").value.trim()) { setMsg("formMsg", "Nothing to add.", "err"); return; }
+    setBusy(true); setMsg("formMsg", "Working…");
+    try { await doAppend(t.id, $("fContent").value); setMsg("formMsg", "Done.", "ok"); $("fContent").value = ""; }
+    catch (e) { setMsg("formMsg", e.message, "err"); log(esc(e.message), true); }
+    finally { setBusy(false); }
+  };
+
+  // ---- plain-English command: fused.ai first, regex fallback, Python does the rest
+  const SYSTEM = "You turn a user's instruction about a Google Doc into one JSON object and nothing else. " +
+    'Schema: {"action": "create_tab"|"append"|"list_tabs", "title": string (tab title), "content": string (text to put in the tab; may be empty)}. ' +
+    "Keep the user's wording for content; you may format it with markdown headings (#) and '- ' bullets. " +
+    "If the user asks for information to be written or generated (e.g. 'add a summary of X'), write that content yourself in the content field. Output only the JSON.";
+
+  function regexParse(cmd) {
+    cmd = cmd.trim();
+    let m = cmd.match(/^(?:please\s+)?(?:create|add|make|open|start)\s+(?:a\s+)?(?:new\s+)?tab\s*(?:called|named|titled|for|:)?\s*["“”']?([^"“”'\n]+?)["“”']?\s*(?:(?:,|and|then|;)?\s*(?:add|with|put|write|containing|insert|fill(?: it)? with)\s*(?:this|the following|these|info|information|content|text|notes?)?\s*:?\s*([\s\S]+))?$/i);
+    if (m) return { action: "create_tab", title: m[1].trim(), content: (m[2] || "").trim() };
+    m = cmd.match(/^(?:please\s+)?(?:in|on|under)\s+(?:the\s+)?(?:tab\s+)?["“”']?([^"“”'\n:,]+?)["“”']?\s*(?:tab)?\s*[:,]?\s*(?:add|append|write|put|insert)\s*(?:this|the following)?\s*:?\s*([\s\S]+)$/i);
+    if (m) return { action: "append", title: m[1].trim(), content: m[2].trim() };
+    m = cmd.match(/^(?:please\s+)?(?:add|append|write|put|insert)\s+([\s\S]+?)\s+(?:to|in|into|on|under)\s+(?:the\s+)?(?:tab\s+)?["“”']?([^"“”'\n]+?)["“”']?\s*(?:tab)?\s*$/i);
+    if (m) return { action: "append", title: m[2].trim(), content: m[1].trim().replace(/^["“”']|["“”']$/g, "") };
+    if (/^(?:list|show|what)\b.*\btabs?\b/i.test(cmd)) return { action: "list_tabs" };
+    return null;
+  }
+
+  async function interpret(cmd) {
+    const tabsList = state.tabs.map((t) => t.title).join(", ") || "(none)";
+    try {
+      const r = await fused.ai.text({ prompt: "Existing tabs: " + tabsList + "\n\nInstruction: " + cmd, systemPrompt: SYSTEM, maxTokens: 2000 });
+      const raw = r.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+      const start = raw.indexOf("{"), end = raw.lastIndexOf("}");
+      const parsed = JSON.parse(raw.slice(start, end + 1));
+      if (parsed && parsed.action) { parsed.via = "ai"; return parsed; }
+    } catch (e) { console.warn("fused.ai parse failed, using regex:", e.message); }
+    const p = regexParse(cmd);
+    if (p) p.via = "regex";
+    return p;
+  }
+
+  async function runCommand() {
+    const cmd = $("command").value.trim();
+    if (!cmd) return;
+    if (!$("docUrl").value.trim()) { setMsg("cmdMsg", "Load a document first.", "err"); return; }
+    setBusy(true); setMsg("cmdMsg", "Thinking…");
+    try {
+      const p = await interpret(cmd);
+      if (!p) throw new Error("I could not understand that. Try: create a tab called Notes and add: hello");
+      if (p.action === "list_tabs") { await loadDoc(); log("Listed tabs: " + esc(state.tabs.map((t) => t.title).join(", ") || "none")); }
+      else if (p.action === "create_tab") { setMsg("cmdMsg", "Creating tab “" + p.title + "”…"); await doCreate(p.title, p.content || ""); }
+      else if (p.action === "append") { setMsg("cmdMsg", "Adding to “" + p.title + "”…"); await doAppend(p.title, p.content || ""); }
+      else throw new Error("Unknown action: " + p.action);
+      setMsg("cmdMsg", "Done.", "ok");
+      $("command").value = "";
+    } catch (e) { setMsg("cmdMsg", e.message, "err"); log(esc(e.message), true); }
+    finally { setBusy(false); }
+  }
+  $("btnRun").onclick = runCommand;
+  $("command").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runCommand(); });
+  for (const b of document.querySelectorAll(".examples button")) b.onclick = () => { $("command").value = b.dataset.ex; };
+
+  // ---------------------------------------------------------------- boot
+  async function boot() {
+    if (isPreview()) { show("preview", true); $("pill").textContent = "preview"; return; }
+    try { await refreshStatus(); }
+    catch (e) { $("pill").textContent = "error"; $("pill").className = "pill off"; show("setup", true); setMsg("setupMsg", e.message, "err"); return; }
+    const doc = fused.params.get("doc");
+    if (doc && state.status.connected) { $("docUrl").value = doc; loadDoc(); }
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

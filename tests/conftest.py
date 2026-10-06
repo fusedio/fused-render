@@ -490,6 +490,24 @@ def _no_tasks_watch_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_bots_threads(monkeypatch):
+    """No test may start the bots' scheduler or the iMessage bridge.
+
+    `bots.registry.start()` runs from the app's STARTUP event (`_startup_bots`)
+    like the schedule loop above; the bridge thread it starts reads
+    ~/Library/Messages/chat.db, which on a developer's Mac is a Full Disk
+    Access prompt in the middle of a test run. Bots built by one test are
+    forgotten before the next (the registry is process-wide). Tests about
+    routines call `tick_routines()` themselves."""
+    from fused_render.bots import registry as bots_registry
+
+    monkeypatch.setattr(bots_registry, "start", lambda: None)
+    bots_registry.reset_for_tests()
+    yield
+    bots_registry.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_claude_config_writes(tmp_path_factory, monkeypatch):
     """No test may read or write the DEVELOPER's own ~/.claude.
 

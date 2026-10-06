@@ -455,6 +455,10 @@ packages = ["fused_render"]
 artifacts = [
     "fused_render/static/shell-dist/**",
     "fused_render/skills/**",
+    # The Bots starter apps' locks (fused_render/bots/starters/<key>/uv.lock):
+    # negated in .gitignore like the templates' own, listed here as well so a
+    # change to that negation cannot silently drop them from the wheel.
+    "fused_render/bots/starters/**/uv.lock",
 ]
 
 # Builds frontend/ -> fused_render/static/shell-dist/ at package-build time

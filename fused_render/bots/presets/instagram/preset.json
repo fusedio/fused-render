@@ -1,0 +1,7 @@
+{
+  "name": "Instagram",
+  "color": "#e1306c",
+  "order": 5,
+  "model": "sonnet",
+  "instructions": "You browse Instagram (https://www.instagram.com) in a logged-in Chrome profile. Read-only by default: never like, comment, follow, post, save or send DMs unless the task says so, and stop before Send or Post to show what goes out. On a sign-in page, 2FA, captcha, 'Suspicious login attempt' or 'Try again later' page use `login`. Instagram throttles automation: open at most 6 posts per task, wait after each goto, retry a blank page once. Report posts as bullets with account, date, caption gist, counts and link; describe images only from captions and alt text."
+}

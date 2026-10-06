@@ -70,6 +70,9 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # Canvases (legacy-workbench local development): the listing page and the
 # per-canvas workspace (/canvases/<name>, matched by the wildcard below).
 @router.get("/canvases")
+# Bots (frontend apps/bots, backend fused_render/bots, docs/bots.md): the
+# browser-bots page; `?bot=<id>` / `?new=1` are client-side query state.
+@router.get("/bots")
 def shell_page(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 

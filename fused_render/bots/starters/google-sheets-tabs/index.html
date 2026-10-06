@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
+<title>Google Sheets Tabs</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1a1f27; --muted: #5f6672;
+    --line: #e1e4e9; --accent: #188038; --accent-text: #ffffff; --ok: #1e8e3e; --err: #d93025;
+    --soft: #e6f4ea; --head: #f1f3f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #101318; --panel: #171b21; --text: #dce2ea; --muted: #9aa0a6;
+            --line: #2a2f37; --accent: #81c995; --accent-text: #0b1a10; --ok: #81c995; --err: #f28b82; --soft: #1a2a20; --head: #1d2229; }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1a1f27; --muted: #5f6672;
+    --line: #e1e4e9; --accent: #188038; --accent-text: #ffffff; --ok: #1e8e3e; --err: #d93025; --soft: #e6f4ea; --head: #f1f3f4;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #101318; --panel: #171b21; --text: #dce2ea; --muted: #9aa0a6;
+    --line: #2a2f37; --accent: #81c995; --accent-text: #0b1a10; --ok: #81c995; --err: #f28b82; --soft: #1a2a20; --head: #1d2229;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; }
+  button, input, select, textarea { font: inherit; color: inherit; margin: 0; }
+  button { background: none; border: 0; padding: 0; cursor: pointer; }
+  ::placeholder { color: var(--muted); opacity: 1; }
+  input, select, textarea, progress { accent-color: var(--accent); }
+  img, svg, video, canvas { display: block; max-width: 100%; }
+
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text); background: var(--bg); min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  .grow { flex: 1; min-width: 0; }
+  .pill { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.on { color: var(--ok); border-color: var(--ok); }
+  .pill.off { color: var(--err); border-color: var(--err); }
+  main { padding: 18px; max-width: 1280px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; min-width: 0; }
+  .card h2 { font-size: 15px; margin: 0 0 8px; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > * { min-width: 0; }
+  input[type=text], input[type=search], textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text);
+  }
+  select {
+    width: auto; padding-right: 28px; appearance: none; -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 14px) 55%, calc(100% - 9px) 55%; background-size: 5px 5px; background-repeat: no-repeat;
+  }
+  textarea { min-height: 110px; resize: vertical; font-family: inherit; }
+  textarea.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .btn { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); font-weight: 600; white-space: nowrap; }
+  .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.small { padding: 4px 10px; font-weight: 400; font-size: 13px; }
+  ol.steps { padding-left: 20px; margin: 8px 0; }
+  ol.steps li { margin: 4px 0; }
+  a { color: var(--accent); }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+  .msg { margin-top: 8px; font-size: 13px; }
+  .msg.err { color: var(--err); }
+  .msg.ok { color: var(--ok); }
+  .cols { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+  .tabs { list-style: none; margin: 0; padding: 0; }
+  .tabs li { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+  .tabs li.sel { border-color: var(--accent); background: var(--soft); }
+  .tabs li .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tabs li .m { font-size: 11px; color: var(--muted); }
+  .tabs li .p { font-size: 12px; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .tabs li.hid .t { font-style: italic; opacity: .75; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; color: var(--text); cursor: pointer; }
+  .scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .scroll::-webkit-scrollbar { width: 8px; height: 8px; } .scroll::-webkit-scrollbar-thumb { background: var(--line); }
+  .log { max-height: 280px; }
+  .log .e { padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .log .e:first-child { border-top: 0; }
+  .log .e .when { color: var(--muted); font-size: 11px; }
+  .log .e.err { color: var(--err); }
+  .hidden { display: none !important; }
+  .placeholder { padding: 40px; text-align: center; color: var(--muted); }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .acct { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .acct code { max-width: 38ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+  .docs { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .docs li {
+    display: inline-flex; align-items: center; gap: 4px; padding: 5px 6px 5px 10px; border: 1px solid var(--line);
+    border-radius: 999px; background: var(--panel); font-size: 13px; max-width: 100%; min-width: 0;
+  }
+  .docs li.sel { border-color: var(--accent); background: var(--soft); }
+  .docs li .n { cursor: pointer; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
+  .docs li .n:hover { color: var(--accent); }
+  .ic { background: none; border: 0; padding: 2px 4px; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; border-radius: 4px; }
+  .ic:hover { color: var(--text); background: var(--line); }
+
+  /* segmented control */
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { padding: 5px 12px; font-size: 13px; border-left: 1px solid var(--line); color: var(--muted); }
+  .seg button:first-child { border-left: 0; }
+  .seg button.on { background: var(--soft); color: var(--text); font-weight: 600; }
+
+  /* data grid */
+  .toolbar { margin-bottom: 10px; }
+  .toolbar input[type=search] { width: 220px; flex: 1 1 180px; max-width: 320px; padding: 6px 10px; }
+  .toolbar select { padding-top: 6px; padding-bottom: 6px; }
+  .count { font-size: 12px; color: var(--muted); }
+  .grid { max-height: 62vh; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: separate; border-spacing: 0; font-size: 13px; min-width: 100%; }
+  th, td { padding: 5px 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+  th { position: sticky; top: 0; background: var(--head); font-weight: 600; z-index: 1; }
+  th button { font-weight: 600; display: inline-flex; gap: 4px; align-items: center; max-width: 100%; }
+  th button span.lbl { overflow: hidden; text-overflow: ellipsis; }
+  th .arrow { color: var(--accent); font-size: 11px; }
+  td.rn, th.rn { color: var(--muted); background: var(--head); text-align: right; font-variant-numeric: tabular-nums; position: sticky; left: 0; z-index: 1; }
+  th.rn { z-index: 2; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:hover td { background: var(--soft); }
+  tr:hover td.rn { background: var(--head); }
+  mark { background: #fbbc04; color: #1a1f27; border-radius: 2px; }
+
+  /* comments */
+  .cmt { border-top: 1px solid var(--line); padding: 10px 0; font-size: 13px; }
+  .cmt:first-child { border-top: 0; }
+  .cmt .who { font-weight: 600; }
+  .cmt .when { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .cmt .q { color: var(--muted); border-left: 3px solid var(--line); padding-left: 8px; margin: 4px 0; white-space: pre-wrap; }
+  .cmt .body { white-space: pre-wrap; margin-top: 2px; }
+  .cmt .rep { margin: 6px 0 0 16px; padding-left: 10px; border-left: 2px solid var(--line); }
+  .badge { font-size: 11px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--ok); color: var(--ok); margin-left: 6px; }
+  .comments { max-height: 62vh; }
+
+  /* styling */
+  .sgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0 12px; }
+  .sgrid > div { min-width: 0; }
+  .color { display: flex; gap: 6px; align-items: center; }
+  .color input[type=text] { flex: 1; min-width: 0; }
+  .color input[type=color] {
+    flex: none; width: 36px; height: 36px; padding: 2px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); cursor: pointer;
+  }
+  .sprev { display: inline-block; padding: 3px 10px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Google Sheets Tabs</h1>
+  <span id="pill" class="pill">…</span>
+  <span id="acct" class="acct hidden"><code id="acctEmail"></code><button id="btnCopyEmail" class="btn small" title="Copy the service account email">Copy</button></span>
+  <div class="grow"></div>
+  <button id="btnSetup" class="btn small hidden">Setup</button>
+  <button id="btnDisconnect" class="btn small hidden">Disconnect</button>
+</header>
+
+<main>
+  <div id="preview" class="placeholder hidden">Google Sheets Tabs — read, append to, style and create worksheet tabs in your Google Sheets.</div>
+
+  <!-- 1. Service account key -->
+  <section id="setup" class="card hidden">
+    <h2>One-time setup: give the app a Google service account</h2>
+    <p class="muted">The app reads and writes Google Sheets as a <b>service account</b>, a robot Google identity with its own email. You create it once, paste its key here, and then share any spreadsheet you want the app to use with that email, exactly like sharing with a colleague. The same key works for the Google Docs Tabs app. The key is stored in this app's <code>.fused/data</code> folder and never packed or shared.</p>
+    <ol class="steps">
+      <li>Open <a href="https://console.cloud.google.com/apis/library/sheets.googleapis.com" target="_blank" rel="noopener">Google Cloud Console → Google Sheets API</a> and click <b>Enable</b>. For comments, also enable the <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">Google Drive API</a>.</li>
+      <li>Go to <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noopener">IAM &amp; Admin → Service accounts</a> → <b>Create service account</b> (any name; no roles needed) → <b>Done</b>. Already have one for Google Docs Tabs? Reuse it.</li>
+      <li>Open the account → <b>Keys → Add key → Create new key → JSON</b>. A key file downloads.</li>
+      <li>Paste the contents of that file below.</li>
+    </ol>
+    <textarea id="keyJson" class="mono" placeholder='{"type": "service_account", "project_id": "...", "private_key": "...", "client_email": "...@....iam.gserviceaccount.com", ...}'></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="btnSaveKey" class="btn primary">Save key</button>
+      <button id="btnCancelSetup" class="btn hidden">Cancel</button>
+      <span id="setupMsg" class="msg"></span>
+    </div>
+  </section>
+
+  <!-- 2. Work -->
+  <section id="work" class="hidden">
+    <div class="card">
+      <h2>Spreadsheet</h2>
+      <div class="row">
+        <input id="docUrl" type="text" class="grow" placeholder="Paste a Google Sheets link, or type the name of a saved spreadsheet" />
+        <button id="btnLoad" class="btn primary">Load</button>
+      </div>
+      <div id="docsRow" class="hidden">
+        <ul id="docs" class="docs"></ul>
+        <p class="muted" style="margin:6px 0 0;font-size:12px">Saved spreadsheets. Every sheet you load is remembered; click a name to switch, ✎ to rename, × to forget. Bots can refer to a spreadsheet by its name.</p>
+      </div>
+      <div id="docMsg" class="msg"></div>
+      <p id="shareHint" class="muted" style="margin:8px 0 0">The spreadsheet must be shared with <code id="shareEmail"></code> as an Editor. <button id="btnCopyEmail2" class="linkish">Copy email</button></p>
+    </div>
+
+    <div id="docArea" class="cols hidden">
+      <div class="card">
+        <div class="row"><h2 class="grow" id="docTitle">Tabs</h2><button id="btnRefresh" class="btn small">Refresh</button></div>
+        <p class="muted" style="margin:0 0 8px;font-size:12px"><a id="docLink" href="#" target="_blank" rel="noopener">Open in Google Sheets ↗</a></p>
+        <ul id="tabs" class="tabs"></ul>
+        <p id="tabsEmpty" class="muted hidden">No worksheets.</p>
+      </div>
+
+      <div style="min-width:0">
+        <div class="card">
+          <div class="row" style="margin-bottom:10px">
+            <h2 class="grow" id="tabTitle" style="margin:0">Data</h2>
+            <div class="seg" id="viewSeg">
+              <button data-view="data">Data</button>
+              <button data-view="comments">Comments</button>
+            </div>
+          </div>
+
+          <div id="dataView">
+            <div class="row toolbar">
+              <input id="q" type="search" placeholder="Filter rows…" />
+              <label class="inline"><input id="hdr" type="checkbox" /> First row is header</label>
+              <select id="limit" title="How many rows to read">
+                <option value="100">100 rows</option>
+                <option value="1000">1,000 rows</option>
+                <option value="5000">5,000 rows</option>
+                <option value="10000">10,000 rows</option>
+              </select>
+              <div class="grow"></div>
+              <span id="count" class="count"></span>
+              <button id="btnEditCopy" class="btn small" title="Put this tab's values in the editor below, to change and write back">Edit a copy</button>
+            </div>
+            <div id="dataMsg" class="msg"></div>
+            <div id="grid" class="grid scroll"></div>
+          </div>
+
+          <div id="commentsView" class="hidden">
+            <div class="row toolbar">
+              <label class="inline"><input id="resolved" type="checkbox" /> Include resolved</label>
+              <div class="grow"></div>
+              <span id="cCount" class="count"></span>
+            </div>
+            <p class="muted" style="margin:0 0 8px;font-size:12px">Comments on the whole spreadsheet (read from the Google Drive API). Google does not say which cell a comment is on, so the quoted text is shown when available.</p>
+            <div id="commentsMsg" class="msg"></div>
+            <div id="comments" class="comments scroll"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row" style="margin-bottom:6px">
+            <h2 class="grow" style="margin:0">Write to the sheet</h2>
+            <div class="seg" id="modeSeg">
+              <button data-mode="append">Append rows</button>
+              <button data-mode="write">Replace values</button>
+              <button data-mode="create">New tab</button>
+            </div>
+          </div>
+          <p id="modeHint" class="muted" style="margin:0;font-size:12px"></p>
+          <div id="titleRow">
+            <label for="ntitle">New tab title</label>
+            <input id="ntitle" type="text" placeholder="e.g. Q4 budget" />
+          </div>
+          <div id="rangeRow">
+            <label for="wrange">Range (optional; empty = the whole tab)</label>
+            <input id="wrange" type="text" placeholder="e.g. A1:D20" />
+          </div>
+          <label for="draft">Rows: paste from a spreadsheet (tab-separated), CSV, or a JSON array of arrays</label>
+          <textarea id="draft" class="mono" placeholder="Name,Amount,Date&#10;Coffee,4.50,2026-09-29&#10;Lunch,12,2026-09-29"></textarea>
+          <div class="row" style="margin-top:8px">
+            <button id="btnWrite" class="btn primary">Append rows</button>
+            <label class="inline" title="RAW stores text exactly as typed. Off (default) parses numbers, dates and =formulas like typing into Sheets."><input id="raw" type="checkbox" /> Store as plain text (no formulas)</label>
+            <span id="formMsg" class="msg" style="margin:0"></span>
+          </div>
+          <p id="draftNote" class="muted hidden" style="margin:6px 0 0;font-size:12px">This draft is too long to keep in the page link; it will be lost on reload.</p>
+        </div>
+
+        <div class="card">
+          <h2>Styling</h2>
+          <p class="muted" style="margin:0;font-size:12px">Format cells in the sheet itself. Empty fields are left as they are. Colors take hex (<code>#ff0000</code>) or names (<code>red</code>, <code>lightblue</code>, <code>none</code>).</p>
+          <div class="sgrid">
+            <div>
+              <label for="stab">Tab</label>
+              <select id="stab" style="width:100%"></select>
+            </div>
+            <div>
+              <label for="srange">Range (empty = the whole tab)</label>
+              <input id="srange" type="text" placeholder="e.g. A1:D10, B:B, 1:1" />
+            </div>
+            <div>
+              <label for="sbg">Background</label>
+              <div class="color"><input id="sbg" type="text" placeholder="unchanged" /><input id="sbgPick" type="color" value="#ffffff" title="Pick a background color" /></div>
+            </div>
+            <div>
+              <label for="sfg">Text color</label>
+              <div class="color"><input id="sfg" type="text" placeholder="unchanged" /><input id="sfgPick" type="color" value="#000000" title="Pick a text color" /></div>
+            </div>
+          </div>
+          <label>Bold</label>
+          <div class="row">
+            <div class="seg" id="boldSeg">
+              <button data-bold="">Unchanged</button>
+              <button data-bold="on"><b>Bold</b></button>
+              <button data-bold="off">Not bold</button>
+            </div>
+            <span class="muted" style="font-size:12px">Preview</span>
+            <span id="sprev" class="sprev">Aa 123</span>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="btnStyle" class="btn primary">Apply</button>
+            <button id="btnHeader" class="btn" title="Bold row 1 with a colored background and white text, freeze it, and auto-fit the columns. Uses the background/text colors above when given.">Style header row</button>
+            <button id="btnClearFmt" class="btn">Clear formatting</button>
+            <span id="styleMsg" class="msg" style="margin:0"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Activity</h2>
+          <div id="log" class="log scroll"><div class="muted">Nothing yet.</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+
+  function isPreview() {
+    if (new URLSearchParams(location.search).get("_preview") === "1") return true;
+    try {
+      let w = window;
+      while (w.parent && w.parent !== w) {
+        w = w.parent;
+        if (new URLSearchParams(w.location.search).get("_preview") === "1") return true;
+      }
+    } catch (e) { /* cross-origin ancestor */ }
+    return false;
+  }
+
+  // ---------------------------------------------------------------- URL state
+  // Every view choice lives in fused.params: doc, tab, view, q, sort, dir, hdr,
+  // limit, resolved, mode, ntitle, wrange, draft, raw, setup, and the Styling
+  // card's stab, srange, sbg, sfg, sbold. Controls write
+  // params; onChange -> apply() is the single re-render path.
+  const DRAFT_MAX = 6000;   // longer drafts are not put in the URL
+  function P() {
+    const g = (k) => fused.params.get(k) || "";
+    return {
+      doc: g("doc"), tab: g("tab"),
+      view: g("view") === "comments" ? "comments" : "data",
+      q: g("q"), sort: g("sort"), dir: g("dir") === "desc" ? "desc" : "asc",
+      hdr: g("hdr") !== "0", limit: ["100", "1000", "5000", "10000"].includes(g("limit")) ? g("limit") : "1000",
+      resolved: g("resolved") === "1",
+      mode: ["append", "write", "create"].includes(g("mode")) ? g("mode") : "append",
+      ntitle: g("ntitle"), wrange: g("wrange"), draft: g("draft"), raw: g("raw") === "1",
+      setup: g("setup") === "1",
+      stab: g("stab"), srange: g("srange"), sbg: g("sbg"), sfg: g("sfg"),
+      sbold: ["on", "off"].includes(g("sbold")) ? g("sbold") : "",
+    };
+  }
+  function setP(key, value) { fused.params.set(key, value == null || value === "" ? null : String(value)); }
+  const timers = {};
+  function setPLater(key, value, ms) {
+    clearTimeout(timers[key]);
+    timers[key] = setTimeout(() => setP(key, value), ms || 250);
+  }
+
+  const state = {
+    status: null,
+    meta: null, metaFor: null, metaErr: "", loadingMeta: false,
+    data: null, dataFor: null, dataErr: "", loadingData: false,
+    comments: null, commentsFor: null, commentsErr: "", loadingComments: false,
+    busy: false,
+  };
+  const want = { doc: null, read: null, comments: null };
+  let draftTooLong = false;   // draft kept only in the textarea (see DRAFT_MAX)
+
+  function api(action, params, key) {
+    const p = { action };
+    for (const k of Object.keys(params || {})) p[k] = String(params[k] == null ? "" : params[k]);
+    return fused.runPython("sheets.py", p, { key: key === undefined ? null : key }).then((r) => {
+      if (r && r.error) { const e = new Error(r.error); e.type = "app"; throw e; }
+      return r;
+    });
+  }
+  function styleApi(action, params) {
+    const p = { action };
+    for (const k of Object.keys(params || {})) p[k] = String(params[k] == null ? "" : params[k]);
+    return fused.runPython("styling.py", p, { key: null }).then((r) => {
+      if (r && r.error) { const e = new Error(r.error); e.type = "app"; throw e; }
+      return r;
+    });
+  }
+
+  function show(id, on) { $(id).classList.toggle("hidden", !on); }
+  function setMsg(id, text, kind) { const el = $(id); el.textContent = text || ""; el.className = "msg " + (kind || ""); }
+  function setBusy(on) {
+    state.busy = on;
+    for (const id of ["btnWrite", "btnLoad", "btnRefresh", "btnStyle", "btnHeader", "btnClearFmt"]) $(id).disabled = on;
+  }
+  function log(html, isErr) {
+    const box = $("log");
+    if (box.firstElementChild && box.firstElementChild.classList.contains("muted")) box.innerHTML = "";
+    const e = document.createElement("div");
+    e.className = "e" + (isErr ? " err" : "");
+    e.innerHTML = '<div class="when">' + new Date().toLocaleTimeString() + "</div>" + html;
+    box.prepend(e);
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  function link(url, title) { return '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(title) + "</a>"; }
+  function sheetIdFrom(text) {
+    const t = (text || "").trim();
+    const m = t.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
+    if (m) return m[1];
+    return /^[A-Za-z0-9_-]{20,}$/.test(t) ? t : "";
+  }
+  function setVal(id, v) { const el = $(id); if (el.value !== v && document.activeElement !== el) el.value = v; }
+
+  // ---------------------------------------------------------------- apply (single render path)
+  function apply() {
+    const p = P();
+    const s = state.status;
+    if (!s) return;
+    const connected = !!s.connected;
+    show("btnSetup", connected); show("btnDisconnect", connected); show("acct", connected);
+    $("pill").textContent = connected ? "connected" : "needs setup";
+    $("pill").className = "pill " + (connected ? "on" : "off");
+    $("acctEmail").textContent = s.email || ""; $("acctEmail").title = s.email || "";
+    $("shareEmail").textContent = s.email || "";
+    const inSetup = !connected || p.setup;
+    show("setup", inSetup); show("btnCancelSetup", connected && p.setup); show("work", !inSetup);
+    if (inSetup) return;
+
+    // controls <- params
+    if (p.doc && document.activeElement !== $("docUrl") && !$("docUrl").value) $("docUrl").value = p.doc;
+    setVal("q", p.q); setVal("ntitle", p.ntitle); setVal("wrange", p.wrange);
+    if (!draftTooLong) setVal("draft", p.draft);
+    setVal("srange", p.srange); setVal("sbg", p.sbg); setVal("sfg", p.sfg);
+    $("hdr").checked = p.hdr; $("limit").value = p.limit; $("resolved").checked = p.resolved; $("raw").checked = p.raw;
+
+    // loads the params call for
+    if (p.doc !== want.doc) {
+      want.doc = p.doc; want.read = null; want.comments = null;
+      if (p.doc) loadMeta(p.doc);
+    }
+    const metaReady = state.meta && state.metaFor === p.doc;
+    const tabOk = metaReady && state.meta.tabs.some((t) => t.id === p.tab);
+    const rk = p.doc + "|" + p.tab + "|" + p.limit;
+    if (tabOk && p.view === "data" && rk !== want.read) { want.read = rk; loadData(rk, p); }
+    const ck = p.doc + "|" + (p.resolved ? "1" : "0");
+    if (metaReady && p.view === "comments" && ck !== want.comments) { want.comments = ck; loadComments(ck, p); }
+
+    draw(p);
+  }
+
+  function refresh() { want.doc = null; apply(); }
+
+  // ---------------------------------------------------------------- loads
+  async function loadMeta(doc) {
+    state.loadingMeta = true; state.metaErr = "";
+    draw(P());
+    try {
+      const r = await api("list_tabs", { doc }, "tabs");
+      if (want.doc !== doc) return;
+      state.meta = r; state.metaFor = doc; state.loadingMeta = false;
+      state.status.docs = mergeDoc(state.status.docs, r);
+      // keep the link canonical (a saved name or bare id becomes the Sheets URL)
+      if (doc !== r.url) { want.doc = r.url; state.metaFor = r.url; $("docUrl").value = r.url; setP("doc", r.url); }
+      const p = P();
+      const tabs = r.tabs || [];
+      if (!tabs.some((t) => t.id === p.tab)) {
+        const first = tabs.find((t) => !t.hidden) || tabs[0];
+        if (first) setP("tab", first.id);
+      }
+      apply();
+    } catch (e) {
+      if (want.doc !== doc) return;
+      state.loadingMeta = false; state.metaErr = e.message; state.meta = null; state.metaFor = doc;
+      draw(P());
+    }
+  }
+  function mergeDoc(docs, r) {
+    const list = (docs || []).filter((d) => d.id !== r.doc_id);
+    const prev = (docs || []).find((d) => d.id === r.doc_id);
+    list.unshift(Object.assign({ name: r.title, title: r.title, url: r.url, id: r.doc_id }, prev || {}, { title: r.title }));
+    return list;
+  }
+
+  async function loadData(rk, p) {
+    state.loadingData = true; state.dataErr = "";
+    draw(P());
+    try {
+      const r = await api("read_tab", { doc: p.doc, tab: p.tab, limit: p.limit }, "read");
+      if (want.read !== rk) return;
+      state.data = r; state.dataFor = rk;
+    } catch (e) {
+      if (want.read !== rk) return;
+      state.data = null; state.dataFor = rk; state.dataErr = e.message;
+    }
+    state.loadingData = false;
+    draw(P());
+  }
+
+  async function loadComments(ck, p) {
+    state.loadingComments = true; state.commentsErr = "";
+    draw(P());
+    try {
+      const r = await api("list_comments", { doc: p.doc, resolved: p.resolved }, "comments");
+      if (want.comments !== ck) return;
+      state.comments = r; state.commentsFor = ck;
+    } catch (e) {
+      if (want.comments !== ck) return;
+      state.comments = null; state.commentsFor = ck; state.commentsErr = e.message;
+    }
+    state.loadingComments = false;
+    draw(P());
+  }
+
+  // ---------------------------------------------------------------- draw
+  function draw(p) {
+    renderDocs(state.status.docs || [], p);
+    const ready = state.meta && state.metaFor === p.doc;
+    if (state.loadingMeta) setMsg("docMsg", "Loading…");
+    else setMsg("docMsg", state.metaErr, state.metaErr ? "err" : "");
+    show("docArea", !!ready);
+    if (!ready) return;
+
+    $("docTitle").textContent = state.meta.title || "Tabs";
+    $("docLink").href = state.meta.url;
+    renderTabs(p);
+
+    const tab = state.meta.tabs.find((t) => t.id === p.tab);
+    $("tabTitle").innerHTML = tab ? link(tab.url, tab.title) : "Data";
+    for (const b of $("viewSeg").children) b.classList.toggle("on", b.dataset.view === p.view);
+    show("dataView", p.view === "data"); show("commentsView", p.view === "comments");
+    if (p.view === "data") renderData(p);
+    else renderComments(p);
+    renderForm(p, tab);
+    renderStyle(p, tab);
+  }
+
+  function renderDocs(docs, p) {
+    const row = $("docsRow"); const ul = $("docs");
+    ul.innerHTML = "";
+    if (!docs.length) { row.classList.add("hidden"); return; }
+    row.classList.remove("hidden");
+    const cur = sheetIdFrom(p.doc);
+    for (const d of docs) {
+      const li = document.createElement("li");
+      if (d.id === cur) li.classList.add("sel");
+      const name = document.createElement("span");
+      name.className = "n"; name.textContent = d.name || d.title || d.id;
+      name.title = (d.title && d.title !== d.name ? d.title + "\n" : "") + d.url;
+      name.onclick = () => { $("docUrl").value = d.url; openDoc(d.url); };
+      const ren = document.createElement("button");
+      ren.className = "ic"; ren.textContent = "✎"; ren.title = "Rename";
+      ren.onclick = async (e) => {
+        e.stopPropagation();
+        const nn = prompt("Name for this spreadsheet:", d.name || d.title || "");
+        if (nn == null || !nn.trim() || nn.trim() === d.name) return;
+        try { await api("rename_doc", { doc: d.id, title: nn.trim() }); await refreshStatus(); }
+        catch (err) { setMsg("docMsg", err.message, "err"); }
+      };
+      const rm = document.createElement("button");
+      rm.className = "ic"; rm.textContent = "×"; rm.title = "Forget this spreadsheet (does not touch the sheet itself)";
+      rm.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm("Forget “" + (d.name || d.title) + "”? The Google Sheet itself is not changed.")) return;
+        try { await api("remove_doc", { doc: d.id }); await refreshStatus(); }
+        catch (err) { setMsg("docMsg", err.message, "err"); }
+      };
+      li.appendChild(name); li.appendChild(ren); li.appendChild(rm);
+      ul.appendChild(li);
+    }
+  }
+
+  function renderTabs(p) {
+    const ul = $("tabs"); ul.innerHTML = "";
+    const tabs = state.meta.tabs || [];
+    show("tabsEmpty", !tabs.length);
+    for (const t of tabs) {
+      const li = document.createElement("li");
+      li.className = (t.id === p.tab ? "sel" : "") + (t.hidden ? " hid" : "");
+      const meta = t.type === "GRID" ? t.rows.toLocaleString() + " × " + t.cols + " grid" : t.type.toLowerCase();
+      li.innerHTML = '<div class="t">' + esc(t.title || "(untitled)") + '</div><div class="m">' + esc(meta + (t.hidden ? " · hidden" : "")) +
+        '</div><div class="p">' + esc(t.preview || "") + "</div>";
+      li.onclick = () => { setP("sort", null); setP("tab", t.id); };
+      ul.appendChild(li);
+    }
+  }
+
+  function colName(i) { let s = ""; i += 1; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; }
+  function asNum(v) {
+    if (typeof v === "number") return v;
+    const t = String(v).trim().replace(/[$€£,%\s]/g, "");
+    return t !== "" && /^-?\d*\.?\d+(e-?\d+)?$/i.test(t) ? parseFloat(t) : NaN;
+  }
+  function hl(text, q) {
+    const s = String(text == null ? "" : text);
+    if (!q) return esc(s);
+    const i = s.toLowerCase().indexOf(q);
+    if (i < 0) return esc(s);
+    return esc(s.slice(0, i)) + "<mark>" + esc(s.slice(i, i + q.length)) + "</mark>" + esc(s.slice(i + q.length));
+  }
+
+  function renderData(p) {
+    const grid = $("grid");
+    const rk = p.doc + "|" + p.tab + "|" + p.limit;
+    const d = state.dataFor === rk ? state.data : null;
+    if (state.loadingData && !d) { grid.innerHTML = '<div class="placeholder"><span class="spinner"></span> Reading…</div>'; setMsg("dataMsg", ""); $("count").textContent = ""; return; }
+    setMsg("dataMsg", state.dataFor === rk ? state.dataErr : "", "err");
+    if (!d) { grid.innerHTML = ""; $("count").textContent = ""; return; }
+    if (d.note) { grid.innerHTML = '<div class="placeholder">' + esc(d.note) + "</div>"; $("count").textContent = ""; return; }
+    const values = d.values || [];
+    if (!values.length) { grid.innerHTML = '<div class="placeholder">This tab is empty.</div>'; $("count").textContent = "0 rows"; return; }
+
+    const header = p.hdr ? values[0] : values[0].map((_, i) => colName(i));
+    let rows = (p.hdr ? values.slice(1) : values).map((r, i) => ({ r, n: i + 1 + (p.hdr ? 1 : 0) }));
+    const total = rows.length;
+    const q = p.q.trim().toLowerCase();
+    if (q) rows = rows.filter((x) => x.r.some((v) => String(v).toLowerCase().includes(q)));
+    const sc = p.sort === "" ? -1 : parseInt(p.sort, 10);
+    if (sc >= 0 && sc < header.length) {
+      const sign = p.dir === "desc" ? -1 : 1;
+      rows.sort((a, b) => {
+        const x = a.r[sc], y = b.r[sc];
+        const nx = asNum(x), ny = asNum(y);
+        if (!isNaN(nx) && !isNaN(ny)) return (nx - ny) * sign;
+        if (x === "" && y !== "") return 1;
+        if (y === "" && x !== "") return -1;
+        return String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" }) * sign;
+      });
+    }
+    const numeric = header.map((_, i) => {
+      let n = 0, k = 0;
+      for (const x of rows.slice(0, 200)) { const v = x.r[i]; if (v === "" || v == null) continue; k++; if (!isNaN(asNum(v))) n++; }
+      return k > 0 && n / k > 0.8;
+    });
+
+    let html = '<table><thead><tr><th class="rn"></th>';
+    header.forEach((h, i) => {
+      const on = i === sc;
+      html += '<th title="' + esc(h) + '"><button data-col="' + i + '"><span class="lbl">' + esc(h === "" ? colName(i) : h) + "</span>" +
+        (on ? '<span class="arrow">' + (p.dir === "desc" ? "▼" : "▲") + "</span>" : "") + "</button></th>";
+    });
+    html += "</tr></thead><tbody>";
+    for (const x of rows) {
+      html += '<tr><td class="rn">' + x.n + "</td>";
+      for (let i = 0; i < header.length; i++) {
+        const v = x.r[i] == null ? "" : x.r[i];
+        html += "<td" + (numeric[i] ? ' class="num"' : "") + ' title="' + esc(v) + '">' + hl(v, q) + "</td>";
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table>";
+    grid.innerHTML = html;
+    for (const b of grid.querySelectorAll("th button")) {
+      b.onclick = () => {
+        const i = b.dataset.col;
+        const cur = P();
+        if (cur.sort !== i) { setP("dir", null); setP("sort", i); }
+        else if (cur.dir === "asc") setP("dir", "desc");
+        else { setP("dir", null); setP("sort", null); }
+      };
+    }
+    $("count").textContent = (q ? rows.length.toLocaleString() + " of " : "") + total.toLocaleString() + " rows" +
+      (d.truncated ? " (first " + Number(p.limit).toLocaleString() + " of " + d.rows.toLocaleString() + " read)" : "") +
+      " · " + d.cols + " cols" + (state.loadingData ? " · refreshing…" : "");
+  }
+
+  function fmtWhen(iso) { const t = Date.parse(iso || ""); return isNaN(t) ? "" : new Date(t).toLocaleString(); }
+  function renderComments(p) {
+    const box = $("comments");
+    const ck = p.doc + "|" + (p.resolved ? "1" : "0");
+    const c = state.commentsFor === ck ? state.comments : null;
+    if (state.loadingComments && !c) { box.innerHTML = '<div class="placeholder"><span class="spinner"></span> Loading comments…</div>'; setMsg("commentsMsg", ""); $("cCount").textContent = ""; return; }
+    setMsg("commentsMsg", state.commentsFor === ck ? state.commentsErr : "", "err");
+    if (!c) { box.innerHTML = ""; $("cCount").textContent = ""; return; }
+    $("cCount").textContent = c.count + " comment" + (c.count === 1 ? "" : "s");
+    if (!c.comments.length) { box.innerHTML = '<div class="placeholder">No ' + (p.resolved ? "" : "open ") + "comments.</div>"; return; }
+    box.innerHTML = c.comments.map((m) =>
+      '<div class="cmt"><span class="who">' + esc(m.author || "Someone") + '</span><span class="when">' + esc(fmtWhen(m.created)) + "</span>" +
+      (m.resolved ? '<span class="badge">resolved</span>' : "") +
+      (m.quoted ? '<div class="q">' + esc(m.quoted) + "</div>" : "") +
+      '<div class="body">' + esc(m.content) + "</div>" +
+      (m.replies || []).map((r) =>
+        '<div class="rep"><span class="who">' + esc(r.author || "Someone") + '</span><span class="when">' + esc(fmtWhen(r.created)) + "</span>" +
+        (r.action ? '<span class="badge">' + esc(r.action) + "</span>" : "") +
+        (r.content ? '<div class="body">' + esc(r.content) + "</div>" : "") + "</div>").join("") +
+      "</div>").join("");
+  }
+
+  const MODE = {
+    append: { btn: "Append rows", hint: "Adds the rows below the last row with data in the selected tab." },
+    write: { btn: "Replace values", hint: "Clears the selected tab (or just the range) and writes these rows from its top-left cell." },
+    create: { btn: "Create tab", hint: "Adds a new worksheet tab, optionally filled with these rows." },
+  };
+  function renderForm(p, tab) {
+    for (const b of $("modeSeg").children) b.classList.toggle("on", b.dataset.mode === p.mode);
+    const m = MODE[p.mode];
+    $("btnWrite").textContent = m.btn;
+    $("modeHint").textContent = m.hint + (p.mode !== "create" ? " Selected tab: " + (tab ? tab.title : "none") + "." : "");
+    show("titleRow", p.mode === "create"); show("rangeRow", p.mode === "write");
+    show("draftNote", draftTooLong);
+  }
+
+  function isHex(v) { return /^#?[0-9a-f]{6}$/i.test((v || "").trim()); }
+  function hex(v) { v = (v || "").trim(); return v.startsWith("#") ? v : "#" + v; }
+  function styleTab(p) {
+    const tabs = (state.meta && state.meta.tabs) || [];
+    return tabs.find((t) => t.id === (p.stab || p.tab)) || null;
+  }
+  function renderStyle(p, tab) {
+    const sel = $("stab");
+    const tabs = (state.meta.tabs || []).filter((t) => t.type === "GRID");
+    const opts = [["", "Selected tab" + (tab ? " (" + tab.title + ")" : "")]].concat(tabs.map((t) => [t.id, t.title]));
+    const sig = JSON.stringify(opts);
+    if (sel.dataset.sig !== sig) {
+      sel.innerHTML = opts.map((o) => '<option value="' + esc(o[0]) + '">' + esc(o[1]) + "</option>").join("");
+      sel.dataset.sig = sig;
+    }
+    sel.value = tabs.some((t) => t.id === p.stab) ? p.stab : "";
+    for (const b of $("boldSeg").children) b.classList.toggle("on", b.dataset.bold === p.sbold);
+    if (isHex(p.sbg)) $("sbgPick").value = hex(p.sbg).toLowerCase();
+    if (isHex(p.sfg)) $("sfgPick").value = hex(p.sfg).toLowerCase();
+    const pv = $("sprev");
+    pv.style.background = ""; pv.style.color = "";
+    if (p.sbg && !/^(none|transparent|clear)$/i.test(p.sbg)) pv.style.background = isHex(p.sbg) ? hex(p.sbg) : p.sbg;
+    if (p.sfg && !/^(none|clear)$/i.test(p.sfg)) pv.style.color = isHex(p.sfg) ? hex(p.sfg) : p.sfg;
+    pv.style.fontWeight = p.sbold === "on" ? "700" : "400";
+  }
+
+  // ---------------------------------------------------------------- setup
+  async function refreshStatus() {
+    state.status = await api("status");
+    apply();
+  }
+  $("btnSaveKey").onclick = async () => {
+    setMsg("setupMsg", "Checking the key with Google…");
+    $("btnSaveKey").disabled = true;
+    try {
+      const r = await api("save_key", { key_json: $("keyJson").value });
+      $("keyJson").value = "";
+      setMsg("setupMsg", "");
+      setP("setup", null);
+      await refreshStatus();
+      log("Connected as <b>" + esc(r.email) + "</b>. Share your spreadsheets with this email.");
+    } catch (e) { setMsg("setupMsg", e.message, "err"); }
+    finally { $("btnSaveKey").disabled = false; }
+  };
+  $("btnSetup").onclick = () => setP("setup", "1");
+  $("btnCancelSetup").onclick = () => setP("setup", null);
+  $("btnDisconnect").onclick = async () => {
+    if (!confirm("Forget the saved service-account key? You can paste it again later.")) return;
+    await api("disconnect"); await refreshStatus();
+  };
+  async function copyEmail(btn) {
+    const email = (state.status && state.status.email) || "";
+    if (!email) return;
+    try { await navigator.clipboard.writeText(email); } catch (e) { /* clipboard blocked */ }
+    const was = btn.textContent; btn.textContent = "Copied"; setTimeout(() => { btn.textContent = was; }, 1200);
+  }
+  $("btnCopyEmail").onclick = (e) => copyEmail(e.currentTarget);
+  $("btnCopyEmail2").onclick = (e) => copyEmail(e.currentTarget);
+
+  // ---------------------------------------------------------------- controls -> params
+  function openDoc(doc) {
+    doc = (doc || "").trim();
+    if (!doc) { setMsg("docMsg", "Paste a Google Sheets link first.", "err"); return; }
+    if (doc === P().doc) { refresh(); return; }
+    setP("sort", null); setP("q", null); setP("tab", null);
+    setP("doc", doc);
+  }
+  $("btnLoad").onclick = () => openDoc($("docUrl").value);
+  $("btnRefresh").onclick = refresh;
+  $("docUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") openDoc($("docUrl").value); });
+  for (const b of $("viewSeg").children) b.onclick = () => setP("view", b.dataset.view === "data" ? null : b.dataset.view);
+  for (const b of $("modeSeg").children) b.onclick = () => setP("mode", b.dataset.mode === "append" ? null : b.dataset.mode);
+  $("q").addEventListener("input", (e) => setPLater("q", e.target.value, 200));
+  $("hdr").onchange = (e) => { setP("sort", null); setP("hdr", e.target.checked ? null : "0"); };
+  $("limit").onchange = (e) => setP("limit", e.target.value === "1000" ? null : e.target.value);
+  $("resolved").onchange = (e) => setP("resolved", e.target.checked ? "1" : null);
+  $("raw").onchange = (e) => setP("raw", e.target.checked ? "1" : null);
+  $("ntitle").addEventListener("input", (e) => setPLater("ntitle", e.target.value));
+  $("wrange").addEventListener("input", (e) => setPLater("wrange", e.target.value));
+  function setDraft(v) {
+    draftTooLong = v.length > DRAFT_MAX;
+    show("draftNote", draftTooLong);
+    setPLater("draft", draftTooLong ? null : v, 300);
+  }
+  $("draft").addEventListener("input", (e) => setDraft(e.target.value));
+
+  $("btnEditCopy").onclick = () => {
+    const p = P();
+    const d = state.data;
+    if (!d || !d.values || !d.values.length) return;
+    const tsv = d.values.map((r) => r.map((v) => String(v).replace(/[\t\n]/g, " ")).join("\t")).join("\n");
+    $("draft").value = tsv;
+    setDraft(tsv);
+    setP("mode", "write");
+    if (d.truncated) setMsg("formMsg", "Only the first " + Number(p.limit).toLocaleString() + " rows were read; replacing would drop the rest.", "err");
+    $("draft").focus();
+  };
+
+  $("stab").onchange = (e) => setP("stab", e.target.value);
+  $("srange").addEventListener("input", (e) => setPLater("srange", e.target.value.trim()));
+  $("sbg").addEventListener("input", (e) => setPLater("sbg", e.target.value.trim()));
+  $("sfg").addEventListener("input", (e) => setPLater("sfg", e.target.value.trim()));
+  $("sbgPick").addEventListener("input", (e) => { $("sbg").value = e.target.value; setPLater("sbg", e.target.value, 150); });
+  $("sfgPick").addEventListener("input", (e) => { $("sfg").value = e.target.value; setPLater("sfg", e.target.value, 150); });
+  for (const b of $("boldSeg").children) b.onclick = () => setP("sbold", b.dataset.bold);
+
+  // ---------------------------------------------------------------- styling actions
+  async function runStyle(action, extra, what) {
+    const p = P();
+    const tab = styleTab(p);
+    if (!tab) { setMsg("styleMsg", "Select a tab first.", "err"); return; }
+    setBusy(true); setMsg("styleMsg", "Working…");
+    try {
+      const r = await styleApi(action, Object.assign({ doc: state.meta.url, tab: tab.id }, extra));
+      log(what + " " + link(r.url, r.range) + ": " + esc((r.applied || []).join(", ")) + ".");
+      setMsg("styleMsg", "Done.", "ok");
+      return r;
+    } catch (e) { setMsg("styleMsg", e.message, "err"); log(esc(e.message), true); }
+    finally { setBusy(false); }
+  }
+  $("btnStyle").onclick = () => {
+    const p = P();
+    const bold = p.sbold === "on" ? "true" : p.sbold === "off" ? "false" : "";
+    if (!$("sbg").value.trim() && !$("sfg").value.trim() && !bold) {
+      setMsg("styleMsg", "Pick a background, a text color or bold first.", "err"); return;
+    }
+    runStyle("format_range", { range: $("srange").value.trim(), bg_color: $("sbg").value.trim(),
+      text_color: $("sfg").value.trim(), bold }, "Styled");
+  };
+  $("btnHeader").onclick = async () => {
+    const r = await runStyle("style_header", { bg_color: $("sbg").value.trim(), text_color: $("sfg").value.trim() }, "Styled header");
+    if (r) refresh();
+  };
+  $("btnClearFmt").onclick = () => {
+    const tab = styleTab(P());
+    const where = $("srange").value.trim();
+    if (!tab || !confirm("Remove all formatting from " + (where ? "range " + where + " on" : "the whole of") + " “" + tab.title + "”? Values are kept.")) return;
+    runStyle("clear_format", { range: where }, "Cleared formatting on");
+  };
+
+  // ---------------------------------------------------------------- write actions
+  $("btnWrite").onclick = async () => {
+    const p = P();
+    const content = $("draft").value;
+    const tab = state.meta && state.meta.tabs.find((t) => t.id === p.tab);
+    const base = { doc: state.meta ? state.meta.url : p.doc, raw: p.raw };
+    let r;
+    setMsg("formMsg", "");
+    try {
+      if (p.mode === "create") {
+        const title = $("ntitle").value.trim();
+        if (!title) { setMsg("formMsg", "Give the new tab a title.", "err"); return; }
+        setBusy(true); setMsg("formMsg", "Working…");
+        r = await api("create_tab", Object.assign(base, { title, content }));
+        log("Created tab " + link(r.url, r.tab.title) + (r.written_rows ? " with " + r.written_rows + " rows." : "."));
+        setP("ntitle", null); $("ntitle").value = "";
+        setP("tab", r.tab.id);
+      } else {
+        if (!tab) { setMsg("formMsg", "Select a tab on the left first.", "err"); return; }
+        if (p.mode === "append") {
+          if (!content.trim()) { setMsg("formMsg", "Nothing to append.", "err"); return; }
+          setBusy(true); setMsg("formMsg", "Working…");
+          r = await api("append", Object.assign(base, { tab: tab.id, content }));
+          log("Appended " + r.appended_rows + " rows to " + link(r.url, tab.title) + (r.updated_range ? " (" + esc(r.updated_range) + ")." : "."));
+        } else {
+          const where = $("wrange").value.trim();
+          if (!confirm("Replace " + (where ? "range " + where + " on" : "all values in") + " “" + tab.title + "”" + (content.trim() ? "" : " with nothing (clear it)") + "?")) return;
+          setBusy(true); setMsg("formMsg", "Working…");
+          r = await api("write_tab", Object.assign(base, { tab: tab.id, content, range: where }));
+          log("Wrote " + r.written_rows + " rows to " + link(r.url, tab.title) + (r.updated_range ? " (" + esc(r.updated_range) + ")." : "."));
+        }
+      }
+      $("draft").value = ""; draftTooLong = false; clearTimeout(timers.draft); setP("draft", null);
+      setMsg("formMsg", "Done.", "ok");
+      refresh();
+    } catch (e) { setMsg("formMsg", e.message, "err"); log(esc(e.message), true); }
+    finally { setBusy(false); }
+  };
+
+  // ---------------------------------------------------------------- boot
+  async function boot() {
+    if (isPreview()) { show("preview", true); $("pill").textContent = "preview"; return; }
+    fused.params.onChange(() => apply());
+    try { await refreshStatus(); }
+    catch (e) { $("pill").textContent = "error"; $("pill").className = "pill off"; show("setup", true); setMsg("setupMsg", e.message, "err"); }
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

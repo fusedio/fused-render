@@ -1024,6 +1024,40 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Bots (fused_render/bots/, docs/bots.md): per-bot Chrome over CDP driven
+    # by `claude -p` or the steps engine, `/api/bots/*` + `/api/bot-apps/*`.
+    # The router imports only `paths`/`registry`; bot/browser code loads on
+    # the first bot request. Imported here, not at the top like canvases: the
+    # router takes `_error`/`_require_fused` from `fused_render.server.common`,
+    # and a top-level import would be a cycle for anyone importing
+    # `fused_render.bots.routes` before the server.
+    from fused_render.bots.routes import router as bots_router
+
+    app.include_router(bots_router)
+
+    # The bots' scheduler (routines + file inbox) and the iMessage bridge
+    # thread. `@on_startup`, so a lean `fused-render open` starts neither — a
+    # bot still answers a request there, it just runs no routine on its own.
+    # Off the event loop: `migrate_layout` is a directory walk.
+    @on_startup
+    async def _startup_bots():
+        from fused_render.bots import paths as bots_paths
+        from fused_render.bots import registry as bots_registry
+
+        try:
+            await asyncio.to_thread(bots_paths.migrate_layout)
+            bots_registry.start()
+        except Exception:  # noqa: BLE001 - a bots failure must not block serving
+            logger.exception("could not start the bots scheduler")
+
+    # Every loaded bot's task and Chrome stop with the server. `_always`: a
+    # request can start a bot's Chrome in a lean app too (the rule above
+    # `on_shutdown_always`), and `shutdown()` is a no-op when none was loaded.
+    @on_shutdown_always
+    async def _shutdown_bots():
+        from fused_render.bots import registry as bots_registry
+
+        await asyncio.to_thread(bots_registry.shutdown)
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same
     # `fused login` provider canvases.py owns (credentials-file presence,

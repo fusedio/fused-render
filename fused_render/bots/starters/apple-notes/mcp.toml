@@ -1,0 +1,73 @@
+# MCP tools for this app, curated in fused-render's MCP panel. Every tool calls
+# notes.py main(action=...). Reads run at once for bots; notes_create and
+# notes_append pause for the user's approval (their names are write verbs).
+
+[[tool]]
+name = "notes_status"
+description = "Check how Notes is reached from here (backend=bridge through the NotesBridge helper, or the read-only database fallback with backend=sqlite), total notes and folders. Call this first when another notes tool returns an error."
+file = "notes.py"
+entrypoint = "main"
+signature = "main(action: str='status', query: str='', folder: str='', id: str='', title: str='', body: str='', text: str='', days: int=7, limit: int=20, in_body: bool=False)"
+
+[tool.pinned]
+action = "status"
+
+[[tool]]
+name = "notes_folders"
+description = "List the user's Apple Notes folders with their account and note counts: folders: [{name, account, notes, id}]."
+file = "notes.py"
+entrypoint = "main"
+signature = "main(action: str='status', query: str='', folder: str='', id: str='', title: str='', body: str='', text: str='', days: int=7, limit: int=20, in_body: bool=False)"
+
+[tool.pinned]
+action = "folders"
+
+[[tool]]
+name = "notes_search"
+description = "Find Apple Notes whose title contains `query` (set in_body=true to also match the note text; slower on big libraries). Optional `folder` narrows to one folder. Returns notes: [{id, title, folder, modified, created, snippet}] newest first, up to `limit` (default 20, max 100). Use notes_read with the id for the full text."
+file = "notes.py"
+entrypoint = "main"
+signature = "main(action: str='status', query: str='', folder: str='', id: str='', title: str='', body: str='', text: str='', days: int=7, limit: int=20, in_body: bool=False)"
+
+[tool.pinned]
+action = "search"
+
+[[tool]]
+name = "notes_read"
+description = "Read one Apple Note in full by `id` (from notes_search or notes_recent) or by `title` (exact, then contains). Returns note: {id, title, folder, modified, created, body (plain text), shared, password_protected}. A password-protected note's body is empty until the user unlocks it in Notes."
+file = "notes.py"
+entrypoint = "main"
+signature = "main(action: str='status', query: str='', folder: str='', id: str='', title: str='', body: str='', text: str='', days: int=7, limit: int=20, in_body: bool=False)"
+
+[tool.pinned]
+action = "read"
+
+[[tool]]
+name = "notes_recent"
+description = "Apple Notes edited in the last `days` days (default 7), optionally within one `folder`, newest first: notes: [{id, title, folder, modified, created, snippet}], up to `limit`."
+file = "notes.py"
+entrypoint = "main"
+signature = "main(action: str='status', query: str='', folder: str='', id: str='', title: str='', body: str='', text: str='', days: int=7, limit: int=20, in_body: bool=False)"
+
+[tool.pinned]
+action = "recent"
+
+[[tool]]
+name = "notes_create"
+description = "Create a new Apple Note with `title` and plain-text `body` (lines become paragraphs) in `folder` (default: the default account's Notes folder). Returns the new note's id, title and folder. Goes through Notes.app directly; if macOS has not allowed the NotesBridge helper to control Notes, an error says where to allow it. Notes saves it immediately; there is no undo from here."
+file = "notes.py"
+entrypoint = "main"
+signature = "main(action: str='status', query: str='', folder: str='', id: str='', title: str='', body: str='', text: str='', days: int=7, limit: int=20, in_body: bool=False)"
+
+[tool.pinned]
+action = "create"
+
+[[tool]]
+name = "notes_append"
+description = "Append `text` (plain text; each line becomes a new paragraph) to the end of an existing Apple Note, found by `id` (from notes_search or notes_recent) or by `title` (exact, else the only note whose title contains it). Several title matches change nothing and return candidates with ids: call again with one `id`. Keeps attachments; refuses locked notes. Returns ok, appended and the note's id, title, folder, snippet. Notes saves it immediately; there is no undo from here."
+file = "notes.py"
+entrypoint = "main"
+signature = "main(action: str='status', query: str='', folder: str='', id: str='', title: str='', body: str='', text: str='', days: int=7, limit: int=20, in_body: bool=False)"
+
+[tool.pinned]
+action = "append"
