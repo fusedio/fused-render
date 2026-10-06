@@ -1612,17 +1612,14 @@
 }
 /* THE ✻ MARK SHARES THE FIRST ROW. A reply that opens on a tool call puts its
    first chip level with the mark, in the same lane column. Hiding that stamp
-   left a one-call reply with no time; dropping it a row down landed on the
-   second chip's row and read as the second chip's (Akshil, 2026-10-06). So it
-   stays in the column every other stamp uses and, while that chip is hovered,
-   sits OVER the mark on an opaque ground — the mark is the fold control for
-   the whole reply, and a pointer resting on a chip is not folding anything. */
+   left a one-call reply with no time; a row lower it read as the second
+   chip's; over the mark it blocked the fold button (Akshil, 2026-10-06, three
+   rounds). So it goes ABOVE the mark, in the lane's gap over the reply —
+   the 20px between turns, where nothing else is drawn — same column as every
+   other stamp, and the mark stays clickable. */
 .chat-root .turn.assistant .body > .toolchip:first-child > .chip-stamp {
-  z-index: 2;
-  padding: 0 4px;
-  margin-right: -4px;
-  border-radius: 4px;
-  background: var(--c-panel);
+  top: -22px;
+  line-height: 20px;
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-root .toolchip > .chip-stamp {
