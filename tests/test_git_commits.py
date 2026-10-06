@@ -87,15 +87,6 @@ def test_relative_path_is_400(repo):
     assert exc.value.status == 400
 
 
-def test_mount_backed_path_refuses(repo, monkeypatch):
-    monkeypatch.setattr(
-        "fused_render.server.routers.git_snapshot.shell_mounts.is_mount_backed",
-        lambda p: True)
-    with pytest.raises(gs._Refused) as exc:
-        gs.list_commits(str(repo["app_dir"] / "reader.py"))
-    assert exc.value.status == 400
-
-
 def test_limit_honoured_and_has_more_truthful(repo):
     result = gs.list_commits(str(repo["app_dir"]), limit=1)
     assert len(result["commits"]) == 1

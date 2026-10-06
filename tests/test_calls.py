@@ -1229,21 +1229,21 @@ def test_viewing_the_log_is_recorded_like_any_other_call(app_client):
 
 def test_the_runtime_never_watches_a_call_log_file(store):
     """The loop is killed at its source: a page watching a log file would reload
-    on the append its own read caused. Excluded in the runtime beside the
-    existing mount-backed exclusion, so generic templates (code, duckdb, tree —
+    on the append its own read caused. Excluded in the runtime,
+    so generic templates (code, duckdb, tree —
     none of which opt out of auto-reload) need to know nothing about it."""
     runtime = os.path.join(os.path.dirname(calls.__file__), "static", "runtime.js")
     src = open(runtime, encoding="utf-8").read()
     assert "function isCallLog(" in src
-    assert "isMountBacked(p) || isCallLog(p)" in src
-    # Every site that used to consult the mount exclusion must use the union.
+    assert "function isUnwatchable(p) {\n    return isCallLog(p);" in src
+    # Every watch site must go through the one exclusion.
     assert "if (isUnwatchable(p)) return;" in src
     assert "if (own && !isUnwatchable(own)) watched.add(own);" in src
     assert "if (file && !isUnwatchable(file)) watched.add(file);" in src
 
 
 def test_config_publishes_the_store_so_the_runtime_can_skip_it(app_client):
-    """The runtime learns the prefix/suffix from the server, like mounts_root —
+    """The runtime learns the prefix/suffix from the server, like other config —
     templates stay ignorant of the call log."""
     client, _ = app_client
     cfg = client.get("/api/config").json()

@@ -403,52 +403,6 @@ def test_readonly_destination_403(tmp_path):
 
 # -------------------------------------------------------------------- mounts
 
-def test_mount_backed_source_is_refused_without_walking_it(tmp_path, monkeypatch):
-    from fused_render.shell import mounts as shell_mounts
-
-    monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda p: True)
-    monkeypatch.setattr(shell_mounts, "mount_read_only", lambda p: False)
-    walked = []
-    # Thread-scoped: this patch is process-wide and it does not merely record —
-    # it returns an EMPTY walk to every caller, so another thread's legitimate
-    # walk would silently see nothing, and its arguments would land in `walked`
-    # and break `walked == []` for a tree this test never named. Under the
-    # fused-engine job the `openfused-invoke-dispatcher` thread enumerates its
-    # own request directory on its own schedule. `_fs_compress` is synchronous on
-    # the calling thread, so the claim ("the mount source is refused before
-    # anything walks it") is proved exactly as before. Do not re-globalise.
-    monkeypatch.setattr(
-        os, "walk",
-        this_thread_only(os.walk, lambda *a, **k: walked.append(a) or iter(())))
-    resp = COMPRESS({"path": str(tmp_path / "mnt" / "proj"), "format": "zip"},
-                    x_fused="1")
-    assert _status(resp) == 400
-    assert "compress unsupported" in _data(resp)["error"]
-    assert walked == []
-
-
-def test_read_only_mount_source_is_readonly_403(tmp_path, monkeypatch):
-    from fused_render.shell import mounts as shell_mounts
-
-    monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda p: True)
-    monkeypatch.setattr(shell_mounts, "mount_read_only", lambda p: True)
-    resp = COMPRESS({"path": str(tmp_path / "mnt" / "proj"), "format": "zip"},
-                    x_fused="1")
-    assert _status(resp) == 403
-    assert _data(resp)["error"] == "readonly"
-
-
-def test_mount_backed_destination_is_refused(tmp_path, monkeypatch):
-    from fused_render.shell import mounts as shell_mounts
-
-    src = make_tree(tmp_path / "proj")
-    dest = tmp_path / "mnt" / "proj.zip"
-    monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda p: str(p).startswith(str(tmp_path / "mnt")))
-    monkeypatch.setattr(shell_mounts, "mount_read_only", lambda p: False)
-    resp = COMPRESS({"path": str(src), "format": "zip", "dest": str(dest)}, x_fused="1")
-    assert _status(resp) == 400
-    assert "compress unsupported" in _data(resp)["error"]
-
 
 # ------------------------------------------------------------ no shell, ever
 

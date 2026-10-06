@@ -114,8 +114,7 @@ def test_paths_under_an_ignored_tree_or_the_store_dir_are_dropped():
     writes parquet into cfg.dir, and without this filter the watcher would
     trigger the scan that triggers the watcher."""
     rules = IgnoreRules(default_ignore())
-    mounts_dir = norm(os.path.expanduser("~/.fused-render/mounts"))
-    dropped = make_dropped(rules, mounts_dir)
+    dropped = make_dropped(rules)
 
     assert dropped(norm(os.path.expanduser("~/proj/node_modules/pkg/index.js")))
     assert dropped(norm(os.path.expanduser("~/Library/Caches/com.example/x")))
@@ -137,8 +136,7 @@ def test_a_path_inside_a_leaf_dir_is_dropped():
     scan of it wrote. Any active git repo under a watched root would churn
     this every flush floor."""
     rules = IgnoreRules(default_ignore())
-    mounts_dir = norm(os.path.expanduser("~/.fused-render/mounts"))
-    dropped = make_dropped(rules, mounts_dir)
+    dropped = make_dropped(rules)
 
     assert dropped(norm(os.path.expanduser(
         "~/repo/.git/objects/ab/cdef0123456789")))
@@ -156,9 +154,8 @@ def test_a_configured_index_dir_outside_the_fused_render_home_is_blocked():
     self-trigger loop this filter exists to prevent, without this explicit
     check."""
     rules = IgnoreRules(default_ignore())
-    mounts_dir = norm(os.path.expanduser("~/.fused-render/mounts"))
     custom_dir = norm(os.path.expanduser("~/my-custom-index-store"))
-    dropped = make_dropped(rules, mounts_dir, index_dir=custom_dir)
+    dropped = make_dropped(rules, index_dir=custom_dir)
 
     assert dropped(os.path.join(custom_dir, "dirs.parquet"))
     assert dropped(custom_dir)

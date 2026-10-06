@@ -31,7 +31,7 @@ The four template lists below are exhaustive over `fused_render/templates/`,
 and a test asserts that — so a newly added template cannot quietly skip the
 classification.
 
-Shared helpers live in `_theme_sources`, mirroring `_mount_safe_helpers`.
+Shared helpers live in `_theme_sources`, as shared test helpers.
 """
 import os
 import re

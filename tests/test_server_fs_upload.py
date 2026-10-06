@@ -127,23 +127,3 @@ def test_upload_refuses_a_readonly_target(tmp_path):
         os.chmod(dest, stat.S_IRUSR | stat.S_IWUSR)
 
 
-def test_upload_refuses_a_read_only_mount(tmp_path, monkeypatch):
-    """A read-only mount refuses BEFORE any kernel probe of the path.
-
-    The order matters as much as the answer: a cold negative os.stat under a
-    mount is the full-prefix enumeration the whole fs_mutate mount branch
-    exists to avoid, so the refusal has to come first (_fs_write:52-56).
-    """
-    from fused_render.shell import mounts as shell_mounts
-    dest = tmp_path / "on-a-mount.png"
-    monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda p: True)
-    monkeypatch.setattr(shell_mounts, "mount_read_only", lambda p: True)
-
-    def boom(p):  # any probe at all is the bug
-        raise AssertionError("probed a read-only mount before refusing")
-
-    monkeypatch.setattr("fused_render.server.fs_mutate._mount_probe", boom)
-    resp = UPLOAD(str(dest), PNG, x_fused="1")
-    assert _status(resp) == 403
-    assert _data(resp)["error"] == "readonly"
-    assert not dest.exists()

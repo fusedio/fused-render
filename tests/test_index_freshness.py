@@ -60,9 +60,6 @@ def spawned(monkeypatch):
         return {"run_id": "r1", "root": root}
 
     monkeypatch.setattr(runner, "start", fake_start)
-    # No mounts records anywhere near tmp_path, so the guard is a no-op here
-    # except in the test that points it at one.
-    monkeypatch.setattr(runner, "_mounts_dir", lambda: "/nonexistent-mounts")
     return calls
 
 
@@ -355,7 +352,6 @@ def test_the_scan_it_starts_is_of_the_configured_root_not_the_open_folder(
     root = _tree(tmp_path, "root")
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
-    monkeypatch.setattr(runner, "_mounts_dir", lambda: "/nonexistent-mounts")
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _Spawned())
     now = os.stat(sub).st_mtime + QUIET_S + 1
     assert note_folder_opened(cfg, sub, [root], now=now) == FreshnessCheck(
@@ -368,16 +364,14 @@ class _Spawned:
     pid = 4242
 
 
-def test_a_mount_backed_folder_is_refused_without_touching_the_kernel(
+def test_a_home_tree_folder_is_refused_without_touching_the_kernel(
         tmp_path, spawned, monkeypatch):
-    """os.stat on a wedged rclone mount blocks the request thread forever (this
-    repo's documented mount-wedge class), so the guard has to come first — and
-    it is pure string work against the mount records."""
-    mounts = _tree(tmp_path, "home/mounts")
+    """The guard comes first and is pure string work: a folder inside a
+    fused-render home is never stat-ed."""
     root = _tree(tmp_path, "home")
-    under = _tree(tmp_path, "home/mounts/bucket/data")
+    under = _tree(tmp_path, "home/cache/bucket/data")
     cfg = _index(tmp_path, root, {root: 1 * NS, under: 1 * NS})
-    monkeypatch.setattr(runner, "_mounts_dir", lambda: mounts)
+    monkeypatch.setenv("FUSED_RENDER_HOME", root)
 
     # Scoped to `under`, not a blanket boom() on every os.stat call: `os` is a
     # single process-wide module object, so patching it unconditionally also
@@ -392,7 +386,7 @@ def test_a_mount_backed_folder_is_refused_without_touching_the_kernel(
 
     def boom(p, *args, **kwargs):
         if isinstance(p, str) and p == under:
-            raise AssertionError("stat reached a mount-backed path")
+            raise AssertionError("stat reached a home-tree path")
         return real_stat(p, *args, **kwargs)
 
     monkeypatch.setattr(freshness.os, "stat", boom)

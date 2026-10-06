@@ -455,31 +455,6 @@ def test_a_missing_path_is_refused(reader, tmp_path):
     assert got["ok"] is False and got["reason"] == "missing"
 
 
-def test_a_mount_backed_target_is_refused_by_the_module(reader, repo, monkeypatch):
-    # The gate is the UX; this is the guarantee (MD-11) — a hand-written
-    # `?_mode=git` URL must not reach git over an rclone-NFS mount.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
-    got = reader.main(repo)
-    assert got["ok"] is False and got["reason"] == "mount"
-
-
-def test_an_unavailable_mount_detector_refuses(reader, repo, monkeypatch):
-    import builtins
-    import sys
-
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("blocked")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    monkeypatch.delitem(sys.modules, "appenv", raising=False)
-    got = reader.main(repo)
-    assert got["ok"] is False and got["reason"] == "mount"
-
-
 def test_a_missing_git_binary_is_a_calm_empty_state(reader, repo, monkeypatch):
     def no_git(*args, **kwargs):
         raise FileNotFoundError(2, "No such file or directory: 'git'")
@@ -1629,9 +1604,3 @@ def test_pending_outside_a_repository_is_refused(reader, tmp_path):
     assert got["ok"] is False and got["reason"] == "missing"
 
 
-def test_pending_on_a_mount_backed_target_is_refused(reader, repo, monkeypatch):
-    # GT-4 covers every op, including the one that feeds a prompt: running git
-    # across an rclone-NFS mount is the failure the refusal exists to prevent.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
-    got = reader.main(repo, op="pending")
-    assert got["ok"] is False and got["reason"] == "mount"

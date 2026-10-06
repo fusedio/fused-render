@@ -233,7 +233,7 @@ def test_the_description_is_clearly_smaller_than_the_title():
     # #1317 brought the title down to sit with the dialog heading (20px to
     # 16px), so the gap over the 13px description is now 3px, not the old 7px.
     # Still more than the smallest step this repo's type scales use elsewhere
-    # (1px, see mounts.css's "Mounts type scale"), so 3px stays the floor.
+    # (1px), so 3px stays the floor.
     assert _px(ask) <= _px(title) - 3, (
         f"the description ({ask}) has to read as body text under the title "
         f"({title}), not as a second heading")

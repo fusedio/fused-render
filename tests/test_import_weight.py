@@ -37,7 +37,6 @@ import sys
 #   * [index]: duckdb, pyarrow, watchfiles
 #   * [desktop]: zeroconf (and its ifaddr), PIL, dbus_fast, objc
 #   * [hf]: huggingface_hub
-#   * [cloud]: botocore, google (google-auth), requests
 #   * [fused]: boto3, mcp, anthropic, cryptography (via pyjwt[crypto])
 #   * [bundled]: numpy, pandas, openpyxl, pptx, msgpack, fpdf, drain3
 # Plus `fused`: it IS base, but the server imports it lazily, on the first
@@ -201,7 +200,7 @@ def test_serve_refuses_on_the_base_install_and_names_all():
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
     message = result.stdout.split("SERVE_REFUSED:", 1)[1]
     assert "pip install 'fused-render[all]'" in message
-    for extra in ("index", "desktop", "hf", "cloud", "fused"):
+    for extra in ("index", "desktop", "hf", "fused"):
         assert f"[{extra}]" in message
 
 

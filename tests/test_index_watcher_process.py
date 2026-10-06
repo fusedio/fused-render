@@ -29,7 +29,7 @@ def _tree(root, *dirs):
 
 def _pruner(root, **kw):
     return Pruner(str(root), IgnoreRules(default_ignore()),
-                  kw.pop("mounts_dir", str(root / "state" / "mounts")), **kw)
+                  **kw)
 
 
 def _n(root, *rel):
@@ -42,15 +42,15 @@ def _n(root, *rel):
 def test_clean_subtrees_are_watched_recursively_and_their_ancestors_flat(tmp_path):
     root = tmp_path / "home"
     _tree(root, "docs/a/b", "empty", "proj/src/deep", "proj/node_modules/pkg",
-          "repo/.git/objects", "repo/lib", "state/mounts/s3/bucket", "idx/runs")
+          "repo/.git/objects", "repo/lib", "idx/runs")
     (root / "a.txt").write_text("x", encoding="utf-8")
 
     recursive, flat = plan_watch(str(root), _pruner(root, index_dir=str(root / "idx")))
 
     assert recursive == _n(root, "docs", "empty", "proj/src", "repo/lib")
-    # The root is flat because it holds the mounts dir and the index dir;
-    # `proj` for its node_modules, `repo` for its .git, `state` for mounts.
-    assert flat == _n(root, "", "proj", "repo", "state")
+    # The root is flat because it holds the index dir; `proj` for its
+    # node_modules, `repo` for its .git.
+    assert flat == _n(root, "", "proj", "repo")
 
 
 def test_nothing_pruned_means_one_recursive_watch_of_the_root(tmp_path):
@@ -280,7 +280,7 @@ def test_the_watcher_is_posix_spawned_and_inherits_no_listening_socket(monkeypat
 
 def _watcher_argv(root):
     spec = {"root": str(root), "ignore": default_ignore(),
-            "mounts_dir": str(root / "not-a-mounts-dir"), "index_dir": None}
+            "index_dir": None}
     return [sys.executable, "-m", WATCHER_MODULE, json.dumps(spec)]
 
 

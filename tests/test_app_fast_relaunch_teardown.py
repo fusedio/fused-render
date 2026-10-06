@@ -1,11 +1,8 @@
 """A relaunch-initiated quit runs the same ordered teardown on tighter budgets.
 
-Measured on the owner's machine, an in-app restart took 8.7 s / 13.2 s: the
-server never drains on the packaged app (SSE connections stay open, so the 2 s
-join always times out), several unmounts each ran to their 6 s budget, and rcd's
-SIGTERM wait cost ~4.5 s. A normal user Quit keeps every one of those budgets;
-only the relaunch trims them, and it can afford to because the successor
-force-clears whatever mount it leaves behind (health._clear_dead_mount).
+The server never drains on the packaged app (SSE connections stay open, so the
+2 s join always times out). A normal user Quit keeps every budget; only the
+relaunch trims them (server drain, tile-daemon quiesce).
 
 AppKit-free, like test_app_quit.py; nothing real is mounted or signalled.
 """
@@ -15,8 +12,7 @@ import time
 import pytest
 
 import fused_render.app as app_mod
-import fused_render.shell.mounts as mounts_mod
-import fused_render.shell.mounts.rcd as rcd_mod
+from fused_render import tile_daemons
 
 
 # ------------------------------------------------------------------ plumbing
@@ -25,32 +21,22 @@ import fused_render.shell.mounts.rcd as rcd_mod
 def test_a_normal_quit_budgets_are_unchanged():
     assert app_mod.QUIT_SERVER_DRAIN_S == 2.0
     assert app_mod.QUIT_CHILDREN_BUDGET_S == 5.0
-    assert mounts_mod._QUIT_UNMOUNT_JOIN_BUDGET_S == 6.0
-    assert mounts_mod._QUIT_QUIESCE_BUDGET_S == 2.0
-    assert mounts_mod._KILL_TIMEOUT_S == 5.0
+    assert tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S == 2.0
 
 
 def test_the_fast_budgets_are_strictly_tighter():
     assert app_mod.QUIT_FAST_SERVER_DRAIN_S < app_mod.QUIT_SERVER_DRAIN_S
-    assert mounts_mod._QUIT_FAST_UNMOUNT_JOIN_BUDGET_S < mounts_mod._QUIT_UNMOUNT_JOIN_BUDGET_S
-    assert mounts_mod._QUIT_FAST_QUIESCE_BUDGET_S <= mounts_mod._QUIT_QUIESCE_BUDGET_S
-    assert mounts_mod._FAST_KILL_TIMEOUT_S < mounts_mod._KILL_TIMEOUT_S
+    assert (tile_daemons.QUIT_FAST_TILE_DAEMONS_BUDGET_S
+            <= tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S)
     assert app_mod.QUIT_FAST_HARD_DEADLINE_S < app_mod.QUIT_HARD_DEADLINE_S
 
 
 def test_the_fast_deadline_is_derived_from_the_fast_steps_it_waits_on():
     inner = (app_mod.QUIT_FAST_SERVER_DRAIN_S
              + app_mod.QUIT_CHILDREN_BUDGET_S
-             + mounts_mod._QUIT_FAST_UNMOUNT_BUDGET_S
-             + mounts_mod.RCD_FAST_REAP_WORST_CASE_S)
-    # Strictly greater, for the reason the normal deadline is: a deadline that
-    # fires mid-SIGTERM-wait skips the SIGKILL escalation.
+             + tile_daemons.QUIT_FAST_TILE_DAEMONS_BUDGET_S)
+    # Strictly greater: the margin covers the unbudgeted interstitials.
     assert app_mod.QUIT_FAST_HARD_DEADLINE_S > inner
-    assert mounts_mod._QUIT_FAST_UNMOUNT_BUDGET_S == pytest.approx(
-        mounts_mod._QUIT_FAST_QUIESCE_BUDGET_S + mounts_mod._QUIT_FAST_UNMOUNT_JOIN_BUDGET_S)
-    assert mounts_mod.RCD_FAST_REAP_WORST_CASE_S == pytest.approx(
-        mounts_mod._CONFIRM_RC_TIMEOUT_S + mounts_mod._PS_TIMEOUT_S
-        + 2 * (mounts_mod._FAST_KILL_TIMEOUT_S + mounts_mod._LIVE_PORT_PROBE_TIMEOUT_S))
 
 
 def test_begin_quit_passes_fast_to_the_teardown_only_when_asked():
@@ -135,8 +121,7 @@ def _teardown(fast, **kw):
             _FakeServer(), server_thread=t, fast=fast,
             close_duckdb=lambda: None, stop_captures=lambda: None,
             stop_children=lambda: None, record_exit=lambda: None,
-            unmount_mounts=lambda: calls.append("unmount"),
-            stop_rcd=lambda: calls.append("rcd"), **kw)
+            quit_daemons=lambda: calls.append("tile-daemons"), **kw)
         return steps, time.monotonic() - t0, calls
     finally:
         release.set()
@@ -155,87 +140,16 @@ def test_a_fast_teardown_runs_the_same_steps_in_the_same_order():
     fast, _, _ = _teardown(True, drain_s=0.01)
     slow, _, _ = _teardown(False, drain_s=0.01)
     assert fast == slow == ["server", "children", "capture", "duckdb",
-                            "unmount", "rcd", "exit-record"]
+                            "tile-daemons", "exit-record"]
 
 
-def test_the_default_fast_unmount_and_reap_use_the_fast_budgets(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(mounts_mod, "unmount_all_for_quit",
-                        lambda *a, **k: seen.__setitem__("unmount", (a, k)))
-    monkeypatch.setattr(mounts_mod, "stop_local_rcd",
-                        lambda *a, **k: seen.__setitem__("rcd", (a, k)))
+def test_the_default_quit_daemons_step_uses_the_fast_budget_only_when_fast(monkeypatch):
+    seen = []
+    monkeypatch.setattr(tile_daemons, "quit_tile_daemons_bounded",
+                        lambda budget_s=None: seen.append(budget_s))
     common = dict(close_duckdb=lambda: None, stop_captures=lambda: None,
                   stop_children=lambda: None, record_exit=lambda: None)
     app_mod.quit_teardown(None, fast=True, **common)
-    assert seen["unmount"] == ((), {"budget_s": mounts_mod._QUIT_FAST_UNMOUNT_JOIN_BUDGET_S,
-                                    "quiesce_s": mounts_mod._QUIT_FAST_QUIESCE_BUDGET_S})
-    assert seen["rcd"] == ((), {"fast": True})
-    seen.clear()
     app_mod.quit_teardown(None, **common)
-    # A normal quit calls them exactly as before: no arguments.
-    assert seen["unmount"] == ((), {})
-    assert seen["rcd"] == ((), {})
-
-
-# ------------------------------------------------------------ mounts / rcd
-
-
-def test_a_fast_unmount_bounds_the_join_and_the_quiesce_by_its_own_budgets(monkeypatch):
-    stuck = threading.Event()
-    mounts = [{"id": "a", "name": "a", "remote": "r:a"},
-              {"id": "b", "name": "b", "remote": "r:b"}]
-    monkeypatch.setattr(mounts_mod, "_rcd_is_ours_to_reap", lambda: True)
-    monkeypatch.setattr(mounts_mod, "list_mounts", lambda: mounts)
-    monkeypatch.setattr(mounts_mod, "_unmount_for_quit", lambda m: stuck.wait(30))
-    monkeypatch.setattr(mounts_mod.lifecycle, "_quit_tile_daemons",
-                        lambda: stuck.wait(30))
-    try:
-        t0 = time.monotonic()
-        mounts_mod.unmount_all_for_quit(budget_s=0.2, quiesce_s=0.1)
-        elapsed = time.monotonic() - t0
-    finally:
-        stuck.set()
-        mounts_mod._QUIT_TEARDOWN_LATCH.clear()
-    # Quiesce 0.1 + the join budget 0.2 (spent once, not per mount) + slack.
-    assert elapsed < 1.5
-
-
-def test_the_default_unmount_budgets_are_the_normal_ones():
-    import inspect
-
-    sig = inspect.signature(mounts_mod.unmount_all_for_quit)
-    assert sig.parameters["budget_s"].default == mounts_mod._QUIT_UNMOUNT_JOIN_BUDGET_S
-    assert sig.parameters["quiesce_s"].default is None
-
-
-def test_a_fast_reap_escalates_to_sigkill_after_the_short_grace(monkeypatch, tmp_path):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(rcd_mod.storage, "read_json", lambda p: {"pid": 4242})
-    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda e: True)
-    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda *a, **k: None)
-    state = {"alive": True}
-    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: state["alive"])
-    sent = []
-
-    def kill(pid, sig):
-        sent.append(sig)
-        if sig == rcd_mod.signal.SIGKILL:
-            state["alive"] = False
-
-    monkeypatch.setattr(rcd_mod.os, "kill", kill)
-    t0 = time.monotonic()
-    mounts_mod._kill_current_rcd(kill_timeout_s=0.2)
-    assert sent == [rcd_mod.signal.SIGTERM, rcd_mod.signal.SIGKILL]
-    assert time.monotonic() - t0 < 2.0
-
-
-def test_stop_local_rcd_fast_uses_the_fast_grace(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(mounts_mod, "_rcd_is_ours_to_reap", lambda: True)
-    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
-                        lambda **k: seen.update(k))
-    mounts_mod.stop_local_rcd(fast=True)
-    assert seen == {"kill_timeout_s": mounts_mod._FAST_KILL_TIMEOUT_S}
-    seen.clear()
-    mounts_mod.stop_local_rcd()
-    assert seen == {}
+    assert seen == [tile_daemons.QUIT_FAST_TILE_DAEMONS_BUDGET_S,
+                    tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S]

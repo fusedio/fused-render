@@ -231,31 +231,6 @@ def test_a_read_only_target_is_refused_as_data(claude_home, tmp_path):
         os.chmod(f, 0o644)
 
 
-@pytest.fixture
-def ro_mount(tmp_path, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    import fused_render.shell.mounts as mounts
-
-    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
-    mp = mounts.mountpoint(m)
-    os.makedirs(mp)
-    f = os.path.join(mp, "page.html")
-    with open(f, "w") as fh:
-        fh.write("keep\n")
-    return f
-
-
-def test_a_read_only_mount_refuses_the_revert(claude_home, ro_mount):
-    ann = _load_annotate()
-    write_version(claude_home, "s", ro_mount, "wanted\n")
-    assert os.access(os.path.dirname(ro_mount), os.W_OK)  # the lie
-    out = ann.main(action="revert", file=ro_mount, version_id="s@v1")
-    assert "error" in out
-    with open(ro_mount, encoding="utf-8") as h:
-        assert h.read() == "keep\n"
-    assert ann.main(action="history", file=ro_mount)["writable"] is False
-
-
 def test_the_store_is_never_written_by_any_action(claude_home, tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path, "disk\n")
@@ -965,20 +940,6 @@ def test_the_disclosure_state_is_not_written_to_the_url(source):
 # ============================================== review round 3 (Bugbot findings)
 
 # --- B1: a read-only target must not reach a destructive confirm ----------
-
-def test_the_plan_refuses_an_unwritable_target_with_its_reason(claude_home,
-                                                               ro_mount):
-    """Strengthened: the plan does not hand back `ok: True` with a false flag for
-    the caller to remember to check — it REFUSES, because a plan is an offer and
-    this action cannot be offered. The bool alone was also a dead end: a read-only
-    mount, a chmod'd file, a symlink and an unwritable directory are four
-    different things for the user to do."""
-    ann = _load_annotate()
-    write_version(claude_home, "s", ro_mount, "wanted\n")
-    plan = ann.main(action="revert_plan", file=ro_mount)
-    assert plan["ok"] is False
-    assert "read-only mount" in plan["error"]
-    assert ann.main(action="history", file=ro_mount)["writable_reason"]
 
 
 @skip_root

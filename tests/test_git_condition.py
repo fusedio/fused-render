@@ -183,42 +183,6 @@ def test_an_empty_path_is_not_offered(gate):
     assert gate("") is False
 
 
-# ----------------------------------------------------------------- mount refusal
-
-
-def test_a_mount_backed_path_is_never_offered(gate, repo, monkeypatch):
-    assert gate(repo) is True  # the same repo, before it looks mount-backed
-    # The env contract the app exports (FUSED_RENDER_MOUNTS_DIR) — how the gate
-    # learns the mounts root without importing fused_render (SPEC PY-15).
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
-    assert gate(repo) is False
-
-
-def test_an_unavailable_mount_detector_fails_closed(gate, repo, monkeypatch):
-    # "Cannot tell" reads as "refuse": the gate exists to keep a subprocess off
-    # a mount, and a guess is not good enough for that.
-    import builtins
-    import sys
-
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("blocked")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    monkeypatch.delitem(sys.modules, "appenv", raising=False)
-    assert gate(repo) is False
-
-
-def test_the_mount_check_precedes_the_subprocess(gate, repo, monkeypatch):
-    # Ordering matters, not just the verdict: a refusal that still forked git at
-    # the mount would have already paid the cost the refusal exists to avoid.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("git was invoked on a mount-backed path")))
-    assert gate(repo) is False
 
 
 # ------------------------------------------------------------------ fails closed

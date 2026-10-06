@@ -114,15 +114,6 @@ def test_relative_path_is_400(repo):
     assert exc.value.status == 400
 
 
-def test_mount_backed_path_refuses(repo, monkeypatch):
-    monkeypatch.setattr(
-        "fused_render.server.routers.git_snapshot.shell_mounts.is_mount_backed",
-        lambda p: True)
-    with pytest.raises(gs._Refused) as exc:
-        gs.extract_snapshot(str(repo["app_dir"] / "reader.py"), repo["old_sha"])
-    assert exc.value.status == 400
-
-
 def test_entry_resolves_from_the_extracted_tree_when_renamed_since(repo):
     """An app whose entry page was renamed since the target commit must open
     at the entry that commit had, not at today's filename."""

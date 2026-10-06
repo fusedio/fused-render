@@ -3,10 +3,8 @@ spawn it with this interpreter, feed execute ops over stdin, and assert the
 JSON-lines events — streams, last-expression display, state persistence
 across cells, error shape, and the stdin interrupt path."""
 
-import contextlib
 import json
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -315,43 +313,6 @@ def test_resolve_empty_name_is_error(kernel_mod, tmp_path):
     assert "error" in kernel_mod._resolve_dest(str(tmp_path), "  ")
 
 
-def test_resolve_with_src_checks_parent_via_stat_not_local_probe(
-        kernel_mod, monkeypatch):
-    seen = []
-    monkeypatch.setattr(kernel_mod, "_remote_meta",
-                        lambda src, p: seen.append(p) or {"remote": True, "is_dir": True})
-    monkeypatch.setattr(kernel_mod.os.path, "isdir",
-                        lambda _: pytest.fail("must not probe a possibly mounted parent"))
-    r = kernel_mod._resolve_dest("/mnt/data", "sub/x", "http://127.0.0.1:1")
-    assert r["path"].endswith("/sub/x.ipynb")
-    assert seen and seen[0].replace(os.sep, "/").endswith("/sub")
-
-
-def test_resolve_remote_missing_parent_is_error(kernel_mod, monkeypatch):
-    def stat_404(src, p):
-        raise urllib.error.HTTPError(src, 404, "not found", {}, None)
-
-    monkeypatch.setattr(kernel_mod, "_remote_meta", stat_404)
-    r = kernel_mod._resolve_dest("/mnt/data", "nope/x", "http://127.0.0.1:1")
-    assert "Folder does not exist" in r["error"]
-
-
-def test_resolve_remote_parent_that_is_a_file_is_error(kernel_mod, monkeypatch):
-    monkeypatch.setattr(kernel_mod, "_remote_meta",
-                        lambda src, p: {"remote": True, "is_dir": False})
-    r = kernel_mod._resolve_dest("/mnt/data", "file.txt/x", "http://127.0.0.1:1")
-    assert "Folder does not exist" in r["error"]
-
-
-def test_resolve_unresponsive_mount_stat_propagates(kernel_mod, monkeypatch):
-    def stat_503(src, p):
-        raise urllib.error.HTTPError(src, 503, "mount unresponsive", {}, None)
-
-    monkeypatch.setattr(kernel_mod, "_remote_meta", stat_503)
-    with pytest.raises(urllib.error.HTTPError):
-        kernel_mod._resolve_dest("/mnt/data", "x", "http://127.0.0.1:1")
-
-
 # ------------------------------------------------- daemon cache dir per home
 
 def test_cache_dir_prefers_resolved_home_dir(kernel_mod, monkeypatch, tmp_path):
@@ -373,18 +334,6 @@ def test_cache_dir_default_without_server_env(kernel_mod, monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_HOME", raising=False)
     assert kernel_mod._cache_dir() == os.path.expanduser(
         "~/.cache/fused-render-notebook")
-
-
-def test_listdir_does_not_fallback_to_a_kernel_scan_when_stat_fails(
-        kernel_mod, monkeypatch, tmp_path):
-    def stat_failed(*_):
-        raise OSError("server unavailable")
-
-    monkeypatch.setattr(kernel_mod, "_remote_meta", stat_failed)
-    monkeypatch.setattr(kernel_mod.os, "listdir",
-                        lambda _: pytest.fail("must not scan an unverified mount"))
-    with pytest.raises(OSError, match="server unavailable"):
-        kernel_mod._listdir(str(tmp_path), "http://127.0.0.1:9999")
 
 
 def _daemon_request(state, path, body):
@@ -511,30 +460,6 @@ def _daemon_get(state, path_and_query):
         return json.load(response)
 
 
-@contextlib.contextmanager
-def _stat_stub(payload):
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    class H(BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_GET(self):
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    try:
-        yield f"http://127.0.0.1:{srv.server_address[1]}"
-    finally:
-        srv.shutdown()
-
-
 def _fake_venv(root):
     py = (root / ".venv" / "Scripts" / "python.exe" if os.name == "nt"
           else root / ".venv" / "bin" / "python")
@@ -542,42 +467,14 @@ def _fake_venv(root):
     py.write_bytes(b"")
 
 
-def _envs_query(nb, src=None):
-    q = "/envs?nb_path=" + urllib.parse.quote(str(nb))
-    if src is not None:
-        q += "&src=" + urllib.parse.quote(src)
-    return q
+def _envs_query(nb):
+    return "/envs?nb_path=" + urllib.parse.quote(str(nb))
 
 
 def test_envs_lists_local_venv(daemon_state, tmp_path):
     _fake_venv(tmp_path)
     r = _daemon_get(daemon_state, _envs_query(tmp_path / "nb.ipynb"))
     assert any(e["label"].startswith(".venv") for e in r["envs"])
-
-
-def test_envs_walks_when_stat_says_local(daemon_state, tmp_path):
-    _fake_venv(tmp_path)
-    with _stat_stub({"remote": False, "is_dir": True}) as src:
-        r = _daemon_get(daemon_state, _envs_query(tmp_path / "nb.ipynb", src))
-    assert any(e["label"].startswith(".venv") for e in r["envs"])
-
-
-def test_envs_skips_venv_walk_on_mount_backed_paths(daemon_state, tmp_path):
-    _fake_venv(tmp_path)
-    with _stat_stub({"remote": True, "is_dir": True}) as src:
-        r = _daemon_get(daemon_state, _envs_query(tmp_path / "nb.ipynb", src))
-    assert r["envs"] == [{"label": "App environment", "path": ""}]
-
-
-def test_envs_skips_venv_walk_when_stat_unreachable(daemon_state, tmp_path):
-    _fake_venv(tmp_path)
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    r = _daemon_get(daemon_state,
-                    _envs_query(tmp_path / "nb.ipynb", f"http://127.0.0.1:{port}"))
-    assert r["envs"] == [{"label": "App environment", "path": ""}]
 
 
 def test_daemon_ensure_with_missing_notebook_dir_still_starts(daemon_state, tmp_path):

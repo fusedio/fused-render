@@ -127,15 +127,3 @@ def test_payload_relative_path_400(tmp_path):
     assert isinstance(resp, JSONResponse) and resp.status_code == 400
 
 
-def test_payload_never_probes_a_mount_backed_path(tmp_path, monkeypatch):
-    # A mount path must answer False WITHOUT shelling out to git (which would
-    # stat/list across the mount — the known mount-killer).
-    from fused_render.server.routers import fs_read as mod
-    from fused_render.shell import mounts as shell_mounts
-
-    monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda p: True)
-    calls = []
-    monkeypatch.setattr(mod, "_is_repo_root", lambda p: calls.append(p) or True)
-    out = _data(_git_repo_payload(str(tmp_path / "mnt" / "repo")))
-    assert out["is_repo_root"] is False
-    assert calls == []

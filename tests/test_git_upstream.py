@@ -343,19 +343,6 @@ def test_an_unreachable_remote_records_nothing_and_raises_nothing(tmp_path):
     assert git_upstream.known_repos() == []
 
 
-def test_a_mount_backed_path_is_refused(tmp_path, monkeypatch):
-    local = _clone_with_remote_ahead(tmp_path)
-    monkeypatch.setattr(git_upstream.shell_mounts, "is_mount_backed", lambda p: True)
-
-    # Dispatched (the slot was free); the mount refusal happens inside the
-    # dispatched call, before any fetch — what matters is that it produces
-    # no recorded repo, not the return value (see the sibling test above).
-    started = git_upstream.note_app_opened(local, _runner=_sync)
-
-    assert started
-    assert git_upstream.known_repos() == []
-
-
 # -------------------------------------------------------------- update / switch
 
 
@@ -380,16 +367,6 @@ def test_update_refuses_a_dirty_tree(tmp_path):
     assert git(local, "log", "-1", "--format=%s").strip() == "c1"
     with open(os.path.join(local, "a.txt"), encoding="utf-8") as f:
         assert f.read() == "dirty\n"
-
-
-def test_update_refuses_a_mount_backed_repo(tmp_path, monkeypatch):
-    local = _clone_with_remote_ahead(tmp_path)
-    monkeypatch.setattr(git_upstream.shell_mounts, "is_mount_backed", lambda p: True)
-
-    res = git_upstream.update_repo(local)
-
-    assert res["ok"] is False
-    assert res["reason"] == "mount"
 
 
 def test_update_refuses_a_repo_with_no_origin(tmp_path):
