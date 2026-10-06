@@ -1210,7 +1210,8 @@ _MACHINERY_DROP = (
     "user-prompt-submit-hook", "system-reminder",
 )
 
-_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
+_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations",
+                    "terminal-hint")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 

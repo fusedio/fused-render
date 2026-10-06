@@ -2094,7 +2094,8 @@ _MACHINERY_DROP = (
 # that boundary has to fail loudly rather than drift quietly. (`pane-shot` has no
 # constant on this side at all — only template.html, which writes the block,
 # names it.)
-_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
+_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations",
+                    "terminal-hint")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 _LEADING_MACHINERY = re.compile(
@@ -2274,6 +2275,83 @@ def _strip_machinery(text: str) -> str:
         if out == before:
             break
     return "" if _LEADING_MACHINERY_OPEN.match(out) else out
+
+
+# ------------------------------------------------------------ terminal hint
+# Which status-bar terminal the user means. The page sends a small JSON object
+# of METADATA ONLY (never screen contents) with each message when the drawer
+# holds a live terminal; it is written onto the turn as one leading
+# `<terminal-hint>` line, after the app-state block (which `_pane_file` needs
+# FIRST) and before the user's words. Like the app-state block it is machinery:
+# "terminal-hint" is in `_MACHINERY_STRIP`, so restored transcripts and the
+# Tasks list never show it as something the user typed.
+TERMINAL_HINT_TAG = "terminal-hint"
+_HINT_FIELD_MAX = 120
+
+
+def _hint_text(value, limit: int = _HINT_FIELD_MAX) -> str:
+    """One hint field as safe single-line text: control characters and angle
+    brackets (which could close the tag early) removed, whitespace collapsed,
+    truncated."""
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return ""
+    text = re.sub(r"[\x00-\x1f\x7f<>]+", " ", str(value))
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "\u2026"
+
+
+def _terminal_hint_block(raw) -> str:
+    """The `<terminal-hint>` block for a page-supplied hint (a JSON string or an
+    already-parsed dict), or "" when it is absent, malformed or has no id."""
+    hint = raw
+    if isinstance(raw, str):
+        if not raw.strip():
+            return ""
+        try:
+            hint = json.loads(raw)
+        except ValueError:
+            return ""
+    if not isinstance(hint, dict):
+        return ""
+    tid = _hint_text(hint.get("id"), 64)
+    if not tid:
+        return ""
+    parts = ["The user's focused terminal is %s" % tid]
+    title = _hint_text(hint.get("title"))
+    if title:
+        parts[0] += " (%s)" % title
+    cwd = _hint_text(hint.get("cwd"), 200)
+    if cwd:
+        parts.append("cwd %s" % cwd)
+    last = _hint_text(hint.get("lastCommand"))
+    if last:
+        text = "last command `%s`" % last
+        code = hint.get("lastExit")
+        if isinstance(code, int) and not isinstance(code, bool):
+            text += " (exit %d)" % code
+        parts.append(text)
+    age = hint.get("ageSec")
+    if isinstance(age, (int, float)) and not isinstance(age, bool) and age >= 0:
+        parts.append("last activity %ds ago" % int(age))
+    line = "; ".join(parts) + (
+        ". Metadata only: call terminal_read to see its contents.")
+    return "<%s>%s</%s>" % (TERMINAL_HINT_TAG, line, TERMINAL_HINT_TAG)
+
+
+def _with_terminal_hint(message: str, raw) -> str:
+    """`message` with the hint block inserted after any leading machinery
+    blocks (app state first, so `_pane_file` still finds it) and before the
+    user's words. Unchanged when there is no usable hint."""
+    block = _terminal_hint_block(raw)
+    if not block:
+        return message
+    pos = 0
+    while True:
+        match = _LEADING_MACHINERY.match(message, pos)
+        if not match:
+            break
+        pos = match.end()
+    return message[:pos] + block + "\n\n" + message[pos:]
 
 
 def _app_state_requests(run_dir: str) -> list:
@@ -2716,7 +2794,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            message_via_stdin: bool = False,
            has_pane: bool | None = None,
            extra_read_dirs: list | None = None,
-           draft_key: str = "") -> dict:
+           draft_key: str = "", terminal_hint: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -2824,7 +2902,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, message)
+    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -3501,7 +3579,8 @@ def _live_host(file: str, session_id: str = "",
 
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
-         effort: str = "", permission_mode: str = "") -> dict:
+         effort: str = "", permission_mode: str = "",
+         terminal_hint: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -3622,7 +3701,7 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, message)
+    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
     return {"sent": True}
 
 
@@ -7020,7 +7099,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
-         native: str = "", draft_key: str = "", queue: str = "") -> dict:
+         native: str = "", draft_key: str = "", queue: str = "",
+         terminal_hint: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -7037,7 +7117,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0",
                       extra_read_dirs=_attach_dirs(read_dirs),
-                      draft_key=draft_key)
+                      draft_key=draft_key, terminal_hint=terminal_hint)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -7137,5 +7217,5 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode)
+                    permission_mode, terminal_hint)
     return {"error": f"unknown action: {action}"}
