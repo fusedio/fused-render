@@ -4,7 +4,7 @@
 // app inline at full thread width; "Beside chat" hands it to the right column.
 import { useEffect, useRef, useState } from "react";
 import type { AppRef } from "../lib/api";
-import { appEmbedBase, appOpenUrl, applyAppParams, paramString } from "./apps";
+import { appEmbedBase, appOpenUrl, applyAppParams, holdAppParams, paramString } from "./apps";
 import { showAppBeside } from "./side";
 
 export interface AppCardProps {
@@ -24,6 +24,10 @@ export function AppCard({ app, onBeside }: AppCardProps) {
     setOpen(on);
   };
   useEffect(() => { if (open) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }); }, [open]);
+  // While the inline iframe runs, this card holds the host URL's app params (its live `fused.params`); the hold is
+  // released on Close and on unmount, which clears the params only if no viewer, side app or other card still shows
+  // an app. "Beside chat" below takes the side app's hold synchronously before this one is released on re-render.
+  useEffect(() => { if (!open) return; return holdAppParams(); }, [open]);
   return (
     <div ref={ref} className={`appmsg${open ? " open" : ""}`} data-dir={app.dir} data-name={name} data-params={params}>
       <div className="hd"><span className="ico">⧉</span>

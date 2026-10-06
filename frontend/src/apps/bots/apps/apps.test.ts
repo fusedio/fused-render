@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { BUILD_RE, _setBuildsState, _setRowsOnly, adoptBuilds, getBuilds, buildFilterCss, buildPrompt, chipFor, isBuild, mine, setBuildsRoot, slugOf, updatePrompt } from "../builds/builds";
 import { observeStatus } from "../builds/tasks";
 import type { TaskRow } from "../builds/tasks";
-import { agoShort, appEmbed, appEmbedBase, appFromText, appOpenUrl, appStateParams, applyAppParams, clearAppParams } from "./apps";
+import { agoShort, anyAppOpen, appEmbed, appEmbedBase, appFromText, appOpenUrl, appStateParams, applyAppParams, clearAppParams, holdAppParams } from "./apps";
 
 const ROOT = "/Users/me/Fused/app";
 
@@ -89,6 +89,17 @@ describe("host params bridge", () => {
     expect(q.get("sort")).toBe("asc");
     expect(q.has("tab")).toBe(false);
     expect(q.has("q")).toBe(false);
+  });
+  test("a hold keeps the params until the LAST holder releases", () => {
+    const a = holdAppParams(); applyAppParams("tab=2");
+    const b = holdAppParams();
+    expect(anyAppOpen()).toBe(true);
+    a();
+    expect((g.location as { search: string }).search).toBe("?bot=b1&tab=2");
+    b();
+    expect((g.location as { search: string }).search).toBe("?bot=b1");
+    expect(anyAppOpen()).toBe(false);
+    b();  // releasing twice is a no-op
   });
   test("clearAppParams drops every app key and keeps the host's", () => {
     applyAppParams("tab=2&q=x");

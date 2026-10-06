@@ -70,11 +70,21 @@ export function applyAppParams(params?: string | null): void {
 /** Drop every app key from this page's URL — the viewer or the side app closed and nothing shows an app any more. */
 export function clearAppParams(): void { applyAppParams(""); }
 
-/** Whether some OTHER surface still shows an app whose state lives on this URL (the side app, registered by side.ts
- *  — apps.ts cannot import it without a cycle). closeView consults it before clearing the params. */
-let otherAppOpen: () => boolean = () => false;
-export function registerOtherAppOpen(fn: () => boolean): void { otherAppOpen = fn; }
-export const anyAppOpen = (): boolean => viewed !== null || otherAppOpen();
+/** Every surface that is currently showing an app whose live state is this URL's params: the side app and each
+ *  expanded inline AppCard take a hold while their iframe runs and release it when it goes. The viewer is tracked by
+ *  `viewed` itself. The params are cleared only when the LAST holder lets go, so closing one surface never wipes the
+ *  `fused.params` of an app still running in another. (A Set of tokens, not a predicate: side.ts and AppCard import
+ *  this module, so apps.ts cannot ask them.) */
+const holders = new Set<symbol>();
+export function holdAppParams(): () => void {
+  const token = Symbol("app-params-hold");
+  holders.add(token);
+  return () => {
+    if (!holders.delete(token)) return;
+    if (viewed === null && holders.size === 0) clearAppParams();
+  };
+}
+export const anyAppOpen = (): boolean => viewed !== null || holders.size > 0;
 
 // "Copy state": a /render link carrying the app's current params. Paste it to any bot: the chat turns it into an app
 // card that reopens the app exactly like this (appFromText below; _app_at in the backend for the bot's `show`).
@@ -133,9 +143,9 @@ export function closeView(): void {
   if (!viewed) return;
   viewed = null;
   viewFrameSrc("about:blank");
-  // The closed app's state must not linger on the URL for the next one to read — unless the side app is still
-  // showing one, in which case the params are ITS live state.
-  if (!otherAppOpen()) clearAppParams();
+  // The closed app's state must not linger on the URL for the next one to read — unless the side app or an
+  // expanded inline card still shows one, in which case the params are ITS live state.
+  if (holders.size === 0) clearAppParams();
   viewEmit();
 }
 
