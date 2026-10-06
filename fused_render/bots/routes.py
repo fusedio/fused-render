@@ -659,7 +659,10 @@ def apps_reveal(body: dict = Body(...), x_fused: str | None = Header(default=Non
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    return _apps().reveal(body.get("dir") or "")
+    # Same root guard as mkdir and icon: `open <dir>` on an arbitrary path
+    # would LAUNCH a .app bundle (a directory to the fs), not reveal a folder.
+    d = _under_apps_root(body.get("dir") or "")
+    return _apps().reveal(d)
 
 
 @router.get("/api/bot-apps/icon")

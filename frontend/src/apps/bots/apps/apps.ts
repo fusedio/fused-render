@@ -53,15 +53,28 @@ export function appStateParams(search: string = typeof location === "undefined" 
   return q.toString();
 }
 
-/** Write an app's params onto this page's URL (replaceState). The shell's main.tsx wraps replaceState to dispatch
- *  `fused:urlchange`, which the runtime and the store follow. */
+/** Write an app's params onto this page's URL (replaceState), REPLACING whatever app keys were there: the host URL
+ *  holds one app's state at a time, and a key the previous app left behind would otherwise be read back as this
+ *  app's state (the runtime syncs `fused.params` from this URL) and copied out by "Copy state". Host keys, `path`
+ *  and `_*` are never touched either way. The shell's main.tsx wraps replaceState to dispatch `fused:urlchange`,
+ *  which the runtime and the store follow. */
 export function applyAppParams(params?: string | null): void {
   try {
     const u = new URL(location.href);
+    for (const k of [...u.searchParams.keys()]) if (appParamOk(k)) u.searchParams.delete(k);
     for (const [k, v] of new URLSearchParams(params || "")) if (appParamOk(k)) u.searchParams.set(k, v);
     if (u.href !== location.href) history.replaceState(history.state, "", u.href);
   } catch { /* no history (tests) */ }
 }
+
+/** Drop every app key from this page's URL — the viewer or the side app closed and nothing shows an app any more. */
+export function clearAppParams(): void { applyAppParams(""); }
+
+/** Whether some OTHER surface still shows an app whose state lives on this URL (the side app, registered by side.ts
+ *  — apps.ts cannot import it without a cycle). closeView consults it before clearing the params. */
+let otherAppOpen: () => boolean = () => false;
+export function registerOtherAppOpen(fn: () => boolean): void { otherAppOpen = fn; }
+export const anyAppOpen = (): boolean => viewed !== null || otherAppOpen();
 
 // "Copy state": a /render link carrying the app's current params. Paste it to any bot: the chat turns it into an app
 // card that reopens the app exactly like this (appFromText below; _app_at in the backend for the bot's `show`).
@@ -120,6 +133,9 @@ export function closeView(): void {
   if (!viewed) return;
   viewed = null;
   viewFrameSrc("about:blank");
+  // The closed app's state must not linger on the URL for the next one to read — unless the side app is still
+  // showing one, in which case the params are ITS live state.
+  if (!otherAppOpen()) clearAppParams();
   viewEmit();
 }
 

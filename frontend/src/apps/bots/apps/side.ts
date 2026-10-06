@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 import type { AppRef } from "../lib/api";
 import { bodyClass, getLayout, setLayout } from "../lib/layout";
-import { appEmbedBase, applyAppParams, appStateParams, paramString } from "./apps";
+import { appEmbedBase, applyAppParams, appStateParams, clearAppParams, getViewedApp, paramString, registerOtherAppOpen } from "./apps";
 
 export interface SideAppState { name: string; dir: string; params: string }
 let sideApp: SideAppState | null = null;
@@ -32,6 +32,9 @@ export function showAppBeside(a: AppRef | { name?: string; dir: string; params?:
   const params = paramString(a.params);
   sideApp = { name: a.name || (a.dir || "").split("/").pop() || "", dir: a.dir, params };
   const key = appEmbedBase(sideApp.dir, sideApp.params);  // same app at the same state: keep it running rather than reload
+  // Registered here, not at module load: apps.ts and side.ts import each other, and a top-level call would run
+  // while apps.ts is still evaluating (TDZ on its module state).
+  registerOtherAppOpen(() => sideApp !== null);
   if (frameKey !== key) { applyAppParams(sideApp.params); load(key, key); }
   bodyClass("hasapp", true); bodyClass("sideapp", true);
   if (getLayout().rcol) setLayout({ rcol: false }, true);  // the column was hidden: slide it open
@@ -43,6 +46,8 @@ export function closeSideApp(): void {
   sideApp = null;
   bodyClass("hasapp", false); bodyClass("sideapp", false);
   load("about:blank", "");
+  // Same rule as closeView: the URL keeps app params only while something still shows an app.
+  if (!getViewedApp()) clearAppParams();
   emit();
 }
 /** Reload keeps the state, like a browser does. */

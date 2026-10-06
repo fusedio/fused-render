@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { BUILD_RE, _setBuildsState, _setRowsOnly, adoptBuilds, getBuilds, buildFilterCss, buildPrompt, chipFor, isBuild, mine, setBuildsRoot, slugOf, updatePrompt } from "../builds/builds";
 import { observeStatus } from "../builds/tasks";
 import type { TaskRow } from "../builds/tasks";
-import { agoShort, appEmbed, appEmbedBase, appFromText, appOpenUrl, appStateParams, applyAppParams } from "./apps";
+import { agoShort, appEmbed, appEmbedBase, appFromText, appOpenUrl, appStateParams, applyAppParams, clearAppParams } from "./apps";
 
 const ROOT = "/Users/me/Fused/app";
 
@@ -80,6 +80,20 @@ describe("host params bridge", () => {
   test("no change, no event", () => {
     applyAppParams("");
     expect(events).toEqual([]);
+  });
+  test("opening another app REPLACES the previous app's keys instead of merging them", () => {
+    applyAppParams("tab=2&q=x");
+    applyAppParams("sort=asc");
+    const q = new URLSearchParams((g.location as { search: string }).search);
+    expect(q.get("bot")).toBe("b1");
+    expect(q.get("sort")).toBe("asc");
+    expect(q.has("tab")).toBe(false);
+    expect(q.has("q")).toBe(false);
+  });
+  test("clearAppParams drops every app key and keeps the host's", () => {
+    applyAppParams("tab=2&q=x");
+    clearAppParams();
+    expect((g.location as { search: string }).search).toBe("?bot=b1");
   });
 });
 
