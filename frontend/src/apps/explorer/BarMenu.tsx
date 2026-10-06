@@ -52,11 +52,16 @@ function useMenuAnchor(align: "left" | "right" = "left") {
   const rootRef = useRef<HTMLDivElement | null>(null);
   // The popup is portaled out of `rootRef`'s subtree, so "inside" is either.
   const popupRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!pos) return;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
+      // A press on the scrim is the scrim's to answer, on the CLICK (below):
+      // closing here would unmount it mid-press and let the release land on
+      // whatever chrome sat under it (Bugbot on #1450).
+      if (backdropRef.current?.contains(t)) return;
       if (!rootRef.current?.contains(t) && !popupRef.current?.contains(t)) setPos(null);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -105,15 +110,20 @@ function useMenuAnchor(align: "left" | "right" = "left") {
   // OverflowMenu), so a reader whose focus was already inside the frame could
   // click the preview all day and the menu stayed up (Akshil, 2026-10-06). A
   // transparent fixed layer under the popup catches that press in THIS
-  // document instead, wherever it lands; a wheel over it closes too (a menu
-  // pinned over a page that scrolled under it is a bug, same as ContextMenu;
-  // the scroll itself goes through — React's wheel listener is passive).
+  // document instead, wherever it lands. It closes on the CLICK, not the
+  // press, so it stays up for the whole of it: closing on pointerdown would
+  // unmount the scrim before mouseup and hand the release to the tab, row or
+  // control that sat beneath (Bugbot on #1450). A wheel over it closes too (a
+  // menu pinned over a page that scrolled under it is a bug, same as
+  // ContextMenu; the scroll itself goes through — React's wheel listener is
+  // passive).
   const backdrop = pos
     ? createPortal(
         <div
+          ref={backdropRef}
           className="bar-menu-backdrop"
           data-testid="bar-menu-backdrop"
-          onPointerDown={close}
+          onClick={close}
           onWheel={close}
           onContextMenu={(e) => {
             e.preventDefault();
