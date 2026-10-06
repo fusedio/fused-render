@@ -34,7 +34,7 @@ export interface RunTriggerProps {
   onToggle: () => void;
   /** Extra class for the seat (`is-bare`'s own line). */
   className?: string;
-  /** HOW LONG THE TURN TOOK, on hover — `Worked for 2m 10s · 3m ago`
+  /** HOW LONG THIS RUN TOOK, on hover — `Worked for 12s · 3m ago`
    *  (ui/run-when.ts). The word stays two words: the span is the one thing a
    *  reader asks of a folded run that the fold cannot show, and a hover is
    *  where a fact that is asked for and not read belongs (Akshil, 2026-10-04).

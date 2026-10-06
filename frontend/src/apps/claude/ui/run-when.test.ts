@@ -51,30 +51,17 @@ describe("runSpan", () => {
   });
 });
 
-describe("the hover words (Akshil, 2026-10-05: Claude's own shape, the TURN's number)", () => {
-  test("run from the user's message to the last stamped thing in the reply", () => {
-    // User sent at T0-12; the reply's tool ran T0..T0+130; the final text
-    // ended at T0+138 (`ended` off its finalized row). "now" is T0+180.
-    const segs: Segment[] = [
-      { kind: "text", text: "Let me look.", ts: T0 },
-      tool("a", T0, T0 + 130),
-      { kind: "text", text: "Done.", ended: T0 + 138 } as Segment,
-    ];
-    expect(runWhenWords(segs, T0 - 12, now)).toBe("Worked for 2m 30s · just now");
+describe("the hover words (Akshil, 2026-10-06: the RUN's number, Claude's shape)", () => {
+  test("run from the run's first stamp to its last result", () => {
+    expect(runWhenWords([think(T0 + 1), tool("a", T0 + 2, T0 + 130)], now)).toBe("Worked for 2m 9s · just now");
   });
   test("measure 'ago' from the END, not the start", () => {
-    // Sent 10 minutes before "now", finished 3 minutes before it.
-    expect(runWhenWords([tool("a", T0 - 100, T0)], T0 - 420, now)).toBe("Worked for 7m · 3m ago");
+    expect(runWhenWords([tool("a", T0 - 420, T0)], now)).toBe("Worked for 7m · 3m ago");
   });
-  test("fall back to the reply's own first stamp without a user stamp (old transcript)", () => {
-    expect(runWhenWords([tool("a", T0, T0 + 130)], null, now)).toBe("Worked for 2m 10s · just now");
-    // A user stamp AFTER the reply's end is not this reply's: ignored the same way.
-    expect(runWhenWords([tool("a", T0, T0 + 130)], T0 + 500, now)).toBe("Worked for 2m 10s · just now");
+  test("say only when, for a run whose stamps all agree", () => {
+    expect(runWhenWords([tool("a", T0)], now)).toBe("3m ago");
   });
-  test("say only when, for a reply whose stamps all agree and no user stamp", () => {
-    expect(runWhenWords([tool("a", T0)], null, now)).toBe("3m ago");
-  });
-  test("say nothing for a reply still streaming, with no clocks", () => {
-    expect(runWhenWords([tool("a"), think()], T0 - 5, now)).toBeNull();
+  test("say nothing for a run still streaming, with no clocks", () => {
+    expect(runWhenWords([tool("a"), think()], now)).toBeNull();
   });
 });

@@ -130,18 +130,16 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
 
   type WhenProps = { "data-hint"?: string; title?: string };
 
-  test("the word carries how long the TURN took, as its own hover and not a title", () => {
+  test("the word carries how long THIS RUN took, as its own hover and not a title", () => {
     const policy = createCardPolicy();
     const segs = [text("Here goes."), stamped("a", T0, T0 + 4), stamped("b", T0 + 5, T0 + 130)];
-    // The user's message went 20 s before the first tool: Claude's number is
-    // measured from there (2m 10s of tools + 20 s = 2m 30s).
-    const r = view(segs, { startedAt: T0 - 20 }, policy);
+    const r = view(segs, {}, policy);
     const json = r.toJSON() as Json | Json[];
     const trigger = byClass(json, "run-trigger")[0]!;
     const props = trigger.props as WhenProps;
-    // Claude's own shape — `Worked for 2m 30s` — then how long ago it finished,
-    // on the app's one instant tooltip (`data-hint`, platform/lib/hints).
-    expect(props["data-hint"]).toMatch(/^Worked for 2m 30s · (just now|\d+m ago|\d+h ago|yesterday|\d+d ago)$/);
+    // The run's own span — first call to last result, 2m 10s — in Claude's
+    // shape, on the app's one instant tooltip (`data-hint`, platform/lib/hints).
+    expect(props["data-hint"]).toMatch(/^Worked for 2m 10s · (just now|\d+m ago|\d+h ago|yesterday|\d+d ago)$/);
     // NOT a `title`: the OS tooltip waits a second (Akshil, 2026-10-05).
     expect(props.title).toBeUndefined();
     // And the opened run is the chips alone — no clock line inside it
@@ -159,19 +157,19 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
     expect(props.title).toBeUndefined();
   });
 
-  test("a bare run (no prose either side) wears the hover too, from the reply's own first stamp without a user stamp", () => {
+  test("a bare run (no prose either side) wears the hover too", () => {
     const json = view([stamped("a", T0, T0 + 9)]).toJSON() as Json | Json[];
     expect((byClass(json, "run-trigger")[0]!.props as WhenProps)["data-hint"]).toMatch(/^Worked for 9s · /);
   });
 
-  test("two runs in one reply wear the SAME words — the number is the turn's", () => {
+  test("two runs in one reply wear their OWN words — the number is each run's", () => {
     // Two prose blocks each with a trailing run: two seats, two words.
     const segs = [text("First."), stamped("a", T0, T0 + 4), text("Second."), stamped("b", T0 + 10, T0 + 70), text("Done.")];
-    const json = view(segs, { startedAt: T0 - 5 }).toJSON() as Json | Json[];
+    const json = view(segs).toJSON() as Json | Json[];
     const whens = byClass(json, "run-trigger").map((t) => (t.props as WhenProps)["data-hint"]);
     expect(whens).toHaveLength(2);
-    expect(whens[0]).toMatch(/^Worked for 1m 15s · /);
-    expect(whens[1]).toBe(whens[0]);
+    expect(whens[0]).toMatch(/^Worked for 4s · /);
+    expect(whens[1]).toMatch(/^Worked for 1m · /);
   });
 });
 

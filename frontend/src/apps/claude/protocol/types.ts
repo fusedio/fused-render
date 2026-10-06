@@ -223,7 +223,7 @@ export interface AgentRequests {
 /** WHEN a segment began — the transcript row's `timestamp` as epoch SECONDS
  *  (agent.py `_row_ts`). Absent where the row carried no clock: the live
  *  stream's delta rows never do, the persisted transcript always does. The
- *  page turns a run's stamps into "Worked for 2m 10s · 3m ago" on `show more`
+ *  page turns a run's stamps into "Worked for 12s · 3m ago" on `show more`
  *  (ui/run-when.ts). */
 export interface SegmentClock {
   ts?: number;
@@ -524,23 +524,6 @@ export interface PollResponse {
    * loop falls back to treating the payload as one turn.
    */
   turn_breaks?: TurnBreak[];
-  /**
-   * WHEN THE CLI OPENED THE REPLY this payload is answering — the last echoed
-   * user row's stamp, epoch seconds (agent.py `_turn_ts`). The `show more`
-   * hover measures "Worked for" from it, so a live turn and the same turn
-   * restored from the transcript say the same number. Null while the echo is
-   * outstanding; absent from an older agent.py.
-   */
-  turn_ts?: number | null;
-  /**
-   * EVERY echoed user row's stamp in this payload, in order (agent.py
-   * `_turn_starts`), one per reply slice: slice `j` of the window starts at
-   * `turn_starts[j]`. `null` where a row carried no clock. Lets a follow-up
-   * folded into the first reply before its bubble existed keep that reply's
-   * start at the first echo rather than the follow-up's. Absent from an older
-   * agent.py; `turn_ts` is then the only clue, for the last slice.
-   */
-  turn_starts?: (number | null)[];
   /**
    * FOLLOW-UPS THE LIVE RUN HAS TAKEN AND THE MODEL HAS NOT ANSWERED YET —
    * the CLI's undrained inbox, in the order they were typed (agent.py `_poll`).

@@ -94,13 +94,6 @@ export interface AssistantTurn {
   streaming?: boolean;
   /** Which followup slice this bubble belongs to (D687, T: followupSeq). */
   followup?: number;
-  /** WHEN THE CLI OPENED THIS REPLY (epoch seconds, `PollResponse.turn_ts`),
-   *  stamped on a live turn when its first payload lands. The `show more`
-   *  hover's "Worked for" starts here rather than at the optimistic bubble's
-   *  send stamp, which runs a few seconds early (spawn, hooks). A restored
-   *  turn has none and reads the user row above it, which carries the same
-   *  instant. */
-  startedAt?: number;
 }
 
 /**

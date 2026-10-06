@@ -4657,44 +4657,6 @@ def _is_api_error_row(row: dict) -> bool:
     return isinstance(row, dict) and row.get("isApiErrorMessage") is True
 
 
-def _turn_starts(rows: list) -> list:
-    """WHEN THE CLI OPENED EACH REPLY IN THIS WINDOW — the stamp of every
-    echoed user row (`_starts_new_turn`), in file order, `None` where a row
-    carried no clock. The page slices the window into one reply per seam and
-    reads slice `j`'s start here, so a follow-up folded into the FIRST reply
-    before its bubble existed (two echoes, one slice, no seam) still starts
-    that reply at the first echo and not the follow-up's (Bugbot, PR #1430).
-    `_turn_ts` below is the last of these, kept for the page's fallback."""
-    out = []
-    for row in rows:
-        if not isinstance(row, dict) or row.get("isSidechain"):
-            continue
-        if _starts_new_turn(row):
-            out.append(_row_ts(row))
-    return out
-
-
-def _turn_ts(rows: list):
-    """WHEN THE CLI OPENED THE REPLY THIS WINDOW ANSWERS — the stamp of the
-    LAST echoed user row (`_starts_new_turn`) in it, epoch seconds, or None.
-
-    The page's `show more` hover measures "Worked for" from this instant
-    (ui/run-when.ts), the same instant the CLI's own `duration_ms` counts
-    from. The page's optimistic bubble is stamped at the SEND — a few seconds
-    earlier, across the spawn and the hooks — and a hover measured from there
-    said 40 s live and 37 s after a reload for one and the same turn
-    (cmux-ux-tester, 2026-10-05). The LAST echo, because a window that holds
-    several absorbed replies is sliced by the page and only its last slice is
-    still being answered; the earlier ones are settled and read their own
-    user rows once restored."""
-    for row in reversed(rows):
-        if not isinstance(row, dict) or row.get("isSidechain"):
-            continue
-        if _starts_new_turn(row):
-            return _row_ts(row)
-    return None
-
-
 def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     """Where a reply ENDED inside this row window because a follow-up had been
     folded into it, as payload offsets a page can slice on.
@@ -5670,13 +5632,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # into.
             "turn_breaks": [] if echo_pending
             else _absorbed_turn_breaks(parsed, app_reads),
-            # WHEN THE CLI OPENED THE REPLY (`_turn_ts`): the hover's
-            # "Worked for" starts here, live and restored alike. Null until
-            # the echo lands, which is the same moment the payload stops
-            # being blanked.
-            "turn_ts": None if echo_pending else _turn_ts(parsed),
-            # …AND EVERY ECHO'S, in order, one per reply slice (`_turn_starts`).
-            "turn_starts": [] if echo_pending else _turn_starts(parsed),
             # WHERE THIS WINDOW STARTS, as a byte offset into out.jsonl (the
             # cursor `_read_current_turn` settled on). The page keeps one
             # bubble per reply in the window and has to notice when the cursor

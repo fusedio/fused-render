@@ -684,25 +684,7 @@ export const Transcript = memo(function Transcript({
           <HistorySkeleton />
         ) : (
           <>
-            {state.turns.map((turn, at) => {
-              // THE MESSAGE THIS REPLY ANSWERS: the nearest user turn above it,
-              // whose stamp starts the hover's "Worked for" (ui/run-when.ts).
-              // Walked back here, where both turns are in hand; a card-only or
-              // app-state row between them is still a user turn and the
-              // reply is still answering the words above it.
-              let startedAt: number | null = null;
-              if (turn.role === "assistant" && typeof turn.startedAt === "number") {
-                // A live turn carries the echo's own stamp (`PollResponse.turn_ts`).
-                startedAt = turn.startedAt;
-              } else if (turn.role === "assistant") {
-                for (let i = at - 1; i >= 0; i--) {
-                  const prev = state.turns[i];
-                  if (prev && prev.role === "user") {
-                    startedAt = typeof prev.ts === "number" ? prev.ts : null;
-                    break;
-                  }
-                }
-              }
+            {state.turns.map((turn) => {
               const plan = parked.get(turn.key);
               // A `<CardStack/>` for one position, by id: the same list, the
               // same three card kinds, restricted to the rows that belong here.
@@ -732,7 +714,6 @@ export const Transcript = memo(function Transcript({
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
                   cwd={cwd}
-                  startedAt={startedAt}
                   collapsed={isFolded(folds.current.get(foldIds.current.get(turn.key) ?? turn.key))}
                   onToggleCollapse={onToggleCollapse}
                   {...(blocked === turn.key &&

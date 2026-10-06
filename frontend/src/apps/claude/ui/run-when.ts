@@ -15,18 +15,11 @@
 // clock — the turn's own stamp carries that — and no line inside the opened
 // run.
 //
-// AND IT IS THE TURN'S NUMBER, NOT THE RUN'S (Akshil, 2026-10-05: "how
-// accurate is this? confirm with Claude on real sessions"). Claude's figure is
-// the whole turn — the user's message to the end of the reply — and that is
-// what `duration_ms` on the CLI's own `result` row measures. The span of the
-// folded tool calls alone was half of it (12 s of a 24 s turn). So the start
-// is the USER turn's stamp (`startedAt`) and the end is the last stamped thing
-// in the reply: a tool's result, or the end of the final streamed text
-// (`ended`, agent.py). Checked on 25 real turns against `duration_ms`: mean
-// difference 0.06 s, worst 1.2 s. Each half is dropped when the rows did not
-// say: no end stamp at all (a turn still streaming) means nothing is drawn
-// rather than a guess; no `startedAt` falls back to the reply's own first
-// stamp, which under-counts and is the best an old transcript allows.
+// AND IT IS THE RUN'S NUMBER, NOT THE TURN'S (Akshil, 2026-10-06: "show more
+// should only show time for things in that, like tool calls, bash time they
+// took, not the whole response"). The word folds one stretch of tool calls,
+// and the hover is about that stretch: its first stamp to its last result.
+// A reply with two runs wears two different numbers.
 import { ago } from "../protocol/history";
 import type { Segment } from "../protocol/types";
 
@@ -68,24 +61,19 @@ export function runSpan(segs: readonly (Segment | null | undefined)[]): RunWhen 
   return Number.isFinite(started) ? { started, finished: Math.max(started, finished) } : null;
 }
 
-/** `Worked for 2m 10s · 3m ago` — the hover, for the whole turn `segs` belong
- *  to. `startedAt` is the user turn's stamp (epoch seconds); "ago" is measured
- *  from the END, because "when was it done" is the question. `ago`'s bare
- *  `now` becomes `just now`, the word the turn stamps already use. */
+/** `Worked for 12s · 3m ago` — the hover for ONE run: its first stamp to its
+ *  last result. "ago" is measured from the END, because "when was it done" is
+ *  the question. `ago`'s bare `now` becomes `just now`, the word the turn
+ *  stamps already use. */
 export function runWhenWords(
   segs: readonly (Segment | null | undefined)[],
-  startedAt: number | null | undefined = null,
   now: () => number = Date.now,
 ): string | null {
   const span = runSpan(segs);
   if (!span) return null;
-  const started =
-    typeof startedAt === "number" && Number.isFinite(startedAt) && startedAt > 0 && startedAt <= span.finished
-      ? startedAt
-      : span.started;
   const when = ago(span.finished, now);
   const done = when === "now" ? "just now" : when;
-  return span.finished > started
-    ? "Worked for " + spanWords(span.finished - started) + " · " + done
+  return span.finished > span.started
+    ? "Worked for " + spanWords(span.finished - span.started) + " · " + done
     : done;
 }

@@ -31,7 +31,6 @@
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
-import { sliceStartedAt } from "./turn-start";
 import {
   decideThroughQueue,
   markTaskIdle,
@@ -1476,11 +1475,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const segs = Array.isArray(poll.segments) ? poll.segments : [];
         const fullText = poll.text || "";
         const reported = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
-        /** `{ startedAt }` for slice `j` of this window, or `{}` (`sliceStartedAt`). */
-        const stampStart = (j: number, last: number, dropped: number) => {
-          const at = sliceStartedAt(poll, j, last, dropped);
-          return at === undefined ? {} : { startedAt: at };
-        };
 
         // A FOLLOW-UP LANDED. All this arms is the shrink test below: the seam
         // itself comes from the payload, so nothing about the transcript moves
@@ -1647,11 +1641,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
               text: "",
               streaming: true,
               followup: slot,
-              // WHEN THE CLI OPENED THIS REPLY (`sliceStartedAt`): the j-th
-              // echo of the window, past the slices the base already stands
-              // for. Stamped at creation — a slice is only ever created after
-              // its echo landed, since the payload is blank until then.
-              ...stampStart(j, breaks.length, reported.length - breaks.length),
             });
           }
           // A REPLY THE PAYLOAD HAS CLOSED OFF WITH A SEAM IS FINISHED, and
@@ -1763,10 +1752,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 text: view.mode === "segments" ? view.view.tailText || "" : view.text,
                 ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
                 followup: chunkOffset + j,
-                // Same stamp as a streamed reply's (Bugbot, PR #1430): a reply
-                // that only ever arrived on the poll that ended it is still a
-                // reply the CLI opened at its echo.
-                ...stampStart(j, spans.length, reported.length - breaks.length),
               });
             }
           }
@@ -3424,12 +3409,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
             text: view.mode === "segments" ? view.view.tailText || "" : view.text,
             ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
             ...(j > 0 ? { followup: j } : {}),
-            // The repair's payload is the raw window — no base, so no dropped
-            // slices (Bugbot, PR #1430).
-            ...(() => {
-              const at = sliceStartedAt(poll, j, probeSpans.length);
-              return at === undefined ? {} : { startedAt: at };
-            })(),
           });
         }
       };
