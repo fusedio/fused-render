@@ -82,6 +82,7 @@ import {
   reconcileTabs,
   removeTab,
   stateFor,
+  syncClaudeTabs,
   type DrawerState,
   type LiveSession,
   type TerminalTab,
@@ -91,6 +92,7 @@ import {
   createTerminalSession,
   killTerminalSession,
   sendTerminalInput,
+  stopClaudeCommands,
 } from "@platform/lib/terminalSession";
 import { getJson } from "@platform/lib/api";
 import { isMod } from "@platform/lib/platform";
@@ -287,6 +289,10 @@ export async function sendPendingRequestIfAny(
     throw new TerminalBusyError();
   }
 }
+
+/** How often an open drawer asks the server whether a chat has started (or
+ * stopped) running commands, which is when its Claude tab appears or changes. */
+export const CLAUDE_TAB_POLL_MS = 2000;
 
 export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // Registers for exactly as long as this component is mounted, so every
@@ -581,6 +587,39 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     else if (tabs.length === 0) reportFocusedTerminal(null);
   }, [open, tabs === null, activeId, activeLabel]);
 
+  /** Claude tabs follow the server's list: one appears when a chat runs its
+   * first command, its running dot tracks the current command, and it goes when
+   * the log does. Shell tabs are never touched here. */
+  useEffect(() => {
+    if (!open || tabs === null) return;
+    let stopped = false;
+    const timer = setInterval(() => {
+      getJson<{ sessions: LiveSession[] }>("/api/terminal")
+        .then(({ sessions }) => {
+          const st = stateRef.current;
+          if (stopped || st.tabs === null) return;
+          const next = syncClaudeTabs(st.tabs, st.activeId, sessions);
+          if (next === null) return;
+          if (next.empty) {
+            forget();
+            setTerminalCount(0);
+            clearExitedSession(heightRef.current);
+            return;
+          }
+          commit(next.tabs, next.activeId);
+        })
+        .catch(() => {});
+    }, CLAUDE_TAB_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [open, tabs === null]);
+
+  function stopClaude(id: string): void {
+    stopClaudeCommands(id).catch(() => {});
+  }
+
   /** "Ask Claude" on a tab: open a chat seeded with a reference to that
    * terminal (metadata only; Claude reads it with `terminal_read`). The tab's
    * cwd picks the folder the chat opens in; a folderless tab uses the default. */
@@ -721,7 +760,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         onPointerUp={onHandlePointerUp}
       />
       {tabs !== null && tabs.length > 0 && (
-        <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} onAskClaude={askClaude} />
+        <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} onAskClaude={askClaude} onStop={stopClaude} />
       )}
       {activeId !== null && <TerminalView key={activeId} id={activeId} autoFocus={focusId === activeId} onExit={() => dropTab(activeId)} />}
       {createError !== null && (

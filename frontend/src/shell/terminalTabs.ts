@@ -16,10 +16,24 @@ export const MAX_HEIGHT = 720;
 export const DEFAULT_HEIGHT = 260;
 export const DEFAULT_LABEL = "Terminal";
 
+/** The server's read-only session kind for a chat's Bash-tool commands (D1325):
+ * its ids are `claude:<chat id>`, which is how a tab is recognised from nothing
+ * but the persisted id list. */
+export const CLAUDE_ID_PREFIX = "claude:";
+export const CLAUDE_LABEL = "Claude";
+
+export function isClaudeId(id: string): boolean {
+  return id.startsWith(CLAUDE_ID_PREFIX);
+}
+
 export interface TerminalTab {
   id: string;
   label: string;
   cwd?: string;
+  /** "claude": the read-only tab showing what a chat's Claude is running. */
+  kind?: "claude";
+  /** A command is executing right now (claude tabs only). */
+  running?: boolean;
 }
 
 /** What survives a reload: the ordered ids, the active one, and each tab's
@@ -37,6 +51,12 @@ export interface LiveSession {
   alive: boolean;
   shell?: string;
   cwd?: string;
+  kind?: string;
+  running?: boolean;
+}
+
+function claudeTab(row: { id: string; running?: boolean }): TerminalTab {
+  return { id: row.id, label: CLAUDE_LABEL, kind: "claude", running: row.running === true };
 }
 
 /** The program a command starts, for a tab label: the first word, skipping
@@ -107,6 +127,7 @@ export function stateFor(height: number, tabs: TerminalTab[], activeId: string |
  * merging a new terminal into what is persisted. */
 export function cachedTabs(cached: DrawerState): TerminalTab[] {
   return cached.sessionIds.map((id) => {
+    if (isClaudeId(id)) return claudeTab({ id });
     const m = cached.meta[id];
     return { id, label: m?.label ?? DEFAULT_LABEL, ...(m?.cwd ? { cwd: m.cwd } : {}) };
   });
@@ -124,15 +145,62 @@ export function reconcileTabs(
   for (const id of cached.sessionIds) {
     const row = byId.get(id);
     if (!row) continue;
+    if (row.kind === "claude" || isClaudeId(id)) {
+      tabs.push(claudeTab(row));
+      continue;
+    }
     const m = cached.meta[id];
     const cwd = m?.cwd ?? row.cwd;
     tabs.push({ id, label: m?.label ?? (row.shell || DEFAULT_LABEL), ...(cwd ? { cwd } : {}) });
   }
+  // A chat's Claude tab that was not cached (it appeared while the drawer was
+  // closed) joins at the end; it never takes the active slot.
+  for (const row of byId.values()) {
+    if (row.kind === "claude" && !tabs.some((t) => t.id === row.id)) tabs.push(claudeTab(row));
+  }
   const activeId =
     cached.activeId !== null && tabs.some((t) => t.id === cached.activeId)
       ? cached.activeId
-      : (tabs[0]?.id ?? null);
+      : (tabs.find((t) => t.kind !== "claude")?.id ?? tabs[0]?.id ?? null);
   return { tabs, activeId };
+}
+
+/** Fold the server's live list into the open drawer's tabs, for the Claude
+ * kind only: a new chat's tab is appended (never activated), a running flag is
+ * refreshed, a tab the server no longer lists is dropped (the active one hands
+ * over like `removeTab`). Shell tabs are never touched. `null` = nothing
+ * changed, so the caller skips the re-render. */
+export function syncClaudeTabs(
+  tabs: TerminalTab[],
+  activeId: string | null,
+  live: LiveSession[],
+): { tabs: TerminalTab[]; activeId: string | null; empty: boolean } | null {
+  const rows = new Map(live.filter((s) => s.kind === "claude" && s.alive).map((s) => [s.id, s]));
+  let next = tabs;
+  let active = activeId;
+  let changed = false;
+  for (const t of tabs) {
+    if (t.kind === "claude" && !rows.has(t.id)) {
+      const r = removeTab(next, active, t.id);
+      next = r.tabs;
+      active = r.activeId;
+      changed = true;
+      if (r.empty) return { tabs: next, activeId: null, empty: true };
+    }
+  }
+  next = next.map((t) => {
+    const row = t.kind === "claude" ? rows.get(t.id) : undefined;
+    if (!row || (t.running === true) === (row.running === true)) return t;
+    changed = true;
+    return { ...t, running: row.running === true };
+  });
+  for (const row of rows.values()) {
+    if (!next.some((t) => t.id === row.id)) {
+      next = [...next, claudeTab(row)];
+      changed = true;
+    }
+  }
+  return changed ? { tabs: next, activeId: active, empty: false } : null;
 }
 
 /** Remove one tab. If it was active, the neighbour to its right becomes active

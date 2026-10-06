@@ -848,3 +848,92 @@ test("busy fallback: a command-only request creates its terminal in the fallback
   });
   expect(created).toEqual(["/drawer", "/drawer"]);
 });
+
+// ---- the read-only Claude tab (D1325) ---------------------------------------
+
+const { syncClaudeTabs, cachedTabs, isClaudeId } = await import("@shell/terminalTabs");
+
+test("claude tab: reconcile appends an uncached claude row, never activates it", () => {
+  const cached = parseState(JSON.stringify({ height: 260, sessionIds: ["a"], activeId: "a", meta: {} }));
+  const r = reconcileTabs(cached, [
+    { id: "a", alive: true, shell: "zsh" },
+    { id: "claude:c1", alive: true, kind: "claude", running: true },
+  ]);
+  expect(r.tabs.map((t) => t.id)).toEqual(["a", "claude:c1"]);
+  expect(r.tabs[1]).toMatchObject({ label: "Claude", kind: "claude", running: true });
+  expect(r.activeId).toBe("a");
+});
+
+test("claude tab: a cached claude id is recognised by prefix and survives only while listed", () => {
+  const cached = parseState(JSON.stringify({ height: 260, sessionIds: ["claude:c1", "a"], activeId: "claude:c1", meta: {} }));
+  expect(isClaudeId("claude:c1")).toBe(true);
+  expect(cachedTabs(cached)[0]).toMatchObject({ kind: "claude", label: "Claude" });
+  const gone = reconcileTabs(cached, [{ id: "a", alive: true }]);
+  expect(gone.tabs.map((t) => t.id)).toEqual(["a"]);
+  expect(gone.activeId).toBe("a");
+});
+
+test("syncClaudeTabs: adds, refreshes running, drops; shell tabs untouched; no change -> null", () => {
+  const shell = { id: "a", label: "zsh" };
+  const live = [{ id: "claude:c1", alive: true, kind: "claude", running: true }];
+  const added = syncClaudeTabs([shell], "a", live)!;
+  expect(added.tabs.map((t) => t.id)).toEqual(["a", "claude:c1"]);
+  expect(added.activeId).toBe("a");
+  expect(syncClaudeTabs(added.tabs, "a", live)).toBeNull();
+  const idle = syncClaudeTabs(added.tabs, "a", [{ ...live[0], running: false }])!;
+  expect(idle.tabs[1].running).toBe(false);
+  const dropped = syncClaudeTabs(idle.tabs, "claude:c1", [])!;
+  expect(dropped.tabs).toEqual([shell]);
+  expect(dropped.activeId).toBe("a");
+});
+
+test("tab strip: claude tab is marked, has no close/ask, and Stop only while running", () => {
+  const stops: string[] = [];
+  const mk = (running: boolean) =>
+    strip({
+      tabs: [{ id: "a", label: "zsh" }, { id: "claude:c1", label: "Claude", kind: "claude", running }],
+      activeId: "claude:c1",
+      onAskClaude: () => {},
+      onStop: (id) => stops.push(id),
+    }).root;
+  const root = mk(true);
+  const tabs = root.findAll((n) => n.props.role === "tab");
+  expect(tabs[1].props.className).toBe("term-tab is-claude is-active");
+  const inClaude = (c: string) => tabs[1].findAll((n) => n.type === "button" && n.props.className === c);
+  expect(inClaude("term-tab-close")).toHaveLength(0);
+  expect(inClaude("term-tab-ask")).toHaveLength(0);
+  act(() => inClaude("term-tab-stop")[0].props.onClick());
+  expect(stops).toEqual(["claude:c1"]);
+  const idle = mk(false).findAll((n) => n.props.role === "tab")[1];
+  expect(idle.findAll((n) => n.type === "button" && n.props.className === "term-tab-stop")).toHaveLength(0);
+});
+
+test("claude tab: an open drawer picks a new chat's tab up from the list and Stop POSTs the stop route", async () => {
+  seed(["a"]);
+  const srv = fakeServer({ live: [{ id: "a" }] });
+  try {
+    const r = await mountOpen();
+    expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a"]);
+    // The chat starts a command: the next poll adds the tab (not active).
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ sessions: [
+            { id: "a", alive: true, shell: "zsh" },
+            { id: "claude:c1", alive: true, kind: "claude", running: true },
+          ] }),
+        } as Response;
+      }
+      return real(url, init);
+    }) as unknown as typeof fetch;
+    await act(async () => { await new Promise((res) => setTimeout(res, 2200)); });
+    expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a", "claude:c1"]);
+    expect(stripProps(r).activeId).toBe("a");
+    act(() => stripProps(r).onStop("claude:c1"));
+    await tick();
+    const stop = srv.calls.find((c) => c.method === "POST" && c.url === "/api/terminal/claude%3Ac1/stop");
+    expect(stop).toBeDefined();
+  } finally { srv.restore(); }
+});
