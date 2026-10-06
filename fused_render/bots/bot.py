@@ -409,6 +409,7 @@ class Bot:
         self.pause_flag = threading.Event()
         self.inbox = []           # user messages arriving mid-task
         self.task_dir = None      # this task's folder in the user's Inbox, made on first artifact
+        self.deleted = False      # set by delete() before shutdown: nothing may write this bot back to disk
         self.last_task_dir = None  # (task_via, folder) of the task that ended last (collect_task_artifacts)
         self.task_started = 0.0   # downloads newer than this belong to the running task
         self.task_origin = "manual"
@@ -458,6 +459,8 @@ class Bot:
 
     # -- persistence -------------------------------------------------------
     def save(self):
+        if self.deleted:
+            return  # delete() is tearing it down: a late save must not resurrect bot.json
         store.write_meta(self.id, self.meta)
 
     def _count_events(self):
@@ -489,6 +492,8 @@ class Bot:
                     ev["via"] = dict(self.task_via)
             elif ev["via"] is None:
                 del ev["via"]
+            if self.deleted:
+                return ev  # never recreate a deleted bot's folder
             os.makedirs(self.dir, exist_ok=True)
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
@@ -1182,8 +1187,14 @@ class Bot:
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
             self.save()
-        if not busy:
-            self.start_task(r["task"], origin="routine")
+        if not busy and not self.start_task(r["task"], origin="routine"):
+            # Someone (a hand-off, a message) started a task between the busy check and the start.
+            with self.lock:
+                r["last_result"] = "skipped: bot was busy"
+                if r["kind"] == "once":
+                    r["enabled"] = True
+                self.save()
+            self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: bot busy")
 
     def _spacing_ok(self, r):
         """Refuse to fire inside the routine's own interval, judged from disk.
@@ -1274,6 +1285,15 @@ class Bot:
             # on it (the router lets no other sender through), may drive it (docs §5).
             self.emit("system", f"Ignored a task from {chan.label(via['kind'])}: Super Bot only takes tasks you type here.")
             return
+        if via.get("kind") == "imessage" and is_super(self.meta):
+            with self.lock:
+                busy_on_chat = self.running() and chan.is_web(getattr(self, "task_via", None))
+            if busy_on_chat:
+                # A chat task may run unattended and its replies are never texted: a text must not steer it,
+                # and is not written as a user line (a later task's CONVERSATION SO FAR would present it as asked).
+                self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
+                self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
         shown = text  # what the user typed; the transcript and status show this, the model reads the quoted form
         stamp = {} if chan.is_web(via) else {"via": via}
@@ -1296,11 +1316,6 @@ class Bot:
             return
         if pending and running and pending.get("seq") != getattr(self, "_offer_seq", None):
             self._settle_offer()  # the offer timed out earlier and the user has moved on: it is stale, not pending
-        if running and texted and is_super(self.meta) and chan.is_web(getattr(self, "task_via", None)):
-            # A chat task may run unattended and its replies are never texted: a text must not steer it.
-            self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
-            self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
-            return
         if running and texted and self._texted_approval(shown):
             return
         with self.lock:
@@ -1371,6 +1386,8 @@ class Bot:
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
         with self.lock:
+            if self.deleted:
+                return False
             if self.thread is not None and self.thread.is_alive():
                 # Two engine threads on one browser is never right: whoever checked "idle" first won.
                 logger.info("bot %s: start_task refused, a task is already running", self.id)
@@ -1390,13 +1407,21 @@ class Bot:
                     from fused_render.bots import agent_engine
                     run = agent_engine.run
                 except Exception:  # noqa: BLE001 — the agent engine may not be installed; the steps engine always is
+                    if is_super(self.meta):
+                        # Super Bot's guard rails (posture, texted answers) live in the agent engine: no fallback.
+                        logger.warning("bot %s: agent engine unavailable for Super Bot", self.id, exc_info=True)
+                        self.emit("error", "Super Bot needs the agent engine (Claude Code), which could not load.")
+                        self.set_status("idle", task_via=None)
+                        self.task_via = dict(chan.WEB)
+                        return False
                     logger.warning("bot %s: agent engine unavailable, using the steps engine", self.id, exc_info=True)
                     engine = "steps"
             if run is None:
                 from fused_render.bots import steps_engine
                 run = steps_engine.run
             self.engine = engine
-            self.thread = threading.Thread(target=run, args=(self, task, label or task), daemon=True, name=f"bot-{self.id}")
+            self.thread = threading.Thread(target=_run_task, args=(run, self, task, label or task), daemon=True,
+                                           name=f"bot-{self.id}")
             self.thread.start()
         return True
 
@@ -1798,7 +1823,7 @@ class Bot:
         hv = self._handoff_via(hd)
         key = (self.id, hd["id"])
         with t.lock:
-            if t.running() or not self._exists(t.id):
+            if t.running() or t.deleted or not self._exists(t.id):
                 return False
             q = t._handoff_queue
             if from_queue:
@@ -1808,10 +1833,14 @@ class Bot:
                 return False
             if t.meta.get("control"):
                 t.meta["control"] = False  # a fresh task means the bot drives again (as receive() does)
-            t.emit("user", hd["task"], via=hv)  # the task in the bot's own chat, chip "from Super Bot"
+            if t.deleted:
+                return False
             start_seq = t.seq
             if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):
                 return False
+            # After the start, so a refusal writes nothing; the engine thread's first emit waits on t.lock
+            # (held here), so this line still comes first in the bot's chat. Chip "from Super Bot".
+            t.emit("user", hd["task"], via=hv)
             if from_queue and q and q[0] == key:
                 q.pop(0)
             self._handoff_threads[hd["id"]] = t.thread
@@ -1914,11 +1943,13 @@ class Bot:
                     time.sleep(HANDOFF_POLL_S)
                     if hd.get("done_at"):
                         return  # settled elsewhere (handoff_stop on a queued hand-off)
-                    if not self._exists(self.id):
+                    if self.deleted or not self._exists(self.id):
                         return  # Super Bot was deleted: nobody to report to, and nothing to save
                     try:
                         t = _registry().get(hd["target"]) if self._exists(hd["target"]) else None
                     except ValueError:
+                        t = None
+                    if t is not None and t.deleted:
                         t = None
                     if t is None:
                         self._handoff_finish(None, hd, "error", f"{name} was deleted before it finished.")
@@ -2017,7 +2048,7 @@ class Bot:
                 return
             hd.update(state=state, done_at=time.time(), result=text[:4000])
             self._handoff_threads.pop(hd["id"], None)
-            if not self._exists(self.id):
+            if self.deleted or not self._exists(self.id):
                 return
             self.save()
         if not summary:
@@ -2026,7 +2057,7 @@ class Bot:
             summary = (m.group(1) if m else flat)[:600]
         self.emit("done", text, summary=summary, source="handoff",
                   handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
-        if t is not None and self._exists(t.id):
+        if t is not None and not t.deleted and self._exists(t.id):
             try:
                 t.emit("system", f"Sent to Super Bot: {text[:280]}", source="handoff", via=None)
             except Exception:  # noqa: BLE001
@@ -2357,6 +2388,18 @@ class Bot:
         return imessage.resolve_contact(d.get("to") or d.get("ref") or d.get("name") or "", self.contacts())
 
 
+def _run_task(run, bot, task, label):
+    """The task thread: the engine's run, then the bot's posture goes back to
+    the web's (task_via), so a click at the Mac after a phone task (a pending
+    offer, say) is judged as the Mac's, not the phone's (tools.phone_super)."""
+    try:
+        run(bot, task, label)
+    finally:
+        with bot.lock:
+            if bot.thread is threading.current_thread():
+                bot.task_via = dict(chan.WEB)
+
+
 def bots_section(bot) -> str:
     """Super Bot's BOTS section (docs §11): one line per ordinary bot, read
     from disk (no Bot objects). Empty for every other bot."""
@@ -2487,6 +2530,7 @@ def delete(bid):
     """Stop the bot's task and Chrome, forget it, remove its data and cache folders."""
     reg = _registry()
     b = reg.get(bid)
+    b.deleted = True  # first: a watcher or starter racing the shutdown below must not start or save it
     b.shutdown()
     reg.forget(bid)
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)

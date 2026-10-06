@@ -433,11 +433,18 @@ open after a task (`_answer_pending_offer` is skipped), and offer questions
 are not numbered on the phone ("Answer it in the app."). Numbered options on
 Super Bot's own `ask` still map back. A text that arrives while Super Bot runs
 a task started in its chat is not applied (that task may run unattended and
-never texts back): a system line, and one texted line "Busy with a task from
-the Mac; text again when it's done." Only Super Bot's `contacts()` include its
+never texts back): no user line is written (a later task's CONVERSATION SO FAR
+would present it as asked), only a system line and one texted line "Busy with
+a task from the Mac; text again when it's done." When a task ends its thread
+puts `task_via` back to the web (`bot._run_task`), so a click at the Mac after
+a phone task is judged with the Mac's posture. Super Bot never falls back to
+the steps engine: without the agent engine its task is refused with an error. Only Super Bot's `contacts()` include its
 own handle (the `imessage` key on any other bot grants nothing).
 `start_task` refuses (returns False) while a task thread is alive, so no two
-starters can put two engines on one browser. Super Bot hands browsing work to
+starters can put two engines on one browser; `routine_fire` records such a
+refusal as "skipped: bot was busy" and keeps a once-routine enabled. `delete`
+sets `bot.deleted` before its shutdown: `start_task` refuses, `save` and
+`emit` write nothing, so nothing racing the teardown can bring the bot back. Super Bot hands browsing work to
 the other bots (§11). The harness side
 is in §6 ("The Super Bot on the harness"). Page: the chooser's Super Bot card
 (shown while no Super Bot exists), the dialog hides local models and Builds
@@ -965,7 +972,7 @@ imessage.py           pure helpers only (chat.db queries, osascript send, handle
 **Via kinds.** `web` (the page; never stamped), `imessage` (addr = the
 sender's normalised handle), `routine`, `botsend` (addr = the inbox file
 stem), and `handoff` (addr = `<Super Bot id>:<hand-off id>`, unique per
-hand-off, `channels.base.handoff_via` / `handoff_parts`; stamped on a task Super Bot
+hand-off, `channels.base.handoff_via`; stamped on a task Super Bot
 handed to a bot and so on its events, label "Super Bot", §11).
 
 **Inbound.** Super Bot is the door. `Channel.door()` answers (Super Bot's id,
@@ -997,7 +1004,9 @@ task thread (other threads pass `via` explicitly: the build watcher carries
 the via of the task that asked for the build, with `source: "build"`; the
 hand-off watcher the via of the Super Bot task that asked, with `source:
 "handoff"`), then calls `registry.on_event`, which hands it to the router when
-one exists (tests and a lean `fused-render open` have none). `OUT_ROLES` are
+one exists (tests and a lean `fused-render open` have none). `registry.start`
+builds the router before the scheduler: the scheduler's first pass constructs
+every Bot, and Super Bot's constructor may emit an interrupted hand-off's card. `OUT_ROLES` are
 `done`, `question`, `error`: approval cards never leave the page.
 `Router.on_event` also skips any event whose via kind is `handoff` (a
 handed-off task reports to Super Bot, not to a phone). `Router.targets()` is
@@ -1094,7 +1103,8 @@ Bot's name and unknown names are refused with the list), records the row
 (state `queued`; if starting it raises, the row is closed `error` and the
 model gets an error), emits `system "Asked <Bot> to: <task>"`
 (`source: "handoff"`) and starts `_watch_handoff`. An idle target gets a
-`user` event with the task (via `handoff`) and `start_task(task, origin
+`user` event with the task (via `handoff`, written right after the start
+succeeds, under the target's lock, so it still comes first) and `start_task(task, origin
 "handoff", via {kind: "handoff", addr: "<Super Bot id>:<hand-off id>"})`; a busy one (or one
 with a queue) gets the hand-off appended to its in-memory `_handoff_queue`
 (state `queued`), and the watcher starts it when the target is idle and the
@@ -1113,8 +1123,8 @@ Bot: `{"role": "question", "text": "<Bot> needs you at the laptop: <the
 card's text>", "source": "handoff", "handoff": {id, target, target_name,
 state: "waiting"}, "via": <origin>}` (a trailing "Approve?" is dropped and
 "Answer it at the Mac." added: nothing on the phone invites a texted yes).
-Both bots are looked up again on every poll: when Super Bot's `bot.json` is
-gone the watcher stops without writing anything; when the target's is gone
+Both bots are looked up again on every poll: when Super Bot is deleted
+(`bot.deleted`, or its `bot.json` gone) the watcher stops without writing anything; when the target's is gone
 the row ends `error` "<Bot> was deleted…". A deleted bot is never written
 back by a late save. At `HANDOFF_MAX_S` a target still running this hand-off
 is stopped and the row ends `error`. A watcher that throws closes its row

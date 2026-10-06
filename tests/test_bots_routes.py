@@ -153,7 +153,7 @@ def test_skills_save_and_delete(client, ws):
 
 def test_send_starts_a_task(client, ws, monkeypatch):
     started = []
-    monkeypatch.setattr(botmod.Bot, "start_task", lambda self, task, label=None, origin="manual": started.append((task, label)))
+    monkeypatch.setattr(botmod.Bot, "start_task", lambda self, task, label=None, origin="manual", via=None: started.append((task, label)))
     bid = make(client)
     st, out = j(client.post(f"/api/bots/{bid}/send", {"text": "   "}))
     assert st == 400 and out["error"] == "empty message"
@@ -282,7 +282,7 @@ def test_writes_need_x_fused(client, ws):
 def test_botsend_queues_a_task_the_scheduler_tick_runs(client, ws, monkeypatch, capsys):
     from fused_render.bots import botsend
     started = []
-    monkeypatch.setattr(botmod.Bot, "start_task", lambda self, task, label=None, origin="manual": started.append(task))
+    monkeypatch.setattr(botmod.Bot, "start_task", lambda self, task, label=None, origin="manual", via=None: started.append(task))
     bid = make(client)
     assert botsend.main(["--list"]) == 0 and "Scout" in capsys.readouterr().out
     assert botsend.main(["nobody", "x"]) == 1

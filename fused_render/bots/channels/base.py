@@ -11,7 +11,7 @@ delivery policy, option numbering and prefixes live once, in `router.py`.
              of the task it started. The web is {"kind": "web", "addr": ""}; a routine's
              task carries {"kind": "routine", "addr": ""} so policy can tell it apart; a
              task Super Bot handed to a bot carries {"kind": "handoff", "addr": "<Super Bot id>:<hand-off id>"}
-             (docs §11; handoff_via / handoff_parts). Policy reads only the kind.
+             (docs §11; handoff_via). Policy reads only the kind.
     Inbound  one message a channel received, before any routing.
     Caps     what the surface can show; the engines and the router read it.
     Door     Super Bot is the one bot a channel reaches (`Channel.door`, docs §10).
@@ -56,14 +56,6 @@ def handoff_via(super_id: str, handoff_id: str) -> dict:
     hand-off so a watcher reads only its own task's events (docs §11). Policy reads the kind."""
     return via(HANDOFF_KIND, f"{super_id}:{handoff_id}")
 
-
-def handoff_parts(v) -> tuple[str, str]:
-    """(Super Bot id, hand-off id) of a handoff via; ("", "") for anything else."""
-    v = v or {}
-    if v.get("kind") != HANDOFF_KIND:
-        return "", ""
-    sid, _, hid = str(v.get("addr") or "").partition(":")
-    return sid, hid
 
 
 class Texted(str):

@@ -110,14 +110,10 @@ def _scheduler(stop: threading.Event) -> None:
 
 
 def start() -> None:
-    """Start the scheduler and the channels router (idempotent)."""
+    """Start the channels router, then the scheduler (idempotent). Router first:
+    the scheduler's first pass builds every Bot, and a Bot's __init__ may emit
+    (an interrupted hand-off's result card) that must reach the phone."""
     with _lock:
-        t = _sched["thread"]
-        if t is None or not t.is_alive():
-            stop = threading.Event()
-            t = threading.Thread(target=_scheduler, args=(stop,), daemon=True, name="bots-routines")
-            _sched.update(thread=t, stop=stop)
-            t.start()
         need_router = _chan["router"] is None
     if need_router:  # outside the lock: a channel may look bots up as it starts
         try:
@@ -136,6 +132,13 @@ def start() -> None:
                 r.start()
         except Exception:  # noqa: BLE001 — no channels is a missing feature, not a broken server
             logger.warning("channels router not started", exc_info=True)
+    with _lock:
+        t = _sched["thread"]
+        if t is None or not t.is_alive():
+            stop = threading.Event()
+            t = threading.Thread(target=_scheduler, args=(stop,), daemon=True, name="bots-routines")
+            _sched.update(thread=t, stop=stop)
+            t.start()
 
 
 def router():
