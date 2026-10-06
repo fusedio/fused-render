@@ -6567,3 +6567,8 @@ The Ask Claude / Fix with AI / tab prompts keep their raw text on the wire (the 
 
 D1325 said the `<terminal-hint>` block was stripped on restore, but `_history` only removed app-state (`_MACHINERY_STRIP` is applied by `_strip_machinery` for session names and the Tasks list, not by `_history`). Reopened chats showed the raw hint in the user bubble and `parseTerminalAsk` never matched. `_history` now also calls `_strip_terminal_hint`, which removes one block at the very start of the text (after app-state removal), so a tag typed mid-message survives. This also makes the D1328 terminal chip render on reopened chats.
 
+
+
+## D1330 — Restore strips the hint behind any leading block; Fix with AI needs a command that ran (2026-10-06, worktree-claude-terminal-share)
+
+`_strip_terminal_hint` now walks the leading machinery blocks the way `_with_terminal_hint` inserts, so a hint behind a pane-shot or annotations block no longer shows on restore (a tag typed mid-message still survives). `reduceShellOsc` tracks `running` between `133;C` and `133;D` and ignores a D outside that pair, matching the server parser: the shims emit `133;D` on the first prompt, and a nonzero `$?` from the rc files showed a Fix pill for a command nobody ran.
