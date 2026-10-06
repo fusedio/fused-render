@@ -21,7 +21,6 @@
 // would run once per pane rather than once for the top document.
 import { useEffect, useRef } from "react";
 
-import { updateInstall, type UpdateStatus } from "@platform/lib/api";
 import {
   UPDATE_DOWNLOAD_FAMILY_KEY,
   UPDATE_RESTART_FAMILY_KEY,
@@ -38,7 +37,7 @@ import {
   type RestartStage,
 } from "@platform/lib/restart-flow";
 import { requestRestart, restartStageNow, useRestartFlow } from "@platform/lib/restart-store";
-import { pokeUpdateStatus, setUpdateStatus, useUpdateStatus } from "@platform/lib/update-status";
+import { installUpdate, useUpdateStatus } from "@platform/lib/update-status";
 
 // `sessionStorage`, not `localStorage` (spec, Notification #2's own
 // paragraph): a "later" dismissal must survive a reload in the SAME window
@@ -76,21 +75,6 @@ function recordRestartDismissed(version: string | null): void {
   } catch {
     // Same as above — losing the "later" memory is not worth crashing over.
   }
-}
-
-// The Download action's body — VERBATIM from the deleted `UpdateBadge.tsx`'s
-// own `install()` (git history, pre-SPEC-update-notifications), comment
-// included: the server force-rechecks the manifest before it installs, and
-// always installs the NEWEST version it finds — the one this card showed, or
-// a newer one published since. It never installs anything older than what
-// was on screen.
-async function install(status: UpdateStatus): Promise<void> {
-  try {
-    setUpdateStatus(await updateInstall(status.latest_version));
-  } catch {
-    // Fall through — the re-armed poll picks up the real state.
-  }
-  pokeUpdateStatus();
 }
 
 // Stage copy for the in-flight card. Three of the four stages reuse
@@ -165,7 +149,7 @@ export default function UpdateNotifier(): null {
             // would be exactly the duplication SPEC-update-notifications.md
             // removes.
             if (downloadIdRef.current !== undefined) dismissNotification(downloadIdRef.current);
-            void install(status);
+            void installUpdate(status);
           },
         },
       };
@@ -180,7 +164,7 @@ export default function UpdateNotifier(): null {
           tone: "error",
           tier: "attention",
           familyKey: UPDATE_DOWNLOAD_FAMILY_KEY,
-          action: { label: "Try again", onClick: () => void install(status) },
+          action: { label: "Try again", onClick: () => void installUpdate(status) },
         },
         downloadIdRef.current,
       );
