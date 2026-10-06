@@ -154,7 +154,7 @@ def note_folder_opened(cfg: IndexConfig, path: str, roots,
 
     Returns a `FreshnessCheck`. Every gate is ordered cheapest-first, so the
     duckdb lookup is unreachable for the common cases: outside the roots,
-    mount-backed, recently scanned, still churning. That ordering means a
+    inside a home tree, recently scanned, still churning. That ordering means a
     change that turns out not to be stale can still come back with
     `retry_after` set if it is also within the quiet window — the staleness
     lookup that would have ruled it out for good has not run yet — so a

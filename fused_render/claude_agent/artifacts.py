@@ -139,7 +139,7 @@ def _list(file: str) -> dict:
     published from a scratchpad that has since been cleaned up is still live at
     its url, but it is not something this target has any hold on any more, and
     a landing screen listing four dead scratchpads above three real pages reads
-    as noise. `exists` None (a mount-backed path the server refuses to stat) is
+    as noise. `exists` None (the server did not report) is
     not "gone" — those rows stay and open their hosted page.
 
     The per-target session scoping this used to add on top (which chats were
@@ -170,7 +170,7 @@ def _list(file: str) -> dict:
     if not isinstance(artifacts, list):
         return {"artifacts": [], "error": "unexpected response"}
     # Drop only the KNOWN-gone (exists is False). None means the server did
-    # not stat the path (mount-backed, hang-avoidance) — those rows stay, and
+    # not report on the path — those rows stay, and
     # the page opens their hosted url instead of claiming a local file.
     artifacts = [a for a in artifacts
                  if isinstance(a, dict) and a.get("exists") is not False]

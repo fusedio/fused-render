@@ -31,7 +31,7 @@ Path patterns are `expanduser`-ed and translated by `_path_regex`, not handed to
 `fnmatch` — `fnmatch`'s `*` matches across `/`, which is wrong for paths:
 
 - **`**/`** → any number of directory levels, **including zero**. So
-  `<home>/**/mounts` matches both `<home>/mounts` and `<home>/branches/<name>/mounts`.
+  `<home>/**/cache` matches both `<home>/cache` and `<home>/branches/<name>/cache`.
 - **`**`** → anything, slashes included.
 - **`*`**, **`?`** → within one segment (`/a/*/c` matches `/a/b/c`, not `/a/b/x/c`).
 
@@ -198,7 +198,7 @@ creates by accident.
 | Other tooling | `Pods`, `.gradle`, `.terraform`, `.cache` |
 | macOS | `.Trash` |
 | Generic build output | `dist`, `build`, `out`, `target`, `coverage`, `vendor` |
-| fused-render | `.fused`, `<home_dir()>/**/mounts` — see §7 |
+| fused-render | `.fused` (the home trees are refused structurally — see §7) |
 
 **Included despite the asymmetry: `dist`, `build`, `out`, `target`, `coverage`,
 `vendor`.** Each is an ordinary word a person could legitimately name a real folder, and
@@ -213,30 +213,22 @@ background scan, and the tradeoff favors a smaller index over indexing every
 `node_modules`-sized `dist/` on the machine. The list is user-editable per project
 (§5) for anyone who keeps real content under one of these names.
 
-The mounts entry is **computed**, not a literal `~/.fused-render/**/mounts`:
-FUSED_RENDER_HOME moves the whole shell home (every test redirects it), and a pattern
-naming a directory nobody uses would silently leave the real mounts dir walkable.
-
 ## 7. The mount guard
 
-`MountGuard` refuses mount paths independently of §6. It exists because the ignore list
-is user-editable and the failure mode is not "some junk gets indexed": a kernel
-`scandir`/`stat` on an rclone NFS mount path can **wedge the mount permanently** — a
-single READDIR on a flat million-key S3 prefix has killed mounts in production — and a
-background crawler nobody is watching is more dangerous than an interactive walk.
+`MountGuard` refuses the fused-render home trees independently of §6. The name is
+historical: it used to also guard a mounts directory, which no longer exists. It exists
+because the ignore list is user-editable and the failure mode is not "some junk gets
+indexed": a home holds caches, sidecars and the index itself, none of it content anyone
+searches for, and a background crawler nobody is watching should never walk it.
 
-**It blocks every fused-render home, whole.** Not just the active home's `mounts`
-subdirectory:
+**It blocks every fused-render home, whole.**
 
 - **Every home** (`default_home_dirs`): the default `~/.fused-render` *and* whatever
   FUSED_RENDER_HOME points at. A dev server, a test run or a branch checkout redirects
-  the home — and then a scan of the user's home directory walks into the *other* home's
-  mounts, which the active config knows nothing about. That is not hypothetical: it is
-  what a live home scan did, hanging ten scan processes on S3 listings with nothing
-  indexed.
-- **The whole tree**, not the mounts subdir: a home holds one mounts dir per branch
-  checkout, plus caches, sidecars and the index itself. None of it is content anyone
-  searches for, and naming the tree covers a mounts dir the guard was never told about.
+  the home, and a scan of the user's home directory would otherwise walk into the
+  *other* home's tree, which the active config knows nothing about.
+- **The whole tree**: a home holds per-branch checkouts, caches, sidecars and the index
+  itself. Naming the tree covers directories the guard was never told about.
 
 Two entry points:
 
@@ -244,17 +236,14 @@ Two entry points:
   resolved once per process. No syscall per directory, which matters at millions of
   them; sound because the walk never follows symlinks, so a guarded path is only ever
   reached by real descent in canonical form.
-- **At the root** (`blocks_root`) the check defers to `mounts.is_mount_backed`, which
-  pays a `realpath` — a scan root arrives from a user and CAN be a symlink into the
-  mounts dir. `runner.start` refuses such a root outright.
+- **At the root** (`blocks_root`) the check also resolves a `realpath` — a scan root
+  arrives from a user and CAN be a symlink into a home. `runner.start` refuses such a
+  root outright.
 
 **The general case is `scan.md §6`'s same-filesystem rule**, which needs no names at
 all: a mount is its own device, so a walk confined to the scan root's filesystem
 refuses every mount — iCloud, SMB, an external disk — including any this guard has
 never heard of. The guard remains because it is specific, cheap, and names the hazard.
-
-Indexing remote mounts later is possible — routed through the rclone rc listing API,
-opt-in per mount — but it is its own project, not a relaxation of this rule.
 
 ## Non-goals
 

@@ -26,7 +26,7 @@ kwargs from `_detach_kwargs` — `start_new_session` on POSIX, creation flags on
 form (OpenIndex used `Popen([python, __file__, "--worker", …])`) is what makes it work
 inside a py2app bundle, where there is no source file to point at.
 
-`start` also **refuses a mount-backed root** (`scan-ignore.md §7`) and records the
+`start` also **refuses a root inside a fused-render home** (`scan-ignore.md §7`) and records the
 start time for the scheduler's debounce (`server-api.md §2`).
 
 ## 2. The run directory
@@ -34,7 +34,7 @@ start time for the scheduler's debounce (`server-api.md §2`).
 One directory per run under `<index>/runs/<run_id>`, where `run_id` is
 `%Y%m%d-%H%M%S` plus 3 random bytes hex. Contents:
 
-- **`spec.json`** — `{root, full, started, config, mounts_dir}`. The worker's ONLY
+- **`spec.json`** — `{root, full, started, config}`. The worker's ONLY
   input: it re-derives nothing from the environment, so a home that moved between the
   request and the spawn cannot make the worker compact into a directory nobody reads.
 - **`events.jsonl`** — append-only progress log (§3). The only channel worker → client.
@@ -139,7 +139,7 @@ cancel the worker stops walking, emits `run_end` with `msg: "cancelled"`, and
 **The walk never leaves the scan root's filesystem.** `run_scan` stats the root once,
 writes its `st_dev` into `spec.json`, and every process compares each directory's device
 against it (`scan_dir_once`'s `root_dev`); a mismatch is skipped, not indexed, not
-descended. A mount — rclone, iCloud, SMB, an external disk — is always its own device,
+descended. A mount — iCloud, SMB, an external disk — is always its own device,
 so this single comparison refuses every mount, including the ones no name list can
 predict. It costs nothing: the `stat` it reads is the one that function already takes,
 and the check happens at the mount's own directory rather than at its parent, so there

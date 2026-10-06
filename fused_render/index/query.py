@@ -760,7 +760,7 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None,
     same `break`), never raised: the walk just stops one segment early, the
     same as a folder that doesn't exist yet. The blocked candidate's path is
     also returned (the 4th tuple element, `None` when nothing was blocked)
-    so a caller can still answer "this typed path is mount-backed" from a
+    so a caller can still answer "this typed path is inside a home tree" from a
     string alone, even though `base` itself lands short of it (see
     `resolve_query`'s `blocked_out` parameter, SPEC-index-search-wedge.md
     item C / D-number TBD). `guard=None` (every existing caller) preserves
@@ -2474,7 +2474,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
     m = read_manifest(cfg)
     # `reason` is the miss's cause, and it is what the in-folder search box
-    # switches on: a package or a mount-backed folder goes to the live walk, an
+    # switches on: a package or a home-tree folder goes to the live walk, an
     # uncovered one is scanned on demand. Decided here rather than in the
     # client, so there is one copy of the rule. The mount half is the server
     # layer's to add (MountGuard); this package/uncovered half is the index's.

@@ -2,10 +2,7 @@
 
 The geotiff / gridv2 / notebook daemons outlive the server process that spawned
 them (they are shared across branches and sessions), so app quit asks each one
-to exit through its token-gated `/quit` endpoint. This used to live inside the
-rclone-mount unmount ladder (it released files held open under a mount); the
-mount feature is gone but the daemons still need quiescing at quit, so the
-step was relocated here and wired into `app.quit_teardown` as its own stage.
+to exit through its token-gated `/quit` endpoint. The step is wired into `app.quit_teardown` as its own stage.
 
 Everything is best-effort: an absent or corrupt state file and a dead port are
 skipped silently, and the whole step is bounded by a join budget so a daemon

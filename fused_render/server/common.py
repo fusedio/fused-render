@@ -7,12 +7,7 @@ import uuid
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
     JSONResponse,
-    RedirectResponse,
-    Response,
-    StreamingResponse,
 )
 
 from fused_render import calls as shell_calls

@@ -14,12 +14,7 @@ import zipfile
 from pathlib import Path
 from fastapi import APIRouter, Body, File, Form, Header, Request, UploadFile
 from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
     JSONResponse,
-    RedirectResponse,
-    Response,
-    StreamingResponse,
 )
 
 from fused_render import calls as shell_calls

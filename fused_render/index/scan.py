@@ -39,7 +39,7 @@ from fused_render.index.store import (
 
 def keep_subdirs(subdirs, rules: IgnoreRules, guard: MountGuard):
     """The subdirectories a walk may hand on: not a hardcoded skip, not
-    mount-backed, and not ignored — except that a LEAF dir survives the ignore
+    inside a home tree, and not ignored — except that a LEAF dir survives the ignore
     list.
 
     "Hand on" rather than "descend into", because a leaf dir kept here is not

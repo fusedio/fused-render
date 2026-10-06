@@ -52,7 +52,6 @@ from fused_render.index.store import (
     applied_ignore_sig,
     delete_store,
     read_manifest,
-    save_applied_ignore,
 )
 from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
@@ -380,11 +379,11 @@ def run_startup_scan(start_dir: str | None = None) -> None:
             logger.info("index: started background scan of %s (run %s)",
                         root, run_id)
         except ValueError as e:
-            # A root that no longer exists, or one that turned out to be
-            # mount-backed — skip it quietly; the config outlives the folders
-            # it names. runner.start makes this call, and it checks the mount
-            # guard BEFORE any kernel syscall, so a wedged mount cannot hang
-            # this loop (there is deliberately no os.path.isdir here).
+            # A root that no longer exists, or one inside a home tree
+            # — skip it quietly; the config outlives the folders
+            # it names. runner.start makes this call, and it checks the home
+            # guard before any kernel syscall (there is deliberately no
+            # os.path.isdir here).
             logger.info("index: skipping %s (%s)", root, e)
         except Exception:  # noqa: BLE001 - one bad root must not stop the rest
             logger.exception("could not start the index scan of %s", root)
@@ -524,11 +523,11 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
 
     A `MountGuard` (SPEC-index-search-wedge.md item 1) is built here and
     handed to `resolve_query`, so its filesystem walk refuses a candidate
-    path under a blocked mount BEFORE `os.path.isdir` would otherwise stat
+    path under a fused-render home BEFORE `os.path.isdir` would otherwise stat
     it — the guard is built fresh each call. That construction is the only
     part with a real (once-per-call) syscall cost, and it is paid regardless
     of what `root`/`q` turn out to be (`MountGuard.__init__` realpaths the
-    mounts dir and the configured home dirs once, to build its roots list);
+    configured home dirs once, to build its roots list);
     the walk itself, against those already-resolved roots, is pure string
     comparison for every candidate — a MATCH is the free branch and costs
     nothing further, a MISS falls through to `os.path.isdir` (see
@@ -539,10 +538,10 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     (`api_index_rank`'s `_rank_worker`, `run_startup_warm`) and for the tests
     that replace this whole function with a fake (`tests/test_index_search.py`).
 
-    `resolve_query` may stop its walk one segment short of a blocked mount
+    `resolve_query` may stop its walk one segment short of a blocked home
     (SPEC-index-search-wedge.md item C): `base` then lands on the last
     UNBLOCKED ancestor, never on the mount itself, so a caller checking `base`
-    alone for mount-backing would miss it and silently answer as if the
+    alone for a blocked home would miss it and silently answer as if the
     corpus simply doesn't cover that folder. The blocked candidate — a plain
     string, `resolve_query`'s `blocked_out` side channel, no extra syscall —
     is carried out on `out["blocked_query_path"]` so `_rank_reason` can still
@@ -678,7 +677,7 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict,
         of them are on the way.
 
     The mount check is paid only on a miss — it realpaths — and a covered root
-    cannot be mount-backed anyway, since nothing ever indexed one. Both calls
+    cannot be inside a home tree anyway, since nothing ever indexed one. Both calls
     below run on this function's own worker thread (folded into
     `_rank_worker`, off the event loop), so a wedge either one hits is caught
     by item 2's bounded-wait/abandon machinery in `api_index_rank`, not left
@@ -687,12 +686,12 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict,
 
     `out.get("blocked_query_path")` (SPEC-index-search-wedge.md item C) is
     checked FIRST and is free — a plain string `_rank_body`'s walk already
-    refused, no syscall at all — and it is what keeps this answer "mount" for
+    refused, no syscall at all — and it is what keeps this answer "mount" (the wire reason) for
     a typed path that never made it into `base`: the walk stops one segment
-    short of a blocked mount, so `base` itself lands on the last unblocked
-    ancestor and would not, by itself, look mount-backed. Only when that
+    short of a blocked home, so `base` itself lands on the last unblocked
+    ancestor and would not, by itself, look blocked. Only when that
     isn't set does this fall back to `MountGuard.blocks_root(root)`, which
-    covers `root` (here, `base`) actually landing ON or under a mount — the
+    covers `root` (here, `base`) actually landing ON or under a home tree — the
     case a resolved, already-covered-looking base can still be in.
 
     `token`, when given, is checked immediately before the `blocks_root`
@@ -761,10 +760,8 @@ def run_startup_warm() -> None:
     Never raises: it runs on a thread nobody joins."""
     try:
         root = warm_root()
-        # A mount-backed home is refused by the index anyway, so the warm
-        # could only answer `covered: false` — after aiming kernel I/O at a
-        # mount path, which is the one thing this codebase never does
-        # speculatively. Exactly the check `runner.start` makes, and what it
+        # A home-tree root is refused by the index anyway, so the warm
+        # could only answer `covered: false`. Exactly the check `runner.start` makes, and what it
         # guarantees is what matters here: a path INSIDE a fused-render home tree is
         # refused before any syscall touches it (one realpath for the rest).
         if MountGuard().blocks_root(root):
@@ -1491,8 +1488,8 @@ def api_index_scan_folder(body: dict = Body(default={}),
     from a search box, so a refusal it could read as transient becomes a
     keystroke-rate retry loop:
 
-      * `refused` — `runner.start` said no. Mount-backed (structurally, and
-        BEFORE any kernel syscall on the path) or simply not a directory.
+      * `refused` — `runner.start` said no. Inside a fused-render home tree (structurally, and
+        before any kernel syscall on the path) or simply not a directory.
       * `debounced` — scanned inside `SCAN_DEBOUNCE_S`. The startup
         scheduler's own floor, deliberately not a second one: a folder that is
         still uncovered after a scan (the ignore rules exclude it) must not be
@@ -1525,10 +1522,10 @@ def api_index_scan_folder(body: dict = Body(default={}),
     # `index_touch._real_blocked`). Answering "refused" a moment later is
     # worth nothing if getting there hangs the request.
     if MountGuard().blocks(root):
-        logger.info("index: not scanning %s on demand (mount-backed)", root)
+        logger.info("index: not scanning %s on demand (inside a home tree)", root)
         return {"ok": True, "started": False, "why": "refused",
-                "error": f"{root} is mount-backed; indexing remote mounts is "
-                         "not supported",
+                "error": f"{root} is inside a fused-render data folder; it is "
+                         "not indexed",
                 "run_id": None, "root": root}
     # ...and then the filesystem it lives on — see index_touch.foreign_device
     # for that argument. Checked here as well as in the queue because these are

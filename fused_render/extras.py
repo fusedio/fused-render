@@ -2,7 +2,7 @@
 
 The base `pip install fused-render` carries what `fused-render open` needs to
 render one app and run its `runPython` calls. Every other feature group is a
-pyproject extra (`[index]`, `[data]`, `[desktop]`, `[hf]`, `[cloud]`,
+pyproject extra (`[index]`, `[data]`, `[desktop]`, `[hf]`,
 `[fused]`, and `[all]` for every one of them). This module is where the server
 asks whether a group is present:
 
@@ -35,7 +35,6 @@ EXTRAS: dict[str, tuple[str, ...]] = {
     "data": ("pyarrow",),
     "desktop": ("zeroconf",),
     "hf": ("huggingface_hub",),
-    "cloud": ("botocore", "google.auth"),
     "fused": ("boto3", "mcp", "anthropic"),
 }
 

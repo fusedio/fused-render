@@ -177,7 +177,7 @@ def _require_serve_extras() -> None:
 
     `serve` is the whole desktop file explorer, and nearly every panel of it
     stands on some extra (search and Repos on `[index]`, Preferences' Hugging
-    Face login on `[hf]`, private buckets on `[cloud]`, deploy/share/MCP on
+    Face login on `[hf]`, deploy/share/MCP on
     `[fused]`). Booting it on the base install would open a shell that errors
     in half its tabs, so it refuses up front and says what to install.
     `fused-render open` is the command the base install is for.

@@ -51,7 +51,6 @@ _CONDITIONS_CACHE: dict[str, tuple[float, float, dict]] = {}
 def _prefs_mtime() -> float:
     # Local import keeps module import order unchanged; shell never imports
     # server so this direction is safe.
-    from fused_render.shell import storage
     try:
         return os.path.getmtime(os.path.join(storage.home_dir(), "prefs.json"))
     except OSError:
