@@ -242,6 +242,28 @@ def is_super(bot) -> bool:
     return (getattr(bot, "meta", None) or {}).get("kind") == "super"
 
 
+def phone_super(bot) -> bool:
+    """Super Bot running a task that did not start in its chat (a text): its
+    posture is "ask" whatever its settings say (docs §5)."""
+    v = getattr(bot, "task_via", None) or {}
+    return is_super(bot) and (v.get("kind") or "web") != "web"
+
+
+def effective_approval(bot) -> str:
+    """The approval setting this task runs under ("ask" | "auto"): the bot's own,
+    except a phone-started Super Bot task always asks. Never written to meta."""
+    if phone_super(bot):
+        return "ask"
+    return (getattr(bot, "meta", None) or {}).get("approval") or "ask"
+
+
+def effective_build_access(bot) -> str:
+    """Builds' setting for this task ("scoped" | "full"); scoped for a phone-started Super Bot task."""
+    if phone_super(bot):
+        return "scoped"
+    return (getattr(bot, "meta", None) or {}).get("build_access") or "scoped"
+
+
 def roster(bot) -> list[dict]:
     """The tools THIS bot gets this task (docs §6): `tool` only when app
     tools are available, `text`/`texts` only with contacts, `upload` only
@@ -668,7 +690,7 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         return "" if not bot.contact(d) else "An iMessage cannot be unsent."  # unknown contact fails in execute instead
     if act == "build":
         return ("It starts a Claude Code session that writes files and spends model credit"
-                + (", unattended (Builds: full access)." if bot.meta.get("build_access") == "full" else "."))
+                + (", unattended (Builds: full access)." if effective_build_access(bot) == "full" else "."))
     if act == "tool":
         app, name, _ = apptools.tool_ref(d)
         rec = apptools.find(apptools.registry(), app, name)

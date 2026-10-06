@@ -51,6 +51,23 @@ def is_web(v) -> bool:
     return not v or (v.get("kind") or WEB_KIND) == WEB_KIND
 
 
+class Texted(str):
+    """A mid-task message that arrived over a phone channel: a plain str for
+    every reader of `bot.inbox`, plus the `via` it came by. Approval and offer
+    waits never take one as their verdict (approvals are answered at the Mac,
+    docs §10); it still reaches the model as an instruction."""
+    via: dict = {}
+
+    def __new__(cls, text: str, v: dict | None = None):
+        s = super().__new__(cls, text)
+        s.via = dict(v or {})
+        return s
+
+
+def is_texted(s) -> bool:
+    return isinstance(s, Texted)
+
+
 @dataclass(frozen=True)
 class Caps:
     """What a surface can render. The web has everything; a phone has text."""

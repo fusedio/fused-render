@@ -110,7 +110,7 @@ def test_only_chat_starts_an_ea_task(client, ws, monkeypatch):
     assert ran == []
     msgs = [e["text"] for e in b.events_since(0) if e["role"] == "system"]
     assert any("Ignored a task from routine" in m for m in msgs)
-    b.start_task("from a text", origin="imessage")  # a text from the handle set on Super Bot (docs §5)
+    b.start_task("from a text", via={"kind": "imessage", "addr": "+15551234567"})  # a text from the handle set on Super Bot (docs §5)
     b.thread.join(5)
     b.start_task("from the chat")
     b.thread.join(5)

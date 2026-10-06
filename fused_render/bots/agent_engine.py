@@ -70,6 +70,7 @@ STOP_TERM_AFTER_S = 5.0        # Stop: interrupt first, SIGTERM after this, SIGK
 RETRY_SLEEP_S = 2.0            # after a failed model call, before the retry turn (OpenBot slept 2 s)
 THOUGHT_WAIT_S = 1.0          # a tool call waits this long for its own tool_use to be read (thought before action)
 MCP_SERVER = "bot"             # the model sees mcp__bot__<tool>
+HANDOFF_PAST_MARK = "(data from a bot you handed off to)"  # bot.past_conversation's label for a hand-off result
 
 # OpenBot `_YES` / `_NO`: what counts as an approval answer.
 YES = re.compile(r"^\s*(y|yes|yep|yeah|ok|okay|sure|approve|approved|go(?!\s+(to|back|on|and)\b)|go ahead|do it|proceed|confirm|allow)\b", re.I)
@@ -301,7 +302,7 @@ def first_message(bot, task: str, past=None, page: dict | None = None) -> str:
     does not spend its first call on `observe`; its refs are the session's
     current ones (run() took it through _observe)."""
     m = bot.meta
-    appr = "ask before irreversible actions" if (m.get("approval") or "ask") != "auto" else "never ask"
+    appr = "ask before irreversible actions" if tools.effective_approval(bot) != "auto" else "never ask"
     tr = apptools.clean_trusted_apps(m.get("trusted_apps"))
     if tr:
         appr += f" (trusted apps, never ask: {', '.join(tr)})"
@@ -682,6 +683,9 @@ def run(bot, task: str, label: str | None = None) -> None:
         token = register_task(bot)
         sess = session(bot)
         sess.task = label or task
+        if sess.is_super and any(HANDOFF_PAST_MARK in ln or ln.startswith("HAND-OFF NOTE (") for ln in past or []):
+            # A bot's hand-off result is web-derived text now in this task's context: treat it as having read the web.
+            sess.web_touched = True
         model = bot.meta.get("model") or DEFAULT_MODEL
         effort = bot.meta.get("effort") or DEFAULT_EFFORT
         sess.model = model
@@ -1231,9 +1235,10 @@ def _gate(bot, sess: TaskSession, preview: str, why: str, notes: list, raw: list
             return None, ""
         heard = False
         for a in bot._drain_inbox():
-            if verdict is None and YES.match(a):
+            # A texted message is never the verdict (approvals are answered at the Mac, docs §10): an instruction.
+            if verdict is None and not channels.base.is_texted(a) and YES.match(a):
                 verdict = True
-            elif verdict is None and NO.match(a):
+            elif verdict is None and not channels.base.is_texted(a) and NO.match(a):
                 verdict = False  # a plain "no, too expensive" is the verdict, not an instruction (OpenBot _NO)
                 said = a.strip()
             else:
@@ -1265,7 +1270,7 @@ def _act(bot, sess: TaskSession, name: str, args: dict, notes: list | None = Non
                        f"again or the args differ.\n\n{sess.ran_calls[ckey]}")
     pre = []
     why = tools.risk(bot, name, args, obs)
-    if why and (bot.meta.get("approval") or "ask") != "auto":
+    if why and tools.effective_approval(bot) != "auto":
         preview = tools.describe(bot, name, args, obs)
         if preview in sess.denied:
             # Seen live: haiku re-issued a denied click one step later ("the task

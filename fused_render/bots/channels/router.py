@@ -39,6 +39,10 @@ def render(ev: dict, caps: Caps) -> tuple[str, list[str]]:
         text = str(ev["summary"]).strip()  # D11: the bot wrote the phone-sized version itself
     opts = [str(o).strip() for o in (ev.get("options") or []) if str(o).strip()]
     numbered: list[str] = []
+    if ev.get("offer") and not caps.buttons:
+        # An app offer is a yes that starts a build: answered at the Mac, never by a texted number.
+        opts = []
+        text += "\n\nAnswer it in the app."
     if opts and not caps.options:
         numbered = opts
         text += "\n\nReply " + " · ".join(f"{i + 1} {o}" for i, o in enumerate(opts))
