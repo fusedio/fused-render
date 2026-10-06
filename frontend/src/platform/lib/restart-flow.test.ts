@@ -238,7 +238,7 @@ test("every stage has exactly the label the design asked for", () => {
   expect(restartStageLabel("restarting")).toBe("Restarting…");
   expect(restartStageLabel("reconnecting")).toBe("Reconnecting…");
   // The end reuses the reconnected pill's own sentence, verbatim.
-  expect(restartStageLabel("back")).toBe("Reconnected — fused-render is back.");
+  expect(restartStageLabel("back")).toBe("Reconnected — Fused Render is back.");
   // The two non-waits have no word: each hands the surface to something else.
   expect(restartStageLabel("ready")).toBe("");
   expect(restartStageLabel("gave-up")).toBe("");

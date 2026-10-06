@@ -245,10 +245,15 @@ export function OnboardingWizard({ config }: { config: Config }) {
   };
   const back = () => setIndex(index - 1);
 
-  // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the last step: the
-  // composer owns both there (Escape cancels its name prompt, Enter sends).
+  // THE COMPOSER STEP owns its own keys and its own way out — and it is not
+  // always the last step: under Fused Bot the wizard ends on FDA (no app
+  // step), where Next simply finishes and the keys stay live.
+  const composerStep = step.id === "app";
+
+  // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the composer step: it
+  // owns both there (Escape cancels its name prompt, Enter sends).
   useEffect(() => {
-    if (last) return;
+    if (composerStep) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -261,7 +266,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `next` is a per-render closure over index
-  }, [finish, last, index, steps.length]);
+  }, [finish, composerStep, index, steps.length]);
 
   // Step counter on the left, Back/Next hugging the right edge of the content
   // column: the pair reads as one control, so they sit together.
@@ -273,7 +278,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           <ArrowLeft data-icon="inline-start" />
           Back
         </Button>
-        {last ? (
+        {composerStep ? (
           <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
             I'll explore on my own
           </Button>
@@ -285,8 +290,8 @@ export function OnboardingWizard({ config }: { config: Config }) {
             onClick={next}
             title="⌘/Ctrl + Enter"
           >
-            Next
-            <ArrowRight data-icon="inline-end" />
+            {last ? "Finish" : "Next"}
+            {!last && <ArrowRight data-icon="inline-end" />}
           </Button>
         )}
       </div>

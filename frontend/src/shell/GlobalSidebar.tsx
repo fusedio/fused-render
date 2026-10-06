@@ -17,7 +17,7 @@ import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
-import { TOURS, startTour } from "@platform/lib/tours";
+import { availableTours, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
 import { useUrlVersion } from "@platform/lib/hooks";
@@ -681,7 +681,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // The first-run wizard, on demand — its own page (shell/onboarding).
       // Reopening touches neither flag until the user finishes or closes it.
       { href: ONBOARDING_PATH, label: "Setup wizard" },
-      ...TOURS.map((tour) => ({
+      ...availableTours().map((tour) => ({
         href: `/preferences#tour-${tour.id}`,
         label: tour.title,
         // Next frame, not now: driver.js measures its highlight the moment it is

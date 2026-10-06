@@ -351,7 +351,7 @@ test("a press the old app never acted on ends as a dismissible 'couldn't restart
     Date.now = realNow;
   }
   const card = getPopupNotification();
-  expect(card?.title).toBe("fused-render couldn't restart itself");
+  expect(card?.title).toBe("Fused Render couldn't restart itself");
   expect(card?.detail).toContain("menu-bar icon");
   expect(card?.detail).toContain("⌘Q");
   expect(card?.tone).toBe("error");

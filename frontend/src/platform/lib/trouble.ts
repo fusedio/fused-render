@@ -19,6 +19,8 @@
 /** The download page's four troubleshooting tabs, verbatim (`data-err`). */
 export type TroubleKind = "notfound" | "login" | "limit" | "raw";
 
+import { bundleName, displayName } from "@platform/lib/flavor";
+
 export const HELP_BASE = "https://render.fused.io";
 
 /** The install line the download page tells people to run (guide step 1). */
@@ -123,14 +125,14 @@ export function troubleReport(ctx: TroubleContext): string {
   const kind = troubleKind(ctx.error);
   const said = String(ctx.error || "").trim();
   const lines = [
-    "Fused Render — problem report",
+    `${displayName()} — problem report`,
     "",
     `What the app was doing: ${ctx.what}`,
     "",
     ...(said ? ["Error:", said, ""] : []),
   ];
   const facts: string[] = [];
-  if (ctx.version) facts.push(`Fused Render v${ctx.version}`);
+  if (ctx.version) facts.push(`${displayName()} v${ctx.version}`);
   if (ctx.install_root) facts.push(`Installation: ${ctx.install_root}`);
   if (ctx.platform) facts.push(`Platform: ${ctx.platform}`);
   if (ctx.python) facts.push(`Python: ${ctx.python}`);
@@ -182,12 +184,18 @@ export function troubleReport(ctx: TroubleContext): string {
  * unrelated copy — and an agent handed that path goes and edits a copy the app
  * does not run.
  */
-export const FIND_INSTALL_COMMANDS: string[] = [
-  "ls -d /Applications/FusedRender.app ~/Applications/FusedRender.app",
-  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits",
-  "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
-  'dir "%LOCALAPPDATA%\\Programs\\FusedRenderPy"   # Windows',
-];
+//
+// A function, not a constant: the bundle is the flavor's (`FusedBot.app` for
+// Fused Bot, platform/lib/flavor.ts), seeded after this module is evaluated.
+export function findInstallCommands(): string[] {
+  const app = bundleName();
+  return [
+    `ls -d /Applications/${app}.app ~/Applications/${app}.app`,
+    `ls -d /Applications/${app}.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits`,
+    "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
+    `dir "%LOCALAPPDATA%\\Programs\\${app}Py"   # Windows`,
+  ];
+}
 
 /** User data — NOT the installation, and the distinction is load-bearing: a
     reinstall replaces one and never touches the other. It holds the template
@@ -216,7 +224,7 @@ function whereToLook(ctx: TroubleContext): string[] {
       "- I do not know where the app is installed, and little else here is",
       "  actionable without it. Find it first, and say which command answered:"
     );
-    FIND_INSTALL_COMMANDS.forEach((cmd) => lines.push(`    ${cmd}`));
+    findInstallCommands().forEach((cmd) => lines.push(`    ${cmd}`));
   }
   lines.push(
     `- Settings, the template registry and the staged core templates: ${USER_DATA_DIR}`,
@@ -246,12 +254,12 @@ export function troubleInstructions(ctx: TroubleContext): string {
       "Check whether the CLI exists and where: `which claude`, and look in ~/.local/bin and /opt/homebrew/bin.",
       "If it is missing, install it: `curl -fsSL https://claude.ai/install.sh | bash`.",
       "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
-      "Confirm with `claude --version`, then tell me to quit Fused Render and reopen it.",
+      `Confirm with \`claude --version\`, then tell me to quit ${displayName()} and reopen it.`,
     ],
     login: [
       "Confirm the CLI runs: `claude --version`.",
       "Sign in: run `claude`, then `/login`, and complete it in the browser.",
-      "Confirm the session works, then tell me to retry in Fused Render.",
+      `Confirm the session works, then tell me to retry in ${displayName()}.`,
     ],
     limit: [
       "Confirm this is a plan limit rather than a fault — the message should say when it resets.",
@@ -260,13 +268,13 @@ export function troubleInstructions(ctx: TroubleContext): string {
     ],
     raw: [
       "Work out what this error is actually about before changing anything.",
-      "If the app's own server is what failed (a fetch error, a 5xx, a refused connection), check whether fused-render is still running and read the log named above before assuming the app itself is broken.",
+      `If the app's own server is what failed (a fetch error, a 5xx, a refused connection), check whether ${displayName()} is still running and read the log named above before assuming the app itself is broken.`,
       "If it names a path, check whether that path exists and is writable.",
       "Tell me the smallest change that would fix it, and what to check afterwards.",
     ],
   };
   const lines = [
-    "I am using Fused Render (a local file explorer / app builder) and something",
+    `I am using ${displayName()} (a local file explorer / app builder) and something`,
     "around it is broken. Please diagnose and fix it on this machine.",
     "",
     `What the app was doing: ${ctx.what}`,
@@ -280,8 +288,8 @@ export function troubleInstructions(ctx: TroubleContext): string {
       : ["It reported no error message of its own.", ""]),
   ];
   const facts: string[] = [];
-  if (ctx.version) facts.push(`Fused Render version: ${ctx.version}`);
-  if (ctx.install_root) facts.push(`Fused Render is installed at: ${ctx.install_root}`);
+  if (ctx.version) facts.push(`${displayName()} version: ${ctx.version}`);
+  if (ctx.install_root) facts.push(`${displayName()} is installed at: ${ctx.install_root}`);
   if (ctx.platform) facts.push(`Platform: ${ctx.platform}`);
   if (ctx.python) facts.push(`Python: ${ctx.python}`);
   if (facts.length) lines.push(...facts, "");

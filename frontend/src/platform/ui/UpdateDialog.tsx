@@ -28,6 +28,7 @@
 import { useEffect } from "react";
 
 import { Modal } from "@platform/ui/modal/Modal";
+import { displayName } from "@platform/lib/flavor";
 
 export type UpdateDialogProps = {
   kind: "refresh";
@@ -59,7 +60,7 @@ export function UpdateDialog(props: UpdateDialogProps) {
 
   return (
     <Modal
-      title={`fused-render updated to v${props.version}`}
+      title={`${displayName()} updated to v${props.version}`}
       busy
       onClose={() => {}}
       footer={

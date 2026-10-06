@@ -95,7 +95,7 @@ test("stuck names the dropped press and is closable, with no spinner and no retr
   const onDismiss = mock(() => {});
   const onRetry = mock(() => {});
   const r = await mount(<RestartOverlayView stage="stuck" onDismiss={onDismiss} onRetry={onRetry} />);
-  expect(text(r.root.findByType("h2"))).toBe("fused-render couldn't restart itself");
+  expect(text(r.root.findByType("h2"))).toBe("Fused Render couldn't restart itself");
   expect(text(r.root.findByType("p"))).toContain("menu-bar icon");
   expect(text(r.root.findByType("p"))).toContain("⌘Q");
   expect(byClass(r, "restart-spinner").length).toBe(0);

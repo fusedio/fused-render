@@ -32,8 +32,8 @@ import {
 import {
   restartInFlight,
   restartStageLabel,
-  RESTART_STUCK_BODY,
-  RESTART_STUCK_TITLE,
+  restartStuckBody,
+  restartStuckTitle,
   type RestartStage,
 } from "@platform/lib/restart-flow";
 import { requestRestart, restartStageNow, useRestartFlow } from "@platform/lib/restart-store";
@@ -292,8 +292,8 @@ export default function UpdateNotifier(): null {
       // second one would be dropped the same way. Dismissible (the default).
       restartIdRef.current = notify(
         {
-          title: RESTART_STUCK_TITLE,
-          detail: RESTART_STUCK_BODY,
+          title: restartStuckTitle(),
+          detail: restartStuckBody(),
           tone: "error",
           tier: "attention",
           familyKey: UPDATE_RESTART_FAMILY_KEY,

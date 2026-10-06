@@ -186,17 +186,20 @@ def _observe(stages: dict) -> None:
         log.debug("onboarding: fda observe failed", exc_info=True)
 
     # First app: any folder under <fused_dir>/local IS an app the user has.
-    try:
-        from fused_render.shell.seed import fused_dir
+    # Only where the wizard has the step: /api/config is read on every page
+    # load, so a flavor without it (Fused Bot) must not pay the scandir.
+    if "app" in STEPS:
+        try:
+            from fused_render.shell.seed import fused_dir
 
-        local = os.path.join(fused_dir(), "local")
-        if os.path.isdir(local):
-            with os.scandir(local) as it:
-                count = sum(1 for e in it if e.is_dir() and not e.name.startswith("."))
-            if count:
-                put("app", "complete", app_count=count)
-    except Exception:  # noqa: BLE001
-        log.debug("onboarding: app observe failed", exc_info=True)
+            local = os.path.join(fused_dir(), "local")
+            if os.path.isdir(local):
+                with os.scandir(local) as it:
+                    count = sum(1 for e in it if e.is_dir() and not e.name.startswith("."))
+                if count:
+                    put("app", "complete", app_count=count)
+        except Exception:  # noqa: BLE001
+            log.debug("onboarding: app observe failed", exc_info=True)
 
     # Claude Code: the health module's DISK CACHE only — a fresh measure spawns
     # processes, and /api/config is read on every page load. No cache, no say.
@@ -242,6 +245,11 @@ def _observe(stages: dict) -> None:
     # `loaders`, which is about whether the CURRENT runner opens it: an MLX
     # repo on a Mac switched to llama.cpp is downloaded, ticked in the step,
     # and would be walked back to pending here under the stricter test.
+    #
+    # Same gate as the app stage above: no step, no hub_cache import and no
+    # cache-folder stats on every /api/config.
+    if "models" not in STEPS:
+        return
     try:
         from fused_render import jobs
         from fused_render.ai import hub_cache, supervisor
@@ -307,7 +315,14 @@ def seed_for_existing_users(fused_ws: str) -> None:
     """One-shot at startup: an install that already has apps under
     <fused_dir>/local predates this wizard — mark it completed so an upgrade
     never greets a returning user with a first-run screen. No-op once any
-    flag is set; never raises (a startup chore, not a gate)."""
+    flag is set; never raises (a startup chore, not a gate).
+
+    Not under Fused Bot: `~/Fused` is shared with Fused Render, so a Render
+    user's apps would stamp Bot's wizard completed on its first launch and
+    skip the claude + fda steps — and Full Disk Access is per bundle id, so
+    the bot needs its own grant walked through."""
+    if _flavor.is_bot():
+        return
     try:
         state = _read()
         if state.get("completed_at") is not None or state.get("dismissed_at") is not None:

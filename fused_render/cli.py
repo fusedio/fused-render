@@ -32,6 +32,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
+from fused_render import _flavor
 from fused_render._branch import branch_port, branch_ref
 from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 from fused_render.shell.seed import ensure_fused_dir, fused_dir
@@ -314,15 +315,16 @@ def _free_port() -> int:
 
 # The two shapes `open` recognizes as "clone this from GitHub" rather than
 # "open this local path": a plain repo/tree URL, and the deep link the
-# desktop app's own `fused-render://open?git=…` handler accepts (D110).
-# Matched by prefix, case-insensitively, same as deeplink.github_url_from.
+# desktop app's own `<scheme>://open?git=…` handler accepts (D110; the scheme
+# is the flavor's, fused-render:// or fused-bot://). Matched by prefix,
+# case-insensitively, same as deeplink.github_url_from.
 _GITHUB_TARGET_PREFIXES = (
     "https://github.com/",
     "http://github.com/",
     "https://www.github.com/",
     "http://www.github.com/",
-    "fused-render://open?git=",
-    "fused-render://open/?git=",
+    f"{_flavor.scheme()}://open?git=",
+    f"{_flavor.scheme()}://open/?git=",
 )
 
 

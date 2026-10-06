@@ -5,9 +5,10 @@
 // one-time setup is done (its *_status tool, read by GET /api/bot-apps/starters/status after the panel is drawn) and an
 // Update button when a newer version ships (confirmed: a build may have edited the installed copy).
 import type { Starter } from "../lib/api";
+import { displayName } from "@platform/lib/flavor";
 
 /** Where OpenBot's strings say "OpenBot": the product the starters ship with here. */
-export const SHIPS_WITH = "Fused Render";
+export const shipsWith = (): string => displayName();
 
 /** A starter as the panel holds it: `ready` is null until the status call says otherwise (or when it cannot tell). */
 export type StarterRow = Starter & { ready: boolean | null };
@@ -41,7 +42,7 @@ export type StarterKind = "install" | "update";
 /** The card's Update button, only when a newer version ships than the one installed. */
 export function updateButton(s: Pick<StarterRow, "installed" | "update" | "version">): { label: string; title: string } | null {
   if (!s.installed || !s.update) return null;
-  return { label: "Update", title: `Replace the installed files with the version that ships with ${SHIPS_WITH} (v${s.version})` };
+  return { label: "Update", title: `Replace the installed files with the version that ships with ${shipsWith()} (v${s.version})` };
 }
 
 /** The busy label while an install / update runs. */
@@ -50,5 +51,5 @@ export const busyLabel = (kind: StarterKind): string => (kind === "update" ? "Up
 /** The Update confirm (askConfirm title, text). */
 export const updateConfirm = (s: Pick<StarterRow, "name" | "dir" | "version">): [string, string] => [
   `Update ${s.name}?`,
-  `This replaces the app's files under ${s.dir} with the ones that ship with ${SHIPS_WITH} (v${s.version}). Edits a build made to that copy are lost; its saved key and library under .fused/ stay.`,
+  `This replaces the app's files under ${s.dir} with the ones that ship with ${shipsWith()} (v${s.version}). Edits a build made to that copy are lost; its saved key and library under .fused/ stay.`,
 ];

@@ -88,7 +88,7 @@ import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
-import { isBot } from "@platform/lib/flavor";
+import { displayName, isBot } from "@platform/lib/flavor";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -920,7 +920,7 @@ function TaskNotifyTerminalSection({
     <section className="prefs-section">
       <h2>Tasks: notify when terminal sessions finish</h2>
       <p className="deploy-muted">
-        fused-render can't always tell every headless Claude session apart from its own — this
+        {displayName()} can&rsquo;t always tell every headless Claude session apart from its own — this
         also raises finished-task notifications for a Claude session you started by hand in a
         terminal.
       </p>
@@ -971,7 +971,7 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
     <section className="prefs-section">
       <h2>Native windows</h2>
       <p className="deploy-muted">
-        Open Fused Render in its own windows instead of browser tabs: a window per app, with
+        Open {displayName()} in its own windows instead of browser tabs: a window per app, with
         native window controls. On by default. Turning it off closes the open windows and the app
         opens everything in your default browser instead.
       </p>
