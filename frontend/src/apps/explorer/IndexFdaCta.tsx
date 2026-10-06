@@ -20,7 +20,7 @@
 import { useState } from "react";
 
 import { openFdaSettings } from "@platform/lib/api";
-import { FDA_COPY, RELAUNCH_HREF, pokeFda, useFda } from "@platform/lib/fda";
+import { fdaCopy, relaunchHref, pokeFda, useFda } from "@platform/lib/fda";
 
 export const SEARCH_FDA_COPY = {
   blocked:
@@ -54,12 +54,12 @@ export function IndexFdaCta({
         {pending ? copy.pending : copy.blocked}
       </span>
       {pending ? (
-        <a className="btn btn-secondary fh-index-cta-btn" href={RELAUNCH_HREF}>
-          {FDA_COPY.relaunch}
+        <a className="btn btn-secondary fh-index-cta-btn" href={relaunchHref()}>
+          {fdaCopy().relaunch}
         </a>
       ) : (
         <button type="button" className="btn btn-secondary fh-index-cta-btn" onClick={open}>
-          {opened ? FDA_COPY.reopen : FDA_COPY.open}
+          {opened ? fdaCopy().reopen : fdaCopy().open}
         </button>
       )}
     </div>

@@ -68,6 +68,7 @@ import os
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render import _flavor
 from fused_render.shell import storage
 
 router = APIRouter()
@@ -186,7 +187,13 @@ def bots_enabled() -> bool:
     answering while this is off (a bookmark or a bot's own link survives the
     toggle), and `/home` keeps answering by URL while it is on. Only a stored
     `true` turns it on.
+
+    Always on under the Fused Bot flavor (`_flavor.is_bot()`): Bots IS that
+    app's front door, so the preference is not a preference there — the
+    getter says true and PUT /api/prefs ignores writes to it.
     """
+    if _flavor.is_bot():
+        return True
     return read_prefs().get("bots_enabled") is True
 
 
@@ -860,7 +867,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'canvases_enabled' must be a boolean"}, status_code=400)
         prefs["canvases_enabled"] = value
         changed = True
-    if "bots_enabled" in body:
+    if "bots_enabled" in body and not _flavor.is_bot():
+        # Under the bot flavor the key is accepted and dropped: the front door
+        # is fixed there (`bots_enabled`), so the response simply reports it.
         value = body.get("bots_enabled")
         if not isinstance(value, bool):
             return JSONResponse({"error": "'bots_enabled' must be a boolean"}, status_code=400)

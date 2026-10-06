@@ -32,7 +32,8 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
   Replacing the bundle under a running process is the SUPPORTED existing flow
   (a manual DMG drag does exactly this): installed.installed_version() then
   drifts from __version__, ServerStatusBanner raises the restart dialog, and
-  fused-render://relaunch (app.begin_relaunch) respawns from disk. That
+  <scheme>://relaunch (app.begin_relaunch; fused-render:// or fused-bot://
+  per flavor) respawns from disk. That
   relaunch guard REQUIRES the drift, which is why the swap happens on install
   rather than being deferred to quit.
 
@@ -63,7 +64,8 @@ import tempfile
 import threading
 import time
 
-from fused_render import __version__, jobs
+from fused_render import __version__, _flavor, jobs
+from fused_render._branch import branch_suffix
 from fused_render.update import common
 # The shared state machine lives in its own module, `_manager.py`, named
 # with a leading underscore (not `manager.py`) precisely so it cannot collide
@@ -82,8 +84,14 @@ logger = logging.getLogger("fused_render.update")
 # key, so redirecting the URL alone cannot feed the updater different bytes.
 MANIFEST_URL = os.environ.get(
     "FUSED_RENDER_UPDATE_MANIFEST_URL",
-    "https://d2ic19jpchjovp.cloudfront.net/fused-render-macos/latest.json")
-CASK_NAME = "fused-render"
+    f"https://d2ic19jpchjovp.cloudfront.net/{_flavor.release_prefix()}-macos/latest.json")
+# "" when the flavor has no Homebrew cask (Fused Bot): `detect_method` then
+# never asks brew and every install goes the DMG way.
+CASK_NAME = _flavor.cask()
+# The installed bundle's name, branch suffix included: `FusedRender.app`,
+# `FusedBot-feature.app`. Names the /Applications target and the swap's
+# hidden siblings below.
+_BUNDLE_NAME = _flavor.app_name() + branch_suffix()
 # GUI apps launch with a bare PATH, so brew is probed at its two fixed homes
 # (Apple Silicon, then Intel) rather than through the environment.
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
@@ -113,7 +121,7 @@ _DISK_SPACE_FACTOR = _base._DISK_SPACE_FACTOR
 # the delay only keeps the manifest fetch out of a booting process's first
 # tick. Every check after it is common.CHECK_INTERVAL_S (5 min) apart.
 MAC_STARTUP_DELAY_S = 1.0
-_DOWNLOAD_PREFIX = "FusedRender-"
+_DOWNLOAD_PREFIX = _flavor.app_name() + "-"
 _DOWNLOAD_SUFFIX = ".dmg"
 
 
@@ -142,6 +150,8 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     DMG path, not a brew upgrade that replaces a different install."""
     if bundle is None:
         return "none"
+    if not CASK_NAME:
+        return "dmg"
     if brew is None:
         brew = find_brew()
     if brew is None:
@@ -162,7 +172,7 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     # The cask's `app` artifact moves the bundle to /Applications; `brew list`
     # output shapes vary across brew versions, so accept the conventional
     # target too when the listing didn't name the bundle directly.
-    if bundle_real == os.path.realpath("/Applications/FusedRender.app"):
+    if bundle_real == os.path.realpath(f"/Applications/{_BUNDLE_NAME}.app"):
         return "brew"
     return "dmg"
 
@@ -329,7 +339,7 @@ class UpdateManager(_base.UpdateManager):
         beat.start()
         mount = None
         old = None
-        swap_in = os.path.join(parent, ".FusedRender-update.app")
+        swap_in = os.path.join(parent, f".{_BUNDLE_NAME}-update.app")
         try:
             mount = self._attach(dmg)
             source = self._find_app(mount)
@@ -346,7 +356,7 @@ class UpdateManager(_base.UpdateManager):
             # The swap: both renames happen inside `parent` so each is atomic
             # on the volume; the running process keeps its open files on the
             # old inode (same situation as a manual DMG drag / brew upgrade).
-            old = os.path.join(parent, f".FusedRender-old-{os.getpid()}.app")
+            old = os.path.join(parent, f".{_BUNDLE_NAME}-old-{os.getpid()}.app")
             os.rename(bundle, old)
             try:
                 os.rename(swap_in, bundle)

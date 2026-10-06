@@ -29,8 +29,9 @@
 import { useEffect, useRef, useState } from "react";
 
 import { dismissFdaNudge, openFdaSettings } from "@platform/lib/api";
-import { FDA_COPY, RELAUNCH_HREF, pokeFda, useFda } from "@platform/lib/fda";
+import { fdaCopy, relaunchHref, pokeFda, useFda } from "@platform/lib/fda";
 import { notify } from "@platform/lib/notifications";
+import { bundleName } from "@platform/lib/flavor";
 
 //: One toast per DENIAL EPISODE, not per tab lifetime: the strip re-detects
 //: `denied` on every remount, so the flag suppresses repeats — but a
@@ -55,7 +56,7 @@ export function FdaStrip() {
       wasShowing.current = true;
       if (!toastShown) {
         toastShown = true;
-        notify({ title: FDA_COPY.deniedToast, tone: "error" });
+        notify({ title: fdaCopy().deniedToast, tone: "error" });
       }
       return;
     }
@@ -69,7 +70,7 @@ export function FdaStrip() {
       wasShowing.current = false;
       // "info" is this app's confirmation tone — there is no green toast
       // (Toast.tsx), and every other success ("Path copied") is info too.
-      notify({ title: FDA_COPY.grantedToast, tone: "info" });
+      notify({ title: fdaCopy().grantedToast, tone: "info" });
     }
   }, [showing, fda]);
 
@@ -90,7 +91,7 @@ export function FdaStrip() {
         {/* Says what is still needed, not that something is broken — same
             posture as ClaudeHealthStrip (SPEC §42: "Nothing red"). */}
         <h2 className="claude-health-title">
-          {pending ? "Relaunch to finish Full Disk Access" : "Give FusedRender Full Disk Access"}
+          {pending ? "Relaunch to finish Full Disk Access" : `Give ${bundleName()} Full Disk Access`}
         </h2>
         <div className="claude-health-head-actions">
           <button
@@ -108,28 +109,28 @@ export function FdaStrip() {
         <li className="claude-health-issue">
           {pending ? (
             <>
-              <p className="claude-health-issue-detail">{FDA_COPY.pending}</p>
+              <p className="claude-health-issue-detail">{fdaCopy().pending}</p>
               <div className="claude-health-actions">
-                <a className="claude-health-action" href={RELAUNCH_HREF}>
-                  {FDA_COPY.relaunch}
+                <a className="claude-health-action" href={relaunchHref()}>
+                  {fdaCopy().relaunch}
                 </a>
               </div>
             </>
           ) : (
             <>
               <p className="claude-health-issue-detail">
-                macOS just refused FusedRender access to a file or folder —
+                macOS just refused {bundleName()} access to a file or folder —
                 sometimes it does this with no permission prompt at all, just
                 "permission denied". Granting Full Disk Access once fixes Desktop,
-                Documents, Downloads and external volumes permanently. FusedRender
+                Documents, Downloads and external volumes permanently. {bundleName()}
                 is completely local: your files are read on this Mac and no data
                 ever leaves your computer.
               </p>
               {waiting ? (
-                <p className="claude-health-issue-detail">{FDA_COPY.waiting}</p>
+                <p className="claude-health-issue-detail">{fdaCopy().waiting}</p>
               ) : (
                 <ol className="claude-health-issue-detail fda-steps">
-                  {FDA_COPY.steps.map((s) => (
+                  {fdaCopy().steps.map((s) => (
                     <li key={s}>{s}</li>
                   ))}
                 </ol>
@@ -143,7 +144,7 @@ export function FdaStrip() {
                     openFdaSettings().catch(() => {}).finally(pokeFda);
                   }}
                 >
-                  {waiting ? FDA_COPY.reopen : FDA_COPY.open}
+                  {waiting ? fdaCopy().reopen : fdaCopy().open}
                 </button>
               </div>
             </>

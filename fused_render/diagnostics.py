@@ -53,6 +53,8 @@ import tempfile
 import time
 import zipfile
 
+from fused_render import _flavor
+
 logger = logging.getLogger(__name__)
 
 SCHEMA = 1
@@ -89,8 +91,8 @@ EXCLUDED_NAMES = (
 )
 
 #: Process names whose crash reports / ps lines are ours.
-_PS_NEEDLES = ("FusedRender", "fused_render", "fused-render", "fused-apple-ai",
-               "claude")
+_PS_NEEDLES = (_flavor.app_name(), "fused_render", _flavor.app_support_name(),
+               "fused-apple-ai", "claude")
 _REDACT_KEY = re.compile(r"token|secret|key|password|credential", re.I)
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -115,7 +117,8 @@ def _default_out_dir() -> str:
 
 
 def _bundle_executable() -> str:
-    """`CFBundleExecutable` of the bundle we run from, else "FusedRender".
+    """`CFBundleExecutable` of the bundle we run from, else the flavor's
+    app name ("FusedRender" / "FusedBot").
     Read here rather than via `app.bundle_executable` — app.py imports
     uvicorn and AppKit-adjacent modules, and the CLI path must stay light."""
     exe = os.path.abspath(sys.executable)
@@ -129,7 +132,7 @@ def _bundle_executable() -> str:
                 return name
         except (OSError, plistlib.InvalidFileException, ValueError):
             pass
-    return "FusedRender"
+    return _flavor.app_name()
 
 
 def _window_start(since_s: float | None, now: float) -> float:
@@ -681,7 +684,7 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
       `memorystatus:` lines (jetsam kills — kernel sender, so `CONTAINS` is
       unavoidable), the memorystatus subsystem, RunningBoard assertions for
       the app (App Nap), and the Swift helper. NOT `process == "python"` or a
-      bare `process == "FusedRender"`: measured at 7 MB and 27 MB per 2 h of
+      bare `process == "<app>"`: measured at 7 MB and 27 MB per 2 h of
       WebKit chatter that buried the dozen lines that matter.
     * The window is read in `LOG_SHOW_CHUNK_S` slices, NEWEST FIRST, against
       one shared deadline. `log show` emits oldest-first, so a single query
@@ -693,7 +696,7 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
     source = "log show"
     predicate = ('(sender == "kernel" AND eventMessage CONTAINS "memorystatus") OR '
                  'subsystem == "com.apple.memorystatus" OR '
-                 '(process == "FusedRender" AND subsystem == "com.apple.runningboard") OR '
+                 f'(process == "{_flavor.app_name()}" AND subsystem == "com.apple.runningboard") OR '
                  'process == "fused-apple-ai"')
     span = min(now - window_start, LOG_SHOW_MAX_SPAN_S)
     deadline = time.monotonic() + LOG_SHOW_TIMEOUT_S

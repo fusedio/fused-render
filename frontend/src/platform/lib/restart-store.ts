@@ -39,6 +39,7 @@
 // The state machine itself is `restart-flow.ts` and is pure; nothing here
 // decides what a probe means.
 import { useSyncExternalStore } from "react";
+import { deepLinkScheme } from "@platform/lib/flavor";
 
 import {
   initialRestart,
@@ -53,10 +54,15 @@ import {
 /** The deep link. `fused_render/deeplink.py` accepts it payload-free by
  *  definition; the OS hands it to the running app, which quits through the
  *  normal teardown (`app.begin_relaunch`) and respawns from the bundle now on
- *  disk. NOT `fda.ts`'s `RELAUNCH_HREF` — that one carries `?reason=fda` and
+ *  disk. NOT `fda.ts`'s `relaunchHref()` — that one carries `?reason=fda` and
  *  respawns the SAME version to pick up a Full Disk Access grant, which is a
- *  different action with a different story on screen. */
-export const RELAUNCH_HREF = "fused-render://relaunch";
+ *  different action with a different story on screen.
+ *
+ *  A function, not a constant: the scheme is the flavor's (`fused-bot://` for
+ *  Fused Bot, platform/lib/flavor.ts), seeded after this module is evaluated. */
+export function relaunchHref(): string {
+  return `${deepLinkScheme()}://relaunch`;
+}
 
 export const RESTART_CHANNEL_NAME = "fused-render:restart";
 export const RESTART_STORAGE_KEY = "fused_restart_requested_at";
@@ -427,7 +433,7 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
       } catch {
         // A channel closed under us — the record above still carries it.
       }
-      h.navigate(RELAUNCH_HREF);
+      h.navigate(relaunchHref());
     },
     noteRestartProbe(probe) {
       start();

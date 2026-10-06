@@ -61,6 +61,7 @@ import time
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
+from fused_render import _flavor
 from fused_render.shell import prefs, storage
 
 log = logging.getLogger(__name__)
@@ -76,8 +77,11 @@ _KEY = "onboarding"
 
 #: The wizard's step ids (frontend shell/onboarding/OnboardingWizard STEPS).
 #: A closed set: prefs.json is shared state, and an unknown id is refused
-#: rather than stored.
-STEPS = ("about", "claude", "fda", "models", "app")
+#: rather than stored. Fused Bot has no local-models step and no first-app
+#: step (it does not build apps), so there the set is three — `_observe`
+#: keys off the same tuple, so neither stage ever enters the meter's count.
+STEPS = (("about", "claude", "fda") if _flavor.is_bot()
+         else ("about", "claude", "fda", "models", "app"))
 
 #: Stage statuses. `n/a` = the machine has no such step; it is not counted.
 STATUSES = ("pending", "partial", "complete", "n/a")
@@ -151,6 +155,8 @@ def _observe(stages: dict) -> None:
     wizard wrote it. Never raises — a meter must not take /api/config down."""
 
     def put(sid: str, status: str, **meta: object) -> None:
+        if sid not in STEPS:  # a step this flavor's wizard does not have
+            return
         rec = stages.get(sid) or {"status": "pending", "meta": {}, "updated_at": None}
         if rec["status"] == status and all(rec["meta"].get(k) == v for k, v in meta.items()):
             stages.setdefault(sid, rec)

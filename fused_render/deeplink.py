@@ -58,6 +58,7 @@ from urllib.parse import quote, unquote, urlsplit
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
+from fused_render import _flavor
 from fused_render._view_url_codec import canonical_fs_path, normpath_for_shape
 from fused_render._view_url_codec import view_url_path as _view_url_path
 
@@ -87,9 +88,15 @@ router = APIRouter()
 # The action is host-position ("open"), payloads are query params — `?git=`
 # today; future payload kinds (a hosted page, a single file, …) become new
 # params on the same action instead of new grammar (owner call, D110).
-_OPEN_PREFIXES = ("fused-render://open?git=", "fused-render://open/?git=")
-_OPEN_FILE_PREFIXES = ("fused-render://open?file=", "fused-render://open/?file=")
-_OPEN_URL_PREFIXES = ("fused-render://open?url=", "fused-render://open/?url=")
+#
+# The scheme is the flavor's (`_flavor.scheme()`: `fused-render` for Fused
+# Render, `fused-bot` for Fused Bot — each bundle registers only its own in
+# CFBundleURLTypes). Every accepted form below is built from it, so the two
+# apps never claim each other's links.
+_SCHEME = _flavor.scheme()
+_OPEN_PREFIXES = (f"{_SCHEME}://open?git=", f"{_SCHEME}://open/?git=")
+_OPEN_FILE_PREFIXES = (f"{_SCHEME}://open?file=", f"{_SCHEME}://open/?file=")
+_OPEN_URL_PREFIXES = (f"{_SCHEME}://open?url=", f"{_SCHEME}://open/?url=")
 
 # The launch action (D128) is payload-free by definition: any query or extra
 # path makes the link NOT a launch link (strictness keeps the grammar clean —
@@ -98,7 +105,7 @@ _OPEN_URL_PREFIXES = ("fused-render://open?url=", "fused-render://open/?url=")
 # `fused-render:launch` (no slashes) is included because some carriers strip
 # the empty authority from an opaque scheme URL.
 _LAUNCH_FORMS = frozenset(
-    {"fused-render://launch", "fused-render://launch/", "fused-render:launch"}
+    {f"{_SCHEME}://launch", f"{_SCHEME}://launch/", f"{_SCHEME}:launch"}
 )
 
 # The relaunch action: quit the running app and respawn it from the bundle on
@@ -106,7 +113,7 @@ _LAUNCH_FORMS = frozenset(
 # button, server-status.ts). Payload-free under the same strictness rules as
 # launch above.
 _RELAUNCH_FORMS = frozenset(
-    {"fused-render://relaunch", "fused-render://relaunch/", "fused-render:relaunch"}
+    {f"{_SCHEME}://relaunch", f"{_SCHEME}://relaunch/", f"{_SCHEME}:relaunch"}
 )
 
 # The relaunch action's one payload (D110: payloads are query params on the
@@ -117,9 +124,9 @@ _RELAUNCH_FORMS = frozenset(
 # version differs). Exact forms, not a parser: the payload has one legal value.
 _RELAUNCH_FDA_FORMS = frozenset(
     {
-        "fused-render://relaunch?reason=fda",
-        "fused-render://relaunch/?reason=fda",
-        "fused-render:relaunch?reason=fda",
+        f"{_SCHEME}://relaunch?reason=fda",
+        f"{_SCHEME}://relaunch/?reason=fda",
+        f"{_SCHEME}:relaunch?reason=fda",
     }
 )
 
@@ -185,11 +192,11 @@ def github_url_from(src: str) -> str:
             src = src[len(prefix):]
             break
     else:
-        if low.startswith("fused-render:"):
+        if low.startswith(f"{_SCHEME}:"):
             raise DeeplinkError(
-                "unsupported fused-render link (expected fused-render://open?git=…, "
-                "fused-render://open?file=…, fused-render://open?url=… or "
-                f"fused-render://launch): {src}"
+                f"unsupported {_SCHEME} link (expected {_SCHEME}://open?git=…, "
+                f"{_SCHEME}://open?file=…, {_SCHEME}://open?url=… or "
+                f"{_SCHEME}://launch): {src}"
             )
     if not src.lower().startswith(("https://", "http://")) and "%" in src:
         # Some carriers (browser address bars, chat apps) percent-encode the

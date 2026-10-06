@@ -55,6 +55,15 @@ export interface Config {
    *  `/bots` and the sidebar's Home row gives way to Bots. In config so the
    *  shell can decide the front door synchronously at first render. */
   bots_enabled?: boolean;
+  /** Which app this build is wearing (fused_render/flavor.py): "render" is
+   *  Fused Render, "bot" is Fused Bot, built from the same repo. Read through
+   *  platform/lib/flavor.ts, seeded before the first render. Absent on an
+   *  older server = render. */
+  flavor?: "render" | "bot";
+  /** The deep-link scheme the running app answers: `fused-render` / `fused-bot`. */
+  scheme?: string;
+  /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
+  display_name?: string;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable

@@ -37,6 +37,7 @@ import {
   type RestartStage,
 } from "@platform/lib/restart-flow";
 import { requestRestart, restartStageNow, useRestartFlow } from "@platform/lib/restart-store";
+import { displayName } from "@platform/lib/flavor";
 import { installUpdate, useUpdateStatus } from "@platform/lib/update-status";
 
 // `sessionStorage`, not `localStorage` (spec, Notification #2's own
@@ -304,7 +305,7 @@ export default function UpdateNotifier(): null {
     if (flow.stage === "gave-up") {
       restartIdRef.current = notify(
         {
-          title: "fused-render didn't come back",
+          title: `${displayName()} didn't come back`,
           detail: "Try restarting again from here, or reopen the app yourself.",
           tone: "error",
           tier: "attention",
@@ -317,7 +318,7 @@ export default function UpdateNotifier(): null {
     }
     restartIdRef.current = notify(
       {
-        title: "Restarting fused-render",
+        title: `Restarting ${displayName()}`,
         detail: inFlightLabel(flow.stage, status?.latest_version ?? null),
         tier: "attention",
         familyKey: UPDATE_RESTART_FAMILY_KEY,
@@ -355,7 +356,7 @@ export default function UpdateNotifier(): null {
       if (!restartInFlight(stage)) return; // resolved between ticks — the stage-change effect above already repainted it
       restartIdRef.current = notify(
         {
-          title: "Restarting fused-render",
+          title: `Restarting ${displayName()}`,
           detail: inFlightLabel(stage, status?.latest_version ?? null),
           tier: "attention",
           familyKey: UPDATE_RESTART_FAMILY_KEY,

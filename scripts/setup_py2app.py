@@ -1,4 +1,8 @@
-"""py2app build spec for FusedRender.app (SPEC D33-D35).
+"""py2app build spec for FusedRender.app / FusedBot.app (SPEC D33-D35).
+
+Which one is decided by the product flavor (fused_render/_flavor.py,
+FUSED_RENDER_FLAVOR): bundle id, name, URL scheme and the TCC purpose strings
+all come from it; the branch suffix nests inside.
 
 Invoked by build_dmg.sh as:
     python scripts/setup_py2app.py py2app --dist-dir <dir>
@@ -27,7 +31,11 @@ import os
 import re
 import sys
 
+from fused_render import _flavor
 from fused_render._branch import branch_ref, branch_suffix
+
+# `FusedRender` / `FusedBot`, no suffix — the brand every string below spells.
+_APP = _flavor.app_name()
 
 # `setuptools` is imported lazily inside the build guard below: this module must
 # stay importable by tests/test_bundle_contents.py, which runs in the plain test
@@ -346,7 +354,8 @@ DOCUMENT_TYPES = [
     {
         # `.fused` is our own single-file app format (SPEC §43, D385): declare
         # the UTI below and claim Owner rank so a Finder double-click always
-        # opens FusedRender on the /openfused confirm page.
+        # opens FusedRender on the /openfused confirm page. Render only: a
+        # bot build declares no document types at all (see the plist).
         "CFBundleTypeName": "FusedRender app",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Owner",
@@ -549,32 +558,37 @@ OPTIONS = {
     # `may_log_missing` consults) rather than widening this flag.
     "no_report_missing_conditional_import": True,
     "plist": {
-        "CFBundleIdentifier": "io.fused.render" + (f".{branch_ref()}" if branch_ref() else ""),
-        "CFBundleName": f"FusedRender{branch_suffix()}",
-        "CFBundleDisplayName": f"FusedRender{branch_suffix()}",
+        "CFBundleIdentifier": _flavor.bundle_id() + (f".{branch_ref()}" if branch_ref() else ""),
+        "CFBundleName": f"{_APP}{branch_suffix()}",
+        "CFBundleDisplayName": f"{_APP}{branch_suffix()}",
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
-        # Finder "Open with FusedRender" (SPEC DM-8):
-        "CFBundleDocumentTypes": DOCUMENT_TYPES,
-        # fused-render:// deep links (SPEC §26, D110): delivered to
-        # application:openURLs: in app.py. Scheme deliberately NOT
-        # branch-suffixed (same rationale as the .fused UTI below): every
-        # build speaks the same links, LaunchServices picks one handler.
+        # Finder "Open with FusedRender" (SPEC DM-8). Render only: FusedBot
+        # is not a file viewer and must not compete for `.fused` (Render
+        # stays the Owner) or any previewable extension.
+        "CFBundleDocumentTypes": [] if _flavor.is_bot() else DOCUMENT_TYPES,
+        # fused-render:// / fused-bot:// deep links (SPEC §26, D110):
+        # delivered to application:openURLs: in app.py. Scheme deliberately
+        # NOT branch-suffixed (same rationale as the .fused UTI below): every
+        # build of a flavor speaks the same links, LaunchServices picks one
+        # handler.
         "CFBundleURLTypes": [
             {
-                "CFBundleURLName": "io.fused.render.deeplink",
-                "CFBundleURLSchemes": ["fused-render"],
+                "CFBundleURLName": _flavor.bundle_id() + ".deeplink",
+                "CFBundleURLSchemes": [_flavor.scheme()],
             }
         ],
         # No other app defines `.fused`, so export the UTI ourselves —
         # without this, LaunchServices treats the extension as dynamic data
         # and the Owner rank above binds unreliably. Identifier deliberately
         # NOT branch-suffixed: every FusedRender build describes the same
-        # file format, even though only one can be the Finder default.
-        "UTExportedTypeDeclarations": [
+        # file format, even though only one can be the Finder default. The
+        # bot build exports nothing: it does not open the format, and a
+        # second declaration of the same UTI would only confuse LaunchServices.
+        "UTExportedTypeDeclarations": [] if _flavor.is_bot() else [
             # `.fused` (SPEC §43, D385): physically a zip, but conforming to
             # public.data (not public.zip-archive) keeps Archive Utility and
             # friends from claiming it.
@@ -592,19 +606,19 @@ OPTIONS = {
         # signing (D73) are what stop it from repeating — but a bare prompt
         # with no reason reads as suspicious; these explain it.
         "NSDesktopFolderUsageDescription": (
-            "FusedRender previews files you open from your Desktop."
+            f"{_APP} previews files you open from your Desktop."
         ),
         "NSDocumentsFolderUsageDescription": (
-            "FusedRender previews files you open from your Documents folder."
+            f"{_APP} previews files you open from your Documents folder."
         ),
         "NSDownloadsFolderUsageDescription": (
-            "FusedRender previews files you open from your Downloads folder."
+            f"{_APP} previews files you open from your Downloads folder."
         ),
         "NSRemovableVolumesUsageDescription": (
-            "FusedRender previews files you open from removable volumes."
+            f"{_APP} previews files you open from removable volumes."
         ),
         "NSNetworkVolumesUsageDescription": (
-            "FusedRender previews files you open from network volumes."
+            f"{_APP} previews files you open from network volumes."
         ),
         # `fused.capture.audio` / a screen recording with `audio: "mic"`
         # (SPEC §45). REQUIRED, not decorative: an app that touches the
@@ -612,7 +626,7 @@ OPTIONS = {
         # rather than prompted. Screen recording has no matching key — that
         # grant lives only in System Settings.
         "NSMicrophoneUsageDescription": (
-            "FusedRender records the microphone when a page you opened asks it "
+            f"{_APP} records the microphone when a page you opened asks it "
             "to — a voice note, or narration over a screen recording."
         ),
         # The app's own windows are WKWebViews (mac_window.py) that GRANT a
@@ -621,10 +635,10 @@ OPTIONS = {
         # strings. REQUIRED like the microphone one: an app that touches the
         # camera or location without its usage string is killed, not asked.
         "NSCameraUsageDescription": (
-            "FusedRender uses the camera when a page you opened asks for it."
+            f"{_APP} uses the camera when a page you opened asks for it."
         ),
         "NSLocationWhenInUseUsageDescription": (
-            "FusedRender uses your location when a page you opened asks for it."
+            f"{_APP} uses your location when a page you opened asks for it."
         ),
     },
 }
@@ -634,7 +648,7 @@ if _BUILDING:
 
     setup(
         app=APP,
-        name=f"FusedRender{branch_suffix()}",
+        name=f"{_APP}{branch_suffix()}",
         version=VERSION,
         options={"py2app": OPTIONS},
         # py2app is already installed into the build venv directly (see

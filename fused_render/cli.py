@@ -292,10 +292,11 @@ def _run_serve(args: argparse.Namespace) -> None:
     app.state.uvicorn_server = server
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; this loopback bind is not touched.
-    from fused_render import lan
+    from fused_render import _flavor, lan
 
     lan.attach(app)
-    lan.start_if_enabled()
+    if not _flavor.is_bot():  # Fused Bot has no LAN sharing surface
+        lan.start_if_enabled()
     server.run()
 
 

@@ -34,6 +34,7 @@ import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
+import { bundleName, isBot } from "@platform/lib/flavor";
 
 import {
   firstOpenStage,
@@ -131,9 +132,16 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (health?.platform && health.platform !== "darwin") reportStage("fda", "n/a", { platform: health.platform });
   }, [health?.platform]);
   useEffect(() => {
+    if (isBot()) return;
     if (picks !== null && picks.length === 0) reportStage("models", "n/a", { offered: 0 });
   }, [picks]);
   const steps = STEPS.filter((s) => {
+    // Fused Bot's server has no models/app steps at all (progress.stageIds):
+    // dropped before the per-machine rules, and never reported `n/a` either —
+    // the server's closed set would not take the write.
+    if (s.id === "models" || s.id === "app") {
+      if (isBot()) return false;
+    }
     if (s.id === "fda") return isMac(health?.platform);
     // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
     // hidden-until-known: this is the only step a `?step=` resume is likely to
@@ -288,7 +296,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
   return (
     <div
       className="onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
-      aria-label="Set up FusedRender"
+      aria-label={`Set up ${bundleName()}`}
     >
       {/* Top bar: brand · steps · close. Three tracks, the outer two an equal
           `1fr`, so the middle one is centred on the BAR — not on whatever the

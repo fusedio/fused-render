@@ -7,7 +7,8 @@ import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
-import { notifyBookmarksChanged } from "@platform/lib/hooks";
+import { notifyBookmarksChanged, setDefaultFavicon } from "@platform/lib/hooks";
+import { displayName, isBot, seedFlavor } from "@platform/lib/flavor";
 import { openTerminal, type TerminalRequest } from "@platform/lib/terminalDockStore";
 import App from "@shell/App";
 import "./shell.css";
@@ -92,6 +93,11 @@ const root = createRoot(document.getElementById("root")!);
 
 getConfig().then(
   (config) => {
+    // Flavor first: the sidebar and the title read it synchronously in this
+    // very render, and a seed a tick later is a flash of the wrong brand.
+    seedFlavor(config);
+    document.title = displayName();
+    if (isBot()) setDefaultFavicon("favicon-bot.png");
     root.render(<App config={config} />);
     // Embed documents are display-only panes/previews. They have no global
     // sidebar, so hydrating its bookmark and recents stores in every iframe is

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build FusedRender.app + a distributable DMG via py2app (SPEC §12, D33-D35).
+# Build FusedRender.app (or FusedBot.app, FUSED_RENDER_FLAVOR=bot) + a
+# distributable DMG via py2app (SPEC §12, D33-D35).
 #
 # Pipeline: pick/bootstrap a FRAMEWORK-build python (py2app needs one to
 # produce a real standalone bundle, see the note below) -> build the wheel
@@ -51,7 +52,17 @@ trap _build_failed ERR
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
 SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
-APP_NAME="FusedRender${SUFFIX}"
+# Product flavor (fused_render/_flavor.py): render -> FusedRender, bot ->
+# FusedBot. The env var is pinned to its default when unset so a stale
+# fused_render/_baked_flavor.py left in the tree by an earlier bot build (the
+# wheel build below is what removes it, and that has not run yet) cannot turn a
+# plain `bash scripts/build_dmg.sh` into a bot build. `python3 -c`, not `-m`:
+# the package __init__ already imports _flavor, so -m would warn about runpy.
+FLAVOR="$(FUSED_RENDER_FLAVOR="${FUSED_RENDER_FLAVOR:-render}" PYTHONPATH="$REPO_ROOT" \
+  python3 -c "from fused_render import _flavor; print(_flavor.flavor())")"
+APP_BASE="$(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+  python3 -c "from fused_render import _flavor; print(_flavor.app_name())")"
+APP_NAME="${APP_BASE}${SUFFIX}"
 
 # Single source of truth is fused_render/__init__.py's __version__ (pyproject
 # derives it dynamically via [tool.hatch.version], so it has no literal version
@@ -71,7 +82,7 @@ ICNS_PATH="$BUILD_DIR/${APP_NAME}.icns"
 APP_DIR="$PY2APP_DIST/${APP_NAME}.app"
 DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}.dmg"
 
-echo "==> fused-render ${VERSION} -> ${APP_NAME}.app (py2app) -> ${DMG_PATH##*/}"
+echo "==> fused-render ${VERSION} [${FLAVOR}] -> ${APP_NAME}.app (py2app) -> ${DMG_PATH##*/}"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 # ---------------------------------------------------------------------------
@@ -177,6 +188,9 @@ echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_
 # ---------------------------------------------------------------------------
 
 export FUSED_RENDER_BRANCH="$REF"
+# Baked into the wheel the same way (scripts/hatch_build.py), and seen by
+# setup_py2app.py and every bundled-interpreter smoke below.
+export FUSED_RENDER_FLAVOR="$FLAVOR"
 
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   echo "==> creating build venv"
@@ -275,10 +289,12 @@ FUSED_RENDER_REQUIRE_BUNDLED=1 \
   "$REPO_ROOT/tests/test_bundle_contents.py"
 
 # ---------------------------------------------------------------------------
-# 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
-#    for the menu-bar glyph (fused_render/assets/menubar-template.png, 36px,
-#    template/monochrome) on a rounded dark card, at the sizes iconutil wants.
-#    Build artifact only - never committed (BUILD_DIR is gitignored).
+# 3. App icon, at the sizes iconutil wants. Render: a fresh, high-res render
+#    of the same four-pointed sparkle used for the menu-bar glyph
+#    (fused_render/assets/menubar-template.png, 36px, template/monochrome) on
+#    a rounded dark card. Bot: the committed 1024px FusedBot artwork
+#    (fused_render/assets/bot/fusedbot-icon-1024.png) resized. Build artifact
+#    only - never committed (BUILD_DIR is gitignored).
 # ---------------------------------------------------------------------------
 
 echo "==> generating app icon"
@@ -286,6 +302,24 @@ ICONSET_DIR="$BUILD_DIR/${APP_NAME}.iconset"
 rm -rf "$ICONSET_DIR" "$ICNS_PATH"
 mkdir -p "$ICONSET_DIR"
 
+if [[ "$FLAVOR" == "bot" ]]; then
+"$BUILD_VENV/bin/python" - "$ICONSET_DIR" "$REPO_ROOT/fused_render/assets/bot/fusedbot-icon-1024.png" <<'PYEOF'
+import sys
+from PIL import Image
+
+iconset_dir, src = sys.argv[1], sys.argv[2]
+bg = Image.open(src).convert("RGBA")
+if bg.size[0] != bg.size[1]:
+    sys.exit(f"bot icon must be square, got {bg.size[0]}x{bg.size[1]}: {src}")
+
+sizes = [16, 32, 128, 256, 512]
+for size in sizes:
+    img = bg.resize((size, size), Image.LANCZOS)
+    img.save(f"{iconset_dir}/icon_{size}x{size}.png")
+    img2x = bg.resize((size * 2, size * 2), Image.LANCZOS)
+    img2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
+PYEOF
+else
 "$BUILD_VENV/bin/python" - "$ICONSET_DIR" <<'PYEOF'
 import math
 import sys
@@ -341,6 +375,7 @@ for size in sizes:
     img2x = bg.resize((size * 2, size * 2), Image.LANCZOS)
     img2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
 PYEOF
+fi
 
 iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
 test -f "$ICNS_PATH"
@@ -793,7 +828,7 @@ WRAPPER_PATH="$APP_DIR/Contents/Resources/bin/fused"
 mkdir -p "$(dirname "$WRAPPER_PATH")"
 cat > "$WRAPPER_PATH" <<WRAPPER
 #!/bin/sh
-# fused CLI bundled with FusedRender.app - the same interpreter + fused
+# fused CLI bundled with ${APP_NAME}.app - the same interpreter + fused
 # package the app's Deploy button uses (fused_render/_fused_cli.py, SPEC §19).
 # PYTHONHOME points the bundled python at its own runtime, exactly as the
 # app's own smoke tests / py2app launcher do. PYTHONPATH is UNSET (env -u):
