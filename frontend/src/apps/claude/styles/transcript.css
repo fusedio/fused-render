@@ -1585,7 +1585,9 @@
    "the ui is bad, check padding"). ON HOVER OF THAT CHIP ONLY (Akshil: "when I
    hover over a bash then and only then show me that time"), never the whole
    reply — a column of times down a run is noise; the one a reader wants is
-   beside the chip they are pointing at. Centred on the chip's head row. */
+   beside the chip they are pointing at — and an OPEN chip keeps its stamp up
+   (Akshil, 2026-10-06), since a reader who unfolded a call is reading it.
+   Centred on the chip's head row. */
 .chat-root .toolchip > .chip-stamp {
   position: absolute;
   right: calc(100% + 8px);
@@ -1602,7 +1604,8 @@
   transition: opacity 0.12s ease;
 }
 .chat-root .toolchip:hover > .chip-stamp,
-.chat-root .toolchip:focus-within > .chip-stamp {
+.chat-root .toolchip:focus-within > .chip-stamp,
+.chat-root .toolchip.is-open > .chip-stamp {
   opacity: 1;
 }
 @media (prefers-reduced-motion: reduce) {
