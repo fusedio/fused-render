@@ -15,6 +15,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/s
 import { cn } from "@platform/lib/utils";
 
 import { chipHint, chipWhen } from "./run-when";
+import { useMinuteTick } from "./useMinuteTick";
 
 import {
   ANSWERABLE_TOOL,
@@ -379,15 +380,14 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipPr
   const parts = toolChipSummaryParts(seg);
   const full = toolChipSummary(seg);
   const status = String(seg.status || "running");
-  const [, redraw] = useState(0);
+  // The lane stamp says how long AGO: re-rendered on the page's minute tick
+  // so a chip left on screen does not keep saying `just now` (Bugbot, PR #1430).
+  useMinuteTick();
   return (
     <Collapsible
       open={open}
       onOpenChange={toggle}
       className={cn("toolchip", open && "is-open")}
-      // The lane stamp says how long AGO; redrawn as the pointer arrives so a
-      // chip left on screen does not keep saying `just now` (Bugbot, PR #1430).
-      onPointerEnter={() => redraw((n) => n + 1)}
     >
       {/* WHEN THIS CALL WAS MADE, in the lane beside the chip — the message
           stamp's words (`chipWhen`), shown on hover like the message stamp is,

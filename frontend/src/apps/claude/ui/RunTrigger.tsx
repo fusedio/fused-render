@@ -42,32 +42,20 @@ export interface RunTriggerProps {
    *  — the same panel every Tasks row caption uses), NOT a `title`: the OS
    *  tooltip waits about a second and cannot be hurried, and a CSS panel of
    *  its own was a second pattern for the same thing (Akshil, 2026-10-05).
-   *  Absent when no member carried a stamp.
-   *
-   *  A GETTER, not a string (Bugbot, PR #1430): the words say how long AGO,
-   *  and a string computed when the rows settled kept saying `just now` for as
-   *  long as the transcript stayed mounted. The attribute is written at render
-   *  and rewritten on the way in — the hint panel reads it on `pointerover`,
-   *  after this element's own handler has run. */
-  when?: (() => string | null) | null;
+   *  Absent when no member carried a stamp. The words say how long AGO, so
+   *  the owner recomputes them on the page's minute tick (`useMinuteTick`);
+   *  a string frozen at settle kept saying `just now` (Bugbot, PR #1430). */
+  when?: string | null;
 }
 
 export function RunTrigger({ open, onToggle, className, when }: RunTriggerProps) {
-  const now = when ? when() : null;
-  const refresh = (el: HTMLButtonElement) => {
-    const w = when ? when() : null;
-    if (w) el.setAttribute("data-hint", w);
-    else el.removeAttribute("data-hint");
-  };
   return (
     <button
       type="button"
       className={cn("run-trigger", className)}
       aria-expanded={open}
       onClick={onToggle}
-      onPointerOver={(e) => refresh(e.currentTarget)}
-      onFocus={(e) => refresh(e.currentTarget)}
-      {...(now ? { "data-hint": now } : {})}
+      {...(when ? { "data-hint": when } : {})}
     >
       {open ? "show less" : "show more"}
     </button>

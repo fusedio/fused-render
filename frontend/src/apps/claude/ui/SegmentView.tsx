@@ -26,6 +26,7 @@ import { RunTrigger } from "./RunTrigger";
 import { runWhenWords } from "./run-when";
 import { ThinkingView } from "./ThinkingView";
 import { ToolChip } from "./ToolChip";
+import { useMinuteTick } from "./useMinuteTick";
 
 /** Numbers segment containers, for the position keys a thinking block is kept
  *  folded by (T:15196 `cardSeq`). */
@@ -135,15 +136,16 @@ export const SegmentView = memo(function SegmentView({
     }
     return keys;
   }, [rows, seats, seq]);
-  // HOW LONG A TRIGGER'S RUNS TOOK (ui/run-when.ts): the hover, as a getter
-  // over EVERY run the word opens — a seat that holds a leading and a
-  // trailing run spans both (Bugbot, PR #1430: reading the first alone left
-  // the later job out, and a clockless first run blanked the hover). A getter
-  // so the "ago" half is current at hover time, not frozen at settle.
+  // HOW LONG A TRIGGER'S RUNS TOOK (ui/run-when.ts): the hover, over EVERY
+  // run the word opens — a seat that holds a leading and a trailing run spans
+  // both (Bugbot, PR #1430: reading the first alone left the later job out,
+  // and a clockless first run blanked the hover). Recomputed on the page's
+  // minute tick so the "ago" half stays true while the transcript is mounted.
+  const tick = useMinuteTick();
   const whenFor = useCallback(
-    (runRows: readonly number[]) => () =>
+    (runRows: readonly number[]) =>
       runWhenWords(runRows.flatMap((i) => (isRun(rows[i]) ? (rows[i] as CollapsibleRun).segs : []))),
-    [rows],
+    [rows, tick],
   );
   const nodes: React.ReactNode[] = [];
   rows.forEach((row, r) => {
