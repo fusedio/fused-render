@@ -240,3 +240,14 @@ def test_importing_app_does_not_pull_in_the_server():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True,
                          text=True, check=True).stdout.strip()
     assert out == "False"
+
+
+def test_one_window_failing_to_navigate_does_not_strand_the_others():
+    class _Boom(_FakeWindow):
+        def load(self, url):
+            raise RuntimeError("webview gone")
+
+    good = _FakeWindow("http://127.0.0.1:1/b")
+    app_mod.navigate_restored([("http://127.0.0.1:1/a", _Boom("x")),
+                               ("http://127.0.0.1:1/b", good)])
+    assert good.loaded == ["http://127.0.0.1:1/b"]
