@@ -165,4 +165,11 @@ same read-only tab after each command completes (not live). Note in report.
   `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` trailers.
 
 ## Build notes
-(append here)
+### Builder 1 (partial: Parts 1a, 1b, 1c, focus endpoint done; 1d frontend and Part 2 NOT done)
+
+- **Part 2a probe: BLOCKED.** The auto-mode classifier denied launching a headless `claude` run twice. No retry or workaround. Nothing is known about `CLAUDE_CODE_SHELL_PREFIX`; Part 2b/2c (or the FALLBACK) need a human to run the probe or pick the fallback.
+- **pyte**: pure python, ~212K, one dep (wcwidth). Base dependency, imported lazily. Rendering is on demand by replaying the 256 KiB ring (~0.3 s per read) rather than a live per-byte emulator, so idle terminals cost nothing.
+- **Shell integration** lives in `fused_render/shell_integration.py`, applied by `PtySession registry.create` via `integrate(profile)`, NOT in `resolve_profile` (existing profile tests assert argv `["/bin/zsh","-l"]`). zsh uses a ZDOTDIR shim restoring ZDOTDIR at the end of .zshrc. bash uses `--init-file` and drops `-l`; FUSED_SHELL_LOGIN makes the shim replay login semantics (so `shopt login_shell` reads off). bash 3.2 `history 1` prefixes a number, which the shim strips.
+- **MCP tools** are keyed on a dedicated `FUSED_RENDER_TERMINAL_ORIGIN` env stamped into mcp.json by agent.py (POSIX only), not the ambient FUSED_RENDER_ORIGIN, so existing "tools == [approve, app_state]" tests stay deterministic. `terminal_list` and `terminal_read` are pre-allowed; `terminal_send` keeps its permission card.
+- **Focus**: `PUT /api/terminal/focus {"id"}` stores `REGISTRY.focused_id`; list entries gain `focused`. The MCP read with no id uses the focused session, else the only live one.
+- **Not done**: the `terminal_hint` note in agent.py, the drawer posting its focused id, and the "Ask Claude" tab action (Part 1d frontend); Part 2b/2c.
