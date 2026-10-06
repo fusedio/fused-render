@@ -80,6 +80,16 @@ def _read(path: str) -> bytes:
         return b""
 
 
+def _read_from(path: str, offset: int) -> bytes:
+    """The bytes of `path` from `offset` on (only those are read)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            return f.read()
+    except OSError:
+        return b""
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -201,7 +211,7 @@ class Stream:
             # the read that precedes the footer.
             code = cmd.exit_code
             ended = code is not None or (cmd.pid != 0 and not _pid_alive(cmd.pid))
-            data = _read(cmd.base + ".out")[st["off"]:]
+            data = _read_from(cmd.base + ".out", st["off"])
             if data:
                 st["off"] += len(data)
                 st["nl"] = data.endswith(b"\n")
