@@ -11,7 +11,7 @@
   templates live.
 
   Isolation is enforced, not hoped for:
-    FUSED_RENDER_HOME            -> <worktree>\.dev-home   (state, venvs, mounts)
+    FUSED_RENDER_HOME            -> <worktree>\.dev-home   (state, venvs)
     FUSED_RENDER_CORE_TEMPLATES  -> <worktree>\fused_render\templates (no staging)
   Before the server is allowed to start, a child interpreter (same environment
   the server will inherit) must confirm home_dir() resolves inside .dev-home and

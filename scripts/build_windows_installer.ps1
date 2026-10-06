@@ -184,47 +184,6 @@ Get-ChildItem -Path (Join-Path $PythonRoot "Scripts") -Filter "*.exe" -ErrorActi
     Remove-Item -Force
 Copy-Item -LiteralPath $Uv -Destination (Join-Path $PythonRoot "uv.exe") -Force
 
-# rclone bundled next to uv.exe (the supervisor's child_environment points
-# FUSED_RENDER_RCLONE_BIN here) so mounts work with zero user setup, matching
-# the macOS DMG and the Linux AppImage. Pinned release, published-SHA256
-# verified (same discipline as the pinned zig download above).
-$RcloneVersion = "1.74.4"
-$RcloneSha256 = "ef097ef9de37a57feb7d9f9c7afb34148ad3c65be8025f1d8f7f521554a701ea"
-$rcloneZip = Join-Path $BuildDir "rclone-v$RcloneVersion-windows-amd64.zip"
-if (-not (Test-Path -LiteralPath $rcloneZip)) {
-    Invoke-WebRequest -Uri "https://downloads.rclone.org/v$RcloneVersion/rclone-v$RcloneVersion-windows-amd64.zip" -OutFile $rcloneZip
-}
-$actualSha = (Get-FileHash -LiteralPath $rcloneZip -Algorithm SHA256).Hash.ToLower()
-if ($actualSha -ne $RcloneSha256) {
-    throw "rclone zip SHA256 mismatch: expected $RcloneSha256, got $actualSha"
-}
-$rcloneExtract = Join-Path $BuildDir "rclone-extract"
-Remove-Item -LiteralPath $rcloneExtract -Recurse -Force -ErrorAction SilentlyContinue
-Expand-Archive -Path $rcloneZip -DestinationPath $rcloneExtract -Force
-$rcloneExe = Get-ChildItem -Path $rcloneExtract -Recurse -Filter "rclone.exe" |
-    Select-Object -First 1
-if (-not $rcloneExe) {
-    throw "rclone.exe not found in the downloaded zip"
-}
-Copy-Item -LiteralPath $rcloneExe.FullName -Destination (Join-Path $PythonRoot "rclone.exe") -Force
-
-# WinFsp MSI staged for installer.iss to chain-install when the driver is
-# missing (D133 - reverses D132's user-installs stance), so mounts work with
-# zero user setup. The app itself stays per-user; only this MSI elevates, from
-# the setup's post-install step. Pinned release, published-SHA256 verified
-# (same discipline as the rclone pin above).
-$WinFspVersion = "2.1.25156"
-$WinFspSha256 = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
-$winfspMsi = Join-Path $BuildDir "winfsp-$WinFspVersion.msi"
-if (-not (Test-Path -LiteralPath $winfspMsi)) {
-    Invoke-WebRequest -Uri "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-$WinFspVersion.msi" -OutFile $winfspMsi
-}
-$actualSha = (Get-FileHash -LiteralPath $winfspMsi -Algorithm SHA256).Hash.ToLower()
-if ($actualSha -ne $WinFspSha256) {
-    throw "WinFsp MSI SHA256 mismatch: expected $WinFspSha256, got $actualSha"
-}
-Copy-Item -LiteralPath $winfspMsi -Destination (Join-Path $StageDir "winfsp.msi") -Force
-
 $icons = Join-Path $StageDir "assets\icons"
 New-Item -ItemType Directory -Force -Path $icons | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "fused_render\assets\fused-render.ico") -Destination $icons -Force
@@ -248,7 +207,6 @@ Invoke-Native $bundlePython @(
     "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, win32job, win32pipe, win32security, win32event, win32process, win32com.shell.shell, pystray, cryptography; print('bundle imports ok')"
 )
 Invoke-Native (Join-Path $PythonRoot "uv.exe") @("--version")
-Invoke-Native (Join-Path $PythonRoot "rclone.exe") @("version")
 $probe = Join-Path $env:TEMP "fused_render_installer_probe_$PID.py"
 $request = Join-Path $env:TEMP "fused_render_installer_request_$PID.json"
 try {

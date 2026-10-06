@@ -208,7 +208,7 @@ bundled = [
 
     "drain3>=0.9.11",
     # Every feature extra, so the packaged interpreter carries the index, the
-    # native integrations, the cloud credential chains and the full engine: DMG
+    # native integrations and the full engine: DMG
     # users cannot pip install, so a feature missing here is missing for good.
     # setup_py2app.py expands this self-reference into the extras it names
     # before deriving the macOS force-list, so everything `[all]` brings is
@@ -279,17 +279,6 @@ desktop = [
 hf = [
     "huggingface_hub>=1.28,<2",
 ]
-# Private-cloud credential chains for mounted buckets. botocore buys the AWS
-# provider chain (SSO / credential_process / assume-role / IMDS) for s3sign's
-# resolver rung; google-auth buys the GCS bearer-token chain (SA key / ADC) for
-# gcssign. requests is google-auth's refresh transport. The signing math stays
-# in-repo (s3sign/gcssign are pure stdlib), so without this extra public
-# buckets still work and private ones do not.
-cloud = [
-    "botocore",
-    "google-auth",
-    "requests",
-]
 # The full engine: the deploy CLI, canvas share/push and the MCP server the
 # MCP panel registers. The base install already has `fused` itself (see
 # `dependencies`); this asks for its extras on the same version:
@@ -320,7 +309,7 @@ fused = [
 # Every feature extra. What `fused-render serve` (the desktop file explorer)
 # requires, and what every packaged build and `[dev]` include.
 all = [
-    "fused-render[index,data,desktop,hf,cloud,fused]",
+    "fused-render[index,data,desktop,hf,fused]",
 ]
 # ---------------------------------------------------------------------------
 # Packaged-build extras. Each includes `[all]`, so a build script's install line
