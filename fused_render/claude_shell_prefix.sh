@@ -15,8 +15,9 @@
 #     the same bytes on the same fds and the same exit status.
 #
 # Per command, in $FUSED_CLAUDE_CMD_LOG:
-#   <id>.cmd    the full command string, raw
-#   <id>.meta   pid=, pgid=, start= (epoch seconds)
+#   <id>.meta   pid=, pgid=, start= (epoch seconds); written FIRST
+#   <id>.cmd    the full command string, raw; created atomically (tmp + mv)
+#               after .meta, so a listed .cmd always has its .meta
 #   <id>.out    stdout+stderr as they arrived
 #   <id>.exit   the exit status, written last
 # <id> is "<epoch seconds, 11 digits>-<pid>", so a name sort is start order.
@@ -48,9 +49,10 @@ fo=$base.fo
 fe=$base.fe
 mkfifo "$fo" "$fe" 2>/dev/null || { rm -f "$fo" "$fe"; transparent; }
 
-printf '%s' "$cmd" > "$base.cmd" 2>/dev/null || { rm -f "$fo" "$fe"; transparent; }
 pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
-printf 'pid=%s\npgid=%s\nstart=%s\n' "$$" "$pgid" "$(date +%s)" > "$base.meta"
+{ printf 'pid=%s\npgid=%s\nstart=%s\n' "$$" "$pgid" "$(date +%s)" > "$base.meta" \
+  && printf '%s' "$cmd" > "$base.cmd.tmp" && mv "$base.cmd.tmp" "$base.cmd"; } 2>/dev/null \
+  || { rm -f "$fo" "$fe" "$base.meta" "$base.cmd.tmp" "$base.cmd"; transparent; }
 : > "$base.out"
 
 # Keep the caller's stdin for the command (a background job would otherwise get

@@ -191,3 +191,28 @@ def test_ps_spawns_are_posix_spawn_safe(monkeypatch, call):
     assert os.path.isabs(seen["argv"][0])
     assert seen["kw"].get("close_fds") is False
     assert "cwd" not in seen["kw"]
+
+
+def test_pid_zero_without_exit_counts_as_running(logroot):
+    # A .cmd with no readable .meta (older layout) must not look ended.
+    d = logroot / "c1"
+    d.mkdir()
+    (d / "00000000001-1.cmd").write_text(wrapped("sleep 5", "/tmp/x-cwd"))
+    (d / "00000000001-1.out").write_bytes(b"partial\n")
+    cmd = claude_cmd_log.Cmd("c1", "00000000001-1")
+    assert cmd.pid == 0 and cmd.running
+    out = claude_cmd_log.Stream("c1").poll()
+    assert b"partial" in out and b"[ended]" not in out
+    (d / "00000000001-1.exit").write_text("0\n")
+    assert not claude_cmd_log.Cmd("c1", "00000000001-1").running
+
+
+def test_stream_poll_reads_only_new_bytes(logroot):
+    fake_cmd(logroot, "c1", "00000000001-1", "sleep 5", b"x" * 1_000_000)  # running
+    s = claude_cmd_log.Stream("c1")
+    first = s.poll()
+    assert first.count(b"x") == 1_000_000
+    with open(logroot / "c1" / "00000000001-1.out", "ab") as f:
+        f.write(b"0123456789")
+    assert s.poll() == b"0123456789"
+    assert s.poll() == b""

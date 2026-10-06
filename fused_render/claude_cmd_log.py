@@ -117,8 +117,10 @@ class Cmd:
 
     @property
     def running(self) -> bool:
-        """No footer yet and the wrapper process is still there."""
-        return self.exit_code is None and _pid_alive(self.pid)
+        """No footer yet and the wrapper process is still there. pid 0 (no
+        .meta read; only an older file layout can show that) counts as running
+        until an .exit appears."""
+        return self.exit_code is None and (self.pid == 0 or _pid_alive(self.pid))
 
     def finished(self) -> bool:
         return not self.running
@@ -198,7 +200,7 @@ class Stream:
             # Check for completion BEFORE reading, so the final bytes are in
             # the read that precedes the footer.
             code = cmd.exit_code
-            ended = code is not None or not _pid_alive(cmd.pid)
+            ended = code is not None or (cmd.pid != 0 and not _pid_alive(cmd.pid))
             data = _read(cmd.base + ".out")[st["off"]:]
             if data:
                 st["off"] += len(data)
