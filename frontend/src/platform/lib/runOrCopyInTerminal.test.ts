@@ -77,3 +77,31 @@ test("with no ranMessage, a successful run stays silent", async () => {
   expect(getPopupNotification()).toBeNull();
   unregister();
 });
+
+test("a pending command on the copy path is handed to the clipboard before it resolves", async () => {
+  let written: unknown[] | null = null;
+  (globalThis as { ClipboardItem?: unknown }).ClipboardItem = class {
+    constructor(public parts: Record<string, Promise<Blob>>) {}
+  };
+  (navigator as unknown as { clipboard: unknown }).clipboard = {
+    write: (items: unknown[]) => {
+      written = items;
+      return Promise.resolve();
+    },
+  };
+  let resolve!: (s: string) => void;
+  const pending = new Promise<string>((r) => (resolve = r));
+  const result = runOrCopyInTerminal(pending);
+  expect(written).not.toBeNull();
+  resolve("claude --resume x");
+  expect(await result).toBe(false);
+  expect(getPopupNotification()?.title).toBe("Command copied — paste it in your terminal");
+  delete (globalThis as { ClipboardItem?: unknown }).ClipboardItem;
+});
+
+test("a pending command with a drawer mounted is awaited and run there", async () => {
+  const unregister = registerTerminalDrawerMounted();
+  await runOrCopyInTerminal(Promise.resolve("claude --resume y"), { cwd: "/tmp/p" });
+  expect(peekPendingTerminalRequest()).toEqual({ cwd: "/tmp/p", command: "claude --resume y" });
+  unregister();
+});
