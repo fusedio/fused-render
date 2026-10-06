@@ -175,3 +175,19 @@ def test_stop_kills_running_command_tree(client, logroot, tmp_path):
     finally:
         if p.poll() is None:
             p.kill()
+
+
+@pytest.mark.parametrize("call", [lambda: claude_cmd_log._descendants(1),
+                                  lambda: claude_cmd_log._is_wrapper(1)])
+def test_ps_spawns_are_posix_spawn_safe(monkeypatch, call):
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["kw"] = argv, kw
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(claude_cmd_log.subprocess, "run", fake_run)
+    call()
+    assert os.path.isabs(seen["argv"][0])
+    assert seen["kw"].get("close_fds") is False
+    assert "cwd" not in seen["kw"]

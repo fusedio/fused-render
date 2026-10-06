@@ -224,10 +224,17 @@ def render_text(chat: str, lines: int) -> str:
     return "\n".join(rows[-lines:])
 
 
+def _ps_exe() -> str:
+    """Absolute ps path. Runs inside the server process, where fork() with
+    libproj resident SIGSEGVs: a bare name or close_fds=True or cwd= forces the
+    fork+exec path, so use the posix_spawn-safe shape (see pty_session._process_name)."""
+    return "/bin/ps" if os.path.exists("/bin/ps") else "/usr/bin/ps"
+
+
 def _descendants(pid: int) -> list[int]:
     try:
-        res = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True,
-                             text=True, timeout=5, close_fds=True)
+        res = subprocess.run([_ps_exe(), "-A", "-o", "pid=,ppid="], capture_output=True,
+                             text=True, timeout=5, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return []
     kids: dict[int, list[int]] = {}
@@ -246,8 +253,8 @@ def _descendants(pid: int) -> list[int]:
 def _is_wrapper(pid: int) -> bool:
     """Guard against a recycled pid: the live process must be our wrapper."""
     try:
-        res = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=5, close_fds=True)
+        res = subprocess.run([_ps_exe(), "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return "claude_shell_prefix" in res.stdout
