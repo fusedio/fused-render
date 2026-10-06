@@ -22,6 +22,8 @@ Five more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see
 ``reader_enabled``), **canvases_enabled** (whether the Canvases feature is
 offered at all — opt-in, default off; see ``canvases_enabled``),
+**bots_enabled** (whether the Bots sub-app replaces Home as the front door —
+opt-in, default off; see ``bots_enabled``),
 **app_sharing_enabled** (whether the unified Share sheet replaces the plain
 Export action — opt-in, default off; see ``app_sharing_enabled``),
 **live_previews_enabled** (whether card thumbnails may render the live app
@@ -168,6 +170,24 @@ def canvases_enabled() -> bool:
     reads as off, so an existing install — signed in or not — has to opt in.
     """
     return read_prefs().get("canvases_enabled") is True
+
+
+def bots_enabled() -> bool:
+    """Whether the Bots sub-app (browser bots, `fused_render/bots/`) is the
+    machine's front door (default off — opt-in, owner's call 2026-10-06).
+
+    Off: the sidebar reads Home → Tasks → … and `/` lands on `/home`; no Bots
+    row anywhere. On: the Home row is HIDDEN, Bots takes its place at the top
+    (Bots → Tasks → …) and `/` (and a bare `/home`) land on `/bots`. The flag
+    swaps the front door rather than adding a row, because a machine that runs
+    bots is FOR the bots — Home's app strips are the explorer's front door.
+
+    A SWITCH OVER THE ENTRY POINTS, like `canvases_enabled`: `/bots` keeps
+    answering while this is off (a bookmark or a bot's own link survives the
+    toggle), and `/home` keeps answering by URL while it is on. Only a stored
+    `true` turns it on.
+    """
+    return read_prefs().get("bots_enabled") is True
 
 
 def native_windows_enabled() -> bool:
@@ -607,6 +627,10 @@ def _prefs_response() -> dict:
         # its Settings menu entry (opt-in, D427). Not a route guard; see
         # `canvases_enabled`.
         "canvases": {"enabled": canvases_enabled()},
+        # Whether the Bots sub-app is the front door — its sidebar row replaces
+        # Home and `/` lands on it (opt-in, default off). Not a route guard;
+        # see `bots_enabled`.
+        "bots": {"enabled": bots_enabled()},
         # Whether the unified Share sheet (public link + .fused file) is offered
         # in place of the plain Export / Download action (opt-in, default off).
         # Not a route guard; see `app_sharing_enabled`.
@@ -835,6 +859,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not isinstance(value, bool):
             return JSONResponse({"error": "'canvases_enabled' must be a boolean"}, status_code=400)
         prefs["canvases_enabled"] = value
+        changed = True
+    if "bots_enabled" in body:
+        value = body.get("bots_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'bots_enabled' must be a boolean"}, status_code=400)
+        prefs["bots_enabled"] = value
         changed = True
     if "app_sharing_enabled" in body:
         value = body.get("app_sharing_enabled")

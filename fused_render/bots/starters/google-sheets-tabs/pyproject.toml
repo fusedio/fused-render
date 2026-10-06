@@ -1,0 +1,16 @@
+[project]
+name = "google-sheets-tabs"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "google-api-python-client",
+    "google-auth-httplib2",
+]
+
+[tool.uv]
+package = false
+
+[tool.fused-render.bot]
+name = "Google Sheets Tabs"
+description = "Connects to the user's Google Sheets and manages worksheet tabs: list tabs, read a worksheet's values, append rows, replace a worksheet's values, create a new worksheet tab, list comments, and style cells (colors, bold, borders, merges, column widths, freezing, conditional formatting, header preset)."
+triggers = ["google sheet", "google sheets", "spreadsheet", "worksheet", "sheet tab", "append rows", "add a sheet tab", "sheet comments", "format cells", "style header", "conditional formatting", "freeze rows"]

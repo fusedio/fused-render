@@ -13,6 +13,9 @@ uv.lock
 # wheel — hatchling excludes gitignored files, so without this negation the lock
 # would silently not be packaged.
 !fused_render/templates/*/uv.lock
+# Same for the Bots sub-app's starter apps (fused_render/bots/starters/<key>/),
+# copied into ~/Fused/app on install and run in their own project venv.
+!fused_render/bots/starters/*/uv.lock
 build/
 dist/
 *.egg-info/

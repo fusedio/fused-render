@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
+<title>Apple Notes</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f6f4; --panel: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e0; --accent: #d9a200; --soft: #fff6d6; --err: #c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141414; --panel: #1d1d1f; --text: #ececec; --muted: #9a9a9e; --line: #2c2c2e; --accent: #f5b400; --soft: #2a2410; --err: #ff6b6b; } }
+  :root[data-theme="light"] { color-scheme: light; --bg: #f6f6f4; --panel: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e0; --accent: #d9a200; --soft: #fff6d6; --err: #c62828; }
+  :root[data-theme="dark"] { color-scheme: dark; --bg: #141414; --panel: #1d1d1f; --text: #ececec; --muted: #9a9a9e; --line: #2c2c2e; --accent: #f5b400; --soft: #2a2410; --err: #ff6b6b; }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, system-ui, sans-serif; }
+  main { display: grid; grid-template-columns: 200px 320px 1fr; height: 100%; }
+  aside, section, article { overflow: auto; }
+  aside { border-right: 1px solid var(--line); padding: 12px 8px; }
+  aside h2, section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 8px 6px; }
+  aside button { display: flex; width: 100%; justify-content: space-between; gap: 8px; background: none; border: none; color: var(--text); font: inherit; padding: 6px 8px; border-radius: 8px; cursor: pointer; text-align: left; }
+  aside button:hover { background: var(--soft); } aside button.on { background: var(--accent); color: #1d1d1f; }
+  aside button small { color: inherit; opacity: .6; }
+  section { border-right: 1px solid var(--line); background: var(--panel); }
+  .bar { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+  .bar input[type=search] { flex: 1; min-width: 0; font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+  .bar label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .note { padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .note:hover { background: var(--soft); } .note.on { background: var(--soft); box-shadow: inset 3px 0 var(--accent); }
+  .note b { display: block; font-weight: 600; } .note small { color: var(--muted); display: block; } .note p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  article { padding: 20px 28px; }
+  article h1 { margin: 0 0 4px; font-size: 20px; } article .meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  article pre { white-space: pre-wrap; font: inherit; margin: 0; }
+  .empty { color: var(--muted); padding: 24px; } .error { color: var(--err); padding: 12px; white-space: pre-wrap; }
+  .status { font-size: 11px; color: var(--muted); padding: 10px 8px 0; }
+</style>
+</head>
+<body>
+<main>
+  <aside>
+    <h2>Folders</h2>
+    <div id="folders" class="empty">Loading…</div>
+    <div id="status" class="status"></div>
+  </aside>
+  <section>
+    <div class="bar"><input id="q" type="search" placeholder="Search titles" /><label><input id="inbody" type="checkbox" /> in text</label></div>
+    <h2 id="listTitle">Recent · 7 days</h2>
+    <div id="list" class="empty">Loading…</div>
+  </section>
+  <article id="reader"><div class="empty">Pick a note to read it.</div></article>
+</main>
+<script>
+  const $ = id => document.getElementById(id), esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const state = { folder: fused.params.get("folder") || "", q: fused.params.get("q") || "", id: fused.params.get("id") || "", inbody: fused.params.get("inbody") === "1", notes: [] };
+  const fmt = iso => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+  const fail = (el, r) => { el.innerHTML = `<div class="error">${esc(r?.error || "No answer from Notes.")}</div>`; };
+
+  // One runPython at a time: the bridge does not resolve calls made in parallel.
+  let chain = Promise.resolve();
+  const call = args => (chain = chain.catch(() => {}).then(() => fused.runPython("./notes.py", args)));
+  async function loadFolders() {
+    const st = await call({ action: "status" }), r = await call({ action: "folders" });
+    $("status").textContent = st?.error ? "" : `${st.notes} notes · ${st.backend === "sqlite" ? "read-only via the Notes database" : (st.accounts || []).join(", ")}`;
+    if (r?.error) return fail($("folders"), r);
+    const all = `<button data-f="" class="${state.folder ? "" : "on"}"><span>All notes</span></button>`;
+    $("folders").innerHTML = all + (r.folders || []).map(f => `<button data-f="${esc(f.name)}" class="${f.name === state.folder ? "on" : ""}" title="${esc(f.account)}"><span>${esc(f.name)}</span><small>${f.notes}</small></button>`).join("");
+    $("folders").onclick = e => { const b = e.target.closest("button[data-f]"); if (!b) return; state.folder = b.dataset.f; fused.params.set("folder", state.folder); loadFolders(); loadList(); };
+  }
+  async function loadList() {
+    const q = state.q.trim();
+    $("listTitle").textContent = q ? `Search · ${q}` : `Recent · 7 days${state.folder ? " · " + state.folder : ""}`;
+    $("list").innerHTML = '<div class="empty">Loading…</div>';
+    const r = await call(q ? { action: "search", query: q, folder: state.folder, in_body: state.inbody ? "true" : "false", limit: 50 } : { action: "recent", days: 7, folder: state.folder, limit: 50 });
+    if (r?.error) return fail($("list"), r);
+    state.notes = r.notes || [];
+    $("list").innerHTML = state.notes.length ? state.notes.map(n => `<div class="note ${n.id === state.id ? "on" : ""}" data-id="${esc(n.id)}"><b>${esc(n.title)}</b><small>${esc(n.folder)} · ${fmt(n.modified)}</small><p>${esc(n.snippet)}</p></div>`).join("")
+      : `<div class="empty">${q ? "No note matches." : "Nothing edited in the last 7 days."}</div>`;
+    $("list").onclick = e => { const d = e.target.closest(".note"); if (!d) return; state.id = d.dataset.id; fused.params.set("id", state.id); for (const x of $("list").children) x.classList.toggle("on", x.dataset.id === state.id); loadNote(); };
+  }
+  async function loadNote() {
+    if (!state.id) return;
+    $("reader").innerHTML = '<div class="empty">Loading…</div>';
+    const r = await call({ action: "read", id: state.id });
+    if (r?.error) return fail($("reader"), r);
+    const n = r.note;
+    $("reader").innerHTML = `<h1>${esc(n.title)}</h1><div class="meta">${esc(n.folder)} · edited ${fmt(n.modified)} · created ${fmt(n.created)}${n.password_protected ? " · locked" : ""}${n.shared ? " · shared" : ""}</div><pre>${esc(n.body || (n.password_protected ? "(unlock this note in Notes to read it)" : ""))}</pre>`;
+  }
+  let t = 0;
+  $("q").value = state.q;
+  $("q").oninput = () => { clearTimeout(t); t = setTimeout(() => { state.q = $("q").value; fused.params.set("q", state.q); loadList(); }, 300); };
+  $("inbody").checked = state.inbody;
+  $("inbody").onchange = () => { state.inbody = $("inbody").checked; fused.params.set("inbody", state.inbody ? "1" : ""); if (state.q.trim()) loadList(); };
+  loadFolders(); loadList(); loadNote();
+</script>
+</body>
+</html>

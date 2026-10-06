@@ -122,6 +122,11 @@ def api_config(
     from fused_render.shell import onboarding as shell_onboarding
 
     config["onboarding"] = shell_onboarding.snapshot()
+    # Bots as the front door (shell/prefs.bots_enabled, default off). In the
+    # CONFIG payload and not only in /api/prefs because the shell decides where
+    # `/` lands at its first render, before any prefs fetch could answer — a
+    # redirect that waited on prefs would paint Home and then hop to Bots.
+    config["bots_enabled"] = shell_prefs.bots_enabled()
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

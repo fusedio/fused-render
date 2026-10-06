@@ -1,0 +1,244 @@
+# MCP tools for this app, curated in fused-render's MCP panel.
+# `fused app serve <this folder>` publishes one tool per [[tool]] table.
+# Every tool calls sheets.py main(action=...); the pinned `action` must be one
+# that sheets.py's run() handles (see BOT.md for the full table).
+
+# ---- auth
+
+[[tool]]
+name = "sheets_status"
+description = "Check whether a Google service-account key is saved, its email, and the saved spreadsheets library (docs: [{id, name, title, url}])."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "status"
+
+[[tool]]
+name = "sheets_set_key"
+description = "Save (and verify with Google) the service-account key JSON used for authentication. Pass the whole key file as key_json. The same key as the Google Docs Tabs app works."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "save_key"
+
+# ---- saved spreadsheets library (.fused/data/sheets.json)
+# Every spreadsheet that is used gets saved automatically under its title. In
+# every other tool, `doc` accepts a saved spreadsheet's name as well as a URL or id.
+
+[[tool]]
+name = "sheets_list_docs"
+description = "List the saved spreadsheets the user has added to this app: [{id, name, title, url, last_used}]. Call this first when the user refers to a spreadsheet by name; pass that name (or the id/url) as `doc` to every other tool."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "list_docs"
+
+[[tool]]
+name = "sheets_add_doc"
+description = "Save a Google Sheet to the library so it can be referred to by name later. doc is a Sheets URL or id; title is the friendly name (optional, defaults to the spreadsheet's own title). Verifies the spreadsheet is shared with the service account."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "add_doc"
+
+[[tool]]
+name = "sheets_rename_doc"
+description = "Give a saved spreadsheet a new friendly name. doc is the current name, id or URL; title is the new name."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "rename_doc"
+
+[[tool]]
+name = "sheets_remove_doc"
+description = "Forget a saved spreadsheet (removes it from the library only; the Google Sheet is untouched). doc is its name, id or URL."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "remove_doc"
+
+# ---- read
+
+[[tool]]
+name = "sheets_list_tabs"
+description = "List all worksheet tabs in a Google Sheet: [{id (gid), title, index, type, hidden, rows, cols, preview (header row), url}]. doc is a Sheets URL, id, or the name of a saved spreadsheet."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "list_tabs"
+
+[[tool]]
+name = "sheets_read_tab"
+description = "Read a worksheet's cell values as rows (list of lists of formatted strings). tab is a worksheet id (gid) or title; range is an optional A1 range like 'A1:D50'; limit caps the rows returned (default 1000, max 10000)."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "read_tab"
+
+# ---- write. content is rows: TSV (pasted from a spreadsheet), CSV, or a JSON
+# array of arrays / array of objects. Values are parsed like typing into
+# Sheets (numbers, dates, =formulas) unless raw=true.
+
+[[tool]]
+name = "sheets_create_tab"
+description = "Create a new worksheet tab with the given title, optionally filled with content rows (CSV, TSV or JSON array of arrays)."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "create_tab"
+
+[[tool]]
+name = "sheets_append_content"
+description = "Append rows to the end of a worksheet (below the last row with data). tab is a worksheet id or title; content is rows as CSV, TSV or a JSON array of arrays."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "append"
+
+[[tool]]
+name = "sheets_write_tab"
+description = "Replace a worksheet's values: clears the whole tab (or just `range`, e.g. 'A1:D20') and writes content rows from its top-left cell. tab is a worksheet id or title."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "write_tab"
+
+# ---- tab management. Both change the Google Sheet's structure, so both are
+# marked [approval].
+
+[[tool]]
+name = "sheets_rename_tab"
+description = "[approval] Rename a worksheet tab. tab is the current worksheet id (gid) or title; title is the new name (must not match another tab)."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "rename_tab"
+
+[[tool]]
+name = "sheets_delete_tab"
+description = "[approval] Permanently delete a worksheet tab and all its data (Sheets batchUpdate deleteSheet). tab must be the worksheet id (gid) or its exact title (no substring matching). Refuses to delete the last remaining tab, or the last visible one."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "delete_tab"
+
+# ---- comments (Drive API; the project must have the Google Drive API enabled)
+
+[[tool]]
+name = "sheets_list_comments"
+description = "List comments on a Google Sheet with their replies. Open comments only unless resolved=true."
+file = "sheets.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', range: str='', key_json: str='', raw: bool=False, limit: int=1000, resolved: bool=False)"
+
+[tool.pinned]
+action = "list_comments"
+
+# ---- styling (styling.py). One spreadsheets.batchUpdate per call. doc, tab and an
+# A1 range as above; every one changes the sheet, so all are marked [approval].
+
+[[tool]]
+name = "sheets_format_range"
+description = "[approval] Format cells in an A1 range of a worksheet. doc is a Sheets URL, id or saved name; tab a worksheet title or gid; range e.g. 'A1:D10', 'B:B', '2:2' (empty = whole tab). Only the args you give change: bg_color / text_color (hex like #ff0000 or names like red, lightblue, darkgreen; 'none' removes), bold / italic / underline / strikethrough ('true'/'false'), font_size (pt), font_family (e.g. 'Roboto Mono'), h_align (left/center/right), v_align (top/middle/bottom), wrap (wrap/overflow/clip), number_format (number, integer, percent, currency, date, time, datetime, text, automatic, or a Sheets pattern like '#,##0.0')."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "format_range"
+
+[[tool]]
+name = "sheets_set_borders"
+description = "[approval] Draw borders on an A1 range. style: solid, medium, thick, dashed, dotted, double or none (removes); color: hex or name (default black); sides: all (default), outer, inner, horizontal, vertical, or a comma list of top, bottom, left, right, inner_horizontal, inner_vertical."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "set_borders"
+
+[[tool]]
+name = "sheets_merge_cells"
+description = "[approval] Merge the cells of an A1 range (e.g. 'A1:D1'). merge_type: all (default, one cell), columns (merge each column) or rows (merge each row). unmerge=true splits every merged cell in the range instead."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "merge_cells"
+
+[[tool]]
+name = "sheets_resize"
+description = "[approval] Set column widths or row heights. range is columns like 'A:C' / 'B' or rows like '1:5' / '3' (or any A1 range with dimension='columns'|'rows'; empty range = every column). Give pixel_size (e.g. 120) or auto_fit=true to fit the content."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "resize"
+
+[[tool]]
+name = "sheets_freeze"
+description = "[approval] Freeze the top `rows` rows and/or the left `cols` columns of a worksheet. 0 unfreezes; leave one out (-1) to keep it as is. range is ignored."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "freeze"
+
+[[tool]]
+name = "sheets_conditional_format"
+description = "[approval] Add a conditional formatting rule to an A1 range (e.g. 'C2:C'). condition: greater_than, greater_or_equal, less_than, less_or_equal, equals, not_equals, between (value '10,20'), not_between, contains, not_contains, starts_with, ends_with, empty, not_empty, is_email, is_url, date_before, date_after, date_equals (value a date or today/yesterday/tomorrow/past_week/past_month/past_year), or formula (value like '=$B2>100'). Matching cells get bg_color and/or text_color (and bold if given). New rules go on top."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "conditional_format"
+
+[[tool]]
+name = "sheets_style_header"
+description = "[approval] One-call header preset: makes the header row bold with a colored background (bg_color, default #188038 green) and white text (text_color), freezes it, and auto-fits the columns. range is optional (default row 1 across the tab; e.g. 'A1:F1' or 'A1:F2' for a two-row header). basic_filter=true also adds a filter on the header."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "style_header"
+
+[[tool]]
+name = "sheets_clear_format"
+description = "[approval] Remove all formatting (colors, fonts, borders, alignment, number formats) from an A1 range, keeping the values. Empty range = the whole tab. Does not remove merges or conditional rules."
+file = "styling.py"
+entrypoint = "main"
+signature = "main(action: str='format_range', doc: str='', tab: str='', range: str='', bg_color: str='', text_color: str='', bold: str='', italic: str='', underline: str='', strikethrough: str='', font_size: int=0, font_family: str='', h_align: str='', v_align: str='', wrap: str='', number_format: str='', style: str='solid', color: str='#000000', sides: str='all', unmerge: bool=False, merge_type: str='all', pixel_size: int=0, auto_fit: bool=False, dimension: str='', rows: int=-1, cols: int=-1, condition: str='', value: str='', basic_filter: bool=False)"
+
+[tool.pinned]
+action = "clear_format"

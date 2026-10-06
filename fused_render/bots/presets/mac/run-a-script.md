@@ -1,0 +1,9 @@
+# Script a stock Apple app (Reminders, Calendar, Notes, Mail, Messages, Finder, Safari, Music)
+trigger: applescript, jxa, osascript, add a reminder, my reminders, calendar events, what's on my calendar, create an event, send an imessage, new note, finder selection, what's playing, open in safari, automate
+
+1. `tool` mac_status, then `tool` mac_probe with `app` set to the app the task names. If `granted` is false, report the hint (allow it under System Settings > Privacy & Security > Automation, or run ~/Fused/tools/grant_automation.py from Terminal) and stop; do not rewrite the script, retry, or go through another app.
+2. For reminders and calendar use the ready-made tools first: mac_reminders / mac_add_reminder, mac_calendar. Remember that Calendar.app only knows what it has synced and shows recurring events once, so an empty week is not proof of a free week; say so when reporting an empty result.
+3. For everything else write JXA (`function run(argv)` reading the user's text from argv, `return JSON.stringify(...)`) or an AppleScript (`on run argv`). Use the snippets from the app's SKILL.md (`py` mac-automation with no file loads it). Messages: address chats by `chat id` from `get id of every chat`, not by service. Notes: the body is HTML.
+4. Reads: `tool` mac_run_script at once and use the `json` field. Writes (send, delete, create, change): `tool` mac_compile_check first, show the user the exact script and what it will change, and `tool` mac_run_script only after approval.
+5. On an error read `hint`: -1743 is a missing grant (stop and tell the user), -1728 a property this macOS lacks (check the dictionary), -2700 a JXA collection call (`coll().length`, `_and` needs 2+ clauses). Fix the code only for -1728 and -2700.
+6. Report the result in plain words (names, dates, counts), quoting data verbatim, and name the app it came from.

@@ -64,6 +64,7 @@ import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
+import { botsFrontDoor, seedBotsEnabled } from "@apps/bots/feature-flag";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
@@ -154,6 +155,9 @@ const Canvases = lazy(() =>
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
+// Bots (ported from FusedBot): browser bots, each driving its own Chrome
+// window. The page carries its own scoped stylesheet in the lazy chunk.
+const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
 
 type StatState =
   | { status: "loading" }
@@ -706,12 +710,19 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  // The Home page is the front door — "/" lands there. Render-time
-  // write is safe — it changes pathname, so the re-render (via fused:urlchange)
-  // derives the real route. (Legacy /view/_home, /view/_account, and the whole
-  // /view//embed namespaces are rewritten at boot by router.ts.)
-  if (location.pathname === "/") {
-    history.replaceState(null, "", "/home");
+  // The FRONT DOOR — "/" lands on Home, or on Bots when the `bots_enabled`
+  // preference swaps it in (shell/prefs.py; the flag rides /api/config so this
+  // render-time decision never waits on a prefs fetch, and the Preferences
+  // page publishes a toggle into the same store, so no reload is needed).
+  // Render-time write is safe — it changes pathname, so the re-render (via
+  // fused:urlchange) derives the real route. (Legacy /view/_home,
+  // /view/_account, and the whole /view//embed namespaces are rewritten at
+  // boot by router.ts.) With the flag on, a bare /home goes to Bots too: the
+  // sidebar hides Home, so the only way to land there is the old default URL.
+  seedBotsEnabled(config.bots_enabled);
+  const frontDoor = botsFrontDoor() ? "/bots" : "/home";
+  if (location.pathname === "/" || (frontDoor === "/bots" && location.pathname === "/home")) {
+    history.replaceState(null, "", frontDoor);
   }
   // A fresh install's first load lands on the setup wizard instead (its own
   // route, shell/onboarding). Once per page load and only from the front
@@ -723,7 +734,7 @@ export default function App({ config }: { config: Config }) {
   if (
     !IS_EMBED &&
     !autoShowDecided &&
-    location.pathname === "/home" &&
+    location.pathname === frontDoor &&
     shouldAutoShow(config)
   ) {
     history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
@@ -796,6 +807,7 @@ export default function App({ config }: { config: Config }) {
   // constrained to the CLI's own canvas-name alphabet, so the match below is
   // also the validation.
   const isCanvases = pathname === "/canvases";
+  const isBots = pathname === "/bots";
   const canvasWorkspaceName =
     /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
@@ -830,6 +842,7 @@ export default function App({ config }: { config: Config }) {
     isHome ||
     isClaudeConfig ||
     isCanvases ||
+    isBots ||
     canvasWorkspaceName !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // A resolved fsPath mounts StatView below, which owns the title itself.
@@ -862,6 +875,8 @@ export default function App({ config }: { config: Config }) {
                             ? "Claude Config"
                             : isCanvases
                               ? "Workbench Canvases"
+                              : isBots
+                                ? "Bots"
                               : canvasWorkspaceName
                                 ? `Canvas: ${canvasWorkspaceName}`
                                 : fsPath
@@ -1011,6 +1026,15 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Canvases key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (isBots) {
+    // Bots — chrome-free like Canvases; the page owns its three columns.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <Bots key={epoch} />
         </Suspense>
       </div>
     );

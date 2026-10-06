@@ -54,6 +54,10 @@ export interface Config {
   // `dismiss` are distinct writes (reached the end vs "skip for now").
   // Server-side, not localStorage: a port drift is a new origin.
   onboarding?: OnboardingState;
+  /** Bots as the front door (prefs `bots_enabled`, default off): `/` lands on
+   *  `/bots` and the sidebar's Home row gives way to Bots. In config so the
+   *  shell can decide the front door synchronously at first render. */
+  bots_enabled?: boolean;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -1255,6 +1259,8 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  /** Bots sub-app as the front door (default off); see shell/prefs.bots_enabled. */
+  bots: { enabled: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
@@ -1547,6 +1553,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export function putBotsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { bots_enabled: enabled });
 }
 
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
