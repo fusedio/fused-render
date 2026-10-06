@@ -30,6 +30,7 @@ from fused_render.bots import apptools, imessage, store
 from fused_render.bots import browser as browser_mod
 from fused_render.bots import paths as bpaths
 from fused_render.bots.browser import Browser
+from fused_render.bots.channels import base as chan
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,10 @@ BUILD_EFFORT = "high"
 BUILD_MODES = {"scoped": "default", "full": "auto"}
 BUILD_POLL_S = 15          # how often a build watcher asks the server for the task's status
 BUILD_MAX_S = 3 * 3600     # stop watching after this long
+# Hand-offs (docs §11): Super Bot gives an ordinary bot a task and gets ONE result back.
+HANDOFF_POLL_S = 2         # how often a hand-off watcher looks at the target bot
+HANDOFF_MAX_S = BUILD_MAX_S  # a target may wait on the user at the Mac (login, approval) for a long time
+HANDOFF_KEEP = 40          # meta["handoffs"] rows kept on Super Bot
 INBOX_LIST = 12            # artifacts the page shows per bot
 
 MODELS = ("haiku", "sonnet", "opus", "fable", "local-4b", "local-9b")  # fused.ai aliases the model picker offers
@@ -69,8 +74,11 @@ ENGINES = ("auto", "steps", "agent")
 # "ask" (default) = the CLI's default mode, a card for every write / edit /
 # shell command; "full" = the CLI's `auto` mode (its own classifier approves
 # what it judges safe and escalates the rest), the same mode Builds' "Full
-# access" uses. Only the user's chat starts a Super Bot task: routines, iMessage and
-# the file inbox are refused (docs §5 "Super Bot").
+# access" uses. Only the user starts a Super Bot task: from its chat, or by text
+# from the iMessage handle set on it (then always in "ask" posture, see
+# agent_engine.super_mode); routines and the file inbox are refused (docs §5
+# "Super Bot"). Super Bot hands browsing work to the other bots (`handoff`,
+# docs §11); a hand-off to Super Bot is refused (depth one).
 KINDS = ("bot", "super")
 SUPER_ACCESS = {"ask": "default", "full": "auto"}
 SUPER_NAME = "Super Bot"
@@ -104,7 +112,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
 - Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue. "Open in browser" pops your Chrome out as a real desktop window; "Dock" brings it back. Your `login` action pops a real window the same way and waits until the user replies "done" or clicks Hand back.
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
-- iMessage (Settings > Advanced): a phone number or Apple ID that can text you tasks and gets your answers texted back; and "Contacts the bot may text", the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
+- iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
 - Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
@@ -386,6 +394,8 @@ def super_id():
 
 
 class Bot:
+    deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
+
     def __init__(self, bid):
         self.id = bid
         self.dir = bpaths.bot_dir(bid)
@@ -401,8 +411,11 @@ class Bot:
         self.pause_flag = threading.Event()
         self.inbox = []           # user messages arriving mid-task
         self.task_dir = None      # this task's folder in the user's Inbox, made on first artifact
+        self.deleted = False      # set by delete() before shutdown: nothing may write this bot back to disk
+        self.last_task_dir = None  # (task_via, folder) of the task that ended last (collect_task_artifacts)
         self.task_started = 0.0   # downloads newer than this belong to the running task
         self.task_origin = "manual"
+        self.task_via = dict(chan.WEB)  # where the running task came from (channels/base.py Via); web by default
         self.engine = None        # "steps" | "agent" while a task runs
         self.wake = threading.Event()
         self.asking = False       # the task thread is blocked on a question/approval for the user
@@ -414,11 +427,33 @@ class Bot:
         self._offer_seq = None    # seq of the offer the task thread is waiting on right now
         self._tool_apps = set()
         self._skills_loaded = []
+        self._handoff_queue = []  # hand-offs waiting for this bot to go idle: [(super bot id, hand-off id)], FIFO
+        self._handoff_threads = {}  # hand-off id -> the target's task thread it started (Super Bot side, in memory)
+        dirty = False
+        if self.meta.pop("channel_forwards", None) is not None:
+            dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
         # A server restart leaves "running" on disk with no thread behind it.
         if self.meta.get("status") in ("running", "waiting", "paused"):
             self.meta["status"] = "idle"
             self.meta["note"] = "interrupted by worker restart"
+            dirty = True
+        # Hand-offs still open when the server last stopped: their target's task died with it.
+        interrupted = []
+        for hd in self.meta.get("handoffs") or []:
+            if not hd.get("done_at"):
+                text = f"Interrupted by a restart; {hd.get('target_name') or 'the bot'}'s chat has what it got to."
+                hd.update(state="error", done_at=time.time(), result=text)
+                interrupted.append((hd, text))
+                dirty = True
+        if dirty:
             self.save()
+        for hd, text in interrupted:
+            # The user was told they would hear: the result card says how it ended (texted back by the origin rule).
+            try:
+                self.emit("done", text, summary=text, source="handoff",
+                          handoff=self._handoff_ref(hd, task=hd.get("task") or "", task_dir=""), via=hd.get("origin_via"))
+            except Exception:  # noqa: BLE001
+                logger.debug("interrupted hand-off card not written", exc_info=True)
         # Builds still in flight when the server last stopped: pick their watchers back up.
         for bd in list(self.meta.get("builds") or []):
             if not bd.get("done_at") and time.time() - float(bd.get("created_at") or 0) < BUILD_MAX_S:
@@ -426,6 +461,8 @@ class Bot:
 
     # -- persistence -------------------------------------------------------
     def save(self):
+        if self.deleted:
+            return  # delete() is tearing it down: a late save must not resurrect bot.json
         store.write_meta(self.id, self.meta)
 
     def _count_events(self):
@@ -441,14 +478,29 @@ class Bot:
         The counter is re-synced to the file first: another writer on the same
         log (a second server process on this app home, a botsend.py) may have
         appended since, and a repeated seq leaves the page's thread with a
-        duplicate row key (an orphaned bubble on bot switch)."""
+        duplicate row key (an orphaned bubble on bot switch).
+
+        Events written by the task thread carry the task's `via` (the channel
+        the task came from) unless the caller set one; other threads (build
+        watcher, offer settlement, greeting) pass theirs explicitly or carry
+        none. The channels router gets every event (registry.on_event) and
+        delivers the outbound-worthy ones under its policy."""
         with self.lock:
             self.seq = max(self.seq, self._count_events()) + 1
             ev = {"seq": self.seq, "ts": time.time(), "role": role, "text": text, **extra}
+            if "via" not in ev:
+                t = self.thread
+                if t is not None and threading.get_ident() == t.ident and not chan.is_web(self.task_via):
+                    ev["via"] = dict(self.task_via)
+            elif ev["via"] is None:
+                del ev["via"]
+            if self.deleted:
+                return ev  # never recreate a deleted bot's folder
             os.makedirs(self.dir, exist_ok=True)
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
-            return ev
+        _registry().on_event(self, ev)
+        return ev
 
     # -- step thumbnails -------------------------------------------------------
     # One small JPEG per action, under cache/<id>/steps/, referenced from the
@@ -504,18 +556,27 @@ class Bot:
         Built from the on-disk transcript, so it survives restarts and lets a new
         task like "do it again" refer to what happened before."""
         keep = {"user": "USER", "question": "YOU ASKED", "approval": "YOU ASKED APPROVAL", "done": "YOU FINISHED", "system": None}
-        out = []
+        out = []  # (seq, line)
         for _, ev in _iter_events(self.events_path):
             role, text = ev.get("role"), (ev.get("text") or "").strip()
             if role not in keep or not text:
                 continue
             if role == "system":
+                if ev.get("ignored_seq") is not None:
+                    # A texted line that was held back (receive: busy on a chat task) is not something the user
+                    # asked this bot to do; drop it from the history so a later task cannot read it as an ask.
+                    out = [p for p in out if p[0] != ev["ignored_seq"]]
+                    continue
                 if not text.startswith("Task started: "):
                     continue
                 label, text = "TASK STARTED", text[len("Task started: "):]
             elif role == "question" and ev.get("offer"):
                 o = ev["offer"]
                 label = f"YOU OFFERED TO {'USE' if o.get('kind') == 'use' else 'BUILD'} THE APP {o.get('name') or ''!r}"
+            elif ev.get("source") == "handoff":
+                # Super Bot's hand-off cards: what another bot reported is data, never its own words or orders.
+                who = str((ev.get("handoff") or {}).get("target_name") or "A BOT").upper()
+                label = f"{who} REPORTED (data from a bot you handed off to)" if role == "done" else f"HAND-OFF NOTE ({who})"
             else:
                 label = keep[role]
             text = " ".join(text.split())
@@ -524,8 +585,8 @@ class Bot:
             rx = (self.meta.get("reactions") or {}).get(str(ev.get("seq")))
             if rx:
                 text += f"  [user reacted {rx}]"
-            out.append(f"{label}: {text}")
-        return out[-limit:]
+            out.append((ev.get("seq"), f"{label}: {text}"))
+        return [line for _, line in out[-limit:]]
 
     # -- memory --------------------------------------------------------------
     # memory.md: durable notes the bot (or you) keep between tasks: site quirks,
@@ -918,7 +979,9 @@ class Bot:
         except Exception:  # noqa: BLE001
             return []
         finally:
-            self.task_dir = None
+            # last_task_dir: a hand-off watcher (docs §11) reports the folder after the task has ended,
+            # keyed by the task's via so a follow-up task never hands it another task's folder.
+            self.last_task_dir, self.task_dir = (dict(getattr(self, "task_via", None) or {}), self.task_dir), None
 
     def _fresh_downloads(self):
         try:
@@ -997,12 +1060,11 @@ class Bot:
             except OSError:
                 continue
             if task:
-                src = "iMessage" if n.startswith("imessage-") else "botsend"
-                if is_super(self.meta):
-                    self.emit("system", f"Ignored a task from {src} ({n[:-4]}): Super Bot only takes tasks you type here.")
-                    continue
-                self.emit("system", f"Task received from {src} ({n[:-4]})")
-                self.send(task)
+                # botsend.py drops. A file is a local script's door whatever its name: never a phone
+                # channel (its stem is no address to text back), and Super Bot refuses it.
+                if not is_super(self.meta):  # Super Bot refuses it in receive(): its thread shows that line only
+                    self.emit("system", f"Task received from {chan.label('botsend')} ({n[:-4]})")
+                self.receive(task, via=chan.via("botsend", n[:-4]))
 
     def events_since(self, cursor):
         """Events after the page's cursor, by position in the file.
@@ -1035,7 +1097,11 @@ class Bot:
             bs["artifacts"] = self.artifacts()
             bs["artifacts_dir"] = self.artifacts_dir
         shot_ts = self.browser.shot_ts()
-        return {**self.meta, "id": self.id, "seq": self.seq, "browser": bs,
+        with self.lock:  # hand-off watchers change rows in place (under this lock); copy them as they stand
+            meta = dict(self.meta)
+            if meta.get("handoffs"):
+                meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
+        return {**meta, "id": self.id, "seq": self.seq, "browser": bs,
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
@@ -1116,6 +1182,7 @@ class Bot:
             if not manual and not self._spacing_ok(r):
                 return
             busy = self.thread is not None and self.thread.is_alive()
+            prev_last = r.get("last")
             r["last"] = time.time()
             if busy:
                 r["last_result"] = "skipped: bot was busy"
@@ -1128,8 +1195,19 @@ class Bot:
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
             self.save()
-        if not busy:
-            self.start_task(r["task"], origin="routine")
+        if not busy and not self.start_task(r["task"], origin="routine"):
+            # Someone (a hand-off, a message) started a task between the busy check and the start. The "fired"
+            # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
+            with self.lock:
+                r["last_result"] = "skipped: bot was busy"
+                # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
+                # and `next` was computed as if this slot had run.
+                r["last"] = prev_last
+                if r["kind"] == "once":
+                    r["enabled"] = True
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+                self.save()
+            self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
 
     def _spacing_ok(self, r):
         """Refuse to fire inside the routine's own interval, judged from disk.
@@ -1201,40 +1279,98 @@ class Bot:
         return self.thread is not None and self.thread.is_alive()
 
     def send(self, text, reply_to=None):
-        """A message from the user. `reply_to` is the seq of an earlier message the
-        user is replying to: the transcript keeps the plain reply plus a quoted
-        snippet for the UI, and the bot reads the reply with that message quoted
-        above it so it knows exactly what is being referred to."""
+        """A message typed on the web page (the composer, a card button)."""
+        return self.receive(text, via=None, reply_to=reply_to)
+
+    def receive(self, text, via=None, reply_to=None):
+        """A message from the user, from any channel (docs §10): the one entry
+        point. `via` is where it came from (channels/base.py; None = the web).
+        `reply_to` is the seq of an earlier message the user is replying to: the
+        transcript keeps the plain reply plus a quoted snippet for the UI, and the
+        bot reads the reply with that message quoted above it so it knows exactly
+        what is being referred to.
+
+        A running task gets it as an instruction or an answer; an idle bot starts
+        a task from it, tagged with the channel so replies go back there."""
+        via = dict(via) if via else dict(chan.WEB)
+        if not chan.is_web(via) and via.get("kind") != "imessage" and is_super(self.meta):
+            # Super Bot has shell and file access: only the user's own chat, or a text from the handle set
+            # on it (the router lets no other sender through), may drive it (docs §5).
+            self.emit("system", f"Ignored a task from {chan.label(via['kind'])}: Super Bot only takes tasks you type here.")
+            return
+        if via.get("kind") == "imessage" and is_super(self.meta):
+            with self.lock:
+                busy_on_chat = self.running() and chan.is_web(getattr(self, "task_via", None))
+            if busy_on_chat:
+                # A chat task may run unattended and its replies are never texted: a text must not steer it,
+                # and is not written as a user line (a later task's CONVERSATION SO FAR would present it as asked).
+                self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
+                self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
         shown = text  # what the user typed; the transcript and status show this, the model reads the quoted form
+        stamp = {} if chan.is_web(via) else {"via": via}
         if quoted:
             snippet = " ".join((quoted.get("text") or "").split())
-            self.emit("user", text, reply={"seq": quoted.get("seq"), "role": quoted.get("role"), "text": snippet[:280]})
+            uev = self.emit("user", text, reply={"seq": quoted.get("seq"), "role": quoted.get("role"), "text": snippet[:280]}, **stamp)
             who = "my own earlier message" if quoted.get("role") == "user" else "your earlier message"
             text = f"Replying to {who}:\n> {snippet[:1200]}\n\n{text}"
         else:
-            self.emit("user", text)
+            uev = self.emit("user", text, **stamp)
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
             if not running and self.meta.get("control"):
                 self.meta["control"] = False  # a fresh task means the bot drives again
             pending = self.meta.get("pending_offer")
+        texted = via.get("kind") == "imessage"
         # A yes or no to an app offer that outlived its task (see _offer) is settled here, without a model call.
-        if pending and not running and self._answer_pending_offer(pending, shown):
+        # Never from a text: a yes starts a build, and approvals are answered at the Mac (docs §10).
+        if pending and not running and not texted and self._answer_pending_offer(pending, shown):
             return
         if pending and running and pending.get("seq") != getattr(self, "_offer_seq", None):
             self._settle_offer()  # the offer timed out earlier and the user has moved on: it is stale, not pending
+        if running and texted and self._texted_approval(shown):
+            return
         with self.lock:
+            if not running and not self.start_task(text, label=shown, via=via) and self.running():
+                if texted and is_super(self.meta) and chan.is_web(getattr(self, "task_via", None)):
+                    # The busy-on-chat hold above was checked before the user line; a chat task that started in
+                    # the gap must still not take a text as an instruction (docs §5 posture by origin). The user
+                    # line is already written: mark it ignored so past_conversation leaves it out.
+                    self.emit("system", "Texted while busy on a chat task; not applied.", via=None, ignored_seq=uev.get("seq"))
+                    self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                    return
+                running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
-                self.inbox.append(text)
+                # Marked as texted: approval and offer waits never take it as their verdict (channels.base.Texted).
+                self.inbox.append(chan.Texted(text, via) if texted else text)
                 self.wake.set()
                 if self.meta.get("status") == "waiting":
                     # waiting_on stays: the engine clears it when its wait ends,
                     # or re-arms the card when this message was an instruction,
                     # not an answer. Clearing here would settle the card for a poll.
                     self.set_status("running")
-            else:
-                self.start_task(text, label=shown)
+
+    def _texted_approval(self, text):
+        """A yes/no texted while the task waits on an approval card: approvals
+        are answered at the Mac only (docs §10), so it is not taken as the
+        answer. True when the text was held back (a system line says why);
+        anything else is an ordinary mid-task instruction."""
+        with self.lock:
+            waiting = self.meta.get("status") == "waiting" and self.meta.get("waiting_on")
+        if not waiting:
+            return False
+        ev = self.event_by_seq(waiting)
+        if not ev or ev.get("role") != "approval":
+            return False
+        try:
+            from fused_render.bots.agent_engine import NO, YES
+        except Exception:  # noqa: BLE001
+            return False
+        if not (YES.match(text or "") or NO.match(text or "")):
+            return False
+        self.emit("system", "Approvals are answered here at the Mac, not by text: use Approve or Deny on the card.", via=None)
+        return True
 
     def _ai_call(self, ai, prompt, **kw):
         """Every fused_ai.text call goes through here so the usage ledger sees it."""
@@ -1251,36 +1387,66 @@ class Bot:
             except Exception:  # noqa: BLE001
                 pass
 
-    def start_task(self, task, label=None, origin="manual"):
+    def start_task(self, task, label=None, origin="manual", via=None):
         """`task` is what the model reads; `label` (default: the same) is what the
         transcript and status show — a reply's quoted prefix is only for the model.
-        `origin` ("manual" | "routine") tags the usage ledger. Picks the engine
-        (docs §5): the bot's `engine` setting, `auto` = steps for a local model or
-        when no `claude` CLI resolves, else the agent engine."""
-        if origin != "manual" and is_super(self.meta):
-            # Super Bot has shell and file access: nothing but the user's own chat may start it (docs §5).
+        `via` is the channel the task came from (channels/base.py; None = web);
+        `origin` tags the usage ledger ("manual" | "routine" | a channel kind) and
+        follows `via` when one is given. Picks the engine (docs §5): the bot's
+        `engine` setting, `auto` = steps for a local model or when no `claude`
+        CLI resolves, else the agent engine. Returns True when the task started;
+        False when it was refused or the bot is already running one."""
+        if via is None:
+            via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
+        elif not chan.is_web(via):
+            origin = via.get("kind") or origin
+        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin == "manual"):
+            # Super Bot has shell and file access: only the user's chat or their text may start it (docs §5).
+            # Judged on the via, so an origin label alone never lifts the gate (or the posture, super_mode).
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
-            return
-        self.task_origin = origin
-        self.stop_flag.clear()
-        self.pause_flag.clear()
-        self.inbox = []
-        self.set_status("running", task=label or task, step=0, note="", waiting_on=None)
-        engine = _engine_for(self.meta)
-        run = None
-        if engine == "agent":
-            try:
-                from fused_render.bots import agent_engine
-                run = agent_engine.run
-            except Exception:  # noqa: BLE001 — the agent engine may not be installed; the steps engine always is
-                logger.warning("bot %s: agent engine unavailable, using the steps engine", self.id, exc_info=True)
-                engine = "steps"
-        if run is None:
-            from fused_render.bots import steps_engine
-            run = steps_engine.run
-        self.engine = engine
-        self.thread = threading.Thread(target=run, args=(self, task, label or task), daemon=True, name=f"bot-{self.id}")
-        self.thread.start()
+            return False
+        with self.lock:
+            if self.deleted:
+                return False
+            if self.thread is not None and self.thread.is_alive():
+                # Two engine threads on one browser is never right: whoever checked "idle" first won.
+                logger.info("bot %s: start_task refused, a task is already running", self.id)
+                return False
+            self.task_origin = origin
+            self.task_via = dict(via)
+            self.task_started = time.time()  # the engines stamp it again; the router reads it from here on (forwards)
+            self.stop_flag.clear()
+            self.pause_flag.clear()
+            self.inbox = []
+            self.set_status("running", task=label or task, step=0, note="", waiting_on=None,
+                            task_via=None if chan.is_web(via) else dict(via))
+            engine = _engine_for(self.meta)
+            run = None
+            if engine == "agent":
+                try:
+                    from fused_render.bots import agent_engine
+                    run = agent_engine.run
+                except Exception:  # noqa: BLE001 — the agent engine may not be installed; the steps engine always is
+                    if is_super(self.meta):
+                        # Super Bot's guard rails (posture, texted answers) live in the agent engine: no fallback.
+                        logger.warning("bot %s: agent engine unavailable for Super Bot", self.id, exc_info=True)
+                        # Explicit via: this runs on the caller's thread, so emit() would not stamp it and a phone-started
+                        # request would get silence (the router answers the origin).
+                        self.emit("error", "Super Bot needs the agent engine (Claude Code), which could not load.",
+                                  **({} if chan.is_web(via) else {"via": dict(via)}))
+                        self.set_status("idle", task_via=None)
+                        self.task_via = dict(chan.WEB)
+                        return False
+                    logger.warning("bot %s: agent engine unavailable, using the steps engine", self.id, exc_info=True)
+                    engine = "steps"
+            if run is None:
+                from fused_render.bots import steps_engine
+                run = steps_engine.run
+            self.engine = engine
+            self.thread = threading.Thread(target=_run_task, args=(run, self, task, label or task), daemon=True,
+                                           name=f"bot-{self.id}")
+            self.thread.start()
+        return True
 
     def pause(self, note=True):
         """`note=False` (a yield from the live view) pauses silently: the page shows its
@@ -1556,12 +1722,15 @@ class Bot:
         if not update and os.path.isdir(d) and os.listdir(d):
             d = os.path.join(builds_root, f"{_slug(name)}-{uuid.uuid4().hex[:4]}")
         os.makedirs(d, exist_ok=True)
-        mode = BUILD_MODES.get(self.meta.get("build_access") or "scoped", "default")
+        from fused_render.bots import tools as _tools
+        mode = BUILD_MODES.get(_tools.effective_build_access(self), "default")  # scoped for a phone-started Super Bot task
         r = _tasks_api("POST", "/api/tasks/create", {
             "prompt": _build_prompt(name, d, spec, update=update), "target": d, "title": f"{'Update' if update else 'Build'} · {name}",
             "model": BUILD_MODEL, "effort": BUILD_EFFORT, "permission_mode": mode})
         bd = {"entry_id": r.get("entry_id") or "", "key": r.get("key") or "", "name": name, "dir": d,
-              "mode": mode, "created_at": time.time()}
+              "mode": mode, "created_at": time.time(),
+              # the channel the asking task came from: the "ready" message goes back there (router D5)
+              "via": None if chan.is_web(getattr(self, "task_via", None)) else dict(self.task_via)}
         with self.lock:
             self.meta["builds"] = (self.meta.get("builds") or [])[-39:] + [bd]
             self.save()
@@ -1599,7 +1768,8 @@ class Bot:
                     seen_running = True
                 if st in ("needs_attention", "blocked") and not bd.get("nudged"):
                     bd["nudged"] = True
-                    self.emit("question", f"The build of \"{bd['name']}\" is waiting for you: answer Claude under Builds.")
+                    self.emit("question", f"The build of \"{bd['name']}\" is waiting for you: answer Claude under Builds.",
+                              source="build", via=bd.get("via"))
                 if st in ("done", "archived") and seen_running:
                     if stable != st:      # status can flicker for ~15 s after a turn: want it twice in a row
                         stable = st
@@ -1607,13 +1777,314 @@ class Bot:
                     reply = " ".join(((row or {}).get("last_reply") or "").split())[:400]
                     # `app` lets the chat render an app card under this message (open inline / beside the chat).
                     self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
-                              app={"name": bd["name"], "dir": bd["dir"]})
+                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     with self.lock:
                         bd["done_at"] = time.time()
                         self.save()
                     return
                 stable = ""
         threading.Thread(target=run, name=f"build-{(bd.get('entry_id') or '')[:8]}", daemon=True).start()
+
+    # -- hand-offs: Super Bot gives a bot a task (docs §11) ---------------------
+    # meta["handoffs"] on Super Bot: [{id, target, target_name, task, origin_via, created_at,
+    #   state: queued|running|waiting|done|error|stopped, done_at?, result?}], last HANDOFF_KEEP.
+    # Task text goes down, status and ONE result come up. The target's ask / login / approvals stay
+    # in its own chat for the user at the Mac; Super Bot never answers for it. Every change to a
+    # row happens under Super Bot's lock (summary() copies the rows under it).
+    def _handoff_via(self, hd):
+        return chan.handoff_via(self.id, hd["id"])
+
+    @staticmethod
+    def _handoff_ref(hd, **extra):
+        return {"id": hd["id"], "target": hd["target"], "target_name": hd.get("target_name") or "",
+                "state": hd["state"], **extra}
+
+    @staticmethod
+    def _exists(bid):
+        """bot.json is still on disk: a deleted bot must never be written back by a late save."""
+        return bool(bid) and os.path.isfile(os.path.join(bpaths.bot_dir(bid), "bot.json"))
+
+    def _handoff_target(self, name):
+        """(Bot, "") for an ordinary bot's name (exact, case-insensitive, then a
+        unique prefix; two bots with the same exact name: the idle one), or
+        (None, "error: …") with the names the model may use."""
+        want = " ".join((name or "").split()).lower()
+        cands, supers = [], []
+        for bid in _list_ids():
+            try:
+                m = _read_meta(bid)
+            except Exception:  # noqa: BLE001
+                continue
+            n = " ".join((m.get("name") or "").split())
+            if n:
+                (supers if is_super(m) or bid == self.id else cands).append((bid, n, m))
+        names = ", ".join(sorted({n for _, n, _ in cands})) or "none yet"
+        if not want:
+            return None, f"error: name a bot from BOTS ({names})"
+        if any(n.lower() == want for _, n, _ in supers):
+            return None, f"error: a hand-off to Super Bot is refused (only the BOTS take hand-offs: {names}); do it yourself"
+        exact = [c for c in cands if c[1].lower() == want]
+        if len(exact) > 1:
+            idle = [c for c in exact if (c[2].get("status") or "idle") in ("idle", "error")]
+            exact = idle[:1] or exact
+        hit = exact or [c for c in cands if c[1].lower().startswith(want)]
+        if len(hit) != 1:
+            if not hit:
+                return None, f"error: no bot named {name!r}. BOTS: {names}"
+            return None, (f"error: several bots match {name!r} ({', '.join(n for _, n, _ in hit)}) and none is free to pick; "
+                          "use a bot's full name, or tell the user two bots share a name")
+        bid = hit[0][0]
+        try:
+            return _registry().get(bid), ""
+        except ValueError:
+            return None, f"error: no bot named {name!r}. BOTS: {names}"
+
+    def _handoff_start(self, t, hd, from_queue=False):
+        """Start hand-off `hd` on bot `t` when `t` is idle and `hd` is next in
+        its queue (a fresh hand-off never jumps a queue). True when started;
+        a queued hand-off leaves the queue only once its task has started."""
+        hv = self._handoff_via(hd)
+        key = (self.id, hd["id"])
+        with t.lock:
+            if t.running() or t.deleted or not self._exists(t.id):
+                return False
+            q = t._handoff_queue
+            if from_queue:
+                if not q or q[0] != key:
+                    return False
+            elif q:
+                return False
+            if t.meta.get("control"):
+                t.meta["control"] = False  # a fresh task means the bot drives again (as receive() does)
+            if t.deleted:
+                return False
+            start_seq = t.seq
+            if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):
+                return False
+            # After the start, so a refusal writes nothing; the engine thread's first emit waits on t.lock
+            # (held here), so this line still comes first in the bot's chat. Chip "from Super Bot".
+            t.emit("user", hd["task"], via=hv)
+            if from_queue and q and q[0] == key:
+                q.pop(0)
+            self._handoff_threads[hd["id"]] = t.thread
+            with self.lock:
+                hd.update(state="running", start_seq=start_seq, started_at=time.time())
+                if self._exists(self.id):
+                    self.save()
+        return True
+
+    def handoff(self, target_name, task):
+        """`handoff`: give an ordinary bot a task and watch it (Super Bot only).
+        A busy bot gets it queued; its watcher starts it when the bot is idle.
+        Returns the (label, result) pair the engine hands back to the model."""
+        task = (task or "").strip()
+        label = f"handoff \"{' '.join((target_name or '').split())[:60] or '?'}\""
+        if not is_super(self.meta):
+            return label, "error: only Super Bot hands tasks to other bots"
+        if not task:
+            return label, "error: handoff needs `task`, a self-contained description of what to do"
+        t, err = self._handoff_target(target_name)
+        if t is None:
+            return label, err
+        name = " ".join((t.meta.get("name") or "bot").split())
+        label = f"handoff \"{name}\""
+        hd = {"id": uuid.uuid4().hex[:8], "target": t.id, "target_name": name, "task": task,
+              # the channel the asking task came from: the result goes back there (router origin rule)
+              "origin_via": None if chan.is_web(getattr(self, "task_via", None)) else dict(self.task_via),
+              "created_at": time.time(), "state": "queued"}
+        with self.lock:
+            self.meta["handoffs"] = (self.meta.get("handoffs") or [])[-(HANDOFF_KEEP - 1):] + [hd]
+            self.save()
+        try:
+            started = self._handoff_start(t, hd)
+            if not started:
+                with t.lock:
+                    t._handoff_queue.append((self.id, hd["id"]))
+        except Exception as e:  # noqa: BLE001 — never leave a row "queued" with no watcher behind it
+            logger.warning("hand-off %s to %s did not start", hd["id"], t.id, exc_info=True)
+            with self.lock:
+                hd.update(state="error", done_at=time.time(), result=f"could not start: {e}"[:400])
+                self.save()
+            return label, f"error: could not hand the task to {name}: {e}"
+        self.emit("system", f"Asked {name} to: {task}", source="handoff", handoff=self._handoff_ref(hd))
+        self._watch_handoff(hd)
+        if started:
+            return label, (f"started; {name} is working on it now (it may pause for the user's approval in its own chat). "
+                           f"Now finish: tell the user you asked {name}, in one short sentence, and that they will hear when it is done.")
+        return label, (f"queued; {name} is busy and starts this as soon as its current task ends. Now finish: tell the user "
+                       f"you asked {name}, in one short sentence, and that they will hear when it is done.")
+
+    def _handoff_is_running(self, t, hd):
+        """`t` is running THIS hand-off's task right now (its via and the thread it started)."""
+        return (t.running() and dict(getattr(t, "task_via", None) or {}) == self._handoff_via(hd)
+                and self._handoff_threads.get(hd["id"]) is t.thread)
+
+    def handoff_stop(self, target_name):
+        """`handoff_stop`: cancel what THIS Super Bot handed to a bot: a queued
+        hand-off is dropped, a running one is stopped. Anything else the bot is
+        doing (the user's own task, a routine) is refused."""
+        label = f"handoff_stop \"{' '.join((target_name or '').split())[:60] or '?'}\""
+        if not is_super(self.meta):
+            return label, "error: only Super Bot hands tasks to other bots"
+        t, err = self._handoff_target(target_name)
+        if t is None:
+            return label, err
+        name = " ".join((t.meta.get("name") or "bot").split())
+        label = f"handoff_stop \"{name}\""
+        with self.lock:
+            mine = [hd for hd in self.meta.get("handoffs") or [] if hd.get("target") == t.id and not hd.get("done_at")]
+        dropped, running = [], False
+        with t.lock:
+            for hd in mine:
+                key = (self.id, hd["id"])
+                if hd.get("state") == "queued" and key in t._handoff_queue:
+                    t._handoff_queue.remove(key)
+                    dropped.append(hd)
+            running = any(self._handoff_is_running(t, hd) for hd in mine)
+        for hd in dropped:
+            self._handoff_finish(None, hd, "stopped", f"Cancelled before {name} started it.")
+        if running:
+            t.stop()  # the watcher reports the outcome (state "stopped") once the task has ended
+        if not dropped and not running:
+            return label, f"error: {name} is not working on anything you handed off; only your own hand-offs can be stopped"
+        return label, (f"stopped; {name} will not finish what you handed off. Now finish: tell the user it is "
+                       "cancelled, in one short sentence.")
+
+    def _watch_handoff(self, hd):
+        """Background: start a queued hand-off when its bot is free, tell the
+        user once when the bot waits on them at the Mac, then report the ONE
+        result to Super Bot's chat (and, by the origin rule, to the phone the
+        asking task came from). Both bots are looked up again on every poll: a
+        deleted one is never written back. Emits carry `via` explicitly: this
+        is not the task thread."""
+        def run():
+            name = hd.get("target_name") or "the bot"
+            t = None
+            try:
+                deadline = float(hd.get("created_at") or time.time()) + HANDOFF_MAX_S
+                while time.time() < deadline:
+                    time.sleep(HANDOFF_POLL_S)
+                    if hd.get("done_at"):
+                        return  # settled elsewhere (handoff_stop on a queued hand-off)
+                    if self.deleted or not self._exists(self.id):
+                        return  # Super Bot was deleted: nobody to report to, and nothing to save
+                    try:
+                        t = _registry().get(hd["target"]) if self._exists(hd["target"]) else None
+                    except ValueError:
+                        t = None
+                    if t is not None and t.deleted:
+                        t = None
+                    if t is None:
+                        self._handoff_finish(None, hd, "error", f"{name} was deleted before it finished.")
+                        return
+                    if hd.get("state") == "queued":
+                        self._handoff_start(t, hd, from_queue=True)
+                        continue
+                    th = self._handoff_threads.get(hd["id"])
+                    if th is not None and th.is_alive():
+                        self._handoff_progress(t, hd)
+                        continue
+                    self._handoff_settle(t, hd)
+                    return
+                started = hd.get("start_seq") is not None
+                if t is not None and started and self._handoff_is_running(t, hd):
+                    t.stop()  # its late result would be lost: end it rather than leave it running unwatched
+                self._handoff_finish(t if started else None, hd, "error",
+                                     f"No result from {name} after {HANDOFF_MAX_S // 3600} hours, so it was stopped; "
+                                     "its chat has what it got to.")
+            except Exception as e:  # noqa: BLE001 — a dead watcher must not leave the row "running" forever
+                logger.warning("hand-off %s: watcher failed", hd.get("id"), exc_info=True)
+                self._handoff_finish(t if hd.get("start_seq") is not None else None, hd, "error",
+                                     f"Lost track of {name}'s task ({e}); its chat has the details.")
+            finally:
+                # Never leave this hand-off at the head of the bot's queue: later ones would stall behind it.
+                try:
+                    tq = t if t is not None else _registry().get(hd["target"])
+                    with tq.lock:
+                        key = (self.id, hd["id"])
+                        if key in tq._handoff_queue:
+                            tq._handoff_queue.remove(key)
+                except Exception:  # noqa: BLE001
+                    pass
+        threading.Thread(target=run, name=f"handoff-{hd['id']}", daemon=True).start()
+
+    def _handoff_progress(self, t, hd):
+        """While the target works: mirror running / waiting, and the first time
+        it waits on the user, one line in Super Bot's chat (texted back by the
+        origin rule). Super Bot never answers for it."""
+        new = "waiting" if t.meta.get("status") == "waiting" else "running"
+        with self.lock:
+            if new == hd.get("state"):
+                return
+            hd["state"] = new
+            ask = new == "waiting" and not hd.get("asked")
+            if ask:
+                hd["asked"] = True
+            if not self._exists(self.id):
+                return
+            self.save()
+        if ask:
+            ws = t.meta.get("waiting_on")
+            ev = t.event_by_seq(ws) if ws else None
+            reason = " ".join(((ev or {}).get("text") or "").split())
+            reason = re.sub(r"\s*Approve\?\s*$", "", reason)[:300] or "it is waiting for you"
+            self.emit("question", f"{hd.get('target_name') or 'A bot'} needs you at the laptop: {reason} Answer it at the Mac.",
+                      source="handoff", handoff=self._handoff_ref(hd), via=hd.get("origin_via"))
+
+    def _handoff_settle(self, t, hd):
+        """The target's task ended: read what it wrote since the hand-off
+        started (events stamped with this hand-off's via) and report it."""
+        hv = self._handoff_via(hd)
+        name = hd.get("target_name") or "The bot"
+        start = int(hd.get("start_seq") or 0)
+        stopped, done, error = False, None, None
+        for _, ev in _iter_events(t.events_path):
+            if int(ev.get("seq") or 0) <= start or dict(ev.get("via") or {}) != hv:
+                continue
+            role = ev.get("role")
+            if role == "system" and (ev.get("text") or "").strip() == "Stopped":
+                stopped = True
+            elif role == "done" and ev.get("source") != "build":
+                done = ev
+            elif role == "error":
+                error = ev
+        last = getattr(t, "last_task_dir", None)  # (via, folder) of the task that ended last
+        task_dir = (last[1] or "") if isinstance(last, tuple) and dict(last[0] or {}) == hv else ""
+        if stopped and done is None:
+            self._handoff_finish(t, hd, "stopped", f"{name} was stopped before it finished.", task_dir=task_dir)
+        elif done is not None:
+            self._handoff_finish(t, hd, "done", (done.get("text") or "").strip() or "(no answer text)",
+                                 summary=(done.get("summary") or "").strip(), task_dir=task_dir)
+        elif error is not None:
+            self._handoff_finish(t, hd, "error", (error.get("text") or "").strip() or "error", task_dir=task_dir)
+        else:
+            self._handoff_finish(t, hd, "error", f"{name} ended without a result; its chat has the details.",
+                                 task_dir=task_dir)
+
+    def _handoff_finish(self, t, hd, state, text, summary="", task_dir=""):
+        """Record the outcome, put the result card in Super Bot's chat (via the
+        asking task's origin) and, when the target ran it, the line in the
+        target's chat that says what went up. Nothing is written for a bot
+        that has been deleted."""
+        with self.lock:
+            if hd.get("done_at"):
+                return
+            hd.update(state=state, done_at=time.time(), result=text[:4000])
+            self._handoff_threads.pop(hd["id"], None)
+            if self.deleted or not self._exists(self.id):
+                return
+            self.save()
+        if not summary:
+            flat = " ".join(text.split())
+            m = re.match(r"(.+?[.!?])(?:\s|$)", flat)
+            summary = (m.group(1) if m else flat)[:600]
+        self.emit("done", text, summary=summary, source="handoff",
+                  handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
+        if t is not None and not t.deleted and self._exists(t.id):
+            try:
+                t.emit("system", f"Sent to Super Bot: {text[:280]}", source="handoff", via=None)
+            except Exception:  # noqa: BLE001
+                logger.debug("hand-off line not written on %s", t.id, exc_info=True)
 
     # -- app tools and app Python ----------------------------------------------
     _tool_calls = 0
@@ -1866,7 +2337,9 @@ class Bot:
             history.append(f"No answer to your offer in {OFFER_WAIT_S // 60} min; the user can still accept it from the chat later. "
                            "Carry on without it: `done` in ONE short line if nothing else remains (the findings are already in the chat).")
             return False
-        verdict = self._offer_verdict(answers, yes)
+        # A texted answer never settles the offer (a yes starts a build; answered at the Mac, docs §10):
+        # it reaches the model as the user's words, below, and any build it leads to goes through the gate.
+        verdict = self._offer_verdict([a for a in answers if not chan.is_texted(a)], yes)
         said = " ".join(a for a in answers if a.strip().lower() not in (yes.lower(), "not now"))
         if verdict == "no":
             self._settle_offer(declined=True)
@@ -1927,13 +2400,49 @@ class Bot:
 
     # -- contacts --------------------------------------------------------------
     def contacts(self):
-        """[(label, handle)] the `text` action may message: the allowlisted sender plus Settings' contacts."""
-        return imessage.parse_contacts(self.meta.get("imessage_to") or "", self.meta.get("imessage") or "")
+        """[(label, handle)] the `text` action may message: Settings' contacts, plus Super Bot's own
+        iMessage handle on Super Bot (on any other bot the `imessage` key is a leftover and grants nothing)."""
+        owner = (self.meta.get("imessage") or "") if is_super(self.meta) else ""
+        return imessage.parse_contacts(self.meta.get("imessage_to") or "", owner)
 
     def contact(self, d):
         """(label, handle) | None for a `text`/`texts` target (`to` / `ref` / `name`)."""
         d = d or {}
         return imessage.resolve_contact(d.get("to") or d.get("ref") or d.get("name") or "", self.contacts())
+
+
+def _run_task(run, bot, task, label):
+    """The task thread: the engine's run, then the bot's posture goes back to
+    the web's (task_via), so a click at the Mac after a phone task (a pending
+    offer, say) is judged as the Mac's, not the phone's (tools.phone_super)."""
+    try:
+        run(bot, task, label)
+    finally:
+        with bot.lock:
+            if bot.thread is threading.current_thread():
+                bot.task_via = dict(chan.WEB)
+
+
+def bots_section(bot) -> str:
+    """Super Bot's BOTS section (docs §11): one line per ordinary bot, read
+    from disk (no Bot objects). Empty for every other bot."""
+    if not is_super(getattr(bot, "meta", None)):
+        return ""
+    lines = []
+    for bid in _list_ids():
+        if bid == getattr(bot, "id", None):
+            continue
+        try:
+            m = _read_meta(bid)
+        except Exception:  # noqa: BLE001
+            continue
+        name = " ".join((m.get("name") or "").split())
+        if not name or is_super(m):
+            continue
+        instr = " ".join((m.get("instructions") or "").split())[:120]
+        lines.append(f"- {name} ({m.get('preset') or 'custom'}; {m.get('status') or 'idle'}): {instr}".rstrip(": "))
+    return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task):\n"
+            + ("\n".join(lines) if lines else "none yet"))
 
 
 # ------------------------------------------------------------ create / delete ---
@@ -1971,7 +2480,7 @@ def create(name="", model="", effort="", instructions="", preset="", kind=""):
             "effort": effort if effort in EFFORTS else DEFAULT_EFFORT, "status": "idle", "instructions": (instructions or "").strip(),
             "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
     if kind == "super":
-        meta.update({"kind": "super", "super_access": "ask", "name": name or SUPER_NAME, "face": dict(SUPER_FACE),
+        meta.update({"kind": "super", "super_access": "ask", "handoffs": [], "name": name or SUPER_NAME, "face": dict(SUPER_FACE),
                      "instructions": meta["instructions"] or SUPER_INSTRUCTIONS,
                      "pinned": True})  # the one bot per Mac starts pinned (sidebar); the user can unpin it
     _write_new_meta(bid, meta)
@@ -2044,10 +2553,13 @@ def delete(bid):
     """Stop the bot's task and Chrome, forget it, remove its data and cache folders."""
     reg = _registry()
     b = reg.get(bid)
+    b.deleted = True  # first: a watcher or starter racing the shutdown below must not start or save it
     b.shutdown()
-    reg.forget(bid)
+    # Folders go BEFORE forget(): between forget and rmtree, registry.get would find bot.json on disk and build a
+    # fresh Bot with deleted=False that could save the folder back. With the folder gone, get() has nothing to load.
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
     shutil.rmtree(bpaths.bot_cache_dir(bid), ignore_errors=True)
+    reg.forget(bid)
 
 
 # Your own Chrome's profiles (~/Library/Application Support/Google/Chrome/<dir>),

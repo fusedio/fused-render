@@ -1,10 +1,9 @@
-"""fused_render.bots.imessage: the pure helpers (no chat.db, no osascript)."""
+"""fused_render.bots.imessage: the pure helpers (no chat.db, no osascript).
+The poll loop and delivery policy are tested in test_bots_channels.py."""
 from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures (app_home, client, …)
-import json
 import os
 
 from fused_render.bots import imessage
-from fused_render.bots import paths as bpaths
 
 
 def test_paths_resolve_lazily_under_app_home(app_home, tmp_path, monkeypatch):
@@ -64,15 +63,6 @@ def test_chunks_split_at_line_breaks():
     assert [len(p) for p in imessage.chunks(early)] == [3000, 2002]
 
 
-def test_outbound_text():
-    assert imessage.outbound_text({"role": "done", "text": " Found 3 flights. "}) == "Found 3 flights."
-    assert imessage.outbound_text({"role": "approval", "text": "Buy it?"}) == "Buy it?\n\nReply yes or no."
-    assert imessage.outbound_text({"role": "question", "text": "Which?", "options": ["Mon", " ", "Tue "]}) == \
-        "Which?\n\nReply with one of: Mon / Tue"
-    assert imessage.outbound_text({"role": "approval", "text": "Go?", "options": ["Yes", "No"]}) == \
-        "Go?\n\nReply with one of: Yes / No"
-
-
 def _blob(text, prefix=b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84"):
     body = text.encode()
     n = len(body)
@@ -97,53 +87,11 @@ def test_decode_attributed_body():
     assert imessage.decode_attributed_body(b"NSString" + b"\x00" * 20 + b"+\x03abc") == ""  # '+' too far away
 
 
-def _events(bid, rows):
-    d = os.path.join(bpaths.data_dir(), bid)
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, "events.jsonl"), "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
-
-
-def test_events_after_by_line():
-    _events("b1", [
-        {"seq": 1, "role": "user", "text": "go"},
-        {"seq": 2, "role": "action", "text": "goto x"},
-        {"seq": 3, "role": "question", "text": "Which?"},
-        "{torn",
-        {"seq": 90, "role": "done", "text": "   "},          # blank text: not sent
-        {"seq": 4, "role": "done", "text": "All done"},
-        {"seq": 5, "role": "error", "text": "boom"},
-        {"seq": 6, "role": "approval", "text": "Buy?"},
-    ])
-    out, n = imessage.events_after("b1", 0)
-    assert n == 8
-    assert [(i, e["text"]) for i, e in out] == [(3, "Which?"), (6, "All done"), (7, "boom"), (8, "Buy?")]
-    out, n = imessage.events_after("b1", 6)
-    assert [i for i, _ in out] == [7, 8] and n == 8
-    out, n = imessage.events_after("b1", 8)
-    assert out == [] and n == 8
-    assert imessage.events_after("nobody", 5) == ([], 5)  # missing file keeps the cursor
-
-
-def test_bots_with_handles_and_drop_task():
-    from fused_render.bots import store
-
-    store.write_meta("a", {"id": "a", "imessage": "+1 555 123 4567"})
-    store.write_meta("b", {"id": "b", "imessage": "+15551234567"})  # same handle: first bot wins
-    store.write_meta("c", {"id": "c", "imessage": ""})
-    store.write_meta("d", {"id": "d", "imessage": "Me@Mail.com"})
-    assert imessage.bots_with_handles() == {"+15551234567": "a", "me@mail.com": "d"}
-    imessage.drop_task("a", 42, "buy milk")
-    inbox = os.path.join(store.bot_dir("a"), "inbox")
-    assert os.listdir(inbox) == ["imessage-42.txt"]
-    assert open(os.path.join(inbox, "imessage-42.txt")).read() == "buy milk\n"
-
 
 def test_cursor_round_trip():
-    assert imessage.load_cursor() == {"rowid": None, "line": {}}
+    assert imessage.load_cursor() == {"rowid": None, "sent": {}}
     imessage.save_cursor({"rowid": 7, "line": {"a": 3}, "sent": {"hi": 1.0}, "seq": {"old": 1}})
-    assert imessage.load_cursor() == {"rowid": 7, "line": {"a": 3}, "sent": {"hi": 1.0}}  # old "seq" dropped
+    assert imessage.load_cursor() == {"rowid": 7, "sent": {"hi": 1.0}}  # the older cursors' "seq" and "line" dropped
 
 
 def test_format_texts():
@@ -152,34 +100,3 @@ def test_format_texts():
                                       {"rowid": 2, "ts": 0, "me": False, "text": "x" * 400}])
     assert s.startswith("TEXTS with Ali (oldest first):\n")
     assert "] me: hi" in s and "] Ali: " + "x" * 300 + "\n" not in s and s.endswith("x" * 300)
-
-
-def test_current_state_prefers_fresh_holder_state():
-    import time as _t
-
-    local = {"running": False, "holder": "", "error": ""}
-    assert imessage.current_state(local) == local
-    with open(imessage.state_path(), "w") as f:
-        json.dump({"running": True, "ts": _t.time(), "pid": 1}, f)
-    assert imessage.current_state({**local, "holder": "pid 1"})["running"] is True
-    with open(imessage.state_path(), "w") as f:
-        json.dump({"running": True, "ts": _t.time() - 3600}, f)
-    assert imessage.current_state({**local, "holder": "pid 1"})["running"] is False
-
-
-def test_bridge_lock_is_exclusive():
-    a, b = imessage.Bridge(), imessage.Bridge()
-    assert a.acquire() is True
-    try:
-        assert b.acquire() is False
-        assert b.state["holder"] == f"pid {os.getpid()}"
-    finally:
-        a.release()
-    assert b.acquire() is True
-    b.release()
-
-
-def test_tick_without_handles_does_nothing():
-    br = imessage.Bridge()
-    br.tick()  # no bot has a handle: never opens chat.db
-    assert br.state["handles"] == 0 and br.db is None

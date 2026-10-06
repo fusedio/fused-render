@@ -3,7 +3,7 @@
 // Rows that change slot glide (FLIP, lib/layout glideRows); new rows fade in. Right-click hands off to the menu.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Bot, BotEvent } from "../lib/api";
-import { lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
+import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { waitingUnread } from "../lib/unread";
@@ -28,6 +28,8 @@ const EMPTY: BotEvent[] = [];
 function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: BotListProps["onContextMenu"] }) {
   const evs = S.events[b.id] || EMPTY, n = unreadCount(b), sel = b.id === S.sel;
   const msg = lastBotMsg(evs), ts = lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
+  // Super Bot with a hand-off in flight (docs §11): that outranks its last message, which is "I asked <Bot>…" anyway.
+  const ho = b.kind === "super" ? activeHandoff(b) : null;
   return (
     <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title="Right-click for options"
       onClick={() => select(b.id)}
@@ -46,7 +48,7 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
         <span className="time" title={fmtWhen(ts)}>{fmtAgo(ts)}</span>
       </div>
       <div className="sub">
-        {msg || (<>
+        {ho ? `waiting on ${ho.target_name || "a bot"}` : msg || (<>
           {b.status === "idle" && b.task ? b.task : statusLabel(b)}
           {b.status !== "idle" && b.title ? " · " + b.title : ""}
           {note ? <> · {note.warn ? <span className="warn">{note.text}</span> : note.text}</> : null}

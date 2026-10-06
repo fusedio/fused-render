@@ -358,6 +358,13 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .msg .when { position: absolute; top: 50%; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; opacity: 0; transition: opacity .12s; pointer-events: none; }
 .bots-page .msg.thought .when, .bots-page .msg.done .when { left: 100cqw; transform: translate(-100%, -50%); }
 .bots-page .msg.user .when { right: 100cqw; transform: translate(100%, -50%); }
+/* Channel chip (docs §10): "via iMessage" on a texted-in user line, "→ iMessage" on the bot lines texted back. */
+.bots-page .msg .via { display: inline-block; margin-left: .5em; padding: 0 .45em; border-radius: 999px; font-size: 10.5px; line-height: 1.6; letter-spacing: .02em; vertical-align: baseline; color: var(--muted); background: var(--bg-alt); white-space: nowrap; }
+.bots-page .msg.user .via { background: rgba(255, 255, 255, .22); color: inherit; }
+/* D12: the delivery line under a bot bubble — what went out on another channel. */
+.bots-page .ev .texted { margin: 2px 0 6px 12px; font-size: 11px; line-height: 1.4; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.bots-page .ev .texted b { font-weight: 500; }
+.bots-page .ev .texted.err { color: var(--danger, #c0392b); }
 .bots-page .msg:hover .when { opacity: 1; }
 @container (max-width: 560px) { .bots-page .msg .when { display: none; } }
 /* The chosen reaction sits on the bubble's bottom corner. */
@@ -392,6 +399,20 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .appmsg .frame { display: none; height: 60vh; min-height: 320px; border-top: 1px solid var(--line); background: var(--bg); }
 .bots-page .appmsg.open .frame { display: block; }
 .bots-page .appmsg .frame iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+/* Hand-off card (docs §11): Super Bot's line about a task it gave another bot. Same box as .appmsg; the body is the bot
+   markdown bubble with its own box stripped, the pill says where the hand-off stands. */
+.bots-page .handoff-card { flex: none; align-self: flex-start; width: min(42rem, 78%); background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; font-size: 13px; animation: bots-msg-in .18s cubic-bezier(.22,1,.36,1); }
+.bots-page .handoff-card .hd { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
+.bots-page .handoff-card .hd .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bots-page .handoff-card .pill { flex: none; font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--inset); color: var(--muted); white-space: nowrap; letter-spacing: .02em; }
+.bots-page .handoff-card .pill.running { color: var(--ok); }
+.bots-page .handoff-card .pill.waiting { color: var(--warn); }
+.bots-page .handoff-card .pill.error { color: var(--err); }
+.bots-page .handoff-card .msg { max-width: none; background: none; border-radius: 0; box-shadow: none; padding: 0 12px 10px; animation: none; }
+.bots-page .handoff-card .ft { display: flex; justify-content: flex-end; padding: 7px 12px; border-top: 1px solid var(--line); }
+.bots-page .handoff-card .ft button { font-size: 11.5px; padding: 4px 9px; }
+.bots-page .handoff-card.waiting { box-shadow: inset 3px 0 0 var(--warn); }
+.bots-page .handoff-card.error { box-shadow: inset 3px 0 0 var(--err); }
 /* Side app in the preview column: body.hasapp shows the Browser | App strip, body.sideapp swaps the browser view for the app frame. */
 .bots-page .sabar { display: none; align-items: center; gap: 4px; padding: 0 10px 8px 14px; border-bottom: 1px solid var(--line); }
 div.bots-page.hasapp .sabar { display: flex; }

@@ -107,18 +107,26 @@ def test_only_chat_starts_an_ea_task(client, ws, monkeypatch):
     st, out = j(client.post("/api/bots", {"kind": "super"}))
     b = registry.get(out["id"])
     b.start_task("from a routine", origin="routine")
-    b.start_task("from a text", origin="imessage")
     assert ran == []
     msgs = [e["text"] for e in b.events_since(0) if e["role"] == "system"]
-    assert any("Ignored a task from routine" in m for m in msgs) and any("Ignored a task from imessage" in m for m in msgs)
+    assert any("Ignored a task from routine" in m for m in msgs)
+    b.start_task("from a text", via={"kind": "imessage", "addr": "+15551234567"})  # a text from the handle set on Super Bot (docs §5)
+    b.thread.join(5)
     b.start_task("from the chat")
     b.thread.join(5)
-    assert ran == [("from the chat", "manual")]
+    assert ran == [("from a text", "imessage"), ("from the chat", "manual")]
 
 
 def test_super_ignores_the_file_inbox(client, ws, monkeypatch):
     sent = []
-    monkeypatch.setattr(botmod.Bot, "send", lambda self, text, reply_to=None: sent.append(text))
+    real = botmod.Bot.receive
+
+    def receive(self, text, via=None, reply_to=None):
+        # Super Bot refuses inside receive() (docs §10): let that run; record what an ordinary bot would start.
+        if botmod.is_super(self.meta):
+            return real(self, text, via=via, reply_to=reply_to)
+        sent.append(text)
+    monkeypatch.setattr(botmod.Bot, "receive", receive)
     st, out = j(client.post("/api/bots", {"kind": "super"}))
     b = registry.get(out["id"])
     os.makedirs(b.inbox_dir, exist_ok=True)
@@ -126,7 +134,8 @@ def test_super_ignores_the_file_inbox(client, ws, monkeypatch):
         f.write("wipe the disk")
     b.drain_file_inbox()
     assert sent == [] and os.listdir(b.inbox_dir) == []
-    assert any("Ignored a task from iMessage" in e["text"] for e in b.events_since(0) if e["role"] == "system")
+    # a file is a local script's door whatever its name: Super Bot reads it as botsend and refuses it
+    assert any("Ignored a task from botsend" in e["text"] for e in b.events_since(0) if e["role"] == "system")
     # the same file reaches an ordinary bot
     st, out = j(client.post("/api/bots", {"name": "Scout"}))
     o = registry.get(out["id"])

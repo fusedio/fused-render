@@ -37,6 +37,8 @@ What this module expects of `bot` (class Bot in bot.py):
   bot.run_tool(app, name, args)       -> (label, result)
   bot.run_py(args)                    -> (label, result)
   bot.show_app(name, obs)             -> (label, result)
+  bot.handoff(bot_name, task)         -> (label, result)   Super Bot only (docs §11)
+  bot.handoff_stop(bot_name)          -> (label, result)
   bot.stop_flag, bot.pause_flag, bot.wake   threading.Event
   bot.all_files()                     [{name, size, kind, …}]  (attached + downloaded)
 Everything else (ask/login/offer waits, approvals, pause/stop) is the
@@ -167,7 +169,8 @@ TOOL_SPECS: dict[str, dict] = {
               "inputSchema": _s(title=REQ, trigger=REQ, steps=REQ)},
     "ask": {"description": "Ask the user something and wait for the answer (a decision, a choice). Never for passwords, codes or "
                            "sign-ins (use login). With 2-5 short `options` the user can pick one with a click; they may still type.",
-            "inputSchema": _s(message=REQ, options={"type": "array", "items": {"type": "string"}, "maxItems": 5})},
+            "inputSchema": _s(message=REQ, options={"type": "array", "items": {"type": "string"}, "maxItems": 5},
+                              summary={"type": "string", "description": "When CHANNEL is present: the question in one short plain sentence, for the text message."})},
     "login": {"description": "The page needs a sign-in, 2FA or captcha: opens a real Chrome window on the user's desktop where "
                              "they sign in with their own keyboard (password manager and passkeys work), waits until they reply "
                              "'done' or click Hand back, then returns. `message` says why, in one sentence.",
@@ -206,7 +209,18 @@ TOOL_SPECS: dict[str, dict] = {
                              "your findings when the task is otherwise complete. One offer per task, never on routines, never for a "
                              "quick fact. Returns what the user decided.",
               "inputSchema": _s(name=REQ, message=REQ, spec=STR)},
+    # Super Bot only (roster drops them for every other bot; docs §11).
+    "handoff": {"description": "Give one of the BOTS a task: it runs in that bot's own chat with its own browser and logins, and "
+                               "its final answer comes back to you later as a hand-off result. `bot` is a name from BOTS; `task` "
+                               "is plain words and self-contained (include any context from files as text). Returns at once: "
+                               "finish your turn, do not wait or poll.",
+                "inputSchema": _s(bot=({"type": "string", "description": "a bot's name from BOTS"}, True),
+                                  task=({"type": "string", "description": "the task in plain words, self-contained"}, True))},
+    "handoff_stop": {"description": "Cancel a task you handed to one of the BOTS (only when the user asks you to cancel it).",
+                     "inputSchema": _s(bot=({"type": "string", "description": "the bot's name from BOTS"}, True))},
 }
+
+HANDOFF_TOOLS = ("handoff", "handoff_stop")
 
 ALL_TOOLS = tuple(TOOL_SPECS)
 
@@ -228,11 +242,36 @@ def is_super(bot) -> bool:
     return (getattr(bot, "meta", None) or {}).get("kind") == "super"
 
 
+def phone_super(bot) -> bool:
+    """Super Bot running a task that did not start in its chat (a text): its
+    posture is "ask" whatever its settings say (docs §5)."""
+    v = getattr(bot, "task_via", None) or {}
+    return is_super(bot) and (v.get("kind") or "web") != "web"
+
+
+def effective_approval(bot) -> str:
+    """The approval setting this task runs under ("ask" | "auto"): the bot's own,
+    except a phone-started Super Bot task always asks. Never written to meta."""
+    if phone_super(bot):
+        return "ask"
+    return (getattr(bot, "meta", None) or {}).get("approval") or "ask"
+
+
+def effective_build_access(bot) -> str:
+    """Builds' setting for this task ("scoped" | "full"); scoped for a phone-started Super Bot task."""
+    if phone_super(bot):
+        return "scoped"
+    return (getattr(bot, "meta", None) or {}).get("build_access") or "scoped"
+
+
 def roster(bot) -> list[dict]:
     """The tools THIS bot gets this task (docs §6): `tool` only when app
     tools are available, `text`/`texts` only with contacts, `upload` only
     when there is something to upload. MCP's `tools/list` shape."""
     names = list(ALL_TOOLS)
+    if not is_super(bot):
+        for n in HANDOFF_TOOLS:
+            names.remove(n)
     if not apptools.available():
         names.remove("tool")
     if not bot.contacts():
@@ -516,6 +555,14 @@ def ui_summary(name: str, result: str, change: str = "", obs: dict | None = None
             m = re.search(r"\(([^()]+)\)", raw)
             app = os.path.basename(m.group(1).rstrip("/")) if m else "app"
         return _clip(f"{app} card posted")
+    if name == "handoff":
+        m = re.search(r'"([^"]+)"', label or "")
+        who = m.group(1) if m else "the bot"
+        if raw.startswith("error"):
+            return _clip(_first_line(raw))
+        return f"asked {who} · queued behind its current task" if raw.startswith("queued") else f"asked {who} · working on it"
+    if name == "handoff_stop" and not raw.startswith("error"):
+        return "cancelled"
     if name == "build":
         doing = "updating" if "updating" in _NOW_DONE.sub("", raw) else "building"
         return f"Claude is {doing} it now · link posted"
@@ -535,6 +582,8 @@ def ui_detail(name: str, result: str, summary: str, change: str = "") -> str | N
     raw = (result or "").strip()
     if name == "show":
         return None
+    if name in HANDOFF_TOOLS and not raw.startswith("error"):
+        return None  # the chip says it all; the rest is written to the model
     if name == "build":
         raw = _NOW_DONE.sub("", raw).strip()
     elif name in BROWSER_ACTIONS and name not in _DETAIL_ALWAYS and raw.startswith("ok"):
@@ -624,6 +673,11 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return f"run {where} › {file} with {json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)[:200]}"
     if act == "goto":
         return f"goto {d.get('url') or ''}".strip()
+    if act == "handoff":
+        task = " ".join((d.get("task") or d.get("text") or "").split())
+        return f"hand \"{d.get('bot') or d.get('name') or '?'}\" the task: {task[:160]}{'…' if len(task) > 160 else ''}"
+    if act == "handoff_stop":
+        return f"stop what you handed \"{d.get('bot') or d.get('name') or '?'}\""
     return f"{act} {what}".strip()
 
 
@@ -636,7 +690,7 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         return "" if not bot.contact(d) else "An iMessage cannot be unsent."  # unknown contact fails in execute instead
     if act == "build":
         return ("It starts a Claude Code session that writes files and spends model credit"
-                + (", unattended (Builds: full access)." if bot.meta.get("build_access") == "full" else "."))
+                + (", unattended (Builds: full access)." if effective_build_access(bot) == "full" else "."))
     if act == "tool":
         app, name, _ = apptools.tool_ref(d)
         rec = apptools.find(apptools.registry(), app, name)
@@ -679,10 +733,13 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
 
 
 def call_key(bot, act: str, d: dict):
-    """Identity of a `py`/`tool` call for the one-instruction-one-run rule;
-    None for every other action (OpenBot `_call_key`)."""
+    """Identity of a `py`/`tool`/`handoff` call for the one-instruction-one-run
+    rule; None for every other action (OpenBot `_call_key`)."""
     d = d or {}
-    if act == "py":
+    if act == "handoff":
+        ref = [" ".join(str(d.get("bot") or d.get("name") or "").split()).lower(),
+               " ".join(str(d.get("task") or d.get("text") or "").split())]
+    elif act == "py":
         app_dir, file, args = bot.py_ref(d)
         if not app_dir or not file:
             return None
@@ -797,6 +854,14 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
         if act == "build":
             return bot.build(d.get("name") or d.get("value") or "", d.get("spec") or d.get("text") or d.get("message") or "",
                              fresh=d.get("new") is True)
+        if act == "handoff":
+            if not is_super(bot):
+                return "handoff", "error: only Super Bot hands tasks to other bots"
+            return bot.handoff(d.get("bot") or d.get("name") or "", d.get("task") or d.get("text") or "")
+        if act == "handoff_stop":
+            if not is_super(bot):
+                return "handoff_stop", "error: only Super Bot hands tasks to other bots"
+            return bot.handoff_stop(d.get("bot") or d.get("name") or "")
         if act == "readfile":
             from fused_render.bots import filereader
             name = d.get("file") or d.get("name") or d.get("text") or ""
