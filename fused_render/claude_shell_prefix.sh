@@ -24,8 +24,26 @@
 # Any failure to set the logging up falls back to the transparent exec.
 
 cmd=$1
-sh_bin=${CLAUDE_CODE_SHELL:-${SHELL:-/bin/sh}}
-[ -x "$sh_bin" ] || sh_bin=/bin/sh
+
+# The CLI's command strings are written for bash/zsh. $SHELL can be anything
+# (fish breaks MCP servers, hooks and the permission server), so it is only
+# honoured when it is one of those.
+# Transparent path: $CLAUDE_CODE_SHELL, else $SHELL if bash/zsh/sh, else the
+# first executable of /bin/bash, /bin/zsh, /bin/sh.
+sh_bin=
+if [ -n "$CLAUDE_CODE_SHELL" ]; then
+  sh_bin=$CLAUDE_CODE_SHELL
+else
+  case ${SHELL##*/} in
+    bash|zsh|sh) [ -x "$SHELL" ] && sh_bin=$SHELL ;;
+  esac
+fi
+if [ -z "$sh_bin" ] || [ ! -x "$sh_bin" ]; then
+  sh_bin=/bin/sh
+  for s in /bin/bash /bin/zsh /bin/sh; do
+    [ -x "$s" ] && { sh_bin=$s; break; }
+  done
+fi
 
 transparent() {
   exec "$sh_bin" -c "$cmd"
@@ -36,6 +54,26 @@ transparent() {
 case $cmd in
   *'/shell-snapshots/snapshot-'*'pwd -P >| '*'-cwd'*) ;;
   *) transparent ;;
+esac
+
+# Bash-tool path: the snapshot is named snapshot-<shell>-..., and that shell
+# (zsh or bash) must run it: $CLAUDE_CODE_SHELL if executable, else $SHELL if
+# its basename matches, else `command -v`, else /bin/<shell>.
+snap=${cmd#*'/shell-snapshots/snapshot-'}
+snap=${snap%%-*}
+case $snap in
+  zsh|bash)
+    want=
+    if [ -n "$CLAUDE_CODE_SHELL" ] && [ -x "$CLAUDE_CODE_SHELL" ]; then
+      want=$CLAUDE_CODE_SHELL
+    elif [ "${SHELL##*/}" = "$snap" ] && [ -x "$SHELL" ]; then
+      want=$SHELL
+    else
+      want=$(command -v "$snap" 2>/dev/null)
+      [ -x "$want" ] || want=/bin/$snap
+    fi
+    [ -x "$want" ] && sh_bin=$want
+    ;;
 esac
 
 dir=$FUSED_CLAUDE_CMD_LOG

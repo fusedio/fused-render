@@ -182,6 +182,35 @@ def test_logged_command_does_not_start_with_sigint_ignored(tmp_path, shell):
     assert r.stderr == b""
 
 
+@pytest.fixture
+def fish_path(tmp_path):
+    d = tmp_path / "fishbin"
+    d.mkdir()
+    f = d / "fish"
+    f.write_text("#!/bin/sh\nexit 99\n")
+    f.chmod(0o755)
+    return str(d)
+
+
+def test_transparent_command_ignores_non_posix_shell(tmp_path, fish_path):
+    for shell in ("/nonexistent/fish", os.path.join(fish_path, "fish")):
+        r = run("echo ok", tmp_path / "log", extra_env={
+            "SHELL": shell, "PATH": fish_path + os.pathsep + os.environ["PATH"]})
+        assert (r.stdout, r.returncode) == (b"ok\n", 0)
+
+
+@pytest.mark.skipif(not os.access("/bin/bash", os.X_OK), reason="no bash")
+def test_bash_snapshot_command_runs_under_bash(tmp_path, fish_path):
+    snap = os.path.join(_SNAPDIR, "shell-snapshots", "snapshot-bash-1700-abc.sh")
+    open(snap, "w").close()
+    cwdf = str(tmp_path / "b-cwd")
+    s = ("source " + snap + " 2>/dev/null || true && eval "
+         + shlex.quote('echo "v=$BASH_VERSION"') + " < /dev/null && pwd -P >| " + cwdf)
+    r = run(s, tmp_path / "log", extra_env={
+        "SHELL": "/nonexistent/fish", "PATH": fish_path + os.pathsep + os.environ["PATH"]})
+    assert r.returncode == 0 and r.stdout.startswith(b"v=") and len(r.stdout.strip()) > 2
+
+
 def test_exit_codes_and_stderr_are_exact(tmp_path):
     for code in (0, 3, 42):
         r = run(bash_tool_string(f"echo e >&2; exit {code}", str(tmp_path / "e-cwd")),
