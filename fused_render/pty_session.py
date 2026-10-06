@@ -40,6 +40,7 @@ import uuid
 from queue import SimpleQueue
 from typing import Optional
 
+from fused_render.shell_integration import ShellEventParser, integrate
 from fused_render.terminal_profiles import TerminalProfile, resolve_profile
 
 _HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pty_exec_helper.py")
@@ -54,6 +55,66 @@ _KILL_GRACE_S = 2.0
 #: wants the shared-ticker treatment fused_render/server/watch.py's
 #: _WATCH_REGISTRY already gives stats (one ticker, many subscribers).
 MAX_SESSIONS = 8
+
+
+#: Size a session is assumed to have when the client never sent one.
+DEFAULT_ROWS, DEFAULT_COLS = 24, 80
+#: Scrolled-off lines the text renderer keeps (the ring bounds it anyway).
+_TEXT_HISTORY = 5000
+MAX_TEXT_LINES = 2000
+DEFAULT_TEXT_LINES = 200
+
+
+def render_screen_text(data: bytes, rows: int, cols: int, lines: int) -> str:
+    """What a human would see after `data` was written to a `rows` x `cols`
+    terminal: scrolled-off history plus the current screen, trailing blank
+    lines trimmed, last `lines` lines.
+
+    Replays through `pyte` (a pure-python VT100 emulator) so `\\r` progress
+    bars, cursor moves, erases and full-screen redraws collapse to their final
+    state instead of arriving as raw escape soup. Done on demand over the
+    (<= SCROLLBACK_CAP) ring rather than incrementally in the reader thread: a
+    live emulator would cost pure-python CPU on every byte of every session,
+    always, to serve a read that happens rarely. Measured ~0.3 s for a full
+    256 KiB ring. A ring truncated mid-escape starts with a few garbled
+    cells; pyte ignores what it cannot parse.
+    """
+    import pyte
+
+    rows = max(1, rows)
+    cols = max(1, cols)
+    screen = pyte.HistoryScreen(cols, rows, history=_TEXT_HISTORY)
+    pyte.ByteStream(screen).feed(data)
+
+    def row_text(line) -> str:
+        return "".join(line[x].data for x in range(cols)).rstrip()
+
+    out = [row_text(line) for line in screen.history.top]
+    out.extend(row.rstrip() for row in screen.display)
+    while out and not out[-1]:
+        out.pop()
+    return "\n".join(out[-max(1, lines):])
+
+
+def _process_name(pid: int) -> Optional[str]:
+    """Best-effort command name of `pid`. Linux reads /proc (no spawn); macOS
+    has no /proc, so it shells out to `ps` with the posix_spawn-safe Popen
+    shape the module docstring spells out (absolute path, close_fds=False, no
+    cwd=), since this runs inside the server process."""
+    try:
+        with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        pass
+    ps = "/bin/ps" if os.path.exists("/bin/ps") else "/usr/bin/ps"
+    try:
+        res = subprocess.run([ps, "-o", "comm=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=2,
+                             close_fds=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    name = res.stdout.strip()
+    return os.path.basename(name) if name else None
 
 
 class SessionLimitError(RuntimeError):
@@ -107,6 +168,11 @@ class PtySession:
         self.profile = profile
         self.alive = True
         self.exit_code: Optional[int] = None
+        # Fed from the reader thread; read by the /text route and the list.
+        self.shell_state = ShellEventParser()
+        self.last_activity = time.time()
+        size = valid_winsize(rows, cols)
+        self.rows, self.cols = size if size is not None else (DEFAULT_ROWS, DEFAULT_COLS)
 
         self._lock = threading.RLock()
         self._subscribers: list[SimpleQueue] = []
@@ -120,7 +186,6 @@ class PtySession:
             # 0x0 pty makes it assume 80 columns and leave a stray inverse
             # `%`. Done here, in the parent, on the fd — never via
             # preexec_fn — so the Popen below stays on posix_spawn.
-            size = valid_winsize(rows, cols)
             if size is not None:
                 _set_winsize(master_fd, *size)
             try:
@@ -164,6 +229,8 @@ class PtySession:
             if not data:
                 break
             with self._lock:
+                self.last_activity = time.time()
+                self.shell_state.feed(data)
                 self._scrollback.extend(data)
                 overflow = len(self._scrollback) - SCROLLBACK_CAP
                 if overflow > 0:
@@ -236,10 +303,54 @@ class PtySession:
                 return self.shell_is_foreground()
             time.sleep(0.05)
 
+    @property
+    def cwd(self) -> str:
+        """The live cwd once the shell has reported one (OSC 7), else the
+        directory the session was spawned in."""
+        return self.shell_state.cwd or self.profile.cwd
+
+    def foreground_name(self) -> Optional[str]:
+        """Name of the program holding the terminal, or None while the shell
+        itself does (or the session is dead / mid-exec with no foreground
+        group). Names the foreground process-group leader."""
+        if not self.alive:
+            return None
+        try:
+            fg_pgid = os.tcgetpgrp(self.master_fd)
+            shell_pgid = os.getpgid(self.proc.pid)
+        except OSError:
+            return None
+        if fg_pgid <= 0 or fg_pgid == shell_pgid:
+            return None
+        return _process_name(fg_pgid) or "unknown"
+
+    def text(self, lines: int = DEFAULT_TEXT_LINES) -> str:
+        with self._lock:
+            data = bytes(self._scrollback)
+            rows, cols = self.rows, self.cols
+        return render_screen_text(data, rows, cols, lines)
+
+    def snapshot(self) -> dict:
+        """The metadata shared by the list and /text responses (camelCase,
+        JSON-ready)."""
+        st = self.shell_state
+        return {
+            "id": self.id, "alive": self.alive, "exitCode": self.exit_code,
+            "shell": os.path.basename(self.profile.shell),
+            "cwd": self.cwd,
+            "foreground": self.foreground_name(),
+            "lastCommand": st.last_command,
+            "lastExit": st.last_exit,
+            "lastActivity": self.last_activity,
+        }
+
     def resize(self, rows: int, cols: int) -> None:
         if not self.alive:
             return
         _set_winsize(self.master_fd, rows, cols)
+        size = valid_winsize(rows, cols)
+        if size is not None:
+            self.rows, self.cols = size
 
     def scrollback(self) -> bytes:
         with self._lock:
@@ -354,6 +465,7 @@ class PtySessionRegistry:
             profile = resolve_profile(cwd=cwd)
             if profile is None:
                 raise RuntimeError("terminal is not supported on this platform")
+            profile = integrate(profile)
             sid = uuid.uuid4().hex
             session = PtySession(sid, profile, rows=rows, cols=cols)
             self._sessions[sid] = session

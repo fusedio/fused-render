@@ -78,14 +78,24 @@ def api_terminal_create(body: dict = Body(default={}),
 def api_terminal_list():
     if _windows():
         return _error(_UNSUPPORTED, status=501)
-    return {"sessions": [
-        {"id": s.id, "alive": s.alive, "exitCode": s.exit_code,
-         # What the client labels a tab with when it has no better name
-         # (the shell's basename) and the tooltip's directory. Additive.
-         "shell": os.path.basename(s.profile.shell),
-         "cwd": s.profile.cwd}
-        for s in pty_session.REGISTRY.list()
-    ]}
+    # `shell` is what the client labels a tab with when it has no better name
+    # and `cwd` the tooltip's directory (live once the shell reports it);
+    # `foreground`/`lastCommand`/`lastExit`/`lastActivity` are additive — see
+    # PtySession.snapshot.
+    return {"sessions": [s.snapshot() for s in pty_session.REGISTRY.list()]}
+
+
+@router.get("/api/terminal/{sid}/text")
+def api_terminal_text(sid: str, lines: int = pty_session.DEFAULT_TEXT_LINES):
+    """The terminal as a human sees it (VT-emulated, not raw bytes) plus the
+    metadata of the list entry. Unguarded like the list: a read."""
+    if _windows():
+        return _error(_UNSUPPORTED, status=501)
+    session = pty_session.REGISTRY.get(sid)
+    if session is None:
+        return _error("no such terminal session", status=404)
+    lines = max(1, min(lines, pty_session.MAX_TEXT_LINES))
+    return {**session.snapshot(), "text": session.text(lines)}
 
 
 @router.post("/api/terminal/{sid}/input")
