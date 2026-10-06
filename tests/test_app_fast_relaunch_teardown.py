@@ -2,7 +2,7 @@
 
 The server never drains on the packaged app (SSE connections stay open, so the
 2 s join always times out). A normal user Quit keeps every budget; only the
-relaunch trims them (server drain, tile-daemon quiesce).
+relaunch trims them (the server drain).
 
 AppKit-free, like test_app_quit.py; nothing real is mounted or signalled.
 """
@@ -12,7 +12,6 @@ import time
 import pytest
 
 import fused_render.app as app_mod
-from fused_render import tile_daemons
 
 
 # ------------------------------------------------------------------ plumbing
@@ -21,20 +20,16 @@ from fused_render import tile_daemons
 def test_a_normal_quit_budgets_are_unchanged():
     assert app_mod.QUIT_SERVER_DRAIN_S == 2.0
     assert app_mod.QUIT_CHILDREN_BUDGET_S == 5.0
-    assert tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S == 2.0
 
 
 def test_the_fast_budgets_are_strictly_tighter():
     assert app_mod.QUIT_FAST_SERVER_DRAIN_S < app_mod.QUIT_SERVER_DRAIN_S
-    assert (tile_daemons.QUIT_FAST_TILE_DAEMONS_BUDGET_S
-            <= tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S)
     assert app_mod.QUIT_FAST_HARD_DEADLINE_S < app_mod.QUIT_HARD_DEADLINE_S
 
 
 def test_the_fast_deadline_is_derived_from_the_fast_steps_it_waits_on():
     inner = (app_mod.QUIT_FAST_SERVER_DRAIN_S
-             + app_mod.QUIT_CHILDREN_BUDGET_S
-             + tile_daemons.QUIT_FAST_TILE_DAEMONS_BUDGET_S)
+             + app_mod.QUIT_CHILDREN_BUDGET_S)
     # Strictly greater: the margin covers the unbudgeted interstitials.
     assert app_mod.QUIT_FAST_HARD_DEADLINE_S > inner
 
@@ -121,7 +116,7 @@ def _teardown(fast, **kw):
             _FakeServer(), server_thread=t, fast=fast,
             close_duckdb=lambda: None, stop_captures=lambda: None,
             stop_children=lambda: None, record_exit=lambda: None,
-            quit_daemons=lambda: calls.append("tile-daemons"), **kw)
+            **kw)
         return steps, time.monotonic() - t0, calls
     finally:
         release.set()
@@ -140,16 +135,4 @@ def test_a_fast_teardown_runs_the_same_steps_in_the_same_order():
     fast, _, _ = _teardown(True, drain_s=0.01)
     slow, _, _ = _teardown(False, drain_s=0.01)
     assert fast == slow == ["server", "children", "capture", "duckdb",
-                            "tile-daemons", "exit-record"]
-
-
-def test_the_default_quit_daemons_step_uses_the_fast_budget_only_when_fast(monkeypatch):
-    seen = []
-    monkeypatch.setattr(tile_daemons, "quit_tile_daemons_bounded",
-                        lambda budget_s=None: seen.append(budget_s))
-    common = dict(close_duckdb=lambda: None, stop_captures=lambda: None,
-                  stop_children=lambda: None, record_exit=lambda: None)
-    app_mod.quit_teardown(None, fast=True, **common)
-    app_mod.quit_teardown(None, **common)
-    assert seen == [tile_daemons.QUIT_FAST_TILE_DAEMONS_BUDGET_S,
-                    tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S]
+                            "exit-record"]

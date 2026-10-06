@@ -550,15 +550,15 @@ def test_stop_all_is_wired_into_the_paths_that_actually_run_on_exit():
     assert "capture.stop_all()" in server
 
 
-def test_the_quit_ladder_runs_the_capture_rung_before_the_unmounts(monkeypatch):
-    """Order matters: a recording writing under a mount holds it busy."""
+def test_the_quit_ladder_runs_the_capture_rung_before_the_exit_record(monkeypatch):
+    """Order matters: the recording is finalised while the teardown still runs;
+    the exit record is the last rung."""
     from fused_render import app as desktop_app
 
     steps = desktop_app.quit_teardown(
         None, stop_captures=lambda: None, close_duckdb=lambda: None,
-        unmount_mounts=lambda: None, stop_rcd=lambda: None,
         stop_children=lambda: None, record_exit=lambda: None)
-    assert steps.index("capture") < steps.index("unmount")
+    assert steps.index("capture") < steps.index("exit-record")
 
 
 def test_stop_all_finalises_everything_on_the_way_out(backend, client, home):

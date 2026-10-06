@@ -33,13 +33,6 @@ from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 from fused_render.server import (
     create_app, export_app_env, set_server_origin_env, write_server_json,
 )
-# The teardown budget the quit deadlines are derived from (see
-# QUIT_HARD_DEADLINE_S / QUIT_FAST_HARD_DEADLINE_S): a deadline that has to
-# outlast it must be computed FROM it, not restated.
-from fused_render.tile_daemons import (
-    QUIT_FAST_TILE_DAEMONS_BUDGET_S,
-    QUIT_TILE_DAEMONS_BUDGET_S,
-)
 from fused_render.shell.seed import ensure_fused_dir
 
 logger = logging.getLogger("fused_render")
@@ -137,8 +130,7 @@ def _close_duckdb_default_connection() -> None:
     shutdown hygiene: release what the default connection holds while the
     interpreter is healthy and the GIL is held, before the later teardown steps run.
 
-    It does not latch, and cannot: the stash in reader.py is ours to mediate,
-    duckdb's module-level API is not — the next `duckdb.sql(...)` or
+    It does not latch, and cannot: duckdb's module-level API is ours to call but not to mediate — the next `duckdb.sql(...)` or
     `default_connection()` simply builds a fresh one. Nothing in `fused_render`
     uses that API (every call site goes through `duckdb.connect()`), so the
     window belongs to in-process template/user code alone.
@@ -383,7 +375,7 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
 # `os._exit` skips atexit handlers, Python finalization (interpreter shutdown,
 # gc, module teardown) and `__cxa_finalize`. That is safe here, and ONLY because
 # quit already does its shutdown explicitly and in order: `quit_teardown` drains
-# the server, closes duckdb and quiesces the tile daemons BEFORE this runs,
+# the server, closes duckdb and kills the children BEFORE this runs,
 # and `begin_quit` removes the pidfile on the calling thread. What is given up is
 # work we either do not have or do not want: the tree registers no `atexit`
 # handler (logging's flush is the one that matters, and it is done here by hand);
@@ -475,7 +467,6 @@ QUIT_DEADLINE_MARGIN_S = 2.0
 QUIT_HARD_DEADLINE_S = (
     QUIT_SERVER_DRAIN_S
     + QUIT_CHILDREN_BUDGET_S
-    + QUIT_TILE_DAEMONS_BUDGET_S
     + QUIT_DEADLINE_MARGIN_S
 )
 
@@ -486,7 +477,6 @@ QUIT_HARD_DEADLINE_S = (
 QUIT_FAST_HARD_DEADLINE_S = (
     QUIT_FAST_SERVER_DRAIN_S
     + QUIT_CHILDREN_BUDGET_S
-    + QUIT_FAST_TILE_DAEMONS_BUDGET_S
     + QUIT_DEADLINE_MARGIN_S
 )
 
@@ -588,7 +578,7 @@ def _record_clean_exit() -> None:
 
 
 def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
-                  close_duckdb=None, quit_daemons=None,
+                  close_duckdb=None,
                   stop_captures=None, stop_children=None,
                   record_exit=None, fast: bool = False) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
@@ -609,9 +599,7 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
       3. "duckdb" — close the reader's cached DuckDB connection while Python is
          healthy and the GIL is held. Anything still alive at
          `NSApplication.terminate:` destructs without the GIL and aborts.
-      4. "tile-daemons" — ask the shared geotiff / gridv2 / notebook daemons to
-         exit (fused_render/tile_daemons.py), bounded by their own budget.
-      5. "exit-record" — record a `quit` event and release the crash file
+      4. "exit-record" — record a `quit` event and release the crash file
          (`_record_clean_exit`, SPEC §50). Last, so a teardown that wedges on
          an earlier rung and gets cut off by the hard deadline leaves the
          crash file in place — that quit was NOT clean.
@@ -621,20 +609,13 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
     tests; the defaults are the real ladder.
 
     `fast=True` is the RELAUNCH quit: identical steps in identical order, on the
-    QUIT_FAST_* budgets (drain, tile-daemon quiesce). A normal quit passes
+    QUIT_FAST_* budgets (the drain). A normal quit passes
     nothing and keeps every budget it always had. Budgets resolve at call time, not def time."""
     steps: list[str] = []
     if drain_s is None:
         drain_s = QUIT_FAST_SERVER_DRAIN_S if fast else QUIT_SERVER_DRAIN_S
     if close_duckdb is None:
         close_duckdb = _close_duckdb_stash
-    if quit_daemons is None:
-        def quit_daemons():
-            from fused_render import tile_daemons
-
-            tile_daemons.quit_tile_daemons_bounded(
-                tile_daemons.QUIT_FAST_TILE_DAEMONS_BUDGET_S if fast
-                else tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S)
     if stop_captures is None:
         def stop_captures():
             from fused_render import capture
@@ -662,7 +643,7 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
         except Exception:
             logger.warning("stopping the server on quit failed", exc_info=True)
     for name, step in (("children", stop_children), ("capture", stop_captures),
-                       ("duckdb", close_duckdb), ("tile-daemons", quit_daemons),
+                       ("duckdb", close_duckdb),
                        ("exit-record", record_exit)):
         steps.append(name)
         try:
@@ -681,7 +662,7 @@ def start_quit(server, *, terminate, server_thread=None, teardown=None,
 
     Called from a menu-item action, i.e. on the AppKit main thread with the run
     loop blocked for as long as we stay in it — so every blocking step (the
-    children reap and tile-daemon quiesce) runs on a
+    children reap) runs on a
     worker and this returns immediately. `terminate` is then called from the
     watchdog thread once teardown finishes OR `deadline_s` elapses, whichever
     comes first: teardown gets a real, bounded chance to complete, and a wedged
@@ -1255,7 +1236,7 @@ def make_appkit_terminate_hook(state: dict, *, reply, start=None,
     LSUIElement (D34: Dock icon AND menu bar item) — so the Dock icon's
     right-click Quit, ⌘Q and logout/restart all go straight to
     `-[NSApplication terminate:]` and, without this hook, straight on to C
-    `exit()`: no drain, no duckdb close, no tile-daemon quiesce. Every defect
+    `exit()`: no drain, no duckdb close, no children reap. Every defect
     the teardown exists to fix was fully live on those surfaces, and none of them
     passes through the tray action.
 
@@ -1805,8 +1786,8 @@ def main() -> None:
         # NOT rumps.quit_application() -> NSApplication.terminate: -> exit(),
         # which aborts in __cxa_finalize after a teardown that already succeeded
         # (see hard_exit). By the time this runs, begin_quit has set quit_ready
-        # and quit_teardown has drained the server, closed duckdb and quiesced the
-        # tile daemons — there is nothing AppKit's termination would
+        # and quit_teardown has drained the server, closed duckdb and killed the
+        # children — there is nothing AppKit's termination would
         # still do for us. os._exit is thread-safe and needs no main thread, so
         # the callAfter hop this used to need is gone with it.
         hard_exit()

@@ -27,7 +27,7 @@ finalization and `__cxa_finalize` entirely — which is the only fix that also
 covers every other native extension we load (GDAL/rasterio, pyarrow, torch).
 
 These tests pin the fix: the ordering (server drain -> children -> duckdb
-closes -> tile daemons quit), the non-blocking entry point with its hard
+closes -> exit record), the non-blocking entry point with its hard
 deadline, and that every quit surface dies by hard exit. Nothing macOS-only is
 exercised — rumps/AppKit are never imported (app.py imports them lazily inside
 `main()`).
@@ -41,7 +41,6 @@ import types
 import pytest
 
 import fused_render.app as app_mod
-from fused_render import tile_daemons
 
 
 # --------------------------------------------------------------- duckdb default connection
@@ -159,7 +158,7 @@ def test_the_default_connection_is_left_alone_when_duckdb_was_never_imported(
 # ------------------------------------------------- ordering + the quit entry
 # The order is load-bearing, not incidental: the server must stop accepting
 # requests first; the duckdb stash must be closed while Python is healthy and
-# long before exit(); the tile daemons are asked to quit after that.
+# long before exit(); the exit record is written last.
 
 
 class _FakeServer:
@@ -176,25 +175,23 @@ def quit_ctx(monkeypatch):
     # The children rung would reach the real engine/AI/pty registries and the
     # server discovery file; record it instead.
     monkeypatch.setattr(app_mod, "_stop_children", lambda: calls.append("children"))
-    monkeypatch.setattr(tile_daemons, "quit_tile_daemons_bounded",
-                        lambda budget_s=None: calls.append("tile-daemons"))
     # The "exit-record" rung writes outages.jsonl in the real log home and
     # releases this process's crash file — neither belongs in a unit test.
     monkeypatch.setattr(app_mod, "_record_clean_exit", lambda: None)
     return calls
 
 
-def test_teardown_order_children_capture_duckdb_then_tile_daemons(quit_ctx):
+def test_teardown_order_children_capture_duckdb_then_exit_record(quit_ctx):
     server = _FakeServer()
 
     steps = app_mod.quit_teardown(server)
 
     assert server.should_exit is True          # step 1: stop serving requests
     assert quit_ctx[0] == "children"           # nothing outlives the app
-    assert quit_ctx.index("duckdb") < quit_ctx.index("tile-daemons")
+    assert "tile-daemons" not in quit_ctx      # shared daemons are never quit
     # "exit-record" (SPEC section 50) is last: a teardown cut off by the hard
     # deadline must leave its crash file behind, because that quit was not clean.
-    assert steps == ["server", "children", "capture", "duckdb", "tile-daemons",
+    assert steps == ["server", "children", "capture", "duckdb",
                      "exit-record"]
 
 
@@ -210,7 +207,7 @@ def test_teardown_drains_the_server_thread_within_a_bounded_wait(quit_ctx):
     finally:
         never.set()
     # ...and the rest of the teardown still ran.
-    assert "tile-daemons" in quit_ctx
+    assert "duckdb" in quit_ctx
 
 
 def test_a_failing_rung_does_not_stop_the_later_ones(quit_ctx, monkeypatch):
@@ -219,7 +216,7 @@ def test_a_failing_rung_does_not_stop_the_later_ones(quit_ctx, monkeypatch):
 
     monkeypatch.setattr(app_mod, "_close_duckdb_stash", boom)
     steps = app_mod.quit_teardown(_FakeServer())
-    assert "tile-daemons" in quit_ctx
+    assert "children" in quit_ctx
     assert steps[-1] == "exit-record"
 
 
@@ -369,8 +366,7 @@ def test_children_rung_is_bounded_by_its_budget(monkeypatch):
 
 def test_the_hard_deadline_exceeds_the_sum_of_the_bounded_steps():
     inner = (app_mod.QUIT_SERVER_DRAIN_S
-             + app_mod.QUIT_CHILDREN_BUDGET_S
-             + tile_daemons.QUIT_TILE_DAEMONS_BUDGET_S)
+             + app_mod.QUIT_CHILDREN_BUDGET_S)
 
     # Strictly greater: the margin covers the unbudgeted interstitials.
     assert app_mod.QUIT_HARD_DEADLINE_S > inner
