@@ -957,8 +957,15 @@ calls `registry.on_event`, which hands it to the router when one exists
 policy (D5): an event of a task that came from channel X goes to X's sender,
 always; otherwise to the bot's owners on that channel only when the event's
 category is in the bot's forwards for it — `channel_forwards: {imessage:
-[results, questions, errors, builds, routines]}` in bot.json, default all but
-`routines`. `render()` turns options into `Reply 1 … · 2 …`, approvals into
+[results, questions, errors, builds, routines]}` in bot.json, default
+`results, errors, builds` (questions off: a web task's approval texted to the
+phone is a second place to answer the same thing). A forward also skips an
+owner the bot already texted during that task with its `text` action
+(`Channel.sent_since`, fed by `imessage.LAST_SENT`): "text me the summary"
+is not followed by the full answer as a second text. `imessage.send_text`
+records every chunk in the cursor's echo window under `CURSOR_LOCK`, whoever
+calls it, so a bot's own `text` never comes back as a command.
+`render()` turns options into `Reply 1 … · 2 …`, approvals into
 `Reply yes or no.`, and cuts a `done` over `Caps.max_len` (600) at a sentence
 with `… Full answer in the app.` In **own** identity (the owner handle is one
 of this Mac's own Messages accounts, read from `message.account` of sent

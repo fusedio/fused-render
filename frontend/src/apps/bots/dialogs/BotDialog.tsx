@@ -21,7 +21,7 @@ export const EFFORTS: [string, string][] = [["low", "Low · quickest"], ["medium
 /** iMessage "Also text me when…" (docs §10 D5): replies to a texted task always go back; these pick what else does. Mirrors channels/base.py FORWARDS. */
 export const FORWARDS: [string, string][] = [["results", "a task I started here finishes"], ["questions", "it has a question or needs an approval"],
   ["errors", "something fails"], ["builds", "an app build is ready"], ["routines", "a routine finishes"]];
-export const FORWARDS_DEFAULT = ["results", "questions", "errors", "builds"];
+export const FORWARDS_DEFAULT = ["results", "errors", "builds"];
 
 export interface BotDialogProps {
   /** The bot being edited; absent for "+ New bot". */

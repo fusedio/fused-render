@@ -1297,6 +1297,7 @@ class Bot:
             return
         self.task_origin = origin
         self.task_via = dict(via)
+        self.task_started = time.time()  # the engines stamp it again; the router reads it from here on (forwards)
         self.stop_flag.clear()
         self.pause_flag.clear()
         self.inbox = []

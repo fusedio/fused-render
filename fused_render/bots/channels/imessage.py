@@ -25,7 +25,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import threading
 import time
 
 from fused_render.bots import imessage as im
@@ -49,8 +48,8 @@ class ImessageChannel(Channel):
         self._own: set[str] = set()   # this Mac's own Messages handles, refreshed by the poll thread (identity() only reads)
         self._own_label = ""
         self._own_ts = 0.0
-        # poll() runs on the router's poll thread, send() on its send thread: both touch the cursor file.
-        self._lock = threading.Lock()
+        # poll() runs on the router's poll thread; senders (router send thread, a bot's `text`
+        # action) run elsewhere. All of them hold imessage.CURSOR_LOCK around the cursor file.
 
     # ------------------------------------------------------------- lock/lifecycle
     def acquire(self) -> bool:
@@ -103,7 +102,7 @@ class ImessageChannel(Channel):
             self.state["error"] = f"another bridge is running ({self.state['holder'] or 'standalone'})"
             return []
         try:
-            with self._lock:
+            with im.CURSOR_LOCK:
                 out = self._tick()
             self.state["running"] = True
             self.state["error"] = ""
@@ -156,15 +155,12 @@ class ImessageChannel(Channel):
 
     # ----------------------------------------------------------------------- send
     def send(self, addr: str, text: str, event: dict | None = None) -> None:
-        now = time.time()
-        with self._lock:  # record before sending: the echo can land in chat.db before osascript returns
-            cur = im.load_cursor()
-            sent = cur.setdefault("sent", {})
-            for chunk in im.chunks(text):
-                sent[chunk] = now
-            im.save_cursor(cur)
-        im.send_text(addr, text)
-        self.state["last_out"] = now
+        im.send_text(addr, text)  # records the echo window itself, under CURSOR_LOCK
+        self.state["last_out"] = time.time()
+
+    def sent_since(self, addr: str, ts: float) -> bool:
+        """Did anything in this process (a reply, or a bot's `text` action) text `addr` after `ts`?"""
+        return im.LAST_SENT.get(im.norm_handle(addr), 0) >= ts
 
     # ------------------------------------------------------------------- identity
     def _refresh_own_handles(self) -> None:

@@ -23,6 +23,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 
 from fused_render.bots import paths as _bpaths
@@ -273,7 +274,25 @@ def format_texts(label, rows):
     return f"TEXTS with {label} (oldest first):\n" + "\n".join(lines)
 
 
+# The cursor file is shared by the channel's poll (router poll thread) and every
+# sender (router send thread, a bot's `text` action on its task thread): one lock.
+CURSOR_LOCK = threading.RLock()
+LAST_SENT = {}   # normalized handle -> ts of the last text this process sent them (router: no double-texting a task)
+
+
 def send_text(handle, text):
+    """Send one text (split at MAX_TEXT). Every chunk is first recorded in the
+    cursor's `sent` window, so its echo (texting your own number makes each
+    reply come back as an incoming row) is never read as a command — whoever
+    sends: the channel's replies or a bot's `text` action."""
+    now = time.time()
+    with CURSOR_LOCK:
+        cur = load_cursor()
+        sent = cur.setdefault("sent", {})
+        for chunk in chunks(text):
+            sent[chunk] = now
+        save_cursor(cur)
+        LAST_SENT[norm_handle(handle)] = now
     for chunk in chunks(text):
         r = subprocess.run(["osascript", "-"] + [handle, chunk], input=_SEND_SCRIPT, capture_output=True,
                            text=True, timeout=SEND_TIMEOUT_S, close_fds=False)

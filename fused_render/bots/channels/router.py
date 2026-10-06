@@ -215,7 +215,12 @@ class Router:
             return [v["addr"]]
         if category(ev) not in forwards_for(bot.meta, ch.kind):
             return []
-        return [addr for addr, bids in ch.owners().items() if bot.id in bids]
+        # A forward is a courtesy copy. Skip an owner the bot already texted during this
+        # task (its `text` action: "send me the summary"): the full answer as a second
+        # text is the noise the owner complained about.
+        since = float(getattr(bot, "task_started", 0) or 0)
+        return [addr for addr, bids in ch.owners().items()
+                if bot.id in bids and not (since and ch.sent_since(addr, since))]
 
     def deliver(self, ch: Channel, bot, ev: dict) -> list[str]:
         """Send one event on one channel; returns the addresses it went to."""

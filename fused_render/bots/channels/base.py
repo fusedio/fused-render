@@ -28,8 +28,10 @@ ROUTINE = {"kind": ROUTINE_KIND, "addr": ""}
 OUT_ROLES = ("done", "question", "approval", "error")
 
 # Forwarding categories (Settings "Also text me when…") and their default.
+# "questions" is off by default: a web task's approval card texted to the phone
+# while the user sits at the Mac is a second place to answer the same thing.
 FORWARDS = ("results", "questions", "errors", "builds", "routines")
-FORWARDS_DEFAULT = ("results", "questions", "errors", "builds")
+FORWARDS_DEFAULT = ("results", "errors", "builds")
 
 
 LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine"}
@@ -97,6 +99,13 @@ class Channel:
         """{addr: [bot ids]} — who may command which bots from this surface.
         Resolved from disk on every call so a Settings save takes effect without a restart."""
         return {}
+
+    def sent_since(self, addr: str, ts: float) -> bool:
+        """True when something already reached `addr` on this surface after `ts`
+        (a bot's own `text` action, say): the router then skips forwarding the
+        task's result there, so "text me the summary" is not followed by the
+        full answer as a second text."""
+        return False
 
     def start(self) -> None:
         """Called once by the router before the first poll."""
