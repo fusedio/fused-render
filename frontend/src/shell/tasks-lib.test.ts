@@ -3705,6 +3705,29 @@ describe("a row with no message at all", () => {
     expect(block(TASKS_CSS, ".tasks-row.is-inert:hover")).not.toContain("!important");
   });
 
+  it("opens an APP folder's task on its entry page, not its listing", () => {
+    // Akshil, 2026-10-06: "any folder we open from the tasks page should open
+    // app by default". `entry` is the server's answer (app_listing.app_entry,
+    // else a plain index.html); absent or "" keeps the folder door.
+    const ran = task({ session_id: "s1", entry: "/Users/me/Desktop/fused/index.html" }, 0);
+    expect(taskHref(ran)).toBe(
+      "/explorer/view/Users/me/Desktop/fused/index.html?_side=claude&session_id=s1",
+    );
+    expect(taskHref({ ...ran, entry: "" })).toBe(
+      "/explorer/view/Users/me/Desktop/fused?_side=claude&session_id=s1",
+    );
+    const waiting = task({
+      key: "pending:e1",
+      session_id: "",
+      status: "queued",
+      entry_origin: "chat",
+      entry: "/Users/me/Desktop/fused/index.html",
+    }, 0);
+    expect(taskHref(waiting)).toBe(
+      "/explorer/view/Users/me/Desktop/fused/index.html?_side=claude&session_id=&queued=e1",
+    );
+  });
+
   it("OPENS a queued row by the entry it is waiting as", () => {
     // A task waiting in a folder's line has no session — nothing of it has run —
     // and this used to be the end of it, so a chat a reader had typed into

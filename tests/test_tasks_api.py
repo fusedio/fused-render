@@ -231,6 +231,40 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["unread"] is True
 
 
+def test_an_app_folder_task_names_its_entry_page(client, projects_dir, state_dir,
+                                                  tmp_path, monkeypatch):
+    """`entry` is the page a FOLDER target opens as (Akshil, 2026-10-06: a task's
+    door opens the app, not the listing): the fused-app marker page first, a
+    plain index.html next, "" for a folder with neither or a file target."""
+    _already_using(state_dir)
+    marked = tmp_path / "marked"
+    marked.mkdir()
+    (marked / "zz.html").write_text("<meta name=\"fused-app\">", encoding="utf-8")
+    (marked / "index.html").write_text("<p>plain</p>", encoding="utf-8")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "index.html").write_text("<p>plain</p>", encoding="utf-8")
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    for sess, folder in (("s-marked", marked), ("s-plain", plain), ("s-bare", bare)):
+        _write_transcript(projects_dir, sess, str(folder), [
+            _user("go", T9), _assistant("done", T10),
+        ])
+
+    by_key = {t["key"]: t for t in _tasks(client)}
+    canon = tasks_mod.canonical_fs_path
+    assert by_key["s-marked"]["entry"] == canon(str(marked / "zz.html"))
+    assert by_key["s-plain"]["entry"] == canon(str(plain / "index.html"))
+    assert by_key["s-bare"]["entry"] == ""
+    # A file target is already a page: nothing to resolve.
+    assert tasks_mod._task_entry(str(plain / "index.html")) == ""
+    # …and the memo follows the folder's mtime: a page appearing later is seen.
+    (bare / "index.html").write_text("<p>late</p>", encoding="utf-8")
+    import os as _os
+    _os.utime(bare, (1, 1))
+    assert tasks_mod._task_entry(str(bare)) == str(bare / "index.html")
+
+
 # --------------------------------------------------------------- entrypoint
 
 
