@@ -117,7 +117,6 @@ def test_handlers_registered_after_the_app_is_built_are_still_picked_up():
 #: to preserve, and the only thing that checks the real 19 handlers rather than
 #: the mechanism driving them.
 EXPECTED_STARTUP = [
-    "_startup_pooled_client",
     "_startup_prewarm_ai",
     "_startup_warm_engine",
     "_startup_resurrect_background_apps",
@@ -135,6 +134,9 @@ EXPECTED_STARTUP = [
     "_startup_ai_hub_catalog_refresh",
     "_startup_resource_trail",
     "_startup_gc_project_venvs",
+    # TEMPORARY upgrade shim (legacy_mounts_cleanup.py); a startup hook so lean
+    # and bare create_app() never run it.
+    "_startup_legacy_mounts_cleanup",
     # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
@@ -153,7 +155,6 @@ EXPECTED_STARTUP = [
 #: decorator, not the name. Kept as-is so this list stays a faithful record of
 #: what ran before rather than a tidied version of it.
 EXPECTED_SHUTDOWN = [
-    "_shutdown_pooled_client",
     "_shutdown_background_apps_resurrection",
     "_startup_shutdown_ai",
     "_shutdown_server_json",
@@ -195,13 +196,9 @@ def test_create_app_registers_nothing_on_the_deprecated_path():
     assert app.router.on_shutdown == []
 
 
-#: The one startup handler registered even in `lean` — building the pooled
-#: httpx client is not warm-up, it's what makes a bearer-mount/`?pooled=1`
-#: read CORRECT rather than merely fast: without `app.state.pooled_client`
-#: that route raises `AttributeError` instead of serving the file. See
-#: `on_startup_always` in app.py.
+#: The startup handlers registered even in `lean` (`on_startup_always` in
+#: app.py).
 EXPECTED_STARTUP_LEAN = [
-    "_startup_pooled_client",
     # Task scheduling must work in lean apps, and the machine-duties lease only
     # hands over promptly if every live process is parked on it from startup.
     "_startup_queue_manager",
@@ -210,14 +207,13 @@ EXPECTED_STARTUP_LEAN = [
 
 #: The shutdown handlers registered even in `lean` — anything that can start
 #: from an ordinary request (an engine, a local AI worker, a terminal
-#: session, a capture, the pooled fs/raw client) rather than only from the
+#: session, a capture) rather than only from the
 #: `@on_startup` warm-up `lean` skips. Order matches their position in
 #: EXPECTED_SHUTDOWN above. `_startup_shutdown_ai` moved in here too: the
 #: `_AI_SESSION` it tears down is constructed at import time and can be
 #: started by an ordinary `/api/ai` request regardless of `lean` — only its
 #: `@on_startup` PREWARM is lean-skipped, not the session object itself.
 EXPECTED_SHUTDOWN_LEAN = [
-    "_shutdown_pooled_client",
     "_startup_shutdown_ai",
     "_shutdown_captures",
     "_shutdown_ai_workers",
@@ -230,16 +226,14 @@ EXPECTED_SHUTDOWN_LEAN = [
 
 def test_lean_registers_no_startup_handlers_but_always_runs_cleanup():
     """`fused-render open`'s server (`create_app(..., lean=True)`): every one
-    of the 19 startup handlers is still DEFINED (so a lean build stays
-    otherwise identical code), and all but one are never collected —
-    `_lifespan` then iterates a near-empty startup list and starts nothing in
-    the background. The one exception, `_startup_pooled_client`, is not
-    warm-up: without it a bearer-mount/`?pooled=1` read in a lean app can't
-    be served AT ALL (see EXPECTED_STARTUP_LEAN's docstring).
+    of the startup handlers is still DEFINED (so a lean build stays
+    otherwise identical code), and all but the `on_startup_always` ones are
+    never collected — `_lifespan` then iterates a near-empty startup list and
+    starts nothing in the background.
 
     Shutdown is NOT symmetric: `lean` only ever skips STARTUP (eager warm-up)
-    work. An engine, a local AI worker, a terminal session, a capture and the
-    pooled fs/raw client can all still start ON DEMAND from an ordinary
+    work. An engine, a local AI worker, a terminal session or a capture can
+    all still start ON DEMAND from an ordinary
     request in a lean app even though their `@on_startup` warm-up never ran
     — so their cleanup (`on_shutdown_always`) is registered regardless of
     `lean`, and everything else (paired only with a startup hook that lean

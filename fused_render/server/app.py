@@ -800,9 +800,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     from fused_render.shell import onboarding as shell_onboarding
 
     app.include_router(shell_onboarding.router)
-    if not lean:
-        # TEMPORARY upgrade shim (see fused_render/legacy_mounts_cleanup.py):
-        # remove in a later release once old homes have been swept.
+    # TEMPORARY upgrade shim (see fused_render/legacy_mounts_cleanup.py):
+    # remove in a later release once old homes have been swept. A startup hook
+    # (so skipped in lean, and not run by building an app, e.g. a TestClient
+    # that never enters the lifespan); it only starts a daemon thread.
+    @on_startup
+    async def _startup_legacy_mounts_cleanup():
         from fused_render import legacy_mounts_cleanup
         legacy_mounts_cleanup.start_background()
 

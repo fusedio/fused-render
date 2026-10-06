@@ -55,7 +55,36 @@ _CMD_TIMEOUT_S = 5.0
 _TERM_GRACE_S = 3.0
 
 
-def _run(argv, runner=subprocess.run):
+def _bounded_run(argv, *, capture_output=True, text=True, timeout=_CMD_TIMEOUT_S,
+                 close_fds=False):
+    """`subprocess.run` with a wait that is bounded even after the timeout.
+
+    `subprocess.run` kills the child on timeout and then waits for it with no
+    limit, so a umount stuck in uninterruptible (D) state would hang the caller
+    forever. Here the child is killed and ABANDONED (never waited on), the pipe
+    ends are closed, and TimeoutExpired is raised. Spawn rules: `close_fds`
+    is passed by the caller (False), `argv[0]` is absolute, and there is no
+    `cwd=`."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=text, close_fds=close_fds)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                if pipe:
+                    pipe.close()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+def _run(argv, runner=_bounded_run):
     """Run one short command; return the CompletedProcess or None on any
     failure. argv[0] must already be absolute."""
     try:
@@ -85,11 +114,17 @@ def _pid_is_rcd(pid: int, *, runner, platform) -> bool:
     if not isinstance(pid, int) or pid <= 1:
         return False
     if platform == "win32":
-        tasklist = _which("tasklist.exe")
-        if not tasklist:
+        # Positive evidence only: the process's command line must be an
+        # `rclone ... rcd`. An image name alone (tasklist) would also match the
+        # user's own rclone, so without PowerShell we skip rather than guess.
+        powershell = _which("powershell.exe")
+        if not powershell:
             return False
-        res = _run([tasklist, "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], runner)
-        return bool(res and "rclone" in (res.stdout or "").lower())
+        res = _run([powershell, "-NoProfile", "-NonInteractive", "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}')"
+                    ".CommandLine"], runner)
+        out = (res.stdout or "").lower() if res and res.returncode == 0 else ""
+        return "rclone" in out and " rcd" in out
     ps = _which("ps", ("/bin/ps", "/usr/bin/ps"))
     if not ps:
         return False
@@ -102,7 +137,7 @@ def _stop_pid(pid: int, *, runner, kill, platform, sleep) -> None:
     if platform == "win32":
         taskkill = _which("taskkill.exe")
         if taskkill:
-            _run([taskkill, "/PID", str(pid), "/T", "/F"], runner)
+            _run([taskkill, "/PID", str(pid), "/F"], runner)
         return
     try:
         kill(pid, signal.SIGTERM)  # lets rclone unmount cleanly
@@ -173,32 +208,47 @@ def _unmount_argvs(path: str, platform: str) -> list[list[str]]:
 
 
 def _unmount_all(mounts_dir: str, *, runner, platform) -> list[str]:
-    """Force-unmount every entry under `mounts_dir`. Returns the entry paths.
+    """Force-unmount every entry under `mounts_dir`. Returns only the entry
+    paths whose unmount command exited 0 (the only ones safe to touch again).
     Lists only `mounts_dir` itself and never stats an entry."""
     try:
         with os.scandir(mounts_dir) as it:
             names = [e.name for e in it]
     except OSError:
         return []
-    paths = [os.path.join(mounts_dir, n) for n in names]
-    for path in paths:
+    unmounted: list[str] = []
+    for n in names:
+        path = os.path.join(mounts_dir, n)
         for argv in _unmount_argvs(path, platform):
             res = _run(argv, runner)
             if res is not None and res.returncode == 0:
+                unmounted.append(path)
                 break
-    return paths
+    return unmounted
 
 
 # ---------------------------------------------------------------- delete
 
 
-def _cache_dirs(environ) -> list[str]:
-    """rclone VFS cache dirs the removed feature could have created: the
-    supervisor's RCLONE_CACHE_DIR / <FUSED_RENDER_CACHE_DIR>/rclone."""
+def _cache_dirs(environ, platform, user_home) -> list[str]:
+    """The rclone VFS cache dirs fused-render itself configured on the old
+    build (supervisor/paths.py: `RCLONE_CACHE_DIR = <cache>/rclone`):
+    Linux `$XDG_CACHE_HOME|~/.cache` + `/fused-render/rclone`; Windows
+    `%LOCALAPPDATA%/FusedRender/cache/rclone` (else `~/.fused-render/cache/rclone`).
+    Resolved here, not read from RCLONE_CACHE_DIR: an inherited value can be the
+    user's own rclone cache and must never be deleted. The supervisor-provided
+    `<FUSED_RENDER_CACHE_DIR>/rclone` is fused-render's own and is included."""
     out: list[str] = []
-    explicit = environ.get("RCLONE_CACHE_DIR")
-    if explicit:
-        out.append(explicit)
+    if platform.startswith("linux"):
+        xdg = environ.get("XDG_CACHE_HOME")
+        base = xdg if xdg and os.path.isabs(xdg) else os.path.join(user_home, ".cache")
+        out.append(os.path.join(base, "fused-render", "rclone"))
+    elif platform == "win32":
+        local = environ.get("LOCALAPPDATA")
+        if local:
+            out.append(os.path.join(local, "FusedRender", "cache", "rclone"))
+        else:
+            out.append(os.path.join(user_home, ".fused-render", "cache", "rclone"))
     base = environ.get("FUSED_RENDER_CACHE_DIR")
     if base:
         out.append(os.path.join(base, "rclone"))
@@ -215,8 +265,8 @@ def _rm(path: str) -> None:
         pass
 
 
-def run(*, home=None, base_home=None, environ=None, runner=subprocess.run,
-        kill=os.kill, platform=None, sleep=time.sleep) -> None:
+def run(*, home=None, base_home=None, environ=None, runner=_bounded_run,
+        kill=os.kill, platform=None, sleep=time.sleep, user_home=None) -> None:
     """The whole cleanup, synchronously. Never raises. The keyword arguments
     exist so tests can fake the subprocess/kill layer and the paths."""
     try:
@@ -224,6 +274,7 @@ def run(*, home=None, base_home=None, environ=None, runner=subprocess.run,
         base_home = base_home or storage.base_home_dir()
         environ = os.environ if environ is None else environ
         platform = platform or sys.platform
+        user_home = user_home or os.path.expanduser("~")
         marker = os.path.join(home, MARKER)
         if os.path.exists(marker):
             return
@@ -237,7 +288,8 @@ def run(*, home=None, base_home=None, environ=None, runner=subprocess.run,
                 lambda: _stop_rcd(home, base_home, runner=runner, kill=kill,
                                   platform=platform, sleep=sleep),
                 lambda: _finish_mounts(home, runner=runner, platform=platform),
-                lambda: _delete_state(home, base_home, environ),
+                lambda: _delete_state(home, base_home, environ, platform,
+                                      user_home),
             )
             for step in steps:
                 try:
@@ -273,13 +325,30 @@ def _finish_mounts(home, *, runner, platform) -> None:
         pass
 
 
-def _delete_state(home, base_home, environ) -> None:
+def _prune_registry(base_home, home) -> None:
+    """Drop only THIS home's entries from the shared rcd registry (other homes /
+    branches may still be running their own rcd); delete the file when nothing
+    is left."""
+    path = os.path.join(base_home, "rcd-registry.json")
+    reg = storage.read_json(path)
+    if not isinstance(reg, list):
+        _rm(path)  # unreadable / not a registry: nothing of anyone's to keep
+        return
+    kept = [e for e in reg
+            if not (isinstance(e, dict) and e.get("dir") == home)]
+    if not kept:
+        _rm(path)
+    elif len(kept) != len(reg):
+        storage.write_json(path, kept)
+
+
+def _delete_state(home, base_home, environ, platform, user_home) -> None:
     for name in _STATE_FILES:
         _rm(os.path.join(home, name))
     for name in _STATE_DIRS:
         _rm(os.path.join(home, name))
-    _rm(os.path.join(base_home, "rcd-registry.json"))
-    for d in _cache_dirs(environ):
+    _prune_registry(base_home, home)
+    for d in _cache_dirs(environ, platform, user_home):
         _rm(d)
 
 

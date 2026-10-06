@@ -592,7 +592,7 @@ def _no_real_user_plugin_sync(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_legacy_mounts_cleanup(monkeypatch):
-    """`create_app` fires the one-time upgrade shim (legacy_mounts_cleanup) on a
+    """The lifespan startup hook fires the one-time upgrade shim (legacy_mounts_cleanup) on a
     daemon thread; it must never run against a test's environment. The tests
     ABOUT the shim call `legacy_mounts_cleanup.run(...)` directly with fakes."""
     from fused_render import legacy_mounts_cleanup
