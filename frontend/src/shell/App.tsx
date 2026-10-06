@@ -51,7 +51,6 @@ import { useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { isBot } from "@platform/lib/flavor";
-import BotShellMenu from "@shell/BotShellMenu";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
@@ -1059,10 +1058,9 @@ export default function App({ config }: { config: Config }) {
   // bottom Preferences menu itself. Fused Bot has none: the Bots page is the
   // whole window, as it was in the standalone FusedBot; Tasks and
   // Preferences open from the native menu bar there (mac_window.py).
-  // Fused Bot's shell control is one gear in the status bar instead
-  // (BotShellMenu, the StatusBar's `leading` slot below): the menu bar is
-  // the door in the native app, this is the door everywhere else (browser
-  // tab, native window failing to construct).
+  // Fused Bot has no shell chrome at all (owner's call): Tasks and
+  // Preferences open from the native menu bar (mac_window.py); a plain
+  // browser tab reaches them by URL.
   const sidebar = isBot() ? null : <GlobalSidebar config={config} />;
 
   // The setup wizard (shell/onboarding) is the whole window: no sidebar, no
@@ -1141,7 +1139,6 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && !isWindows && <TerminalDrawer cwd={fsPath} />}
         {!IS_EMBED && (
           <StatusBar
-            leading={isBot() && <BotShellMenu />}
             terminalDock={!isWindows && <TerminalDock />}
             system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}
