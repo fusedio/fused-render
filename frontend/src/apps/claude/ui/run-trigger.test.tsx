@@ -165,6 +165,20 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
     expect(byClass(bare.toJSON() as Json | Json[], "chip-stamp")).toHaveLength(0);
   });
 
+  test("a word that opens a leading AND a trailing run times both (Bugbot, PR #1430)", () => {
+    // The run before the prose and the run after it share one seat and one
+    // word; the hover spans first call to last result across both — and a
+    // clockless first run does not blank it.
+    const both = [stamped("a", T0, T0 + 4), text("Middle."), stamped("b", T0 + 10, T0 + 70)];
+    const json = view(both).toJSON() as Json | Json[];
+    const triggers = byClass(json, "run-trigger");
+    expect(triggers).toHaveLength(1);
+    expect((triggers[0]!.props as WhenProps)["data-hint"]).toMatch(/ · ran 1m 10s$/);
+    const clockless = [tool("a", "Bash"), text("Middle."), stamped("b", T0 + 10, T0 + 70)];
+    const j2 = view(clockless).toJSON() as Json | Json[];
+    expect((byClass(j2, "run-trigger")[0]!.props as WhenProps)["data-hint"]).toMatch(/ · ran 1m$/);
+  });
+
   test("a run with no clocks has no hover", () => {
     const json = view([text("Here goes."), tool("a", "Bash"), tool("b", "Read")]).toJSON() as Json | Json[];
     const props = byClass(json, "run-trigger")[0]!.props as WhenProps;
