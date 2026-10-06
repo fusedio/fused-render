@@ -1133,6 +1133,22 @@ class WindowManager:
         else:
             self.open(self.home_url)
 
+    def snapshot_urls(self) -> list[str]:
+        """What every open window shows now, in ``_windows`` order (MRU, newest
+        last — so reopening them in this order rebuilds the same stacking).
+        Main thread only: it asks WebKit for each page's URL. app.py's
+        relaunch records these (relaunch_windows.py) BEFORE `close_all`; the
+        frames come back by themselves, each window's autosave name is its key."""
+        urls = []
+        for w in list(self._windows):
+            try:
+                u = w.current_url()
+            except Exception:  # noqa: BLE001 — one dead window must not lose the rest
+                continue
+            if u:
+                urls.append(u)
+        return urls
+
     def has_windows(self) -> bool:
         return bool(self._windows)
 

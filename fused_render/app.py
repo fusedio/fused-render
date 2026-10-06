@@ -29,7 +29,7 @@ import webbrowser
 
 import uvicorn
 
-from fused_render import desktop_probe
+from fused_render import desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 from fused_render.server import (
@@ -913,6 +913,18 @@ RELAUNCH_DEADLINE_S = 50.0
 # How many times it asks, the first ask included.
 RELAUNCH_OPEN_TRIES = 3
 
+# Where a relaunching instance writes down its open native windows for the
+# successor (fused_render/relaunch_windows.py). Beside PIDFILE: branch-scoped
+# like it, so a dev branch's restart never feeds another branch's app.
+RELAUNCH_WINDOWS_FILE = os.path.join(APP_SUPPORT_DIR, "relaunch-windows.json")
+
+# How old a snapshot may be and still be replayed. Twice the relauncher's own
+# deadline: the successor writes nothing until it is serving, and the longest a
+# healthy restart takes end to end is that deadline — past it the file is a
+# leftover (a restart that never came back), and replaying it into some later,
+# unrelated launch would be a surprise.
+RELAUNCH_SNAPSHOT_MAX_AGE_S = 2 * RELAUNCH_DEADLINE_S
+
 
 def bundle_executable(bundle: str) -> str:
     """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender.
@@ -1178,6 +1190,34 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
         logger.info("relaunch deep link ignored: quit already in progress")
         return False
     return True
+
+
+def make_windows_quit(begin, *, state: dict, close_windows, snapshot, discard):
+    """The quit action `main()` hands every surface: the windows first, then
+    the ordered teardown (`begin` — `make_quit_action`'s).
+
+    A RELAUNCH is the one caller that passes `on_claim`. It must record the open
+    windows BEFORE they are closed (`close_windows` empties the manager, and a
+    snapshot taken after it would be empty), so the order is
+    snapshot -> close -> claim, enforced here rather than left to statement
+    order in a closure. A quit already in flight has closed the windows itself,
+    so a snapshot then would be empty and would erase a good one — skipped. And
+    if the claim is refused (the in-flight quit was the user's own), the file
+    is withdrawn: nobody is coming back to read it."""
+    def _do_quit(on_claim=None) -> bool:
+        wrote = False
+        if on_claim is not None and not state.get("quitting"):
+            try:
+                wrote = bool(snapshot())
+            except Exception:
+                logger.warning("could not record the open windows", exc_info=True)
+        close_windows()
+        claimed = begin(on_claim=on_claim)
+        if wrote and not claimed:
+            discard()
+        return claimed
+
+    return _do_quit
 
 
 def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None):
@@ -1537,7 +1577,10 @@ def main() -> None:
                 # flight and the page that linked here reconnects on its own
                 # (D126 banner), so no tab is opened now and nothing is queued
                 # to open later. state["docs"] above also keeps the bootstrap
-                # from auto-opening the home tab on a fresh launch.
+                # from auto-opening the home tab on a fresh launch. (A restart
+                # from native windows is the exception, and it is not decided
+                # HERE: the bootstrap reopens the windows the predecessor
+                # recorded once the server is ready — relaunch_windows.py.)
                 logger.info("launch deep link: ensuring app/server only, no tab")
                 continue
             try:
@@ -1704,6 +1747,16 @@ def main() -> None:
         pending, state["pending"] = state["pending"], []
         for target in pending:
             _open_target(target)
+        # The windows a relaunch's predecessor had open (relaunch_windows.py).
+        # Through `_open_target` like every other open: a native window, or —
+        # with the preference off / no manager — a browser tab. `docs` is set
+        # so the home window below is not added on top of them; with no
+        # snapshot (a restart from a browser tab, or any ordinary launch)
+        # nothing here fires and the launch behaves exactly as before.
+        for path in relaunch_windows.take_snapshot(
+                RELAUNCH_WINDOWS_FILE, max_age_s=RELAUNCH_SNAPSHOT_MAX_AGE_S):
+            state["docs"] = True
+            _open_target(f"http://127.0.0.1:{port}" + path)
         # Home window only when this launch wasn't a document double-click.
         if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
             _open_target(url)
@@ -1771,12 +1824,29 @@ def main() -> None:
     # quit_teardown do the blocking work off-thread under a hard deadline.
     _begin_quit_action = make_quit_action(state, terminate=_terminate)
 
-    def _do_quit(on_claim=None) -> bool:
-        # The windows first (`_close_windows`), then the ordered teardown.
-        # Same signature and return as `make_quit_action`'s: `begin_relaunch`
-        # passes `on_claim` and reads the claim bool.
-        _close_windows()
-        return _begin_quit_action(on_claim=on_claim)
+    def _snapshot_windows() -> bool:
+        # Main thread only (AppKit), like `_close_windows`: a relaunch deep link
+        # arrives there. Off it, or with no manager, there is nothing to record.
+        manager = state.get("windows")
+        if manager is None:
+            return False
+        from Foundation import NSThread
+
+        if not NSThread.isMainThread():
+            return False
+        targets = relaunch_windows.targets_from_urls(manager.snapshot_urls(), port)
+        logger.info("relaunch: recording %d open window(s) for the successor",
+                    len(targets))
+        return relaunch_windows.write_snapshot(RELAUNCH_WINDOWS_FILE, targets)
+
+    # The windows first (`_close_windows`), then the ordered teardown. Same
+    # signature and return as `make_quit_action`'s: `begin_relaunch` passes
+    # `on_claim` and reads the claim bool — and the relaunch also records its
+    # windows first (see make_windows_quit).
+    _do_quit = make_windows_quit(
+        _begin_quit_action, state=state, close_windows=_close_windows,
+        snapshot=_snapshot_windows,
+        discard=lambda: relaunch_windows.discard_snapshot(RELAUNCH_WINDOWS_FILE))
 
     status_app = FusedRenderStatusApp()
 
