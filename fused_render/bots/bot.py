@@ -394,6 +394,8 @@ def super_id():
 
 
 class Bot:
+    deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
+
     def __init__(self, bid):
         self.id = bid
         self.dir = bpaths.bot_dir(bid)
@@ -1188,12 +1190,14 @@ class Bot:
                 r["enabled"] = False
             self.save()
         if not busy and not self.start_task(r["task"], origin="routine"):
-            # Someone (a hand-off, a message) started a task between the busy check and the start.
+            # Someone (a hand-off, a message) started a task between the busy check and the start. The "fired"
+            # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
                 r["last_result"] = "skipped: bot was busy"
                 if r["kind"] == "once":
                     r["enabled"] = True
                 self.save()
+            self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
             self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: bot busy")
 
     def _spacing_ok(self, r):
@@ -1410,7 +1414,10 @@ class Bot:
                     if is_super(self.meta):
                         # Super Bot's guard rails (posture, texted answers) live in the agent engine: no fallback.
                         logger.warning("bot %s: agent engine unavailable for Super Bot", self.id, exc_info=True)
-                        self.emit("error", "Super Bot needs the agent engine (Claude Code), which could not load.")
+                        # Explicit via: this runs on the caller's thread, so emit() would not stamp it and a phone-started
+                        # request would get silence (the router answers the origin).
+                        self.emit("error", "Super Bot needs the agent engine (Claude Code), which could not load.",
+                                  **({} if chan.is_web(via) else {"via": dict(via)}))
                         self.set_status("idle", task_via=None)
                         self.task_via = dict(chan.WEB)
                         return False
@@ -2532,9 +2539,11 @@ def delete(bid):
     b = reg.get(bid)
     b.deleted = True  # first: a watcher or starter racing the shutdown below must not start or save it
     b.shutdown()
-    reg.forget(bid)
+    # Folders go BEFORE forget(): between forget and rmtree, registry.get would find bot.json on disk and build a
+    # fresh Bot with deleted=False that could save the folder back. With the folder gone, get() has nothing to load.
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
     shutil.rmtree(bpaths.bot_cache_dir(bid), ignore_errors=True)
+    reg.forget(bid)
 
 
 # Your own Chrome's profiles (~/Library/Application Support/Google/Chrome/<dir>),
