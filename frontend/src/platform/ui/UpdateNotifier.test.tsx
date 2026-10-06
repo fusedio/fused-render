@@ -313,7 +313,7 @@ test("the restart card loses its ✕ and re-notifies in place while restartInFli
   const popup = getPopupNotification();
   expect(popup?.id).toBe(beforeId);
   expect(popup?.dismissible).toBe(false);
-  expect(popup?.title).toBe("Restarting fused-render");
+  expect(popup?.title).toBe("Restarting Fused Render");
 
   // A probe failing twice moves the stage to "reconnecting" — still in
   // flight, still no ✕, same id, new stage copy.
@@ -351,7 +351,7 @@ test("a press the old app never acted on ends as a dismissible 'couldn't restart
     Date.now = realNow;
   }
   const card = getPopupNotification();
-  expect(card?.title).toBe("fused-render couldn't restart itself");
+  expect(card?.title).toBe("Fused Render couldn't restart itself");
   expect(card?.detail).toContain("menu-bar icon");
   expect(card?.detail).toContain("⌘Q");
   expect(card?.tone).toBe("error");

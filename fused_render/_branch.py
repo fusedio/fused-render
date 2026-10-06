@@ -17,8 +17,9 @@ import os
 import re
 import sys
 
+from fused_render import _flavor
+
 _MAX_LEN = 12
-_BASE_PORT = 1777
 _PORT_RANGE_SIZE = 1000
 _PORT_OFFSET = 1788
 
@@ -78,10 +79,21 @@ def branch_ref(ref: str | None = None) -> str:
 
 def branch_port(ref: str | None = None) -> int:
     r = branch_ref(ref)
+    base = _flavor.port_base()
     if not r:
-        return _BASE_PORT
+        return base
     digest = hashlib.sha1(r.encode()).hexdigest()
-    return int(digest, 16) % _PORT_RANGE_SIZE + _PORT_OFFSET
+    # The branch range sits just above the flavor's baseline, so Render stays
+    # exactly where it always was ([1788, 2788)) and Bot branches land in
+    # [2788, 3788): a bot and a render build of the same ref never share a
+    # port. Bot's 2777 baseline sits inside Render's branch range, so a ref
+    # that hashes onto any flavor's baseline steps to the next port (still
+    # inside the range, still deterministic) rather than stealing the
+    # installed app's listener.
+    port = int(digest, 16) % _PORT_RANGE_SIZE + _PORT_OFFSET + (base - 1777)
+    while port in _flavor.all_port_bases():
+        port += 1
+    return port
 
 
 def branch_suffix(ref: str | None = None) -> str:

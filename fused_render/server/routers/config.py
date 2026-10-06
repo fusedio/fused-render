@@ -2,7 +2,7 @@ import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from fused_render import __version__
+from fused_render import __version__, _flavor
 from fused_render import calls as shell_calls
 from fused_render.installed import installed_version
 from fused_render.server import dirpicker
@@ -108,6 +108,12 @@ def api_config(
     # `/` lands at its first render, before any prefs fetch could answer — a
     # redirect that waited on prefs would paint Home and then hop to Bots.
     config["bots_enabled"] = shell_prefs.bots_enabled()
+    # Which app this is (fused_render/_flavor.py): "render" or "bot", with the
+    # deep-link scheme and the name the shell shows for it. The bot flavor
+    # also reads bots_enabled as true above (prefs.bots_enabled).
+    config["flavor"] = _flavor.flavor()
+    config["scheme"] = _flavor.scheme()
+    config["display_name"] = _flavor.display_name()
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

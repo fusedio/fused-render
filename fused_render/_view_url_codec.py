@@ -14,6 +14,8 @@ import re
 from pathlib import PureWindowsPath
 from urllib.parse import quote, unquote, urlsplit
 
+from fused_render import _flavor
+
 
 def _is_drive_path(fs_path: str) -> bool:
     # A drive-letter path has drive 'C:' + a non-empty root; a UNC path's
@@ -119,7 +121,7 @@ def is_launch_url(raw: str) -> bool:
     """True when a raw launch argument is an OS-delivered URL rather than a
     filesystem path — the cue to skip existence checks and cwd resolution."""
     low = raw.lower()
-    if low.startswith(("fused-render:", "file:")):
+    if low.startswith((_flavor.scheme() + ":", "file:")):
         return True
     return bool(_SCHEME_RE.match(raw))
 
@@ -140,7 +142,7 @@ def open_target_path(raw: str) -> str:
       "FusedRender could not open" dialog, exactly like a missing file;
     - anything else (a plain absolute path, a folder) -> `view_url_path`.
     """
-    if raw.lower().startswith("fused-render:"):
+    if raw.lower().startswith(_flavor.scheme() + ":"):
         return "/clone?src=" + quote(raw, safe="")
     if raw.lower().startswith("file:"):
         split = urlsplit(raw)

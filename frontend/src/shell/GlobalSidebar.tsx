@@ -17,10 +17,11 @@ import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
-import { TOURS, startTour } from "@platform/lib/tours";
+import { availableTours, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
 import { useUrlVersion } from "@platform/lib/hooks";
+import { displayName, isBot } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -501,7 +502,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // signed-out state itself, and gating it on the account would delete the only
   // affordance for reaching a feature you have not set up yet. The primary row
   // needs both.
-  const canvasesEnabled = useCanvasesFeature();
+  // FUSED BOT (platform/lib/flavor): the same shell wearing the bot app's
+  // name shows Bots, Tasks and Preferences, and nothing else — no Canvases,
+  // AI Models, Projects or Bookmarks rows, and a shorter settings menu. The
+  // routes stay reachable (a bot's app frame and its Edit door still land on
+  // the explorer and the app page); only the doors in this column go.
+  const bot = isBot();
+  const canvasesEnabled = useCanvasesFeature() && !bot;
   const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
   // BOTS AS THE FRONT DOOR (prefs `bots_enabled`, default off). Unlike the
   // Canvases flag this does not ADD a row, it SWAPS the top one: on, the Home
@@ -627,8 +634,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       : []),
   ];
   if (claudeConfigAvailable) menuEntries.push("separator");
+  // Templates are the Render app's own concern; Fused Bot's menu skips
+  // straight to Preferences (Canvases is already off above).
+  if (!bot) {
+    menuEntries.push({ href: "/templates", label: "Templates", icon: TEMPLATES_ICON });
+  }
   menuEntries.push(
-    { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     // No /tasks entry here on purpose: Tasks is primary nav now (see the
     // rail below). Listing the same route in the menu too would light the Tasks
     // row and the Preferences trigger at once, since `prefsActive` treats every
@@ -670,7 +681,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // The first-run wizard, on demand — its own page (shell/onboarding).
       // Reopening touches neither flag until the user finishes or closes it.
       { href: ONBOARDING_PATH, label: "Setup wizard" },
-      ...TOURS.map((tour) => ({
+      ...availableTours().map((tour) => ({
         href: `/preferences#tour-${tour.id}`,
         label: tour.title,
         // Next frame, not now: driver.js measures its highlight the moment it is
@@ -742,14 +753,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           },
         ]
       : []),
-    {
-      key: "ai-models",
-      label: "AI Models",
-      icon: AI_MODELS_ICON,
-      href: AI_MODELS_HOME,
-      active: aiModelsActive,
-      badge: residentDot,
-    },
+    ...(bot
+      ? []
+      : [
+          {
+            key: "ai-models",
+            label: "AI Models",
+            icon: AI_MODELS_ICON,
+            href: AI_MODELS_HOME,
+            active: aiModelsActive,
+            badge: residentDot,
+          },
+        ]),
     // Same gate and same place as the expanded row: the rail is the whole
     // sidebar when collapsed, and a meter that vanished on collapse would read
     // as setup being done.
@@ -787,7 +802,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           shell/task-peek-flag.ts. Off, the collapse is the one this sidebar has
           always had. */}
       <SidebarFrame
-        title="Render"
+        title={bot ? "Bot" : "Render"}
         homeHref={frontDoor}
         rail={rail}
         tuckOnCollapse={taskPeekOn}
@@ -834,25 +849,28 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={canvasesActive}
             />
           )}
-          <NavItem
-            href={AI_MODELS_HOME}
-            id="ai-models-link"
-            label="AI Models"
-            icon={AI_MODELS_ICON}
-            active={aiModelsActive}
-            extra={residentDot}
-            trailing={
-              // Beta while the surface (playground foremost) is still settling —
-              // the chip skin is the shared one, the modifier only recolours it.
-              <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
-            }
-          />
+          {!bot && (
+            <NavItem
+              href={AI_MODELS_HOME}
+              id="ai-models-link"
+              label="AI Models"
+              icon={AI_MODELS_ICON}
+              active={aiModelsActive}
+              extra={residentDot}
+              trailing={
+                // Beta while the surface (playground foremost) is still settling —
+                // the chip skin is the shared one, the modifier only recolours it.
+                <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+              }
+            />
+          )}
         </div>
         {/* Projects (D487, "Current apps" until 2026-08-26): the apps on the
             desk, above the permanent Bookmarks tree. Collapsible; always ends
-            in a "+ New app" row. */}
-        <CurrentAppsSection />
-        <BookmarksSection />
+            in a "+ New app" row. Neither under Fused Bot: a bot's apps are
+            listed by the bot, and there is no file tree to bookmark into. */}
+        {!bot && <CurrentAppsSection />}
+        {!bot && <BookmarksSection />}
         <div className="sidebar-section sidebar-settings">
           <UpdateCard />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
@@ -869,7 +887,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             active={prefsActive}
             trailing={
               config.version ? (
-                <span className="version-chip" title={`Fused Render v${config.version}`}>
+                <span className="version-chip" title={`${displayName()} v${config.version}`}>
                   v{config.version}
                 </span>
               ) : undefined

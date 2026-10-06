@@ -49,7 +49,7 @@ import threading
 import time
 import urllib.parse
 
-from fused_render import hotkey
+from fused_render import _flavor, hotkey
 from fused_render._view_url_codec import (app_page_path, canonical_fs_path, embed_url_path,
                                           view_url_path)
 
@@ -155,8 +155,8 @@ def notify_settings_changed(hotkey_spec: str | None) -> None:
 
 # ---- registry ------------------------------------------------------------------------
 
-HOME_ROW = {"home": True, "path": "", "url": "/", "name": "Fused Render",
-            "title": "Fused Render", "kind": "home", "pinned": False,
+HOME_ROW = {"home": True, "path": "", "url": "/", "name": _flavor.display_name(),
+            "title": _flavor.display_name(), "kind": "home", "pinned": False,
             "recent": False, "running": False, "icon": None}
 
 _CACHE_TTL_S = 2.0

@@ -19,6 +19,7 @@
 import { useSyncExternalStore } from "react";
 
 import { getConfig, type FdaState } from "@platform/lib/api";
+import { bundleName, deepLinkScheme } from "@platform/lib/flavor";
 
 export type { FdaState };
 
@@ -35,23 +36,35 @@ export const POLL_MS = 3000;
 // update dialog's Restart: the OS hands it to the running app, which quits
 // through the normal teardown and respawns; this tab's poll picks the new
 // server up on its own.
-export const RELAUNCH_HREF = "fused-render://relaunch?reason=fda";
+//
+// A FUNCTION, not a constant: the scheme is the flavor's (`fused-bot://` for
+// Fused Bot, platform/lib/flavor.ts), and the flavor is seeded after this
+// module is evaluated — a constant here would bake in the default.
+export function relaunchHref(): string {
+  return `${deepLinkScheme()}://relaunch?reason=fda`;
+}
 
-// Shared copy, so the wizard step and the strip say the same thing.
-export const FDA_COPY = {
-  steps: [
-    "Open System Settings on the Full Disk Access pane.",
-    "Turn on FusedRender in the list.",
-    "Relaunch FusedRender — the grant applies to the next launch.",
-  ],
-  waiting: "Waiting for the grant… turn FusedRender on in the pane that just opened.",
-  pending: "Full Disk Access is granted. Relaunch FusedRender to apply it.",
-  grantedToast: "Full Disk Access is on — no more prompts",
-  deniedToast: "macOS denied FusedRender access to a file — grant Full Disk Access to fix this",
-  open: "Open System Settings",
-  reopen: "Open System Settings again",
-  relaunch: "Relaunch FusedRender",
-} as const;
+// Shared copy, so the wizard step and the strip say the same thing. The pane
+// lists the app by its BUNDLE name ("FusedRender" / "FusedBot", no space),
+// so that is the word the steps use. A function for the same reason as the
+// href above.
+export function fdaCopy() {
+  const app = bundleName();
+  return {
+    steps: [
+      "Open System Settings on the Full Disk Access pane.",
+      `Turn on ${app} in the list.`,
+      `Relaunch ${app} — the grant applies to the next launch.`,
+    ],
+    waiting: `Waiting for the grant… turn ${app} on in the pane that just opened.`,
+    pending: `Full Disk Access is granted. Relaunch ${app} to apply it.`,
+    grantedToast: "Full Disk Access is on — no more prompts",
+    deniedToast: `macOS denied ${app} access to a file — grant Full Disk Access to fix this`,
+    open: "Open System Settings",
+    reopen: "Open System Settings again",
+    relaunch: `Relaunch ${app}`,
+  } as const;
+}
 
 let snapshot: FdaSnapshot = undefined;
 const listeners = new Set<() => void>();

@@ -7,6 +7,7 @@ import { homeTour } from "./home";
 import { tasksTour } from "./tasks";
 import { aiTour } from "./ai";
 import { explorerTour } from "./explorer";
+import { isBot } from "@platform/lib/flavor";
 
 /** A driver step plus the three things an INTERACTIVE step needs: something to
     do when it opens, the click that ends it, and the keystroke that means the
@@ -80,13 +81,22 @@ export interface Tour {
 // order a new user meets them, then the explorer walkthrough.
 export const TOURS: Tour[] = [homeTour, tasksTour, aiTour, explorerTour];
 
+/** The tours THIS flavor can show (platform/lib/flavor). Fused Bot has no
+ *  Home, AI Models or explorer surface in its sidebar, so the Tasks tour is
+ *  the one left — a tour whose targets are not on screen would drop every
+ *  step and mark itself seen. A function: the flavor is seeded after this
+ *  module is evaluated. */
+export function availableTours(): Tour[] {
+  return isBot() ? TOURS.filter((t) => t.id === tasksTour.id) : TOURS;
+}
+
 export function tourById(id: string): Tour | null {
-  return TOURS.find((t) => t.id === id) ?? null;
+  return availableTours().find((t) => t.id === id) ?? null;
 }
 
 /** The tour that should fire on a first visit to `pathname`, if any. */
 export function autoStartTourFor(pathname: string): Tour | null {
-  return TOURS.find((t) => t.autoStart !== false && t.matches(pathname)) ?? null;
+  return availableTours().find((t) => t.autoStart !== false && t.matches(pathname)) ?? null;
 }
 
 // v2 keys are deliberately fresh: the old single `fused.tour.seen` said nothing

@@ -63,7 +63,7 @@ test("refresh mode is exactly what it has always been", async () => {
   const r = await mount(
     <UpdateDialog kind="refresh" version="0.5.51" buildVersion="0.5.50" />,
   );
-  expect(text(r.root.findByType("h2"))).toBe("fused-render updated to v0.5.51");
+  expect(text(r.root.findByType("h2"))).toBe("Fused Render updated to v0.5.51");
   expect(text(r.root.findByType("p"))).toBe(
     "This page is still on v0.5.50. Refresh to load the new version.",
   );

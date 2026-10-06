@@ -201,8 +201,13 @@ def _canvas_push_internal_env() -> str:
 
 
 def canvases_root() -> str:
-    return os.environ.get("FUSED_RENDER_CANVASES_DIR") or os.path.expanduser(
-        "~/.fused-render/canvases"
+    # Under the unnested home (`~/.fused-render`, or FUSED_RENDER_HOME), not a
+    # spelled-out path, so one home override moves this with everything else.
+    # The env override wins as before.
+    from fused_render.shell.storage import base_home_dir
+
+    return os.environ.get("FUSED_RENDER_CANVASES_DIR") or os.path.join(
+        base_home_dir(), "canvases"
     )
 
 

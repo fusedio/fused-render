@@ -47,6 +47,7 @@ import {
   type OnboardingState,
 } from "@platform/lib/api";
 
+import { isBot } from "@platform/lib/flavor";
 import { ONBOARDING_PATH } from "./state";
 
 export type StageStatus = OnboardingStageStatus;
@@ -55,6 +56,15 @@ export type Stages = Record<string, OnboardingStage>;
 /** The stage ids, in wizard order — the server's closed set (STEPS). */
 export const STAGE_IDS = ["about", "claude", "fda", "models", "app"] as const;
 export type StageId = (typeof STAGE_IDS)[number];
+
+/** The stages THIS flavor has (platform/lib/flavor). Fused Bot's server
+ *  trims its STEPS to about/claude/fda — no model picks, no first app — so
+ *  the meter must not count the two it will never see as pending, and the
+ *  wizard must not offer them. A function, not a filtered constant: the
+ *  flavor is seeded after this module is evaluated. */
+export function stageIds(): readonly StageId[] {
+  return isBot() ? STAGE_IDS.filter((id) => id !== "models" && id !== "app") : STAGE_IDS;
+}
 
 let snapshot: OnboardingState | null = null;
 const listeners = new Set<() => void>();
@@ -209,7 +219,7 @@ const WEIGHT: Record<StageStatus, number> = { pending: 0, partial: 0.5, complete
  *  visible steps); default is every stage. */
 export function progressPercent(
   stages: Stages | undefined,
-  ids: readonly string[] = STAGE_IDS,
+  ids: readonly string[] = stageIds(),
 ): { percent: number; counted: number; complete: number; partial: number } {
   let counted = 0;
   let sum = 0;
@@ -234,7 +244,7 @@ export function progressPercent(
  *  wizard order — where a click on the meter should land. Null when nothing
  *  is left. */
 export function firstOpenStage(stages: Stages | undefined): StageId | null {
-  for (const id of STAGE_IDS) {
+  for (const id of stageIds()) {
     const s = stageStatus(stages, id);
     if (s !== "complete" && s !== "n/a") return id;
   }

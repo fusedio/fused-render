@@ -42,6 +42,22 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
     )
 
 
+def _write_baked_flavor(root: str, name: str, build_data: dict) -> None:
+    """Bake the product flavor into fused_render/_baked_flavor.py (see
+    fused_render/_flavor.py), or remove it for a default (render) build —
+    same shape and same staleness argument as ``_write_baked_ref``."""
+    baked_path = os.path.join(root, "fused_render", "_baked_flavor.py")
+    if not name or name == "render":
+        if os.path.exists(baked_path):
+            os.remove(baked_path)
+        return
+    with open(baked_path, "w") as f:
+        f.write(f'_BAKED_FLAVOR = "{name}"\n')
+    build_data.setdefault("artifacts", []).append(
+        "fused_render/_baked_flavor.py"
+    )
+
+
 # The canonical skills ship ONLY as a package-level copy at
 # fused_render/skills/ — the wheel-install source for both the user-level skill
 # sync (D185, now fused_render/user_plugin.py — D492) and the plugin root under
@@ -153,10 +169,17 @@ class ShellBuildHook(BuildHookInterface):
         """
         sys.path.insert(0, self.root)
         try:
-            from fused_render import _branch
+            from fused_render import _branch, _flavor
 
             ref = _branch.branch_ref()
+            # Env only, never the baked file: reading it back would make a
+            # stale _baked_flavor.py from an earlier local bot build
+            # self-perpetuating through every later wheel build.
+            name = os.environ.get(_flavor.ENV, "").strip().lower() or "render"
+            if name not in (_flavor.RENDER, _flavor.BOT):
+                raise RuntimeError(f"{_flavor.ENV} must be render or bot, got {name!r}")
         finally:
             sys.path.remove(self.root)
 
         _write_baked_ref(self.root, ref, build_data)
+        _write_baked_flavor(self.root, name, build_data)

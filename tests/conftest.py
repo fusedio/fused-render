@@ -55,6 +55,9 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
 # which engine answers — see the module docstring. Not a tmpdir, so it gets its
 # own line rather than a fourth entry above.
 os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
+# Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
+# local bot DMG build must not flip them (port 1777 assertions, startup set).
+os.environ.setdefault("FUSED_RENDER_FLAVOR", "render")
 
 
 # What the warm fixture's project folder declares (SPEC PY-16 — the environment

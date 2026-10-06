@@ -206,7 +206,7 @@ export const IS_TOP_EMBED = IS_EMBED && window === window.top && !IS_PREVIEW && 
 // the app in a window of its own (platform/lib/native-window.ts) instead of
 // navigating this one.
 export const IS_NATIVE_WINDOW =
-  window === window.top && /\bFusedRender\/\S+/.test(navigator.userAgent) &&
+  window === window.top && /\bFused(?:Render|Bot)\/\S+/.test(navigator.userAgent) &&
   !/\bLauncher\b/.test(navigator.userAgent);
 
 // Is this pathname panel mode's sentinel route? Both prefixes, because panel

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 6 88 88" width="88" height="88">
+  <!-- FusedBot menu-bar template icon, hand-written: the bots' "cloud" avatar
+       (frontend/src/apps/bots/lib/face.ts FACE_SHAPES.cloud) as a black
+       silhouette with the two eyes cut out (transparent, not dark-on-dark), so
+       AppKit can tint it for light and dark menu bars (macapp.py passes
+       template=True). Rendered to menubar.png (36 px) and menubar@2x.png (72 px).
+       The eyes are a touch larger than the avatar's so they survive 18 pt. -->
+  <defs>
+    <mask id="eyes" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="#fff" />
+      <rect x="40" y="42" width="6.5" height="14" rx="3.25" fill="#000" />
+      <rect x="53.5" y="42" width="6.5" height="14" rx="3.25" fill="#000" />
+    </mask>
+  </defs>
+  <path d="M30 84 C16 84 10 74 12 64 C6 56 10 44 22 42 C22 28 34 20 46 26 C54 14 74 16 78 32 C92 34 94 52 84 58 C90 70 82 84 68 84 Z"
+        fill="#000" mask="url(#eyes)" />
+</svg>

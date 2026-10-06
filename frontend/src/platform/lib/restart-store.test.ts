@@ -11,7 +11,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const {
-  RELAUNCH_HREF,
+  relaunchHref,
   noteRestartProbe,
   receiveRestartBroadcastForTests,
   requestRestart,
@@ -61,16 +61,16 @@ test("the press latches BEFORE it navigates", async () => {
   // is a race, so the latch has to already have happened by the time the
   // navigation is recorded.
   expect(seen.stage).toBe("quitting");
-  expect(nav).toEqual([RELAUNCH_HREF]);
+  expect(nav).toEqual([relaunchHref()]);
   expect(typeof seen.requestedAt).toBe("number");
   act(() => r.unmount());
 });
 
 test("the deep link is the bare relaunch, not the FDA one", () => {
-  // `fda.ts`'s RELAUNCH_HREF carries `?reason=fda` and respawns the SAME
+  // `fda.ts`'s relaunchHref() carries `?reason=fda` and respawns the SAME
   // version to pick up a Full Disk Access grant — a different action with a
   // different story on screen (fused_render/deeplink.py tells them apart).
-  expect(RELAUNCH_HREF).toBe("fused-render://relaunch");
+  expect(relaunchHref()).toBe("fused-render://relaunch");
 });
 
 test("a second window latches the broadcast and runs the same clock", async () => {

@@ -14,6 +14,7 @@
 // layout modes and the update-bookmark flow, not just for these hooks.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { NAV_EVENT } from "@platform/lib/router";
+import { displayName } from "@platform/lib/flavor";
 import { createCloseDeferrer } from "@platform/lib/exit-animation";
 import { navReach, subscribeNavReach, type NavReach } from "@platform/lib/nav-history";
 import {
@@ -211,7 +212,8 @@ export function useDeferredClose(
 export function useDocumentTitle(label: string | null | undefined): void {
   useEffect(() => {
     if (label === undefined) return;
-    document.title = label ? `${label} – Fused Render` : "Fused Render";
+    const brand = displayName();
+    document.title = label ? `${label} – ${brand}` : brand;
   }, [label]);
 }
 
@@ -257,6 +259,18 @@ function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
   }
   if (old) old.replaceWith(link);
   else document.head.appendChild(link);
+}
+
+// Re-point the DEFAULT at a sibling of the icon the document arrived with —
+// `favicon-bot.png` beside `favicon.ico`, under whatever base Vite served
+// them from (dev or packaged; see the 404 note above). Called once from
+// main.tsx under the bot flavor, before the first render: every later
+// restore (an app's icon.svg leaving the screen) then lands on this one.
+export function setDefaultFavicon(file: string): void {
+  const current = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (!current) return;
+  defaultHref = new URL(file, current.href).href;
+  setFaviconHref(DEFAULT_FAVICON);
 }
 
 // Tab icon: while a route inside an app is on screen, its optional icon.svg

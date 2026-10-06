@@ -97,7 +97,22 @@ def delete(bid):
 
 # ------------------------------------------------------------- threads ---
 def _scheduler(stop: threading.Event) -> None:
+    # One scheduler per machine: Fused Render and Fused Bot share the bots
+    # tree, so each pass first makes sure this process holds the routines
+    # flock. The loser keeps looping and re-trying, so when the owner quits
+    # the lock falls to it on its next pass and routines carry on.
+    standing_down = False
     while not stop.is_set():
+        if _ROUTINES_LOCK["fh"] is None and not _take_routines_lock():
+            if not standing_down:
+                standing_down = True
+                logger.info("bots routines: another Fused app owns the scheduler on this "
+                            "machine; serving the bots without ticking them until it quits")
+            stop.wait(SCHED_EVERY_S)
+            continue
+        if standing_down:
+            standing_down = False
+            logger.info("bots routines: scheduler lock acquired, ticking routines")
         try:
             for b in all():
                 try:
@@ -139,6 +154,49 @@ def start() -> None:
             t = threading.Thread(target=_scheduler, args=(stop,), daemon=True, name="bots-routines")
             _sched.update(thread=t, stop=stop)
             t.start()
+
+
+_ROUTINES_LOCK = {"fh": None}
+
+
+def _take_routines_lock() -> bool:
+    """One routines scheduler per machine. Fused Render and Fused Bot share the
+    bots tree (`<home>/bots`), so without this both would tick every routine
+    on their 20 s pass. Same flock the iMessage channel uses
+    (bots/channels/imessage.py), re-tried by `_scheduler` every pass while
+    not held; the fd is kept until shutdown(). Windows has no fcntl and only
+    one app, so it just proceeds."""
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    path = os.path.join(bpaths.data_root(), "routines.lock")
+    try:
+        fh = open(path, "a+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()  # re-tried every pass while standing down: never leak the fd
+        return False
+    _ROUTINES_LOCK["fh"] = fh
+    return True
+
+
+def _drop_routines_lock() -> None:
+    fh, _ROUTINES_LOCK["fh"] = _ROUTINES_LOCK["fh"], None
+    if fh is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        fh.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def router():
@@ -191,6 +249,7 @@ def shutdown() -> None:
             pass
     with _lock:
         _sched.update(thread=None, stop=None)
+    _drop_routines_lock()
     for b in loaded():
         try:
             b.shutdown()

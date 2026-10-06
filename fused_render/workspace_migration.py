@@ -47,6 +47,7 @@ import os
 import time
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
+from fused_render import _flavor
 from fused_render._branch import branch_dir
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
@@ -348,7 +349,7 @@ def _rewrite_schedule(src: str, dst: str) -> None:
 
 
 def _app_support_dir() -> str:
-    """``~/Library/Application Support/fused-render``, branch-nested.
+    """``~/Library/Application Support/<fused-render|fused-bot>``, branch-nested.
 
     A deliberate duplicate of ``app.APP_SUPPORT_DIR`` rather than an import:
     ``app`` is the desktop menu-bar entry point (heavy, AppKit-adjacent startup
@@ -358,7 +359,7 @@ def _app_support_dir() -> str:
     as ``storage.home_dir()`` does. Expanded per call, not at import, so it
     follows HOME the way every other path here does.
     """
-    return branch_dir(os.path.expanduser("~/Library/Application Support/fused-render"))
+    return branch_dir(_flavor.app_support_base())
 
 
 def _rewrite_pin(src: str, dst: str) -> None:

@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from fused_render import _flavor
 from fused_render import calls as shell_calls
 from fused_render import health
 from fused_render.canvases import router as canvases_router
@@ -404,6 +405,21 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             shutdown_handlers.append(func)
         return func
 
+    # The Fused Bot flavor (`_flavor.is_bot()`) is the same server with the
+    # Bots page as its only front door: nothing it shows needs the file index,
+    # the AI hub catalogs, the local-model prewarm, the resource trail or the
+    # venv/share-rule housekeeping, so those warm-ups are skipped the way
+    # `lean` skips everything — at the REGISTRATION point, never by unmounting
+    # a router (every route keeps answering; a bot's own fused.ai call still
+    # starts a worker on demand). Shutdown partners stay on `on_shutdown`:
+    # each `stop()` is a no-op when nothing started, same as under `lean`.
+    _skip_for_bot = _flavor.is_bot()
+
+    def on_startup_full(func):
+        if not lean and not _skip_for_bot:
+            startup_handlers.append(func)
+        return func
+
     # `lean` only ever skips STARTUP work. A handful of things below start on
     # demand from an ordinary request — regardless of `lean` — rather than
     # from an `@on_startup` hook: an engine (runPython/render spawn a
@@ -439,7 +455,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.state.shutdown_handlers = shutdown_handlers
     app.state.start_dir = start_dir
 
-    @on_startup
+    @on_startup_full
     async def _startup_prewarm_ai():
         prewarm_ai(app)
 
@@ -622,7 +638,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # 8-second timeout — straight from `describe_catalog`, a route the AI
     # Models picker polls. They now read `hub_metadata.cached()` only (a
     # plain disk read), and this background thread is the sole writer.
-    @on_startup
+    @on_startup_full
     async def _startup_ai_hub_metadata_refresh():
         from fused_render.ai import supervisor
 
@@ -633,7 +649,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # goes stale as new repos land on the Hub between builds; this widens
     # each built pool by one `lastModified` delta per day, same background-
     # thread shape as the two hooks immediately above.
-    @on_startup
+    @on_startup_full
     async def _startup_ai_hub_catalog_refresh():
         from fused_render.ai import supervisor
 
@@ -668,7 +684,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # into resources.jsonl, so a diagnostics bundle shows what memory looked
     # like in the hours before an outage. Its own daemon thread; a failure to
     # start is a missing diagnostic, never a reason to refuse to serve.
-    @on_startup
+    @on_startup_full
     async def _startup_resource_trail():
         try:
             health.start_resource_trail()
@@ -711,7 +727,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     #
     # Best-effort like every other startup chore here: a home dir that cannot be
     # listed is a disk problem, not a reason to refuse to serve.
-    @on_startup
+    @on_startup_full
     async def _startup_gc_project_venvs():
         from fused_render import projectenv
 
@@ -1045,7 +1061,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # must not delay server readiness. Best-effort and silent on failure
     # (no CLI, not signed in, offline) — status/publish already fall back to
     # the built-in `.fused` rule alone when the cache stays empty.
-    @on_startup
+    @on_startup_full
     async def _startup_warm_share_rules():
         from fused_render import share_file
 
@@ -1104,7 +1120,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # of each root, so a reload loop does not queue scan after scan. First boot
     # takes seconds over a whole home; while it runs, the explorer's search
     # falls back to the live walk with no error state (SPEC server-api.md §2).
-    @on_startup
+    @on_startup_full
     async def _startup_index_scan():
         from fused_render import extras
 
@@ -1131,7 +1147,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # time-based freshness check) failed three times. One background thread
     # per configured root; `index_watch.start()` is idempotent, same
     # singleton-start convention as the resource-trail start.
-    @on_startup
+    @on_startup_full
     async def _startup_index_watch():
         from fused_render import extras
         from fused_render.server import index_watch

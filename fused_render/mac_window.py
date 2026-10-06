@@ -124,16 +124,18 @@ from WebKit import (
     WKWebViewConfiguration,
 )
 
-from fused_render import __version__, window_policy
+from fused_render import __version__, _flavor, window_policy
 from fused_render._view_url_codec import app_page_path, view_url_path
 from fused_render.logs import log_dir
 
 logger = logging.getLogger(__name__)
 
-APP_NAME = "Fused Render"
+APP_NAME = _flavor.display_name()  # "Fused Render" / "Fused Bot"
 DEFAULT_SIZE = (1280, 840)
 MIN_SIZE = (560, 360)
 # Rides on WebKit's own UA so a page can tell "inside the app" from "a browser".
+# Stays `FusedRender/` under BOTH flavors: router.ts (IS_NATIVE_WINDOW) and
+# lan.py sniff this literal, and Fused Bot is the same shell in another skin.
 USER_AGENT_MARKER = f"FusedRender/{__version__}"
 
 # The titlebar paints the app's `--bg` token (frontend/src/styles/tokens.css),
@@ -960,6 +962,9 @@ class _MenuTarget(NSObject):
     def showTasks_(self, _s):
         self._m.show_tasks()
 
+    def showPreferences_(self, _s):
+        self._m.show_page("/preferences")
+
     def showLauncher_(self, _s):
         launcher = self._m.show_launcher
         if launcher is not None:
@@ -1114,10 +1119,15 @@ class WindowManager:
     def show_tasks(self) -> None:
         """Window → Tasks (⌘⇧T): a window already on the Tasks page comes to
         the front, else one opens. Main thread."""
-        url = f"http://127.0.0.1:{self.port}/tasks"
+        self.show_page("/tasks")
+
+    def show_page(self, path: str) -> None:
+        """A window already on this shell page comes to the front, else one
+        opens on it. Main thread."""
+        url = f"http://127.0.0.1:{self.port}{path}"
         for w in reversed(self._windows):
             current = w.current_url() or ""
-            if urllib.parse.urlsplit(current).path == "/tasks":
+            if urllib.parse.urlsplit(current).path == path:
                 w.show()
                 return
         self.open(url)
@@ -1125,9 +1135,18 @@ class WindowManager:
     def _is_home(self, w: _Window) -> bool:
         # The shell's home is `/`, which the SPA rewrites in place to `/home`
         # (shell/App.tsx); `/apps` is the Apps hub, and a window on /tasks or
-        # /preferences has no key either — none of those is Home.
+        # /preferences has no key either — none of those is Home. With Bots
+        # as the front door (`prefs.bots_enabled`, always on under the bot
+        # flavor) `/` lands on `/bots`, so that window IS Home — without this
+        # `show_home` found no home window and opened a fresh one every time.
         path = urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/")
-        return path in ("", "/home")
+        if path in ("", "/home"):
+            return True
+        if path == "/bots":
+            from fused_render.shell import prefs
+
+            return prefs.bots_enabled()
+        return False
 
     def show_home(self) -> None:
         """A window already showing the shell home comes to the front — the
@@ -1316,9 +1335,13 @@ def _build_main_menu(target) -> NSMenu:
     sep = NSMenuItem.separatorItem
     main = NSMenu.alloc().init()
 
+    # Fused Bot has no shell sidebar (App.tsx), so the menu bar is its only
+    # door to Preferences; Render reaches them from the sidebar as always.
+    bot = _flavor.is_bot()
     submenu(APP_NAME, [
         item(f"About {APP_NAME}", b"orderFrontStandardAboutPanel:", tgt=None),
         sep(),
+        *([item("Preferences…", b"showPreferences:", ","), sep()] if bot else []),
         item(f"Hide {APP_NAME}", b"hide:", "h", tgt=None),
         item("Hide Others", b"hideOtherApplications:", "h", CMD | _ALT, tgt=None),
         item("Show All", b"unhideAllApplications:", tgt=None),
@@ -1348,15 +1371,17 @@ def _build_main_menu(target) -> NSMenu:
         item("Select All", b"selectAll:", "a", tgt=None),
     ], main)
 
+    # Fused Bot has no explorer to edit in and no launcher to search with
+    # (app.py builds neither), so those two rows are not offered; Home stays —
+    # it goes to the front door, which is the Bots page there.
     submenu("View", [
         item("Reload Page", b"reload:", "r"),
         item("Back", b"goBack:", "["),
         item("Forward", b"goForward:", "]"),
         item("Home", b"goHome:", "H", CMD | _SHIFT),
-        item("Edit App", b"editApp:", "E", CMD | _SHIFT),
+        *([] if bot else [item("Edit App", b"editApp:", "E", CMD | _SHIFT)]),
         sep(),
-        item("Search Apps…", b"showLauncher:"),
-        sep(),
+        *([] if bot else [item("Search Apps…", b"showLauncher:"), sep()]),
         item("Open in Browser", b"openInBrowser:", "L", CMD | _SHIFT),
         item("Copy URL", b"copyUrl:", "C", CMD | _SHIFT),
         sep(),

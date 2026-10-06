@@ -21,7 +21,10 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 _SCHEMA = 1
-_SIGNING_CONTEXT = "fused-render-update"
+# Must match fused_render/update/common.py SIGNING_CONTEXT for the flavor the
+# installer was built as: "<release_prefix>-update". Overridable so the
+# Fused Bot release job signs with "fused-bot-update".
+_SIGNING_CONTEXT = os.environ.get("FUSED_RENDER_UPDATE_SIGNING_CONTEXT", "fused-render-update")
 
 
 def _signing_message(version: str, sha256: str) -> bytes:

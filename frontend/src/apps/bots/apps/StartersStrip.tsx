@@ -8,7 +8,7 @@ import { useState } from "react";
 import { api, starterIconUrl, type AppRow } from "../lib/api";
 import { errMsg, showBanner } from "../state/store";
 import { viewApp } from "./apps";
-import { SHIPS_WITH, busyLabel, toInstall, type StarterRow } from "./starters";
+import { shipsWith, busyLabel, toInstall, type StarterRow } from "./starters";
 
 export interface StartersStripProps {
   /** Every starter; the strip keeps the ones not installed. */
@@ -35,7 +35,7 @@ export function StartersStrip({ rows, reloadApps }: StartersStripProps) {
 
   return (
     <div className="astrip" id="astrip">
-      <div className="ahd"><b>Starter apps</b><small>Ready-made apps that ship with {SHIPS_WITH}; installed ones are in the gallery below. A bot made from the matching preset installs its own.</small></div>
+      <div className="ahd"><b>Starter apps</b><small>Ready-made apps that ship with {shipsWith()}; installed ones are in the gallery below. A bot made from the matching preset installs its own.</small></div>
       <div className="srow">
         {todo.map((s, i) => (
           <div key={s.key} className="scard" data-i={i}>

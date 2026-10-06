@@ -44,6 +44,8 @@
 // for one event is one reload too many; this stage only names what is on
 // screen for the moment before that one lands.
 
+import { displayName } from "@platform/lib/flavor";
+
 export const RESTART_STAGES = [
   "ready",
   "quitting",
@@ -228,7 +230,7 @@ export function restartStageLabel(stage: RestartStage): string {
   if (stage === "quitting") return "Quitting…";
   if (stage === "restarting") return "Restarting…";
   if (stage === "reconnecting") return "Reconnecting…";
-  if (stage === "back") return "Reconnected — fused-render is back.";
+  if (stage === "back") return `Reconnected — ${displayName()} is back.`;
   return "";
 }
 
@@ -320,6 +322,11 @@ export function restartIsSlow(requestedAt: number | null, now: number): boolean 
 /** The sentence a stuck press ends in. Terminal states get sentences (the
  *  stage words stay one word); the overlay and the notification both say it, so
  *  it lives here once. */
-export const RESTART_STUCK_TITLE = "fused-render couldn't restart itself";
-export const RESTART_STUCK_BODY =
-  "The running app didn't act on the restart. Quit fused-render from its menu-bar icon (or press ⌘Q), then open it again.";
+//  Functions, not constants: the name is the flavor's (platform/lib/flavor.ts),
+//  seeded after this module is evaluated.
+export function restartStuckTitle(): string {
+  return `${displayName()} couldn't restart itself`;
+}
+export function restartStuckBody(): string {
+  return `The running app didn't act on the restart. Quit ${displayName()} from its menu-bar icon (or press ⌘Q), then open it again.`;
+}

@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 
-from fused_render import __version__, jobs
+from fused_render import __version__, _flavor, jobs
 from fused_render.update import common
 
 logger = logging.getLogger("fused_render.update")
@@ -120,7 +120,7 @@ class UpdateManager:
 
     # Subclass class attrs: the download's temp-file naming and the delay
     # before the first check (see start_auto_checks()).
-    _DOWNLOAD_PREFIX: str = "FusedRender-"
+    _DOWNLOAD_PREFIX: str = _flavor.app_name() + "-"
     _DOWNLOAD_SUFFIX: str = ""
     _STARTUP_DELAY_S: float = 1.0
 
@@ -721,7 +721,7 @@ class UpdateManager:
     # -- shared download-dir housekeeping ---------------------------------------
 
     def _updates_dir(self) -> str:
-        path = os.path.expanduser("~/Library/Application Support/fused-render/updates")
+        path = os.path.join(_flavor.app_support_base(), "updates")
         os.makedirs(path, exist_ok=True)
         return path
 

@@ -34,6 +34,7 @@ import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
+import { bundleName, isBot } from "@platform/lib/flavor";
 
 import {
   firstOpenStage,
@@ -131,9 +132,16 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (health?.platform && health.platform !== "darwin") reportStage("fda", "n/a", { platform: health.platform });
   }, [health?.platform]);
   useEffect(() => {
+    if (isBot()) return;
     if (picks !== null && picks.length === 0) reportStage("models", "n/a", { offered: 0 });
   }, [picks]);
   const steps = STEPS.filter((s) => {
+    // Fused Bot's server has no models/app steps at all (progress.stageIds):
+    // dropped before the per-machine rules, and never reported `n/a` either —
+    // the server's closed set would not take the write.
+    if (s.id === "models" || s.id === "app") {
+      if (isBot()) return false;
+    }
     if (s.id === "fda") return isMac(health?.platform);
     // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
     // hidden-until-known: this is the only step a `?step=` resume is likely to
@@ -237,10 +245,15 @@ export function OnboardingWizard({ config }: { config: Config }) {
   };
   const back = () => setIndex(index - 1);
 
-  // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the last step: the
-  // composer owns both there (Escape cancels its name prompt, Enter sends).
+  // THE COMPOSER STEP owns its own keys and its own way out — and it is not
+  // always the last step: under Fused Bot the wizard ends on FDA (no app
+  // step), where Next simply finishes and the keys stay live.
+  const composerStep = step.id === "app";
+
+  // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the composer step: it
+  // owns both there (Escape cancels its name prompt, Enter sends).
   useEffect(() => {
-    if (last) return;
+    if (composerStep) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -253,7 +266,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `next` is a per-render closure over index
-  }, [finish, last, index, steps.length]);
+  }, [finish, composerStep, index, steps.length]);
 
   // Step counter on the left, Back/Next hugging the right edge of the content
   // column: the pair reads as one control, so they sit together.
@@ -265,7 +278,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           <ArrowLeft data-icon="inline-start" />
           Back
         </Button>
-        {last ? (
+        {composerStep ? (
           <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
             I'll explore on my own
           </Button>
@@ -277,8 +290,8 @@ export function OnboardingWizard({ config }: { config: Config }) {
             onClick={next}
             title="⌘/Ctrl + Enter"
           >
-            Next
-            <ArrowRight data-icon="inline-end" />
+            {last ? "Finish" : "Next"}
+            {!last && <ArrowRight data-icon="inline-end" />}
           </Button>
         )}
       </div>
@@ -288,7 +301,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
   return (
     <div
       className="onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
-      aria-label="Set up FusedRender"
+      aria-label={`Set up ${bundleName()}`}
     >
       {/* Top bar: brand · steps · close. Three tracks, the outer two an equal
           `1fr`, so the middle one is centred on the BAR — not on whatever the

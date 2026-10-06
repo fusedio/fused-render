@@ -68,6 +68,7 @@ import os
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render import _flavor
 from fused_render.shell import storage
 
 router = APIRouter()
@@ -186,7 +187,13 @@ def bots_enabled() -> bool:
     answering while this is off (a bookmark or a bot's own link survives the
     toggle), and `/home` keeps answering by URL while it is on. Only a stored
     `true` turns it on.
+
+    Always on under the Fused Bot flavor (`_flavor.is_bot()`): Bots IS that
+    app's front door, so the preference is not a preference there — the
+    getter says true and PUT /api/prefs ignores writes to it.
     """
+    if _flavor.is_bot():
+        return True
     return read_prefs().get("bots_enabled") is True
 
 
@@ -864,7 +871,11 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         value = body.get("bots_enabled")
         if not isinstance(value, bool):
             return JSONResponse({"error": "'bots_enabled' must be a boolean"}, status_code=400)
-        prefs["bots_enabled"] = value
+        # Under the bot flavor the key is KNOWN but fixed: the front door is
+        # Bots there (`bots_enabled`), so nothing is stored and the response
+        # simply reports true — still a recognised write, not the 400 below.
+        if not _flavor.is_bot():
+            prefs["bots_enabled"] = value
         changed = True
     if "app_sharing_enabled" in body:
         value = body.get("app_sharing_enabled")
@@ -938,7 +949,10 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         value = body.get("lan_enabled")
         if not isinstance(value, bool):
             return JSONResponse({"error": "'lan_enabled' must be a boolean"}, status_code=400)
-        prefs["lan_enabled"] = value
+        # Fused Bot has no LAN sharing surface (boot never starts the
+        # listener either): known key, nothing stored, `lan.apply` below skipped.
+        if not _flavor.is_bot():
+            prefs["lan_enabled"] = value
         changed = True
     if "default_model" in body:
         value = body.get("default_model")
@@ -1110,7 +1124,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             index_watch.resume()
         else:
             index_watch.pause()
-    if "lan_enabled" in body:
+    if "lan_enabled" in body and not _flavor.is_bot():
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's
         # `lan.error` rather than failing the PUT.

@@ -94,6 +94,10 @@ set -- ${_ARGS[@]+"${_ARGS[@]}"}
 if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
   export FUSED_RENDER_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 fi
+# Pin the flavor too: a stale fused_render/_baked_flavor.py left by a local
+# `FUSED_RENDER_FLAVOR=bot bash scripts/build_dmg.sh` must not silently turn
+# the dev server into Fused Bot (other port, other bundle id, Bots-only shell).
+export FUSED_RENDER_FLAVOR="${FUSED_RENDER_FLAVOR:-render}"
 
 # ---------------------------------------------------------------------------
 # Process cleanup: kill_tree, the per-worktree pidfile, and the one shutdown

@@ -88,6 +88,7 @@ import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
+import { displayName, isBot } from "@platform/lib/flavor";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -919,7 +920,7 @@ function TaskNotifyTerminalSection({
     <section className="prefs-section">
       <h2>Tasks: notify when terminal sessions finish</h2>
       <p className="deploy-muted">
-        fused-render can't always tell every headless Claude session apart from its own — this
+        {displayName()} can&rsquo;t always tell every headless Claude session apart from its own — this
         also raises finished-task notifications for a Claude session you started by hand in a
         terminal.
       </p>
@@ -970,7 +971,7 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
     <section className="prefs-section">
       <h2>Native windows</h2>
       <p className="deploy-muted">
-        Open Fused Render in its own windows instead of browser tabs: a window per app, with
+        Open {displayName()} in its own windows instead of browser tabs: a window per app, with
         native window controls. On by default. Turning it off closes the open windows and the app
         opens everything in your default browser instead.
       </p>
@@ -1749,11 +1750,17 @@ export default function Preferences() {
   // /ai-models?tab=engines before this page renders, which is why an unknown
   // tab falling back to "render" is not the answer for that one — a bookmark
   // pointing at the engine picker should land ON the engine picker.
+  // FUSED BOT (platform/lib/flavor) has no file index, no LAN sharing and no
+  // Fused account to sign into (Share and Canvases are Render's): those tabs
+  // go, and a `?tab=` naming one lands on the first tab rather than on an
+  // empty panel. The Render tab also sheds the sections that are only about
+  // Render's own features, below.
+  const bot = isBot();
   const tab: PrefsTab =
-    requested === "indexing" ? "indexing"
+    requested === "indexing" && !bot ? "indexing"
     : requested === "ai" ? "ai"
-    : requested === "lan" ? "lan"
-    : requested === "account" ? "account"
+    : requested === "lan" && !bot ? "lan"
+    : requested === "account" && !bot ? "account"
     : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
@@ -1778,7 +1785,7 @@ export default function Preferences() {
               className={"prefs-tab" + (tab === "render" ? " active" : "")}
               onClick={() => setTab("render")}
             >
-              Render preferences
+              {bot ? "Bot preferences" : "Render preferences"}
             </button>
             {/* AI — which model, and with whose credentials (D403). Named for
                 the subject rather than for the two controls in it, so adding a
@@ -1791,38 +1798,44 @@ export default function Preferences() {
               AI
             </button>
             {/* Indexing — the file index behind the explorer's search. The TAB
-                is always present — a user looking for "why is search
-                finding/missing this" has nowhere else to go — even though
-                indexing itself now has an opt-out toggle inside it
+                is always present (under Render) — a user looking for "why is
+                search finding/missing this" has nowhere else to go — even
+                though indexing itself now has an opt-out toggle inside it
                 (`indexing_enabled`): the panel is where that answer lives,
                 on or off. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
-              onClick={() => setTab("indexing")}
-            >
-              Indexing
-            </button>
+            {!bot && (
+              <button
+                type="button"
+                className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
+                onClick={() => setTab("indexing")}
+              >
+                Indexing
+              </button>
+            )}
             {/* Render local network — sharing apps with phones on the Wi-Fi
                 (lan.py): the switch, the pairing QR and the paired devices.
                 Its own tab because pairing is a task you come here to DO with
                 a phone in hand, not a setting you glance at. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "lan" ? " active" : "")}
-              onClick={() => setTab("lan")}
-            >
-              Render local network
-            </button>
+            {!bot && (
+              <button
+                type="button"
+                className={"prefs-tab" + (tab === "lan" ? " active" : "")}
+                onClick={() => setTab("lan")}
+              >
+                Render local network
+              </button>
+            )}
             {/* Fused account — sign in/out for Share and Canvases. See the
                 header comment for why it is a tab of its own. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "account" ? " active" : "")}
-              onClick={() => setTab("account")}
-            >
-              Fused account
-            </button>
+            {!bot && (
+              <button
+                type="button"
+                className={"prefs-tab" + (tab === "account" ? " active" : "")}
+                onClick={() => setTab("account")}
+              >
+                Fused account
+              </button>
+            )}
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
@@ -1833,26 +1846,31 @@ export default function Preferences() {
                 <UpdatesSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
-                <CanvasesSection prefs={prefs} onChange={setPrefs} />
-                <AppSharingSection prefs={prefs} onChange={setPrefs} />
+                {/* Render-only features: Fused Bot has no canvases, no app
+                    sharing, no app git, no live previews, no process monitor —
+                    and its Bots switch is forced on by the server, so a toggle
+                    here would be a lie. Tasks DO exist in bot, so the queue and
+                    terminal-notify switches stay. */}
+                {!bot && <CanvasesSection prefs={prefs} onChange={setPrefs} />}
+                {!bot && <AppSharingSection prefs={prefs} onChange={setPrefs} />}
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
-                <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />
+                {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
-                <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
-                <MonitorSection prefs={prefs} onChange={setPrefs} />
-                <BotsSection prefs={prefs} onChange={setPrefs} />
+                {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
+                {!bot && <MonitorSection prefs={prefs} onChange={setPrefs} />}
+                {!bot && <BotsSection prefs={prefs} onChange={setPrefs} />}
                 <DiagnosticsSection />
               </>
             )}
-            {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}
+            {tab === "lan" && !bot && <LanSection prefs={prefs} onChange={setPrefs} />}
             {tab === "ai" && (
               <>
                 <ModelSection prefs={prefs} onChange={setPrefs} />
                 <HuggingFaceSection />
               </>
             )}
-            {tab === "indexing" && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
-            {tab === "account" && <FusedAccountSection />}
+            {tab === "indexing" && !bot && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
+            {tab === "account" && !bot && <FusedAccountSection />}
           </div>
         </>
       )}

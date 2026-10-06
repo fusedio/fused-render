@@ -19,6 +19,7 @@ import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
 
 import { reportStage, type StageStatus } from "./progress";
+import { bundleName } from "@platform/lib/flavor";
 import { StepHeader } from "./StepHeader";
 
 type RowState = "done" | "open" | "unknown";
@@ -158,7 +159,7 @@ export function ClaudeStep({
         title="Connect Claude Code"
         lead={
           <>
-            FusedRender builds apps by handing your brief to Claude Code running on
+            {bundleName()} builds apps by handing your brief to Claude Code running on
             this machine. It is what the composer, the Tasks page and every{" "}
             <code className="rounded bg-muted px-1 py-0.5 text-[0.85em]">fused.ai</code>{" "}
             call go through. The file explorer, previews and local models work without

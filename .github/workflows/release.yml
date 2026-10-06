@@ -251,6 +251,172 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" --clobber
 
+  # FusedBot.app: the same repo, build script and signing path with
+  # FUSED_RENDER_FLAVOR=bot (fused_render/_flavor.py) — its own bundle id,
+  # icon, URL scheme, S3 prefixes and update manifest. A plain copy of the
+  # render job above rather than a matrix: the render job's outputs feed
+  # publish-download-page and bump-homebrew, and the bot has neither a
+  # download-page slot nor a cask.
+  build-sign-notarize-release-bot:
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
+    # Runner + interpreter rationale: see build-sign-notarize-release.
+    runs-on: macos-26
+    permissions:
+      contents: write # needed to attach the DMG to a GitHub Release
+      id-token: write # needed to assume the AWS role via OIDC
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
+      NOTARY_PROFILE: ci-notary
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      # CloudFront distribution fronting the fused-render bucket (provisioned in
+      # Fused's infrastructure config). Flip to render.fused.io once its alias +
+      # cert have applied — release-note and latest.json links pick it up here.
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+    steps:
+      - uses: actions/checkout@v5
+
+      # Two jobs at once: build_dmg.sh's own version check needs `str | None`
+      # syntax (py>=3.10), and — the load-bearing one — on macOS arm64 this
+      # installs a python.org-style FRAMEWORK build under /Library/Frameworks,
+      # which is the interpreter build_dmg.sh step 1 bundles (see runs-on).
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Select an Xcode with the macOS 26 SDK (apple tier helper)
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -n "$XCODE" ]]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+
+      # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
+      # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
+      # no other way to build a script venv there (D176). The Linux and Windows
+      # build scripts already require uv on the host the same way; macOS runners
+      # do not have it preinstalled, so the build fails loudly without this.
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Import signing cert + notary credentials into ephemeral keychain
+        env:
+          CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARY_API_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/codesign-cert.p12"
+          echo "$CODESIGN_CERT_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 14400 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          # Without this, codesign blocks on a keychain-access UI prompt that
+          # can never be answered in CI (see docs/signing.md's CI notes).
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # notarytool profiles live in a keychain too; store into the same
+          # ephemeral one so it's gone with the runner, nothing persists.
+          # App Store Connect API key: no personal Apple ID tied to CI, and
+          # unlike an app-specific password it doesn't expire.
+          API_KEY_PATH="$RUNNER_TEMP/notary-api-key.p8"
+          printf '%s' "$NOTARY_API_KEY_P8" > "$API_KEY_PATH"
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --key "$API_KEY_PATH" --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER_ID" \
+            --keychain "$KEYCHAIN_PATH"
+          rm -f "$API_KEY_PATH"
+
+          rm -f "$CERT_PATH"
+
+      - name: Build, sign, notarize, staple DMG
+        env:
+          FUSED_RENDER_CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
+          FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
+          FUSED_RENDER_FLAVOR: bot
+        run: bash scripts/build_dmg.sh
+
+      - name: Delete ephemeral keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseBot
+          aws-region: us-west-2
+
+      - name: Upload DMG + wheel to S3
+        id: artifacts
+        run: |
+          set -euo pipefail
+          # Not `brew install awscli`: GH's macOS images don't have the
+          # `aws/tap` cask pre-trusted, and Homebrew's tap-trust gate fails
+          # the install outright. Apple's own .pkg installer sidesteps
+          # Homebrew (and its taps) entirely.
+          if ! command -v aws >/dev/null; then
+            curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "$RUNNER_TEMP/AWSCLIV2.pkg"
+            sudo installer -pkg "$RUNNER_TEMP/AWSCLIV2.pkg" -target /
+          fi
+          DMG_PATH="$(ls dist/*.dmg)"
+          DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
+          WHL_PATH="$(ls dist/*.whl)"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
+          echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
+          # No DMG_URL/WHL_URL here: the bot has no download-page slot, so
+          # nothing downstream reads them.
+          aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-bot-dmgs/$(basename "$DMG_PATH")"
+          aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-bot-wheels/$(basename "$WHL_PATH")"
+
+      - name: Publish signed macOS update manifest
+        # The bot's in-app updater polls this fixed name under its own
+        # prefix (_flavor.release_prefix() = fused-bot); same signing scheme
+        # and script as the render manifest above.
+        env:
+          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+          # fused_render/update/common.py SIGNING_CONTEXT for the bot flavor.
+          FUSED_RENDER_UPDATE_SIGNING_CONTEXT: fused-bot-update
+          MACOS_PREFIX: fused-bot-macos
+        run: |
+          set -euo pipefail
+          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedBot-//')"
+          uv run --no-project --with cryptography \
+            scripts/windows/generate_update_manifest.py \
+            "$VERSION" "$DMG_PATH" "https://${CDN_DOMAIN}/fused-bot-dmgs" \
+            dist/macos-latest.json
+          # no-cache: the updater polls this fixed name; a stale CDN copy
+          # would mask a release.
+          aws s3 cp dist/macos-latest.json "s3://${S3_BUCKET}/${MACOS_PREFIX}/latest.json" \
+            --cache-control no-cache
+
+      - name: Invalidate CloudFront
+        run: |
+          set -euo pipefail
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/fused-bot-dmgs/*" "/fused-bot-wheels/*" "/fused-bot-macos/*"
+
+      - name: Upload DMG to GitHub Release
+        # DMG only. The bot wheel has the SAME filename as the render wheel
+        # (fused_render-<ver>-py3-none-any.whl — the flavor is baked inside,
+        # not in the name), so uploading it here would clobber whichever
+        # job's wheel landed first. S3 keeps them apart by prefix.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
+
   build-windows-release:
     # See docs/PYTHON_SUPERVISOR_SPEC.md "Software updates".
     needs: prepare-release

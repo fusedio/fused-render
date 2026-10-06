@@ -24,11 +24,12 @@ import { useEffect, useState } from "react";
 import {
   restartInFlight,
   restartStageLabel,
-  RESTART_STUCK_BODY,
-  RESTART_STUCK_TITLE,
+  restartStuckBody,
+  restartStuckTitle,
   type RestartStage,
 } from "@platform/lib/restart-flow";
 import { requestRestart, useRestartFlow } from "@platform/lib/restart-store";
+import { displayName } from "@platform/lib/flavor";
 import { Modal } from "@platform/ui/modal/Modal";
 
 /** Whether the overlay is up: any in-flight stage, or a give-up / stuck ending
@@ -64,7 +65,7 @@ export function RestartOverlayView(props: {
   if (stage === "stuck") {
     return (
       <Modal
-        title={RESTART_STUCK_TITLE}
+        title={restartStuckTitle()}
         onClose={onDismiss}
         footer={
           <button type="button" className="btn btn-primary" onClick={onDismiss}>
@@ -72,7 +73,7 @@ export function RestartOverlayView(props: {
           </button>
         }
       >
-        <p>{RESTART_STUCK_BODY}</p>
+        <p>{restartStuckBody()}</p>
       </Modal>
     );
   }
@@ -94,7 +95,7 @@ export function RestartOverlayView(props: {
         }
       >
         <p>
-          fused-render didn&rsquo;t come back after the update. Try again, or reopen the app
+          {displayName()} didn&rsquo;t come back after the update. Try again, or reopen the app
           yourself and this page will reconnect.
         </p>
       </Modal>

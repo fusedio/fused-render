@@ -25,7 +25,8 @@ import { useEffect, useState } from "react";
 import { Check, ExternalLink, FolderLock, Lock, RotateCw, Search, ShieldCheck } from "lucide-react";
 
 import { openFdaSettings, type Config } from "@platform/lib/api";
-import { FDA_COPY, RELAUNCH_HREF, pokeFda, seedFda, useFda } from "@platform/lib/fda";
+import { fdaCopy, relaunchHref, pokeFda, seedFda, useFda } from "@platform/lib/fda";
+import { bundleName } from "@platform/lib/flavor";
 import { Button } from "@platform/shadcn/ui/button";
 
 import { reportStage } from "./progress";
@@ -81,8 +82,8 @@ export function FdaStep({
     <div className="flex flex-col gap-6">
       <StepHeader
         eyebrow={eyebrow}
-        title="Let FusedRender read your files"
-        lead="macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them, survives upgrades, and is what lets FusedRender index your files for search."
+        title={`Let ${bundleName()} read your files`}
+        lead={`macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them, survives upgrades, and is what lets ${bundleName()} read your files.`}
       />
 
       <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2 lg:grid-cols-4">
@@ -139,22 +140,22 @@ export function FdaStep({
               </span>
               <div>
                 <div className="text-sm font-medium">Granted — one relaunch to go</div>
-                <div className="text-xs text-muted-foreground">{FDA_COPY.pending}</div>
+                <div className="text-xs text-muted-foreground">{fdaCopy().pending}</div>
               </div>
             </div>
             {/* A plain link — `?reason=fda`, which is NOT the update restart
                 (that one goes through platform/lib/restart-store): the OS hands
                 the deep link to the running app, which quits and respawns. This
                 tab keeps polling and flips to "Already granted" on its own. */}
-            <Button variant="accent" render={<a href={RELAUNCH_HREF} />}>
+            <Button variant="accent" render={<a href={relaunchHref()} />}>
               <RotateCw data-icon="inline-start" />
-              {FDA_COPY.relaunch}
+              {fdaCopy().relaunch}
             </Button>
           </div>
         ) : (
           <>
             <ol className="m-0 flex list-none flex-col gap-1.5 p-0 text-sm">
-              {FDA_COPY.steps.map((s, i) => (
+              {fdaCopy().steps.map((s, i) => (
                 <li key={s} className="flex gap-2">
                   <span className="w-4 shrink-0 text-muted-foreground">{i + 1}.</span>
                   <span>{s}</span>
@@ -162,18 +163,18 @@ export function FdaStep({
               ))}
             </ol>
             <div className="flex flex-wrap items-center gap-3">
-              <Button variant="accent" onClick={open} disabled={!offered} title={offered ? undefined : "Available in the installed FusedRender app"}>
+              <Button variant="accent" onClick={open} disabled={!offered} title={offered ? undefined : `Available in the installed ${bundleName()} app`}>
                 <ExternalLink data-icon="inline-start" />
-                {opened ? FDA_COPY.reopen : FDA_COPY.open}
+                {opened ? fdaCopy().reopen : fdaCopy().open}
               </Button>
               {!offered && (
                 <span className="text-xs text-muted-foreground">
-                  Available in the installed FusedRender app — a dev server's grant would land on the terminal that launched it.
+                  Available in the installed {bundleName()} app — a dev server&rsquo;s grant would land on the terminal that launched it.
                 </span>
               )}
               {opened && offered && (
                 <span className="text-xs text-muted-foreground" role="status">
-                  {FDA_COPY.waiting}
+                  {fdaCopy().waiting}
                 </span>
               )}
             </div>

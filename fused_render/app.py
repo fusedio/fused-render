@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from fused_render import desktop_probe, relaunch_windows
+from fused_render import _flavor, desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 
@@ -37,7 +37,7 @@ from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 
 logger = logging.getLogger("fused_render")
 
-_APP_SUPPORT_BASE = os.path.expanduser("~/Library/Application Support/fused-render")
+_APP_SUPPORT_BASE = _flavor.app_support_base()
 APP_SUPPORT_DIR = branch_dir(_APP_SUPPORT_BASE)
 PIDFILE = os.path.join(APP_SUPPORT_DIR, "server.pid")
 PORTFILE = os.path.join(APP_SUPPORT_DIR, "server.port")
@@ -64,7 +64,7 @@ def view_url_path(fs_path: str) -> str:
 
 
 def clone_url_path(raw_url: str) -> str:
-    """Shell URL path for an OS-delivered `fused-render://` deep link (SPEC
+    """Shell URL path for an OS-delivered `<scheme>://` deep link (SPEC
     §26, D110): the /clone confirm page with the raw link as ?src=. Parsing
     and validation happen server-side (deeplink.py); this only ferries the
     string. Module-level (not a closure) so it is testable without AppKit.
@@ -80,7 +80,7 @@ def clone_url_path(raw_url: str) -> str:
 def openurls_target_path(raw_url: str) -> str:
     """Shell URL path for an `application:openURLs:` event (SPEC §26, D110).
 
-    AppKit delivers both `fused-render://` deep links AND plain document
+    AppKit delivers both `<scheme>://` deep links AND plain document
     opens (e.g. a Finder double-click on a registered `.fused` file, as
     a `file://` URL) through this one selector — unlike `openFiles:`, which
     only ever gets plain paths. Only a `fused-render:` URL is a deep link;
@@ -353,7 +353,10 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     lan.attach(app)
     # A pairing announces itself in the shell's own status bar (Notifications
     # section polls /api/lan/pairings) — not in macOS notification center.
-    lan.start_if_enabled()
+    # Fused Bot never opens the LAN listener: the routes stay mounted (attach
+    # above), the preference is simply not honoured at boot.
+    if not _flavor.is_bot():
+        lan.start_if_enabled()
     return server, thread
 
 
@@ -826,7 +829,8 @@ def begin_quit(state: dict, *, terminate=None, start=None,
 def bundle_path() -> str | None:
     """The .app bundle root when running packaged, None otherwise.
 
-    sys.executable is …/FusedRender.app/Contents/MacOS/python under py2app
+    sys.executable is …/<app_name><branch_suffix>.app/Contents/MacOS/python
+    under py2app (FusedRender.app / FusedBot.app)
     (same anatomy fusedcli.setup_cli_hint and installed.installed_version
     rely on).
     """
@@ -905,7 +909,8 @@ RELAUNCH_SNAPSHOT_MAX_AGE_S = 2 * RELAUNCH_DEADLINE_S
 
 
 def bundle_executable(bundle: str) -> str:
-    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender.
+    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender
+    (FusedBot under the bot flavor).
 
     Not "anything under Contents/MacOS": the bundle also ships
     `Contents/MacOS/python` (the packaged interpreter every engine run, index
@@ -927,7 +932,7 @@ def bundle_executable(bundle: str) -> str:
             return name
     except (OSError, plistlib.InvalidFileException):
         pass
-    return "FusedRender"
+    return _flavor.app_name()
 
 
 def relauncher_log_path(pid: int) -> str:
@@ -1030,13 +1035,13 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
         f'say "pid {int(pid)} has exited"; '
         f"/bin/sleep {RELAUNCH_SETTLE_S}; "
-        # `open -a <bundle> fused-render://launch`, not a plain `open <bundle>`:
+        # `open -a <bundle> <scheme>://launch`, not a plain `open <bundle>`:
         # a plain open is a normal launch, which boots onto a fresh home tab and
         # steals focus from the page that asked for the restart. Delivering the
         # launch action instead makes the successor's handler set state["docs"]
         # and open nothing (D128); -a pins WHICH copy launches, so the deep link
         # can't resolve to some other registered install.
-        '"$opener" -a "$bundle" "fused-render://launch"; rc=$?; '
+        f'"$opener" -a "$bundle" "{_flavor.scheme()}://launch"; rc=$?; '
         'say "open attempt 1 exited $rc"; '
         f"try=1; next=$(( $(/bin/date +%s) + {int(RELAUNCH_RETRY_AFTER_S)} )); "
         "while :; do "
@@ -1056,7 +1061,7 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         "try=$((try + 1)); "
         # `-n` ONLY here: nothing is running as the app, so forcing a new instance
         # cannot produce a second server racing the first.
-        '"$opener" -n -a "$bundle" "fused-render://launch"; rc=$?; '
+        f'"$opener" -n -a "$bundle" "{_flavor.scheme()}://launch"; rc=$?; '
         'say "open attempt $try (-n, nothing was running) exited $rc"; '
         f'next=$(( now + {int(RELAUNCH_RETRY_AFTER_S)} )); '
         "else "
@@ -1096,7 +1101,7 @@ def _spawn_relauncher_logged(bundle: str, pid: int):
 def begin_relaunch(*, quit_action, bundle=None, spawn=None,
                    running=None, installed=None, same_version=False,
                    fda_granted=None) -> bool:
-    """fused-render://relaunch: quit through the normal teardown and park a
+    """<scheme>://relaunch: quit through the normal teardown and park a
     relauncher on our pid. True if the relaunch was started.
 
     Acts ONLY when this process is provably stale — the disk version is known
@@ -1121,7 +1126,7 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     "The teardown drains for seconds" used to make this safe by accident; the
     hook makes it safe by construction.
 
-    `same_version=True` (fused-render://relaunch?reason=fda) swaps the
+    `same_version=True` (<scheme>://relaunch?reason=fda) swaps the
     staleness check for a different "am I the one who needs replacing" test:
     a Full Disk Access grant applies to the next process, so respawning the
     very same version is the whole point — but ONLY while THIS process still
@@ -1522,7 +1527,9 @@ def main() -> None:
 
     import rumps  # macOS-only; see module docstring
 
-    icon_path = os.path.join(os.path.dirname(__file__), "assets", "menubar-template.png")
+    # Per flavor (`_flavor.menubar_icon()`): both are black+alpha template
+    # glyphs, so `template=True` below recolors either for the menu bar.
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", _flavor.menubar_icon())
 
     # Startup ordering matters (learned the hard way): the AppKit run loop
     # starts FIRST and the server boots in the background AFTER it. Document
@@ -1582,7 +1589,9 @@ def main() -> None:
 
     rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
 
-    # ---- fused-render:// deep links (SPEC §26, D110) -------------------------
+    # ---- <scheme>:// deep links (SPEC §26, D110) -----------------------------
+    # The scheme is the flavor's (`_flavor.scheme()`: fused-render:// or
+    # fused-bot://); deeplink.py builds the accepted forms from it.
     # AppKit delivers URL-scheme opens (CFBundleURLTypes in the py2app plist)
     # to application:openURLs:. Same delegate-patch mechanism as openFiles
     # above; the /clone confirm page does all parsing and asks before any
@@ -1605,14 +1614,14 @@ def main() -> None:
         state["docs"] = True  # a deep-link launch shouldn't also open the home tab
         for raw in raws:
             if is_fda_relaunch_url(raw):
-                # fused-render://relaunch?reason=fda (FdaStrip / FdaStep's
+                # <scheme>://relaunch?reason=fda (FdaStrip / FdaStep's
                 # "Relaunch" button): a Full Disk Access grant only reaches a
                 # fresh process, so respawn this same version.
                 logger.info("fda relaunch deep link: quitting to respawn for the grant")
                 begin_relaunch(quit_action=_do_quit, same_version=True)
                 continue
             if is_relaunch_url(raw):
-                # fused-render://relaunch (the update dialog's Restart button,
+                # <scheme>://relaunch (the update dialog's Restart button,
                 # through frontend platform/lib/restart-store):
                 # park a relauncher on our pid and quit through the normal
                 # teardown — the successor boots from the bundle on disk, and
@@ -1623,7 +1632,7 @@ def main() -> None:
                 begin_relaunch(quit_action=_do_quit)
                 continue
             if is_launch_url(raw):
-                # fused-render://launch (D128): the OS launching/foregrounding
+                # <scheme>://launch (D128): the OS launching/foregrounding
                 # this app IS the whole action — the server boot is already in
                 # flight and the page that linked here reconnects on its own
                 # (D126 banner), so no tab is opened now and nothing is queued
@@ -1828,7 +1837,8 @@ def main() -> None:
             # row (SPEC §25 PV-3, D98). It stays built as the fallback surface
             # if the controller fails to construct (PV-8) — the app must never
             # be left unquittable.
-            super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
+            super().__init__(_flavor.app_support_name(), icon=icon_path, template=True,
+                             quit_button=None)
             self.menu = ["Open in browser", "Copy URL", "Open app logs",
                          "Save Diagnostics…", "Quit"]
 
@@ -2004,77 +2014,85 @@ def main() -> None:
         # focuses-or-opens a window, off it opens a browser tab at the same
         # address (`window_policy.shell_path_for`). Guarded — no launcher is
         # a lesser outcome than no app.
-        try:
-            from AppKit import NSApp
+        #
+        # Not built at all under Fused Bot (owner call): no ⌥Space panel, no
+        # global hotkey registered. `state["launcher"]` stays None, which is
+        # what the ready path, the popover's "Search Apps…" key and
+        # /api/launcher's `available` already key off.
+        if _flavor.is_bot():
+            logger.info("launcher not built: bot flavor")
+        else:
+            try:
+                from AppKit import NSApp
 
-            from fused_render import launcher as launcher_mod
-            from fused_render.launcher_panel import LauncherController
+                from fused_render import launcher as launcher_mod
+                from fused_render.launcher_panel import LauncherController
 
-            def _open_from_launcher(fs_path: str) -> None:
-                manager = state["windows"]
-                # `enabled`, not just a manager: it outlives the preference
-                # being switched off, and off must be the browser tab on the
-                # app page exactly as before — never the run window's embed.
-                if manager is None or not manager.enabled:
-                    webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
-                    return
-                # Dock semantics; the panel is non-activating, so bring
-                # this app forward or the window opens behind the caller.
-                # An app lands in its own run window, as a shell click does.
-                NSApp.activateIgnoringOtherApps_(True)
-                manager.focus_or_open_app(fs_path)
+                def _open_from_launcher(fs_path: str) -> None:
+                    manager = state["windows"]
+                    # `enabled`, not just a manager: it outlives the preference
+                    # being switched off, and off must be the browser tab on the
+                    # app page exactly as before — never the run window's embed.
+                    if manager is None or not manager.enabled:
+                        webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
+                        return
+                    # Dock semantics; the panel is non-activating, so bring
+                    # this app forward or the window opens behind the caller.
+                    # An app lands in its own run window, as a shell click does.
+                    NSApp.activateIgnoringOtherApps_(True)
+                    manager.focus_or_open_app(fs_path)
 
-            def _home_from_launcher() -> None:
-                manager = state["windows"]
-                if manager is None:
-                    webbrowser.open(url)
-                    return
-                NSApp.activateIgnoringOtherApps_(True)
-                manager.show_home()
+                def _home_from_launcher() -> None:
+                    manager = state["windows"]
+                    if manager is None:
+                        webbrowser.open(url)
+                        return
+                    NSApp.activateIgnoringOtherApps_(True)
+                    manager.show_home()
 
-            def _open_keys() -> set[str]:
-                # Read live: the manager comes and goes with the preference.
-                manager = state["windows"]
-                return manager.open_keys() if manager is not None else set()
+                def _open_keys() -> set[str]:
+                    # Read live: the manager comes and goes with the preference.
+                    manager = state["windows"]
+                    return manager.open_keys() if manager is not None else set()
 
-            launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
-            state["launcher"] = launcher_ctl
+                launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
+                state["launcher"] = launcher_ctl
 
-            # What the uvicorn thread may call (PUT /api/prefs, GET
-            # /api/launcher): rebinding hops to the main thread; the
-            # bound flags and the open-window set are plain attribute
-            # reads, safe from any thread.
-            def _rebind(spec) -> None:
-                if spec:
-                    AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
-                else:  # the row modifier changed; rebind those, tell the page
-                    AppHelper.callAfter(launcher_ctl.push_settings)
+                # What the uvicorn thread may call (PUT /api/prefs, GET
+                # /api/launcher): rebinding hops to the main thread; the
+                # bound flags and the open-window set are plain attribute
+                # reads, safe from any thread.
+                def _rebind(spec) -> None:
+                    if spec:
+                        AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
+                    else:  # the row modifier changed; rebind those, tell the page
+                        AppHelper.callAfter(launcher_ctl.push_settings)
 
-            def _suspend(on: bool) -> None:
-                AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
+                def _suspend(on: bool) -> None:
+                    AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
 
-            launcher_mod.native_hooks.update({
-                "rebind": _rebind,
-                "suspend": _suspend,
-                "hotkey_bound": launcher_ctl.hotkey_bound,
-                "pinned_bound": launcher_ctl.pinned_bound,
-                "open_keys": _open_keys,
-            })
-            if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
-                # Dev only: SIGUSR2 toggles the launcher, so a script can
-                # screenshot it without Accessibility access to press the
-                # shortcut. Python signal handlers run only between
-                # bytecodes; an idle AppKit run loop executes none, so a
-                # no-op tick keeps the interpreter breathing.
-                import signal
+                launcher_mod.native_hooks.update({
+                    "rebind": _rebind,
+                    "suspend": _suspend,
+                    "hotkey_bound": launcher_ctl.hotkey_bound,
+                    "pinned_bound": launcher_ctl.pinned_bound,
+                    "open_keys": _open_keys,
+                })
+                if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
+                    # Dev only: SIGUSR2 toggles the launcher, so a script can
+                    # screenshot it without Accessibility access to press the
+                    # shortcut. Python signal handlers run only between
+                    # bytecodes; an idle AppKit run loop executes none, so a
+                    # no-op tick keeps the interpreter breathing.
+                    import signal
 
-                signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
-                    launcher_ctl.toggle))
-                status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
-                status_app.launcher_dev_tick.start()
-        except Exception:
-            logger.exception("launcher unavailable")
-            state["launcher"] = None
+                    signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
+                        launcher_ctl.toggle))
+                    status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+                    status_app.launcher_dev_tick.start()
+            except Exception:
+                logger.exception("launcher unavailable")
+                state["launcher"] = None
 
         try:
             # Lazy + guarded: pyobjc-framework-WebKit may be missing in an

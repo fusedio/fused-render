@@ -50,6 +50,7 @@ import {
   useRestartFlow,
 } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
+import { deepLinkScheme, displayName } from "@platform/lib/flavor";
 import {
   bannerSurface,
   initialStatus,
@@ -373,7 +374,7 @@ export default function ServerStatusBanner() {
   if (surface === "slow") {
     return (
       <div className="server-status server-status-slow" role="status" aria-live="polite">
-        fused-render is slow to respond…
+        {displayName()} is slow to respond…
       </div>
     );
   }
@@ -381,7 +382,7 @@ export default function ServerStatusBanner() {
   if (surface === "reconnected") {
     return (
       <div className="server-status server-status-reconnected" role="status" aria-live="polite">
-        Reconnected — fused-render is back.
+        Reconnected — {displayName()} is back.
       </div>
     );
   }
@@ -392,16 +393,16 @@ export default function ServerStatusBanner() {
 
   return (
     <div className="server-status server-status-down" role="status" aria-live="polite">
-      <div className="server-status-title">fused-render isn't running</div>
+      <div className="server-status-title">{displayName()} isn&rsquo;t running</div>
       <div className="server-status-body">
-        The app that powers this page has stopped or was closed. Reopen the fused-render app, and
+        The app that powers this page has stopped or was closed. Reopen the {displayName()} app, and
         this page will reconnect on its own.
       </div>
-      {/* fused-render://launch (D128): the OS starts the app, the server-boot
+      {/* `<scheme>://launch` (D128): the OS starts the app, the server-boot
           makes the next probe succeed, and this page reconnects on its own —
           the link opens no tab and navigates nowhere. */}
-      <a className="server-status-launch" href="fused-render://launch">
-        Start fused-render
+      <a className="server-status-launch" href={`${deepLinkScheme()}://launch`}>
+        Start {displayName()}
       </a>
       <button type="button" className="server-status-retry" onClick={checkNow}>
         Check again
