@@ -962,6 +962,9 @@ class _MenuTarget(NSObject):
     def showTasks_(self, _s):
         self._m.show_tasks()
 
+    def showPreferences_(self, _s):
+        self._m.show_page("/preferences")
+
     def showLauncher_(self, _s):
         launcher = self._m.show_launcher
         if launcher is not None:
@@ -1116,10 +1119,15 @@ class WindowManager:
     def show_tasks(self) -> None:
         """Window → Tasks (⌘⇧T): a window already on the Tasks page comes to
         the front, else one opens. Main thread."""
-        url = f"http://127.0.0.1:{self.port}/tasks"
+        self.show_page("/tasks")
+
+    def show_page(self, path: str) -> None:
+        """A window already on this shell page comes to the front, else one
+        opens on it. Main thread."""
+        url = f"http://127.0.0.1:{self.port}{path}"
         for w in reversed(self._windows):
             current = w.current_url() or ""
-            if urllib.parse.urlsplit(current).path == "/tasks":
+            if urllib.parse.urlsplit(current).path == path:
                 w.show()
                 return
         self.open(url)
@@ -1327,9 +1335,13 @@ def _build_main_menu(target) -> NSMenu:
     sep = NSMenuItem.separatorItem
     main = NSMenu.alloc().init()
 
+    # Fused Bot has no shell sidebar (App.tsx), so the menu bar is its only
+    # door to Preferences; Render reaches them from the sidebar as always.
+    bot = _flavor.is_bot()
     submenu(APP_NAME, [
         item(f"About {APP_NAME}", b"orderFrontStandardAboutPanel:", tgt=None),
         sep(),
+        *([item("Preferences…", b"showPreferences:", ","), sep()] if bot else []),
         item(f"Hide {APP_NAME}", b"hide:", "h", tgt=None),
         item("Hide Others", b"hideOtherApplications:", "h", CMD | _ALT, tgt=None),
         item("Show All", b"unhideAllApplications:", tgt=None),
@@ -1362,7 +1374,6 @@ def _build_main_menu(target) -> NSMenu:
     # Fused Bot has no explorer to edit in and no launcher to search with
     # (app.py builds neither), so those two rows are not offered; Home stays —
     # it goes to the front door, which is the Bots page there.
-    bot = _flavor.is_bot()
     submenu("View", [
         item("Reload Page", b"reload:", "r"),
         item("Back", b"goBack:", "["),

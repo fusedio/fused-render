@@ -50,6 +50,7 @@ import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
 import { useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
+import { isBot } from "@platform/lib/flavor";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
@@ -1054,8 +1055,10 @@ export default function App({ config }: { config: Config }) {
   // ONE sidebar for every route (it replaced the per-context pair: the
   // explorer's on fs routes, the shell app-switcher elsewhere). The shell no
   // longer picks — GlobalSidebar carries nav, recents, bookmarks and the
-  // bottom Preferences menu itself.
-  const sidebar = <GlobalSidebar config={config} />;
+  // bottom Preferences menu itself. Fused Bot has none: the Bots page is the
+  // whole window, as it was in the standalone FusedBot; Tasks and
+  // Preferences open from the native menu bar there (mac_window.py).
+  const sidebar = isBot() ? null : <GlobalSidebar config={config} />;
 
   // The setup wizard (shell/onboarding) is the whole window: no sidebar, no
   // status bar, no docks — a pre-app surface, which is why it is not one more
