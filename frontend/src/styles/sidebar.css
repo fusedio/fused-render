@@ -1357,3 +1357,161 @@ a.bookmark-name::after {
   }
 }
 
+
+/* -- The update card (shell/UpdateCard) ---------------------------------------
+   Sits directly above the Settings row, ahead of the setup progress row. Loud
+   on purpose: an accent-tinted card with a real button. The busy variant drops
+   to neutral, the error variant takes the error tint. --on-accent is the token
+   for text on an accent fill, so the button holds in both themes. */
+.update-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 6px;
+  padding: 10px;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  border-radius: 8px;
+  background: rgba(var(--accent-rgb), 0.07);
+}
+
+.update-card.is-error {
+  border-color: rgba(var(--error-rgb), 0.4);
+  background: rgba(var(--error-rgb), 0.07);
+}
+
+.update-card.is-busy {
+  border-color: var(--border);
+  background: rgba(var(--tint), 0.03);
+}
+
+.update-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.update-card-detail {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.update-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-card-btn {
+  margin: 0;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-card-btn:hover {
+  filter: brightness(1.1);
+}
+
+.update-card-ghost {
+  margin: 0;
+  padding: 3px 4px;
+  border: 0;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.update-card-ghost:hover {
+  color: var(--fg);
+}
+
+.update-card-btn:focus-visible,
+.update-card-ghost:focus-visible,
+.update-card-compact:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.update-card-bar {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: rgba(var(--tint), 0.08);
+}
+
+.update-card-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: var(--accent);
+  animation: update-card-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes update-card-slide {
+  from {
+    left: -40%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+.update-card-spin {
+  animation: update-card-rotate 1s linear infinite;
+}
+
+@keyframes update-card-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The collapsed form after "Later": one row, same slot, still clickable. */
+.update-card-compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 7px 10px;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  border-radius: 8px;
+  background: rgba(var(--accent-rgb), 0.07);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.update-card-compact:hover {
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.update-card-compact b {
+  font-weight: 600;
+}
+
+.update-card-ver {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.sidebar-rail-dot.is-update {
+  background: var(--accent);
+}

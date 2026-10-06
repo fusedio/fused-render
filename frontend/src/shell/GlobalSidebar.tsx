@@ -33,6 +33,9 @@ import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection from "@shell/CurrentAppsSection";
+import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
+import { useRestartFlow } from "@platform/lib/restart-store";
+import { useUpdateStatus } from "@platform/lib/update-status";
 import { useSidebarArrowNav } from "@shell/sidebarArrowNav";
 
 // House — the Home page (/home): search hero + the three recency strips.
@@ -451,6 +454,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // its icon; and it is border-box against the other's `content-box`, so its 1px
   // ring ate the dot down to 5px of fill beside a 7px neighbour. One dot
   // vocabulary in this sidebar, one class that draws it.
+  // The collapsed rail's stand-in for the expanded footer's UpdateCard.
+  const updateStatus = useUpdateStatus();
+  const restartFlow = useRestartFlow();
+  const updateDot = updateCardActive(updateStatus, restartFlow.stage) ? (
+    <span className="sidebar-rail-dot is-update" title="Update available. Open the sidebar to act on it" />
+  ) : undefined;
+
   const residentDot = residentModels.length ? (
     <span
       className="sidebar-rail-dot is-resident"
@@ -764,11 +774,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
-      // No update dot any more (SPEC-update-notifications.md): the manual
-      // check moved into Preferences, and the two decision moments the app
-      // actually needs to surface are now the Notifications chip's own two
-      // cards — a second, quieter signal here would just be a rhyme of that
-      // chip's own count.
+      // The expanded footer carries the UpdateCard; the collapsed rail has no
+      // room for it, so the same moments show as a dot.
+      badge: updateDot,
     },
   ];
 
@@ -846,6 +854,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
+          <UpdateCard />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
           {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the
