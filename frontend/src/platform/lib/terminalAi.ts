@@ -3,10 +3,17 @@
 // everything that can be wrong without a real canvas lives here.
 
 export type ShellFailure = { command: string; exitCode: number };
-export type OscState = { pendingCommand: string; failure: ShellFailure | null };
+export type OscState = {
+  pendingCommand: string;
+  failure: ShellFailure | null;
+  /** True between 133;C and its 133;D. The shims also emit 133;D on the first
+   * prompt (carrying whatever `$?` the rc files left), which is no command the
+   * user ran, so a D outside a C..D pair is ignored. */
+  running: boolean;
+};
 
 export function initialOscState(): OscState {
-  return { pendingCommand: "", failure: null };
+  return { pendingCommand: "", failure: null, running: false };
 }
 
 /** Mirrors `_unescape_command` in fused_render/shell_integration.py: the shims
@@ -43,13 +50,14 @@ export function reduceShellOsc(state: OscState, ident: 133 | 633, data: string):
     if (data.startsWith("E;")) return { ...state, pendingCommand: unescapeCommand(data.slice(2)).trim() };
     return state;
   }
-  if (data === "C" || data.startsWith("C;")) return { ...state, failure: null };
+  if (data === "C" || data.startsWith("C;")) return { ...state, failure: null, running: true };
   if (data === "D" || data.startsWith("D;")) {
+    if (!state.running) return state;
     const n = data.startsWith("D;") ? parseInt(data.slice(2), 10) : NaN;
     if (Number.isFinite(n) && n !== 0 && n !== 130) {
-      return { ...state, failure: { command: state.pendingCommand, exitCode: n } };
+      return { ...state, running: false, failure: { command: state.pendingCommand, exitCode: n } };
     }
-    return { ...state, failure: null };
+    return { ...state, running: false, failure: null };
   }
   return state;
 }

@@ -15,17 +15,36 @@ test("nonzero exit becomes a failure with the pending command", () => {
   expect(run([633, "E;false"], [133, "C"], [133, "D;1"]).failure).toEqual({ command: "false", exitCode: 1 });
 });
 
-test("exit 0, 130 and a missing exit clear the failure", () => {
-  const failed: Array<[133 | 633, string]> = [[633, "E;x"], [133, "C"], [133, "D;2"]];
-  expect(run(...failed, [133, "D;0"]).failure).toBeNull();
-  expect(run(...failed, [133, "D;130"]).failure).toBeNull();
-  expect(run(...failed, [133, "D"]).failure).toBeNull();
-  expect(run(...failed, [133, "D;abc"]).failure).toBeNull();
+test("exit 0, 130 and a missing exit leave no failure", () => {
+  const start: Array<[133 | 633, string]> = [[633, "E;x"], [133, "C"]];
+  expect(run(...start, [133, "D;0"]).failure).toBeNull();
+  expect(run(...start, [133, "D;130"]).failure).toBeNull();
+  expect(run(...start, [133, "D"]).failure).toBeNull();
+  expect(run(...start, [133, "D;abc"]).failure).toBeNull();
 });
 
-test("133;C clears a failure; other marks leave state unchanged", () => {
-  const failed: Array<[133 | 633, string]> = [[633, "E;x"], [133, "D;2"]];
-  expect(run(...failed, [133, "C"]).failure).toBeNull();
+test("a next command's exit 0 clears an earlier failure", () => {
+  const failed: Array<[133 | 633, string]> = [[633, "E;x"], [133, "C"], [133, "D;2"]];
+  expect(run(...failed, [133, "C"], [133, "D;0"]).failure).toBeNull();
+});
+
+test("133;D before any 133;C (the first prompt) is not a finished command", () => {
+  const s = run([133, "D;1"]);
+  expect(s.failure).toBeNull();
+  expect(s.running).toBe(false);
+});
+
+test("a second 133;D without a new 133;C leaves the state unchanged", () => {
+  const s = run([633, "E;false"], [133, "C"], [133, "D;1"]);
+  expect(s.failure).toEqual({ command: "false", exitCode: 1 });
+  expect(reduceShellOsc(s, 133, "D;0")).toBe(s);
+});
+
+test("133;C clears a failure and marks running; other marks leave state unchanged", () => {
+  const failed: Array<[133 | 633, string]> = [[633, "E;x"], [133, "C"], [133, "D;2"]];
+  const c = run(...failed, [133, "C"]);
+  expect(c.failure).toBeNull();
+  expect(c.running).toBe(true);
   const s = run(...failed);
   expect(reduceShellOsc(s, 133, "A")).toBe(s);
 });
