@@ -29,17 +29,24 @@ import webbrowser
 
 import uvicorn
 
-from fused_render import desktop_probe
+from fused_render import desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
 from fused_render.server import (
     create_app, export_app_env, set_server_origin_env, write_server_json,
 )
-# The two teardown budgets the quit deadline is derived from (see
-# QUIT_HARD_DEADLINE_S). Imported eagerly — `create_app` above already pulls the
-# mounts package in, so this costs nothing — because a deadline that has to
-# outlast them must be computed FROM them, not restated.
-from fused_render.shell.mounts import _QUIT_UNMOUNT_BUDGET_S, RCD_REAP_WORST_CASE_S
+# The teardown budgets the quit deadlines are derived from (see
+# QUIT_HARD_DEADLINE_S / QUIT_FAST_HARD_DEADLINE_S). Imported eagerly — `create_app`
+# above already pulls the mounts package in, so this costs nothing — because a
+# deadline that has to outlast them must be computed FROM them, not restated.
+from fused_render.shell.mounts import (
+    _QUIT_FAST_QUIESCE_BUDGET_S,
+    _QUIT_FAST_UNMOUNT_BUDGET_S,
+    _QUIT_FAST_UNMOUNT_JOIN_BUDGET_S,
+    _QUIT_UNMOUNT_BUDGET_S,
+    RCD_FAST_REAP_WORST_CASE_S,
+    RCD_REAP_WORST_CASE_S,
+)
 from fused_render.shell.seed import ensure_fused_dir
 
 logger = logging.getLogger("fused_render")
@@ -473,6 +480,12 @@ def hard_exit(code: int = 0, *, exit_process=os._exit,
 
 QUIT_SERVER_DRAIN_S = 2.0
 
+# The drain for a RELAUNCH-initiated quit. On the packaged app the drain never
+# succeeds anyway (the shell's SSE/websocket connections stay open, see
+# QUIT_CHILDREN_BUDGET_S), so the full 2 s is pure latency; 0.5 s still lets an
+# idle server exit on its first polls.
+QUIT_FAST_SERVER_DRAIN_S = 0.5
+
 # Budget for the "children" rung below. The server's lifespan shutdown
 # handlers (engine_host.stop_all, ai supervisor.unload_all, the pty registry,
 # index_watch.stop, remove_server_json) are what kill every child the server
@@ -512,6 +525,18 @@ QUIT_HARD_DEADLINE_S = (
     + QUIT_CHILDREN_BUDGET_S
     + _QUIT_UNMOUNT_BUDGET_S
     + RCD_REAP_WORST_CASE_S
+    + QUIT_DEADLINE_MARGIN_S
+)
+
+# The same derivation for a relaunch-initiated quit (`fast=True` through
+# begin_quit -> start_quit -> quit_teardown). Only the three tight terms change;
+# the children budget is kept (a straggling engine worker surviving into the new
+# version is the bug it exists for). A normal Quit keeps QUIT_HARD_DEADLINE_S.
+QUIT_FAST_HARD_DEADLINE_S = (
+    QUIT_FAST_SERVER_DRAIN_S
+    + QUIT_CHILDREN_BUDGET_S
+    + _QUIT_FAST_UNMOUNT_BUDGET_S
+    + RCD_FAST_REAP_WORST_CASE_S
     + QUIT_DEADLINE_MARGIN_S
 )
 
@@ -612,10 +637,10 @@ def _record_clean_exit() -> None:
         crashlog.release()
 
 
-def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DRAIN_S,
+def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
                   close_duckdb=None, unmount_mounts=None, stop_rcd=None,
                   stop_captures=None, stop_children=None,
-                  record_exit=None) -> list[str]:
+                  record_exit=None, fast: bool = False) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
 
     The order is the point, and each rung is a precondition of the next:
@@ -649,20 +674,36 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
     Every step is best-effort and independently guarded — a failure in one must
     not skip the ones after it (a mount store we cannot read must still let the
     daemon be reaped, and vice versa). The step callables are injectable for
-    tests; the defaults are the real ladder."""
+    tests; the defaults are the real ladder.
+
+    `fast=True` is the RELAUNCH quit: identical steps in identical order, on the
+    QUIT_FAST_* budgets (drain, unmount join + quiesce, rcd SIGTERM grace). It is
+    safe because the successor force-clears any mount this teardown left behind
+    (health._clear_dead_mount). A normal quit passes nothing and keeps every
+    budget it always had. Budgets resolve at call time, not def time."""
     steps: list[str] = []
+    if drain_s is None:
+        drain_s = QUIT_FAST_SERVER_DRAIN_S if fast else QUIT_SERVER_DRAIN_S
     if close_duckdb is None:
         close_duckdb = _close_duckdb_stash
     if unmount_mounts is None:
         def unmount_mounts():
             from fused_render.shell.mounts import unmount_all_for_quit
 
-            unmount_all_for_quit()
+            if fast:
+                unmount_all_for_quit(
+                    budget_s=_QUIT_FAST_UNMOUNT_JOIN_BUDGET_S,
+                    quiesce_s=_QUIT_FAST_QUIESCE_BUDGET_S)
+            else:
+                unmount_all_for_quit()
     if stop_rcd is None:
         def stop_rcd():
             from fused_render.shell.mounts import stop_local_rcd
 
-            stop_local_rcd()
+            if fast:
+                stop_local_rcd(fast=True)
+            else:
+                stop_local_rcd()
     if stop_captures is None:
         def stop_captures():
             from fused_render import capture
@@ -703,7 +744,8 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
 
 
 def start_quit(server, *, terminate, server_thread=None, teardown=None,
-               deadline_s: float = QUIT_HARD_DEADLINE_S) -> threading.Thread:
+               deadline_s: "float | None" = None,
+               fast: bool = False) -> threading.Thread:
     """Begin quitting WITHOUT blocking the caller, and terminate when done.
 
     Called from a menu-item action, i.e. on the AppKit main thread with the run
@@ -715,11 +757,19 @@ def start_quit(server, *, terminate, server_thread=None, teardown=None,
     step still cannot leave an app that refuses to quit. Exactly one call to
     `terminate` either way — only the watchdog ever calls it.
 
+    `fast=True` (a relaunch quit) runs the teardown on the QUIT_FAST_* budgets and
+    under QUIT_FAST_HARD_DEADLINE_S; the default is today's behaviour exactly.
+
     Returns the watchdog thread (tests join it; nothing in the app does — the
     process is gone by then)."""
+    if deadline_s is None:
+        deadline_s = QUIT_FAST_HARD_DEADLINE_S if fast else QUIT_HARD_DEADLINE_S
     if teardown is None:
         def teardown():
-            quit_teardown(server, server_thread=server_thread)
+            if fast:
+                quit_teardown(server, server_thread=server_thread, fast=True)
+            else:
+                quit_teardown(server, server_thread=server_thread)
 
     done = threading.Event()
 
@@ -775,7 +825,8 @@ def _quit_ready_event_locked(state: dict) -> threading.Event:
 
 
 def begin_quit(state: dict, *, terminate=None, start=None,
-               remove_pidfile=None, on_claim=None, surface: str = "menu") -> bool:
+               remove_pidfile=None, on_claim=None, surface: str = "menu",
+               fast: bool = False) -> bool:
     """Start THE teardown unless one is already running; True if this call
     started it.
 
@@ -803,7 +854,11 @@ def begin_quit(state: dict, *, terminate=None, start=None,
     successor (a fork+exec of a large process under `start_new_session`), i.e.
     the app quits and nothing comes back. The old
     `AppHelper.callAfter(rumps.quit_application)` made that impossible by
-    construction, and this hook is what replaces that guarantee."""
+    construction, and this hook is what replaces that guarantee.
+
+    `fast` marks a RELAUNCH quit (begin_relaunch): the teardown runs on the tighter
+    QUIT_FAST_* budgets. It reaches `start` only when True, so a `start` written
+    before the flag existed keeps working for every normal quit."""
     if start is None:
         start = start_quit
     if remove_pidfile is None:
@@ -842,8 +897,9 @@ def begin_quit(state: dict, *, terminate=None, start=None,
         if terminate is not None:
             terminate()
 
+    extra = {"fast": True} if fast else {}
     start(state.get("server"), terminate=_finished,
-          server_thread=state.get("server_thread"))
+          server_thread=state.get("server_thread"), **extra)
     return True
 
 
@@ -903,7 +959,8 @@ RELAUNCH_RETRY_AFTER_S = 5.0
 # The relauncher's overall deadline, COUNTED FROM ITS OWN START — which is the
 # press, not the pid's death: it is spawned by `begin_quit`'s `on_claim`, at the
 # very start of the teardown. That distinction is load-bearing. The teardown may
-# take up to QUIT_HARD_DEADLINE_S (39 s), so a deadline counted from the pid's
+# take up to QUIT_HARD_DEADLINE_S (39 s; a relaunch quit runs the tighter
+# QUIT_FAST_HARD_DEADLINE_S, so this is a conservative cap), so a deadline counted from the pid's
 # death could still be running 89 s after the press, long after the page gave up
 # at RESTART_GIVE_UP_MS (60 s, frontend/src/platform/lib/restart-flow.ts) and
 # told the user the app is not running. Counted from the press it is under that
@@ -912,6 +969,18 @@ RELAUNCH_DEADLINE_S = 50.0
 
 # How many times it asks, the first ask included.
 RELAUNCH_OPEN_TRIES = 3
+
+# Where a relaunching instance writes down its open native windows for the
+# successor (fused_render/relaunch_windows.py). Beside PIDFILE: branch-scoped
+# like it, so a dev branch's restart never feeds another branch's app.
+RELAUNCH_WINDOWS_FILE = os.path.join(APP_SUPPORT_DIR, "relaunch-windows.json")
+
+# How old a snapshot may be and still be replayed. Twice the relauncher's own
+# deadline: the successor writes nothing until it is serving, and the longest a
+# healthy restart takes end to end is that deadline — past it the file is a
+# leftover (a restart that never came back), and replaying it into some later,
+# unrelated launch would be a surprise.
+RELAUNCH_SNAPSHOT_MAX_AGE_S = 2 * RELAUNCH_DEADLINE_S
 
 
 def bundle_executable(bundle: str) -> str:
@@ -978,8 +1047,8 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
     that survives us: its own session, no inherited pipes.
 
     The poll loop has no timeout of its own: the pid it waits on is guaranteed
-    to die within QUIT_HARD_DEADLINE_S (start_quit's watchdog terminates the app
-    past it, teardown finished or not), so a bounded wait here would only
+    to die within QUIT_FAST_HARD_DEADLINE_S (the relaunch quit's watchdog
+    terminates the app past it, teardown finished or not), so a bounded wait here would only
     duplicate that guarantee.
 
     IT VERIFIES, RATHER THAN HOPING. `open` exits 0 for "I handed the URL to
@@ -1180,6 +1249,34 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     return True
 
 
+def make_windows_quit(begin, *, state: dict, close_windows, snapshot, discard):
+    """The quit action `main()` hands every surface: the windows first, then
+    the ordered teardown (`begin` — `make_quit_action`'s).
+
+    A RELAUNCH is the one caller that passes `on_claim`. It must record the open
+    windows BEFORE they are closed (`close_windows` empties the manager, and a
+    snapshot taken after it would be empty), so the order is
+    snapshot -> close -> claim, enforced here rather than left to statement
+    order in a closure. A quit already in flight has closed the windows itself,
+    so a snapshot then would be empty and would erase a good one — skipped. And
+    if the claim is refused (the in-flight quit was the user's own), the file
+    is withdrawn: nobody is coming back to read it."""
+    def _do_quit(on_claim=None) -> bool:
+        wrote = False
+        if on_claim is not None and not state.get("quitting"):
+            try:
+                wrote = bool(snapshot())
+            except Exception:
+                logger.warning("could not record the open windows", exc_info=True)
+        close_windows()
+        claimed = begin(on_claim=on_claim)
+        if wrote and not claimed:
+            discard()
+        return claimed
+
+    return _do_quit
+
+
 def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None):
     """The Quit action for the two surfaces WE own — the rumps menu item and the
     popover's `quitApp_`, which receives it through the controller's actions
@@ -1191,9 +1288,13 @@ def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None)
         # relauncher behind a quit THIS call started, and hands its spawn in as
         # `on_claim` so it happens before anything can exit. The menu/popover
         # surfaces pass nothing and ignore the bool.
+        # `on_claim` doubles as "this is the relaunch": only that caller gets the
+        # fast teardown (QUIT_FAST_*); the menu/popover keep the full budgets.
+        relaunch = on_claim is not None
         return begin_quit(state, terminate=terminate, start=start,
                           remove_pidfile=remove_pidfile, on_claim=on_claim,
-                          surface="relaunch" if on_claim is not None else "menu/popover")
+                          surface="relaunch" if relaunch else "menu/popover",
+                          fast=relaunch)
 
     return _do_quit
 
@@ -1537,7 +1638,10 @@ def main() -> None:
                 # flight and the page that linked here reconnects on its own
                 # (D126 banner), so no tab is opened now and nothing is queued
                 # to open later. state["docs"] above also keeps the bootstrap
-                # from auto-opening the home tab on a fresh launch.
+                # from auto-opening the home tab on a fresh launch. (A restart
+                # from native windows is the exception, and it is not decided
+                # HERE: the bootstrap reopens the windows the predecessor
+                # recorded once the server is ready — relaunch_windows.py.)
                 logger.info("launch deep link: ensuring app/server only, no tab")
                 continue
             try:
@@ -1704,6 +1808,16 @@ def main() -> None:
         pending, state["pending"] = state["pending"], []
         for target in pending:
             _open_target(target)
+        # The windows a relaunch's predecessor had open (relaunch_windows.py).
+        # Through `_open_target` like every other open: a native window, or —
+        # with the preference off / no manager — a browser tab. `docs` is set
+        # so the home window below is not added on top of them; with no
+        # snapshot (a restart from a browser tab, or any ordinary launch)
+        # nothing here fires and the launch behaves exactly as before.
+        for path in relaunch_windows.take_snapshot(
+                RELAUNCH_WINDOWS_FILE, max_age_s=RELAUNCH_SNAPSHOT_MAX_AGE_S):
+            state["docs"] = True
+            _open_target(f"http://127.0.0.1:{port}" + path)
         # Home window only when this launch wasn't a document double-click.
         if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
             _open_target(url)
@@ -1771,12 +1885,29 @@ def main() -> None:
     # quit_teardown do the blocking work off-thread under a hard deadline.
     _begin_quit_action = make_quit_action(state, terminate=_terminate)
 
-    def _do_quit(on_claim=None) -> bool:
-        # The windows first (`_close_windows`), then the ordered teardown.
-        # Same signature and return as `make_quit_action`'s: `begin_relaunch`
-        # passes `on_claim` and reads the claim bool.
-        _close_windows()
-        return _begin_quit_action(on_claim=on_claim)
+    def _snapshot_windows() -> bool:
+        # Main thread only (AppKit), like `_close_windows`: a relaunch deep link
+        # arrives there. Off it, or with no manager, there is nothing to record.
+        manager = state.get("windows")
+        if manager is None:
+            return False
+        from Foundation import NSThread
+
+        if not NSThread.isMainThread():
+            return False
+        targets = relaunch_windows.targets_from_urls(manager.snapshot_urls(), port)
+        logger.info("relaunch: recording %d open window(s) for the successor",
+                    len(targets))
+        return relaunch_windows.write_snapshot(RELAUNCH_WINDOWS_FILE, targets)
+
+    # The windows first (`_close_windows`), then the ordered teardown. Same
+    # signature and return as `make_quit_action`'s: `begin_relaunch` passes
+    # `on_claim` and reads the claim bool — and the relaunch also records its
+    # windows first (see make_windows_quit).
+    _do_quit = make_windows_quit(
+        _begin_quit_action, state=state, close_windows=_close_windows,
+        snapshot=_snapshot_windows,
+        discard=lambda: relaunch_windows.discard_snapshot(RELAUNCH_WINDOWS_FILE))
 
     status_app = FusedRenderStatusApp()
 
