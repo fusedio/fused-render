@@ -21,7 +21,8 @@
 // and the hover is about that stretch: its first stamp to its last result.
 // A reply with two runs wears two different numbers.
 import { ago } from "../protocol/history";
-import type { Segment } from "../protocol/types";
+import type { Segment, ToolSegment } from "../protocol/types";
+import { stampTitle } from "./stamp";
 
 /** `4s`, `2m 10s`, `1h 3m` — floor at every unit, never two decimals, and the
  *  second unit only when the first is not the whole story. */
@@ -76,4 +77,36 @@ export function runWhenWords(
   return span.finished > span.started
     ? "Worked for " + spanWords(span.finished - span.started) + " · " + done
     : done;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+/** THE LANE STAMP ON A TOOL CHIP (Akshil, 2026-10-06: "on the left side where
+ *  there is space we show 1d ago, 3d ago, or some date — same language as the
+ *  message stamp"). The message stamp's own words, in the message stamp's own
+ *  register (ui/stamp.ts: `just now`, `3m ago`, `2h ago`), but the lane beside
+ *  a chip is the ✻ mark's column plus the gutter — about 54px — so a day-old
+ *  call says `4 Oct` and leaves the clock to the hover, where the message
+ *  stamp has the whole row and says `4 Oct, 22:42`. Epoch seconds in. */
+export function chipWhen(ts: number | null | undefined, now: number = Date.now()): string | null {
+  if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return null;
+  const at = ts > 1e11 ? ts : ts * 1000;
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return null;
+  const age = now - at;
+  if (age < 60_000) return "just now";
+  if (age < 3_600_000) return Math.floor(age / 60_000) + "m ago";
+  if (age < 86_400_000) return Math.floor(age / 3_600_000) + "h ago";
+  return d.getDate() + " " + MONTHS[d.getMonth()];
+}
+
+/** THE STAMP'S HOVER: the exact instant the call was made, and how long it ran
+ *  (`4 Oct 2026, 22:42:33 · ran 4s`) — a call still running says so. */
+export function chipHint(seg: Pick<ToolSegment, "ts" | "ended" | "status">): string | null {
+  const title = stampTitle(seg.ts);
+  if (!title) return null;
+  const ts = seg.ts as number;
+  const ended = seg.ended;
+  if (typeof ended === "number" && Number.isFinite(ended) && ended >= ts) return title + " · ran " + spanWords(ended - ts);
+  return seg.status === "running" ? title + " · still running" : title;
 }

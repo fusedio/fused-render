@@ -150,6 +150,21 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
     expect(chips(open)).toHaveLength(2);
   });
 
+  test("an opened run's chips wear the lane stamp with the exact-time hover", () => {
+    const policy = createCardPolicy();
+    const segs = [text("Here goes."), stamped("a", T0, T0 + 4)];
+    const r = view(segs, {}, policy);
+    press(r.toJSON() as Json | Json[]);
+    const open = again(r, segs, {}, policy);
+    const stamps = byClass(open, "chip-stamp");
+    expect(stamps).toHaveLength(1);
+    expect((stamps[0]!.props as { "data-hint"?: string })["data-hint"]).toMatch(/ · ran 4s$/);
+    // No stamp on a chip whose row carried no clock.
+    const bare = view([text("Here goes."), tool("b", "Bash")], {}, createCardPolicy());
+    press(bare.toJSON() as Json | Json[]);
+    expect(byClass(bare.toJSON() as Json | Json[], "chip-stamp")).toHaveLength(0);
+  });
+
   test("a run with no clocks has no hover", () => {
     const json = view([text("Here goes."), tool("a", "Bash"), tool("b", "Read")]).toJSON() as Json | Json[];
     const props = byClass(json, "run-trigger")[0]!.props as WhenProps;

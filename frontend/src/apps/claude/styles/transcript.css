@@ -1553,6 +1553,7 @@
    edge and nothing else. Fifteen boxed rows read as fifteen separate things
    each asking to be considered; fifteen rail lines read as one transcript. */
 .chat-root .toolchip {
+  position: relative;
   padding: 2px 0 2px 12px;
   border-left: 1px solid var(--c-border);
   border-radius: 0;
@@ -1574,6 +1575,34 @@
   border-radius: 0 8px 8px 0;
   margin: 8px 0;
   padding: 4px 0 6px 12px;
+}
+/* WHEN THE CALL WAS MADE, in the lane beside the chip (ToolChip `chip-stamp`,
+   Akshil 2026-10-06). The message stamp's register — 11px, faint, tabular — in
+   the column the ✻ mark sits in, right-aligned to the chip's rail. On hover of
+   the reply only, as the message stamp is: a column of times down every run is
+   noise, the one a reader wants is beside the chip they are pointing at. */
+.chat-root .toolchip > .chip-stamp {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 2px;
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--c-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.chat-root .turn.assistant:hover .toolchip > .chip-stamp,
+.chat-root .toolchip:focus-within > .chip-stamp {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .toolchip > .chip-stamp {
+    transition: none;
+  }
 }
 .chat-root .toolchip .chip-body {
   padding-right: 10px;
