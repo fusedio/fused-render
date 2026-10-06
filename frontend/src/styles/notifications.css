@@ -359,11 +359,71 @@
    account for — the surface's own box is naturally the padded parent's
    content area, so FitAddon's parentElement read already reflects it. */
 .term-view {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 8px;
+}
+
+/* "Ask Claude" selection pill and "Fix with AI" failure pill, floated over the
+   terminal. Positioned against .term-view; above xterm's canvas layers. */
+.term-ai-pill,
+.term-ai-fix {
+  position: absolute;
+  right: 12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.term-ai-pill {
+  padding: 0 8px;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.term-ai-pill kbd {
+  font: inherit;
+  color: var(--fg-muted);
+}
+
+.term-ai-fix {
+  bottom: 8px;
+  overflow: hidden;
+}
+
+.term-ai-fix button {
+  height: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.term-ai-fix button:first-child {
+  padding: 0 4px 0 8px;
+}
+
+.term-ai-fix button:last-child {
+  padding: 0 8px 0 4px;
+  color: var(--fg-muted);
+}
+
+.term-ai-pill:hover,
+.term-ai-fix button:hover {
+  color: var(--accent);
 }
 
 .term-view-surface {

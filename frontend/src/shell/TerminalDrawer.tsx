@@ -70,6 +70,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
+import type { ShellFailure } from "@platform/lib/terminalAi";
 import TerminalTabStrip from "@shell/TerminalTabStrip";
 import {
   DEFAULT_LABEL,
@@ -77,6 +78,7 @@ import {
   MIN_HEIGHT,
   STORAGE_KEY,
   cachedTabs,
+  isClaudeId,
   parseState,
   programLabel,
   reconcileTabs,
@@ -98,7 +100,12 @@ import { getJson } from "@platform/lib/api";
 import { isMod } from "@platform/lib/platform";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
-import { askClaudeTerminalPrompt, reportFocusedTerminal } from "@platform/lib/terminalFocus";
+import {
+  askClaudeSelectionPrompt,
+  askClaudeTerminalPrompt,
+  fixTerminalFailurePrompt,
+  reportFocusedTerminal,
+} from "@platform/lib/terminalFocus";
 import { explainWithAi } from "@platform/lib/explain-with-ai";
 import {
   closeTerminalDock,
@@ -630,6 +637,22 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     void explainWithAi(askClaudeTerminalPrompt(tab), tab.cwd);
   }
 
+  /** "Ask Claude" on a selection inside the active terminal. */
+  function askSelection(id: string, text: string): void {
+    const tab = stateRef.current.tabs?.find((t) => t.id === id);
+    if (!tab) return;
+    reportFocusedTerminal(id, tab.label);
+    void explainWithAi(askClaudeSelectionPrompt(tab, text), tab.cwd);
+  }
+
+  /** "Fix with AI" on the last failed command of a (non-Claude) terminal. */
+  function fixFailure(id: string, failure: ShellFailure): void {
+    const tab = stateRef.current.tabs?.find((t) => t.id === id);
+    if (!tab) return;
+    reportFocusedTerminal(id, tab.label);
+    void explainWithAi(fixTerminalFailurePrompt(tab, failure), tab.cwd);
+  }
+
   /** A terminal is gone (its shell exited, or its tab was closed): drop the
    * tab, activate the neighbour, and if that was the last one clear the cache
    * and close the drawer so the next open mints a fresh shell. */
@@ -762,7 +785,16 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
       {tabs !== null && tabs.length > 0 && (
         <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} onAskClaude={askClaude} onStop={stopClaude} />
       )}
-      {activeId !== null && <TerminalView key={activeId} id={activeId} autoFocus={focusId === activeId} onExit={() => dropTab(activeId)} />}
+      {activeId !== null && (
+        <TerminalView
+          key={activeId}
+          id={activeId}
+          autoFocus={focusId === activeId}
+          onExit={() => dropTab(activeId)}
+          onAskSelection={(t) => askSelection(activeId, t)}
+          onFixFailure={isClaudeId(activeId) ? undefined : (f) => fixFailure(activeId, f)}
+        />
+      )}
       {createError !== null && (
         <div className="term-drawer-exit">
           {`Couldn't start a terminal: ${createError} — `}
