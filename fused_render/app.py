@@ -1236,7 +1236,12 @@ def reopen_windows_early(manager, port: int, *, snapshot_file: str,
     restored = []
     for path in targets:
         url = f"http://127.0.0.1:{port}" + path
-        win = manager.open(url, html=html)
+        try:
+            win = manager.open(url, html=html)
+        except Exception:
+            logger.warning("could not reopen relaunch window %s", url,
+                           exc_info=True)
+            continue
         if win is not None:
             restored.append((url, win))
     if targets:

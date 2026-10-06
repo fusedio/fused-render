@@ -185,6 +185,28 @@ def test_windows_reopen_as_placeholders_before_any_server(tmp_path, monkeypatch)
     assert all(w.loaded == [] for _, w in restored)
 
 
+def test_one_placeholder_failing_to_open_does_not_lose_the_others(
+        tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(rw.time, "time", lambda: 1001.0)
+    p = _snap(tmp_path, ["/a", "/b", "/c"])
+
+    class _FlakyManager(_FakeManager):
+        def open(self, url, html=None):
+            if url.endswith("/b"):
+                raise RuntimeError("boom")
+            return super().open(url, html=html)
+
+    m = _FlakyManager()
+    with caplog.at_level("WARNING"):
+        restored = app_mod.reopen_windows_early(
+            m, 7, snapshot_file=p, max_age_s=100, html="x")
+    assert [u for u, _ in restored] == [
+        "http://127.0.0.1:7/a", "http://127.0.0.1:7/c"]
+    assert all(w.url == u for u, w in restored)
+    assert any("http://127.0.0.1:7/b" in r.getMessage()
+               and r.levelname == "WARNING" for r in caplog.records)
+
+
 def test_restored_windows_navigate_to_their_snapshot_urls(tmp_path, monkeypatch):
     monkeypatch.setattr(rw.time, "time", lambda: 1001.0)
     p = _snap(tmp_path, ["/a", "/b"])
