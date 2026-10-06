@@ -490,7 +490,7 @@ def _no_tasks_watch_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_bots_threads(monkeypatch):
+def _no_bots_threads(monkeypatch, tmp_path_factory):
     """No test may start the bots' scheduler or the iMessage bridge.
 
     `bots.registry.start()` runs from the app's STARTUP event (`_startup_bots`)
@@ -498,9 +498,15 @@ def _no_bots_threads(monkeypatch):
     ~/Library/Messages/chat.db, which on a developer's Mac is a Full Disk
     Access prompt in the middle of a test run. Bots built by one test are
     forgotten before the next (the registry is process-wide). Tests about
-    routines call `tick_routines()` themselves."""
+    routines call `tick_routines()` themselves.
+
+    `FUSED_RENDER_APP_HOME` points at an empty tmp dir too: `_startup_bots`
+    also runs `fusedbot_import.import_once`, which otherwise finds the
+    developer's real FusedBot tree under ~/.fused-render-app and copies
+    hundreds of MB of Chrome profiles into the test home."""
     from fused_render.bots import registry as bots_registry
 
+    monkeypatch.setenv("FUSED_RENDER_APP_HOME", str(tmp_path_factory.mktemp("no-fusedbot")))
     monkeypatch.setattr(bots_registry, "start", lambda: None)
     bots_registry.reset_for_tests()
     yield
