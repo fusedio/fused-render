@@ -13,7 +13,8 @@ export function saveSeen(seen: Record<string, number>): void {
   try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch { /* storage blocked */ }
 }
 
-/** Events past "seen", system notes excluded; 0 for a bot never opened. Falls back to the raw seq gap when trimmed history no longer covers the range. */
+/** Events past "seen", system notes excluded; 0 for a bot never opened. A hand-off result (role done, docs §11) counts like
+ *  any done; the hand-off "Asked …" / "Sent to Super Bot" lines are system rows and do not. Falls back to the raw seq gap when trimmed history no longer covers the range. */
 export function unreadOf(seen: number | undefined, evs: BotEvent[], b: Pick<Bot, "seq">): number {
   if (seen == null) return 0;  // never opened: nothing to catch up on
   return evs.some((e) => e.seq > seen) ? evs.filter((e) => e.seq > seen && e.role !== "system").length : Math.max(0, b.seq - seen);

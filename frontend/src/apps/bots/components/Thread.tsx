@@ -12,9 +12,9 @@ import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
 import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
 import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
-import { chosenOption, firstNewIndex, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
+import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import {
-  act, cur, eventsOf, getState, markSeen, openDialog, setNewCount, setScrollToEnd, unviewed, useBots, viewedSet,
+  act, cur, eventsOf, getState, markSeen, openDialog, select, setNewCount, setScrollToEnd, unviewed, useBots, viewedSet,
 } from "../state/store";
 import { END_GAP, gapOf, evBox, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { SetupLines } from "./SetupLines";
@@ -56,6 +56,10 @@ interface RowProps {
   /** The apps root (appFromText needs it; "" until loaded). */
   appsRoot: string;
   onBeside: (a: AppRef) => void;
+  /** Hand-off card: the hand-off's live state from Super Bot's `handoffs` (the event's own stamp is as of writing). */
+  hstate?: string;
+  /** Hand-off card: the bot it went to still exists ("Open <Bot>'s chat" is live). */
+  targetLive?: boolean;
 }
 
 /** An action event's raw tool result as display text ("" when there is none). The wire sends a string; anything else is shown as JSON. */
@@ -93,8 +97,35 @@ function Action({ text, result, detail, thumbSrc, title }: { text: string; resul
   );
 }
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps): JSX.Element {
+/** Super Bot's hand-off line (docs §11): who it asked, where that stands, and (on the result) exactly the text the bot
+ *  sent back. The header already names the bot and the step, so the body drops the matching lead-in of the text. */
+function HandoffCard({ e, state, targetLive }: { e: BotEvent; state: string; targetLive: boolean }) {
+  const h = e.handoff!, who = h.target_name || "the bot";
+  const head = e.role === "system" ? `Asked ${who}`
+    : e.role === "question" ? `${who} needs you at the laptop`
+    : state === "error" ? `${who} failed` : state === "stopped" ? `${who} stopped` : `${who} finished`;
+  const lead = e.role === "system" ? /^Asked .+? to:\s*/ : e.role === "question" ? /^.+? needs you at the laptop:\s*/ : null;
+  const text = lead ? e.text.replace(lead, "") : e.text;
+  return (
+    <div className={`handoff-card ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
+      <div className="hd"><span className="ttl">{head}</span><span className={`pill ${state}`}>{state}</span></div>
+      {text ? <HtmlMsg className="msg md" title={fmtWhen(e.ts)} html={md(text)} /> : null}
+      <div className="ft">
+        <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
+          onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
+      </div>
+    </div>
+  );
+}
+
+/** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
+const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
+
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
+  if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
+  // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
+  if (isHandoff(e) && e.role === "system") return <div className="msg note" title={title}>{e.text}</div>;
   if (e.role === "action") {
     return <Action text={e.text} result={e.result || ""} detail={detailText(e.detail)} thumbSrc={e.thumb ? stepThumbUrl(botId, e.thumb) : ""} title={title} />;
   }
@@ -144,11 +175,13 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps
     );
   }
   const actable = ACTABLE.has(e.role);
-  const viaLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "botsend" ? "botsend" : k);
   // Bot text is markdown (bold, lists, code…); what the user typed stays verbatim.
-  // A channel chip (docs §10) on a user line that arrived by text. Bot lines get a <Texted> line from their delivery rows instead.
-  const viaChip = e.role === "user" && e.via?.kind && e.via.kind !== "web" && e.via.kind !== "routine"
-    ? `<span class="via" title="${esc(`Received over ${viaLabel(e.via.kind)} from ${e.via.addr || "?"}`)}">via ${esc(viaLabel(e.via.kind))}</span>`
+  // A channel chip (docs §10) on a user line that arrived by text, or that Super Bot handed off. Bot lines get a <Texted> line from their delivery rows instead.
+  const k = e.via?.kind;
+  const viaChip = e.role === "user" && k && k !== "web" && k !== "routine"
+    ? k === "handoff"
+      ? `<span class="via" title="Handed off by Super Bot">from ${esc(chanLabel(k))}</span>`
+      : `<span class="via" title="${esc(`Received over ${chanLabel(k)} from ${e.via!.addr || "?"}`)}">via ${esc(chanLabel(k))}</span>`
     : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
     + (e.role === "user" ? esc(e.text) : md(e.text)) + viaChip
@@ -170,8 +203,6 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps
     </>
   );
 }
-
-const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "botsend" ? "botsend" : k);
 
 /** D12: what else this message was sent as. One quiet line per channel under the bubble: the exact text that went out when it
  *  differs from the bubble (a summary, a numbered question, a cut), a bare "→ iMessage" when it is the same, "Not texted" on error. */
@@ -354,12 +385,17 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // D12: delivery rows join the bubble they refer to (`ref`); they render nothing of their own (isNoise).
     const texted = new Map<number, BotEvent[]>();
     for (const e of evs) if (e.role === "delivery" && e.ref != null) texted.set(e.ref, [...(texted.get(e.ref) || []), e]);
+    // Hand-off cards: the "Asked <Bot>" card follows its hand-off's state live; the waiting / result cards keep their own.
+    const hds = new Map((b.handoffs || []).map((h) => [h.id, h.state]));
+    const botIds = new Set(S.bots.map((x) => x.id));
     content = evs.map((e, i) => {
-      const card = e.role === "approval" || e.role === "question";
+      const ho = e.handoff && isHandoff(e) ? e.handoff : null;
+      const card = !ho && (e.role === "approval" || e.role === "question");
       return (
         <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
-          reaction={ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
-          chosen={e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside} />
+          reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
+          chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
+          hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined} />
       );
     });
   }

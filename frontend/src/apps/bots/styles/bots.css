@@ -399,6 +399,20 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .appmsg .frame { display: none; height: 60vh; min-height: 320px; border-top: 1px solid var(--line); background: var(--bg); }
 .bots-page .appmsg.open .frame { display: block; }
 .bots-page .appmsg .frame iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+/* Hand-off card (docs §11): Super Bot's line about a task it gave another bot. Same box as .appmsg; the body is the bot
+   markdown bubble with its own box stripped, the pill says where the hand-off stands. */
+.bots-page .handoff-card { flex: none; align-self: flex-start; width: min(42rem, 78%); background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; font-size: 13px; animation: bots-msg-in .18s cubic-bezier(.22,1,.36,1); }
+.bots-page .handoff-card .hd { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
+.bots-page .handoff-card .hd .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bots-page .handoff-card .pill { flex: none; font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--inset); color: var(--muted); white-space: nowrap; letter-spacing: .02em; }
+.bots-page .handoff-card .pill.running { color: var(--ok); }
+.bots-page .handoff-card .pill.waiting { color: var(--warn); }
+.bots-page .handoff-card .pill.error { color: var(--err); }
+.bots-page .handoff-card .msg { max-width: none; background: none; border-radius: 0; box-shadow: none; padding: 0 12px 10px; animation: none; }
+.bots-page .handoff-card .ft { display: flex; justify-content: flex-end; padding: 7px 12px; border-top: 1px solid var(--line); }
+.bots-page .handoff-card .ft button { font-size: 11.5px; padding: 4px 9px; }
+.bots-page .handoff-card.waiting { box-shadow: inset 3px 0 0 var(--warn); }
+.bots-page .handoff-card.error { box-shadow: inset 3px 0 0 var(--err); }
 /* Side app in the preview column: body.hasapp shows the Browser | App strip, body.sideapp swaps the browser view for the app frame. */
 .bots-page .sabar { display: none; align-items: center; gap: 4px; padding: 0 10px 8px 14px; border-bottom: 1px solid var(--line); }
 div.bots-page.hasapp .sabar { display: flex; }
@@ -608,14 +622,6 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .modal .field textarea { font: inherit; font-size: 12px; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; resize: vertical; min-height: 54px; }
 .bots-page .modal .field small { color: var(--muted); font-weight: 300; }
 .bots-page .modal .field small.stat { font-size: 11px; margin-top: 4px; line-height: 1.4; }  /* bridge status under the iMessage field */
-/* "Also text me when…" (docs §10): a fieldset styled as one field, its checkboxes as rows in the inset. */
-.bots-page #bmodal fieldset.field.forwards { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
-.bots-page #bmodal fieldset.field.forwards legend { padding: 0; margin-bottom: 5px; font-size: 11px; font-weight: 300; color: var(--muted); }
-.bots-page #bmodal fieldset.field.forwards .check { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--inset); color: var(--text); font-size: 12px; cursor: pointer; }
-.bots-page #bmodal fieldset.field.forwards .check:first-of-type { border-radius: 10px 10px 0 0; }
-.bots-page #bmodal fieldset.field.forwards .check:last-of-type { border-radius: 0 0 10px 10px; }
-.bots-page #bmodal fieldset.field.forwards .check + .check { border-top: 1px solid var(--bg); }
-.bots-page #bmodal fieldset.field.forwards .check input { margin: 0; accent-color: var(--accent); }
 .bots-page .modal .field input:not([type=checkbox]) { font: inherit; font-size: 12px; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; }
 .bots-page .modal h3 { margin: 0 0 12px; font-size: 16px; font-weight: 400; }
 .bots-page .modal p { margin: 0 0 14px; color: var(--muted); }

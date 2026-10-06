@@ -18,10 +18,6 @@ export const MODELS: [string, string][] = [
   ["local-4b", "Gemma 4B · local model"], ["local-9b", "Gemma 12B · local model"],
 ];
 export const EFFORTS: [string, string][] = [["low", "Low · quickest"], ["medium", "Medium"], ["high", "High · careful"], ["xhigh", "Extra high · slowest"]];
-/** iMessage "Also text me when…" (docs §10 D5): replies to a texted task always go back; these pick what else does. Mirrors channels/base.py FORWARDS. */
-export const FORWARDS: [string, string][] = [["results", "a task I started here finishes"], ["questions", "it has a question or needs an approval"],
-  ["errors", "something fails"], ["builds", "an app build is ready"], ["routines", "a routine finishes"]];
-export const FORWARDS_DEFAULT = ["results", "errors", "builds"];
 
 export interface BotDialogProps {
   /** The bot being edited; absent for "+ New bot". */
@@ -33,7 +29,8 @@ export interface BotDialogProps {
 
 export function BotDialog({ bot, pick, onClose }: BotDialogProps) {
   const editing = !!bot;
-  // Super Bot (docs §5): Claude models only, a Mac-access toggle instead of Builds, no iMessage, no local models.
+  // Super Bot (docs §5): Claude models only, a Mac-access toggle instead of Builds, no local models, and the only bot
+  // with an owner phone handle (docs §10: one voice on the phone; it hands work to the others, §11).
   const isSuper = bot ? bot.kind === "super" : pick?.kind === "super";
   const [fresh] = useState(() => (pick ? newBotInit(pick) : null));
   const [title] = useState(() => (bot ? `Settings · ${bot.name}` : fresh?.title || "New bot"));
@@ -41,10 +38,9 @@ export function BotDialog({ bot, pick, onClose }: BotDialogProps) {
   const [init] = useState(() => bot
     ? { name: bot.name, model: bot.model || "sonnet", effort: bot.effort || "low", instructions: bot.instructions || "", memory: bot.memory || "",
         approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", encrypt: !!bot.encrypt, imessage: bot.imessage || "", imessageTo: bot.imessage_to || "",
-        forwards: bot.channel_forwards?.imessage ?? [...FORWARDS_DEFAULT],
         superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [] }
     : { name: fresh?.name || `Bot ${getState().bots.length + 1}`, model: fresh?.model || "sonnet", effort: "low", instructions: fresh?.instructions || "", memory: "",
-        approval: "ask", buildAccess: "scoped", encrypt: false, imessage: "", imessageTo: "", forwards: [...FORWARDS_DEFAULT], superAccess: "ask", trustedApps: [] as string[] });
+        approval: "ask", buildAccess: "scoped", encrypt: false, imessage: "", imessageTo: "", superAccess: "ask", trustedApps: [] as string[] });
   const [name, setName] = useState(init.name);
   const [model, setModel] = useState(init.model);
   const [effort, setEffort] = useState(init.effort);
@@ -56,7 +52,6 @@ export function BotDialog({ bot, pick, onClose }: BotDialogProps) {
   const [encrypt, setEncrypt] = useState(init.encrypt);
   const [imessage, setImessage] = useState(init.imessage);
   const [imessageTo, setImessageTo] = useState(init.imessageTo);
-  const [forwards, setForwards] = useState<string[]>(init.forwards);
   const [profile, setProfile] = useState("");
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [trustedApps, setTrustedApps] = useState<string[]>(init.trustedApps);
@@ -67,7 +62,7 @@ export function BotDialog({ bot, pick, onClose }: BotDialogProps) {
   // The avatar subject: the face is hashed from the id (or, for a new bot, the name it opened with) until one is picked.
   const bm = useMemo(() => ({ id: bot?.id, name: init.name, face }), [bot?.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile,
-    face: faceOf(bm), imessage: imessage.trim(), imessageTo: imessageTo.trim(), forwards: FORWARDS.map(([k]) => k).filter((k) => forwards.includes(k)), preset: fresh?.preset || "",
+    face: faceOf(bm), imessage: imessage.trim(), imessageTo: imessageTo.trim(), preset: fresh?.preset || "",
     kind: isSuper ? "super" : "bot", superAccess, trustedApps });  // the face shown is the face kept
   const [initial] = useState(() => JSON.stringify(read()));
   const okDisabled = editing && JSON.stringify(read()) === initial;
@@ -153,7 +148,7 @@ export function BotDialog({ bot, pick, onClose }: BotDialogProps) {
             const d = e.currentTarget; if (!d.open) return;
             const body = d.parentElement; requestAnimationFrame(() => body?.scrollTo({ top: body.scrollHeight, behavior: "smooth" }));
           }}>
-            <summary>Advanced <small>{isSuper ? "· approvals, trusted apps, Mac access, browser profile, encryption" : "· approvals, trusted apps, browser profile, iMessage, encryption"}</small></summary>
+            <summary>Advanced <small>{isSuper ? "· Mac access, approvals, trusted apps, browser profile, iMessage, contacts, encryption" : "· approvals, trusted apps, builds, browser profile, contacts, encryption"}</small></summary>
             {isSuper ? (
               <label className="field" title="Super Bot runs Claude Code's own tools. Ask: a card in the chat before every file write, edit and shell command (reading never asks). Unattended: Claude Code's own judgement approves what it considers safe and asks about the rest. Once a task has read the web, every write and command asks either way.">Mac access <small>· files, shell and code on this Mac</small>
                 <select id="bmsuper" value={superAccess} onChange={(e) => setSuperAccess(e.target.value)}>
@@ -193,20 +188,12 @@ export function BotDialog({ bot, pick, onClose }: BotDialogProps) {
                 {profiles.map((p) => <option key={p.dir} value={p.dir}>{p.name}{p.email ? ` · ${p.email}` : ""}</option>)}
               </select>
             </label>
-            <label className="field" style={{ display: isSuper ? "none" : "" }} title="Texts from this number (or Apple ID email) to you on this Mac become tasks for this bot, and its answers and questions are texted back. Needs Messages signed in here and Full Disk Access for FusedRender; see imessage.py.">iMessage <small>· phone number or Apple ID that can text this bot</small>
+            {/* Super Bot is the one door from the phone (docs §10): only it has an owner handle; other bots get phone work through its hand-offs. */}
+            <label className="field" style={{ display: isSuper ? "" : "none" }} title="Texts from this number (or Apple ID email) to you on this Mac become tasks for Super Bot. It texts back only replies to those tasks, including what the bots it hands work to send back; nothing else is forwarded. Approvals stay on this Mac. Needs Messages signed in here and Full Disk Access for FusedRender; see imessage.py.">iMessage <small>· phone number or Apple ID that can text Super Bot</small>
               <input id="bmimsg" placeholder="+1 555 123 4567 · blank = off" autoComplete="off" value={imessage} onChange={(e) => setImessage(e.target.value)} />
               <small className="stat" id="bmimsgstat">{imessageStatus(init.imessage, imsgState)}</small>
             </label>
-            {!isSuper && imessage.trim() ? (
-              <fieldset className="field forwards" title="Replies to a task you texted always come back as texts. These pick what else gets texted (docs §10).">
-                <legend>Also text me when <small>· besides replies to texted tasks</small></legend>
-                {FORWARDS.map(([k, label]) => (
-                  <label key={k} className="check"><input type="checkbox" id={`bmfw-${k}`} checked={forwards.includes(k)}
-                    onChange={(e) => setForwards(e.target.checked ? [...forwards, k] : forwards.filter((x) => x !== k))} /> {label}</label>
-                ))}
-              </fieldset>
-            ) : null}
-            <label className="field" style={{ display: isSuper ? "none" : "" }} title="The only people the bot's `text` action can iMessage, one per line: a name and a phone number or Apple ID. The number above is always allowed. Every text goes through the approval gate unless Approvals is “Never ask”.">Contacts the bot may text <small>· name + number, one per line</small>
+            <label className="field" title={`The only people the bot's \`text\` action can iMessage, one per line: a name and a phone number or Apple ID.${isSuper ? " The number above is always allowed." : ""} Every text goes through the approval gate unless Approvals is “Never ask”.`}>Contacts the bot may text <small>· name + number, one per line</small>
               <textarea id="bmimsgto" rows={2} placeholder={"Ali +1 555 123 4567\nMom mom@icloud.com"} value={imessageTo} onChange={(e) => setImessageTo(e.target.value)} /></label>
             <label className="field check" title="While the browser is closed, the profile is one AES-256 file; the key lives in your macOS Keychain. Lose the Keychain item and saved logins are gone.">
               <input type="checkbox" id="bmencrypt" checked={encrypt} onChange={(e) => setEncrypt(e.target.checked)} /> Encrypt browser profile at rest <small>· key in macOS Keychain</small>

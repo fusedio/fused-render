@@ -241,8 +241,9 @@ export async function pollOnce(): Promise<void> {
           list = list.concat(b.events);
           cursors[b.id] = b.seq;
           if (!first) notifyEvents(b, b.events);
-          // Fresh system notes for the bot on screen surface as a toast; never on first load, never stale ones.
-          if (!first && b.id === S.sel) toast = b.events.filter((e) => e.role === "system" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
+          // Fresh system notes for the bot on screen surface as a toast; never on first load, never stale ones. Hand-off
+          // lines (docs §11) render in the thread instead, so they do not toast as well.
+          if (!first && b.id === S.sel) toast = b.events.filter((e) => e.role === "system" && e.source !== "handoff" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
         }
         if (!(b.id in cursors)) cursors[b.id] = b.seq;
         if (list.length > EVENT_CAP) list = list.slice(list.length - EVENT_CAP);
