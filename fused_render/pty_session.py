@@ -452,6 +452,9 @@ class PtySessionRegistry:
     def __init__(self):
         self._lock = threading.RLock()
         self._sessions: dict[str, PtySession] = {}
+        #: The tab the drawer reports as in front of the user (PUT
+        #: /api/terminal/focus). Advisory metadata for Claude, never a gate.
+        self.focused_id: Optional[str] = None
 
     def create(self, cwd: Optional[str] = None,
                rows: Optional[int] = None,

@@ -1429,6 +1429,16 @@ def _image_to_png(path: str) -> dict:
         return {"error": "could not convert: %s" % e}
 
 
+def _terminal_tools_supported() -> bool:
+    """Whether this run gets the terminal MCP tools (terminal_list / read /
+    send): POSIX only, because every /api/terminal route 501s on Windows, and
+    only with a server origin to reach. One predicate for the three places that
+    must agree — the origin stamped into mcp.json, the roster the server then
+    offers, and the pre-allowance in --allowed-tools — so a tool is never
+    allowed that cannot be called, or callable that cannot answer."""
+    return os.name != "nt" and bool(_origin())
+
+
 def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
@@ -1453,26 +1463,33 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     args = [server, _perm_dir(run_dir)]
     if pane:
         args.append(_state_dir(run_dir))
+    server_env = {
+        "FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT),
+        # UTF-8 stdio for the server, whatever the machine's locale is.
+        # The CLI's MCP client is Node: it writes raw UTF-8 JSON with
+        # non-ASCII unescaped, while Python decodes a pipe at the LOCALE
+        # encoding — the ANSI code page on Windows, where a curly quote
+        # in a `Write` payload used to kill the server before it parked
+        # the request (no card, dead permission bridge, a turn that
+        # simply stopped; see permission_server._utf8_stdio). It has to
+        # be named HERE to reach the child at all: the MCP client passes
+        # an allowlist of env vars plus exactly this dict, so an ambient
+        # PYTHONUTF8 would not survive the spawn.
+        "PYTHONUTF8": "1",
+    }
+    if _terminal_tools_supported():
+        # The switch for the terminal tools (permission_server.TERMINAL_*): the
+        # origin they call. Named here for the same reason as PYTHONUTF8 — it
+        # must be in THIS dict to reach the server — and absent otherwise,
+        # which is what keeps the tools out of the roster.
+        server_env["FUSED_RENDER_TERMINAL_ORIGIN"] = _origin()
     with _private_open(path) as fh:
         json.dump({"mcpServers": {PERMISSION_SERVER: {
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
             "args": args,
-            "env": {
-                "FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT),
-                # UTF-8 stdio for the server, whatever the machine's locale is.
-                # The CLI's MCP client is Node: it writes raw UTF-8 JSON with
-                # non-ASCII unescaped, while Python decodes a pipe at the LOCALE
-                # encoding — the ANSI code page on Windows, where a curly quote
-                # in a `Write` payload used to kill the server before it parked
-                # the request (no card, dead permission bridge, a turn that
-                # simply stopped; see permission_server._utf8_stdio). It has to
-                # be named HERE to reach the child at all: the MCP client passes
-                # an allowlist of env vars plus exactly this dict, so an ambient
-                # PYTHONUTF8 would not survive the spawn.
-                "PYTHONUTF8": "1",
-            },
+            "env": server_env,
             # Hard per-call ceiling for this server, and a permission card is a
             # tool call that lasts as long as the user takes to look at it. Set
             # above the server's own wait so an unanswered card returns OUR
@@ -2440,8 +2457,16 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            #     life of the SESSION, not the turn — --allowed-tools is fixed
            #     at spawn, so a later attachment from a NEW directory forces a
            #     respawn rather than silently arriving ungranted (_send).
+           #   terminal_list / terminal_read — the same kind of thing again: a
+           #     read of the user's own terminals by the agent they are talking
+           #     to. `terminal_send` is deliberately NOT here: it types into the
+           #     user's shell, so it keeps its permission card.
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
-                     else []) + [_read_rule(SHOTS)]
+                     else [])
+                    + ([f"mcp__{PERMISSION_SERVER}__{t}"
+                        for t in ("terminal_list", "terminal_read")]
+                       if _terminal_tools_supported() else [])
+                    + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
                     + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
     cmd += _plugin_argv(file)

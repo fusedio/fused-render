@@ -82,7 +82,29 @@ def api_terminal_list():
     # and `cwd` the tooltip's directory (live once the shell reports it);
     # `foreground`/`lastCommand`/`lastExit`/`lastActivity` are additive — see
     # PtySession.snapshot.
-    return {"sessions": [s.snapshot() for s in pty_session.REGISTRY.list()]}
+    reg = pty_session.REGISTRY
+    focused = reg.focused_id
+    return {"sessions": [{**s.snapshot(), "focused": s.id == focused}
+                         for s in reg.list()]}
+
+
+@router.put("/api/terminal/focus")
+def api_terminal_focus(body: dict = Body(default={}),
+                       x_fused: str | None = Header(default=None)):
+    """Remember which terminal tab the user has in front of them, so Claude's
+    `terminal_read()` with no id (and `terminal_list`'s `focused`) can answer
+    "which terminal do you mean". The drawer reports it on every tab change;
+    `{"id": null}` clears it (drawer closed / last tab gone)."""
+    if _windows():
+        return _error(_UNSUPPORTED, status=501)
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    sid = (body or {}).get("id")
+    if sid is not None and not isinstance(sid, str):
+        return _error("'id' must be a string or null", status=400)
+    pty_session.REGISTRY.focused_id = sid or None
+    return {"ok": True}
 
 
 @router.get("/api/terminal/{sid}/text")
