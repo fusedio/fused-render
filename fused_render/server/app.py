@@ -1038,14 +1038,20 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The bots' scheduler (routines + file inbox) and the iMessage bridge
     # thread. `@on_startup`, so a lean `fused-render open` starts neither — a
     # bot still answers a request there, it just runs no routine on its own.
-    # Off the event loop: `migrate_layout` is a directory walk.
+    # Off the event loop: `migrate_layout` is a directory walk and
+    # `fusedbot_import.import_once` copies a FusedBot install's bots in on the
+    # first start that finds one (stamped; see that module). Layout first, so
+    # the import lands in today's tree; both before `start()`, so the
+    # scheduler's first pass sees every bot.
     @on_startup
     async def _startup_bots():
+        from fused_render.bots import fusedbot_import as bots_import
         from fused_render.bots import paths as bots_paths
         from fused_render.bots import registry as bots_registry
 
         try:
             await asyncio.to_thread(bots_paths.migrate_layout)
+            await asyncio.to_thread(bots_import.import_once)
             bots_registry.start()
         except Exception:  # noqa: BLE001 - a bots failure must not block serving
             logger.exception("could not start the bots scheduler")
