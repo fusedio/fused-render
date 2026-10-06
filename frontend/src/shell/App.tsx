@@ -20,6 +20,7 @@ import { subscribeJobDismissed, type Job } from "@platform/lib/jobs";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   IS_EMBED,
+  IS_NATIVE_WINDOW,
   IS_PREVIEW,
   fsPathFromLocation,
   isPanelPath,
@@ -71,6 +72,7 @@ import SystemDock from "@shell/SystemDock";
 import { useMonitorFeature } from "@platform/lib/monitor-flag";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
+import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
 import TerminalDock from "@shell/TerminalDock";
 import TerminalDrawer from "@shell/TerminalDrawer";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
@@ -1252,6 +1254,9 @@ export default function App({ config }: { config: Config }) {
         )}
       </div>
       <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
+      {/* No status bar in an app's native window, so no RepoUpdatesDock: its
+          repo's auto-sync failures (and pull popup) are drawn here instead. */}
+      {IS_EMBED && IS_NATIVE_WINDOW && <NativeAppSyncNotices />}
       {/* The two self-update notifications (Download available / Restart
           ready), plus in-flight restart narration re-notifying the same card
           — SPEC-update-notifications.md's consolidation of what used to be 5

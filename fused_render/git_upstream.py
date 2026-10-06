@@ -2,18 +2,25 @@
 opened in, plus (below) the opt-in update/switch mutations the activity
 card's repo rows offer (SPEC §33 / §36).
 
-WHEN THIS RUNS. `note_app_opened` is called from GET /render's D301 block
-(server/routers/render.py) — the one existing definition of "this app is
-being opened", right beside `record_app_open`, inside the same
-`_preview != "1" and not _referred_by_preview(referer)` guard. It is
-deliberately NOT triggered from /api/fs/list: that is the hook
-`fused_render.index.freshness.note_folder_opened` uses, gated on the file
-index's own `indexing_enabled()` pref (server/routers/index.py), and it fires
-once per directory LISTING rather than once per app open. Borrowing that hook
-would put git notifications behind an unrelated switch and make the
-throttle — not the trigger — carry all the load of a page that lists a
-folder every second. A background fetch only ever needs to happen once per
-repo per app open, and GET /render already says that exactly once.
+WHEN THIS RUNS. `note_app_opened` has two callers, both "an app is being
+opened": GET /render's D301 block (server/routers/render.py), right beside
+`record_app_open`, inside the same `_preview != "1" and not
+_referred_by_preview(referer)` guard; and GET /api/apps/entry with the
+explicit `opened=1` the explorer's Listing sends when it opens a folder (the
+listing never renders the entry page, and its companion panes are `_noopen=1`,
+so without this a folder visit never pulled). The folder trigger does NOT
+record recency. Other /api/apps/entry callers (thumbnails, menus, probes)
+omit `opened` and trigger nothing. It is deliberately NOT triggered from
+/api/fs/list: that is the hook `fused_render.index.freshness.note_folder_opened`
+uses, gated on the file index's own `indexing_enabled()` pref
+(server/routers/index.py), and it fires once per directory LISTING rather
+than once per app open. Borrowing that hook would put git notifications
+behind an unrelated switch and make the throttle — not the trigger — carry
+all the load of a page that lists a folder every second.
+
+AN OPEN IS NEVER DROPPED. If the process-wide slot is busy the path is parked
+(`_pending`, deduped, bounded) and the next release of the slot runs it,
+chained one at a time; the per-root throttle still applies when it runs.
 
 WHY A NEW MODULE, MIRRORING RATHER THAN IMPORTING `templates/git/ops.py`.
 `ops.py` is reached only as `fused.runPython("./ops.py")` from inside the
@@ -506,6 +513,7 @@ def _mutation_slot():
     finally:
         if acquired:
             _check_slot.release()
+            _drain_pending()
 
 
 _BUSY_REFUSAL = (
@@ -983,6 +991,14 @@ _checked: dict = {}  # repo root -> last-checked epoch seconds
 # block each other").
 _check_slot = threading.Lock()
 
+# Opens that found the slot busy, parked until it frees (insertion-ordered,
+# deduped by path; bounded so a pathological caller cannot grow it). Without
+# this a folder open that landed mid-check was simply lost, and nothing
+# retried it. `_due` still dedupes by repo root when each is finally run.
+_PENDING_MAX = 32
+_pending_lock = threading.Lock()
+_pending: dict = {}  # path -> None, oldest first
+
 _state_lock = threading.Lock()
 _state: dict = {}  # repo root -> last known check_repo() result
 
@@ -996,7 +1012,48 @@ def _due(root, now):
         return True
 
 
-def _background_check(path):
+def _park(path):
+    with _pending_lock:
+        if path not in _pending and len(_pending) >= _PENDING_MAX:
+            return
+        _pending[path] = None
+
+
+def _drain_pending(runner=None):
+    """The slot was just released: run the oldest parked open, if any. One
+    at a time and chained — each finished check starts the next — so a burst
+    of busy-slot opens is a queue, never a thread per request. Cheap and safe
+    to call from anywhere that releases `_check_slot`."""
+    with _pending_lock:
+        if not _pending:
+            return
+    if not _check_slot.acquire(blocking=False):
+        return  # the holder's own release drains
+    with _pending_lock:
+        path = next(iter(_pending), None)
+        if path is not None:
+            del _pending[path]
+    if path is None:
+        _check_slot.release()
+        return
+    _dispatch(path, runner)
+
+
+def _dispatch(path, runner=None):
+    """Run `_background_check(path)` on `runner` (default: a daemon thread).
+    The slot must already be held; it is released here only if the runner
+    cannot start (interpreter shutting down)."""
+    run = runner or (lambda fn: threading.Thread(
+        target=fn, daemon=True, name="git-upstream-check").start())
+    try:
+        run(lambda: _background_check(path, runner))
+    except RuntimeError:
+        _check_slot.release()
+        return False
+    return True
+
+
+def _background_check(path, runner=None):
     """Everything a note_app_opened dispatch does, entirely off the request
     thread: resolve `path` to a repo root (a `git rev-parse` subprocess),
     decide whether that root is due, and run the check if so. Never raises:
@@ -1033,6 +1090,7 @@ def _background_check(path):
         logger.exception("git-upstream check failed for %s", path)
     finally:
         _check_slot.release()
+        _drain_pending(runner)
 
 
 def note_app_opened(path, *, _runner=None):
@@ -1058,6 +1116,9 @@ def note_app_opened(path, *, _runner=None):
     for it, so a test can run the check synchronously and inspect
     `known_repos()` immediately. Production callers never pass it.
 
+    If the slot is busy the open is parked and run when the slot frees (see
+    `_drain_pending`); the return is then False — not dispatched NOW.
+
     Returns whether a background attempt was DISPATCHED — for tests; real
     callers ignore it. Matches `index.note_folder_opened`'s own return
     convention exactly: that function also returns True as soon as its
@@ -1069,15 +1130,13 @@ def note_app_opened(path, *, _runner=None):
     knowable synchronously any more.
     """
     if not _check_slot.acquire(blocking=False):
+        # Busy: park the open rather than dropping it, then re-try once in
+        # case the holder released between the failed acquire and the park
+        # (its drain would have found the queue empty).
+        _park(path)
+        _drain_pending(_runner)
         return False
-    runner = _runner or (lambda fn: threading.Thread(
-        target=fn, daemon=True, name="git-upstream-check").start())
-    try:
-        runner(lambda: _background_check(path))
-    except RuntimeError:  # interpreter shutting down
-        _check_slot.release()
-        return False
-    return True
+    return _dispatch(path, _runner)
 
 
 def force_check(path, *, _runner=None):
@@ -1125,6 +1184,7 @@ def force_check(path, *, _runner=None):
         finally:
             _check_slot.release()
             done.set()
+            _drain_pending()
 
     runner = _runner or (lambda fn: threading.Thread(
         target=fn, daemon=True, name="git-upstream-doctor-check").start())

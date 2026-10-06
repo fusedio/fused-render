@@ -939,7 +939,9 @@ export default function Listing({
   useEffect(() => {
     let alive = true;
     setAppEntryPath(null);
-    getAppEntry(base).then(
+    // `opened`: a folder visit is an app open for git auto-sync (the listing
+    // never renders the entry page, so /render's trigger cannot fire).
+    getAppEntry(base, { opened: true }).then(
       (res) => alive && setAppEntryPath(res.entry),
       // An unreadable folder is "no entry page", never an error of its own: the
       // button simply does not appear.

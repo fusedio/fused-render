@@ -284,3 +284,41 @@ describe("syncFailureActions", () => {
     expect(syncFailureActions("dirty").map((a) => a.label)).toEqual(["Open git view", "Fix with Claude"]);
   });
 });
+
+// ---- the native app window's own-repo filter ----
+
+import { appPathInRepo, failuresForApp, pullsForApp } from "./repo-updates-lib";
+
+const fail = (root: string): SyncFailure => ({
+  id: root, root, name: "r", reason: "dirty", title: "t", action: "a",
+  command: "c", output: "o", push: false, at: 1,
+});
+const pull = (root: string) => ({ id: root, root, name: "r", count: 1, at: 1 });
+
+describe("appPathInRepo", () => {
+  it("matches the root itself and anything below it", () => {
+    expect(appPathInRepo("/Users/me/repo", "/Users/me/repo")).toBe(true);
+    expect(appPathInRepo("/Users/me/repo/apps/x/index.html", "/Users/me/repo")).toBe(true);
+  });
+  it("does not match a sibling that merely shares a prefix", () => {
+    expect(appPathInRepo("/Users/me/repo-two/x.html", "/Users/me/repo")).toBe(false);
+  });
+  it("tolerates a trailing slash on the root and a null app path", () => {
+    expect(appPathInRepo("/Users/me/repo/x.html", "/Users/me/repo/")).toBe(true);
+    expect(appPathInRepo(null, "/Users/me/repo")).toBe(false);
+  });
+});
+
+describe("failuresForApp / pullsForApp", () => {
+  it("keeps only the repo containing this window's app", () => {
+    const app = "/Users/me/a/apps/x/index.html";
+    expect(failuresForApp([fail("/Users/me/a"), fail("/Users/me/b")], app).map((f) => f.root))
+      .toEqual(["/Users/me/a"]);
+    expect(pullsForApp([pull("/Users/me/a"), pull("/Users/me/b")], app).map((p) => p.root))
+      .toEqual(["/Users/me/a"]);
+  });
+  it("shows nothing when the window has no app path", () => {
+    expect(failuresForApp([fail("/Users/me/a")], null)).toEqual([]);
+    expect(pullsForApp([pull("/Users/me/a")], null)).toEqual([]);
+  });
+});
