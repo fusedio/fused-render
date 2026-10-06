@@ -41,7 +41,7 @@ from queue import Empty
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 
-from fused_render import pty_session
+from fused_render import claude_cmd_log, pty_session
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -85,7 +85,26 @@ def api_terminal_list():
     reg = pty_session.REGISTRY
     focused = reg.focused_id
     return {"sessions": [{**s.snapshot(), "focused": s.id == focused}
-                         for s in reg.list()]}
+                         for s in reg.list()] + _claude_entries(focused)}
+
+
+def _claude_entries(focused) -> list:
+    """The read-only "claude" tabs: one per chat that has run a Bash-tool
+    command (D1325). Always `alive` — a log view never exits — with `running`
+    saying whether a command is executing right now."""
+    out = []
+    for e in claude_cmd_log.list_chats():
+        cmds = claude_cmd_log.commands(e["chat"])
+        last = cmds[-1] if cmds else None
+        sid = claude_cmd_log.session_id(e["chat"])
+        out.append({
+            "id": sid, "kind": "claude", "chat": e["chat"], "alive": True,
+            "exitCode": None, "shell": "claude", "cwd": None, "foreground": None,
+            "lastCommand": claude_cmd_log.readable_command(last.raw) if last else None,
+            "lastExit": last.exit_code if last else None,
+            "lastActivity": e["lastActivity"], "running": e["running"],
+            "focused": sid == focused})
+    return out
 
 
 @router.put("/api/terminal/focus")
@@ -113,10 +132,16 @@ def api_terminal_text(sid: str, lines: int = pty_session.DEFAULT_TEXT_LINES):
     metadata of the list entry. Unguarded like the list: a read."""
     if _windows():
         return _error(_UNSUPPORTED, status=501)
+    lines = max(1, min(lines, pty_session.MAX_TEXT_LINES))
+    chat = claude_cmd_log.chat_of(sid)
+    if chat is not None:
+        entry = next((e for e in _claude_entries(None) if e["chat"] == chat), None)
+        if entry is None:
+            return _error("no such terminal session", status=404)
+        return {**entry, "text": claude_cmd_log.render_text(chat, lines)}
     session = pty_session.REGISTRY.get(sid)
     if session is None:
         return _error("no such terminal session", status=404)
-    lines = max(1, min(lines, pty_session.MAX_TEXT_LINES))
     return {**session.snapshot(), "text": session.text(lines)}
 
 
@@ -156,6 +181,21 @@ def api_terminal_input(sid: str, body: dict = Body(default={}),
     return {"ok": True}
 
 
+@router.post("/api/terminal/{sid}/stop")
+def api_terminal_stop(sid: str, x_fused: str | None = Header(default=None)):
+    """Stop the commands a chat is running right now (the Claude tab's Stop
+    button). Kills the wrapper's process tree, not a pgid: see claude_cmd_log."""
+    if _windows():
+        return _error(_UNSUPPORTED, status=501)
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    chat = claude_cmd_log.chat_of(sid)
+    if chat is None or not claude_cmd_log.command_ids(chat):
+        return _error("no such terminal session", status=404)
+    return {"ok": True, "stopped": len(claude_cmd_log.stop(chat))}
+
+
 @router.delete("/api/terminal/{sid}")
 def api_terminal_delete(sid: str, x_fused: str | None = Header(default=None)):
     if _windows():
@@ -163,15 +203,52 @@ def api_terminal_delete(sid: str, x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    if claude_cmd_log.chat_of(sid) is not None:
+        return _error("the Claude tab is read-only; use stop", status=400)
     if not pty_session.REGISTRY.kill(sid):
         return _error("no such terminal session", status=404)
     return {"ok": True}
+
+
+async def _stream_claude(ws: WebSocket, chat: str) -> None:
+    """The read-only Claude tab: same frames as a pty stream (binary output,
+    text `{"exit"}`) but backed by the wrapper's log, polled. Replay is just the
+    first poll of a fresh reader; client input is read and dropped."""
+    await ws.accept()
+    if not claude_cmd_log.command_ids(chat):
+        await ws.send_text(json.dumps({"exit": None}))
+        await ws.close(code=1008)
+        return
+    reader = claude_cmd_log.Stream(chat)
+    await ws.send_bytes(await asyncio.to_thread(reader.poll))
+
+    async def pump():
+        while True:
+            await asyncio.sleep(0.2)
+            data = await asyncio.to_thread(reader.poll)
+            if data:
+                await ws.send_bytes(data)
+
+    pumper = asyncio.create_task(pump())
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pumper.cancel()
 
 
 @router.websocket("/api/terminal/{sid}/stream")
 async def api_terminal_stream(ws: WebSocket, sid: str):
     if _windows():
         await ws.close(code=1008)
+        return
+    chat = claude_cmd_log.chat_of(sid)
+    if chat is not None:
+        await _stream_claude(ws, chat)
         return
     session = pty_session.REGISTRY.get(sid)
     if session is None:
