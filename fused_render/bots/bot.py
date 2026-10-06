@@ -556,12 +556,17 @@ class Bot:
         Built from the on-disk transcript, so it survives restarts and lets a new
         task like "do it again" refer to what happened before."""
         keep = {"user": "USER", "question": "YOU ASKED", "approval": "YOU ASKED APPROVAL", "done": "YOU FINISHED", "system": None}
-        out = []
+        out = []  # (seq, line)
         for _, ev in _iter_events(self.events_path):
             role, text = ev.get("role"), (ev.get("text") or "").strip()
             if role not in keep or not text:
                 continue
             if role == "system":
+                if ev.get("ignored_seq") is not None:
+                    # A texted line that was held back (receive: busy on a chat task) is not something the user
+                    # asked this bot to do; drop it from the history so a later task cannot read it as an ask.
+                    out = [p for p in out if p[0] != ev["ignored_seq"]]
+                    continue
                 if not text.startswith("Task started: "):
                     continue
                 label, text = "TASK STARTED", text[len("Task started: "):]
@@ -580,8 +585,8 @@ class Bot:
             rx = (self.meta.get("reactions") or {}).get(str(ev.get("seq")))
             if rx:
                 text += f"  [user reacted {rx}]"
-            out.append(f"{label}: {text}")
-        return out[-limit:]
+            out.append((ev.get("seq"), f"{label}: {text}"))
+        return [line for _, line in out[-limit:]]
 
     # -- memory --------------------------------------------------------------
     # memory.md: durable notes the bot (or you) keep between tasks: site quirks,
@@ -1177,6 +1182,7 @@ class Bot:
             if not manual and not self._spacing_ok(r):
                 return
             busy = self.thread is not None and self.thread.is_alive()
+            prev_last = r.get("last")
             r["last"] = time.time()
             if busy:
                 r["last_result"] = "skipped: bot was busy"
@@ -1194,11 +1200,14 @@ class Bot:
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
                 r["last_result"] = "skipped: bot was busy"
+                # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
+                # and `next` was computed as if this slot had run.
+                r["last"] = prev_last
                 if r["kind"] == "once":
                     r["enabled"] = True
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
                 self.save()
             self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
-            self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: bot busy")
 
     def _spacing_ok(self, r):
         """Refuse to fire inside the routine's own interval, judged from disk.
@@ -1303,11 +1312,11 @@ class Bot:
         stamp = {} if chan.is_web(via) else {"via": via}
         if quoted:
             snippet = " ".join((quoted.get("text") or "").split())
-            self.emit("user", text, reply={"seq": quoted.get("seq"), "role": quoted.get("role"), "text": snippet[:280]}, **stamp)
+            uev = self.emit("user", text, reply={"seq": quoted.get("seq"), "role": quoted.get("role"), "text": snippet[:280]}, **stamp)
             who = "my own earlier message" if quoted.get("role") == "user" else "your earlier message"
             text = f"Replying to {who}:\n> {snippet[:1200]}\n\n{text}"
         else:
-            self.emit("user", text, **stamp)
+            uev = self.emit("user", text, **stamp)
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
             if not running and self.meta.get("control"):
@@ -1324,6 +1333,13 @@ class Bot:
             return
         with self.lock:
             if not running and not self.start_task(text, label=shown, via=via) and self.running():
+                if texted and is_super(self.meta) and chan.is_web(getattr(self, "task_via", None)):
+                    # The busy-on-chat hold above was checked before the user line; a chat task that started in
+                    # the gap must still not take a text as an instruction (docs §5 posture by origin). The user
+                    # line is already written: mark it ignored so past_conversation leaves it out.
+                    self.emit("system", "Texted while busy on a chat task; not applied.", via=None, ignored_seq=uev.get("seq"))
+                    self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                    return
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
                 # Marked as texted: approval and offer waits never take it as their verdict (channels.base.Texted).
