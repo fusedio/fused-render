@@ -63,11 +63,18 @@ t1=$!
 tee -a "$base.out" < "$fe" >&2 &
 t2=$!
 
+# A non-interactive sh starts an async job with SIGINT/SIGQUIT ignored (POSIX),
+# and a child cannot undo an inherited SIG_IGN, so KeyboardInterrupt, `kill
+# -INT` and test-runner cancellation would all be dead inside the command.
+# `set -m` around just the launch gives the job its own process group with the
+# default dispositions (no perl needed, stderr untouched).
+set -m
 "$sh_bin" -c "$cmd" <&3 >"$fo" 2>"$fe" &
 cpid=$!
-# A signal aimed at this wrapper must reach the command, which is no longer
-# the wrapper itself.
-trap 'kill -TERM "$cpid" 2>/dev/null' TERM INT HUP
+set +m
+# A signal aimed at this wrapper must reach the command (now its own process
+# group, led by $cpid), which is no longer the wrapper itself.
+trap 'kill -TERM -- -"$cpid" 2>/dev/null || kill -TERM "$cpid" 2>/dev/null' TERM INT HUP
 wait "$cpid"
 rc=$?
 while kill -0 "$cpid" 2>/dev/null; do

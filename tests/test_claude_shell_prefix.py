@@ -163,3 +163,29 @@ def test_sigterm_to_wrapper_reaches_command(tmp_path):
     assert p.returncode != 0
     (ident,) = entries(log)
     assert read(log, ident, "exit").strip() != b"0"
+
+
+SIGCHECK = ("python3 -c 'import signal,sys; sys.exit(0 if "
+            "signal.getsignal(signal.SIGINT) is not signal.SIG_IGN and "
+            "signal.getsignal(signal.SIGQUIT) is not signal.SIG_IGN else 3)'")
+
+
+@pytest.mark.parametrize("shell", ["/bin/sh", "/bin/bash", "/bin/zsh"])
+def test_logged_command_does_not_start_with_sigint_ignored(tmp_path, shell):
+    # A non-interactive sh starts `cmd &` with SIGINT/SIGQUIT ignored, and a
+    # child cannot undo an inherited SIG_IGN: KeyboardInterrupt would be dead.
+    if not os.access(shell, os.X_OK):
+        pytest.skip(shell + " missing")
+    r = run(bash_tool_string(SIGCHECK, str(tmp_path / "c-cwd")), tmp_path / "log",
+            extra_env={"CLAUDE_CODE_SHELL": shell})
+    assert r.returncode == 0, r.stderr
+    assert r.stderr == b""
+
+
+def test_exit_codes_and_stderr_are_exact(tmp_path):
+    for code in (0, 3, 42):
+        r = run(bash_tool_string(f"echo e >&2; exit {code}", str(tmp_path / "e-cwd")),
+                tmp_path / "log")
+        assert (r.stdout, r.stderr, r.returncode) == (b"", b"e\n", code)
+    r = run(bash_tool_string("true", str(tmp_path / "e-cwd")), tmp_path / "log")
+    assert (r.stdout, r.stderr, r.returncode) == (b"", b"", 0)
