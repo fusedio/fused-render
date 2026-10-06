@@ -1610,14 +1610,19 @@
     transition: none;
   }
 }
-/* THE ✻ MARK OWNS THE FIRST ROW. A reply that opens on a tool call puts its
-   first chip level with the mark, in the same lane column, and the stamp
-   painted straight over the glyph (cmux-ux-tester, 2026-10-06). It was hidden
-   for a day, which left a one-call reply with no time at all (Akshil's edge
-   case). It sits one row lower instead, just under the mark: only the hovered
-   chip's stamp is ever visible, so nothing is there to collide with. */
+/* THE ✻ MARK SHARES THE FIRST ROW. A reply that opens on a tool call puts its
+   first chip level with the mark, in the same lane column. Hiding that stamp
+   left a one-call reply with no time; dropping it a row down landed on the
+   second chip's row and read as the second chip's (Akshil, 2026-10-06). So it
+   stays in the column every other stamp uses and, while that chip is hovered,
+   sits OVER the mark on an opaque ground — the mark is the fold control for
+   the whole reply, and a pointer resting on a chip is not folding anything. */
 .chat-root .turn.assistant .body > .toolchip:first-child > .chip-stamp {
-  top: 25px;
+  z-index: 2;
+  padding: 0 4px;
+  margin-right: -4px;
+  border-radius: 4px;
+  background: var(--c-panel);
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-root .toolchip > .chip-stamp {
