@@ -148,6 +148,12 @@ RUNS = _runs_root()
 # 0700 enforcement, one pruner and one `Read(...)` rule rather than two of each.
 SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 
+# Per-chat logs of the Bash-tool commands a chat runs (D1325): a sibling of
+# `runs` for the same privacy reason, and keyed by CHAT (session) id rather than
+# run id because every turn of a chat is a new run dir but one conversation.
+# `fused_render/claude_cmd_log.py` repeats this path; a test pins them equal.
+CMD_LOGS = os.path.join(os.path.dirname(RUNS), "claude-cmds")
+
 # How long a crop is kept, and how many are kept at all. Both are cleanup, not
 # a quota: the page names the file it writes and the ONLY reader is the agent
 # reading a path out of one turn's message, so a crop stops mattering when its
@@ -2594,7 +2600,26 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
-def _spawn_env() -> dict:
+def _prefix_supported() -> bool:
+    return os.name != "nt"
+
+
+def _shell_prefix_path() -> str:
+    """Absolute path of the packaged CLAUDE_CODE_SHELL_PREFIX wrapper, made
+    executable if a packaging step dropped the bit. "" when unavailable."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "claude_shell_prefix.sh")
+    if not os.path.isfile(path):
+        return ""
+    if not os.access(path, os.X_OK):
+        try:
+            os.chmod(path, os.stat(path).st_mode | 0o755)
+        except OSError:
+            return ""
+    return path
+
+
+def _spawn_env(chat_id: str = "") -> dict:
     """`os.environ`, adjusted the same way for every `claude` spawn — the
     session host's own CLI Popen and (nothing else now, but kept as its own
     function so the two never drift again the way _start's inline copy could
@@ -2631,6 +2656,21 @@ def _spawn_env() -> dict:
     env = os.environ.copy()
     env.pop("FUSED_ENV", None)
     env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    # Mirror this chat's Bash-tool commands into a log the drawer's "Claude" tab
+    # reads (D1325). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
+    # statusline) through the prefix; the wrapper is transparent for all but
+    # Bash-tool commands. A prefix the user exported themselves is left alone.
+    if (chat_id and not _bad_id(chat_id) and _prefix_supported()
+            and not env.get("CLAUDE_CODE_SHELL_PREFIX")):
+        prefix = _shell_prefix_path()
+        if prefix:
+            log_dir = os.path.join(CMD_LOGS, chat_id)
+            try:
+                _private_dir(log_dir)
+            except OSError:
+                return env
+            env["CLAUDE_CODE_SHELL_PREFIX"] = prefix
+            env["FUSED_CLAUDE_CMD_LOG"] = log_dir
     return env
 
 

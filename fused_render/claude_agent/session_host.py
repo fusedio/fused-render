@@ -390,7 +390,8 @@ def main() -> None:
         # own leader, and `_cancel`'s killpg only ever needs the CLI's.
         cli = subprocess.Popen(
             _cli_popen_command(argv), stdin=subprocess.PIPE, stdout=out_fh,
-            stderr=err_fh, cwd=req["cwd"], env=agent._spawn_env(),
+            stderr=err_fh, cwd=req["cwd"], env=agent._spawn_env(
+                req["session_id"] or req.get("new_session_id", "")),
             **agent._DETACH)
     except Exception as exc:
         # No CLI process ever existed — write the failure where `_poll`'s
