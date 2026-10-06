@@ -25,6 +25,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import threading
 import time
 
 from fused_render.bots import imessage as im
@@ -44,10 +45,12 @@ class ImessageChannel(Channel):
     def __init__(self):
         self.state = {"running": False, "error": "", "last_in": None, "last_out": None, "handles": 0, "holder": "", "echoes": 0}
         self.lock_fh = None
-        self.db = None
-        self._own: set[str] = set()
+        self.db = None          # the poll thread's connection; never used from another thread
+        self._own: set[str] = set()   # this Mac's own Messages handles, refreshed by the poll thread (identity() only reads)
         self._own_label = ""
         self._own_ts = 0.0
+        # poll() runs on the router's poll thread, send() on its send thread: both touch the cursor file.
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------- lock/lifecycle
     def acquire(self) -> bool:
@@ -100,7 +103,8 @@ class ImessageChannel(Channel):
             self.state["error"] = f"another bridge is running ({self.state['holder'] or 'standalone'})"
             return []
         try:
-            out = self._tick()
+            with self._lock:
+                out = self._tick()
             self.state["running"] = True
             self.state["error"] = ""
             return out
@@ -125,6 +129,7 @@ class ImessageChannel(Channel):
         if cur.get("rowid") is None:  # first run: start from now, never replay history
             cur["rowid"] = self.db.execute("select coalesce(max(ROWID), 0) from message").fetchone()[0]
             im.save_cursor(cur)
+        self._refresh_own_handles()
         now = time.time()
         sent = {t: ts for t, ts in (cur.get("sent") or {}).items() if now - ts < ECHO_WINDOW_S}
         cur["sent"] = sent
@@ -151,30 +156,30 @@ class ImessageChannel(Channel):
 
     # ----------------------------------------------------------------------- send
     def send(self, addr: str, text: str, event: dict | None = None) -> None:
-        im.send_text(addr, text)
-        cur = im.load_cursor()
-        sent = cur.setdefault("sent", {})
         now = time.time()
-        for chunk in im.chunks(text):
-            sent[chunk] = now
-        im.save_cursor(cur)
+        with self._lock:  # record before sending: the echo can land in chat.db before osascript returns
+            cur = im.load_cursor()
+            sent = cur.setdefault("sent", {})
+            for chunk in im.chunks(text):
+                sent[chunk] = now
+            im.save_cursor(cur)
+        im.send_text(addr, text)
         self.state["last_out"] = now
 
     # ------------------------------------------------------------------- identity
-    def _own_handles(self) -> set[str]:
-        """Handles this Mac's Messages is signed in as (the `account` of rows it sent)."""
+    def _refresh_own_handles(self) -> None:
+        """Handles this Mac's Messages is signed in as (the `account` of rows it
+        sent). Poll thread only: it is the one that owns `self.db` (sqlite
+        connections are thread-bound); identity() just reads the cached set."""
         now = time.time()
-        if now - self._own_ts < IDENTITY_TTL_S:
-            return self._own
+        if self.db is None or now - self._own_ts < IDENTITY_TTL_S:
+            return
         self._own_ts = now
         try:
-            db = self.db or im.open_db()
-            rows = db.execute("select distinct account from message where is_from_me = 1 and account is not null "
-                              "and account != '' order by ROWID desc limit 50").fetchall()
-            if db is not self.db:
-                db.close()
-        except Exception:  # noqa: BLE001 — no FDA yet: identity stays unknown, the status line carries the error
-            return self._own
+            rows = self.db.execute("select distinct account from message where is_from_me = 1 and account is not null "
+                                   "and account != '' order by ROWID desc limit 50").fetchall()
+        except Exception:  # noqa: BLE001 — identity stays unknown; the status line carries the poll error
+            return
         own = set()
         for (acct,) in rows:
             a = str(acct or "")
@@ -185,10 +190,9 @@ class ImessageChannel(Channel):
                 own.add(h)
         self._own = own
         self._own_label = next(iter(sorted(own)), "")
-        return own
 
     def identity(self) -> dict:
-        own = self._own_handles()
+        own = self._own
         if not own:
             return {"mode": "own", "label": ""}  # unknown yet: the owner said "own, always"; detection only upgrades
         owners = set(self.owners())

@@ -5,7 +5,11 @@ import json
 import os
 import sqlite3
 
-from fused_render.bots import channels, imessage, registry, store
+import pytest
+
+pytest.importorskip("fcntl")  # the iMessage channel's lock is POSIX-only; the Windows runner skips this file
+
+from fused_render.bots import channels, imessage, registry, store  # noqa: E402
 from fused_render.bots.channels import base, router as rmod
 from fused_render.bots.channels.base import Caps, Channel, Inbound
 from fused_render.bots.channels.imessage import CAPS, ImessageChannel

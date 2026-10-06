@@ -186,8 +186,8 @@ def shutdown() -> None:
             r.stop()
         except Exception:  # noqa: BLE001
             pass
+    with _lock:
         _sched.update(thread=None, stop=None)
-        _imsg.update(bridge=None, stop=None)
     for b in loaded():
         try:
             b.shutdown()
