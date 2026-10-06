@@ -41,10 +41,7 @@ from fused_render.server import git_status
 # fresh dict there, and a by-value copy here would keep serving the orphaned
 # pre-reload cache.
 from fused_render.shell import fda as shell_fda
-from fused_render.server.fs_stat import (
-    _fs_stat,
-    _stat_or_none,
-)
+from fused_render.server.fs_stat import _fs_stat
 from fused_render.server.proxy import _harden_raw
 from fused_render.server import templates as _server_templates
 from fused_render.server.templates import (
@@ -319,19 +316,6 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     # the page is hosted, against the bundle's _asset route by the same key.
     if base and not os.path.isabs(path):
         path = os.path.normpath(os.path.join(os.path.dirname(base), path))
-    # No stat before a GET: the file response below stats once. HEAD is
-    # answered from st_size.
-    if request.method == "HEAD":
-        st = await asyncio.to_thread(_stat_or_none, path)
-        if st is None:
-            return _error(f"no such file: {path}", status=404)
-        media_type, _ = mimetypes.guess_type(path)
-        return Response(status_code=200, headers={
-            "content-length": str(st.st_size),
-            "content-type": media_type or "application/octet-stream",
-            "accept-ranges": "bytes",
-            "last-modified": email.utils.formatdate(st.st_mtime, usegmt=True),
-        })
     # Not _stat_or_none here: it folds EVERY OSError into "missing", and on a
     # TCC-denied path the stat itself raises EPERM — the file would 404 as
     # "no such file" when it exists and was refused, and the Full Disk Access
@@ -360,6 +344,15 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
         # previous behavior: FileResponse surfaces it as the send-time error.
         pass
     media_type, _ = mimetypes.guess_type(path)
+    if request.method == "HEAD":
+        # Same stat + permission handling as the GET above (so a TCC-denied
+        # file is the shell_fda 403 for HEAD too); answered from st_size.
+        return Response(status_code=200, headers={
+            "content-length": str(st.st_size),
+            "content-type": media_type or "application/octet-stream",
+            "accept-ranges": "bytes",
+            "last-modified": email.utils.formatdate(st.st_mtime, usegmt=True),
+        })
     return FileResponse(path, media_type=media_type or "application/octet-stream")
 
 @router.websocket("/api/fs/events")

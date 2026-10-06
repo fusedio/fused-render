@@ -61,3 +61,36 @@ def test_dot_slash_relative_resolved(tmp_path):
     resp = client.get("/api/fs/raw", params={"path": "./logo.svg", "base": str(page)})
     assert resp.status_code == 200
     assert resp.text == "<svg/>"
+
+
+def test_head_reports_size_and_a_missing_file_is_404(tmp_path):
+    f = _write(tmp_path, "a.txt", "hello")
+    client = _client(tmp_path)
+    ok = client.head("/api/fs/raw", params={"path": str(f)})
+    assert ok.status_code == 200
+    assert ok.headers["content-length"] == "5"
+    gone = client.head("/api/fs/raw", params={"path": str(tmp_path / "nope")})
+    assert gone.status_code == 404
+
+
+def test_head_on_a_tcc_denied_stat_is_the_fda_403_not_a_404(tmp_path, monkeypatch):
+    """HEAD shares the GET path's stat handling: EPERM is a refusal (and feeds
+    the Full Disk Access nudge), never folded into "missing"."""
+    from fused_render.server.routers import fs_read
+
+    f = _write(tmp_path, "a.txt", "hello")
+    seen = []
+    real_stat = fs_read.os.stat
+
+    def stat(p, *a, **k):
+        if str(p) == str(f):
+            raise PermissionError(1, "Operation not permitted")
+        return real_stat(p, *a, **k)
+
+    monkeypatch.setattr(fs_read.os, "stat", stat)
+    monkeypatch.setattr(fs_read.shell_fda, "refused",
+                        lambda path, e: seen.append(path) or
+                        fs_read._error("fda", status=403))
+    resp = _client(tmp_path).head("/api/fs/raw", params={"path": str(f)})
+    assert resp.status_code == 403
+    assert seen == [str(f)]

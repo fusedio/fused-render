@@ -2413,8 +2413,7 @@ def _ai_usage(raw) -> dict | None:
 # app keeps a build's lock scoped to only its own lifespan's loop.
 #
 # `app`, when given, is the app this session belongs to: the session is
-# stashed on `app.state.ai_session` (mirrors `open_pooled_client`'s
-# `app.state.pooled_client` in common.py) so that app's OWN shutdown hook —
+# stashed on `app.state.ai_session` so that app's OWN shutdown hook —
 # and its request handlers, via `request.app.state.ai_session` — reach this
 # exact session rather than whatever the module global happens to hold by
 # the time they run. Two app builds overlapping in one process each prewarm

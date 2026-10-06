@@ -82,7 +82,7 @@ def _fs_write(body: dict, x_fused: str | None):
 
     IN THE PAYLOAD, not through an out-parameter, and that is not a style
     choice: an extra argument at the CALL SITE breaks every existing
-    monkeypatch of this helper (`tests/test_stat_cache.py` replaces it with a
+    monkeypatch of this helper (a test that replaces it with a
     two-argument lambda), which a default value hides at definition time and
     does not fix at all. A caller that stubs this out simply returns no
     `created` key, and the route reads that as "nothing to report".
