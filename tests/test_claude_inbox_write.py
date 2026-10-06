@@ -205,6 +205,42 @@ def test_two_identical_follow_ups_with_one_echo_still_show_the_second(
     assert agent._poll("run")["inbox"] == []
 
 
+def _echo_many(run_dir, *texts):
+    """What the CLI writes back for lines queued while it was STREAMING: they
+    are dequeued together at the turn's end as ONE user row with one `text`
+    block per line (measured 2026-09-21, CLI 2.1.2xx)."""
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": t} for t in texts]}}) + "\n")
+
+
+def test_a_folded_echo_row_retires_every_entry_it_carries(agent, tmp_path):
+    """Akshil, 2026-10-04: a "ghost" of the reader's own message sat under
+    the reply that had already answered it, for the rest of the run.
+
+    Two lines typed while the model was streaming come back as ONE echo row
+    with two text blocks. Read as one joined string that row matched neither
+    entry, so both stayed "drained, waiting" forever. The blocks are the
+    messages: one echo row with N blocks is N echoes."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "also no backward compat")
+    agent._write_inbox_entry(str(run_dir), "just build it")
+    agent._write_inbox_entry(str(run_dir), "and then test")
+    names = sorted(n for n in os.listdir(run_dir / "inbox")
+                   if n.endswith(".json"))
+    for n in names:
+        _drain(run_dir, n)
+
+    _echo_many(run_dir, "also no backward compat", "just build it")
+    inbox = agent._poll("run")["inbox"]
+    assert [row["text"] for row in inbox] == ["and then test"]
+    assert [row["id"] for row in inbox] == [names[2]]
+
+    _echo(run_dir, "and then test")
+    assert agent._poll("run")["inbox"] == []
+
+
 def test_the_echo_window_is_read_once_while_the_transcript_is_unchanged(
         agent, tmp_path, monkeypatch):
     """🟡 review, 2026-09-12. `_poll` runs every 400 ms for the life of a

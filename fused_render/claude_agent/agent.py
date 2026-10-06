@@ -3777,8 +3777,32 @@ def _read_echo_texts(run_dir: str) -> tuple:
             continue
         if not isinstance(row, dict) or not _starts_new_turn(row):
             continue
-        texts.append(_inbox_text(row).strip())
+        # ONE ECHO ROW CAN BE SEVERAL MESSAGES (measured 2026-09-21, CLI
+        # 2.1.2xx): lines typed while the model is streaming are queued and
+        # dequeued together at the turn's end as ONE user row with N `text`
+        # blocks, one per send. `_write_inbox_entry` writes exactly one block
+        # per entry, so the blocks ARE the entries — appended one by one, the
+        # suffix/prefix walk in `_drained_unechoed` sees N echoes for N drains.
+        # Joined into one string (the old reading) the merged row matched
+        # nothing, every entry stayed "waiting" for the life of the run, and a
+        # ghost of the reader's own words sat under the reply that had already
+        # answered them (Akshil, 2026-10-04).
+        texts.extend(t for t in _inbox_blocks(row) if t)
     return texts, whole
+
+
+def _inbox_blocks(row) -> list:
+    """The `text` blocks of one user row, each stripped, in order — the
+    per-message view `_read_echo_texts` needs of a folded echo. `[]` for
+    anything that is not a user turn with words in it."""
+    if not isinstance(row, dict) or row.get("type") != "user":
+        return []
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    return [str(b.get("text") or "").strip() for b in content
+            if isinstance(b, dict) and b.get("type") == "text"]
 
 
 def _inbox_text(row) -> str:
