@@ -144,7 +144,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps
     );
   }
   const actable = ACTABLE.has(e.role);
-  const viaLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "botsend" ? "botsend" : k);
+  const viaLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "whatsapp" ? "WhatsApp" : k === "botsend" ? "botsend" : k);
   // Bot text is markdown (bold, lists, code…); what the user typed stays verbatim.
   // A channel chip (docs §10) on a user line that arrived by text. Bot lines get a <Texted> line from their delivery rows instead.
   const viaChip = e.role === "user" && e.via?.kind && e.via.kind !== "web" && e.via.kind !== "routine"
@@ -171,7 +171,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps
   );
 }
 
-const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "botsend" ? "botsend" : k);
+const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "whatsapp" ? "WhatsApp" : k === "botsend" ? "botsend" : k);
 
 /** D12: what else this message was sent as. One quiet line per channel under the bubble: the exact text that went out when it
  *  differs from the bubble (a summary, a numbered question, a cut), a bare "→ iMessage" when it is the same, "Not texted" on error. */

@@ -319,6 +319,12 @@ fused = [
 ]
 # Every feature extra. What `fused-render serve` (the desktop file explorer)
 # requires, and what every packaged build and `[dev]` include.
+# WhatsApp as a bot channel (bots/channels/whatsapp.py, POC): neonize wraps whatsmeow (Go,
+# shipped as a dylib in the wheel) and needs libmagic on the host (`brew install libmagic`).
+# Opt-in, never in [all] or a packaged build yet.
+whatsapp = [
+    "neonize",
+]
 all = [
     "fused-render[index,data,desktop,hf,cloud,fused]",
 ]
