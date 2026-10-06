@@ -173,8 +173,12 @@ def _take_routines_lock() -> bool:
     path = os.path.join(bpaths.data_root(), "routines.lock")
     try:
         fh = open(path, "a+")
+    except OSError:
+        return False
+    try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        fh.close()  # re-tried every pass while standing down: never leak the fd
         return False
     _ROUTINES_LOCK["fh"] = fh
     return True
