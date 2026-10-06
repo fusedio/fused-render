@@ -116,6 +116,7 @@ import type { ReactNode } from "react";
 import DownloadManager from "@platform/ui/DownloadManager";
 
 export default function StatusBar({
+  leading,
   terminalDock,
   system,
   models,
@@ -134,9 +135,14 @@ export default function StatusBar({
   models?: ReactNode;
   activity?: ReactNode;
   repoUpdates?: ReactNode;
+  /** The very first item, at the bar's left edge, ahead of the system dock:
+   *  Fused Bot's shell menu (`shell/BotShellMenu.tsx`) lives here, since that
+   *  flavor has no sidebar to carry it. Nothing in Render fills it. */
+  leading?: ReactNode;
 }) {
   return (
     <div className="status-bar">
+      {leading}
       {system && <div className="status-bar-start">{system}</div>}
       {terminalDock}
       {models}

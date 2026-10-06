@@ -1516,36 +1516,38 @@ a.bookmark-name::after {
   background: var(--accent);
 }
 
-/* Fused Bot's corner gear (shell/BotShellMenu.tsx) — the bot flavor mounts no
-   sidebar, so this sits where the sidebar's Preferences trigger would be and
-   opens the shell pages the Bots page has no row for. Fixed, over the page;
-   the Bots page measures its own <main>, so it costs no width. */
+/* Fused Bot's shell gear (shell/BotShellMenu.tsx), the status bar's
+   `leading` item: a full-height bar chip at the left edge, its menu opening
+   upward over the page. In flow, so it never covers the bar or the Bots list;
+   the open menu is the only thing that floats, at the context-menu layer. */
 .bot-shell-menu {
-  position: fixed;
-  left: 10px;
-  bottom: 10px;
-  z-index: 1000;
+  position: relative;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding-left: var(--status-bar-start-gutter);
 }
 .bot-shell-menu-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-alt);
+  width: 22px;
+  height: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: none;
   color: var(--fg-muted);
   cursor: pointer;
 }
 .bot-shell-menu-btn:hover,
 .bot-shell-menu-btn[aria-expanded="true"] {
   color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 .bot-shell-menu .bot-shell-menu-list {
   position: absolute;
-  left: 0;
-  bottom: 36px;
+  left: var(--status-bar-start-gutter);
+  bottom: calc(100% + 4px);
   min-width: 180px;
 }
 .bot-shell-menu-row {

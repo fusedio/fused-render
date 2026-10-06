@@ -3,9 +3,11 @@
 // Preferences — but the same shell also runs in a plain browser tab (native
 // windows off, or the window failing to construct and falling back to the
 // browser), where there is no menu bar at all. This corner button is the door
-// that exists in both: a small gear, bottom-left where the sidebar's
-// Preferences trigger used to sit, opening the three shell pages the Bots
-// page itself has no row for. Shell-only; apps may not import it.
+// that exists in both: a small gear at the status bar's left edge (its
+// `leading` slot), opening the three shell pages the Bots page itself has
+// no row for. In the bar, not floating: the bottom-left corner is live
+// chrome (bot-list actions, the bots context menu) and a fixed control
+// there covered it. Shell-only; apps may not import it.
 import { useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
@@ -22,19 +24,25 @@ export default function BotShellMenu() {
 
   // Outside click / Escape closes. Listening only while open keeps the
   // document free of a permanent handler on a page that never uses it.
+  // Escape is taken in the capture phase and stopped: while this menu is
+  // open it is the topmost dismissable, and the Bots page's panels and
+  // dialogs each close on the same key.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      e.preventDefault();
+      setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
 
