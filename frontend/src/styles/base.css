@@ -154,9 +154,13 @@ iframe {
 .hint-panel.is-on {
   display: block;
 }
-/* The caption's words, lighter than its numbers (hints.ts `renderWords`). */
+/* The caption's words, lighter than its numbers (hints.ts `renderWords`):
+   `1h ago · ran 2m 47s` is two facts and some grammar, and the facts are the
+   digits. One weight step (500 → 400) did not read on screen (Akshil,
+   2026-10-06), so the words go to 300 and a touch transparent. */
 .hint-panel .hint-word {
-  font-weight: 400;
+  font-weight: 300;
+  opacity: 0.78;
 }
 
 /* The columnised form (hints.ts `renderHint`). `auto 1fr` puts every token in
