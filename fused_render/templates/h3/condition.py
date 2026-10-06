@@ -6,7 +6,7 @@ unconditionally. The detection mirrors `h3_reader.py` — a name match against
 the known H3 column names, else a uint64/hex-string bit-pattern sniff — so the
 gate agrees with what the reader would pick once opened.
 
-Remote mounts make I/O the whole cost here, so the gate is footer-first:
+I/O is the whole cost here, so the gate is footer-first:
 
 1. `parquet_metadata()` reads only the footer — column names, physical types,
    and per-row-group min/max stats. A column whose every row group has stats
@@ -104,7 +104,7 @@ def main(path: str) -> bool:
             # mismatch is likely real data the reader would render, so pay
             # for a sample; unknown names stay footer-only (that's every
             # column of every plain parquet — the case this gate must keep
-            # cheap on remote mounts).
+            # cheap).
             if name.lower() in H3_NAMES:
                 unresolved.append(name)
         else:

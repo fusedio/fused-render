@@ -302,7 +302,7 @@ HARD_CAP = 256_000_000  # refuse (error, don't OOM) above this
 # Multiscale stores (zarr-conventions "multiscales"): the root attrs list every
 # pyramid level with its shape, so pick the finest level that fits the budget
 # up front and walk ONLY that subgroup — walking all levels costs a metadata
-# round-trip per node (slow on remote mounts) and auto-pick-by-size would grab
+# read per node and auto-pick-by-size would grab
 # the native-resolution level (trillions of cells).
 asset = None
 ms = dict(g.attrs).get("multiscales")
@@ -376,8 +376,7 @@ def cvals(d):
     if ca is not None and np.issubdtype(ca.dtype, np.number):
         return np.asarray(ca[:], dtype="float64").ravel()
     return None
-# data + coords live in separate files: overlap the reads (remote mounts pay
-# a network round-trip per file, so serial reads add up)
+# data + coords live in separate files: overlap the reads
 from concurrent.futures import ThreadPoolExecutor
 with ThreadPoolExecutor(3) as _ex:
     _fd = _ex.submit(lambda: np.asarray(a[tuple(sl)], dtype="float64"))
@@ -406,12 +405,6 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         if not py:
             raise Z.Unsupported(f"needs a system Python with {module} (set GEO_PYTHON)")
         env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
-        # NetCDF4/HDF5 opens request a POSIX file lock. Mounted buckets are
-        # served over NFS (see shell/mounts.py), which grants no locks, so HDF5
-        # aborts with "errno = 77, No locks available" (ENOLCK). The mounts are
-        # read-only, so disabling locking is safe. setdefault leaves an explicit
-        # host override intact.
-        env.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
         r = subprocess.run([py, "-c", code], input=json.dumps(params),
                            capture_output=True, text=True, timeout=180, env=env,
                            encoding="utf-8", errors="replace")
@@ -794,16 +787,9 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                "stats": s["stats"], "stretch": [s["stretch"]],
                "shape": [rows, cols],
                "lonlat_bounds": (g["bounds"] if g else None)}
-        # file_size: getsize() a regular file (a NetCDF, single stat — safe),
-        # but NEVER walk a directory store. INVARIANT: a zarr store can hold
-        # millions of chunk files and a single os.walk/os.scandir over a remote
-        # rclone NFS mount lists the whole S3 prefix — that trips the macOS NFS
-        # deadman and DROPS THE MOUNT, wedging the daemon. The old capped walk
-        # did NOT help: os.walk builds a directory's whole file list at once, so
-        # the fatal enumeration happens before any per-file cap is consulted.
-        # The daemon endpoints receive no `src`, so it cannot ask /api/fs/stat
-        # whether the path is remote (see GAP note) — hence size is simply
-        # omitted for directory stores. It is cosmetic; correctness > a number.
+        # file_size: a regular file only — never walk a directory store (a zarr
+        # store can hold millions of chunk files). It is cosmetic, so it is
+        # simply omitted for directory stores.
         try:
             out["file_size"] = os.path.getsize(path) if os.path.isfile(path) else None
         except OSError:

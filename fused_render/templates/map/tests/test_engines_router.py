@@ -26,12 +26,6 @@ PROXY = f"/api/engines/{ENGINE}/proxy"
 @pytest.fixture
 def client(tmp_path, monkeypatch, engine_host):
     from fused_render.server.app import create_app
-    from fused_render.shell import mounts
-
-    # create_app's body starts mount threads that reach for a real rclone;
-    # neutralized exactly as the root tests/conftest.py does.
-    monkeypatch.setattr(mounts, "startup", lambda: None)
-    monkeypatch.setattr(mounts, "start_health_monitor", lambda: None)
     app = create_app(str(tmp_path))
     # No context manager: the startup events (schedule loop, AI reaper, index
     # scan) must not run; child teardown is the engine_host fixture's.

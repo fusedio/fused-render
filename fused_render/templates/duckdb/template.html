@@ -165,7 +165,7 @@
   }
   .save-count[hidden] { display: none; }
   /* Indeterminate load bar between the filter bar and the grid. A sort/filter
-     change on a remote file keeps the old grid up (no "Loading…" wipe) and then
+     change on a parquet file keeps the old grid up (no "Loading…" wipe) and then
      awaits a multi-second row-positions scan before anything repaints — so
      without this the UI looks frozen. The bar turns on the instant load()
      starts and off as soon as rows or skeletons paint. Always 2px tall so
@@ -266,7 +266,7 @@
   td.is-null { color: var(--fg-dim); }
   td.is-null::before { content: "(NULL)"; font-style: italic; }
   td.is-null:focus::before { content: ""; }
-  /* Column still in flight (remote per-column parallel load): shimmer bar. */
+  /* Column still in flight (per-column parallel load): shimmer bar. */
   td.skel { color: transparent; pointer-events: none; }
   td.load-err { color: var(--error); opacity: 0.75; }
   td.skel::before {
@@ -353,7 +353,7 @@
 
     // Indeterminate load indicator. On from the moment a load starts until the
     // grid next paints rows or skeletons — this is the only signal during the
-    // serial row-positions scan a remote sort/filter runs before its first
+    // serial row-positions scan a sorted/filtered load runs before its first
     // repaint (renderAll turns it off; see load()).
     const setLoading = (on) => loadbar.classList.toggle("active", !!on);
 
@@ -619,7 +619,7 @@
             `</div></th>`;
         }).join("")}${actHead}</tr>`;
 
-        // Remote per-column load, no rows landed yet: a placeholder grid of
+        // Per-column load, no rows landed yet: a placeholder grid of
         // all-skeleton rows so the table shape paints before any data.
         // Replaced wholesale by the first column's renderAll (applyColumn).
         const placeholderRows = state.pending && state.pending.size && !state.rows.length
@@ -635,7 +635,7 @@
             ? `<td class="rowact"><button class="del-btn" data-id="${escapeHtml(id)}">${deleted ? "↺" : "✕"}</button></td>`
             : "";
           const cells = cols.map((c) => {
-            // Column data still in flight (remote per-column parallel load):
+            // Column data still in flight (per-column parallel load):
             // a shimmer skeleton, filled in place by fillColumn when it lands.
             if (state.pending && state.pending.has(c)) {
               return `<td class="skel" data-col="${escapeHtml(c)}"></td>`;
@@ -780,12 +780,12 @@
     // ---- load / save ----
 
     let loadSeq = 0;
-    // Last schema fetched for the remote per-column path, keyed by file+table.
+    // Last schema fetched for the per-column path, keyed by file+table.
     // Lets a re-load (filter/sort/page change) skip the serial schema await.
     let schemaCache = null;
     async function load() {
       const seq = ++loadSeq;
-      // Signal immediately — before any await — so a remote sort/filter shows
+      // Signal immediately — before any await — so a sort/filter shows
       // motion during its positions scan instead of a frozen grid.
       setLoading(true);
       const file = fused.params.get("_file");
@@ -812,14 +812,6 @@
         file, table, offset: String(offset), limit: String(LIMIT),
         sort: currentSort(), filters: currentFilters(),
       };
-      // Remote-backed file (the shell sets _remote from stat on the iframe
-      // URL — reserved "_" params don't flow through fused.params, so read it
-      // off this frame's own URL like the runtime reads _file): hand the
-      // reader the app's ranged-read URL, so parquet is scanned over HTTP
-      // instead of hammering the mounted filesystem with random reads.
-      if (new URLSearchParams(location.search).get("_remote") === "1") {
-        args.source_url = location.origin + "/api/fs/raw?path=" + encodeURIComponent(file);
-      }
       // The filtered COUNT scans far more of the file than the 100-row page, so
       // fetch it concurrently and fill the pager total in when it lands — the
       // page renders without waiting for it (the pager shows "…" until then).
@@ -837,17 +829,13 @@
         })
         .catch(() => {}); // a failed count just leaves the total "…"; the page still works
       try {
-        // Parquet, local or mounted: fetch the schema alone (footer-only,
-        // fast), then load the columns through parallel size-batched page
-        // calls. The first one to land renders the rows with shimmer
-        // skeletons in the still-loading columns; each later arrival fills
-        // its cells in place. The batching exists for remote files (the
-        // page's cost is per-column bytes over a slow link), but local
-        // parquet shares the branch for parity: same skeletons, same
-        // per-column ⚠ on failure, same schema-cached flicker-free reloads —
-        // and on a local file the columns usually pack into one batch, so it
-        // degrades to the single page call it replaced. CSV/JSON (which
-        // can't scan column-selectively anyway) keep the single call.
+        // Parquet: fetch the schema alone (footer-only, fast), then load the
+        // columns through parallel size-batched page calls. The first one to
+        // land renders the rows with shimmer skeletons in the still-loading
+        // columns; each later arrival fills its cells in place. The columns
+        // usually pack into one batch on a local file, so it degrades to a
+        // single page call. CSV/JSON (which can't scan column-selectively
+        // anyway) keep the single call.
         if (/\.parquet$/i.test(file)) {
           // Awaiting the schema is the one serial step, and it only carries
           // new information the first time: on a re-load of the same file
@@ -949,7 +937,7 @@
       }
     }
 
-    // Pack the columns of the parallel remote-parquet load into batches: one
+    // Pack the columns of the parallel parquet load into batches: one
     // query per batch, each batch capped at BUDGET compressed bytes so all its
     // columns land together — cheap columns share a call (one filter scan, one
     // dispatch) instead of each paying query overhead, while a column bigger
@@ -969,7 +957,7 @@
       return batches.map((b) => b.cols);
     }
 
-    // One batch of the parallel remote-parquet load arrived (d) or failed
+    // One batch of the parallel parquet load arrived (d) or failed
     // (null). Sorted/filtered loads pre-seed the ids from the positions
     // phase, so every batch just fills cells in by id. Otherwise (unsorted
     // pages, or the positions call failed) the first successful batch defines

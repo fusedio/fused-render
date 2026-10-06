@@ -152,33 +152,14 @@ def _why(exc, path) -> str:
 def file_writable(file: str) -> bool:
     """True iff `apply_revert` could actually replace `file`.
 
-    A three-part gate, and for the
-    same reasons:
+    A two-part gate:
 
-      * a read-only remote mount is asked about FIRST, because `os.access(W_OK)`
-        LIES there — with CacheMode=full the write lands in the local VFS cache
-        and only 403s at the async upload (the sidecar-write incident), so
-        os.access would wave a doomed write through. Only the shell's persisted
-        `read_only` flag knows, and it arrives through `appenv`'s env contract
-        (`FUSED_RENDER_RO_MOUNTS`) rather than a `fused_render` import, which a
-        template child can never do.
       * an EXISTING file needs W_OK on itself, not merely on its directory: the
         `os.replace` below goes through the directory and would otherwise
         silently blow past a `chmod -w` file.
       * the DIRECTORY needs W_OK either way, because mkstemp and the replace
         both land there. (A half a plain file write does not need and a
         replace does.)
-
-    The two ways the mount probe can be unavailable are handled DIFFERENTLY on
-    purpose, and the difference is the whole point of the first bullet. A MISSING
-    `appenv` — a copy of this folder taken without its `shared/` sibling —
-    degrades to the pure os.access rule, because there is no flag to consult and
-    refusing every local file would break the feature outright. But a probe that
-    RAISES fails CLOSED: one blanket `except Exception` around the call re-opens
-    exactly the incident the probe exists for, letting a malformed
-    `FUSED_RENDER_RO_MOUNTS` (or any OSError normalizing a path) fall through to
-    the lie, report `ok: True`, and surface the 403 later at an async upload
-    where this UI will never see it.
     """
     return writable_reason(file) == ""
 
@@ -189,10 +170,9 @@ def writable_reason(file: str) -> str:
 
     The reason has to travel with the verdict. The view disables its revert
     controls on the bool, and "it cannot be reverted" with no cause is a dead end
-    for the three genuinely different situations here: a read-only mount (nothing
-    local to fix — the remote rejects writes), a `chmod -w` file (fixable), and an
+    for the genuinely different situations here: a `chmod -w` file (fixable) and an
     unwritable directory (fixable, and a different thing to fix). This module
-    already distinguishes all three to reach its answer; throwing that away and
+    already distinguishes them to reach its answer; throwing that away and
     letting the UI guess was the actual defect.
     """
     file = os.path.abspath(file)
@@ -211,20 +191,6 @@ def writable_reason(file: str) -> str:
         return ("it is a symlink — os.replace would replace the LINK rather than "
                 "write through it, and the checkpoint chain belongs to the path "
                 "the view opened, not to the link's target")
-    try:
-        from appenv import mount_read_only
-    except ImportError:
-        mount_read_only = None
-    if mount_read_only is not None:
-        try:
-            if mount_read_only(file):
-                return ("this file is on a read-only mount, so the remote would "
-                        "reject the write (os.access cannot see that)")
-        except Exception as exc:
-            # Unanswerable => not writable; see the docstring.
-            return ("the read-only-mount check failed (%s: %s), so writing here "
-                    "cannot be shown to be safe"
-                    % (type(exc).__name__, exc))
     parent = os.path.dirname(file) or "."
     if not os.access(parent, os.W_OK):
         return "its directory (%s) is not writable" % parent
@@ -860,8 +826,8 @@ def timeline(file, enrich: bool = False, deltas: bool = True) -> dict:
         "available": available,
         "writable": why_not == "",
         # Travels WITH the verdict: "it cannot be reverted" with no cause is a
-        # dead end, and a read-only mount, a chmod'd file and an unwritable
-        # directory are three different things to do about it.
+        # dead end, and a chmod'd file and an unwritable
+        # directory are different things to do about it.
         "writable_reason": why_not,
         "current": cur,
         "versions": versions,
@@ -1029,8 +995,7 @@ def apply_revert(file, entry_id) -> dict:
         so following the link would revert a path whose own timeline is a
         different chain, and silently editing a file the user did not name is
         worse than declining to.
-      * an unwritable target (`file_writable`, which includes the read-only
-        mount that `os.access` lies about).
+      * an unwritable target (`file_writable`).
 
     Like `revert_plan`, this takes no `enrich` parameter — the selector must mean
     the same thing to the plan and to the write.

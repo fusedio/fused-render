@@ -61,8 +61,7 @@ def _git_bin():
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
 # the built-in executor __file__ is already set, so this is a no-op. (The
-# markdown/graph.py and git/log.py pattern — without it the `../shared` hop in
-# _is_mount_backed raises NameError the first time a clone is attempted.)
+# markdown/graph.py and git/log.py pattern.)
 if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "reader.py")
 
@@ -445,25 +444,6 @@ def _free_dest(file):
     return candidate
 
 
-def _is_mount_backed(path):
-    """Whether `path` sits under the app's mounts dir, via shared/appenv — the
-    one home for the mount rule, the same bridge git/condition.py uses (a
-    template must not import fused_render, SPEC PY-15).
-
-    Fails CLOSED: if appenv cannot be imported we cannot tell, and the safe
-    answer for a write target is to refuse rather than to write."""
-    shared = os.path.join(os.path.dirname(_HERE), "shared")
-    if shared not in sys.path:
-        sys.path.insert(0, shared)
-    try:
-        from appenv import is_mount_backed
-    except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
-        raise _Refused("mount-unsupported",
-                       "Can't tell whether that folder is on a mount, so the "
-                       "clone was not attempted.") from exc
-    return is_mount_backed(path)
-
-
 def _within(root, target):
     """True when `target` is `root` or sits inside it, compared canonically so
     a symlink or a /var -> /private/var alias can't slip past."""
@@ -485,15 +465,6 @@ def _check_dest(dest, scratch):
     dest = os.path.normpath(dest)
     if not os.path.isabs(dest):
         raise _Refused("bad-dest", "The destination must be an absolute path.")
-
-    # Before any filesystem probe of the destination, like _fs_compress's mount
-    # branch: a clone into the rclone VFS means writing a whole working tree
-    # and object store through the cache, which is exactly the pattern that
-    # wedges a mount.
-    if _is_mount_backed(dest):
-        raise _Refused("mount-unsupported",
-                       "That folder is on a mounted location; cloning there "
-                       "isn't supported.")
 
     # Nothing may land in a throwaway scratch tree — they are rmtree'd the
     # moment their call returns, so a clone placed inside one would be deleted

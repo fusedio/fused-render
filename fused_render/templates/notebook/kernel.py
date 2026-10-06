@@ -131,71 +131,23 @@ def _wait_alive(version, timeout):
     return None
 
 
-def _server_url(src, endpoint, path):
-    import urllib.parse
-    u = urllib.parse.urlsplit(src)
-    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + urllib.parse.quote(path)
-
-
-def _remote_meta(src, path):
-    import urllib.request
-    if not src:
-        return None
-    with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
-                                timeout=10) as r:
-        return json.load(r)
-
-
-def _list_remote(src, path, cap=5000):
-    import urllib.parse
-    import urllib.request
-    entries, cursor = [], ""
-    while True:
-        url = _server_url(src, "/api/fs/list", path)
-        if cursor:
-            url += "&cursor=" + urllib.parse.quote(cursor)
-        with urllib.request.urlopen(url, timeout=30) as r:
-            payload = json.load(r)
-        entries.extend(payload.get("entries") or [])
-        cursor = payload.get("cursor") or ""
-        if len(entries) >= cap or not payload.get("truncated") or not cursor:
-            break
-    return entries
-
-
-def _listdir(path, src):
-    """Folder-picker listing for the new-notebook / save-a-copy modal. A
-    mount-backed dir lists via the server's /api/fs/list, never a kernel scan
-    that could wedge the mount (mirrors docs.py's listdir)."""
+def _listdir(path):
+    """Folder-picker listing for the new-notebook / save-a-copy modal."""
     base = os.path.abspath(os.path.expanduser(path)) if path else os.path.expanduser("~")
     dirs, files = [], []
-    meta = _remote_meta(src, base)
-    if meta and meta.get("remote"):
-        if not meta.get("is_dir"):
-            base = os.path.dirname(base) or os.path.expanduser("~")
-        entries = _list_remote(src, base)
-        for ent in entries:
-            nm = ent["name"]
-            if nm.startswith("."):
-                continue
-            if ent.get("is_dir"):
-                dirs.append(nm)
-            elif nm.lower().endswith(".ipynb"):
-                files.append(nm)
-    else:
-        if not os.path.isdir(base):
-            base = os.path.dirname(base) or os.path.expanduser("~")
-        try:
-            names = os.listdir(base)
-        except OSError as e:
-            return {"error": str(e)}
-        for nm in names:
-            if nm.startswith("."):
-                continue
-            if os.path.isdir(os.path.join(base, nm)):
-                dirs.append(nm)
-            elif nm.lower().endswith(".ipynb"):
-                files.append(nm)
+    if not os.path.isdir(base):
+        base = os.path.dirname(base) or os.path.expanduser("~")
+    try:
+        names = os.listdir(base)
+    except OSError as e:
+        return {"error": str(e)}
+    for nm in names:
+        if nm.startswith("."):
+            continue
+        if os.path.isdir(os.path.join(base, nm)):
+            dirs.append(nm)
+        elif nm.lower().endswith(".ipynb"):
+            files.append(nm)
     dirs.sort(key=str.lower)
     files.sort(key=str.lower)
     parent = os.path.dirname(base) or base
@@ -204,14 +156,12 @@ def _listdir(path, src):
             "dirs": dirs, "files": files}
 
 
-def _resolve_dest(directory, name, src=""):
+def _resolve_dest(directory, name):
     """Destination for the new-notebook / save-a-copy modal. `name` may be a
     plain name, a relative subpath, or an absolute path that overrides the
     browsed `directory`; os.path keeps the semantics platform-correct (both
     separators on Windows; a backslash stays an ordinary filename character
-    on POSIX). Appends .ipynb unless already present. With `src` the parent
-    check rides /api/fs/stat — never a local probe that could wedge a mount
-    (same rule as _listdir)."""
+    on POSIX). Appends .ipynb unless already present."""
     name = (name or "").strip()
     if not name:
         return {"error": "Enter a name."}
@@ -225,29 +175,20 @@ def _resolve_dest(directory, name, src=""):
         full += ".ipynb"
     parent = os.path.dirname(full)
     missing = {"error": "Folder does not exist: " + parent.replace(os.sep, "/")}
-    if src:
-        try:
-            meta = _remote_meta(src, parent)
-        except OSError as e:
-            if getattr(e, "code", None) == 404:
-                return missing
-            raise
-        if not meta.get("is_dir"):
-            return missing
-    elif not os.path.isdir(parent):
+    if not os.path.isdir(parent):
         return missing
     return {"path": full.replace(os.sep, "/"),
             "dir": parent.replace(os.sep, "/"),
             "name": os.path.basename(full)}
 
 
-def main(action: str = "ensure", path: str = "", src: str = "", name: str = ""):
+def main(action: str = "ensure", path: str = "", name: str = ""):
     """runPython entrypoint: ensure the daemon (default), or folder listings /
     destination resolution for the save/new modal."""
     if action == "listdir":
-        return _listdir(path, src)
+        return _listdir(path)
     if action == "resolve":
-        return _resolve_dest(path, name, src)
+        return _resolve_dest(path, name)
     version = _version()
     st = _read_state()
     if st and _alive(st.get("port"), version):
@@ -353,8 +294,8 @@ def _serve():
             kw.update(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                       stderr=subprocess.DEVNULL, env=env, text=True,
                       encoding="utf-8", errors="replace", bufsize=1)
-            # no isdir probe on the notebook dir — it can hang on a wedged
-            # mount; a missing dir surfaces from Popen instead
+            # no isdir probe on the notebook dir; a missing dir surfaces from
+            # Popen instead
             cwd = os.path.dirname(self.nb_path)
             try:
                 proc = subprocess.Popen([self.python, _body()], cwd=cwd or None, **kw)
@@ -517,8 +458,8 @@ def _serve():
                 k = Kernel(nb_path, python)
                 kernels[kid] = k
         if fresh:
-            # spawn outside klock: Popen and the cwd isdir probe can hang on a
-            # wedged mount, and that must not stall every other kernel request
+            # spawn outside klock: Popen can be slow, and that must not stall
+            # every other kernel request
             try:
                 k._spawn()
             except OSError as e:
@@ -559,17 +500,7 @@ def _serve():
         envs = [{"label": "App environment", "path": ""}]
         seen = {os.path.normcase(_canon_python(sys.executable))}
         nb = q1(q, "nb_path", "")
-        src = q1(q, "src", "")
         d = os.path.dirname(os.path.abspath(os.path.expanduser(nb))) if nb else ""
-        if d and src:
-            # a mount-backed notebook gets no .venv walk: kernel-side isfile
-            # probes can wedge the mount, and a remote .venv is not a runnable
-            # interpreter; an unverifiable dir is skipped the same way
-            try:
-                if _remote_meta(src, d).get("remote"):
-                    d = ""
-            except OSError:
-                d = ""
         for _ in range(4):
             if not d:
                 break

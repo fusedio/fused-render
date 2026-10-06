@@ -1721,8 +1721,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   envEl.addEventListener("pointerdown", async () => {
     if (envsLoaded) return;
     try {
-      const r = await dFetch("/envs?nb_path=" + encodeURIComponent(file) +
-                             "&src=" + encodeURIComponent(location.origin));
+      const r = await dFetch("/envs?nb_path=" + encodeURIComponent(file));
       envsLoaded = true;
       fillEnvSelect(r.envs);
     } catch (err) {
@@ -1857,8 +1856,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     modalLocEl.textContent = "…";
     let d;
     try {
-      const src = location.origin + "/api/fs/raw?path=" + encodeURIComponent(dir || "");
-      d = await fused.runPython("./kernel.py", { action: "listdir", path: dir || "", src },
+      d = await fused.runPython("./kernel.py", { action: "listdir", path: dir || "" },
                                 { key: null });
       if (d.error) throw new Error(d.error);
     } catch (err) {
@@ -1915,9 +1913,8 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         // resolve server-side: the input may be a plain name, a relative
         // subpath, or an absolute path overriding the browsed folder — and
         // os.path knows the platform's separator rules
-        const src = location.origin + "/api/fs/raw?path=" + encodeURIComponent(modalCtx.dir || "");
         const r = await fused.runPython("./kernel.py",
-          { action: "resolve", path: modalCtx.dir, name: raw, src }, { key: null });
+          { action: "resolve", path: modalCtx.dir, name: raw }, { key: null });
         if (r.error) throw new Error(r.error);
         name = r.name;
         payload.path = r.path;

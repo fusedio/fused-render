@@ -26,9 +26,8 @@
  * native dialog that fails for any reason OTHER than the user cancelling: a
  * cancel is an answer and is passed straight through, never re-asked in HTML.
  *
- * Listing goes through the SERVER rather than any local scan for the usual
- * reason (a mount-backed directory must never be walked by a kernel scan), and
- * it means the picker works unchanged for whatever the server can list.
+ * Listing goes through the SERVER rather than any local scan, so the picker
+ * works unchanged for whatever the server can list.
  *
  * A native folder dialog returns an existing directory and nothing else, so
  * `opts.name` is resolved the same way in both backends: the free name is

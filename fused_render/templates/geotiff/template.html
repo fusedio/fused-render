@@ -207,19 +207,7 @@ async function ensureDaemon(){
 // foreign page that guessed the port can't read tiles cross-origin
 const dURL = p => `http://127.0.0.1:${daemon.port}${p}${p.includes('?') ? '&' : '?'}t=${encodeURIComponent(daemon.token || '')}`;
 
-// Every request hands the daemon a range-capable /api/fs/raw locator; the
-// daemon asks the server (/api/fs/stat) whether the file is mount-backed and
-// only then reads chunks over HTTP instead of mmap'ing the kernel NFS mount,
-// whose concurrent page faults stall and drop the mount under a screenful of
-// tiles. Local files stay on mmap. The template carries no mount knowledge.
-const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
-// EVERY daemon query is built here so none can miss `src` — a missed one
-// silently regresses that request to the mmap-over-NFS path.
-const daemonQuery = params => {
-  const q = new URLSearchParams(params);
-  q.set('src', rawURL(params.file));
-  return q.toString();
-};
+const daemonQuery = params => new URLSearchParams(params).toString();
 
 function renderQuery(){
   const params = { file: P.file(), mode: P.mode(), band: P.band(),
@@ -663,7 +651,7 @@ els.browse.onclick = async () => {
 els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
 async function refreshExplorer(dir){
   dir = dir || P.dir();
-  const r = await fused.runPython('./browse.py', { dir, exts: '.tif,.tiff', show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
+  const r = await fused.runPython('./browse.py', { dir, exts: '.tif,.tiff', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
   if (!r || r.error) return;
   els.crumbs.innerHTML = r.crumbs.map(c =>
     `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');
