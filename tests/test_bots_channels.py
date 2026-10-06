@@ -38,10 +38,16 @@ class FakeChannel(Channel):
 
 class FakeBot:
     def __init__(self, bid, name, meta=None):
-        self.id, self.meta, self.received = bid, {"name": name, **(meta or {})}, []
+        self.id, self.meta, self.received, self.emitted = bid, {"name": name, **(meta or {})}, [], []
+        self.task_started = 0.0
 
     def receive(self, text, via=None, reply_to=None):
         self.received.append((text, via))
+
+    def emit(self, role, text, **extra):
+        ev = {"seq": len(self.emitted) + 100, "role": role, "text": text, **extra}
+        self.emitted.append(ev)
+        return ev
 
 
 class FakeRegistry:
@@ -165,6 +171,60 @@ def test_dispatch_routes_by_name_then_sticky():
     assert [t for t, _ in b1.received] == ["first"]
     assert [t for t, _ in b2.received] == ["pack up", "and the boxes"]
     assert all(v == {"kind": "fake", "addr": "+1"} for _, v in b1.received + b2.received)
+
+
+def test_split_summary_and_summary_render():
+    assert base.split_summary("Full answer.\n\nSUMMARY: Short one.") == ("Full answer.", "Short one.")
+    assert base.split_summary("Full answer.\n**Summary:** Short one.", "") == ("Full answer.", "Short one.")
+    assert base.split_summary("Just text.", " given  field ") == ("Just text.", "given field")
+    assert base.split_summary("Text.\nSUMMARY: ignored", "field wins") == ("Text.", "field wins")
+    assert base.split_summary("No marker here") == ("No marker here", "")
+    # the router texts the summary on a max_len surface, the full text on the web
+    ev = {"role": "done", "text": "Long " * 200, "summary": "Short."}
+    assert rmod.render(ev, CAPS) == ("Short.", [])
+    assert rmod.render(ev, base.WEB_CAPS)[0].startswith("Long Long")
+    ev = {"role": "question", "text": "Which of these three long options…", "summary": "Which?", "options": ["A", "B"]}
+    assert rmod.render(ev, CAPS) == ("Which?\n\nReply 1 A · 2 B", ["A", "B"])
+
+
+def test_deliver_writes_delivery_rows():
+    ch = FakeChannel({"+1": ["b1"]})
+    b1 = FakeBot("b1", "Scout")
+    r = rmod.Router(FakeRegistry(b1))
+    r.add(ch)
+    ev = {"seq": 7, "role": "done", "text": "Full.", "summary": "Short.", "via": {"kind": "fake", "addr": "+1"}}
+    assert r.deliver(ch, b1, ev) == ["+1"]
+    assert b1.emitted == [{"seq": 100, "role": "delivery", "text": "@Scout Short.", "ref": 7, "channel": "fake", "addr": "+1", "via": None}]
+    # a send that keeps failing leaves a row with the error, and nothing is marked sent
+    class Broken(FakeChannel):
+        def send(self, addr, text, event=None):
+            raise RuntimeError("osascript: Messages got an error")
+    bad = Broken({"+1": ["b1"]})
+    r.add(bad)
+    rmod.SEND_RETRY_WAIT_S, old = 0, rmod.SEND_RETRY_WAIT_S
+    try:
+        assert r.deliver(bad, b1, {"seq": 8, "role": "error", "text": "boom", "via": {"kind": "fake", "addr": "+1"}}) == []
+    finally:
+        rmod.SEND_RETRY_WAIT_S = old
+    row = b1.emitted[-1]
+    assert row["role"] == "delivery" and row["ref"] == 8 and row["error"].startswith("osascript")
+    # delivery rows are not outbound-worthy themselves
+    r.on_event(b1, row)
+    assert r._q.empty()
+
+
+def test_forward_skips_an_owner_the_bot_already_texted():
+    ch = FakeChannel({"+1": ["b1"]})
+    b1 = FakeBot("b1", "Scout")
+    b1.task_started = 1000.0
+    r = rmod.Router(FakeRegistry(b1))
+    r.add(ch)
+    ev = {"role": "done", "text": "ok"}
+    assert r.targets(ch, b1, ev) == ["+1"]
+    ch.sent_since = lambda addr, ts: addr == "+1" and ts <= 1500.0  # the bot's `text` action reached +1 at 1500
+    assert r.targets(ch, b1, ev) == []
+    # a reply to the origin is never skipped
+    assert r.targets(ch, b1, {**ev, "via": {"kind": "fake", "addr": "+1"}}) == ["+1"]
 
 
 def test_on_event_ignores_what_no_channel_carries():

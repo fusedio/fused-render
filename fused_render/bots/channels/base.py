@@ -16,6 +16,7 @@ delivery policy, option numbering and prefixes live once, in `router.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 import time
 
 WEB_KIND = "web"
@@ -114,6 +115,24 @@ class Channel:
         """Called once by the router on shutdown."""
 
 
+_SUMMARY_LINE = re.compile(r"(?:^|\n)[ \t]*\**summary\**[ \t]*:\**[ \t]*(.+?)[ \t]*\Z", re.I | re.S)
+
+
+def split_summary(text: str, summary: str = "") -> tuple[str, str]:
+    """(message, summary). The model may hand the phone-sized version as a field
+    (`summary`) or as a trailing `SUMMARY: …` line of the message (the agent
+    engine's final message has no fields); the line is lifted out of the message
+    either way so the web does not show it twice."""
+    text = (text or "").rstrip()
+    summary = " ".join((summary or "").split())
+    m = _SUMMARY_LINE.search(text)
+    if m:
+        found = " ".join(m.group(1).split())
+        text = text[:m.start()].rstrip()
+        summary = summary or found
+    return text, summary[:1000]
+
+
 def prompt_section(v: dict | None, caps: Caps, kind_label: str = "") -> str:
     """The CHANNEL paragraph for the model when the task came from a surface
     other than the web. Empty for web and routine tasks."""
@@ -122,8 +141,9 @@ def prompt_section(v: dict | None, caps: Caps, kind_label: str = "") -> str:
     label = kind_label or (v or {}).get("kind") or "another channel"
     lines = [f"CHANNEL: the user sent this task from {label} and is reading your replies there, on a phone, not at the Mac."]
     if caps.max_len:
-        lines.append(f"- Your `done` message is sent as a text: lead with the answer in one short paragraph (under {caps.max_len} characters); "
-                     "details, tables and lists go in a `save` file or stay out. Everything you write still shows in full on the Mac.")
+        lines.append(f"- Your `done` goes out as a text. Give it a `summary` (or end your final message with a line `SUMMARY: …`): "
+                     f"the answer in one or two plain sentences, under {caps.max_len} characters, no Markdown. The full message "
+                     "(details, lists, links) shows on the Mac; only the summary is texted. Same for `ask`: a short `summary` of the question.")
     if not caps.options:
         lines.append("- Every `ask` carries 2-5 short `options`; the user answers with a number or a word. Never ask an open question you could make a choice.")
     if not caps.buttons:

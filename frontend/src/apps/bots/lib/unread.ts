@@ -20,7 +20,7 @@ export function unreadOf(seen: number | undefined, evs: BotEvent[], b: Pick<Bot,
 }
 
 /** Your own messages are never "new" to you; system notes never show in the thread. */
-export const isNoiseEv = (e: BotEvent): boolean => e.role === "system" || e.role === "user";
+export const isNoiseEv = (e: BotEvent): boolean => e.role === "system" || e.role === "user" || e.role === "delivery";
 
 /** Messages past the opening baseline that were never scrolled into view. */
 export function unviewedOf(base: number | undefined, viewed: Set<number> | undefined, evs: BotEvent[]): BotEvent[] {

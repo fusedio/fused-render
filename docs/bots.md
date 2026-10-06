@@ -974,6 +974,25 @@ addresses the bot, so bot lines read apart from the user's own in the
 self-thread. A **dedicated** identity (Messages signed into a bot Apple ID)
 sends bare.
 
+**Summary (D11).** With a `CHANNEL:` paragraph present the bot writes the
+phone-sized version itself: `done` / `ask` take a `summary` field (steps
+engine), or the final message ends with a `SUMMARY: …` line (agent engine,
+whose final message has no fields); `channels.base.split_summary` lifts the
+line out of the message either way and the event carries `summary`. The
+router texts `summary` when the surface has a `max_len`, else the cut.
+
+**Delivery rows (D12).** `via` on an event is origin only (one value). Where
+a bot message actually went is a separate fact: after each channel send the
+router appends `{"role": "delivery", "ref": <seq>, "channel", "addr", "text":
+<exactly what went out>, "error"?}` to the same `events.jsonl` (append-only,
+multi-writer safe; `bot.emit` with `via=None`). Not an `OUT_ROLE`, so it never
+triggers a send; `past_conversation` and `export_markdown` skip it by
+allow-list; the page hides the row (`isNoise`) and joins it to the bubble by
+`ref` as a quiet line: `Texted (iMessage): …` when the text differs from the
+bubble (summary, numbered options, cut), `→ iMessage` when it is the same,
+`Not sent to iMessage: <error>` when every retry failed. Unread counting
+ignores delivery rows (`isNoiseEv`).
+
 **Engines.** Both prompts get a `CHANNEL:` paragraph from `channels.prompt_for`
 when `task_via` is not web/routine (one short `done`, options on every `ask`,
 no `offer`, `login` means a walk to the Mac) and `task from iMessage (user is

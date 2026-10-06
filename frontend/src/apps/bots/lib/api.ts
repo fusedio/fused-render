@@ -5,7 +5,7 @@
 
 // ------------------------------------------------------------------ wire types (§2) ----
 /** `note`: a muted harness line in the thread ("Already ran …", "Still waiting for Approve / Deny on …"); not a bubble, not reactable. */
-export type Role = "user" | "thought" | "action" | "approval" | "question" | "done" | "error" | "system" | "note";
+export type Role = "user" | "thought" | "action" | "approval" | "question" | "done" | "error" | "system" | "note" | "delivery";
 export type BotStatus = "idle" | "running" | "waiting" | "paused" | "error";
 export type Model = "haiku" | "sonnet" | "opus" | "fable" | "local-4b" | "local-9b";
 export type Effort = "low" | "medium" | "high" | "xhigh";
@@ -36,6 +36,14 @@ export interface BotEvent {
   via?: Via;
   /** "build": a build watcher's notice (routed under the "builds" forward). */
   source?: string;
+  /** done / question: the bot's own phone-sized version (D11); the router texts this instead of the cut message. */
+  summary?: string;
+  /** role "delivery" (D12): the event this row records a send of, the channel, the address, and the error when the send failed.
+   *  `text` is exactly what went out. Never rendered as a bubble; the thread joins it to `ref`. */
+  ref?: number;
+  channel?: string;
+  addr?: string;
+  error?: string;
   trace?: unknown;
   artifacts?: unknown;
 }

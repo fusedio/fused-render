@@ -42,6 +42,7 @@ Reply with strict JSON only, no prose, no code fences:
  "tab": "<for tab: new|switch|close>", "index": <tab number for switch/close>,
  "risky": true|false (only for irreversible actions, see Rules),
  "message": "<for done: final answer/summary; for ask: the question; for offer: what the app would do for them, plus your findings so far when the task is otherwise complete; for login: a short reason shown to the user>",
+ "summary": "<for done / ask when a CHANNEL section is present: the message in one or two plain sentences for the text message; omit otherwise>",
  "options": ["<for ask, optional: 2-5 short answers the user can pick with one click>"]}
 
 Actions:
@@ -253,10 +254,12 @@ def run(bot, task, label=None):
                 history.append(f"save -> {res}")
                 continue
             if act == "done":
-                msg = decision.get("message") or "Done."
+                msg, summary = channels.base.split_summary(decision.get("message") or "Done.", decision.get("summary") or "")
                 final_msg = msg
                 arts = bot.collect_task_artifacts(msg)
                 extra = {"artifacts": [{"name": r["name"], "path": r["path"], "kind": r["kind"]} for r in arts]} if arts else {}
+                if summary:
+                    extra["summary"] = summary  # D11: what a phone channel gets instead of the cut message
                 app = botmod._app_in_text(msg)   # a done that links a built app gets the app card too
                 if app:
                     extra["app"] = app
@@ -277,7 +280,8 @@ def run(bot, task, label=None):
                                    "you see; they are not yours. Reply with a JSON browser action (start with goto).")
                     continue
                 opts = [str(o).strip()[:80] for o in (decision.get("options") or []) if str(o).strip()][:5]
-                ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}))
+                q, q_sum = channels.base.split_summary(q, decision.get("summary") or "")
+                ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"summary": q_sum} if q_sum else {}))
                 bot.set_status("waiting", waiting_on=ev["seq"])
                 bot.asking = True
                 drove = False

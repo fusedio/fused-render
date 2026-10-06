@@ -47,6 +47,8 @@ interface RowProps {
   isNew: boolean;
   /** This message's reaction emoji ("" for none). */
   reaction: string;
+  /** Delivery rows (D12) that record this message being sent on another channel; the "Texted: …" line under the bubble. */
+  texted?: BotEvent[];
   /** Approval / question card: the bot waits on this one. */
   live: boolean;
   /** Answered question: your answer, normalized (optionKey); null otherwise. */
@@ -144,9 +146,9 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps
   const actable = ACTABLE.has(e.role);
   const viaLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "botsend" ? "botsend" : k);
   // Bot text is markdown (bold, lists, code…); what the user typed stays verbatim.
-  // A channel chip (docs §10): a user line that arrived by text, and the bot lines the router texted back.
-  const viaChip = e.via?.kind && e.via.kind !== "web" && e.via.kind !== "routine"
-    ? `<span class="via" title="${esc(e.role === "user" ? `Received over ${viaLabel(e.via.kind)} from ${e.via.addr || "?"}` : `Also sent over ${viaLabel(e.via.kind)}`)}">${e.role === "user" ? "via " : "→ "}${esc(viaLabel(e.via.kind))}</span>`
+  // A channel chip (docs §10) on a user line that arrived by text. Bot lines get a <Texted> line from their delivery rows instead.
+  const viaChip = e.role === "user" && e.via?.kind && e.via.kind !== "web" && e.via.kind !== "routine"
+    ? `<span class="via" title="${esc(`Received over ${viaLabel(e.via.kind)} from ${e.via.addr || "?"}`)}">via ${esc(viaLabel(e.via.kind))}</span>`
     : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
     + (e.role === "user" ? esc(e.text) : md(e.text)) + viaChip
@@ -169,6 +171,26 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps
   );
 }
 
+const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "botsend" ? "botsend" : k);
+
+/** D12: what else this message was sent as. One quiet line per channel under the bubble: the exact text that went out when it
+ *  differs from the bubble (a summary, a numbered question, a cut), a bare "→ iMessage" when it is the same, "Not texted" on error. */
+function Texted({ e, rows }: { e: BotEvent; rows: BotEvent[] }) {
+  const norm = (s: string) => (s || "").replace(/^@\S+(?:\s\S+)?\s+/, "").replace(/\s+/g, " ").trim();
+  return (
+    <>
+      {rows.map((d) => {
+        const label = chanLabel(d.channel || "");
+        if (d.error) return <div key={d.seq} className="texted err" title={d.error}>Not sent to {label}: {d.error}</div>;
+        const same = norm(d.text) === norm(e.text);
+        return same
+          ? <div key={d.seq} className="texted" title={d.text}>→ {label}</div>
+          : <div key={d.seq} className="texted" title={d.text}><b>Texted</b> ({label}): {d.text.replace(/\s+/g, " ")}</div>;
+      })}
+    </>
+  );
+}
+
 const Row = memo(function Row(p: RowProps) {
   const { e, day, isNew } = p;
   if (isNoise(p.e)) return <div className="ev" />;
@@ -177,6 +199,7 @@ const Row = memo(function Row(p: RowProps) {
       {day ? <div className="day">{fmtDay(e.ts)}</div> : null}
       {isNew ? <div className="new">New</div> : null}
       {body(p)}
+      {p.texted?.length ? <Texted e={e} rows={p.texted} /> : null}
     </div>
   );
 });
@@ -328,10 +351,13 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     content = <div className="empty">Say hello: give this bot a task.</div>;
   } else {
     const keys = rowKeys(evs, botId);
+    // D12: delivery rows join the bubble they refer to (`ref`); they render nothing of their own (isNoise).
+    const texted = new Map<number, BotEvent[]>();
+    for (const e of evs) if (e.role === "delivery" && e.ref != null) texted.set(e.ref, [...(texted.get(e.ref) || []), e]);
     content = evs.map((e, i) => {
       const card = e.role === "approval" || e.role === "question";
       return (
-        <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew}
+        <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside} />
       );

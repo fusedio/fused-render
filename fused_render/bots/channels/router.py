@@ -60,6 +60,8 @@ def render(ev: dict, caps: Caps) -> tuple[str, list[str]]:
     with (empty when the surface shows buttons itself). A phone has only the
     reply box, so choices become "Reply 1 … · 2 …" and approvals "Reply yes or no"."""
     text = (ev.get("text") or "").strip()
+    if caps.max_len and (ev.get("summary") or "").strip():
+        text = str(ev["summary"]).strip()  # D11: the bot wrote the phone-sized version itself
     opts = [str(o).strip() for o in (ev.get("options") or []) if str(o).strip()]
     numbered: list[str] = []
     if opts and not caps.options:
@@ -234,16 +236,27 @@ class Router:
             text = f"@{(bot.meta.get('name') or 'bot').strip()} {text}"
         sent = []
         for addr in addrs:
+            err = ""
             for attempt in range(SEND_RETRIES):
                 try:
                     ch.send(addr, text, ev)
                     sent.append(addr)
+                    err = ""
                     self._errors.pop(ch.kind, None)
                     break
                 except Exception as e:  # noqa: BLE001
-                    self._errors[ch.kind] = f"send failed: {str(e).strip()[:200]}"
+                    err = str(e).strip()[:200] or e.__class__.__name__
+                    self._errors[ch.kind] = f"send failed: {err}"
                     if attempt + 1 < SEND_RETRIES:
                         self._stop.wait(SEND_RETRY_WAIT_S)
+            # D12: one delivery row per channel send, in the same log, joined by `ref`. It carries the
+            # exact text that went out (prefix, numbering, summary or cut), or the error when nothing did.
+            # Not an OUT_ROLE, so it never triggers a delivery of its own.
+            try:
+                bot.emit("delivery", text, ref=ev.get("seq"), channel=ch.kind, addr=addr, via=None,
+                         **({"error": err} if err else {}))
+            except Exception:  # noqa: BLE001
+                logger.debug("delivery row not written", exc_info=True)
         if sent and numbered:
             with self._lock:
                 self._pending[bot.id] = numbered

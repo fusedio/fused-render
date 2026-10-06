@@ -167,7 +167,8 @@ TOOL_SPECS: dict[str, dict] = {
               "inputSchema": _s(title=REQ, trigger=REQ, steps=REQ)},
     "ask": {"description": "Ask the user something and wait for the answer (a decision, a choice). Never for passwords, codes or "
                            "sign-ins (use login). With 2-5 short `options` the user can pick one with a click; they may still type.",
-            "inputSchema": _s(message=REQ, options={"type": "array", "items": {"type": "string"}, "maxItems": 5})},
+            "inputSchema": _s(message=REQ, options={"type": "array", "items": {"type": "string"}, "maxItems": 5},
+                              summary={"type": "string", "description": "When CHANNEL is present: the question in one short plain sentence, for the text message."})},
     "login": {"description": "The page needs a sign-in, 2FA or captcha: opens a real Chrome window on the user's desktop where "
                              "they sign in with their own keyboard (password manager and passkeys work), waits until they reply "
                              "'done' or click Hand back, then returns. `message` says why, in one sentence.",

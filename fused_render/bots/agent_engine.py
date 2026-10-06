@@ -720,10 +720,13 @@ def run(bot, task: str, label: str | None = None) -> None:
             _call(bot._routine_outcome, None, task, "error", f"gave up after {sess.max_steps} steps")
             bot.set_status("idle")
             return
-        final_msg = final or "Done."
+        final_msg, summary = channels.base.split_summary(final or "Done.")  # D11: a trailing "SUMMARY: …" line is the phone's text
+        final_msg = final_msg or "Done."
         arts = bot.collect_task_artifacts(final_msg) or []
         collected = True
         extra = {"artifacts": [{"name": r.get("name"), "path": r.get("path"), "kind": r.get("kind")} for r in arts]} if arts else {}
+        if summary:
+            extra["summary"] = summary
         app = _app_in_text(final_msg)
         if app:
             extra["app"] = app
@@ -1111,7 +1114,8 @@ def _permission(bot, sess: TaskSession, args: dict):
 def _ask(bot, sess: TaskSession, args: dict):
     q = (args.get("message") or "").strip() or "I need your input to continue."
     opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:5]
-    ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}))
+    q, q_sum = channels.base.split_summary(q, str(args.get("summary") or ""))
+    ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"summary": q_sum} if q_sum else {}))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
     drove = False

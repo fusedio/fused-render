@@ -7,7 +7,8 @@ import { lastSeqOf } from "./derive";
 export const SESSION_GAP_S = 15 * 60;
 
 /** System notes surface as toasts, never in the thread (an empty .ev wrapper keeps the row count aligned). */
-export const isNoise = (e: BotEvent): boolean => e.role === "system";
+/** Rows that render nothing of their own: system lines, and delivery rows (D12), which the thread joins to the bubble they refer to. */
+export const isNoise = (e: BotEvent): boolean => e.role === "system" || e.role === "delivery";
 
 /** A `.day` divider goes above `e`: the first event, or one after more than SESSION_GAP_S of silence. `prev` is the raw previous event (system notes included). */
 export const sessionBreak = (prev: BotEvent | undefined, e: BotEvent): boolean => !prev || e.ts - prev.ts > SESSION_GAP_S;

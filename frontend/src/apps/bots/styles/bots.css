@@ -361,6 +361,10 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 /* Channel chip (docs §10): "via iMessage" on a texted-in user line, "→ iMessage" on the bot lines texted back. */
 .bots-page .msg .via { display: inline-block; margin-left: .5em; padding: 0 .45em; border-radius: 999px; font-size: 10.5px; line-height: 1.6; letter-spacing: .02em; vertical-align: baseline; color: var(--muted); background: var(--bg-alt); white-space: nowrap; }
 .bots-page .msg.user .via { background: rgba(255, 255, 255, .22); color: inherit; }
+/* D12: the delivery line under a bot bubble — what went out on another channel. */
+.bots-page .ev .texted { margin: 2px 0 6px 12px; font-size: 11px; line-height: 1.4; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.bots-page .ev .texted b { font-weight: 500; }
+.bots-page .ev .texted.err { color: var(--danger, #c0392b); }
 .bots-page .msg:hover .when { opacity: 1; }
 @container (max-width: 560px) { .bots-page .msg .when { display: none; } }
 /* The chosen reaction sits on the bubble's bottom corner. */
