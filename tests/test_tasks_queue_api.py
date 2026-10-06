@@ -4025,6 +4025,11 @@ def test_create_with_queue_false_marks_the_task_forced_before_dispatch(
     assert queue_manager.get().is_forced(body["entry_id"]) is True
     # The row reads running from the dispatch, as the manager's own does.
     assert marked == ["sess-forced"]
+    # …and the names the run minted are forced at once, as the force door
+    # marks them (Bugbot, PR #1429): a door holding only the session id must
+    # not read the task as unforced before `learn_forced` catches up.
+    assert queue_manager.get().is_forced("sess-forced") is True
+    assert queue_manager.get().is_forced("r1") is True
 
 
 def test_a_forced_create_the_conversation_cannot_take_yet_stays_pending_and_forced(

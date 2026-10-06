@@ -7762,6 +7762,14 @@ def api_task_create(body: dict = Body(...),
                          "sends it", entry_id, exc_info=True)
         else:
             session_id = str((started or {}).get("session_id") or "")
+            run_id = str((started or {}).get("run_id") or "")
+            # THE NAMES THE RUN JUST MINTED ARE FORCED TOO, right now — the
+            # force door writes them the same way (Bugbot, PR #1429): a gate,
+            # a card answer or a send that holds only the new session id would
+            # otherwise read the task as unforced until `learn_forced` caught
+            # up, and put it back in a line.
+            if session_id or run_id:
+                queue_manager.get().mark_forced(session_id, run_id)
             if session_id:
                 # The turn just began on this session; the manager's own
                 # dispatch marks it the same way so the row reads running.
