@@ -114,7 +114,8 @@ def test_deliver_prefixes_in_own_identity_and_numbers_options():
     b1 = FakeBot("b1", "Scout")
     r = rmod.Router(FakeRegistry(b1))
     r.add(ch)
-    ev = {"role": "question", "text": "Size?", "options": ["Studio", "1br"], "via": {"kind": "fake", "addr": "+1"}}
+    ev = {"seq": 5, "role": "question", "text": "Size?", "options": ["Studio", "1br"], "via": {"kind": "fake", "addr": "+1"}}
+    b1.meta["waiting_on"] = 5  # numbers map back only while the bot still waits on that question
     assert r.deliver(ch, b1, ev) == ["+1"]
     assert ch.sent == [("+1", "@Scout Size?\n\nReply 1 Studio · 2 1br")]
     # the numbered answer maps back on the way in, once

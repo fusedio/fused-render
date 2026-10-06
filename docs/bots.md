@@ -418,7 +418,7 @@ every other (botsend, …) with a system line; `start_task` accepts a web via
 with origin `manual` or an `imessage` via (judged on the via, never on the
 origin label) and ignores everything else; `routine_add` raises;
 `drain_file_inbox` reads every inbox file, on every bot, as botsend and so
-Super Bot drops it. Posture by origin: a phone-started task always runs in
+Super Bot drops it (its thread shows only the refusal, no "Task received" line). Posture by origin: a phone-started task always runs in
 CLI permission mode `default` (ask before every write, edit and shell command,
 answered at the Mac), whatever `super_access` says (`agent_engine.super_mode`;
 `_permission` reads the same answer), and with approvals `ask` and Builds
@@ -964,7 +964,8 @@ imessage.py           pure helpers only (chat.db queries, osascript send, handle
 
 **Via kinds.** `web` (the page; never stamped), `imessage` (addr = the
 sender's normalised handle), `routine`, `botsend` (addr = the inbox file
-stem), and `handoff` (addr = Super Bot's id; stamped on a task Super Bot
+stem), and `handoff` (addr = `<Super Bot id>:<hand-off id>`, unique per
+hand-off, `channels.base.handoff_via` / `handoff_parts`; stamped on a task Super Bot
 handed to a bot and so on its events, label "Super Bot", §11).
 
 **Inbound.** Super Bot is the door. `Channel.door()` answers (Super Bot's id,
@@ -977,7 +978,11 @@ SMS has a spoofable sender). `Router.resolve` passes a row from the door's
 handle to Super Bot and drops anything else silently (the channel's
 `last_in` still moves); there is no `@name` addressing and no sticky bot. A
 reply of `2` / `b` to a numbered question maps back to that option
-(`map_answer`, the options of the last numbered question texted). Then
+(`map_answer`, the options of the last numbered question texted, kept with
+that question's seq: a number maps only while the question is still the
+bot's `waiting_on`, and the router forgets it on the bot's next `user` event or
+its task's own `done` / `error`, so an answer given at the Mac leaves a later
+"2" as just "2"). Then
 `bot.receive(text, via)`: the one entry point for user messages (`send()` is
 `receive(text, via=None)` for the web). A running phone-started task gets it
 as an instruction or an answer to its own `ask`, never as the answer to an
@@ -1090,12 +1095,14 @@ Bot's name and unknown names are refused with the list), records the row
 model gets an error), emits `system "Asked <Bot> to: <task>"`
 (`source: "handoff"`) and starts `_watch_handoff`. An idle target gets a
 `user` event with the task (via `handoff`) and `start_task(task, origin
-"handoff", via {kind: "handoff", addr: <Super Bot id>})`; a busy one (or one
+"handoff", via {kind: "handoff", addr: "<Super Bot id>:<hand-off id>"})`; a busy one (or one
 with a queue) gets the hand-off appended to its in-memory `_handoff_queue`
 (state `queued`), and the watcher starts it when the target is idle and the
 hand-off is at the head. `start_task` refuses a bot that is already running
 (it returns False), so a queued hand-off stays queued until its task has
-really started. The target's prompt gets a `HAND-OFF:` paragraph
+really started; a message the user sent in that same instant (`receive` lost
+the race to the hand-off) becomes an instruction to the running task, never
+dropped. The target's prompt gets a `HAND-OFF:` paragraph
 (`channels.base.prompt_section`) and `task from Super Bot (a hand-off; …)`.
 
 **Watcher** (one daemon thread per hand-off, every `HANDOFF_POLL_S` = 2 s,
@@ -1124,8 +1131,10 @@ and on the target `{"role": "system", "text": "Sent to Super Bot: <first 280
 chars>", "source": "handoff"}`. Every watcher emit passes `via` explicitly
 (`origin_via`: the asking task's via, `None` for the web, so a web-started
 hand-off never texts); the router's origin rule does the rest. `task_dir` is
-the target's Inbox task folder (`Bot.last_task_dir`, kept by
-`collect_task_artifacts`) or "".
+the target's Inbox task folder (`Bot.last_task_dir`, `(task_via, folder)` kept
+by `collect_task_artifacts`, used only when its via is this hand-off's) or "".
+Because the via is unique per hand-off, a queued follow-up that starts inside
+the poll window never lends its events or folder to the earlier result.
 
 **Stop.** `handoff_stop(name)` drops this Super Bot's queued hand-offs to that
 bot (state `stopped`, "Cancelled before <Bot> started it.") and stops the

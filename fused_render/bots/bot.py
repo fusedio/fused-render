@@ -409,7 +409,7 @@ class Bot:
         self.pause_flag = threading.Event()
         self.inbox = []           # user messages arriving mid-task
         self.task_dir = None      # this task's folder in the user's Inbox, made on first artifact
-        self.last_task_dir = None  # the folder of the task that ended last (collect_task_artifacts)
+        self.last_task_dir = None  # (task_via, folder) of the task that ended last (collect_task_artifacts)
         self.task_started = 0.0   # downloads newer than this belong to the running task
         self.task_origin = "manual"
         self.task_via = dict(chan.WEB)  # where the running task came from (channels/base.py Via); web by default
@@ -967,8 +967,9 @@ class Bot:
         except Exception:  # noqa: BLE001
             return []
         finally:
-            # last_task_dir: a hand-off watcher (docs §11) reports the folder after the task has ended.
-            self.last_task_dir, self.task_dir = self.task_dir, None
+            # last_task_dir: a hand-off watcher (docs §11) reports the folder after the task has ended,
+            # keyed by the task's via so a follow-up task never hands it another task's folder.
+            self.last_task_dir, self.task_dir = (dict(getattr(self, "task_via", None) or {}), self.task_dir), None
 
     def _fresh_downloads(self):
         try:
@@ -1049,7 +1050,8 @@ class Bot:
             if task:
                 # botsend.py drops. A file is a local script's door whatever its name: never a phone
                 # channel (its stem is no address to text back), and Super Bot refuses it.
-                self.emit("system", f"Task received from {chan.label('botsend')} ({n[:-4]})")
+                if not is_super(self.meta):  # Super Bot refuses it in receive(): its thread shows that line only
+                    self.emit("system", f"Task received from {chan.label('botsend')} ({n[:-4]})")
                 self.receive(task, via=chan.via("botsend", n[:-4]))
 
     def events_since(self, cursor):
@@ -1302,6 +1304,8 @@ class Bot:
         if running and texted and self._texted_approval(shown):
             return
         with self.lock:
+            if not running and not self.start_task(text, label=shown, via=via) and self.running():
+                running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
                 # Marked as texted: approval and offer waits never take it as their verdict (channels.base.Texted).
                 self.inbox.append(chan.Texted(text, via) if texted else text)
@@ -1311,8 +1315,6 @@ class Bot:
                     # or re-arms the card when this message was an instruction,
                     # not an answer. Clearing here would settle the card for a poll.
                     self.set_status("running")
-            else:
-                self.start_task(text, label=shown, via=via)
 
     def _texted_approval(self, text):
         """A yes/no texted while the task waits on an approval card: approvals
@@ -1741,8 +1743,8 @@ class Bot:
     # Task text goes down, status and ONE result come up. The target's ask / login / approvals stay
     # in its own chat for the user at the Mac; Super Bot never answers for it. Every change to a
     # row happens under Super Bot's lock (summary() copies the rows under it).
-    def _handoff_via(self):
-        return chan.via(chan.HANDOFF_KIND, self.id)
+    def _handoff_via(self, hd):
+        return chan.handoff_via(self.id, hd["id"])
 
     @staticmethod
     def _handoff_ref(hd, **extra):
@@ -1793,7 +1795,7 @@ class Bot:
         """Start hand-off `hd` on bot `t` when `t` is idle and `hd` is next in
         its queue (a fresh hand-off never jumps a queue). True when started;
         a queued hand-off leaves the queue only once its task has started."""
-        hv = self._handoff_via()
+        hv = self._handoff_via(hd)
         key = (self.id, hd["id"])
         with t.lock:
             if t.running() or not self._exists(t.id):
@@ -1806,7 +1808,6 @@ class Bot:
                 return False
             if t.meta.get("control"):
                 t.meta["control"] = False  # a fresh task means the bot drives again (as receive() does)
-            t.last_task_dir = None
             t.emit("user", hd["task"], via=hv)  # the task in the bot's own chat, chip "from Super Bot"
             start_seq = t.seq
             if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):
@@ -1863,7 +1864,7 @@ class Bot:
 
     def _handoff_is_running(self, t, hd):
         """`t` is running THIS hand-off's task right now (its via and the thread it started)."""
-        return (t.running() and dict(getattr(t, "task_via", None) or {}) == self._handoff_via()
+        return (t.running() and dict(getattr(t, "task_via", None) or {}) == self._handoff_via(hd)
                 and self._handoff_threads.get(hd["id"]) is t.thread)
 
     def handoff_stop(self, target_name):
@@ -1979,7 +1980,7 @@ class Bot:
     def _handoff_settle(self, t, hd):
         """The target's task ended: read what it wrote since the hand-off
         started (events stamped with this hand-off's via) and report it."""
-        hv = self._handoff_via()
+        hv = self._handoff_via(hd)
         name = hd.get("target_name") or "The bot"
         start = int(hd.get("start_seq") or 0)
         stopped, done, error = False, None, None
@@ -1993,7 +1994,8 @@ class Bot:
                 done = ev
             elif role == "error":
                 error = ev
-        task_dir = getattr(t, "last_task_dir", None) or ""
+        last = getattr(t, "last_task_dir", None)  # (via, folder) of the task that ended last
+        task_dir = (last[1] or "") if isinstance(last, tuple) and dict(last[0] or {}) == hv else ""
         if stopped and done is None:
             self._handoff_finish(t, hd, "stopped", f"{name} was stopped before it finished.", task_dir=task_dir)
         elif done is not None:

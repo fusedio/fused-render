@@ -77,7 +77,7 @@ class Router:
         self._q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
-        self._pending: dict[str, list[str]] = {}  # bot id -> options of the last numbered question sent out
+        self._pending: dict[str, tuple] = {}  # bot id -> (seq, options) of the numbered question still awaiting a texted answer
         self._errors: dict[str, str] = {}         # kind -> last router-side error for Settings
         self._lock = threading.Lock()
 
@@ -133,15 +133,24 @@ class Router:
         bid, text = self.resolve(ch, m)
         if bid is None or not (text or "").strip():
             return
-        with self._lock:
-            opts = self._pending.pop(bid, [])
-        text = map_answer(text, opts)
         bot = self._registry.get(bid)
+        with self._lock:
+            seq, opts = self._pending.pop(bid, (None, []))
+        # Only while that question is still what the bot waits on: answered at the Mac meanwhile, a "2" is just a "2".
+        if seq is not None and (getattr(bot, "meta", None) or {}).get("waiting_on") != seq:
+            opts = []
+        text = map_answer(text, opts)
         bot.receive(text, via=base.via(ch.kind, m.addr))
 
     # ----------------------------------------------------------------- outbound
     def on_event(self, bot, ev: dict) -> None:
         """Called by bot.emit() for every event; cheap: enqueue or ignore."""
+        role = ev.get("role")
+        if self._pending and (role == "user" or (role in ("done", "error") and not ev.get("source"))):
+            # The numbered question was answered (at the Mac or here) or its task ended: numbers mean nothing
+            # now. A hand-off or build card from another thread is not the task's end.
+            with self._lock:
+                self._pending.pop(getattr(bot, "id", None), None)
         if ev.get("role") not in OUT_ROLES or not (ev.get("text") or "").strip():
             return
         if ((ev.get("via") or {}).get("kind") or "") == base.HANDOFF_KIND:
@@ -193,7 +202,7 @@ class Router:
                 logger.debug("delivery row not written", exc_info=True)
         if sent and numbered:
             with self._lock:
-                self._pending[bot.id] = numbered
+                self._pending[bot.id] = (ev.get("seq"), numbered)
         return sent
 
     def _send_loop(self) -> None:
