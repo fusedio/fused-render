@@ -49,16 +49,16 @@ def test_every_runner_code_named_here_is_a_registered_runner():
     assert set(engine_options.UNSUPPORTED) <= codes
 
 
-def test_the_table_holds_exactly_the_diffusers_image_refusal():
+def test_the_table_holds_exactly_the_diffusers_image_refusals():
     """Pinned explicitly rather than left implicit: three rows, one per
-    diffusers image code, all refusing `image` and nothing else — the state
-    since the mflux-only base-image edit option shipped. If this fails
-    because something else was added, that is fine — update this test
-    alongside the entry."""
+    diffusers image code, each refusing `image` (the mflux-only base-image
+    edit) and `mask` (the mflux-only FLUX.1 Fill inpaint, issue #1439) and
+    nothing else. If this fails because something else was added, that is
+    fine — update this test alongside the entry."""
     assert set(engine_options.UNSUPPORTED) == {
         "diffusers-image", "diffusers-image-cuda", "diffusers-image-rocm"}
     for code, rules in engine_options.UNSUPPORTED.items():
-        assert set(rules) == {"image"}, code
+        assert set(rules) == {"image", "mask"}, code
 
 
 def test_the_three_diffusers_codes_carry_the_IDENTICAL_sentence():

@@ -76,6 +76,10 @@ router = APIRouter()
 _MIN_SIDE, _MAX_SIDE, _SIDE_STEP = 256, 2048, 16
 _MAX_STEPS = 100
 _MAX_SEED = 2**31 - 1
+#: Guidance caps, per mode — see the clamp in `api_ai_image`. The second
+#: exists because FLUX.1 Fill's own default (30) is above the first.
+_MAX_GUIDANCE = 20.0
+_MAX_FILL_GUIDANCE = 50.0
 
 # The request envelope of a job-backed AI call is closed (D413): an option
 # neither of these routes has is refused with a 400 rather than silently
@@ -88,7 +92,7 @@ _MAX_SEED = 2**31 - 1
 # `_provider_rejection` for what the other values earn.
 _IMAGE_OPTIONS = frozenset({
     "prompt", "model", "width", "height", "steps", "guidance", "seed", "image",
-    "provider"})
+    "mask", "provider"})
 # Bounds for a video request. Narrower canvas than an image's — `w*h <=
 # 768*1344` — originally chosen against the FL2VA checkpoint of the
 # since-dropped `h3-video` runner (D468), the shape it was benchmarked at;
@@ -462,6 +466,20 @@ def _edit_default_size(image_path: str) -> tuple[int, int] | None:
     fitted_w = max(_MIN_SIDE, width // _SIDE_STEP * _SIDE_STEP)
     fitted_h = max(_MIN_SIDE, height // _SIDE_STEP * _SIDE_STEP)
     return fitted_w, fitted_h
+
+
+def _default_inpaint_model() -> str | None:
+    """The model a `mask` request resolves to when the caller named none:
+    the first curated row for the resolved image runner that has a fill
+    recipe (`formats.mflux_fill_recipe`), or None when the engine has no
+    such row — in which case the caller falls through to `default_for` and
+    is refused by the ordinary engine/model checks with their own sentence.
+    Catalog order (smallest first) is the tie-break, exactly as `default_
+    for` itself breaks it."""
+    for entry in catalog.for_capability(registry.IMAGE_GENERATION):
+        if formats.mflux_fill_recipe(entry["id"]) is not None:
+            return entry["id"]
+    return None
 
 
 def _resolve_reference_file(value, base, *, caller: str, verb: str,
@@ -1741,7 +1759,20 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     if not isinstance(prompt, str) or not prompt.strip():
         return _error("'prompt' must be a non-empty string", status=400)
 
-    model = _model_of(body) or catalog.default_for(registry.IMAGE_GENERATION)
+    # `mask` present and `model` not: resolve to the catalog's INPAINT row,
+    # not `default_for`'s smallest-first pick (issue #1439). The two modes
+    # need two different checkpoints — a Klein cannot take a mask and a Fill
+    # cannot render without one — so a model-less `fused.ai.image({image,
+    # mask})` under a pure mirror of the edit path would 400 on its own
+    # default. Only the MISSING case is steered; a model the caller NAMED
+    # that has no fill recipe is still refused below rather than swapped,
+    # since silently substituting a model is the accepted-and-ignored
+    # failure `engine_options` exists to prevent.
+    mask_in = body.get("mask")
+    model = _model_of(body)
+    if not model:
+        model = (_default_inpaint_model() if mask_in is not None else None) \
+            or catalog.default_for(registry.IMAGE_GENERATION)
     if not model:
         # A machine with no image runner has no default either, and answering
         # about the CATALOG would bury the reason: "the Diffusers runner is not
@@ -1759,6 +1790,29 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # gate run: an image argument accepted and silently ignored).
     image = body.get("image")
     image_path = None
+    mask_path = None
+    # `mask` without `image` is refused FIRST, before anything about the
+    # engine or model is consulted: a mask names which region of a base to
+    # repaint, and with no base there is nothing to keep — the request is
+    # malformed whichever runner would serve it.
+    if mask_in is not None and image is None:
+        return _error(
+            "'mask' needs 'image' — a mask says which region of a base image "
+            "to repaint (white = repaint, black = keep), so fused.ai.image("
+            "{image, mask}) needs both", status=400)
+    active_runner = registry.for_capability(registry.IMAGE_GENERATION)
+    # A FLUX.1 Fill checkpoint asked for a plain render or a whole-image
+    # edit (no `mask`): refused here for the cost reason the model checks
+    # below give — its `generate_image` requires a mask, and the worker's
+    # own refusal would land only after a venv build and a 9.6 GB download.
+    if (mask_in is None and active_runner is not None
+            and active_runner.code == "mflux-image"
+            and formats.mflux_native_mode(model) == "fill"):
+        return _error(
+            f"{model} is an inpainting (FLUX.1 Fill) checkpoint — it repaints "
+            "the white region of a mask and needs BOTH 'image' and 'mask'. "
+            "Pass a mask, or name a model that renders from a prompt, such as "
+            "mlx-community/FLUX.2-Klein-4B-4bit.", status=400)
     if image is not None:
         # Decision 4: one image, a single string. An array or any other type
         # is a 400 rather than a guess at what the first (or last) element
@@ -1769,16 +1823,23 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
                 "string — fused.ai.image({image}) edits exactly one image, "
                 "so an array or any other type is rejected rather than "
                 "guessed at", status=400)
+        if mask_in is not None and (not isinstance(mask_in, str)
+                                    or not mask_in.strip()):
+            return _error(
+                "'mask' must be the path to one mask image, as a single "
+                "string — fused.ai.image({image, mask}) repaints exactly "
+                "one region of one image, so an array or any other type is "
+                "rejected rather than guessed at", status=400)
         # Refused HERE, before a job row opens: `engine_options.py`'s own
         # rule is to refuse at the endpoint AND again in the worker, and the
         # endpoint is where the RESOLVED runner is already known — the one
         # that will actually serve this request regardless of which model id
         # was named, since mflux/diffusers is an Engines-tab choice, not a
         # per-model one.
-        active_runner = registry.for_capability(registry.IMAGE_GENERATION)
         if active_runner is not None:
             try:
-                engine_options.unsupported_or_raise(active_runner.code, image=image)
+                engine_options.unsupported_or_raise(active_runner.code, image=image,
+                                                    mask=mask_in)
             except ValueError as e:
                 return _error(str(e), status=400)
             # The ENGINE can edit (mflux), but this specific MODEL may not
@@ -1791,13 +1852,24 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
             # potentially trigger a venv build and a multi-GB download
             # before the worker's own `_build_variant` finally raises — the
             # exact cost this whole block exists to avoid paying first.
-            if (active_runner.code == "mflux-image"
-                    and formats.mflux_edit_recipe(model) is None):
-                return _error(
-                    f"{model} has no edit variant this runner knows how to "
-                    "build — it can render from a prompt with this model "
-                    "but not edit an existing image with it. Try "
-                    "mlx-community/FLUX.2-Klein-4B-4bit.", status=400)
+            #
+            # With `mask`, the question is the INPAINT table instead
+            # (`formats.mflux_fill_recipe`, issue #1439): a Klein has an edit
+            # variant and no fill one, a Fill checkpoint the reverse, so the
+            # two checks are exclusive by mode rather than stacked.
+            if active_runner.code == "mflux-image":
+                if mask_in is not None and formats.mflux_fill_recipe(model) is None:
+                    return _error(
+                        f"{model} has no inpainting variant this runner knows "
+                        "how to build — 'mask' needs a FLUX.1 Fill checkpoint. "
+                        "Omit 'model' to use the catalog's Fill row, or name "
+                        "mflux-community/flux-1-dev-fill-mflux-q4.", status=400)
+                if mask_in is None and formats.mflux_edit_recipe(model) is None:
+                    return _error(
+                        f"{model} has no edit variant this runner knows how to "
+                        "build — it can render from a prompt with this model "
+                        "but not edit an existing image with it. Try "
+                        "mlx-community/FLUX.2-Klein-4B-4bit.", status=400)
         # Page-relative, the same rule `/api/ai/transcribe`'s `path` follows
         # (RH-1) — see `_resolve_reference_file`, shared with `/api/ai/
         # video`'s own `image` option. No allowlist, for the identical
@@ -1812,6 +1884,17 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
             verb="edits exactly one image")
         if rejection is not None:
             return rejection
+        if mask_in is not None:
+            # Same rule, same `base`: the mask sits beside the page exactly
+            # as the base image does. Any size — mflux resizes it to the
+            # render inside `MaskUtil.create_masked_latents`, so a mask
+            # drawn over a thumbnail of the base is fine.
+            mask_path, rejection = _resolve_reference_file(
+                mask_in, body.get("base"), caller="fused.ai.image",
+                verb="repaints exactly one region", option="mask",
+                noun="mask image")
+            if rejection is not None:
+                return rejection
 
     # Decision 1: an edit's default size comes from the BASE IMAGE, using the
     # prototype's own arithmetic (confirmed as written by the gate run). Any
@@ -1842,14 +1925,24 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # defaults are fixed by the prototype, not by whichever model the edit
     # happens to resolve to, exactly as it already short-circuits the size
     # lookup above.
+    #
+    # An INPAINT (`mask`, issue #1439) takes its size from the base image
+    # like an edit — the whole point is that every pixel outside the mask
+    # comes back as it went in, so the render has to be the base's shape —
+    # but its steps/guidance from the resolved model's CATALOG row like a
+    # plain render: FLUX.1 Fill is not distilled and is trained for guidance
+    # around 30 (mflux's own fill CLI default), numbers that belong beside
+    # the checkpoint they describe, not hard-coded to a mode. A Fill repo
+    # with no curated row keeps the generic 28/4.0, which is honest if poor.
     default_width = default_height = 1024
-    default_steps = 4 if image_path is not None else 28
-    default_guidance = 1.0 if image_path is not None else 4.0
+    is_edit = image_path is not None and mask_path is None
+    default_steps = 4 if is_edit else 28
+    default_guidance = 1.0 if is_edit else 4.0
     if image_path is not None:
         edit_size = _edit_default_size(image_path)
         if edit_size is not None:
             default_width, default_height = edit_size
-    else:
+    if not is_edit:
         entry = catalog.entry_for(registry.IMAGE_GENERATION, model)
         entry_defaults = entry.get("defaults") if entry else None
         if entry_defaults:
@@ -1887,8 +1980,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     guidance_in = body.get("guidance")
     if guidance_in is None or guidance_in == "":
         guidance_in = default_guidance
+    # The cap is per MODE: 20 was chosen for text-to-image and a Klein edit,
+    # where anything above it is noise, but FLUX.1 Fill DEFAULTS to 30 — a
+    # cap of 20 would silently cut the catalog's own default and every
+    # inpaint would render under-guided with nothing on the reply saying so.
+    max_guidance = _MAX_FILL_GUIDANCE if mask_path is not None else _MAX_GUIDANCE
     try:
-        guidance = max(0.0, min(20.0, float(guidance_in)))
+        guidance = max(0.0, min(max_guidance, float(guidance_in)))
     except (TypeError, ValueError):
         return _error("'guidance' must be a number", status=400)
     # A seed the caller did not choose is chosen HERE and reported back, so
@@ -1942,6 +2040,10 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # but a worker that ever grew a stricter check should not have to
         # tell those two apart because this route always sent one.
         request["image"] = image_path
+    if mask_path is not None:
+        # Same absent-not-None rule: the worker reads `mask`'s presence to
+        # pick the inpaint mode over the edit one.
+        request["mask"] = mask_path
     try:
         supervisor.start_image(model, request, job, page=page, source=source)
     except supervisor.SupervisorError as e:
@@ -1985,6 +2087,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # that passed a relative `image` can see which file it actually
         # resolved to.
         reply["image"] = canonical_fs_path(image_path)
+    if mask_path is not None:
+        reply["mask"] = canonical_fs_path(mask_path)
     return reply
 
 

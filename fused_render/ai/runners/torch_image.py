@@ -739,7 +739,8 @@ def generate(body):
     # wheel is actually running — so whichever of the three this process is,
     # the refusal is correct. A future option whose wording legitimately
     # differs by hardware could not reuse this call as-is.
-    engine_options.unsupported_or_raise("diffusers-image", image=body.get("image"))
+    engine_options.unsupported_or_raise("diffusers-image", image=body.get("image"),
+                                        mask=body.get("mask"))
 
     prompt = str(body.get("prompt") or "")
     width = int(body.get("width") or 1024)
