@@ -148,7 +148,7 @@ RUNS = _runs_root()
 # 0700 enforcement, one pruner and one `Read(...)` rule rather than two of each.
 SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 
-# Per-chat logs of the Bash-tool commands a chat runs (D1325): a sibling of
+# Per-chat logs of the Bash-tool commands a chat runs (D1326): a sibling of
 # `runs` for the same privacy reason, and keyed by CHAT (session) id rather than
 # run id because every turn of a chat is a new run dir but one conversation.
 # `fused_render/claude_cmd_log.py` repeats this path; a test pins them equal.
@@ -2667,7 +2667,7 @@ def _spawn_env(chat_id: str = "") -> dict:
     env.pop("FUSED_ENV", None)
     env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
     # Mirror this chat's Bash-tool commands into a log the drawer's "Claude" tab
-    # reads (D1325). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
+    # reads (D1326). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
     # statusline) through the prefix; the wrapper is transparent for all but
     # Bash-tool commands. A prefix the user exported themselves is left alone.
     if (chat_id and not _bad_id(chat_id) and _prefix_supported()

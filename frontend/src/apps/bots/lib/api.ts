@@ -5,7 +5,7 @@
 
 // ------------------------------------------------------------------ wire types (§2) ----
 /** `note`: a muted harness line in the thread ("Already ran …", "Still waiting for Approve / Deny on …"); not a bubble, not reactable. */
-export type Role = "user" | "thought" | "action" | "approval" | "question" | "done" | "error" | "system" | "note";
+export type Role = "user" | "thought" | "action" | "approval" | "question" | "done" | "error" | "system" | "note" | "delivery";
 export type BotStatus = "idle" | "running" | "waiting" | "paused" | "error";
 export type Model = "haiku" | "sonnet" | "opus" | "fable" | "local-4b" | "local-9b";
 export type Effort = "low" | "medium" | "high" | "xhigh";
@@ -13,6 +13,19 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 export interface Offer { kind: "use" | "build"; name: string; dir: string; spec: string }
 export interface AppRef { name: string; dir: string; params?: Record<string, string> | string; tools?: unknown }
 export interface ReplyRef { seq: number; role: Role; text: string }
+
+/** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
+ *  (a task Super Bot delegated, docs §11); the web is never stamped. */
+export interface Via { kind: "imessage" | "routine" | "botsend" | "handoff" | "web" | (string & {}); addr: string }
+
+export type HandoffState = "queued" | "running" | "waiting" | "done" | "error" | "stopped";
+/** Super Bot's meta["handoffs"] (docs §11): one task it handed to an ordinary bot, last 40. */
+export interface Handoff {
+  id: string; target: string; target_name: string; task: string; origin_via?: Via | null; created_at: number;
+  state: HandoffState; done_at?: number; result?: string;
+}
+/** The `handoff` stamp on Super Bot's hand-off lines ("Asked …", "… needs you at the laptop", the result). */
+export interface HandoffRef { id: string; target: string; target_name: string; task?: string; state: HandoffState; task_dir?: string }
 
 export interface BotEvent {
   seq: number;
@@ -29,6 +42,20 @@ export interface BotEvent {
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;
+  /** Where the message came from / which channel the bot's reply went to (docs §10). Absent = the web page. */
+  via?: Via;
+  /** "build": a build watcher's notice. "handoff": a hand-off line (docs §11): on Super Bot it carries `handoff` and
+   *  renders as a hand-off card; on the target bot it is the bare "Sent to Super Bot: …" line. */
+  source?: "build" | "handoff" | (string & {});
+  handoff?: HandoffRef;
+  /** done / question: the bot's own phone-sized version (D11); the router texts this instead of the cut message. */
+  summary?: string;
+  /** role "delivery" (D12): the event this row records a send of, the channel, the address, and the error when the send failed.
+   *  `text` is exactly what went out. Never rendered as a bubble; the thread joins it to `ref`. */
+  ref?: number;
+  channel?: string;
+  addr?: string;
+  error?: string;
   trace?: unknown;
   artifacts?: unknown;
 }
@@ -107,8 +134,13 @@ export interface Bot {
   reactions?: Record<string, string>;
   encrypt?: boolean;
   chrome_profile?: string;
+  /** The owner's phone handle; only Super Bot's is read (it is the one bot reachable over iMessage, docs §10). */
   imessage?: string;
   imessage_to?: string;
+  /** Super Bot only: the tasks it handed to ordinary bots, oldest first (docs §11). */
+  handoffs?: Handoff[];
+  /** The channel the running task came from; null/absent for a web task. */
+  task_via?: Via | null;
   builds?: unknown;
   pending_offer?: { seq: number; [k: string]: unknown } | null;
   offers_declined?: unknown;
@@ -142,9 +174,15 @@ export interface UsageSummary {
   days: { day: string; n: number }[];
 }
 
-export interface ImessageState { running: boolean; error: string; last_in: number | null; last_out: number | null; handles: number; holder: string; ts?: number; [k: string]: unknown }
+export interface ChannelIdentity { mode: "own" | "dedicated" | ""; label: string }
+export interface ImessageState {
+  running: boolean; error: string; last_in: number | null; last_out: number | null; handles: number; holder: string; ts?: number;
+  /** Who the bot speaks as: "own" = the user's own Messages account (texts carry "@name"), "dedicated" = a bot Apple ID. */
+  identity?: ChannelIdentity;
+  [k: string]: unknown;
+}
 
-export interface StatusReply { bots: Bot[]; ts: number; usage: UsageSummary | null; imessage: ImessageState | null }
+export interface StatusReply { bots: Bot[]; ts: number; usage: UsageSummary | null; imessage: ImessageState | null; channels?: Record<string, ImessageState> | null }
 
 export interface AppRow { folder: string; dir: string; name: string; desc: string; tools: unknown; skill: unknown; icon: string | null; mtime: number }
 export interface BuildRow { entryId: string; name: string; dir: string; createdAt: number; doneAt?: number }

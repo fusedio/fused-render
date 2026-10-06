@@ -1,5 +1,5 @@
 #!/bin/sh
-# CLAUDE_CODE_SHELL_PREFIX wrapper (D1325). The Claude CLI invokes
+# CLAUDE_CODE_SHELL_PREFIX wrapper (D1326). The Claude CLI invokes
 #     <this script> '<one complete shell command string>'
 # (argc == 1) for EVERYTHING it spawns: Bash-tool commands, hook commands, the
 # statusline and MCP stdio servers (permission_server.py included). The

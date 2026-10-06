@@ -849,7 +849,7 @@ test("busy fallback: a command-only request creates its terminal in the fallback
   expect(created).toEqual(["/drawer", "/drawer"]);
 });
 
-// ---- the read-only Claude tab (D1325) ---------------------------------------
+// ---- the read-only Claude tab (D1326) ---------------------------------------
 
 const { syncClaudeTabs, cachedTabs, isClaudeId } = await import("@shell/terminalTabs");
 

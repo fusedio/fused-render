@@ -90,7 +90,7 @@ def api_terminal_list():
 
 def _claude_entries(focused) -> list:
     """The read-only "claude" tabs: one per chat that has run a Bash-tool
-    command (D1325). Always `alive` — a log view never exits — with `running`
+    command (D1326). Always `alive` — a log view never exits — with `running`
     saying whether a command is executing right now."""
     out = []
     for e in claude_cmd_log.list_chats():

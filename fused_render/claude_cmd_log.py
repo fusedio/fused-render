@@ -1,6 +1,6 @@
 """Reader for the per-chat command log the shell-prefix wrapper writes.
 
-`claude_shell_prefix.sh` (D1325) mirrors every Bash-tool command a chat runs
+`claude_shell_prefix.sh` (D1326) mirrors every Bash-tool command a chat runs
 into `<root>/<chat id>/<cmd id>.{cmd,meta,out,exit}`. This module is the other
 half: it turns that directory into the byte stream the drawer's read-only
 "Claude" tab shows, lists the chats that have one, and stops the commands still

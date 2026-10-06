@@ -13,14 +13,16 @@ export function saveSeen(seen: Record<string, number>): void {
   try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch { /* storage blocked */ }
 }
 
-/** Events past "seen", system notes excluded; 0 for a bot never opened. Falls back to the raw seq gap when trimmed history no longer covers the range. */
+/** Events past "seen", system notes excluded; 0 for a bot never opened. A hand-off result (role done, docs §11) counts like
+ *  any done; the hand-off "Asked …" / "Sent to Super Bot" lines are system rows and do not. Falls back to the raw seq gap when trimmed history no longer covers the range. */
 export function unreadOf(seen: number | undefined, evs: BotEvent[], b: Pick<Bot, "seq">): number {
   if (seen == null) return 0;  // never opened: nothing to catch up on
-  return evs.some((e) => e.seq > seen) ? evs.filter((e) => e.seq > seen && e.role !== "system").length : Math.max(0, b.seq - seen);
+  // Delivery rows (docs §10 D12) are bookkeeping joined to a bubble, not a message: a texted reply is one new item, not two.
+  return evs.some((e) => e.seq > seen) ? evs.filter((e) => e.seq > seen && e.role !== "system" && e.role !== "delivery").length : Math.max(0, b.seq - seen);
 }
 
 /** Your own messages are never "new" to you; system notes never show in the thread. */
-export const isNoiseEv = (e: BotEvent): boolean => e.role === "system" || e.role === "user";
+export const isNoiseEv = (e: BotEvent): boolean => e.role === "system" || e.role === "user" || e.role === "delivery";
 
 /** Messages past the opening baseline that were never scrolled into view. */
 export function unviewedOf(base: number | undefined, viewed: Set<number> | undefined, evs: BotEvent[]): BotEvent[] {

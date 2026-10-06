@@ -8,7 +8,7 @@
 // ServerStatusBanner's 5s one — see UpdateBadge.tsx's header for why.
 import { useSyncExternalStore } from "react";
 
-import { getConfig, updateCheck, type UpdateStatus } from "@platform/lib/api";
+import { getConfig, updateCheck, updateInstall, type UpdateStatus } from "@platform/lib/api";
 
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
@@ -294,4 +294,18 @@ export function updateLabel(status: UpdateStatus): string {
   // No version in the label (it was always ellipsised in the status chip); the
   // chip's tooltip and the notification's detail carry it instead.
   return "Update available";
+}
+
+// The Download action's body, shared by the notification card and the sidebar
+// chip so both surfaces take one path. The server force-rechecks the manifest
+// before it installs and always installs the NEWEST version it finds — the one
+// on screen, or a newer one published since. It never installs anything older
+// than what was shown.
+export async function installUpdate(status: UpdateStatus): Promise<void> {
+  try {
+    setUpdateStatus(await updateInstall(status.latest_version));
+  } catch {
+    // Fall through — the re-armed poll picks up the real state.
+  }
+  pokeUpdateStatus();
 }

@@ -91,11 +91,38 @@ def discard_snapshot(path: str) -> None:
     _remove(path)
 
 
-def take_snapshot(path: str, *, max_age_s: float, now: float | None = None) -> list[str]:
+# What a restored window shows from the instant it opens until the new server
+# answers. Static and self-contained (no script, no request): the server it
+# would fetch from is exactly what is not up yet. Colours are the shell's own
+# tokens (`--bg` in frontend/src/styles/tokens.css; mac_window.TITLEBAR_BG), so
+# the window chrome and the page read as one surface, and it follows the OS
+# light/dark like the titlebar does.
+RESTARTING_HTML = (
+    "<!doctype html><html><head><meta charset=utf-8>"
+    "<meta name=color-scheme content='dark light'>"
+    "<title>Restarting\u2026</title><style>"
+    "html,body{height:100%;margin:0}"
+    "body{display:flex;align-items:center;justify-content:center;"
+    "background:#131417;color:#9aa0aa;"
+    "font:15px -apple-system,BlinkMacSystemFont,sans-serif}"
+    "@media (prefers-color-scheme:light){body{background:#fff;color:#5b6270}}"
+    ".d{width:14px;height:14px;margin-right:12px;border-radius:50%;"
+    "border:2px solid currentColor;border-top-color:transparent;"
+    "animation:s 1s linear infinite}"
+    "@keyframes s{to{transform:rotate(360deg)}}"
+    "</style></head><body><div class=d></div>Restarting\u2026</body></html>"
+)
+
+
+def take_snapshot(path: str, *, max_age_s: float, now: float | None = None,
+                  on_age=None) -> list[str]:
     """Consume the snapshot: the file is deleted BEFORE it is parsed, so it is
     one-shot whatever it holds (a crash while reopening must not replay it on
     every later launch). Returns the targets to reopen, or [] when there is
-    no file, it is older than ``max_age_s``, or it is unreadable."""
+    no file, it is older than ``max_age_s``, or it is unreadable.
+
+    ``on_age`` (optional) is called with the snapshot's age in seconds — the
+    time since the predecessor's press — for the relaunch timing log."""
     try:
         with open(path, encoding="utf-8") as f:
             raw = f.read()
@@ -115,5 +142,7 @@ def take_snapshot(path: str, *, max_age_s: float, now: float | None = None) -> l
         return []
     # A path, not a URL: the caller prepends its own origin, so anything that
     # could re-point it ("//host", "http://…") is dropped.
+    if on_age is not None:
+        on_age(now - at)
     return [w for w in windows
             if isinstance(w, str) and w.startswith("/") and not w.startswith("//")]

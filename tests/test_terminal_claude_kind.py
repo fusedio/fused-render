@@ -1,6 +1,6 @@
 """The read-only "claude" session kind on /api/terminal: listed, streamed over
 the same WS protocol from the wrapper's per-chat log, readable as text, and
-stoppable (D1325)."""
+stoppable (D1326)."""
 import json
 import os
 import shlex
