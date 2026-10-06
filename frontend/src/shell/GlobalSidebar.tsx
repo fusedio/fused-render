@@ -33,6 +33,9 @@ import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection from "@shell/CurrentAppsSection";
+import UpdateChip, { updateChipActive } from "@shell/UpdateChip";
+import { useRestartFlow } from "@platform/lib/restart-store";
+import { useUpdateStatus } from "@platform/lib/update-status";
 import { useSidebarArrowNav } from "@shell/sidebarArrowNav";
 
 // House — the Home page (/home): search hero + the three recency strips.
@@ -192,7 +195,10 @@ function useDismiss(
   }, [onClose]);
 }
 
-// The expanded-sidebar trigger row.
+// The expanded-sidebar trigger row. `trailing` (the version chip, the update
+// chip) sits OUTSIDE the <button> in an overlay: the update chip is itself a
+// button, and a button inside a button is invalid HTML. The overlay lets
+// pointer events fall through to the row except on the interactive chip.
 function PreferencesTrigger({
   open,
   dot,
@@ -206,25 +212,27 @@ function PreferencesTrigger({
       the only sidebar chrome that can show it. */
   active: boolean;
   /** Trailing-edge content, same slot NavItem gives Tasks its count — this
-      row's is the version chip. */
+      row's is the update chip and the version chip. */
   trailing?: React.ReactNode;
   onToggle: (el: HTMLElement) => void;
 }) {
   return (
-    <button
-      type="button"
-      className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
-      aria-haspopup="menu"
-      aria-expanded={open}
-      onClick={(e) => onToggle(e.currentTarget)}
-    >
-      <span className="icon">
-        {PREFERENCES_ICON}
-        {dot}
-      </span>{" "}
-      Settings
-      {trailing && <span className="sidebar-item-trail">{trailing}</span>}
-    </button>
+    <div className="sidebar-prefs-row">
+      <button
+        type="button"
+        className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => onToggle(e.currentTarget)}
+      >
+        <span className="icon">
+          {PREFERENCES_ICON}
+          {dot}
+        </span>{" "}
+        Settings
+      </button>
+      {trailing && <span className="sidebar-item-trail sidebar-prefs-trail">{trailing}</span>}
+    </div>
   );
 }
 
@@ -451,6 +459,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // its icon; and it is border-box against the other's `content-box`, so its 1px
   // ring ate the dot down to 5px of fill beside a 7px neighbour. One dot
   // vocabulary in this sidebar, one class that draws it.
+  // The collapsed rail's stand-in for the expanded row's UpdateChip.
+  const updateStatus = useUpdateStatus();
+  const restartFlow = useRestartFlow();
+  const updateDot = updateChipActive(updateStatus, restartFlow.stage) ? (
+    <span className="sidebar-rail-dot is-update" title="Update available — open the sidebar to act on it" />
+  ) : undefined;
+
   const residentDot = residentModels.length ? (
     <span
       className="sidebar-rail-dot is-resident"
@@ -764,11 +779,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
-      // No update dot any more (SPEC-update-notifications.md): the manual
-      // check moved into Preferences, and the two decision moments the app
-      // actually needs to surface are now the Notifications chip's own two
-      // cards — a second, quieter signal here would just be a rhyme of that
-      // chip's own count.
+      // The expanded row carries the UpdateChip; the collapsed rail has no
+      // room for words, so the same two decision moments show as a dot.
+      badge: updateDot,
     },
   ];
 
@@ -859,11 +872,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             open={prefsPos !== null}
             active={prefsActive}
             trailing={
-              config.version ? (
-                <span className="version-chip" title={`Fused Render v${config.version}`}>
-                  v{config.version}
-                </span>
-              ) : undefined
+              <>
+                <UpdateChip />
+                {config.version && (
+                  <span className="version-chip" title={`Fused Render v${config.version}`}>
+                    v{config.version}
+                  </span>
+                )}
+              </>
             }
             onToggle={togglePrefsMenu}
           />

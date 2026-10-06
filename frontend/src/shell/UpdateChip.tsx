@@ -6,9 +6,19 @@
 import { ArrowUp } from "lucide-react";
 import type { MouseEvent } from "react";
 
-import { restartInFlight } from "@platform/lib/restart-flow";
+import type { UpdateStatus } from "@platform/lib/api";
+import { restartInFlight, type RestartStage } from "@platform/lib/restart-flow";
 import { requestRestart, useRestartFlow } from "@platform/lib/restart-store";
 import { installUpdate, useUpdateStatus } from "@platform/lib/update-status";
+
+/** Whether the chip is showing something the user can act on (or is mid-act):
+ *  the collapsed rail mirrors this as a dot. */
+export function updateChipActive(status: UpdateStatus | null, stage: RestartStage): boolean {
+  if (!status) return false;
+  if (status.state === "available") return !status.check_only;
+  if (status.state === "installing") return true;
+  return status.state === "installed" && (stage === "ready" || restartInFlight(stage));
+}
 
 export default function UpdateChip() {
   const status = useUpdateStatus();

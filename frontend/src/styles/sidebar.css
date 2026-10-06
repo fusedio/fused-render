@@ -1357,3 +1357,62 @@ a.bookmark-name::after {
   }
 }
 
+
+/* -- The update chip (shell/UpdateChip) --------------------------------------
+   The persistent surface for the two update decisions, on the Settings row's
+   trailing edge beside the quiet version chip. Loud on purpose: an accent
+   filled pill, where the version chip is an outlined footnote. --on-accent is
+   the token for text on an accent fill, so it holds in both themes. The trail
+   is an overlay (the chip is a button and cannot nest inside the row button),
+   so it ignores pointer events except on the chip itself. */
+.sidebar-prefs-row {
+  position: relative;
+}
+
+.sidebar-prefs-trail {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  margin-left: 0;
+  pointer-events: none;
+}
+
+.update-chip {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 0 7px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.update-chip:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.update-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.update-chip.is-busy,
+.update-chip:disabled {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg-muted);
+  cursor: default;
+}
+
+.sidebar-rail-dot.is-update {
+  background: var(--accent);
+}
