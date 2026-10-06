@@ -34,15 +34,28 @@ export interface RunTriggerProps {
   onToggle: () => void;
   /** Extra class for the seat (`is-bare`'s own line). */
   className?: string;
+  /** HOW LONG THIS RUN TOOK, on hover — `Worked for 12s · 3m ago`
+   *  (ui/run-when.ts). The word stays two words: the span is the one thing a
+   *  reader asks of a folded run that the fold cannot show, and a hover is
+   *  where a fact that is asked for and not read belongs (Akshil, 2026-10-04).
+   *  Served by the app's ONE instant tooltip (`data-hint`, platform/lib/hints
+   *  — the same panel every Tasks row caption uses), NOT a `title`: the OS
+   *  tooltip waits about a second and cannot be hurried, and a CSS panel of
+   *  its own was a second pattern for the same thing (Akshil, 2026-10-05).
+   *  Absent when no member carried a stamp. The words say how long AGO, so
+   *  the owner recomputes them on the page's minute tick (`useMinuteTick`);
+   *  a string frozen at settle kept saying `just now` (Bugbot, PR #1430). */
+  when?: string | null;
 }
 
-export function RunTrigger({ open, onToggle, className }: RunTriggerProps) {
+export function RunTrigger({ open, onToggle, className, when }: RunTriggerProps) {
   return (
     <button
       type="button"
       className={cn("run-trigger", className)}
       aria-expanded={open}
       onClick={onToggle}
+      {...(when ? { "data-hint": when } : {})}
     >
       {open ? "show less" : "show more"}
     </button>

@@ -53,8 +53,7 @@ import {
 } from "@platform/lib/hooks";
 import { goBack, goForward } from "@platform/lib/nav-history";
 import Chevron from "@platform/ui/Chevron";
-import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
-import { resolveCloudUrl } from "@platform/lib/api";
+import { urlScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { notify } from "@platform/lib/notifications";
 import { openTopbarMenu } from "@apps/explorer/topbar-menu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
@@ -467,25 +466,12 @@ function TopbarActionsSlot() {
 
 // Open a URL typed/pasted into the path bar. Every failure is an error toast
 // carrying the reason — the path bar has already closed by now, so a silent
-// no-op would read as "Enter did nothing". A cloud URL keeps its trailing
-// slash (that is a prefix the mount may cover, not path noise); the server
-// strips it when it resolves.
-async function openUrl(url: string, scheme: string): Promise<void> {
+// no-op would read as "Enter did nothing".
+function openUrl(url: string, scheme: string): void {
   if (scheme === "file") {
     try {
       navigate(fileUrlToPath(url));
     } catch (e) {
-      notify({ title: (e as Error).message, tone: "error" });
-    }
-    return;
-  }
-  if (isCloudScheme(scheme)) {
-    try {
-      const { path } = await resolveCloudUrl(url);
-      navigate(path);
-    } catch (e) {
-      // The server's message names what's missing ("no mount covers
-      // s3://<bucket> — add one from the Mounts page in the sidebar").
       notify({ title: (e as Error).message, tone: "error" });
     }
     return;
@@ -792,12 +778,11 @@ export function Breadcrumb({
   const submitEdit = (raw: string) => {
     let path = raw.trim();
     // A pasted URL, not a path. Handled before any path munging — "~"
-    // expansion and trailing-slash trimming are path grammar, and a URL's
-    // trailing slash is part of the key (see openUrl).
+    // expansion and trailing-slash trimming are path grammar.
     const scheme = urlScheme(path);
     if (scheme) {
       setEditing(false);
-      void openUrl(path, scheme);
+      openUrl(path, scheme);
       return;
     }
     if (home !== undefined) {

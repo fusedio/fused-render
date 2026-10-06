@@ -19,7 +19,7 @@ import sys
 import pytest
 from fastapi.responses import JSONResponse
 
-from fused_render.server.mount import _fs_stat as STAT
+from fused_render.server.fs_stat import _fs_stat as STAT
 from fused_render.server.fs_mutate import _fs_write as WRITE
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
@@ -74,7 +74,7 @@ def test_stat_writable_false_for_readonly_file(readonly):
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="`writable` on a directory comes from os.access(path, os.W_OK) "
-           "(mount._writable), and Windows' directory read-only attribute is "
+           "(fs_stat._writable), and Windows' directory read-only attribute is "
            "largely vestigial — long used only by Explorer's folder-"
            "customization UI, not access control — so os.access keeps "
            "reporting a chmod'd-read-only DIRECTORY as writable there. The "
@@ -140,66 +140,3 @@ def test_write_refuses_missing_parent_for_an_ordinary_path(tmp_path):
     assert _status(resp) == 404
     assert "parent directory does not exist" in _data(resp)["error"]
     assert not f.exists()
-
-
-# ---------------------------------------------------- read-only remote mounts
-# Under a mount, os.access(W_OK) lies: with CacheMode=full a kernel write
-# lands in the local VFS cache and only fails at async upload. The mount
-# record carries a `read_only` flag (detected at attach, see
-# test_shell_mounts), and _writable must consult it so stat.writable and the
-# write guard stay in agreement (RO-1) for remote paths too.
-
-@pytest.fixture
-def mounted(tmp_path, monkeypatch):
-    """A real file sitting under a fake mountpoint inside a redirected
-    FUSED_RENDER_HOME. Returns a factory: mounted(read_only=...) -> file path.
-
-    fs/stat routes a mount-backed stat through the rclone rc API instead of the
-    kernel (a kernel GETATTR over a mount can wedge it), so a live stub rcd must
-    answer operations/stat for the mounted file."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    import fused_render.shell.mounts as mounts
-    from test_shell_mounts import StubRcd
-
-    stub = StubRcd()
-    stub.responses["operations/stat"] = {"item": {"Size": len(b"original")}}
-    mounts.write_rcd_state(stub.port, 4242)
-
-    def make(name, read_only):
-        m = mounts.add_mount(name, f"{name}-remote:bucket", read_only=read_only)
-        mp = mounts.mountpoint(m)
-        os.makedirs(mp)
-        f = os.path.join(mp, "notes.txt")
-        with open(f, "w") as fh:
-            fh.write("original")
-        return f
-
-    yield make
-    stub.close()
-
-
-def test_stat_not_writable_under_read_only_mount(mounted):
-    out = _data(STAT(mounted("pub", read_only=True)))
-    assert out["writable"] is False
-    assert out["remote"] is True
-
-
-def test_stat_writable_under_writable_mount(mounted):
-    out = _data(STAT(mounted("data", read_only=False)))
-    assert out["writable"] is True
-
-
-def test_write_refuses_read_only_mount(mounted):
-    f = mounted("pub", read_only=True)
-    resp = _write(f, "changed")
-    assert _status(resp) == 403
-    assert _data(resp)["error"] == "readonly"
-    with open(f) as fh:
-        assert fh.read() == "original"
-
-
-def test_write_refuses_new_file_under_read_only_mount(mounted):
-    f = mounted("pub", read_only=True)
-    resp = _write(os.path.join(os.path.dirname(f), "new.txt"), "x")
-    assert _status(resp) == 403
-    assert _data(resp)["error"] == "readonly"

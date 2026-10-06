@@ -55,7 +55,6 @@ immediately without showing a plan.
 - Git-view user commits are never auto-pushed.
 - Background git must never hang on credentials (keep the existing
   `GIT_TERMINAL_PROMPT=0` etc. env; timeouts). Fail fast and notify, except offline (silent).
-- Mount-backed repos still refused, as today.
 - Fix with Claude must not change files before approval nor push without asking.
 - Setting off ⇒ identical to today.
 - Auto-push must not block the Claude turn / app lifecycle request path — run it in the background.
@@ -84,7 +83,7 @@ immediately without showing a plan.
 - `fused_render/git_upstream.py` — `note_app_opened` (:683-761), `check_repo` (:223-245),
   `CHECK_TTL_S=300` (:102), `_check_slot`, in-memory `_state` (:680), `known_repos()` (:821),
   `is_known_repo()` (:845), `update_repo` (:503, `pull --ff-only origin <default>`),
-  `_mutation_preflight` (:354), `_mutation_slot` (:474), git env (:82-96), mount refusal (:154-170).
+  `_mutation_preflight` (:354), `_mutation_slot` (:474), git env (:82-96).
   Failures are deliberately silent today (:37-41) — that changes for non-offline failures.
 - `fused_render/server/routers/git_upstream.py:36-61` — GET/POST `/api/git-upstream`.
 - `fused_render/server/routers/render.py:~104` — the single "app opened" trigger.
@@ -218,3 +217,33 @@ indexing pref `indexing_enabled()`) and follow that pattern for the new toggle +
   model is not guaranteed one-per-request, so `_LAST_RUN` is now a
   `threading.local` set whole by `_run`. Test:
   `test_refusal_output_is_per_call_not_shared_across_threads`.
+
+## Decisions log: every-open trigger + native-window notifications
+
+- **Folder open is a trigger, via an opt-in param.** GET /api/apps/entry
+  takes `opened=1` (only `Listing.tsx`'s once-per-folder-visit effect sends
+  it) and calls `note_app_opened` when an entry resolves. The other callers
+  (AppPage, Preview, EntryActionsMenu, EmbedStrip, EditAppFileBoot) are
+  probes, not opens, so triggering on all was rejected. It never calls
+  `record_app_open`. Tests: `test_folder_open_*`,
+  `test_entry_probe_without_opened_does_not_trigger`.
+- **A busy slot parks the open.** `_pending` (path-keyed, max 32) plus
+  `_drain_pending`, called after every release of `_check_slot` (background
+  check, force_check, `_mutation_slot`). Chained one at a time, so no thread
+  per request; `_due` still dedupes by root, so the 5-min throttle holds.
+  `note_app_opened` re-drains once after parking to close the window where
+  the holder released between the failed acquire and the park. Returns
+  False when parked (existing test relies on that). `_runner` seam kept.
+- **Native windows: scoped poll + overlay.** `NativeAppSyncNotices`
+  (mounted when `IS_EMBED && IS_NATIVE_WINDOW`) runs `useRepoUpdates` scoped
+  to the repo containing the window's entry path (`appPathInRepo`, string
+  containment on the server's realpath'd root; a symlinked app path would
+  miss, best-effort). Pull popup is the hook's own `notify()`, which
+  NotificationHost already draws in an embed; failure rows are the dock's
+  `SyncFailureRowView` in a top-right column.
+- **Fix with Claude from a native window loads the explorer in place.** An
+  embed cannot SPA-navigate to the full shell (IS_EMBED is fixed at load), so
+  the row does `location.assign(view url)` like the title bar's Edit. That
+  load drops the in-memory staged ask, so `pending-claude-ask.ts` now mirrors
+  it into sessionStorage (same 60 s TTL, cleared on take). Dead end: opening
+  the repo through POST /api/windows/open (focuses an app window, no prompt).

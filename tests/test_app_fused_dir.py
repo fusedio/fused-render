@@ -433,15 +433,6 @@ def test_meta_with_a_blank_app_dir_reads_as_unrecorded(app):
 
 # ------------------------------------------------------------------- refusals
 
-def test_mount_backed_folders_are_refused(app, monkeypatch):
-    """A remote mount is not the app's private disk, and this is the render
-    path — no makedirs, no stat, nothing that can wedge a mount."""
-    from fused_render.shell import mounts as shell_mounts
-
-    monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda _path: True)
-    assert app_fused_dir.ensure(str(app)) is False
-    assert not os.path.exists(app / ".fused")
-
 
 def test_a_missing_folder_is_false_not_an_exception(tmp_path):
     assert app_fused_dir.ensure(str(tmp_path / "gone")) is False

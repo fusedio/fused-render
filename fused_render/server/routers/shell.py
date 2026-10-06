@@ -31,8 +31,8 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # `/learn` — the bundled App Basics content — until 2026-08-22 (D419); both are
 # gone with the pages they served: Tasks answers the same question the inbox
 # did and answers it better (Akshil), and the learn content ships as a
-# community app now. The sessions MOUNT is untouched: the bundled inbox app is
-# still on disk under the mounts root and still opens in the explorer like any
+# community app now. The bundled inbox app is
+# still on disk and still opens in the explorer like any
 # other view. What was deleted is the shell pages that gave them routes.
 # The Claude pages: the settings panel (frontend apps/claude_config) and the
 # retired /claude-md page, which the client rewrites to the panel's MD Files
@@ -43,6 +43,8 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 @router.get("/claude-md")
 @router.get("/preferences")
 @router.get("/templates")
+# Retired Mounts page: still answered with the shell so a stale bookmark loads
+# it, and the client redirects it home.
 @router.get("/mounts")
 # AI Models (SPEC §37) — a client-side page like the rest, and reachable by URL
 # even where the sidebar hides its entry. The bare prefix is what the sidebar
@@ -70,6 +72,9 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # Canvases (legacy-workbench local development): the listing page and the
 # per-canvas workspace (/canvases/<name>, matched by the wildcard below).
 @router.get("/canvases")
+# Bots (frontend apps/bots, backend fused_render/bots, docs/bots.md): the
+# browser-bots page; `?bot=<id>` / `?new=1` are client-side query state.
+@router.get("/bots")
 def shell_page(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 

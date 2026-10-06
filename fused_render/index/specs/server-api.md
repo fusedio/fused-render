@@ -13,7 +13,7 @@ unguarded like every other read endpoint and none of them can write.
 
 | Route | Guard | Purpose |
 |---|---|---|
-| `POST /api/index/scan` `{root?, full?}` | X-Fused | start a detached scan; `{run_id, root}`. No `root` means the first configured root (§3). A non-directory or mount-backed root is a 400. A 409 with `{"error": "indexing is disabled in Preferences"}` while `indexing_enabled` is off. |
+| `POST /api/index/scan` `{root?, full?}` | X-Fused | start a detached scan; `{run_id, root}`. No `root` means the first configured root (§3). A non-directory or guarded root is a 400. A 409 with `{"error": "indexing is disabled in Preferences"}` while `indexing_enabled` is off. |
 | `POST /api/index/scan-folder` `{path}` | X-Fused | cover ONE folder because a search box asked; `{started, why, run_id, root}`, never an error (§7.2) |
 | `POST /api/index/cancel` `{run_id}` | X-Fused | touch the run's cancel flag |
 | `GET /api/index/status?run_id=&since=` | — | scan state (§2) |
@@ -193,12 +193,9 @@ all of it billed to a keystroke. The warm moves it to idle.
 
 - A **thread**, not `asyncio.to_thread`: a startup hook must complete before the app
   serves, and this is seconds of work.
-- A **mount-backed** home is skipped by `MountGuard.blocks_root`, the same check
-  `runner.start` makes, before anything touches the path: the index refuses to scan
-  mounts, so the warm could only answer `covered: false` after aiming kernel I/O at a
-  mount. The guarantee is about the mount, not about cost — a path under the mounts dir
-  matches on `abspath` alone, while a local home falls through to `is_mount_backed` and
-  pays two `realpath`s, neither of them on the mount.
+- A home inside a fused-render home tree is skipped by `MountGuard.blocks_root`, the same
+  check `runner.start` makes, before anything touches the path: the index refuses to scan
+  those trees, so the warm could only answer `covered: false`.
 - **One bounded wait on a first boot.** Usually the index is already there, the search
   answers `covered: true`, and the warm is those two calls and nothing else. When it
   answers `covered: false` — first-ever boot, nothing to sweep — the warm waits for the
@@ -355,7 +352,7 @@ now-deleted Python port of the browser ranker) is gone — an accepted feature l
 an oversight: `indexstore` no longer matches `index/specs/index-store.md` on an indexed
 folder. `frontend/src/platform/lib/fuzzy.ts` is UNCHANGED and keeps its subsequence
 pass; it still ranks the live streamed walk for the folders no scan will ever cover
-(mount-backed, package, ignored), which this route never touches.
+(guarded, package, ignored), which this route never touches.
 
 Losing the subsequence pass loses only a TAIL, not a reordering: `fuzzyMatch`'s
 substring branch always set `longestRun = len(q)`, the maximum a subsequence-only hit
@@ -403,7 +400,7 @@ otherwise one of:
 
 | `reason` | means | what the client does |
 |---|---|---|
-| `mount` | mount-backed; `MountGuard` refuses to index it at all | live streamed walk |
+| `mount` | inside a fused-render home; `MountGuard` refuses to index it at all | live streamed walk |
 | `package` | a `.app`/`.photoslibrary` — recorded as one opaque row, never listed | live streamed walk |
 | `ignored` | the scan's ignore list excludes this tree (`node_modules`, …) | live streamed walk |
 | `disabled` | the `indexing_enabled` preference is off (`shell/prefs.py`) — no scan will start | live streamed walk |
@@ -448,7 +445,7 @@ next launch, which runs the startup scan, so indexing begins on its own once the
 grants and relaunches. `POST /api/index/scan` answers 409 with `reason: "fda"`;
 `scan-folder` answers `why: "fda"`.
 
-**Deciding this server-side is the point.** The mount policy is `MountGuard`'s — the
+**Deciding this server-side is the point.** The guard policy is `MountGuard`'s — the
 same object `runner.start` refuses with — the ignore list is the scan config's, and the
 package rule is a shape of the store. A copy of any of them in TypeScript would drift,
 and the drift would surface as two searches disagreeing about one folder. The client's
@@ -471,25 +468,24 @@ keystroke-rate retry loop.
   the root it is given (`index-store.md`), so a folder-sized scan merges into the store.
 - `SCAN_DEBOUNCE_S` — the startup scheduler's own floor, not a second one — stops a
   folder that stays uncovered after a scan from being rescanned on the next keystroke.
-- **A path SPELLED under a mount is refused before this route stats it.**
-  `MountGuard.blocks` is a string prefix test against the mount records, and it
-  runs ahead of everything that touches the path, because a stat under a wedged
-  rclone mount blocks the request thread indefinitely — answering `refused` a
+- **A path SPELLED under a fused-render home is refused before this route stats it.**
+  `MountGuard.blocks` is a string prefix test against the home roots, and it
+  runs ahead of everything that touches the path — answering `refused` a
   moment later is worth nothing if getting there hangs. Ordered the same way at
   both doors (here and `index_touch._real_blocked`).
 
   What that does NOT cover, stated because the ordering above invites the
   stronger reading: `blocks` does not resolve symlinks, so a link whose TARGET
-  is inside a mount passes it, and the `foreign_device` stat below then follows
-  the link onto the mount. `blocks_root`'s `realpath` is what catches that case,
+  is inside a home passes it, and the `foreign_device` stat below then follows
+  the link there. `blocks_root`'s `realpath` is what catches that case,
   and it is reached later (inside `runner.start`) — but it is not a cheaper
-  answer either, since resolving the link touches the mount too. The exposure
+  answer either, since resolving the link touches the target too. The exposure
   is the same one every caller with a user-supplied path has always had; this
   route does not add to it, and does not remove it.
 - **A scan root on a different filesystem than the user's home is refused**
   (`index_touch.foreign_device`). `MountGuard` only knows fused-render's own
-  mounts dir, so a user's SMB/NFS volume at `/Volumes/share` is not
-  mount-backed as far as it is concerned — and `scan.scan_dir_once`'s
+  home trees, so a user's SMB/NFS volume at `/Volumes/share` is not
+  guarded as far as it is concerned — and `scan.scan_dir_once`'s
   `root_dev` guard, which normally stops a crawl leaving the home filesystem,
   is defeated by construction when the root IS the volume. The live walk did
   crawl such paths, but it was abortable, entry-capped and tied to an open
@@ -543,7 +539,7 @@ of the folder:
   and a refused rescan leaves a renamed file unfindable, which is the failure
   this mechanism exists to prevent. The 120 s deadline is the escape from both
   the floor and the wait-for-a-live-run, so nothing is held for ever.
-- **the same three refusals the route makes**: mount-backed, excluded by the
+- **the same three refusals the route makes**: inside a fused-render home, excluded by the
   ignore rules (a save inside `node_modules` would otherwise index nothing and
   rewrite the store to say so), and a folder on another filesystem.
 
@@ -568,7 +564,7 @@ risk doesn't exist any more (`search_ranked`'s docstring, `_rank_sql`).
   root rescanned in the background. A folder nobody opens still waits for a startup or
   manual scan, and a change deeper than the folder being viewed does not move its
   mtime — an ambient watcher remains a later project.
-- **Indexing remote mounts** — refused structurally (`scan-ignore.md §7`).
+- **Indexing network volumes** — refused structurally by the same-filesystem rule (`scan.md §6`).
 - **Deciding what SQL is safe** — the guard is `query.md §5`; these routes only adapt it
   to HTTP.
 

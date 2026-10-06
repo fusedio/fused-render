@@ -59,7 +59,7 @@
 # log:** bnb prints `Could not detect ROCm GPU architecture: [Errno 2] No such
 # file or directory: 'rocminfo'` followed by `ROCm GPU architecture detection
 # failed despite ROCm being available.` on import, because its arch probe
-# shells out to the `rocminfo` binary and this app bundles rclone, not the
+# shells out to the `rocminfo` binary and this app does not bundle the
 # ROCm userspace tools. The kernels above ran correctly anyway — bnb's arch
 # detection is only degraded, not load-bearing for the operations this app
 # calls — so the warning is expected and not a sign the wheel is broken.

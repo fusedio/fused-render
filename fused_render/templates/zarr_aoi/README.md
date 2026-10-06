@@ -1,6 +1,6 @@
 # zarr_aoi — hosted-Zarr AOI streaming preview for Fused Render
 
-Preview terabyte-scale Zarr stores (local, mounted, or `s3://...`) by streaming
+Preview terabyte-scale Zarr stores (local or `s3://...`) by streaming
 only the chunk byte-ranges that intersect the current viewport. Includes a
 "📊 stats" panel showing exactly how many requests/bytes were streamed vs the
 logical dataset size, native-pixel click probes with per-read cost, a time/level

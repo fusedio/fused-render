@@ -127,19 +127,6 @@ def test_publish_refuses_a_root_that_does_not_exist(monkeypatch):
     assert resp.json()["error"]
 
 
-def test_publish_refuses_a_mount_backed_root(tmp_path, monkeypatch):
-    from fused_render.shell import mounts as shell_mounts
-
-    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
-    monkeypatch.setattr(github_setup, "executable", lambda p: True)
-    monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda p: True)
-    resp = _client().post("/api/github/publish", headers={"X-Fused": "1"},
-                          json={"root": str(tmp_path), "name": "my-repo",
-                                "visibility": "private"})
-    assert resp.status_code == 409
-    assert "remote mounts" in resp.json()["error"]
-
-
 def test_publish_with_a_root_inside_the_repository_starts(tmp_path, monkeypatch):
     # A root that IS inside a repository — the allowed scope — is accepted:
     # `_resolve_repo_root` walks it up to the work-tree root via `git

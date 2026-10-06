@@ -2,8 +2,7 @@
 (test_file_history.py, test_annotate_revert.py).
 
 Kept in a non-test module so both suites import from a neutral home instead of
-one test module reaching into the other's namespace — same reason as
-_mount_safe_helpers.py.
+one test module reaching into the other's namespace.
 
 The store this fakes is NOT ours; it is Claude Code's, and the helper under test
 is a strictly read-only consumer of it. So the one thing this fixture must never

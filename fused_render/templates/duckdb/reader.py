@@ -34,7 +34,6 @@ stay read-only.
 import datetime
 import decimal
 import os
-import threading
 
 import duckdb
 
@@ -138,7 +137,7 @@ def _rowgroup_prune(con, scan: str, sort: dict, types: dict, need: int) -> str:
     can't be proven safe. Parquet's footer carries per-row-group min/max stats
     for every column; DuckDB's own top-N pushdown is reactive (it reads groups
     in file order and only skips ones beaten by rows already seen), which on a
-    remote file still pays a range read per group. Deciding up front from
+    file still pays a read per group. Deciding up front from
     parquet_metadata() moves no extra bytes — the footer is already parsed.
 
     Soundness (desc; asc is the mirror): rank groups by stats_min descending
@@ -211,229 +210,14 @@ def _build_order(sort, columns):
     return f" ORDER BY {_quote_ident(col)} {direction.upper()}"
 
 
-# ------------------------------------------------------------- remote files
-# When the page marks the file remote (the shell's /api/fs/stat says its
-# bytes come from a mount), it passes `source_url` — the app's own
-# /api/fs/raw URL for the file — and parquet is scanned over ranged HTTP
-# instead of local file I/O. Reading a remote-backed mount like a local file
-# breaks down under an analytical read pattern: DuckDB fans out concurrent
-# range reads, each small kernel NFS READ stalls behind a multi-MB remote
-# fetch, and macOS's 1s NFS timeout drops the whole mount ("server
-# connections interrupted"). Over HTTP a slow read is just slow. This reader
-# knows nothing beyond the URL it was handed; anything that fails on it falls
-# back to the plain file path.
-
-
-# Versioned stash key for the long-lived HTTP connection below. Bumping it (a
-# settings change) simply strands the old connection for GC and builds a fresh
-# one — no stale-config connection can outlive a code update in a long-running
-# server. A module constant rather than a literal at each use so
-# _http_connection and close_http_connection cannot drift apart.
-_HTTP_CON_KEY = "_fused_render_http_con_v3"
-
-
-# One-way latch, set by close_http_connection and never cleared: once quit has
-# closed the stash, nothing may create another one. Lives on the duckdb module
-# for the same reason the stash does — this module object is transient
-# (executor._run_inprocess re-execs it per call and never puts it in
-# sys.modules), so a module-local flag would be forgotten by the next reader run.
-_HTTP_CON_LATCH = "_fused_render_http_con_closed"
-
-
-_HTTP_CON_LOCK = "_fused_render_http_con_lock"
-
-
-def _http_con_lock():
-    """The lock serializing "is it latched?" against "install the stash", shared by
-    every reader run in this process.
-
-    Also on the duckdb module, and for a sharper reason than the stash: a
-    module-level `threading.Lock()` in THIS file would be a different object every
-    call, since the executor re-execs this module per request — i.e. no lock at all.
-
-    Installed with `dict.setdefault` on the module's `__dict__`, which is the one
-    way to create a shared lock without already having one: the default is
-    constructed before the call, and setdefault itself is a single C-level dict
-    operation, so racing callers all receive whichever Lock landed first and the
-    losers' unused Lock objects are collected."""
-    return duckdb.__dict__.setdefault(_HTTP_CON_LOCK, threading.Lock())
-
-
-def _http_connection():
-    """A DuckDB connection for reading mounted parquet over HTTP, kept alive
-    across reader runs. DuckDB's external file cache holds the byte ranges a
-    query fetched, so re-filtering the same file is served from memory instead
-    of re-downloading row groups — but the cache dies with its database
-    instance, and the executor re-execs this module per call. Stash the
-    connection on the *duckdb* module (which does survive in sys.modules of
-    the server process) and hand out cursors. Racing calls may both build one;
-    the first to install wins and the loser CLOSES what it built (it used to be
-    dropped for the collector, waved off as harmless — but an unclosed
-    DuckDBPyConnection is precisely the object that aborts in a GIL-less
-    `exit()`, so "someone will collect it eventually" is the same bug on a
-    longer fuse).
-
-    Because the stash outlives every reader run, something has to close it
-    before the process exits: on macOS the server runs in-process inside the
-    rumps app and AppKit's `exit()` destructs this connection with NO GIL held
-    (SIGABRT, INCIDENT 2026-07-29). That is close_http_connection's job.
-
-    Raises once quit has closed the stash, rather than quietly building another
-    one: the caller's remote fast path already treats any failure here as "fall
-    back to reading the plain file path", which is the correct behavior for a
-    process on its way out. See _HTTP_CON_LATCH.
-
-    Building is deliberately done OUTSIDE the lock (connect + LOAD httpfs + the
-    pragmas are real work, and a read must not serialize behind another read's
-    setup) — but the decision to INSTALL is taken under it, re-reading the latch.
-    Checking the latch only up front left a window the width of that setup: a read
-    that passed the check could install its connection after quit had already
-    latched and cleared, and since the latch is one-way, nothing would ever close
-    that one. The invariant this pair of critical sections buys, and the reason the
-    re-check is not merely defensive: once close_http_connection returns, no
-    connection can be installed on the duckdb module again."""
-    lock = _http_con_lock()
-    with lock:
-        if getattr(duckdb, _HTTP_CON_LATCH, False):
-            raise RuntimeError(
-                "the shared DuckDB HTTP connection is closed (the app is quitting)")
-        con = getattr(duckdb, _HTTP_CON_KEY, None)
-    if con is None:
-        con = duckdb.connect(":memory:")
-        con.execute("LOAD httpfs")  # raises if unavailable -> caller falls back
-        con.execute("PRAGMA enable_object_cache=true")
-        # The object cache alone revalidates cached parquet metadata against
-        # the remote's etag/last-modified — and presigned store URLs are
-        # GET-signed, so the validation HEAD 403s and every run re-fetches
-        # and re-parses the footer (~700KB, several ranged reads). This
-        # setting caches metadata by URL with no revalidation, which fits
-        # this connection's traffic: mount-backed objects are effectively
-        # immutable, and the URLs themselves rotate (presigned links are
-        # re-minted every ~30min), naturally bounding staleness.
-        con.execute("SET parquet_metadata_cache=true")
-        # Remote scans block worker threads in HTTP reads, and the default
-        # pool (one per core) lets a single fat-column query starve every
-        # concurrent one — the grid's parallel per-column loads would all
-        # converge to the slowest column (measured: 32 threads -> the light
-        # columns land in ~5s while an 18MB column takes 13s; default pool ->
-        # everything takes 13s). IO-bound, so way past core count is fine.
-        #
-        # threads=32 used to also *drive* an over-read on many-small-row-group
-        # files: a LIMIT/OFFSET page let the parallel scan speculatively open
-        # ~threads row groups before the LIMIT halted it (measured ~32 groups /
-        # ~12s cold when only row group 0 was needed). That is fixed at the
-        # source now — the unsorted, unfiltered page prunes to its row-group
-        # range via a file_row_number predicate (see _page_sql), so DuckDB never
-        # schedules groups outside the window regardless of thread count. So
-        # threads=32 stays: it helps the single-big-row-group file (which must
-        # read whole column chunks and parallelizes to the bucket ceiling)
-        # without hurting the many-small-group file any more.
-        con.execute("SET threads=32")
-        with lock:
-            if getattr(duckdb, _HTTP_CON_LATCH, False):
-                # Quit latched while we were building. We own this connection and
-                # nothing else will ever see it, so we must close it here: leaving
-                # it to the collector is the crash on a longer fuse.
-                _close_quietly(con)
-                raise RuntimeError(
-                    "the shared DuckDB HTTP connection is closed (the app is "
-                    "quitting)")
-            winner = getattr(duckdb, _HTTP_CON_KEY, None)
-            if winner is None:
-                setattr(duckdb, _HTTP_CON_KEY, con)
-            else:
-                # A concurrent call installed its own first. Use the shared one (the
-                # point of the stash is one warm cache) and close ours.
-                _close_quietly(con)
-                con = winner
-    return con.cursor()
-
-
-def _close_quietly(con) -> None:
-    try:
-        con.close()
-    except Exception:
-        pass  # already invalid; nothing left to do but not raise
-
-
-def close_http_connection() -> bool:
-    """Close and drop the stashed HTTP connection; True if one was closed.
-
-    Called from the app's quit path (fused_render/app.py's `quit_teardown`)
-    while Python is still healthy and the GIL is held. It has to be an explicit
-    step because interpreter finalization never runs on macOS. That was true for
-    a bad reason and is now true by design, and the difference matters to anyone
-    debugging the next duckdb-at-exit report:
-
-      * until D357, quit ended in `NSApplication.terminate:` -> C `exit()`, and
-        pyobjc releases the GIL for the duration of that ObjC call, so the C++
-        static destructors `exit()` runs executed with no GIL — a surviving
-        `DuckDBPyConnection` destructs there, calls `PyEval_SaveThread`, and
-        Py_FatalError aborts the process (SIGABRT crash dialog, INCIDENT
-        2026-07-29: preview one mounted parquet file and every later quit
-        crashed; and again 2026-08-19 on a connection this close cannot reach).
-      * since D357 the app dies by `os._exit` (`app.hard_exit`) and no longer
-        reaches those destructors at all — no code path calls into AppKit's
-        termination any more (app.py's own structural test pins that).
-
-    So this close is no longer what averts an abort. It stays for the reason it
-    would have been worth having anyway: the stashed connection holds a socket
-    against an rclone HTTP serve that the very next teardown rung reaps, and the
-    latch below is a real barrier against a late read reopening one. Linux and
-    Windows exit through normal finalization and were unaffected throughout.
-
-    Latches first, and that is what makes closing this EARLY in the teardown
-    safe rather than racy: the server drain ahead of it is a bounded join that can
-    time out, so uvicorn may still be serving while the unmount and rcd steps run
-    for seconds, and any parquet read in that window would otherwise restash a
-    fresh connection and bring the abort back. Deliberately not deferred to
-    "immediately before terminate" instead — the steps in between are the ones
-    that can hang, and the hard deadline would then terminate having never closed
-    anything, which is precisely the crash.
-
-    Total no-op when no connection was ever built (the latch still goes on, so a
-    late read cannot start one), and never raises: quit must proceed whatever
-    DuckDB thinks of being closed.
-
-    Latching and taking the stash happen together under the shared lock, which is
-    what makes the latch a real barrier rather than a hint: a read already PAST the
-    check and inside connect() will re-take that lock before it installs anything,
-    see the latch, and close its own connection instead (see _http_connection).
-    The actual close() is done outside the lock — it can block on DuckDB's own
-    teardown, and a read arriving meanwhile should get its fast refusal, not queue
-    behind us."""
-    with _http_con_lock():
-        setattr(duckdb, _HTTP_CON_LATCH, True)
-        con = getattr(duckdb, _HTTP_CON_KEY, None)
-        # Drop the stash BEFORE closing: the attribute must be gone even if close()
-        # raises, because a closed-but-still-reachable connection is exactly the
-        # object exit()'s destructors trip over — and _http_connection must not hand
-        # out cursors from a connection being torn down.
-        if con is not None:
-            try:
-                delattr(duckdb, _HTTP_CON_KEY)
-            except AttributeError:
-                pass  # raced another closer; it holds the reference now
-    if con is None:
-        return False
-    try:
-        con.close()
-    except Exception:
-        return False
-    return True
-
-
 def relation_for(file: str, file_row_number: bool = False) -> str:
     """The read-only table-function that reads `file` by extension. Shared with
-    writer.py so read and write agree on how each format is parsed. `file` may
-    be an http(s) URL (the mounted-parquet fast path), which is passed through
-    verbatim; the extension logic reads the same either way.
+    writer.py so read and write agree on how each format is parsed.
 
     `file_row_number` (parquet only) asks read_parquet to expose its
     `file_row_number` pseudo-column — the row's physical position in the file.
     It's ignored for the other formats, which have no such pseudo-column."""
-    is_url = file.startswith(("http://", "https://"))
-    lit = _quote_str(file if is_url else os.path.abspath(file))
+    lit = _quote_str(os.path.abspath(file))
     ext = _logical_ext(file)
     if ext == ".parquet":
         opt = ", file_row_number=true" if file_row_number else ""
@@ -451,17 +235,15 @@ def _page_sql(scan: str, relation: str, where: str, order: str,
               limit: int = MAX_LIMIT) -> str:
     """The paging SELECT, which must also yield each row's physical file position
     as `_POS` (the writer's edit key) even after WHERE/ORDER reshuffle the page.
-    `scan` is whatever relation_for reads — the file path, or the http URL on
-    the mounted-parquet fast path. `projection` narrows the selected columns
-    (already quoted, comma-joined); filter/sort columns need not be in it —
-    WHERE/ORDER BY bind against the scan, not the select list.
+    `scan` is the file path relation_for reads. `projection` narrows the
+    selected columns (already quoted, comma-joined); filter/sort columns need
+    not be in it — WHERE/ORDER BY bind against the scan, not the select list.
 
     For parquet the position comes from read_parquet's `file_row_number`
     pseudo-column. Crucially, that leaves predicate + row-group pushdown intact:
     a filtered/sorted page prunes to the matching row groups, and a narrow
     projection reads only those columns' bytes — what the grid's per-column
-    parallel loading over a remote file relies on. The obvious alternative —
-    numbering rows with a `row_number() OVER ()` window — is a blocking
+    parallel loading relies on. The obvious alternative — numbering rows with a `row_number() OVER ()` window — is a blocking
     operator that sits between the filter and the scan, defeating both
     pushdowns and forcing DuckDB to read row groups that provably hold no
     match. CSV/JSON have no such pseudo-column and can't prune anyway, so they
@@ -471,7 +253,7 @@ def _page_sql(scan: str, relation: str, where: str, order: str,
     row-group pruning up front: file position IS the page order, so the window
     [offset, offset+limit) is expressed as a `file_row_number` range predicate
     instead of LIMIT/OFFSET. LIMIT/OFFSET alone are *reactive* — DuckDB's
-    parallel scan (threads=32 here) speculatively reads ~threads row groups
+    parallel scan speculatively reads ~threads row groups
     before the LIMIT halts it (measured: ~32 groups / ~12s cold when only row
     group 0 / ~2MB was needed). The range predicate prunes to just the groups
     spanning the window, so only their bytes move. Sound only unsorted +
@@ -597,7 +379,7 @@ def _fs_gate(file, out):
 
 def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
          sort: "dict | None" = None, filters: "list | None" = None,
-         mode: str = "full", source_url: str = "",
+         mode: str = "full",
          columns: "list | None" = None,
          positions: "list | None" = None) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
@@ -610,29 +392,6 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         # "count" returns only {total_rows} — no editability verdict to gate.
         return out if mode == "count" else _fs_gate(file, out)
 
-    # Remote fast path: scan the URL the page handed us on the shared
-    # connection, for every flat format (.duckdb/.ddb already returned above).
-    # Reading a mount-backed file over the serve — parquet, CSV/TSV or JSON —
-    # keeps DuckDB's concurrent range reads off the NFS mount, whose 1s RPC
-    # timeout drops the whole mount under an analytical scan. CSV/JSON can't
-    # prune like parquet and re-scan the file per page, but the serve's shared
-    # VFS cache (mounts.SERVE_VFS_OPT) makes the repeat reads local-disk-cheap,
-    # so slow-but-safe beats fast-but-fatal. Any failure — httpfs unavailable,
-    # the URL gone stale, a network error mid-query — falls back to the path.
-    if source_url.startswith(("http://", "https://")):
-        try:
-            cur = _http_connection()
-        except Exception:
-            cur = None
-        if cur is not None:
-            try:
-                return _read_flat(file, source_url, cur, ext, offset, limit,
-                                  sort, filters, mode, columns, positions)
-            except duckdb.Error:
-                pass
-            finally:
-                cur.close()
-
     con = duckdb.connect(":memory:")
     try:
         # Reuse parsed parquet/CSV metadata across the queries in *this* call
@@ -640,18 +399,16 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         # across calls — the executor re-execs this module and never keeps it in
         # sys.modules — so this only saves within a single reader run.
         con.execute("PRAGMA enable_object_cache=true")
-        return _read_flat(file, file, con, ext, offset, limit, sort, filters,
+        return _read_flat(file, con, ext, offset, limit, sort, filters,
                           mode, columns, positions)
     finally:
         con.close()
 
 
-def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
+def _read_flat(file: str, con, ext: str, offset: int, limit: int,
                sort, filters, mode: str, columns: "list | None" = None,
                positions: "list | None" = None) -> dict:
-    """Page a flat file on an open connection/cursor. `scan` is what DuckDB
-    reads (the file path, or its http URL on the mounted fast path); `file`
-    stays the real path for the FS-level editability gate.
+    """Page a flat file on an open connection/cursor.
 
     Sorted/filtered pages over parquet load in two phases: mode="positions"
     resolves the page window to file positions (one query pays the sort/filter
@@ -659,7 +416,7 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
     as `positions` and becomes a row-group-pruned point read — no per-batch
     re-sort, and every batch provably resolves the same row set. `positions`
     is authoritative: sort/filters/offset/limit are ignored alongside it."""
-    relation = relation_for(scan)
+    relation = relation_for(file)
     # Column types (BIGINT, VARCHAR, DOUBLE, …) so the grid can label each
     # header. DESCRIBE reports the relation's schema without scanning rows,
     # and drives which filters are valid and how they cast.
@@ -668,8 +425,7 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
     where, wbinds = _build_where(filters, types)
 
     # "schema" answers from the footer alone — no row bytes moved. The grid
-    # uses it over a remote file to paint the full header + skeleton cells
-    # immediately, then fills columns in from parallel batched page calls.
+    # uses it to paint the full header + skeleton cells immediately, then fills columns in from parallel batched page calls.
     if mode == "schema":
         editable = ext in _EDITABLE_EXTS
         # Compressed bytes per column (first row group — the one a first page
@@ -683,7 +439,7 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
                 col_sizes = {r[0]: r[1] for r in con.execute(
                     "SELECT path_in_schema, SUM(total_compressed_size) "
                     "FROM parquet_metadata(?) WHERE row_group_id = 0 "
-                    "GROUP BY path_in_schema", [scan]).fetchall()}
+                    "GROUP BY path_in_schema", [file]).fetchall()}
             except duckdb.Error:
                 pass
         return _fs_gate(file, {
@@ -696,9 +452,8 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
                 "writing that back would lose the original nested structure."),
         })
 
-    # The filtered count scans every candidate row group, so over a remote
-    # mount it dominates. The grid fetches it in a separate "count" call and
-    # renders the page first ("… rows"), so "page" skips it (total_rows None)
+    # The filtered count scans every candidate row group, so it can dominate.
+    # The grid fetches it in a separate "count" call and renders the page first ("… rows"), so "page" skips it (total_rows None)
     # and "count" returns only the total. "full" (default) keeps both inline.
     if mode == "count":
         total = con.execute(
@@ -712,7 +467,7 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
     if mode == "positions":
         if ext != ".parquet":
             raise ValueError("positions mode requires a parquet file")
-        rel = relation_for(scan, file_row_number=True)
+        rel = relation_for(file, file_row_number=True)
         tie = f"{order}, file_row_number" if order else ""
         prune = where
         if order and not where:
@@ -720,7 +475,7 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
             # hold the window. Best-effort — any surprise (unorderable stats
             # values, metadata query failure) keeps the full scan.
             try:
-                prune = _rowgroup_prune(con, scan, sort, types, offset + limit)
+                prune = _rowgroup_prune(con, file, sort, types, offset + limit)
             except (duckdb.Error, TypeError):
                 prune = ""
         cur = con.execute(
@@ -745,25 +500,23 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
         # spelling of "no rows" (positions are never negative).
         if ext != ".parquet":
             raise ValueError("positions require a parquet file")
-        rel = relation_for(scan, file_row_number=True)
+        rel = relation_for(file, file_row_number=True)
         proj = ("* EXCLUDE (file_row_number)" if projection == "*"
                 else projection)
         in_list = ",".join(str(int(p)) for p in positions[:MAX_LIMIT]) or "-1"
         cur = con.execute(f"SELECT file_row_number AS {_POS}, {proj} "
                           f"FROM {rel} WHERE file_row_number IN ({in_list})")
-    elif _logical_ext(scan) == ".parquet" and not where and not order:
+    elif _logical_ext(file) == ".parquet" and not where and not order:
         # Unsorted, unfiltered parquet page: _page_sql bakes the window into a
         # file_row_number range predicate (see its docstring) so DuckDB prunes
         # to the covering row groups. The window is in the SQL, not bound —
         # wbinds is empty here (no filter), so there are no ? to fill.
-        # Key on the SCAN's ext, not `ext` (the file's): _page_sql branches on
-        # _logical_ext(scan), and if the two diverge (a source_url without a
-        # splitext-visible .parquet) the branch and the emitted SQL must still
-        # agree, else the no-bind path meets a LIMIT ? OFFSET ? query.
-        cur = con.execute(_page_sql(scan, relation, where, order, projection,
+        # Keyed on _logical_ext, the same test _page_sql branches on, so the
+        # branch and the emitted SQL agree (no-bind vs LIMIT ? OFFSET ?).
+        cur = con.execute(_page_sql(file, relation, where, order, projection,
                                     offset=offset, limit=limit), wbinds)
     else:
-        cur = con.execute(_page_sql(scan, relation, where, order, projection),
+        cur = con.execute(_page_sql(file, relation, where, order, projection),
                           wbinds + [limit, offset])
     desc = [d[0] for d in cur.description] if cur.description else []
     columns = desc[1:]                      # drop the leading _POS column

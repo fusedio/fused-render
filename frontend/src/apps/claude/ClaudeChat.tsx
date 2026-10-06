@@ -238,8 +238,6 @@ export interface ClaudeChatProps {
    * PR3 hangs the notes off the same getter.
    */
   annotateTarget?: () => HTMLIFrameElement | null;
-  /** `_remote=1`. */
-  remote?: boolean;
   /** `_preview=1` — this mount is a thumbnail, so the pane's own render is too. */
   preview?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
@@ -4862,64 +4860,68 @@ function ChatBody(props: ChatBodyProps) {
                   <RecapFold text={away.recap.text} />
                 ) : null
               }
+              trailing={
+                <>
+                {/* FOLLOW-UPS THE LIVE RUN IS HOLDING, in the transcript's own user
+                    bubble and in its own column. Ordinary bubbles, with no line
+                    under them and no chrome of any kind: the message is not queued,
+                    it is not behind anything, and the host will drain it in seconds
+                    — a caption saying so would be this feature narrating the app's
+                    normal behaviour back at the reader (design.md, UI).
+
+                    THEY ARE DRAWN FROM THE RUN (`state.inbox`), which is what makes
+                    a reload paint the same picture: the optimistic bubble above them
+                    is this document's memory and does not survive one, and the
+                    transcript cannot help because nothing has consumed the message
+                    yet. Deduped against both (`inboxRows`), so no message is ever
+                    two bubbles. */}
+                {queueOn &&
+                  inboxRows.map((row) => (
+                  <div className="c-inbox" key={row.id}>
+                    <div className="turn user c-inbox-turn">
+                      <div className="bubble">{row.text}</div>
+                    </div>
+                  </div>
+                  ))}
+                {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
+                    conversation. They are the LAST rows of the transcript by
+                    construction — the scheduler sends in `due` order, which for a
+                    chat's own sends is the order they were typed, and nothing of
+                    this conversation's can be after them — so drawing them
+                    immediately under the log IS drawing them in the transcript,
+                    without threading a per-turn slot through it for rows that belong
+                    to the schedule rather than to the run.
+
+                    DRAWN FROM THE SERVER (`waiting`), which is what makes a reload
+                    paint the identical picture. The row the admission puts up a
+                    second after Enter is the same row, minted early from the
+                    answer and replaced by the server's own on the next poll.
+
+                    NOTHING HERE FOR A FOLLOW-UP INTO THIS CHAT'S OWN RUNNING TURN.
+                    Those bubbles are ordinary bubbles the controller posted, they
+                    are held by the live host for a matter of seconds, and there is
+                    no entry to be behind, to run next, or to delete — so they get no
+                    second row, no card, and (under the flag) not even the composer's
+                    old footnote. A count of something nobody can act on was three
+                    pieces of chrome for a state that resolves itself. */}
+                {queueOn &&
+                  waiting.map((row) => (
+                    <WaitingRow
+                      key={row.entryId}
+                      row={row}
+                      facts={waitFacts}
+                      deleting={deleting.has(row.entryId)}
+                      onDelete={() => void deleteWaiting(row.entryId)}
+                      /* A REPEAT'S SECOND VERB. `delete` on an occurrence skips one
+                         run and the template arms the next, so the row offers the
+                         thing the reader actually meant — and it posts the TEMPLATE
+                         id the row carries, which is the only id that stops it. */
+                      onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
+                    />
+                  ))}
+                </>
+              }
             />
-            {/* FOLLOW-UPS THE LIVE RUN IS HOLDING, in the transcript's own user
-                bubble and in its own column. Ordinary bubbles, with no line
-                under them and no chrome of any kind: the message is not queued,
-                it is not behind anything, and the host will drain it in seconds
-                — a caption saying so would be this feature narrating the app's
-                normal behaviour back at the reader (design.md, UI).
-
-                THEY ARE DRAWN FROM THE RUN (`state.inbox`), which is what makes
-                a reload paint the same picture: the optimistic bubble above them
-                is this document's memory and does not survive one, and the
-                transcript cannot help because nothing has consumed the message
-                yet. Deduped against both (`inboxRows`), so no message is ever
-                two bubbles. */}
-            {queueOn &&
-              inboxRows.map((row) => (
-              <div className="c-inbox" key={row.id}>
-                <div className="turn user c-inbox-turn">
-                  <div className="bubble">{row.text}</div>
-                </div>
-              </div>
-              ))}
-            {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
-                conversation. They are the LAST rows of the transcript by
-                construction — the scheduler sends in `due` order, which for a
-                chat's own sends is the order they were typed, and nothing of
-                this conversation's can be after them — so drawing them
-                immediately under the log IS drawing them in the transcript,
-                without threading a per-turn slot through it for rows that belong
-                to the schedule rather than to the run.
-
-                DRAWN FROM THE SERVER (`waiting`), which is what makes a reload
-                paint the identical picture. The row the admission puts up a
-                second after Enter is the same row, minted early from the
-                answer and replaced by the server's own on the next poll.
-
-                NOTHING HERE FOR A FOLLOW-UP INTO THIS CHAT'S OWN RUNNING TURN.
-                Those bubbles are ordinary bubbles the controller posted, they
-                are held by the live host for a matter of seconds, and there is
-                no entry to be behind, to run next, or to delete — so they get no
-                second row, no card, and (under the flag) not even the composer's
-                old footnote. A count of something nobody can act on was three
-                pieces of chrome for a state that resolves itself. */}
-            {queueOn &&
-              waiting.map((row) => (
-                <WaitingRow
-                  key={row.entryId}
-                  row={row}
-                  facts={waitFacts}
-                  deleting={deleting.has(row.entryId)}
-                  onDelete={() => void deleteWaiting(row.entryId)}
-                  /* A REPEAT'S SECOND VERB. `delete` on an occurrence skips one
-                     run and the template arms the next, so the row offers the
-                     thing the reader actually meant — and it posts the TEMPLATE
-                     id the row carries, which is the only id that stops it. */
-                  onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
-                />
-              ))}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
                 scrolls; this is pinned where the composer is, so a reader twenty
                 turns down still knows something of theirs is held, what by, and

@@ -122,7 +122,7 @@ def main(action: str = "history", file: str = "", version_id=None,
          enrich: bool = False, confirm_unique: bool = False) -> dict:
     # Every revert action answers with data, never an exception: a raised error
     # here reaches the page as the red traceback overlay, and "no history for
-    # this file" / "read-only mount" / "stale version id" are all ordinary
+    # this file" / "read-only file" / "stale version id" are all ordinary
     # states of this surface that the panel renders as text.
     if action in ("history", "revert_plan", "revert"):
         if not file:

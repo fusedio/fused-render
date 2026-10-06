@@ -18,14 +18,6 @@ Three rules shape the whole module:
    turns it into a path against the candidate set that exists right now.
    Renaming `Foo.md` silently changes what every other note's `[[Foo]]` points
    at, so a cached resolved edge would be wrong rather than merely stale.
-
-3. **The recursive walk never touches a remote mount** (MD-11). `scan_root`
-   raises `MountUnsupported` for a mount-backed root before it walks anything —
-   a kernel listing over an rclone NFS mount on a flat million-key prefix is
-   the known mount-wedge, and the folder mode's `condition.py` refuses the same
-   paths so the mode is never even offered. Belt and braces: the gate is the
-   UX, this is the guarantee. Single-file read/write on a mount stays fully
-   supported — that is one bounded read, not a walk.
 """
 import os
 import re
@@ -118,35 +110,6 @@ SKIP_DIRS = frozenset((
 ))
 
 
-class MountUnsupported(Exception):
-    """Raised instead of walking a mount-backed root (MD-11)."""
-
-
-# --------------------------------------------------------------- mount refusal
-
-
-def _refuse_mounts(root: str) -> None:
-    """Refuse a mount-backed root outright.
-
-    The detector is `shared/appenv.is_mount_backed`, a faithful port of the
-    app's `shell.mounts.is_mount_backed` that answers from `FUSED_RENDER_*`
-    instead of importing `fused_render`. It has to: this file runs as a child
-    process, and the fused local execution backend strips PYTHONPATH from those,
-    so the old `from fused_render.shell.mounts import ...` took its except branch
-    on EVERY run there and refused every root. An ImportError still means we
-    cannot tell, and "cannot tell" must read as "refuse": a walk we were not
-    allowed to do is the failure this exists to prevent.
-    """
-    try:
-        from appenv import is_mount_backed
-    except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
-        raise MountUnsupported(f"mount detection unavailable: {exc}") from exc
-    if is_mount_backed(root):
-        raise MountUnsupported(
-            "The link graph is not supported on remote mounts. "
-            "Opening and editing a single .md file still works.")
-
-
 # ----------------------------------------------------------------- vault root
 
 # What marks the top of a vault. `.obsidian/` is Obsidian's own marker; `.git`
@@ -159,15 +122,6 @@ VAULT_MARKERS = (".obsidian", ".git")
 # shallow enough that a note in a deep temp path cannot drag the scan up to
 # $HOME by accident.
 MAX_ASCENT = 8
-
-
-def _mount_detector():
-    """`is_mount_backed`, or None when we cannot tell (MD-11's fail-closed rule)."""
-    try:
-        from appenv import is_mount_backed
-    except Exception:  # noqa: BLE001 — cannot tell -> do not ascend
-        return None
-    return is_mount_backed
 
 
 def _has_vault_marker(directory: str) -> bool:
@@ -194,22 +148,10 @@ def vault_root(start: str) -> str:
     `v/docs/` linking `../spec/overview.md` got a halo of grey `../…` ghosts and
     an empty backlinks panel.
 
-    Bounded (MAX_ASCENT levels, and the filesystem root ends it either way) and
-    mount-aware: the climb never enters a mount-backed path, because a walk over
-    one is the thing MD-11 exists to prevent — and because a local note that
-    merely lives under a mounted folder should be scanned in the folder it is
-    actually in, not answered with `mount_unsupported`. Falls back to `start`
-    when no marker is found: never `$HOME`, never `/`.
+    Bounded (MAX_ASCENT levels, and the filesystem root ends it either way).
+    Falls back to `start` when no marker is found: never `$HOME`, never `/`.
     """
     start = os.path.abspath(start)
-    detect = _mount_detector()
-    if detect is None:
-        return start
-    try:
-        if detect(start):
-            return start  # _refuse_mounts has the last word on this one anyway
-    except Exception:  # noqa: BLE001 — cannot tell -> do not ascend
-        return start
     current = start
     for _ in range(MAX_ASCENT + 1):
         if _has_vault_marker(current):
@@ -217,11 +159,6 @@ def vault_root(start: str) -> str:
         parent = os.path.dirname(current)
         if parent == current:
             break  # the filesystem root
-        try:
-            if detect(parent):
-                break
-        except Exception:  # noqa: BLE001 — cannot tell -> stop climbing
-            break
         current = parent
     return start
 
@@ -688,10 +625,9 @@ def scan_root(root: str, max_files: int = MAX_FILES,
     """Walk `root` and parse every note under it, with no cache involved.
 
     Returns `{"root", "notes": {relpath: row}, "assets": [relpath],
-    "truncated"}`. Refuses a mount-backed root before walking (MD-11).
+    "truncated"}`.
     """
     root = os.path.abspath(root)
-    _refuse_mounts(root)
     walk = _walk(root, max_files, max_assets, max_entries)
     notes = {}
     for rel, (full, mtime_ns, size) in walk["found"].items():
@@ -840,9 +776,6 @@ def scan_indexed(root: str, max_files: int = MAX_FILES,
     import json
 
     root = os.path.abspath(root)
-    # Before anything, including creating the index dir: the walk below is the
-    # operation that must never happen on a mount (MD-11).
-    _refuse_mounts(root)
     walk = _walk(root, max_files, max_assets, max_entries)
     found = walk["found"]
 
@@ -1212,10 +1145,7 @@ def main(action: str = "note", file: str = "", root: str = "", depth=1):
     optional there and names the note the completions will be inserted INTO, so
     the forms can be validated from it), and
     `graph` both graph surfaces — the local panel (with `file` + `depth`) and
-    the folder-level mode (root only). Every one of them refuses a mount-backed
-    root (MD-11); reading and writing a single file is not affected, because
-    that is one bounded read and one bounded write.
-
+    the folder-level mode (root only). 
     Without an explicit `root`, the scan root is the nearest ancestor of the
     note carrying a vault marker (`vault_root`), falling back to the note's own
     folder. `depth` is untyped on purpose: it arrives as a string from a URL
@@ -1232,10 +1162,6 @@ def main(action: str = "note", file: str = "", root: str = "", depth=1):
     # An explicit `root` always wins; the ascent only supplies the DEFAULT.
     root = os.path.abspath(root) if root else _default_root(file)
     depth = _coerce_depth(depth)
-    try:
-        _refuse_mounts(root)
-    except MountUnsupported as exc:
-        return _error("mount_unsupported", str(exc))
 
     rel = None
     if file:
@@ -1250,10 +1176,7 @@ def main(action: str = "note", file: str = "", root: str = "", depth=1):
                     return _error("outside_root", f"{file} is not under {root}")
                 rel = None
 
-    try:
-        scan = scan_indexed(root)
-    except MountUnsupported as exc:
-        return _error("mount_unsupported", str(exc))
+    scan = scan_indexed(root)
     if action == "candidates":
         # `file` is optional here and stays optional: without it every form is
         # validated from the root, which is all a caller with no open note can

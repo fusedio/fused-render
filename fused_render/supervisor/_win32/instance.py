@@ -287,7 +287,7 @@ def _current_user_sid() -> str:
 
 def reap_payload_processes(timeout: float) -> None:
     """--shutdown-for-upgrade sweep for when no primary is running: detached
-    workers (template daemons, rclone rcd) outlive the app by design and would
+    workers (template daemons) outlive the app by design and would
     hold payload\\ locked against the installer's rename."""
     _wait_payload_gone(time.monotonic() + timeout)
 

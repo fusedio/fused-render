@@ -1,0 +1,195 @@
+# MCP tools for this app, curated in fused-render's MCP panel. Every tool calls
+# mac.py main(action=...). Reads (status, probe, shortcuts, applets, frontmost,
+# reminders, calendar, dark_mode/volume without a value) run at once; anything
+# that runs a script, a shortcut or an applet, or changes a setting, pauses for
+# the user's approval (its name carries a write verb).
+
+[[tool]]
+name = "mac_status"
+description = "Check Mac automation from here: macOS version and what it supports (scripting, Shortcuts CLI, Shortcuts automations, Use Model), whether System Events answers, how many shortcuts and applets exist. Call this first; its `note` tells the user what their macOS can and cannot do."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "status"
+
+[[tool]]
+name = "mac_probe"
+description = "Which stock apps this process may automate (the Automation grant, skill Step 0): one harmless read each against Reminders, Calendar, Notes, Mail, Messages, Finder, Safari and Music, or only `app`. Returns granted:[...], denied:[...] with the hint to give the user for a denied app. Call before scripting an app for the first time."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "probe"
+
+[[tool]]
+name = "mac_run_script"
+description = "Run an AppleScript (language='applescript') or JavaScript for Automation (language='jxa') `script` through osascript with `args` as argv (AppleScript: `on run argv`; JXA: `function run(argv)`; never paste user text into the script body). JXA must `return JSON.stringify(...)`: the result comes back parsed in `json`, plus stdout, rc, stderr and a `hint` on known macOS errors (-1743 = no Automation grant: stop and tell the user, do not retry)."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "run"
+
+[[tool]]
+name = "mac_compile_check"
+description = "Syntax-check a `script` (language 'applescript' or 'jxa') with osacompile without running it. Use before mac_run_script or mac_create_applet for anything that sends, deletes or changes data."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "compile"
+
+[[tool]]
+name = "mac_shortcuts"
+description = "The user's Shortcuts with their UUIDs: shortcuts:[{name, id}], optionally filtered by `name` (substring). Shortcuts cannot be made from here; the user builds them in Shortcuts.app."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "shortcuts"
+
+[[tool]]
+name = "mac_run_shortcut"
+description = "Run one shortcut by `name` or UUID (UUID is safer), feeding `input` text and reading its output as `output_type` (public.plain-text or public.json). Times out after 30 s: a shortcut that ends in Show Result or asks for input never returns to the CLI; it must end in Stop and Output."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "shortcut"
+
+[[tool]]
+name = "mac_notify"
+description = "Show a macOS notification with `message`, `title` and optional `subtitle`. Needs no Automation grant."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "notify"
+
+[[tool]]
+name = "mac_dark_mode"
+description = "Read whether the Mac is in dark mode: {dark: true|false}. To switch it, use mac_set_dark_mode."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "dark_mode"
+
+[[tool]]
+name = "mac_set_dark_mode"
+description = "Switch the Mac's appearance: `value` true/'dark' for dark mode, false/'light' for light."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "dark_mode"
+
+[[tool]]
+name = "mac_volume"
+description = "Read the output volume: {output: 0-100, muted}. To change it, use mac_set_volume."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "volume"
+
+[[tool]]
+name = "mac_set_volume"
+description = "Change the output volume to `value` (0-100)."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "volume"
+
+[[tool]]
+name = "mac_frontmost"
+description = "The frontmost app and every app with a window: {frontmost, apps:[...]}."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "frontmost"
+
+[[tool]]
+name = "mac_reminders"
+description = "Open reminders in `reminder_list` (default: the default list), newest `limit`: {list, lists:[names], open, reminders:[{id, name, body, due}]}. Needs the Reminders Automation grant (mac_probe)."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "reminders"
+
+[[tool]]
+name = "mac_add_reminder"
+description = "Create a reminder `name` with optional `body` and `due` (ISO date-time) in `reminder_list` (default list). Returns its id, list and due date."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "add_reminder"
+
+[[tool]]
+name = "mac_calendar"
+description = "Upcoming events in the next `days` days across Calendar.app's calendars (or one `calendar`): {calendars, count, events:[{calendar, summary, start, end, location, recurring}]}. Calendar.app only knows what it has synced and shows recurring events once; an empty answer is not proof of a free week."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "calendar"
+
+[[tool]]
+name = "mac_applets"
+description = "The automation apps (applets) this app has built under ~/Fused/automations: applets:[{name, path, modified, has_script}]."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "applets"
+
+[[tool]]
+name = "mac_create_applet"
+description = "Build an automation app: compile `script` (language 'applescript' or 'jxa') with osacompile into ~/Fused/automations/<name>.app, a double-clickable macOS app with its own Automation permission, so it runs from the Dock, Finder, a Shortcut or a launchd schedule. Returns path and how to run it. `overwrite=true` replaces an existing applet. Check the script with mac_compile_check first."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "create_applet"
+
+[[tool]]
+name = "mac_run_applet"
+description = "Launch one of the built applets by `name` (or an absolute .app path) and wait for it to finish. The first run of a new applet makes macOS ask the user to allow it to control each app it scripts."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "run_applet"
+
+[[tool]]
+name = "mac_delete_applet"
+description = "Remove a built applet by `name` from ~/Fused/automations. There is no undo."
+file = "mac.py"
+entrypoint = "main"
+signature = "main(action: str='status', script: str='', language: str='applescript', args: list=[], app: str='', name: str='', input: str='', output_type: str='public.plain-text', title: str='', message: str='', subtitle: str='', value=None, limit: int=20, days: int=7, reminder_list: str='', calendar: str='', body: str='', due: str='', overwrite: bool=False)"
+
+[tool.pinned]
+action = "delete_applet"

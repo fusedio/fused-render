@@ -81,7 +81,7 @@ The loop, per configured root (`index_routes.scan_roots(load_config())`):
    without a second timer thread.
 3. **Filter at arrival** (`watch_filter`). Drop a path when
    `ignore.ignored_for_index(cfg.rules, path, tree=True)` says so, or when
-   `MountGuard(mounts_dir=runner._mounts_dir()).blocks(path)`. Read the
+   `MountGuard().blocks(path)`. Read the
    `tree=` semantics in `ignore.py:119` and use the form that means "this
    path or any ancestor is ignored". The app's own state folder
    (`~/.fused-render`, D548) and the index store under it (`cfg.dir`) are

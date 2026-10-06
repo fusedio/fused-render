@@ -17,10 +17,9 @@ changed in the move, and why:
     touch a real home).
   * **`python -m fused_render.index.worker`** rather than `Popen([python,
     __file__])`, which has no meaning inside a py2app bundle.
-  * **A structural mount guard** (ignore.MountGuard) on top of the ignore
-    entry for the mounts dir: kernel FS syscalls on an rclone NFS mount path
-    can wedge the mount permanently, so refusing them cannot be left to a
-    user-editable list.
+  * **A structural home-tree guard** (ignore.MountGuard) that refuses the
+    fused-render home trees: indexing the app's own state cannot be left to a
+    user-editable ignore list.
   * **No raw `sql` action.** OpenIndex handed arbitrary duckdb statements to a
     trusted local page; behind an HTTP route that is an arbitrary read/write
     surface. `stats` and `lookup` remain.

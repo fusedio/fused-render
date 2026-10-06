@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
+<title>Mac Automation</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f6f4; --panel: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e0; --accent: #5e5ce6; --soft: #ecebfd; --err: #c62828; --ok: #2f8f58; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141414; --panel: #1d1d1f; --text: #ececec; --muted: #9a9a9e; --line: #2c2c2e; --accent: #7d7bff; --soft: #24234a; --err: #ff6b6b; --ok: #5fd38a; } }
+  :root[data-theme="light"] { color-scheme: light; --bg: #f6f6f4; --panel: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e0; --accent: #5e5ce6; --soft: #ecebfd; --err: #c62828; --ok: #2f8f58; }
+  :root[data-theme="dark"] { color-scheme: dark; --bg: #141414; --panel: #1d1d1f; --text: #ececec; --muted: #9a9a9e; --line: #2c2c2e; --accent: #7d7bff; --soft: #24234a; --err: #ff6b6b; --ok: #5fd38a; }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, system-ui, sans-serif; }
+  main { display: grid; grid-template-columns: 1fr 340px; grid-template-rows: auto 1fr; height: 100%; }
+  header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); }
+  header b { color: var(--text); }
+  .pill { padding: 2px 8px; border-radius: 999px; background: var(--soft); color: var(--text); }
+  .pill.ok { color: var(--ok); } .pill.no { color: var(--err); }
+  section, aside { overflow: auto; padding: 16px; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+  h2:first-child { margin-top: 0; }
+  textarea, input[type=text], select { width: 100%; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+  textarea { min-height: 180px; resize: vertical; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  .row label { font-size: 12px; color: var(--muted); display: flex; gap: 4px; align-items: center; }
+  .row input[type=text] { flex: 1; min-width: 120px; }
+  button { font: inherit; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  pre { white-space: pre-wrap; word-break: break-word; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 8px 0 0; min-height: 44px; }
+  pre.err { color: var(--err); }
+  .item { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .item small { color: var(--muted); display: block; font-size: 11px; }
+  .item button { padding: 3px 8px; font-size: 12px; }
+  .empty { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header id="status">Checking this Mac…</header>
+  <section>
+    <h2>Script</h2>
+    <div class="row">
+      <label><input type="radio" name="lang" value="applescript" checked /> AppleScript</label>
+      <label><input type="radio" name="lang" value="jxa" /> JavaScript (JXA)</label>
+      <label>args <input id="args" type="text" placeholder='["one", "two"]' /></label>
+    </div>
+    <textarea id="script" spellcheck="false">tell application "System Events" to tell appearance preferences to get dark mode</textarea>
+    <div class="row">
+      <button id="check">Check syntax</button>
+      <button id="run" class="primary">Run</button>
+      <span style="flex:1"></span>
+      <label>applet name <input id="appletName" type="text" placeholder="Morning" /></label>
+      <button id="build">Build automation app</button>
+    </div>
+    <pre id="out" class="empty">Results show here. JXA scripts should end in return JSON.stringify(...).</pre>
+  </section>
+  <aside>
+    <h2>Automation apps</h2>
+    <div id="applets" class="empty">Loading…</div>
+    <h2>Shortcuts</h2>
+    <div class="row"><input id="shortcutInput" type="text" placeholder="input text (optional)" /></div>
+    <div id="shortcuts" class="empty">Loading…</div>
+  </aside>
+</main>
+<script>
+  const $ = id => document.getElementById(id), esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // One runPython at a time: the bridge does not resolve calls made in parallel.
+  let chain = Promise.resolve();
+  const call = args => (chain = chain.catch(() => {}).then(() => fused.runPython("./mac.py", args)));
+  const lang = () => document.querySelector('input[name=lang]:checked').value;
+  const show = r => { const el = $("out"); el.className = r && r.error ? "err" : ""; el.textContent = JSON.stringify(r, null, 1); };
+  const parseArgs = () => { const t = $("args").value.trim(); if (!t) return []; try { const v = JSON.parse(t); return Array.isArray(v) ? v : [v]; } catch (e) { return [t]; } };
+
+  async function loadStatus() {
+    const s = await call({ action: "status" });
+    if (!s || s.error) { $("status").innerHTML = `<span class="pill no">${esc(s?.error || "no answer")}</span>`; return; }
+    const sup = s.supports || {};
+    $("status").innerHTML = `<span>macOS <b>${esc(s.macos)} ${esc(s.macos_name)}</b> · ${esc(s.arch)}</span>`
+      + `<span class="pill ${s.system_events ? "ok" : "no"}">System Events ${s.system_events ? "granted" : "denied"}</span>`
+      + `<span class="pill ${s.shortcuts_cli ? "ok" : "no"}">${s.shortcuts} shortcuts</span>`
+      + `<span class="pill">${s.applets} applets · ${esc(s.automations_dir)}</span>`
+      + `<span class="pill ${sup.shortcuts_automations ? "ok" : ""}">Shortcuts automations ${sup.shortcuts_automations ? "yes" : "macOS 26"}</span>`
+      + `<span class="pill ${sup.apple_intelligence_actions ? "ok" : ""}">Apple Intelligence ${sup.apple_intelligence_actions ? "yes" : "15.1+ / Apple silicon"}</span>`
+      + `<button id="probe" style="margin-left:auto">Probe app grants</button>`;
+    $("probe").onclick = async () => { $("probe").disabled = true; show(await call({ action: "probe" })); $("probe").disabled = false; };
+  }
+  async function loadApplets() {
+    const r = await call({ action: "applets" }), el = $("applets");
+    if (!r || r.error) { el.innerHTML = `<span class="empty">${esc(r?.error || "no answer")}</span>`; return; }
+    if (!r.applets.length) { el.innerHTML = `<span class="empty">None yet. Write a script, name it and click Build.</span>`; return; }
+    el.innerHTML = r.applets.map(a => `<div class="item"><div><b>${esc(a.name)}</b><small>${esc(a.path)}</small></div>`
+      + `<span><button data-run="${esc(a.name)}">Run</button> <button data-del="${esc(a.name)}">Delete</button></span></div>`).join("");
+    el.querySelectorAll("[data-run]").forEach(b => b.onclick = async () => { b.disabled = true; show(await call({ action: "run_applet", name: b.dataset.run })); b.disabled = false; });
+    el.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => { if (!confirm(`Delete applet "${b.dataset.del}"?`)) return; show(await call({ action: "delete_applet", name: b.dataset.del })); loadApplets(); loadStatus(); });
+  }
+  async function loadShortcuts() {
+    const r = await call({ action: "shortcuts", limit: 200 }), el = $("shortcuts");
+    if (!r || r.error) { el.innerHTML = `<span class="empty">${esc(r?.error || "no answer")}</span>`; return; }
+    if (!r.shortcuts.length) { el.innerHTML = `<span class="empty">No shortcuts in Shortcuts.app.</span>`; return; }
+    el.innerHTML = r.shortcuts.map(s => `<div class="item"><div><b>${esc(s.name)}</b><small>${esc(s.id)}</small></div><button data-id="${esc(s.id || s.name)}">Run</button></div>`).join("");
+    el.querySelectorAll("[data-id]").forEach(b => b.onclick = async () => { b.disabled = true; show(await call({ action: "shortcut", name: b.dataset.id, input: $("shortcutInput").value })); b.disabled = false; });
+  }
+  $("check").onclick = async () => show(await call({ action: "compile", script: $("script").value, language: lang() }));
+  $("run").onclick = async () => { $("run").disabled = true; show(await call({ action: "run", script: $("script").value, language: lang(), args: parseArgs() })); $("run").disabled = false; };
+  $("build").onclick = async () => {
+    const name = $("appletName").value.trim(); if (!name) { $("appletName").focus(); return; }
+    $("build").disabled = true;
+    show(await call({ action: "create_applet", name, script: $("script").value, language: lang(), overwrite: true }));
+    $("build").disabled = false; loadApplets(); loadStatus();
+  };
+  loadStatus(); loadApplets(); loadShortcuts();
+</script>
+</body>
+</html>

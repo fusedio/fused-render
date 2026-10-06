@@ -1,0 +1,13 @@
+[project]
+name = "mac-automation"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.fused-render.bot]
+name = "Mac Automation"
+description = "Automates this Mac: scripts Reminders, Calendar, Notes, Mail, Messages, Finder, Safari and Music with AppleScript or JXA, toggles dark mode and volume, posts notifications, runs Shortcuts, and builds double-clickable automation apps (applets)."
+triggers = ["automate my mac", "applescript", "jxa", "osascript", "shortcut", "shortcuts", "dark mode", "volume", "reminder", "reminders", "calendar event", "notification", "applet", "automation app", "finder"]

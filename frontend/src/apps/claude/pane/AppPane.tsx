@@ -373,7 +373,7 @@ export function useFramedSrc(
       };
     }
     try {
-      const src = paneSrcFor(t, file ?? "", decision.remote, flags);
+      const src = paneSrcFor(t, file ?? "", flags);
       return { src, framedMode: t.mode, error: null, commit: { mode: t.mode, src } };
     } catch (err) {
       // Nothing committed: the frame keeps showing what it was showing.

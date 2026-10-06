@@ -7,7 +7,7 @@ description: Use when adding, editing, or vendoring a helper in fused_render/tem
 
 ## Overview
 
-`fused_render/templates/shared/` is where ONE copy of a helper lives when both a built-in template and an arbitrary user `.py` need it — `appenv.py` (env facts: home dir, mounts, origin) and `fused_ai.py` (the Python client for `fused.ai`) are the two that exist today. It looks like an ordinary shared-code folder. It is not: every file in it runs as a subprocess with no guarantee the `fused_render` package is importable, and both consumer shapes (a template shipped inside the app, a user file anywhere on disk) have to resolve the same import identically. The rules below are currently scattered across `appenv.py`'s and `fused_ai.py`'s own docstrings and SPEC PY-15/PY-19 — write them down here instead of re-deriving them per contribution.
+`fused_render/templates/shared/` is where ONE copy of a helper lives when both a built-in template and an arbitrary user `.py` need it — `appenv.py` (env facts: home dir, origin) and `fused_ai.py` (the Python client for `fused.ai`) are the two that exist today. It looks like an ordinary shared-code folder. It is not: every file in it runs as a subprocess with no guarantee the `fused_render` package is importable, and both consumer shapes (a template shipped inside the app, a user file anywhere on disk) have to resolve the same import identically. The rules below are currently scattered across `appenv.py`'s and `fused_ai.py`'s own docstrings and SPEC PY-15/PY-19 — write them down here instead of re-deriving them per contribution.
 
 ## Where it goes, and how each consumer reaches it
 
@@ -26,7 +26,7 @@ A user `.py` may run inside a hermetic `uv` venv built from ITS OWN `pyproject.t
 
 ## Never `import fused_render`
 
-The subprocess a template or a user `.py` runs in has `PYTHONPATH` stripped (SPEC PY-15 / D166) — deliberately, for venv hermeticity under the fused engine, and as a side effect under the built-in executor too. A shared file that tries `from fused_render.shell.mounts import ...` works when the package happens to be importable and silently takes its fallback branch when it is not, which is exactly the kind of engine-dependent behavior that goes unnoticed until someone runs the other engine. `_child.py` has a dedicated diagnostic for a user file that imports the package (naming the interpreter, `PYTHONPATH`, and `sys.path[:3]`) precisely because this mistake is common enough to need one.
+The subprocess a template or a user `.py` runs in has `PYTHONPATH` stripped (SPEC PY-15 / D166) — deliberately, for venv hermeticity under the fused engine, and as a side effect under the built-in executor too. A shared file that tries `from fused_render.shell.storage import ...` works when the package happens to be importable and silently takes its fallback branch when it is not, which is exactly the kind of engine-dependent behavior that goes unnoticed until someone runs the other engine. `_child.py` has a dedicated diagnostic for a user file that imports the package (naming the interpreter, `PYTHONPATH`, and `sys.path[:3]`) precisely because this mistake is common enough to need one.
 
 **The one sanctioned channel back to the app is `appenv.py`**: the server exports resolved facts as `FUSED_RENDER_*` env vars before it starts serving, and `appenv.py` reads only those, per call, never caching them at import time. If your utility needs a fact about the running app (a directory, the server's origin), it goes through `appenv`, not through `fused_render`.
 

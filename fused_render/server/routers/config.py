@@ -9,19 +9,12 @@ from fused_render.server import dirpicker
 from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import fda as shell_fda
-from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
 from fused_render.shell.storage import home_dir as shell_home_dir
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
 
-
-# Mount-health telemetry the Mounts panel polls: current per-mount state
-# plus the auto-reconnect event log. A read — no X-Fused guard.
-@router.get("/api/mounts/health")
-def api_mounts_health():
-    return shell_mounts.health_snapshot()
 
 @router.get("/api/config")
 def api_config(
@@ -55,29 +48,17 @@ def api_config(
         # Which /api/run engine is in effect (D69/§20): "fused" | "builtin".
         # Read per request — it can change under the Preferences switch.
         "engine": shell_prefs.effective_engine(),
-        # Root of the mounts dir (~/.fused-render/mounts). The rendered
-        # page's auto-reload watcher (static/runtime.js) uses this to skip
-        # watching mount-backed data files: they live on read-only remote
-        # buckets that never change, so watching them buys nothing and every
-        # poll is remote traffic — the stat storm that killed a mount in the
-        # fs/events incident. Templates stay mount-agnostic; the skip lives
-        # in runtime internals, keyed off this server-provided prefix.
-        "mounts_root": os.path.abspath(shell_mounts.mounts_dir()),
-        # The call-log store (calls.py). Same job as `mounts_root` above and
-        # for a sharper reason: a call-log file is APPENDED TO by the act of
-        # viewing it, so a page watching one reloads, re-reads, appends, and
-        # reloads again. Watching it is never useful either — the viewers that
-        # want live updates (log_studio's Tail) poll instead, precisely so a
-        # reload cannot rebuild the frame mid-poll. Keyed off this prefix +
+        # The call-log store (calls.py). A call-log file is APPENDED TO by the
+        # act of viewing it, so a page watching one reloads, re-reads, appends,
+        # and reloads again. Watching it is never useful either — the viewers
+        # that want live updates (log_studio's Tail) poll instead, precisely so
+        # a reload cannot rebuild the frame mid-poll. Keyed off this prefix +
         # suffix so generic templates (code, duckdb, tree) need to know
         # nothing about the call log.
         #
         # Canonicalized on the way out: `abspath` is backslashed on Windows
         # while every path the runtime holds is forward-slashed, so the
-        # prefix test in `isCallLog` would never fire there. (`mounts_root`
-        # above has the same shape and is deliberately left alone — changing
-        # it would newly ENABLE an exclusion on Windows, which is a mount
-        # behaviour change and belongs with the mount code, not here.)
+        # prefix test in `isCallLog` would never fire there.
         "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
         "calls_suffix": shell_calls.SUFFIX,
         # Where shell code may write SCRATCH files — bytes the app made and can
@@ -122,6 +103,11 @@ def api_config(
     from fused_render.shell import onboarding as shell_onboarding
 
     config["onboarding"] = shell_onboarding.snapshot()
+    # Bots as the front door (shell/prefs.bots_enabled, default off). In the
+    # CONFIG payload and not only in /api/prefs because the shell decides where
+    # `/` lands at its first render, before any prefs fetch could answer — a
+    # redirect that waited on prefs would paint Home and then hop to Bots.
+    config["bots_enabled"] = shell_prefs.bots_enabled()
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:
@@ -132,7 +118,7 @@ def api_config(
 def api_desktop_ready(
     token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
 ):
-    # Readiness probe (desktop_probe.matching_server): echoes only the launch token, touching no mounts/rcd, so a slow cold-start subsystem can't make the supervisor kill a healthy server.
+    # Readiness probe (desktop_probe.matching_server): echoes only the launch token, touching no heavy subsystem, so a slow cold-start subsystem can't make the supervisor kill a healthy server.
     from fused_render.paths import desktop_instance
 
     instance = desktop_instance()

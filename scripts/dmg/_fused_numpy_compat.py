@@ -1,4 +1,4 @@
-"""Pick the numpy build that matches the running macOS (D1321).
+"""Pick the numpy build that matches the running macOS (D1325).
 
 The DMG ships TWO numpy builds of the same version:
 

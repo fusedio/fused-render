@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 
 from fused_render import schedule, schedule_wake, tasks_store
 from fused_render.server import create_app
-from fused_render.shell import mounts as mounts_mod
 
 WRITE = {"X-Fused": "1"}
 
@@ -230,21 +229,6 @@ def test_a_new_folder_is_not_created_for_a_request_that_is_refused_later(client,
     assert res.status_code == 400
     assert not (target / "ABC1").exists()
     assert schedule.list_entries() == []
-
-
-def test_a_mount_backed_target_is_refused(client, target, monkeypatch):
-    """The refusal the claude template's own gate exists for: the bytes under a
-    mount come from a remote over FUSE, and a scheduled turn is an agent turned
-    loose on the path. Scheduling one would route around that gate."""
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: str(p).startswith(str(target)))
-
-    res = client.post("/api/schedule", headers=WRITE,
-                      json={"target": str(target), "message": "hi",
-                            "delay_seconds": 60})
-    assert res.status_code == 400
-    assert "remote mount" in res.json()["error"]
-    assert schedule.list_entries() == []  # nothing stored
 
 
 # ----------------------------------------------------------------- cancelling

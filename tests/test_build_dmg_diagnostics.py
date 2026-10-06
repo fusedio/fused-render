@@ -119,7 +119,7 @@ def test_the_force_list_reconciliation_does_not_repin_the_shipped_payload():
 # from the RUNNER to the INTERPRETER: the build refuses Homebrew's python for a
 # release, bundles the python.org-style framework `setup-python` installs, and
 # step 4f fails the build on any Mach-O whose minos exceeds 13.0 (except the
-# runtime-gated default numpy, D1321). These pins
+# runtime-gated default numpy, D1325). These pins
 # check the source for that arrangement, since the failure is silent on the
 # machine that builds and only shows up on a user's older Mac.
 _MACOS_WORKFLOW_JOBS = (

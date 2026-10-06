@@ -2303,9 +2303,7 @@ def test_the_missing_skills_fallback_confines_the_session_to_its_folder():
     What actually happened in the field, with the skills absent: the session
     accepted the fallback, went looking for the edge format in the app's own
     internals, and ran `find / -iname "pipeline.md"` and a recursive walk of
-    `~/.fused-render` — which permanently wedged every rclone NFS mount on the
-    user's machine (a known failure mode in this repo: a recursive walk over
-    ~/.fused-render/mounts is the documented mount-killer). Its own summary was
+    `~/.fused-render`. Its own summary was
     "I got sidetracked digging through internal app files", i.e. it recognised
     the detour only afterwards — so the text must PREVENT the walk, not nudge.
     """
@@ -2316,10 +2314,8 @@ def test_the_missing_skills_fallback_confines_the_session_to_its_folder():
     assert "do not search outside this folder" in low
     # The three destinations it actually went to, named.
     assert "find" in low and "recursive" in low
-    assert "~/.fused-render/mounts" in tail
+    assert "~/.fused-render" in tail
     assert "fused-render" in low and "internal" in low
-    # And why: the mounts are network mounts a walk destroys.
-    assert "wedge" in low or "wedges" in low
     # The positive instruction survives — the folder itself is the reference.
     assert "canvas.toml" in tail and "conventions" in low
 

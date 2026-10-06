@@ -16,7 +16,7 @@ the live microphone and clipboard READ; everything server-side works.
 talking to loopback. The LAN listener serves ``LanApp``, an ASGI wrapper
 around the same FastAPI app that admits ONLY what an app page needs and
 refuses everything else with 404 — the explorer, the shell, Claude sessions,
-the file index, mounts, git, config writes, and any path outside
+the file index, git, config writes, and any path outside
 ``~/Fused/local`` or the app state dir ``~/.fused-render`` (``allowed_roots``;
 apps keep per-install data there). Nothing on the LAN side can widen what the
 wrapper forwards without editing the allowlist below.
@@ -120,7 +120,7 @@ _roots_cache: tuple[float, list[str]] | None = None
 #: The ONLY subfolders of the app-state dir (``home_dir()``, i.e.
 #: ``~/.fused-render`` or a branch nest of it) the LAN side may reach. That dir
 #: also holds the private CA key (``lan_tls/``), every Claude transcript,
-#: logs, search indexes, mount definitions and gigabytes of venvs and git
+#: logs, search indexes and gigabytes of venvs and git
 #: branches — none of an app's business, and a paired phone that could read
 #: ``lan_tls/ca.key`` could impersonate the computer's https forever. So the
 #: state dir is NOT a root; only these leaves are, and everything else there is

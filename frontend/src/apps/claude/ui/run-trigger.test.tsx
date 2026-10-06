@@ -120,6 +120,88 @@ const press = (json: Json | Json[] | null, cls = "run-trigger") =>
 /** Chips that are NOT nested inside anything else — the members on screen. */
 const chips = (json: Json | Json[] | null) => byClass(json, "toolchip");
 
+describe("when the run happened (Akshil, 2026-10-04)", () => {
+  const T0 = 1_791_108_000;
+  const stamped = (id: string, ts: number, ended?: number): ToolSegment => ({
+    ...tool(id, "Bash"),
+    ts,
+    ...(ended !== undefined ? { ended } : {}),
+  });
+
+  type WhenProps = { "data-hint"?: string; title?: string };
+
+  test("the word carries how long THIS RUN took, as its own hover and not a title", () => {
+    const policy = createCardPolicy();
+    const segs = [text("Here goes."), stamped("a", T0, T0 + 4), stamped("b", T0 + 5, T0 + 130)];
+    const r = view(segs, {}, policy);
+    const json = r.toJSON() as Json | Json[];
+    const trigger = byClass(json, "run-trigger")[0]!;
+    const props = trigger.props as WhenProps;
+    // How long ago it finished, then the run's own span — first call to last
+    // result, 2m 10s — on the app's one instant tooltip (`data-hint`).
+    expect(props["data-hint"]).toMatch(/^(just now|\d+m ago|\d+h ago|yesterday|\d+d ago) · ran 2m 10s$/);
+    // NOT a `title`: the OS tooltip waits a second (Akshil, 2026-10-05).
+    expect(props.title).toBeUndefined();
+    // And the opened run is the chips alone — no clock line inside it
+    // (Akshil, 2026-10-05: "adding a line as well I don't think good choice").
+    press(json);
+    const open = again(r, segs, {}, policy);
+    expect(byClass(open, "run-when")).toHaveLength(0);
+    expect(chips(open)).toHaveLength(2);
+  });
+
+  test("an opened run's chips wear the lane stamp with the exact-time hover", () => {
+    const policy = createCardPolicy();
+    const segs = [text("Here goes."), stamped("a", T0, T0 + 4)];
+    const r = view(segs, {}, policy);
+    press(r.toJSON() as Json | Json[]);
+    const open = again(r, segs, {}, policy);
+    const stamps = byClass(open, "chip-stamp");
+    expect(stamps).toHaveLength(1);
+    expect((stamps[0]!.props as { "data-hint"?: string })["data-hint"]).toMatch(/ · ran 4s$/);
+    // No stamp on a chip whose row carried no clock.
+    const bare = view([text("Here goes."), tool("b", "Bash")], {}, createCardPolicy());
+    press(bare.toJSON() as Json | Json[]);
+    expect(byClass(bare.toJSON() as Json | Json[], "chip-stamp")).toHaveLength(0);
+  });
+
+  test("a word that opens a leading AND a trailing run times both (Bugbot, PR #1430)", () => {
+    // The run before the prose and the run after it share one seat and one
+    // word; the hover spans first call to last result across both — and a
+    // clockless first run does not blank it.
+    const both = [stamped("a", T0, T0 + 4), text("Middle."), stamped("b", T0 + 10, T0 + 70)];
+    const json = view(both).toJSON() as Json | Json[];
+    const triggers = byClass(json, "run-trigger");
+    expect(triggers).toHaveLength(1);
+    expect((triggers[0]!.props as WhenProps)["data-hint"]).toMatch(/ · ran 1m 10s$/);
+    const clockless = [tool("a", "Bash"), text("Middle."), stamped("b", T0 + 10, T0 + 70)];
+    const j2 = view(clockless).toJSON() as Json | Json[];
+    expect((byClass(j2, "run-trigger")[0]!.props as WhenProps)["data-hint"]).toMatch(/ · ran 1m$/);
+  });
+
+  test("a run with no clocks has no hover", () => {
+    const json = view([text("Here goes."), tool("a", "Bash"), tool("b", "Read")]).toJSON() as Json | Json[];
+    const props = byClass(json, "run-trigger")[0]!.props as WhenProps;
+    expect(props["data-hint"]).toBeUndefined();
+    expect(props.title).toBeUndefined();
+  });
+
+  test("a bare run (no prose either side) wears the hover too", () => {
+    const json = view([stamped("a", T0, T0 + 9)]).toJSON() as Json | Json[];
+    expect((byClass(json, "run-trigger")[0]!.props as WhenProps)["data-hint"]).toMatch(/ · ran 9s$/);
+  });
+
+  test("two runs in one reply wear their OWN words — the number is each run's", () => {
+    // Two prose blocks each with a trailing run: two seats, two words.
+    const segs = [text("First."), stamped("a", T0, T0 + 4), text("Second."), stamped("b", T0 + 10, T0 + 70), text("Done.")];
+    const json = view(segs).toJSON() as Json | Json[];
+    const whens = byClass(json, "run-trigger").map((t) => (t.props as WhenProps)["data-hint"]);
+    expect(whens).toHaveLength(2);
+    expect(whens[0]).toMatch(/ · ran 4s$/);
+    expect(whens[1]).toMatch(/ · ran 1m$/);
+  });
+});
+
 describe("the trigger's seat", () => {
   test("it sits in the corner of the prose block the run follows", () => {
     const json = view([text("Here goes."), tool("a", "Read"), tool("b", "Bash")]).toJSON() as Json | Json[];

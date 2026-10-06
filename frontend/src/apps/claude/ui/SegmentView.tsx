@@ -10,12 +10,12 @@
 // typer, and arrives as `tail` (protocol/segments.ts `streamingTailOf`). This
 // component only paints it — the typer's slice plus the caret — because the
 // alternative is two renderers with their own opinion of the same string.
-import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "@platform/lib/utils";
 
-import { groupCollapsibles, isRun, leadSplit, seatTriggers } from "../protocol/segments";
+import { groupCollapsibles, isRun, leadSplit, seatTriggers, type CollapsibleRun } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
 import { Caret } from "./Caret";
@@ -23,8 +23,10 @@ import { cardKey, runKey, useCardOpens } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
 import { NoticeView } from "./NoticeView";
 import { RunTrigger } from "./RunTrigger";
+import { runWhenWords } from "./run-when";
 import { ThinkingView } from "./ThinkingView";
 import { ToolChip } from "./ToolChip";
+import { useMinuteTick } from "./useMinuteTick";
 
 /** Numbers segment containers, for the position keys a thinking block is kept
  *  folded by (T:15196 `cardSeq`). */
@@ -134,6 +136,17 @@ export const SegmentView = memo(function SegmentView({
     }
     return keys;
   }, [rows, seats, seq]);
+  // HOW LONG A TRIGGER'S RUNS TOOK (ui/run-when.ts): the hover, over EVERY
+  // run the word opens — a seat that holds a leading and a trailing run spans
+  // both (Bugbot, PR #1430: reading the first alone left the later job out,
+  // and a clockless first run blanked the hover). Recomputed on the page's
+  // minute tick so the "ago" half stays true while the transcript is mounted.
+  const tick = useMinuteTick();
+  const whenFor = useCallback(
+    (runRows: readonly number[]) =>
+      runWhenWords(runRows.flatMap((i) => (isRun(rows[i]) ? (rows[i] as CollapsibleRun).segs : []))),
+    [rows, tick],
+  );
   const nodes: React.ReactNode[] = [];
   rows.forEach((row, r) => {
     if (isRun(row)) {
@@ -146,7 +159,7 @@ export const SegmentView = memo(function SegmentView({
       if (bare.has(r))
         nodes.push(
           <div key={"bare:" + key} className="seg-block is-bare has-trigger">
-            <RunTrigger open={isRunOpen(key)} onToggle={() => toggleRun(key)} />
+            <RunTrigger open={isRunOpen(key)} onToggle={() => toggleRun(key)} when={whenFor([r])} />
           </div>,
         );
       if (!isRunOpen(key)) return;
@@ -194,7 +207,7 @@ export const SegmentView = memo(function SegmentView({
     const held = seats.get(r);
     const seated = held ? (runKeys.get(held[0]!) ?? null) : null;
     const trigger = seated ? (
-      <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} />
+      <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} when={whenFor(held!)} />
     ) : null;
     // A LEADING run — one seated here from ABOVE (its row is before this one)
     // — sits on the FIRST SENTENCE of this prose, not its last line (Akshil,

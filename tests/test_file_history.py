@@ -548,62 +548,6 @@ def test_a_read_only_directory_is_not_reverted(claude_home, tmp_path):
 # this, and it arrives via shared/appenv's env contract — never by importing
 # fused_render, which a template child can never do.
 
-@pytest.fixture
-def ro_mount(tmp_path, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    import fused_render.shell.mounts as mounts
-
-    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
-    mp = mounts.mountpoint(m)
-    os.makedirs(mp)
-    f = os.path.join(mp, "page.html")
-    with open(f, "w") as fh:
-        fh.write("current\n")
-    return f
-
-
-def test_a_read_only_mount_refuses_the_revert(claude_home, ro_mount):
-    fh = _load()
-    write_version(claude_home, "s", ro_mount, "wanted\n")
-    assert os.access(os.path.dirname(ro_mount), os.W_OK)  # the lie
-    assert fh.file_writable(ro_mount) is False
-    with pytest.raises(PermissionError):
-        fh.apply_revert(ro_mount, "s@v1")
-    with open(ro_mount, encoding="utf-8") as h:
-        assert h.read() == "current\n"
-
-
-def test_the_timeline_reports_writability_so_the_ui_can_disable_revert(
-        claude_home, ro_mount):
-    fh = _load()
-    write_version(claude_home, "s", ro_mount, "wanted\n")
-    assert fh.timeline(ro_mount)["writable"] is False
-
-
-def test_writability_degrades_to_os_access_without_appenv(claude_home, ro_mount):
-    """A copy of this folder taken without its `shared/` sibling has no appenv.
-    The guard keeps the pure os.access rule rather than raising — the timeline
-    still renders, it just cannot see mount read-only-ness."""
-    import builtins
-    import sys
-
-    fh = _load()
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("blocked")
-        return real_import(name, *args, **kwargs)
-
-    saved = sys.modules.pop("appenv", None)
-    builtins.__import__ = blocked
-    try:
-        assert fh.file_writable(ro_mount) is True
-    finally:
-        builtins.__import__ = real_import
-        if saved is not None:
-            sys.modules["appenv"] = saved
-
 
 # --------------------------------------------------------- the unique-content
 # hazard: current disk content is frequently in NO checkpoint, so a naive
@@ -1057,22 +1001,6 @@ def test_the_plan_and_the_write_always_see_the_did_not_exist_rows(claude_home,
 
 
 # --- I6: the read-only-mount probe must fail CLOSED ----------------------
-
-def test_a_failing_mount_probe_is_treated_as_not_writable(claude_home, tmp_path,
-                                                           monkeypatch):
-    """The blanket `except Exception` used to wrap the probe CALL as well as the
-    import, so any failure inside it fell through to os.access — which lies under
-    a read-only mount with CacheMode=full. A doomed revert then reported ok:True
-    and the 403 arrived later at the async upload, never reaching this UI."""
-    fh = _load()
-    f = _target(tmp_path)
-    import appenv
-
-    def boom(_path):
-        raise TypeError("malformed FUSED_RENDER_RO_MOUNTS")
-
-    monkeypatch.setattr(appenv, "mount_read_only", boom)
-    assert fh.file_writable(f) is False
 
 
 # --- M2: an unreadable store is not a fact about the file ----------------

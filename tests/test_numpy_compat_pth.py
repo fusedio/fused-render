@@ -1,4 +1,4 @@
-"""Decision logic of the DMG's startup numpy selector (D1321)."""
+"""Decision logic of the DMG's startup numpy selector (D1325)."""
 
 import importlib.util
 import os

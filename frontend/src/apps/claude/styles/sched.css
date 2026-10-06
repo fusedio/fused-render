@@ -557,3 +557,14 @@ a.c-waitcard .wc-ahead:hover,
 .c-inbox .turn.user.c-inbox-turn {
   margin: 0;
 }
+
+/* INSIDE THE LOG NOW (Transcript's `trailing`, 2026-10-04): `.chat-log` already
+   holds the 720px measure and the 20px gutter, so the row's own copy of both
+   is dropped there or the bubble sits 40px in from the turns above it. The
+   rules above still apply where the row is drawn on its own. */
+.chat-root .chat-log .c-inbox,
+.chat-root .chat-log .c-waiting {
+  max-width: none;
+  padding-left: 0;
+  padding-right: 0;
+}

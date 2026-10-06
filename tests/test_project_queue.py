@@ -320,7 +320,7 @@ def test_a_wedged_mount_answers_with_the_path_and_makes_no_syscall(
 
     wedged = home / "mnt"
     monkeypatch.setattr(pq, "_GUARD",
-                        MountGuard(mounts_dir=str(wedged), home_dirs=[]))
+                        MountGuard(home_dirs=[str(wedged)]))
 
     def boom(_project):
         raise AssertionError("app_dir_for must not be reached on a wedged mount")

@@ -476,8 +476,7 @@ BAD_ANSWER = ("The answer could not be matched to the question that was asked, "
 def _claude_bin() -> str:
     """Path to the claude executable to run.
 
-    FUSED_RENDER_CLAUDE_BIN (an explicit override, mirroring
-    FUSED_RENDER_RCLONE_BIN) beats PATH, which beats the platform's known
+    FUSED_RENDER_CLAUDE_BIN (an explicit override) beats PATH, which beats the platform's known
     install locations. A stale override that isn't a file is ignored rather
     than allowed to shadow a real install."""
     override = os.environ.get("FUSED_RENDER_CLAUDE_BIN")
@@ -3777,8 +3776,32 @@ def _read_echo_texts(run_dir: str) -> tuple:
             continue
         if not isinstance(row, dict) or not _starts_new_turn(row):
             continue
-        texts.append(_inbox_text(row).strip())
+        # ONE ECHO ROW CAN BE SEVERAL MESSAGES (measured 2026-09-21, CLI
+        # 2.1.2xx): lines typed while the model is streaming are queued and
+        # dequeued together at the turn's end as ONE user row with N `text`
+        # blocks, one per send. `_write_inbox_entry` writes exactly one block
+        # per entry, so the blocks ARE the entries — appended one by one, the
+        # suffix/prefix walk in `_drained_unechoed` sees N echoes for N drains.
+        # Joined into one string (the old reading) the merged row matched
+        # nothing, every entry stayed "waiting" for the life of the run, and a
+        # ghost of the reader's own words sat under the reply that had already
+        # answered them (Akshil, 2026-10-04).
+        texts.extend(t for t in _inbox_blocks(row) if t)
     return texts, whole
+
+
+def _inbox_blocks(row) -> list:
+    """The `text` blocks of one user row, each stripped, in order — the
+    per-message view `_read_echo_texts` needs of a folded echo. `[]` for
+    anything that is not a user turn with words in it."""
+    if not isinstance(row, dict) or row.get("type") != "user":
+        return []
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    return [str(b.get("text") or "").strip() for b in content
+            if isinstance(b, dict) and b.get("type") == "text"]
 
 
 def _inbox_text(row) -> str:
@@ -4295,7 +4318,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
     def tail(kind):
         return segments[-1] if segments and segments[-1]["kind"] == kind else None
 
-    def grow(kind, chunk, separator=""):
+    def grow(kind, chunk, separator="", ts=None):
         """Append `chunk` to the trailing `kind` segment, opening one if the
         tail is something else.
 
@@ -4319,13 +4342,23 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         hard_break = False
         if seg is None:
             seg = {"kind": kind, "text": []}
+            # WHEN IT BEGAN (`ts`, epoch seconds), off the row that opened it —
+            # the persisted transcript stamps every row, the live stream only
+            # the finalized ones, so the key is simply absent where there is
+            # no clock. The page turns a run's stamps into "14:02 · 3m ago ·
+            # took 2m 10s" on the `show more` word (Akshil, 2026-10-04: "I am
+            # trying to get a sense of how long the job took").
+            if ts is not None:
+                seg["ts"] = ts
             segments.append(seg)
         if separator:
             seg["text"].append(separator)
         seg["text"].append(chunk)
 
-    def settle(seg, payload):
+    def settle(seg, payload, ended=None):
         seg["status"], seg["output"], seg["images"] = payload
+        if ended is not None:
+            seg["ended"] = ended
 
     for row in rows:
         if not isinstance(row, dict):
@@ -4344,7 +4377,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 delta = ev.get("delta") or {}
                 if delta.get("type") == "text_delta":
                     grow("text", str(delta.get("text", "")),
-                         "\n\n" if pending_sep else "")
+                         "\n\n" if pending_sep else "", _row_ts(row))
                     any_text, pending_sep = True, False
                 elif delta.get("type") == "thinking_delta":
                     # Only a chunk that actually carries text opens a segment:
@@ -4355,7 +4388,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                     # unfolded to nothing at all.
                     chunk = _thinking_delta_text(row)
                     if chunk:
-                        grow("thinking", chunk)
+                        grow("thinking", chunk, ts=_row_ts(row))
             elif et == "message_stop":
                 # A tool-using turn is several assistant messages; without a
                 # break their texts concatenate mid-word ("orange.After").
@@ -4373,17 +4406,31 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                         continue
                     chunk = str(block.get("thinking") or "")
                     if chunk.strip():
-                        grow("thinking", chunk)
+                        grow("thinking", chunk, ts=_row_ts(row))
             # Text blocks next, joined the way `_history` joins them, so a
             # restored turn's `text` and its segments say the same thing. Safe
             # against block order because a real message is text-then-tools.
+            has_text = any(isinstance(b, dict) and b.get("type") == "text"
+                           and str(b.get("text") or "").strip() for b in content)
             if not streamed:
                 whole = "\n".join(b.get("text", "") for b in content
                                   if isinstance(b, dict) and b.get("type") == "text")
                 if whole.strip():
                     grow("text", whole,
-                         "\n\n" if any_text and tail("text") is not None else "")
+                         "\n\n" if any_text and tail("text") is not None else "",
+                         _row_ts(row))
                     any_text = True
+            elif has_text and tail("text") is not None:
+                # WHEN THE STREAMED TEXT FINISHED (`ended`). The deltas that
+                # built this segment carry no clock; the finalized row that
+                # repeats them is written when the message completes, so its
+                # stamp is the segment's end — the one the page measures a
+                # turn's "Worked for" to (ui/run-when.ts). Checked against
+                # the CLI's own `duration_ms` on real runs (2026-10-05): user
+                # row → last stamped row agrees to well under a second.
+                ended = _row_ts(row)
+                if ended is not None:
+                    tail("text")["ended"] = ended
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
@@ -4428,11 +4475,14 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 seg = {"kind": "tool", "id": tool_id, "name": name,
                        "input": tool_input if isinstance(tool_input, dict) else {},
                        "status": "running", "output": None, "images": []}
+                ts = _row_ts(row)
+                if ts is not None:
+                    seg["ts"] = ts
                 segments.append(seg)
                 if tool_id:
                     by_tool_id[tool_id] = seg
                     if tool_id in orphans:
-                        settle(seg, orphans.pop(tool_id))
+                        settle(seg, *orphans.pop(tool_id))
         elif t == "system" and row.get("subtype") == "task_notification":
             # The harness waking the run because a background shell it started
             # has finished or been stopped (D415). It is not the model speaking
@@ -4448,13 +4498,19 @@ def _segments_from_rows(rows: list, shape: tuple = (),
             # so a restored conversation and a streaming one show the same chip.
             note = str(row.get("summary") or "").strip()
             if note:
-                segments.append({"kind": "notice", "text": [note],
-                                 "status": str(row.get("status") or "")})
+                seg = {"kind": "notice", "text": [note],
+                       "status": str(row.get("status") or "")}
+                if _row_ts(row) is not None:
+                    seg["ts"] = _row_ts(row)
+                segments.append(seg)
         elif t == "user" and isinstance(content, str):
             note = _task_notification(content)
             if note:
-                segments.append({"kind": "notice", "text": [note["summary"]],
-                                 "status": note["status"]})
+                seg = {"kind": "notice", "text": [note["summary"]],
+                       "status": note["status"]}
+                if _row_ts(row) is not None:
+                    seg["ts"] = _row_ts(row)
+                segments.append(seg)
         elif t == "result" and not row.get("parent_tool_use_id"):
             # See `hard_break`. Nothing is emitted for a `result` row itself.
             hard_break = True
@@ -4468,11 +4524,14 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 output, images = _tool_result_payload(block)
                 payload = ("error" if block.get("is_error") else "ok",
                            output, images)
+                # WHEN IT ANSWERED (`ended`): with `ts` on the call, the pair
+                # is how long the tool ran.
+                ended = _row_ts(row)
                 seg = by_tool_id.get(tool_id)
                 if seg is not None:
-                    settle(seg, payload)
+                    settle(seg, payload, ended)
                 elif tool_id:
-                    orphans[tool_id] = payload
+                    orphans[tool_id] = (payload, ended)
     # Finalize: the parts lists collapse to the plain `text` string the schema
     # promises. Tool segments have no `text` at all and are left alone.
     out = []
@@ -6066,31 +6125,16 @@ def _snapshots(file: str, enrich: bool, deltas: bool) -> dict:
 def _snap_target(file: str) -> str:
     """Empty when this panel may touch `file`, else the sentence saying why not.
 
-    One gate for all three actions, cheapest and most dangerous first, so a
+    One gate for all three actions, cheapest first, so a
     hand-written call cannot reach a target the panel does not offer (MD-11):
 
       * no target at all;
-      * a MOUNT-BACKED path. This runs BEFORE any stat, deliberately: the bytes
-        under the mounts dir come from a remote over FUSE and an ordinary kernel
-        stat on a wedged mount hangs the worker — the very reason
-        `condition.py` refuses to offer this template there at all. `appenv`
-        unreachable means we cannot tell, which reads as refuse (CT-12), and it
-        can only happen for a copy of this folder taken without its `shared/`
-        sibling;
       * a DIRECTORY. The store keys on one absolute FILE path
         (`sha256(abspath)[:16]@vN`), so a folder has no checkpoint chain to
         show, plan against, or write back.
     """
     if not file:
         return "missing target file (no _file param?)"
-    try:
-        from appenv import is_mount_backed
-    except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
-        return ("cannot tell whether this path is on a remote mount, so "
-                "file history is not offered here")
-    if is_mount_backed(file):
-        return ("this file is on a remote mount, where file history is not "
-                "offered")
     if os.path.isdir(file):
         return "file history is per-file; a folder has no checkpoints"
     return ""

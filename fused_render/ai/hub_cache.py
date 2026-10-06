@@ -658,7 +658,9 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return "automatic-speech-recognition", "its CTranslate2 Whisper layout"
     if formats.is_mlx_whisper_snapshot(names, config):
         return "automatic-speech-recognition", "its MLX Whisper weights"
-    if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
+    # Either mflux table — a Fill checkpoint is as much text-to-image here as
+    # a Klein one; `mflux_native_mode` is the one membership test for both.
+    if formats.mflux_native_mode(repo_id) and formats.has_mflux_components(dirnames):
         return "text-to-image", "its MLX diffusion components"
     if formats.is_laya_snapshot(names, dirnames):
         # Decisive for the same reason `weights.npz` is: `rl_agent_config.json`
@@ -1732,6 +1734,11 @@ def _repo_signature(repo_dir: str) -> tuple:
     writes do not touch a directory's mtime. That is a download in flight, whose
     bytes the job row reports live and far better than a cache walk ever could, and
     `_CACHED_MODELS_TTL` is what bounds it.
+
+    Each `snapshots/<commit>/` is in the signature too: a file linked into or
+    removed from a revision bumps THAT directory's mtime and not `snapshots/`,
+    so without it a pruned or newly landed snapshot entry sat behind the TTL —
+    a "downloaded" badge over a revision that had just lost a file.
     """
     out = []
     for name in ("", "blobs", "snapshots", "refs"):
@@ -1739,6 +1746,9 @@ def _repo_signature(repo_dir: str) -> tuple:
             out.append(os.stat(os.path.join(repo_dir, name)).st_mtime_ns)
         except OSError:
             out.append(None)
+    out.append(tuple(sorted(
+        (e.name, _entry_mtime(e))
+        for e in _snapshot_dirs(os.path.join(repo_dir, "snapshots")))))
     return tuple(out)
 
 

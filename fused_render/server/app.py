@@ -35,10 +35,8 @@ from fused_render.shell.recents import router as recents_router
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
     STATIC_DIR,
-    close_pooled_client,
     logger,
     no_cache_and_log,
-    open_pooled_client,
     unhandled_exception,
     _forced_engine,
 )
@@ -119,30 +117,24 @@ def export_app_env() -> None:
     Templates learn their environment through ``templates/shared/appenv.py``,
     which reads only env vars. That indirection exists because the fused local
     execution backend strips ``PYTHONPATH`` from child processes: a template's
-    guarded ``from fused_render.shell.mounts import ...`` then silently takes its
-    fallback branch and a mount-backed path gets treated as local. Env vars cross
+    guarded ``from fused_render.shell import ...`` then silently takes its
+    fallback branch. Env vars cross
     that boundary intact.
 
-    Both values are exported ALREADY RESOLVED — ``home_dir()`` includes the
-    per-branch nesting (``FUSED_RENDER_BRANCH``) and ``mounts_dir()`` is
-    normpath'd — so no consumer re-implements those rules. Called from the same
-    place as ``set_server_origin_env``, i.e. before the server starts serving, so
-    every child process inherits them; the read-only mount list is exported
-    separately by ``shell.mounts.export_ro_mounts_env`` because it has to be
-    refreshed on every store write, not just at startup.
+    Values are exported ALREADY RESOLVED — ``home_dir()`` includes the
+    per-branch nesting (``FUSED_RENDER_BRANCH``) — so no consumer re-implements
+    those rules. Called from the same place as ``set_server_origin_env``, i.e.
+    before the server starts serving, so every child process inherits them.
     """
     from fused_render import canvases
     from fused_render import skill_plugin
-    from fused_render.shell import mounts as shell_mounts
     from fused_render.shell import seed as shell_seed
     from fused_render.shell import storage as shell_storage
 
     os.environ["FUSED_RENDER_HOME_DIR"] = shell_storage.home_dir()
-    os.environ["FUSED_RENDER_MOUNTS_DIR"] = shell_mounts.mounts_dir()
     # Where app folders live — the claude template commits a finished turn
     # into the containing app's repo, and scopes that to this workspace.
     os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
-    shell_mounts.export_ro_mounts_env()
     # The skill plugin the chats we spawn are handed (D216). Here rather than in
     # a startup event because this is the export path: it assembles the root and
     # publishes it as one more FUSED_RENDER_* var for every child to inherit.
@@ -355,8 +347,8 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     """Build the FastAPI app. ``lean=True`` (``fused-render open``) wires every
     router so requests still work, but skips every BACKGROUND and WARM-UP
-    side effect below (and the two started directly in this body: mount
-    automount + health monitor) — nothing here runs beyond what a single
+    side effect below (and the one started directly in this body: the
+    one-time legacy-mount cleanup) — nothing here runs beyond what a single
     render/runPython/AI request needs. The rule `lean` follows throughout:
     anything a request needs in order to be CORRECT is always set up;
     anything that only makes a later request faster, or keeps something
@@ -365,10 +357,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     registration points that split it.
 
     Shutdown cleanup is gated the same way, not by `lean`: an engine, a
-    local AI worker, a terminal session, a capture and the pooled fs/raw
-    client can all still start ON DEMAND from an ordinary request in a lean
-    app — the pooled client always does, since it is `on_startup_always` —
-    even when their eager `@on_startup` warm-up was skipped, so their
+    local AI worker, a terminal session and a capture
+    can all still start ON DEMAND from an ordinary request in a lean
+    app even when their eager `@on_startup` warm-up was skipped, so their
     `@on_shutdown_always` cleanup always runs too, lean or not, and is a
     no-op when nothing was started. See `on_shutdown_always` just below.
     """
@@ -418,7 +409,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # from an `@on_startup` hook: an engine (runPython/render spawn a
     # template daemon or a background-app child), a local AI worker
     # (`/api/ai_runtime`'s load route), a status-bar terminal session, a
-    # screen/mic capture, and the pooled fs/raw HTTP client. `lean` skipping
+    # screen/mic capture. `lean` skipping
     # their STARTUP hooks only ever skips an eager warm-up — none of them are
     # the only way to start the thing they clean up. Their `@on_shutdown`
     # cleanup has to run in every app, lean included, or a lean server that
@@ -431,15 +422,8 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         return func
 
     # The other half of that same rule: `lean` skips WARM-UP, never anything a
-    # request needs to be CORRECT rather than merely fast. `open_pooled_client`
-    # just builds an `httpx.AsyncClient` — no network I/O, no meaningful cost —
-    # and without it a lean app's bearer-mount/`?pooled=1` reads raise
-    # `AttributeError` on `app.state.pooled_client` instead of serving the
-    # file (`tests/test_app_lifespan.py` covers this). So it is not optional
-    # warm-up the way `_startup_warm_engine`/`_startup_prewarm_ai` are —
-    # skipping it would make a request behave differently, not just slower —
-    # and it is registered unconditionally, pairing with the already-always
-    # `_shutdown_pooled_client`.
+    # request needs to be CORRECT rather than merely fast. Hooks registered
+    # through `on_startup_always` run in every app, lean included.
     def on_startup_always(func):
         startup_handlers.append(func)
         return func
@@ -454,19 +438,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.state.startup_handlers = startup_handlers
     app.state.shutdown_handlers = shutdown_handlers
     app.state.start_dir = start_dir
-
-    # Shared keep-alive HTTP pool for the opt-in pooled /api/fs/raw proxy
-    # (TASK F), the fused.ai warm Claude session (D168/D169), and the
-    # unhandled-exception/access-log middleware — bodies live in
-    # _server_common.py / _server_ai.py; only the app-bound registration
-    # stays here (an on_event hook needs the actual `app` it's attached to).
-    @on_startup_always
-    async def _startup_pooled_client():
-        await open_pooled_client(app)
-
-    @on_shutdown_always
-    async def _shutdown_pooled_client():
-        await close_pooled_client(app)
 
     @on_startup
     async def _startup_prewarm_ai():
@@ -819,13 +790,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The app call log (calls.py): GET /api/calls/config + the page-error
     # event POST. The records themselves are written by the middleware above.
     app.include_router(shell_calls.router)
-    # Mounts: remote storage mounted as local paths via rclone rcd
-    # (shell/mounts.py). startup() remounts every mount in a background
-    # thread; mounts deliberately survive server restarts.
-    from fused_render.shell import mounts as shell_mounts
-    from fused_render.shell import prefetch as shell_prefetch
-
-    app.include_router(shell_mounts.router)
     # Full Disk Access nudge (shell/fda.py): open the Settings pane + persist
     # "Not now". The state itself rides /api/config's `fda` field.
     from fused_render.shell import fda as shell_fda
@@ -836,23 +800,16 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     from fused_render.shell import onboarding as shell_onboarding
 
     app.include_router(shell_onboarding.router)
-    # Automount + its health monitor are the two side effects this body starts
-    # directly rather than through `@on_startup` above, so `lean` has to gate
-    # them here too — a lean server serves the mounts router (requests still
-    # work against whatever a mount already has attached) but reconnects none
-    # and polls none.
-    if not lean:
-        shell_mounts.startup()
-        # Background mount-health monitor (shell/mounts.py): polls every mount
-        # on a timer, auto-reconnects a wedged/disconnected NFS mount ONCE per
-        # disconnect episode, and records an event log the Mounts panel polls.
-        # Started AFTER startup() so the automount thread owns the initial
-        # attach — the monitor only acts on a later healthy->disconnected
-        # transition.
-        shell_mounts.start_health_monitor()
+    # TEMPORARY upgrade shim (see fused_render/legacy_mounts_cleanup.py):
+    # remove in a later release once old homes have been swept. A startup hook
+    # (so skipped in lean, and not run by building an app, e.g. a TestClient
+    # that never enters the lifespan); it only starts a daemon thread.
+    @on_startup
+    async def _startup_legacy_mounts_cleanup():
+        from fused_render import legacy_mounts_cleanup
+        legacy_mounts_cleanup.start_background()
 
-    # Mount-health telemetry (api_mounts_health), /api/config, and
-    # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
+    # /api/config and /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
     # Liveness probe, outage beacon and diagnostics bundle (routers/health.py,
@@ -1024,6 +981,46 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Bots (fused_render/bots/, docs/bots.md): per-bot Chrome over CDP driven
+    # by `claude -p` or the steps engine, `/api/bots/*` + `/api/bot-apps/*`.
+    # The router imports only `paths`/`registry`; bot/browser code loads on
+    # the first bot request. Imported here, not at the top like canvases: the
+    # router takes `_error`/`_require_fused` from `fused_render.server.common`,
+    # and a top-level import would be a cycle for anyone importing
+    # `fused_render.bots.routes` before the server.
+    from fused_render.bots.routes import router as bots_router
+
+    app.include_router(bots_router)
+
+    # The bots' scheduler (routines + file inbox) and the iMessage bridge
+    # thread. `@on_startup`, so a lean `fused-render open` starts neither — a
+    # bot still answers a request there, it just runs no routine on its own.
+    # Off the event loop: `migrate_layout` is a directory walk and
+    # `fusedbot_import.import_once` copies a FusedBot install's bots in on the
+    # first start that finds one (stamped; see that module). Layout first, so
+    # the import lands in today's tree; both before `start()`, so the
+    # scheduler's first pass sees every bot.
+    @on_startup
+    async def _startup_bots():
+        from fused_render.bots import fusedbot_import as bots_import
+        from fused_render.bots import paths as bots_paths
+        from fused_render.bots import registry as bots_registry
+
+        try:
+            await asyncio.to_thread(bots_paths.migrate_layout)
+            await asyncio.to_thread(bots_import.import_once)
+            bots_registry.start()
+        except Exception:  # noqa: BLE001 - a bots failure must not block serving
+            logger.exception("could not start the bots scheduler")
+
+    # Every loaded bot's task and Chrome stop with the server. `_always`: a
+    # request can start a bot's Chrome in a lean app too (the rule above
+    # `on_shutdown_always`), and `shutdown()` is a no-op when none was loaded.
+    @on_shutdown_always
+    async def _shutdown_bots():
+        from fused_render.bots import registry as bots_registry
+
+        await asyncio.to_thread(bots_registry.shutdown)
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same
     # `fused login` provider canvases.py owns (credentials-file presence,
@@ -1121,7 +1118,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         index_routes.startup_warm()
         # ...and mirror every scan run into a sys:index:<run_id> Job so it
         # shows up in the Activity card the same way a download does. Same
-        # idempotent start-once pattern as shell_mounts.start_health_monitor
+        # idempotent start-once pattern as the resource-trail start
         # above; called here rather than at import time so a test that never
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
@@ -1133,7 +1130,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # SPEC-index-live-watch.md §1 for why the previous approach (a
     # time-based freshness check) failed three times. One background thread
     # per configured root; `index_watch.start()` is idempotent, same
-    # singleton-start convention as `shell_mounts.start_health_monitor`.
+    # singleton-start convention as the resource-trail start.
     @on_startup
     async def _startup_index_watch():
         from fused_render import extras

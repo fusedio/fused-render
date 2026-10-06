@@ -1,0 +1,196 @@
+# MCP tools for this app, curated in fused-render's MCP panel.
+# `fused app serve <this folder>` publishes one tool per [[tool]] table.
+# Every tool calls docs.py main(action=...); the pinned `action` must be one
+# that docs.py's run() handles (see BOT.md for the full table).
+
+[[tool]]
+name = "docs_status"
+description = "Check whether a Google service-account key is saved, its email, and the saved documents library (docs: [{id, name, title, url}])."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "status"
+
+[[tool]]
+name = "docs_set_key"
+description = "Save (and verify with Google) the service-account key JSON used for authentication. Pass the whole key file as key_json."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "save_key"
+
+# ---- saved documents library (.fused/data/docs.json)
+# Every doc that is used gets saved automatically under its title. In every
+# other tool, `doc` accepts a saved document's name as well as a URL or id.
+
+[[tool]]
+name = "docs_list_docs"
+description = "List the saved documents the user has added to this app: [{id, name, title, url, last_used}]. Call this first when the user refers to a doc by name; pass that name (or the id/url) as `doc` to every other tool."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "list_docs"
+
+[[tool]]
+name = "docs_add_doc"
+description = "Save a Google Doc to the library so it can be referred to by name later. doc is a Docs URL or id; title is the friendly name (optional, defaults to the doc's own title). Verifies the doc is shared with the service account."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "add_doc"
+
+[[tool]]
+name = "docs_rename_doc"
+description = "Give a saved document a new friendly name. doc is the current name, id or URL; title is the new name."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "rename_doc"
+
+[[tool]]
+name = "docs_remove_doc"
+description = "Forget a saved document (removes it from the library only; the Google Doc is untouched). doc is its name, id or URL."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "remove_doc"
+
+# ---- read
+
+[[tool]]
+name = "docs_list_tabs"
+description = "List all tabs in a Google Doc (id, title, depth, parent, preview). doc is a Docs URL, id, or the name of a saved document."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "list_tabs"
+
+[[tool]]
+name = "docs_read_tab"
+description = "Read the full text of one tab of a Google Doc. tab is a tab id or title."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "read_tab"
+
+# ---- write
+
+[[tool]]
+name = "docs_create_tab"
+description = "Create a new tab in a Google Doc with the given title, optional parent tab, and initial content (light markdown: # headings, - bullets, 1. lists)."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "create_tab"
+
+[[tool]]
+name = "docs_append_content"
+description = "Append content to the end of a tab in a Google Doc. tab is a tab id or title."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "append"
+
+[[tool]]
+name = "docs_write_tab"
+description = "Replace the whole contents of a tab in a Google Doc with content. tab is a tab id or title."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "write_tab"
+
+# ---- comments (Drive API; the project must have the Google Drive API enabled)
+
+[[tool]]
+name = "docs_list_comments"
+description = "List comments on a Google Doc with their replies. Open comments only unless resolved=true."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "list_comments"
+
+[[tool]]
+name = "docs_add_comment"
+description = "Add a new (unanchored) comment to a Google Doc. content is the comment text."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "add_comment"
+
+[[tool]]
+name = "docs_reply_comment"
+description = "Reply to an existing comment on a Google Doc. comment is the comment id, content the reply text."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "reply_comment"
+
+[[tool]]
+name = "docs_resolve_comment"
+description = "Resolve a comment on a Google Doc, with an optional closing reply in content. comment is the comment id."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "resolve_comment"
+
+[[tool]]
+name = "docs_reopen_comment"
+description = "Reopen a resolved comment on a Google Doc, with an optional reply in content. comment is the comment id."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "reopen_comment"
+
+[[tool]]
+name = "docs_delete_comment"
+description = "Delete a comment (and its replies) from a Google Doc. comment is the comment id."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "delete_comment"
+
+# ---- natural language
+
+[[tool]]
+name = "docs_run_command"
+description = "Parse a plain-English instruction (create/append/overwrite a tab, list tabs, list/add comments) and run it against a Google Doc."
+file = "docs.py"
+entrypoint = "main"
+signature = "main(action: str='status', doc: str='', title: str='', content: str='', tab: str='', parent: str='', key_json: str='', command: str='', comment: str='', resolved: bool=False)"
+
+[tool.pinned]
+action = "command"

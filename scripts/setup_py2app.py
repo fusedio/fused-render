@@ -118,28 +118,15 @@ NEVER_FORCE_AS_PACKAGE = {"mpl_toolkits", "PyObjCTools", "google", "__pycache__"
 ALREADY_IN_INCLUDES = {"_duckdb", "_cffi_backend"}
 
 # Packages copied into the bundle by build_dmg.sh AFTER py2app runs, instead of
-# being forced through `packages`.
-#
-# `google` (google-auth) is here because py2app cannot carry it either way:
-#   * as `"google"` it is a PEP 420 namespace package with no `__init__.py`, and
-#     py2app's package bootstrap cannot resolve those — the limitation already
-#     documented for mpl_toolkits and PyObjCTools below;
-#   * as `"google.auth"`/`"google.oauth2"` the build dies outright.
-#     `collect_packagedirs()` (build_app.py:1210) maps `get_bootstrap()` over
-#     EVERY entry of `self.packages`, dotted included, and that calls
-#     `modulegraph.util.imp_find_module`, which splits the name and calls
-#     `imp.find_module("google")` — ImportError, before py2app's own
-#     dotted-aware `included_subpkg` path is ever reached. Tried; it fails the
-#     build. `tests/test_bundle_contents.py` now rejects dotted entries so this
-#     cannot be reintroduced by a unit test that passes while the build breaks.
-#
-# Staging it explicitly is the same pattern as rclone and uv (steps 4d/4d-bis):
-# a plain copy, no modulegraph involvement, and the namespace parent comes along
-# by construction. `[bundled]`'s own comment is the authority for shipping it at
-# all — the cloud credential chain was folded into the bundled app precisely because
-# "DMG users cannot pip install". Its dependencies (pyasn1, pyasn1-modules,
-# cryptography) are ordinary packages and stay in the derived list.
-STAGED_PACKAGES = ["google"]
+# being forced through `packages`. Currently empty; the mechanism stays for any
+# PEP 420 namespace package (no `__init__.py`) that py2app's package bootstrap
+# cannot resolve, whether named plainly or by dotted subpackage
+# (`collect_packagedirs()` in build_app.py maps `get_bootstrap()` over every
+# `packages` entry, and `imp.find_module("google")`-style lookups raise for
+# namespace parents). `tests/test_bundle_contents.py` rejects dotted entries.
+# build_dmg.sh copies each entry in as a plain directory, no modulegraph
+# involvement.
+STAGED_PACKAGES = []
 
 
 def _norm_dist(name):
@@ -160,7 +147,7 @@ def declared_requirements(extra="bundled"):
     (`fused-render[all]`, and the `fused-render[index,...]` that `[all]` is)
     expanded into the extras it names, recursively. `[bundled]` reaches the
     feature extras only through `fused-render[all]`, so reading its lines
-    literally would leave duckdb, pyarrow, the cloud chains and the full engine
+    literally would leave duckdb, pyarrow and the full engine
     out of the force-list. tests/test_bundle_contents.py and
     tests/test_engine_requirements.py read the declared set through this too.
     """

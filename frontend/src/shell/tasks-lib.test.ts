@@ -1959,10 +1959,9 @@ describe("filingIntent", () => {
     expect(a.kind).toBe("archive");
     expect(a.label).toBe("Archive");
     expect(a.lane).toBe("archived");
-    // The two halves a person reaching for Delete is actually asking about: the
-    // run still booked is called off, and the conversation is not destroyed.
-    expect(a.title).toContain("kept");
-    expect(a.title).toContain("calls off");
+    // ONE WORD (Akshil, 2026-10-05): the hover used to be a three-clause
+    // paragraph over a 24px button. The verb is the whole caption now.
+    expect(a.title).toBe("Archive");
   });
 
   it("offers Unarchive on an archived task, naming NO lane", () => {
@@ -1974,9 +1973,8 @@ describe("filingIntent", () => {
     expect(a.kind).toBe("unarchive");
     expect(a.label).toBe("Unarchive");
     expect(a.lane).toBe(null);
-    // Says the two things a person cannot see before pressing.
-    expect(a.title).toContain("Archive");
-    expect(a.title).toContain("nothing is re-run");
+    // Same rule as Archive: the verb, nothing more.
+    expect(a.title).toBe("Unarchive");
   });
 
   it("offers nothing while a run is in flight — the ONLY null now", () => {

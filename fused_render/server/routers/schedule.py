@@ -2,14 +2,8 @@
 
 The model — the store, the firing decision, the catch-up bound — is
 `fused_render/schedule.py`; this is the HTTP skin over it. Two things live here
-rather than there, both because they need what only this layer knows:
+rather than there, because it needs what only this layer knows:
 
-* **the mount refusal.** A scheduled turn is an agent turned loose on a path,
-  and the bytes under the mounts dir come from a remote over FUSE. Every peer
-  gate refuses those paths (the claude template's own `condition.py` exists for
-  this single refusal), so scheduling a message against one would route around
-  that gate. The mounts registry lives above the schedule module, so the check
-  belongs on this side of the import.
 * **ValueError -> 400.** The model raises with a message written for a human;
   the route is what turns that into a status code.
 
@@ -63,15 +57,13 @@ def api_schedule_events():
     shell polls to raise a toast for a message that ran, failed, or was missed
     while the user was elsewhere.
 
-    A SEPARATE endpoint from the listing above, for the reason the mount-health
-    log is separate: this one is polled app-wide, by every shell, forever, and
-    making that poll carry the full entry list would be paying for the page's
+    A SEPARATE endpoint from the listing above, for its own reason: this one
+    is polled app-wide, by every shell, forever, and making that poll carry the full entry list would be paying for the page's
     payload on a request that only ever reads a handful of ids.
 
     Undelivered-only, and the SERVER is what remembers which those are. The
-    alternative — a client-side "first poll is a silent baseline", copied from the
-    mount-health poller — is wrong for this log specifically: the catch-up pass
-    emits its `missed` verdicts on the scheduler's first tick, long before a shell
+    alternative — a client-side "first poll is a silent baseline" — is wrong for this log
+    specifically: the catch-up pass emits its `missed` verdicts on the scheduler's first tick, long before a shell
     has loaded, so the baseline swallowed precisely the events the log exists to
     deliver."""
     return {"events": schedule.undelivered_events()}
@@ -187,18 +179,11 @@ async def api_schedule_shot(file: UploadFile | None = File(default=None),
 def resolve_target(value, field: str = "target"):
     """`(resolved path, None)` for a create body's target, or `("", error)`.
 
-    TWO refusals, both of which have to happen before anything is stored, and
-    both of which every caller that creates an entry owes:
+    A refusal that has to happen before anything is stored, and that every
+    caller that creates an entry owes:
 
     * **it is required.** A scheduled turn with no path is an agent turned loose
       on whatever the process happens to be sitting in.
-    * **it may not be mount-backed.** The bytes under the mounts dir come from a
-      remote over FUSE and every peer gate refuses those paths (the claude
-      template's `condition.py` exists for this single refusal), so scheduling
-      against one would route around that gate. `is_mount_backed` is imported per
-      call, not at module scope: binding the name at import would freeze it past
-      the mounts registry's own seams, the same reason the peer gates resolve it
-      late.
 
     Resolved the way the model will resolve it (expanduser + abspath), so the
     path this clears is the path that gets scheduled. `field` names the field in
@@ -208,13 +193,7 @@ def resolve_target(value, field: str = "target"):
     if not isinstance(value, str) or not value.strip():
         return "", _error(f"{field}: required", status=400)
 
-    from fused_render.shell.mounts import is_mount_backed
-
     resolved = os.path.abspath(os.path.expanduser(value.strip()))
-    if is_mount_backed(resolved):
-        return "", _error(
-            f"{field}: refused — a scheduled session must not run against a "
-            "remote mount", status=400)
     return resolved, None
 
 
@@ -848,10 +827,7 @@ def api_schedule_resend(body: dict = Body(...),
     message may be queued rather than away (its conversation can be mid-turn),
     and that is a sentence to show, not an error to raise.
 
-    **The mount refusal is re-checked**, not inherited from the original's
-    creation. It passed the gate whenever it was scheduled, and a path can
-    become mount-backed after that; spawning against the stored target without
-    asking again would route around the gate the whole check exists to be."""
+    """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -865,13 +841,6 @@ def api_schedule_resend(body: dict = Body(...),
                      if str(e.get("id") or "") == entry_id), None)
     if original is None:
         return _error(f"no scheduled message with id {entry_id!r}", status=404)
-
-    from fused_render.shell.mounts import is_mount_backed
-
-    if is_mount_backed(str(original.get("target") or "")):
-        return _error(
-            "target: refused — a scheduled session must not run against a "
-            "remote mount", status=400)
 
     try:
         result = schedule.resend(entry_id)

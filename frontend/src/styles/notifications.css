@@ -49,6 +49,28 @@
    card this slot used to wrap is gone — SPEC-toasts-become-notifications.md
    — but the slot itself, and this collapse mechanics, are still what
    `JobPopupCard.tsx`/`MessagePopupCard.tsx` both ride below.) */
+/* Sync-failure rows in a native app window (shell/NativeAppSyncNotices.tsx):
+   a top-right column, clear of the bottom-right popup column, with the same
+   floating surface `.toast-slot > .dl-row` gives a lone row. Tokens only. */
+.native-sync-host {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(300px, calc(100vw - 24px));
+}
+
+.native-sync-host > .dl-row {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+}
+
 .toast-slot {
   display: grid;
   grid-template-rows: 1fr;
@@ -1929,4 +1951,26 @@ a.sys-link {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 2px;
+}
+
+/* The terminal's own font (platform/ui/terminalTheme.ts, TERMINAL_NERD_FONT):
+   JetBrainsMono Nerd Font Mono, regular + bold, SIL OFL 1.1 (assets/fonts/OFL.txt).
+   No local() source on purpose, so a differently-patched install of the same
+   name can't change the cell metrics. font-display: block because TerminalView
+   waits for the load before xterm measures its grid, so a fallback-font flash
+   would only ever be a wrong-width grid. */
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("../assets/fonts/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("../assets/fonts/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
 }

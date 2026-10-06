@@ -73,12 +73,6 @@ def canonical_root(root: str) -> str:
     return norm(os.path.abspath(os.path.expanduser((root or "~").strip())))
 
 
-def _mounts_dir() -> str:
-    """Indirection so a test can point the mount guard somewhere harmless."""
-    from fused_render.shell.mounts import mounts_dir
-    return mounts_dir()
-
-
 def _detach_kwargs() -> dict:
     """Popen kwargs that let the worker outlive the request and the page.
 
@@ -212,14 +206,9 @@ def start(cfg: IndexConfig, root: str, full: bool = False,
         # A home walk without Full Disk Access reads under every TCC-protected
         # folder and fires (or silently loses) a prompt per folder.
         raise ValueError(index_gate.FDA_MESSAGE)
-    # The guard runs BEFORE any kernel syscall on the caller's path: it is
-    # pure string work against the mount records, while os.path.isdir on a
-    # path under a wedged NFS mount blocks the request thread indefinitely
-    # (this repo's documented mount-wedge class).
-    if MountGuard(mounts_dir=_mounts_dir()).blocks_root(root):
+    if MountGuard().blocks_root(root):
         raise ValueError(
-            f"{root} is mount-backed; indexing remote mounts is not supported "
-            "(a kernel crawl of an rclone mount can wedge it)")
+            f"{root} is inside a fused-render home; it is never indexed")
     if not os.path.isdir(root):
         raise ValueError(f"not a directory: {root}")
     sig = cfg.rules.sig()
@@ -278,8 +267,7 @@ def start(cfg: IndexConfig, root: str, full: bool = False,
     # is why `hint`, when given, is written in its own canonical (deduped,
     # sorted) form rather than the caller's raw iterables.
     run_spec = {"root": root, "full": bool(full), "started": time.time(),
-               "ignore_sig": sig, "config": cfg.to_dict(),
-               "mounts_dir": _mounts_dir()}
+               "ignore_sig": sig, "config": cfg.to_dict()}
     if hint is not None:
         forced_key, subtrees_key = _hint_key(hint)
         run_spec["hint"] = {"forced": list(forced_key),

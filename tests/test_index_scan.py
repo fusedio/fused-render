@@ -28,7 +28,7 @@ def _cfg(tmp_path, **over):
 
 
 def _guard(tmp_path):
-    return MountGuard(mounts_dir=str(tmp_path / "nowhere-mounts"))
+    return MountGuard(home_dirs=[])
 
 
 def _p(path) -> str:
@@ -289,12 +289,12 @@ def test_keep_subdirs_still_honors_ignores_for_non_leaf_dirs(tmp_path):
     assert keep_subdirs([_p(tmp_path / "node_modules")], rules, guard) == []
     # SKIP_DIRS and the mount guard keep their veto over a leaf dir too
     assert keep_subdirs(["/dev"], rules, guard) == []
-    blocked = MountGuard(mounts_dir=_p(tmp_path / "m"))
+    blocked = MountGuard(home_dirs=[_p(tmp_path / "m")])
     assert keep_subdirs([_p(tmp_path / "m" / "s3" / ".git")], rules, blocked) == []
 
 
 def test_keep_subdirs_drops_skip_dirs_ignored_and_mount_paths(tmp_path):
-    guard = MountGuard(mounts_dir=_p(tmp_path / "mounts"))
+    guard = MountGuard(home_dirs=[_p(tmp_path / "mounts")])
     subs = [_p(tmp_path / "ok"), _p(tmp_path / "mounts" / "s3"),
             _p(tmp_path / "node_modules"), "/proc"]
     assert keep_subdirs(subs, IgnoreRules(["node_modules"]), guard) == [

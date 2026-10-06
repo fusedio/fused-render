@@ -46,7 +46,6 @@ from typing import Optional
 
 from fused_render import jobs
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -823,10 +822,6 @@ def _resolve_repo_root(root: str) -> str:
     """
     if not root or not os.path.isabs(root):
         raise PublishError("no repository folder was given")
-    if shell_mounts.is_mount_backed(root):
-        raise PublishError(
-            "git is not available on remote mounts — publishing would have "
-            "to push across the mounted tree")
     if not os.path.isdir(root):
         raise PublishError(f"{root} does not exist")
     res = _git_run(root, "rev-parse", "--show-toplevel")
@@ -996,8 +991,7 @@ def publish_start(root: str, name: str, visibility: str) -> dict:
     """Kick off `gh repo create --source --push`, and return the opening
     record — or raise `PublishError` before anything is spawned.
 
-    EVERY REFUSAL BELOW RUNS BEFORE THE SLOT IS CLAIMED: a mount-backed
-    repo, one with no commits, or one that already has a remote is a
+    EVERY REFUSAL BELOW RUNS BEFORE THE SLOT IS CLAIMED: one with no commits, or one that already has a remote is a
     refusal about the REPOSITORY, not about whether a publish happens to be
     running right now, so none of them should have to wait behind — or be
     confused with — the single-flight check.

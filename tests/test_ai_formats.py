@@ -373,6 +373,14 @@ def test_mflux_needs_the_variant_table_as_well_as_the_layout():
     assert "mflux-image" not in formats.loaders(
         repo_id="someone/else-mlx", names=set(), dirnames=components, config={},
         torch_weights=False)
+    # The Fill table counts too (issue #1439): a cached Fill snapshot is the
+    # same runner's, and `hub_cache` tags it text-to-image off the same
+    # `mflux_native_mode` call — a loaders() that said otherwise would leave
+    # the page a text-to-image card with no engine that opens it.
+    fill = next(iter(formats.MFLUX_FILL_VARIANTS))
+    assert formats.mflux_native_mode(fill) == "fill"
+    assert "mflux-image" in formats.loaders(
+        repo_id=fill, names=set(), dirnames=components, config={}, torch_weights=False)
 
 
 def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():

@@ -54,7 +54,7 @@ def has_fused_meta(html_path: str) -> bool:
 
 def text_has_fused_meta(text: str) -> bool:
     """The marker check for a page already held as text (GET /render reads the
-    file — or the mount serve — before asking), same head-bytes budget."""
+    file before asking), same head-bytes budget."""
     return _FUSED_META_RE.search(
         text[:_META_SCAN_BYTES].encode("utf-8", "ignore")) is not None
 
@@ -400,11 +400,10 @@ def workspace_apps(root: str) -> list[dict]:
     page (it did under the two-level walk, and a linked-in app folder is a
     reasonable thing to have), but the walk stops there: it is now three levels
     deep, so `<ws>/loop -> <ws>` would otherwise duplicate the entire listing
-    under a bogus tag, and a link into a remote mount would pay three levels of
-    kernel listing on a page load. `MountGuard` is the structural half of that
-    second one and is consulted BEFORE any syscall on a candidate path — a `stat`
-    under a wedged rclone mount blocks the serving thread, so the guard's pure
-    string comparison has to come first (the ordering `index/freshness.py` uses).
+    under a bogus tag, and a link into the app's own state tree would be walked on a
+    page load. `MountGuard` (the fused-render home-tree guard) is the structural
+    half of that second one and is consulted BEFORE any syscall on a candidate
+    path (the ordering `index/freshness.py` uses).
 
     Skips whatever it cannot read at every level and returns [] for a root that
     isn't listable (no workspace yet, on a first run) — a listing degrades, it
@@ -417,7 +416,7 @@ def _walk_workspace(root: str, make: "RowFactory") -> list[dict]:
     apps: list[dict] = []
     guard = MountGuard()
     if guard.blocks(root):
-        # A workspace pointed at a mount is not walked at all, rather than
+        # A workspace pointed at a fused-render home tree is not walked at all, rather than
         # walked carefully: see the guard's own docstring.
         return apps
     _walk_apps(root, root, 1, apps, guard, make)
@@ -492,9 +491,8 @@ def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict],
                 or lowered.endswith(OPAQUE_DIR_SUFFIXES)):
             continue
         path = os.path.join(dir_path, name)
-        # BEFORE the first syscall on this path, deliberately: a stat under a
-        # wedged rclone mount blocks the serving thread, and the guard answers
-        # from mount records with pure string work.
+        # BEFORE the first syscall on this path, deliberately: the guard answers
+        # with pure string work.
         if guard.blocks(path):
             continue
         try:
@@ -549,7 +547,7 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
     on the LOCAL workspace.
 
     The error asymmetry decides every ambiguous case: True hides the file
-    from the file recents, so anything indeterminate (OSError, mount-backed
+    from the file recents, so anything indeterminate (OSError, guarded
     root, outside the workspace) answers False — a duplicate row is today's
     behavior, a file missing from both lists is a new bug. Parity with the
     walk is held by tests (test_app_listing.py), same as the shared-template
@@ -558,7 +556,7 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
     guard = MountGuard()
     root = os.path.abspath(root)
     if guard.blocks(root):
-        return False  # workspace_apps lists nothing under a mount
+        return False  # workspace_apps lists nothing under a guarded home tree
     # The walk's first act is listdir(root), and an unlistable root lists
     # nothing — the same probe here keeps parity (an execute-only root must
     # not make a descendant "an app's entry" the walk would never emit).

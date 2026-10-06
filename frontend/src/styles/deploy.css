@@ -162,7 +162,7 @@
   overflow-y: auto;
 }
 
-/* Canonical field controls inside modals and mount forms — ONE background
+/* Canonical field controls inside modals and forms — ONE background
    (--bg, recessed against the --bg-alt dialog surface), ONE padding, ONE
    focus treatment. :where() keeps specificity at the scope class alone, so
    composite frames that reset their inner input (.templates-key-input input,

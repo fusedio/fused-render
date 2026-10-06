@@ -544,14 +544,6 @@ trap 'dev_shutdown; exit 143' TERM
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
-# Keep the rclone rcd daemon (and its mounts + warm VFS cache) alive across the
-# watchfiles server restarts that fire on every .py edit — without this the
-# daemon dies with the server (production teardown) and each restart pays the
-# re-mount + cache re-warm cost. Production leaves this unset. Respect an
-# already-set value so the caller can override (including to "0" to force the
-# production dies-with-server behavior).
-export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
-
 # Mark the server as a DEV RUN: /api/config echoes it as `dev: true` and the
 # shell's status banner then stops asking the developer to refresh for an
 # update. Here the served `version` is the checkout's while the bundle in the

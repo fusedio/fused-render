@@ -84,8 +84,8 @@ measured latency, not platform, so it helps equally on NFS/SMB anywhere.
 - **Case sensitivity** — ignore-name matching is exact, so `Node_Modules` is not
   pruned on case-insensitive filesystems. Search is unaffected: `lookup` uses `ILIKE`.
 - **Network filesystems** — directory-mtime reuse assumes a parent's mtime changes when
-  a child is added or removed; NFS/SMB caching can break that on any platform. Remote
-  mounts are not indexed at all (`scan-ignore.md §7`).
+  a child is added or removed; NFS/SMB caching can break that on any platform. Network
+  volumes are not indexed at all (`scan.md §6`).
 
 ## Non-goals
 

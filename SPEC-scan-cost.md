@@ -135,7 +135,7 @@ calling `fsevents.hint()`.
 
 * `runner.start(cfg, root, full=False)` (`runner.py:127`) gains an optional
   hint parameter; it is serialised into `spec.json` (`runner.py:189`) next to
-  `root` / `full` / `ignore_sig` / `config` / `mounts_dir`.
+  `root` / `full` / `ignore_sig` / `config`.
 * the worker passes it through to `scan`, where `scan.py:415-484` already
   branches `if hint is not None: summary = _run_fsevents(...)`. A supplied
   hint takes that branch without the journal thread.

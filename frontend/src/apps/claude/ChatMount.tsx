@@ -197,8 +197,6 @@ export interface ChatMountProps {
   /** The "Fix with AI" prompt, PULLED and cleared by the host before it is
    *  passed (explorer `takeClaudeAsk`) — so it reaches exactly one mount. */
   initialAsk?: ClaudeAsk;
-  /** `_remote=1` (sidebar under a mount). */
-  remote?: boolean;
   /** `_nofocus=1` (the frame-focus contract). */
   noFocus?: boolean;
   /** `_preview=1` (IS_PREVIEW thumbnails). */
@@ -283,7 +281,6 @@ export function ChatMount(props: ChatMountProps) {
         // take the keyboard": a thumbnail is display-only, and focus inside a
         // frame scrolls that frame into view (D348, platform/lib/frame-focus).
         autoFocus={!props.preview && !props.noFocus}
-        {...(props.remote ? { remote: true } : {})}
         {...(props.preview ? { preview: true } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}

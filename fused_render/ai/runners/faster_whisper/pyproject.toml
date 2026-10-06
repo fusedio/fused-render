@@ -7,7 +7,7 @@
 #
 # **No system ffmpeg.** Whisper implementations traditionally shell out to
 # `ffmpeg` for anything that is not a 16kHz wav, which is a dependency this app
-# does not ship and cannot promise — it bundles rclone, not ffmpeg, so a runner
+# does not ship and cannot promise — it does not bundle ffmpeg, so a runner
 # that assumed it would work on the machine it was written on and fail on a
 # user's with a subprocess error nobody can act on. faster-whisper decodes
 # through PyAV, whose wheels CARRY the ffmpeg libraries, so the dependency stays

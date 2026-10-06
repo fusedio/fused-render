@@ -182,12 +182,6 @@ describe("the file preview's URL — the chat's rule, ported (D616)", () => {
       .toBe("/render?path=%2Fs%2Fa.html&_preview=1&_nofocus=1");
   });
 
-  it("forwards stat's remote hint", () => {
-    expect(taskPreviewSrcFor(STAT([{ mode: "duckdb", path: "/t/d/i.html" }],
-                                  { remote: true }), "/s/a.csv"))
-      .toContain("&_remote=1");
-  });
-
   it("null — not an error — for every no-preview answer", () => {
     expect(taskPreviewSrcFor(null, "/s/a.csv")).toBe(null);
     expect(taskPreviewSrcFor(STAT([]), "/s/a.csv")).toBe(null);

@@ -1,4 +1,6 @@
 """Text-to-image on mflux (MLX): one resident model, four routes (SPEC §40).
+Three MODES over that model — generate, edit, and masked inpaint (`mask`,
+issue #1439) — the third over a different checkpoint; see `_recipe_for`.
 
 The Apple Silicon counterpart of `runners/torch_image.py`, and deliberately
 its twin from the outside: the same `/generate` body, the same one-JSON reply,
@@ -178,9 +180,17 @@ def _recipe_for(model_id, mode):
     one-process-per-model worker, choosing between these two lookups and
     re-running `_build_variant` when the resident mode differs from what a
     request needs — there is no second worker process to route to instead.
+
+    `"fill"` (`fused.ai.image({image, mask})`, issue #1439) reads
+    `formats.mflux_fill_recipe` — a standalone third table for a DIFFERENT
+    checkpoint, never derived from `_VARIANTS` (see that table's comment),
+    which is why a Klein request carrying `mask` and a Fill request carrying
+    no mask both land on `None` here and are refused by the caller.
     """
     if mode == "edit":
         return formats.mflux_edit_recipe(model_id)
+    if mode == "fill":
+        return formats.mflux_fill_recipe(model_id)
     return _VARIANTS.get(model_id)
 
 
@@ -196,6 +206,24 @@ def _build_variant(model_id, fetched, mode):
     """
     recipe = _recipe_for(model_id, mode)
     if recipe is None:
+        native = formats.mflux_native_mode(model_id)
+        if native == "fill":
+            # A Fill checkpoint asked to do something other than inpaint. Its
+            # `generate_image` REQUIRES both paths (see `formats.MFLUX_FILL_
+            # VARIANTS`), so there is no plain or edit variant to build over
+            # these weights — the request, not the model, is what has to
+            # change.
+            raise RuntimeError(
+                f"{model_id} is an inpainting (FLUX.1 Fill) checkpoint — it "
+                "repaints the white region of a mask and needs BOTH 'image' "
+                "and 'mask'. Pass a mask, or name a model that renders from "
+                "a prompt, such as mlx-community/FLUX.2-Klein-4B-4bit.")
+        if mode == "fill":
+            raise RuntimeError(
+                f"{model_id} is not a model this runner knows how to inpaint "
+                "with — 'mask' needs a FLUX.1 Fill checkpoint, which has no "
+                "variant class named for this repo. Try "
+                "mflux-community/flux-1-dev-fill-mflux-q4.")
         if mode == "edit":
             # Reached only if a model appears in `_VARIANTS` (so `load()`
             # accepted it for plain generation) but `formats.mflux_edit_
@@ -313,8 +341,16 @@ def load(model_id, fetched):
     """`fetched` is what `download` returned — the snapshot directory."""
     # BOTH checks come before the import `_build_variant` does, and they
     # answer different questions. This one is about the CATALOG: a repo
-    # nobody has written a variant for.
-    if model_id not in _VARIANTS:
+    # nobody has written a variant for — in EITHER table. The mode a repo is
+    # built in at bring-up is the one its weights are for: a Klein row
+    # renders from a prompt and is built as `"generate"` (the untouched
+    # path, Decision 3); a Fill row cannot (`formats.MFLUX_FILL_VARIANTS`)
+    # and is built as `"fill"` straight away, so the first inpaint request
+    # finds its mode already resident and `_ensure_mode` returns on line
+    # one — and a plain or edit request against it is refused by that same
+    # function's recipe check before anything is dropped.
+    native = formats.mflux_native_mode(model_id)
+    if native is None:
         raise RuntimeError(
             f"{model_id} is not a model this runner knows how to build. It "
             "loads mflux's own MLX conversions, and each one needs a variant "
@@ -332,10 +368,10 @@ def load(model_id, fetched):
             "text_encoder/ and vae/ subfolders. A diffusers or GGUF repo will "
             "not load here.")
 
-    model, vae = _build_variant(model_id, fetched, "generate")
+    model, vae = _build_variant(model_id, fetched, native)
     _loaded["model"] = model
     _loaded["vae"] = vae
-    _loaded["mode"] = "generate"
+    _loaded["mode"] = native
     # Remembered so `_ensure_mode` can re-run `_build_variant` for the OTHER
     # mode without a second `download()` — the snapshot is already on disk and
     # `download` has already reported those bytes to the job row, so a second
@@ -636,6 +672,13 @@ def generate(body):
     are never passed from here: Gate A found that argument inert unless
     `image_strength` also arrives, and even then it is img2img noise strength,
     not instruction editing, which is not what `image` promises a caller.
+
+    **`mask`, if present, selects the third mode — INPAINT — and needs
+    `image` too** (issue #1439). It renders through `Flux1Fill`, a FLUX.1
+    Fill checkpoint resident in its own process (`formats.MFLUX_FILL_
+    VARIANTS`): white in the mask is repainted from the prompt, black is
+    kept, and the kept pixels come back untouched by construction rather
+    than by compositing. Both paths are resized to the render inside mflux.
     """
     if _loaded.get("model") is None:
         raise RuntimeError("no model is loaded")
@@ -646,7 +689,18 @@ def generate(body):
     # `kwargs["image_paths"] = [image]` below type-check as `list[str]`
     # instead of a list of an unknown, possibly-`None` element.
     image = str(body.get("image") or "")
-    mode = "edit" if image else "generate"
+    # `mask` (issue #1439) selects the third mode, INPAINT, over `image`: a
+    # request carrying both renders through `Flux1Fill` with `image_path=`
+    # and `masked_image_path=` — the library's own two required positionals
+    # — and leaves every pixel outside the mask's white region untouched by
+    # construction. A mask with no base is meaningless (nothing to keep), so
+    # it is refused here as well as at the endpoint, per `engine_options`'s
+    # two-doors rule: this worker can be reached without the route.
+    mask = str(body.get("mask") or "")
+    if mask and not image:
+        raise ValueError("'mask' needs 'image' — a mask says which region of "
+                         "a base image to repaint, so there has to be one")
+    mode = "fill" if mask else ("edit" if image else "generate")
     _ensure_mode(mode, body.get("job") or None)
     model = _loaded["model"]
     # BEFORE anything touches the model: this is a request thread, the weights it
@@ -703,6 +757,18 @@ def generate(body):
                 # exactly one path (Decision 4 — an array or non-string
                 # `image` is refused before this worker is ever reached).
                 kwargs["image_paths"] = [image]
+            elif mode == "fill":
+                # `Flux1Fill.generate_image(seed, prompt, image_path,
+                # masked_image_path, ...)` — SINGULAR `image_path`, not the
+                # edit class's list, and the mask under the library's own
+                # name. Both are resized to `width`x`height` inside mflux
+                # (`MaskUtil.create_masked_latents`, LANCZOS), and the mask
+                # is binarised at 0.5 — white = repaint, black = keep — so
+                # nothing is pre-processed here. `image_strength` is NOT
+                # passed: on this class it is img2img noise on the base,
+                # the exact knob Gate A found useless for editing.
+                kwargs["image_path"] = image
+                kwargs["masked_image_path"] = mask
             rendered = model.generate_image(**kwargs)
         finally:
             # Even on the cancel path: a reporter left pointing at a finished

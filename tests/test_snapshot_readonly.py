@@ -25,8 +25,8 @@ whether the tree was cached yesterday or a second ago.
 Fixing only the framing template would leave the path writable to everything else
 (the explorer's own file ops, an /api/fs/write from any view, a rename). The
 promise "this is history" has to be kept at the mutation boundary, which is the
-posture the rest of the repo already takes: `mount_read_only` refuses a
-read-only mount in every handler rather than once.
+posture the rest of the repo already takes: the fs routes refuse a
+read-only path in every handler rather than once.
 
 The refusal reuses the existing `readonly` wire contract (403 + `{"error":
 "readonly"}`) rather than inventing a string: runtime.js `writeFile` already turns
@@ -41,7 +41,7 @@ import os
 import pytest
 from fastapi.responses import JSONResponse
 
-from fused_render.server import fs_mutate, mount
+from fused_render.server import fs_mutate, fs_stat as mount
 from fused_render.shell import storage
 
 

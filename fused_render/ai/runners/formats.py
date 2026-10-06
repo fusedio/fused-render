@@ -279,6 +279,78 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     # `_build_variant` reads it unconditionally.
     return {**edit, "config": plain["config"], "vae": plain.get("vae")}
 
+
+#: The INPAINT counterpart (`fused.ai.image({image, mask})`, mflux-only): a
+#: FLUX.1 **Fill** checkpoint, which repaints only the white region of a mask
+#: and hands every other pixel of the base back untouched — what the
+#: whole-image instruction edit above cannot promise (issue #1439: a beard
+#: erased, lipstick painted on, by an edit that was asked to move a mouth).
+#:
+#: **A THIRD table, standalone — NOT a row in `MFLUX_VARIANTS` and NOT derived
+#: from one the way `MFLUX_EDIT_VARIANTS` is.** The edit table can derive
+#: `config`/`vae` because Klein edit runs over the SAME snapshot as Klein
+#: generate. Fill is a different checkpoint entirely (FLUX.1, two text
+#: encoders, a transformer whose input embedder takes 384 channels — base
+#: latents, masked-image latents and the packed mask concatenated — where a
+#: plain FLUX.1 takes 64), so it has its own `config` and could never share a
+#: row. And it must stay OUT of `MFLUX_VARIANTS` because that table means "this
+#: repo can render from a prompt alone": `Flux1Fill.generate_image` takes
+#: `image_path` and `masked_image_path` as REQUIRED positionals (read off the
+#: installed mflux 0.19.1), so a plain generate against it is a `TypeError`
+#: inside the worker, not a picture. `mflux_native_mode` below is how
+#: `load()` tells the two kinds of repo apart at bring-up.
+#:
+#: **No `vae` key, deliberately — this row gets NO live preview.** FLUX.1's
+#: autoencoder is 16-channel with a 2x2 patchify, and `preview.PROJECTIONS`
+#: has no fit for it: `AutoencoderKLFlux2` is FLUX.2's and `AutoencoderKL`
+#: there is SD1.5's 4-channel fit, which would project garbage. `_build_
+#: variant` reads `recipe.get("vae")` and `preview.sink(..., None)` is the
+#: documented no-op, so the row simply denoises without a thumbnail until
+#: somebody fits one — the same standing a variant "that names no
+#: autoencoder" already has in `tests/test_ai_mflux_worker.py`.
+#:
+#: The repo: `mflux-community`'s own 4-bit conversion of
+#: `black-forest-labs/FLUX.1-Fill-dev`, 9.6 GB on the Hub (2026-10-06, every
+#: sibling summed — the two text encoders are 2.7 GB of it), tagged
+#: `base_model: black-forest-labs/FLUX.1-Fill-dev`, which is what lets
+#: `hub_loadable`'s mflux admission rule find it from a search. Stored
+#: quantization is read off the weights themselves (`WeightApplier.apply_and_
+#: quantize` with `quantize_arg=None`), so the worker passes no `quantize`.
+MFLUX_FILL_VARIANTS = {
+    "mflux-community/flux-1-dev-fill-mflux-q4": {
+        "variant": "Flux1Fill",
+        "module": "mflux.models.flux.variants.fill.flux_fill",
+        "config": "dev_fill",
+    },
+}
+
+
+def mflux_fill_recipe(model_id: str) -> dict | None:
+    """The full inpaint-mode recipe for `model_id`, or None when it is not a
+    Fill checkpoint this build knows. A copy, so a caller mutating the
+    recipe cannot edit the table."""
+    row = MFLUX_FILL_VARIANTS.get(model_id)
+    return dict(row) if row is not None else None
+
+
+def mflux_native_mode(model_id: str) -> str | None:
+    """The mode an mflux repo is BUILT in at bring-up — `"generate"` for a
+    `MFLUX_VARIANTS` row, `"fill"` for a `MFLUX_FILL_VARIANTS` one, None for a
+    repo neither table names.
+
+    The one place that says a repo belongs to this runner at all: `mflux_
+    image/worker.py:load` builds this mode first and `hub_cache` tags a
+    cached snapshot off it, so a Fill repo is text-to-image on the AI Models
+    page exactly as a Klein one is. A repo in BOTH tables would be a bug
+    (one checkpoint cannot both need and refuse a mask); `generate` wins
+    there only so the answer is deterministic.
+    """
+    if model_id in MFLUX_VARIANTS:
+        return "generate"
+    if model_id in MFLUX_FILL_VARIANTS:
+        return "fill"
+    return None
+
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
 
@@ -2075,7 +2147,11 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # let the check below claim it and the page would offer a Diffusers
         # Load button that opens on a layout diffusers cannot read.
         return tuple(found)
-    if repo_id in MFLUX_VARIANTS and has_mflux_components(dirnames):
+    # Either mflux table (`mflux_native_mode`): a Fill checkpoint is loaded
+    # by the same runner as a Klein, only in a different mode — and
+    # `hub_cache._format_task` tags it text-to-image off this same call, so
+    # the two must not disagree about which repos are mflux's.
+    if mflux_native_mode(repo_id) and has_mflux_components(dirnames):
         found.append("mflux-image")
     if DIFFUSERS_INDEX in names:
         found.extend(DIFFUSERS_RUNNERS)

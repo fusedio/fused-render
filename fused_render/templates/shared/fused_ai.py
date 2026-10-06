@@ -108,7 +108,7 @@ SERVER_JSON_NAME = "server.json"
 # caller's option: the server is the one closed envelope (D413).
 _IMAGE_WIRE_KEYS = frozenset(
     {"prompt", "model", "width", "height", "steps", "guidance", "seed", "image",
-     "provider"})
+     "mask", "provider"})
 _TRANSCRIBE_WIRE_KEYS = frozenset(
     {"path", "model", "language", "task", "initialPrompt", "vad", "diarize",
      "speakers", "words", "provider"})
@@ -661,7 +661,8 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
 def image(prompt: str, model: str | None = None, width: int | None = None,
           height: int | None = None, steps: int | None = None,
           guidance: float | None = None, seed: int | None = None,
-          image: str | None = None, provider: str | None = None,
+          image: str | None = None, mask: str | None = None,
+          provider: str | None = None,
           wait: bool = True, on_progress=None,
           timeout: float | None = None) -> dict:
     """`POST /api/ai/image`. Job-backed like `transcribe()`, same default.
@@ -669,6 +670,8 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
     `image` (a base image to edit) follows the identical local-abspath rule
     `path` does above, for the same reason (RH-1) — the server's `base`
     option is for a page's own `?path=`, which this module has none of.
+    `mask` (white = repaint, black = keep; needs `image`; a FLUX.1 Fill model)
+    follows the same rule.
     """
     body: dict = {"prompt": prompt}
     for key, value in (
@@ -680,6 +683,8 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
             body[key] = value
     if image is not None:
         body["image"] = os.path.abspath(os.path.expanduser(image))
+    if mask is not None:
+        body["mask"] = os.path.abspath(os.path.expanduser(mask))
     reply = _post_json("/api/ai/image", body)
     if not wait:
         return reply
@@ -691,7 +696,7 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
         reply, usage={"imagesGenerated": 1},
         metadata={k: reply.get(k) for k in
                   ("seed", "width", "height", "steps", "guidance", "image",
-                   "prompt", "previewPath")})
+                   "mask", "prompt", "previewPath")})
 
 
 def speech(text: str, model: str | None = None, voice: str | None = None,

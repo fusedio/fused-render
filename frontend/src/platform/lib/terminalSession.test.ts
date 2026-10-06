@@ -22,7 +22,7 @@ import type {
 // is a dynamic import rather than a static one.
 installDomShim();
 
-const { TerminalSession, terminalStreamUrl, buildTerminalCommand } = await import(
+const { TerminalSession, terminalStreamUrl, buildTerminalCommand, createTerminalBody } = await import(
   "@platform/lib/terminalSession"
 );
 
@@ -355,5 +355,13 @@ describe("buildTerminalCommand", () => {
     expect(
       buildTerminalCommand({ cwd: "/tmp/foo", command: "echo a\necho b", execute: false }),
     ).toBe("\x1b[200~cd '/tmp/foo' && echo a\necho b\x1b[201~");
+  });
+});
+
+describe("createTerminalBody", () => {
+  test("carries cwd and the size hint, and omits what is unknown", () => {
+    expect(createTerminalBody("/tmp", { rows: 30, cols: 120 })).toEqual({ cwd: "/tmp", rows: 30, cols: 120 });
+    expect(createTerminalBody(undefined, null)).toEqual({});
+    expect(createTerminalBody("/tmp")).toEqual({ cwd: "/tmp" });
   });
 });

@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
 from fused_render.shell import bookmarks as bookmarks_mod
-from fused_render.shell import mounts as mounts_mod
 
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
@@ -347,7 +346,7 @@ def test_missing_never_flags_any_underscore_sentinel_route(tmp_path, monkeypatch
     tree = [
         {**_bm("prefs", "prefs", 1), "url": "/view/_prefs"},
         {**_bm("templates", "templates", 2), "url": "/view/_templates"},
-        {**_bm("mounts", "mounts", 3), "url": "/view/_mounts"},
+        {**_bm("extra", "extra", 3), "url": "/view/_prefs?tab=x"},
         {**_bm("account", "account", 4), "url": "/view/_prefs?tab=account"},
         {**_bm("panel", "panel", 5), "url": "/view/_panel?_layout=x"},
     ]
@@ -356,7 +355,7 @@ def test_missing_never_flags_any_underscore_sentinel_route(tmp_path, monkeypatch
 
 
 def test_missing_check_is_bounded_when_hung(tmp_path, monkeypatch):
-    # A stale bookmark sitting on a slow/hung mount must never stall the
+    # A stale bookmark sitting on a slow or hung filesystem must never stall the
     # sidebar's poll. Fail open: a check that outlives the budget is NOT
     # flagged, and the endpoint stays well under the hang duration.
     client, home = _client(tmp_path, monkeypatch)
@@ -367,7 +366,7 @@ def test_missing_check_is_bounded_when_hung(tmp_path, monkeypatch):
         time.sleep(10)
         return True  # would flag missing if it ever completed within budget
 
-    monkeypatch.setattr(bookmarks_mod.pathops.os.path, "exists", _hang)
+    monkeypatch.setattr(bookmarks_mod.os.path, "exists", _hang)
 
     start = time.monotonic()
     resp = client.get("/api/bookmarks")
@@ -390,7 +389,7 @@ def test_missing_checks_run_concurrently_not_serially(tmp_path, monkeypatch):
         time.sleep(0.5)
         return False
 
-    monkeypatch.setattr(bookmarks_mod.pathops.os.path, "exists", _slow)
+    monkeypatch.setattr(bookmarks_mod.os.path, "exists", _slow)
 
     start = time.monotonic()
     resp = client.get("/api/bookmarks")
@@ -403,41 +402,3 @@ def test_missing_checks_run_concurrently_not_serially(tmp_path, monkeypatch):
     assert elapsed < 2.0, f"GET took {elapsed:.1f}s — checks not concurrent"
 
 
-def test_missing_mount_backed_paths_route_through_rc_not_os_path(tmp_path, monkeypatch):
-    # Mount safety: a mount-backed bookmark target must be checked via the
-    # rclone rc API (rc_stat_for), NEVER a kernel os.path.exists — a raw
-    # GETATTR on a hung NFS mount is the exact call that wedges it. Unlike
-    # recents (files-only), a directory target is also legitimately "present".
-    client, home = _client(tmp_path, monkeypatch)
-    live = tmp_path / "live_mount.parquet"
-    a_dir = tmp_path / "dir_mount"
-    indet = tmp_path / "indet_mount.parquet"
-    gone = tmp_path / "gone_mount.parquet"
-    tree = [_bm(name, name, i) | {"url": _view_url(p)}
-            for i, (name, p) in enumerate(
-                [("live", live), ("dir", a_dir), ("indet", indet), ("gone", gone)])]
-    _write_tree(home, tree)
-
-    monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
-
-    def _no_os_path_exists(path):
-        raise AssertionError("os.path.exists called on a mount-backed path")
-
-    monkeypatch.setattr(bookmarks_mod.pathops.os.path, "exists", _no_os_path_exists)
-
-    def _stat(path, **kw):
-        if path.endswith("live_mount.parquet"):
-            return "exists"
-        if path.endswith("dir_mount"):
-            return "exists"  # a directory listing is a valid bookmark target
-        if path.endswith("gone_mount.parquet"):
-            return "missing"  # healthy rcd, item null -> trustworthy negative
-        return "indeterminate"  # rcd down / timeout / error
-
-    monkeypatch.setattr(mounts_mod, "rc_stat_for", _stat)
-
-    resp = client.get("/api/bookmarks")
-    assert resp.status_code == 200
-    # confirmed-missing only; file, dir, and indeterminate all stay unflagged
-    # (fail open on indeterminate).
-    assert resp.json()["missing"] == ["gone"]

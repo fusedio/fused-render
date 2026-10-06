@@ -74,8 +74,6 @@ export interface PaneDecision {
   /** The entry html the pane is rendering, for `app_state`'s `entry` field.
    *  `""` for no-pane and CHAT_ONLY: nothing of ours is rendering it (T:5420). */
   entry: string;
-  /** stat's remote flag, forwarded to the framed page as `_remote=1`. */
-  remote: boolean;
   /** The mode the iframe is showing right now — the idempotence record that
    *  `applyLeftMode` compares against (T:5284). `null` when no pane. */
   framedMode: string | null;
@@ -122,7 +120,7 @@ export interface PaneSrcFlags {
 function withFlags(src: string, flags: PaneSrcFlags | undefined): string {
   let out = src;
   // `_preview` BEFORE `_nofocus`, which is the order T spells at its one site
-  // that emits both: `paneSrcFor(t, path, remote) + "&_preview=1&_nofocus=1"`
+  // that emits both: `paneSrcFor(t, path) + "&_preview=1&_nofocus=1"`
   // (T:10717). Nothing reads either flag positionally, so this is literal
   // parity and not behaviour — but the inventory pins these URLs as an EXACT
   // shape, and a snapshot test or a log grep written to T's spelling misses on
@@ -139,8 +137,7 @@ function withFlags(src: string, flags: PaneSrcFlags | undefined): string {
  * ONE stat entry → the iframe src (T:5298-5321). Split out of the decision so a
  * picker switch re-derives the URL from the entry list it already has, with no
  * re-stat — and so the shot viewer (D616) can frame a template for a file that
- * is NOT the chat's target with the URL shape verbatim, down to the `_remote`
- * hint. One builder, so a preview that works in the pane cannot be subtly
+ * is NOT the chat's target with the URL shape verbatim. One builder, so a preview that works in the pane cannot be subtly
  * different in the viewer.
  *
  * NOTE on the param name: the target rides as `_file`, not `_mode`. `_mode` is
@@ -153,7 +150,6 @@ function withFlags(src: string, flags: PaneSrcFlags | undefined): string {
 export function paneSrcFor(
   entry: Pick<TemplateEntry, "mode" | "path">,
   file: string,
-  remote = false,
   flags?: PaneSrcFlags,
 ): string {
   // `_render` is a shell sentinel (PT-12), not a template folder: it means "the
@@ -164,14 +160,11 @@ export function paneSrcFor(
   if (!entry.path) {
     throw new Error("the default view for this file has no template (" + entry.mode + ")");
   }
-  // `_remote=1` is forwarded exactly as the shell's own iframe does, so a
-  // template that prefers ranged HTTP reads over local file I/O gets the hint.
   return withFlags(
     "/render?path=" +
       encodeURIComponent(entry.path) +
       "&_file=" +
-      encodeURIComponent(file) +
-      (remote ? "&_remote=1" : ""),
+      encodeURIComponent(file),
     flags,
   );
 }
@@ -209,40 +202,37 @@ export function decidePane(input: PaneDecisionInput): PaneDecision {
       // CHAT_ONLY still reports the NOUN and still withholds `entry`: that field
       // names "the entry html the pane is rendering", and from here nothing of
       // ours is (T:5420-5425).
-      if (chatOnly) return { ...NO_PANE, ...nounsFor("project"), remote: false };
+      if (chatOnly) return { ...NO_PANE, ...nounsFor("project") };
       return {
         kind: "project",
         src: appEntrySrc(entry, flags),
         ...nounsFor("project"),
         leftModes: [],
         entry,
-        remote: !!stat.remote,
         framedMode: null,
       };
     }
     // An ordinary folder, not a project: NO PANE (D239). A distinct answer
     // rather than a thrown error.
-    return { ...NO_PANE, ...nounsFor("folder"), remote: false };
+    return { ...NO_PANE, ...nounsFor("folder") };
   }
 
   // CHAT_ONLY is checked BEFORE the entry lookup below, on purpose: the "no
   // preview view for this file" throw is about a pane WE have to fill, and in
   // this layout there is no pane to fail at filling (T:5457-5463).
-  if (chatOnly) return { ...NO_PANE, ...nounsFor("file"), remote: false };
+  if (chatOnly) return { ...NO_PANE, ...nounsFor("file") };
 
   const leftModes = paneOfferable(stat.templates);
-  const remote = !!stat.remote;
   const t = curLeftEntry(leftModes, leftMode);
   if (!t) throw new Error("no preview view for this file");
   return {
     kind: "file",
-    src: paneSrcFor(t, file, remote, flags),
+    src: paneSrcFor(t, file, flags),
     ...nounsFor("file"),
     leftModes,
     // The target IS the document being annotated, so app_state reports the file
     // itself where a folder target reports the app's entry page (T:5466).
     entry: file,
-    remote,
     framedMode: t.mode,
   };
 }

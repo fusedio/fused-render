@@ -24,9 +24,6 @@ export interface Config {
   // Drifts from `version` after a DMG install replaces the bundle under a
   // still-running process — ServerStatusBanner then asks for an app restart.
   installed_version: string | null;
-  // Root of the mounts dir (~/.fused-render/mounts) — every mount lives at
-  // `${mounts_root}/<name>`.
-  mounts_root: string;
   // Where shell code may write scratch files — bytes the app made and can
   // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
   // the writer mkdirs it, and /api/fs/mkdir makes ONE level at a time.
@@ -54,6 +51,10 @@ export interface Config {
   // `dismiss` are distinct writes (reached the end vs "skip for now").
   // Server-side, not localStorage: a port drift is a new origin.
   onboarding?: OnboardingState;
+  /** Bots as the front door (prefs `bots_enabled`, default off): `/` lands on
+   *  `/bots` and the sidebar's Home row gives way to Bots. In config so the
+   *  shell can decide the front door synchronously at first render. */
+  bots_enabled?: boolean;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -90,7 +91,7 @@ export interface ListResult {
   // servers omit these two fields, so both are optional.
   truncated?: boolean;
   // Opaque continuation token for the next page — non-null only on the
-  // resumable S3-direct route (rclone and a local scandir can't resume). Pass
+  // resumable route (a local scandir can't resume). Pass
   // it back to listDir to fetch the next page.
   cursor?: string | null;
 }
@@ -133,9 +134,6 @@ export interface StatResult {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // Bytes come from a remote (path under a mount). Preview forwards this to
-  // the template iframe as _remote=1 so pages can prefer ranged HTTP reads.
-  remote?: boolean;
   // False for a file on a read-only mount (or any path the user can't write).
   writable?: boolean;
   // /api/fs/write only: whether that write ADDED this path rather than
@@ -1255,6 +1253,8 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  /** Bots sub-app as the front door (default off); see shell/prefs.bots_enabled. */
+  bots: { enabled: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
@@ -1547,6 +1547,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export function putBotsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { bots_enabled: enabled });
 }
 
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
@@ -1909,278 +1913,6 @@ export function writeOsClipboard(
   paths: string[]
 ): Promise<{ token: string; supported: boolean }> {
   return postJson<{ token: string; supported: boolean }>("/api/clipboard/files", { paths });
-}
-
-// -- Mounts (shell/mounts.py) ------------------------------------------
-// Remote storage mounted as local paths via rclone rcd. Credentials live in
-// rclone's config; mounts survive server restarts and are adopted on start.
-
-export interface Mount {
-  id: string;
-  name: string;
-  remote: string;
-  mountpoint: string;
-  // Health, not just presence:
-  //  - "disconnected" = a kernel mount is (or was) there but its rclone daemon
-  //    no longer serves it — listings show stale or empty data.
-  //  - "stale" = the split-brain from the 2026-07-16 incident: rclone still
-  //    lists the mount but the kernel dropped it (e.g. the user hit
-  //    "Disconnect" on the macOS "Server connections interrupted" dialog).
-  // Both are repaired via reconnectMount (force unmount + fresh mount).
-  state: "mounted" | "stale" | "disconnected" | "unmounted";
-  mounted: boolean; // state === "mounted"
-  // The remote rejects writes (anonymous S3, an http backend, …), detected at
-  // attach time. Files under the mountpoint stat as writable:false, so
-  // templates open them read-only.
-  read_only: boolean;
-  // Why restarting the rclone daemon would help this mount, else null:
-  //  - "params" = the mount is live but its running options no longer match the
-  //    record (e.g. read_only flipped) — a restart re-mounts to apply them.
-  //  - "credentials" = a disconnected env_auth mount whose credentials probe
-  //    valid again; the long-lived daemon still holds the stale keys, so only a
-  //    restart (not Reconnect) re-reads the refreshed ones.
-  // Both route the user to the single global Restart rclone button.
-  restart_reason?: "params" | "credentials" | null;
-  // The mount's async upload queue (D221). null means the question does not
-  // APPLY — the mount is read-only or not healthy, so it can hold no queue.
-  // A read that was attempted and failed comes back as {unknown: true}, which
-  // is a different thing and must be shown, not swallowed: with a full VFS
-  // cache a save completes locally and uploads afterwards, so "we don't know"
-  // can hide files that never reached the remote.
-  uploads?: MountUploads | null;
-}
-
-// Files written to a mount that haven't reached the remote yet. A discriminated
-// union on `unknown` on purpose: the unknown case carries NO counts, so it
-// cannot be read as zero by a caller that forgets to check.
-export type MountUploads =
-  | {
-      unknown: false;
-      pending: number;
-      // Items whose upload already came back unsuccessfully (quota,
-      // permissions). The number that matters — a save the user saw succeed
-      // did not stick. Always <= pending; rclone re-queues a failed item
-      // rather than dropping it, so it stays counted in both.
-      failed: number;
-      failed_names: string[]; // capped by the server; `failed` carries the rest
-    }
-  | { unknown: true; reason: string };
-
-// How a remote is reached, which is what the Remote dropdown groups by:
-// "public" = anonymous, no credentials at all; "detected" = the user's own
-// AWS/gcloud credentials, read where they already live; "other" = a remote the
-// user set up themselves (only a materialized remote can be this).
-export type RemoteKind = "public" | "detected" | "other";
-
-// The cloud behind a remote, from its rclone backend type — used to match a
-// pasted s3:// or gs:// link to a remote that can actually serve it.
-export type RemoteProvider = "s3" | "gcs" | "other";
-
-// A remote we can offer from credentials already present in the user's
-// dotfiles (AWS profiles/env, gcloud ADC). Materialized on first use into a
-// keyless env_auth remote; `id` identifies the source to the detect endpoint.
-export interface RemoteSuggestion {
-  id: string;
-  label: string;
-  remote_name: string;
-  kind: RemoteKind;
-  provider: RemoteProvider;
-  // Whether `remote_name` has ALREADY been materialized. The server returns
-  // every suggestion either way, so the setup panels can show what is possible;
-  // anything that CREATES from a suggestion (the "suggest:<id>" options in Add
-  // mount) must offer only `!exists` ones or it 409s on a remote that's there.
-  exists: boolean;
-}
-
-// An existing rclone remote. `name` is the verbatim rclone spec (incl trailing
-// ':') used unchanged as the mount base; `label` is the friendly name to show —
-// the same one its suggestion used, or the bare `name` for a custom remote.
-export interface RcloneRemote {
-  name: string;
-  label: string;
-  // Same two fields a RemoteSuggestion carries, meaning the same thing: the
-  // server classifies a remote by PROVENANCE (its stored rclone config matched
-  // against the suggestion that would have created it), so the client groups
-  // and link-matches on facts rather than sniffing names and label substrings.
-  // "other" = a remote the user brought themselves (custom S3, an OAuth account).
-  kind: RemoteKind;
-  provider: RemoteProvider;
-}
-
-export interface MountsResult {
-  rclone: {
-    available: boolean;
-    version: string | null;
-    remotes: RcloneRemote[];
-    suggested: RemoteSuggestion[];
-  };
-  mounts: Mount[];
-}
-
-export function getMounts(): Promise<MountsResult> {
-  return getJson<MountsResult>("/api/mounts");
-}
-
-// Lightweight health snapshot for the background mount-health poll (the global
-// disconnect/reconnect toast, useMountHealth). Cheaper than getMounts — no
-// rclone enumeration — and carries a bounded, append-only `events` log with
-// monotonically increasing int ids the poller tracks a high-water mark against.
-export interface MountHealth {
-  id: string;
-  name: string;
-  state: Mount["state"];
-  mountpoint: string;
-}
-
-export type MountEventKind = "disconnected" | "reconnected" | "reconnect_failed";
-
-export interface MountEvent {
-  id: number; // monotonic, append-only — the poll's high-water mark keys on it
-  mount_id: string;
-  name: string;
-  kind: MountEventKind;
-  ts: number; // epoch seconds
-  detail: string;
-}
-
-export interface MountsHealthResult {
-  mounts: MountHealth[];
-  events: MountEvent[];
-}
-
-export function getMountsHealth(): Promise<MountsHealthResult> {
-  return getJson<MountsHealthResult>("/api/mounts/health");
-}
-
-// Path-bar support: the local path a bucket URL (s3://, gs://, gcs://) maps to
-// through the mount that covers it. Rejects with the server's message — "no
-// mount covers s3://<bucket> …" — when nothing does; the caller shows it
-// verbatim, since only the server knows the mount records and rclone config.
-export function resolveCloudUrl(url: string): Promise<{ path: string }> {
-  return getJson<{ path: string }>("/api/mounts/resolve?url=" + encodeURIComponent(url));
-}
-
-export function createMount(name: string, remote: string): Promise<Mount> {
-  return postJson<Mount>("/api/mounts", { name, remote });
-}
-
-export function attachMount(id: string): Promise<Mount> {
-  return postJson<Mount>(`/api/mounts/${id}/mount`, {});
-}
-
-// force=true is for a mount already shown as disconnected: its dead NFS
-// mount rejects a plain unmount, so the backend escalates to a force unmount.
-export function detachMount(id: string, force = false): Promise<Mount> {
-  return postJson<Mount>(`/api/mounts/${id}/unmount${force ? "?force=1" : ""}`, {});
-}
-
-// Repair a disconnected mount: force-clear the dead mountpoint, remount.
-export function reconnectMount(id: string): Promise<Mount> {
-  return postJson<Mount>(`/api/mounts/${id}/reconnect`, {});
-}
-
-// Global recovery: restart the rcd daemon and re-mount everything. Briefly
-// disconnects ALL mounts, but is the only fix for a stale-credential daemon
-// (a fresh daemon re-reads refreshed keys) and for applying changed mount
-// params. Returns the same shape as getMounts so the caller refreshes at once.
-export function restartRclone(): Promise<MountsResult> {
-  return postJson<MountsResult>("/api/mounts/restart", {});
-}
-
-export function deleteMount(id: string): Promise<void> {
-  const res = fetch(`/api/mounts/${id}`, {
-    method: "DELETE",
-    headers: { "X-Fused": "1" },
-  });
-  return res.then(async (r) => {
-    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
-  });
-}
-
-// S3-compatible only: keys are written straight into rclone's own config.
-// OAuth backends (Google Drive, …) have no keys to paste and go through
-// startRemoteOAuth below instead.
-export function createRemote(
-  name: string,
-  params: Record<string, string>
-): Promise<{ ok: boolean; name: string }> {
-  return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes", {
-    name,
-    params,
-  });
-}
-
-// Materialize a keyless remote from auto-detected credentials (idempotent).
-// Returns the rclone remote name (e.g. "aws:") to mount against.
-export function createDetectedRemote(id: string): Promise<{ ok: boolean; name: string }> {
-  return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes/detect", {
-    id,
-  });
-}
-
-// -- Browser sign-in: Google Drive, Dropbox, Box (D219, D223) -----------------
-//
-// The server spawns `rclone authorize "<backend>"`, which runs its own loopback
-// callback server and opens the SYSTEM browser itself — unlike the Fused
-// login there is no URL for us to window.open. So the client's whole job is
-// to start it, poll, and report.
-//
-// The provider keys and their labels live in lib/oauth.ts; this module only
-// moves the request and the status.
-
-export interface RemoteOAuthStatus {
-  in_flight: boolean;
-  name: string | null;
-  // Which provider the attempt is for ("drive" | "dropbox" | "box"), so a page
-  // that polls a sign-in it did not start still labels it correctly.
-  provider: string | null;
-  backend: string | null;
-  // Both null while in flight. `ok` false with a message is the failure the UI
-  // must show — INCLUDING the child that exited having produced no token at
-  // all (browser tab closed, consent never granted, timed out), which is
-  // retryable and says so in `error`.
-  ok: boolean | null;
-  error: string | null;
-}
-
-// Starts the browser sign-in and returns immediately. 409 when one is already
-// in flight (rclone's callback port can only be bound once), and 409 when
-// `name` is already taken unless `replace` is set — config/create overwrites,
-// so replacing a working remote takes an explicit opt-in rather than a stale
-// client-side snapshot.
-//
-// `client` is the user's OWN OAuth client. It is REQUIRED for Drive (a 400
-// otherwise): Google is retiring rclone's built-in shared client ID, so a Drive
-// sign-in without one is refused before the browser ever opens. Dropbox and Box
-// take none — omit it, and rclone uses its own.
-export function startRemoteOAuth(
-  name: string,
-  opts: {
-    provider?: string;
-    replace?: boolean;
-    clientId?: string;
-    clientSecret?: string;
-  } = {}
-): Promise<{ ok: boolean; name: string; provider: string }> {
-  return postJson<{ ok: boolean; name: string; provider: string }>(
-    "/api/mounts/remotes/oauth",
-    {
-      name,
-      provider: opts.provider ?? "drive",
-      replace: opts.replace ?? false,
-      client_id: opts.clientId ?? "",
-      client_secret: opts.clientSecret ?? "",
-    }
-  );
-}
-
-// Open GET like getMounts — a pure in-memory read with no side effects.
-export function getRemoteOAuthStatus(): Promise<RemoteOAuthStatus> {
-  return getJson<RemoteOAuthStatus>("/api/mounts/remotes/oauth/status");
-}
-
-export function cancelRemoteOAuth(): Promise<{ ok: boolean; canceled: boolean }> {
-  return postJson<{ ok: boolean; canceled: boolean }>("/api/mounts/remotes/oauth/cancel", {});
 }
 
 // -- Template management (fused_render/templates_api.py; TEMPLATE_MGMT_SPEC) --
@@ -2762,9 +2494,17 @@ export interface AppEntryInfo {
   migration_task?: { id: string; state: string; run_id: string | null } | null;
 }
 
-export function getAppEntry(path: string): Promise<AppEntryInfo> {
+// `opened` is the explorer saying "this folder was just opened": the server
+// then also notes the git auto-sync check for it. Only the listing sets it —
+// every other caller is a probe, not an open.
+export function getAppEntry(
+  path: string,
+  opts?: { opened?: boolean },
+): Promise<AppEntryInfo> {
   return getJson<AppEntryInfo>(
-    `/api/apps/entry?path=${encodeURIComponent(path)}`,
+    `/api/apps/entry?path=${encodeURIComponent(path)}${
+      opts?.opened ? "&opened=1" : ""
+    }`,
   );
 }
 

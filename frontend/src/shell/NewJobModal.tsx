@@ -2250,8 +2250,7 @@ export function taskPreviewSrcFor(stat: StatResult | null, path: string): string
   if (t.mode === "_render") return thumbUrl("/render?path=" + encodeURIComponent(path));
   if (!t.path) return null;
   return thumbUrl("/render?path=" + encodeURIComponent(t.path)
-    + "&_file=" + encodeURIComponent(path)
-    + (stat.remote ? "&_remote=1" : ""));
+    + "&_file=" + encodeURIComponent(path));
 }
 
 export function buildSchedulePayload(form: {

@@ -2,18 +2,25 @@
 opened in, plus (below) the opt-in update/switch mutations the activity
 card's repo rows offer (SPEC §33 / §36).
 
-WHEN THIS RUNS. `note_app_opened` is called from GET /render's D301 block
-(server/routers/render.py) — the one existing definition of "this app is
-being opened", right beside `record_app_open`, inside the same
-`_preview != "1" and not _referred_by_preview(referer)` guard. It is
-deliberately NOT triggered from /api/fs/list: that is the hook
-`fused_render.index.freshness.note_folder_opened` uses, gated on the file
-index's own `indexing_enabled()` pref (server/routers/index.py), and it fires
-once per directory LISTING rather than once per app open. Borrowing that hook
-would put git notifications behind an unrelated switch and make the
-throttle — not the trigger — carry all the load of a page that lists a
-folder every second. A background fetch only ever needs to happen once per
-repo per app open, and GET /render already says that exactly once.
+WHEN THIS RUNS. `note_app_opened` has two callers, both "an app is being
+opened": GET /render's D301 block (server/routers/render.py), right beside
+`record_app_open`, inside the same `_preview != "1" and not
+_referred_by_preview(referer)` guard; and GET /api/apps/entry with the
+explicit `opened=1` the explorer's Listing sends when it opens a folder (the
+listing never renders the entry page, and its companion panes are `_noopen=1`,
+so without this a folder visit never pulled). The folder trigger does NOT
+record recency. Other /api/apps/entry callers (thumbnails, menus, probes)
+omit `opened` and trigger nothing. It is deliberately NOT triggered from
+/api/fs/list: that is the hook `fused_render.index.freshness.note_folder_opened`
+uses, gated on the file index's own `indexing_enabled()` pref
+(server/routers/index.py), and it fires once per directory LISTING rather
+than once per app open. Borrowing that hook would put git notifications
+behind an unrelated switch and make the throttle — not the trigger — carry
+all the load of a page that lists a folder every second.
+
+AN OPEN IS NEVER DROPPED. If the process-wide slot is busy the path is parked
+(`_pending`, deduped, bounded) and the next release of the slot runs it,
+chained one at a time; the per-root throttle still applies when it runs.
 
 WHY A NEW MODULE, MIRRORING RATHER THAN IMPORTING `templates/git/ops.py`.
 `ops.py` is reached only as `fused.runPython("./ops.py")` from inside the
@@ -22,7 +29,7 @@ route to it, and it is exec'd standalone with no `fused_render` import
 allowed (SPEC PY-15), so a server-side caller cannot import it either. This
 is the same shape `server/routers/git_snapshot.py` and `server/routers/
 git_repos.py` already use for the same reason: the non-interactive git
-environment, the repo-root resolution, and the mount refusal below are
+environment and the repo-root resolution below are
 DUPLICATED from `ops.py`/`log.py` on purpose, each noting its twin. Keep them
 in step.
 
@@ -50,10 +57,6 @@ push, an auth failure. Those are recorded as one standing failure per repo
 (`sync_failures`, served by GET /api/git-upstream) until dismissed or a
 later sync succeeds. It only ever fast-forwards: never merge, rebase or force.
 
-MOUNT-BACKED REPOS ARE REFUSED OUTRIGHT, before any subprocess — the same
-rule `ops.py`'s `_refuse_mounts` (GT-4 / MD-11) enforces for the same
-reason: a background fetch across an rclone-NFS mount is exactly the wedge
-that refusal exists to prevent.
 """
 import contextlib
 import logging
@@ -63,8 +66,6 @@ import subprocess
 import sys
 import threading
 import time
-
-from fused_render.shell import mounts as shell_mounts
 
 logger = logging.getLogger(__name__)
 
@@ -163,12 +164,8 @@ def _ok(result):
 
 def repo_root(path):
     """The work-tree root containing `path`, or None — not inside a repo, git
-    unavailable, or mount-backed (refused before any subprocess: the pattern
-    `ops.py:_refuse_mounts` enforces, for the reason the module docstring
-    gives)."""
+    unavailable."""
     if not path:
-        return None
-    if shell_mounts.is_mount_backed(path):
         return None
     cwd = path if os.path.isdir(path) else os.path.dirname(path)
     if not cwd or not os.path.isdir(cwd):
@@ -365,8 +362,7 @@ def _operation_in_flight(root):
 
 def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     """Every check both mutations need before touching anything: the repo
-    still exists, isn't mount-backed (GT-4 / MD-11 — the same wedge
-    `ops.py:_refuse_mounts` exists to prevent), isn't already mid an
+    still exists, isn't already mid an
     operation left in flight — a rebase may be in progress for any reason,
     not only one this module started — has a clean working tree, an
     attached branch (unless `allow_detached`), and a
@@ -387,9 +383,6 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     refusal for it — only `switch_repo` passes `allow_detached=True`."""
     if not os.path.isdir(root):
         return None, None, _refuse("missing", f"{root} no longer exists.")
-    if shell_mounts.is_mount_backed(root):
-        return None, None, _refuse(
-            "mount", "Git operations are not available on remote mounts.")
     operation = _operation_in_flight(root)
     if operation is not None:
         # Checked BEFORE the dirty check on purpose: a mid-rebase tree
@@ -506,6 +499,7 @@ def _mutation_slot():
     finally:
         if acquired:
             _check_slot.release()
+            _drain_pending()
 
 
 _BUSY_REFUSAL = (
@@ -515,7 +509,7 @@ _BUSY_REFUSAL = (
 def update_repo(root):
     """--ff-only pull of `origin/<default>` — the card's primary action, on
     the default branch. Refuses on a dirty tree, a detached HEAD, a missing
-    or unresolvable remote, or a mount-backed repo; a non-fast-forward pull
+    or unresolvable remote; a non-fast-forward pull
     (should not happen for the default branch under normal use, but the tree
     may have moved between the check and the click) is reported in git's own
     words, exactly like ops.py's `_pull`."""
@@ -844,7 +838,7 @@ def _sync_locked(root, *, action, push):
     whenever the fetch succeeded, so the caller can refresh `_state`.
 
     Never raises for a git problem; the background callers wrap it anyway."""
-    if not os.path.isdir(root) or shell_mounts.is_mount_backed(root):
+    if not os.path.isdir(root):
         return _skipped("unavailable")
     if not _ok(_run(root, "remote", "get-url", "origin")):
         return _skipped("no-remote")
@@ -983,6 +977,14 @@ _checked: dict = {}  # repo root -> last-checked epoch seconds
 # block each other").
 _check_slot = threading.Lock()
 
+# Opens that found the slot busy, parked until it frees (insertion-ordered,
+# deduped by path; bounded so a pathological caller cannot grow it). Without
+# this a folder open that landed mid-check was simply lost, and nothing
+# retried it. `_due` still dedupes by repo root when each is finally run.
+_PENDING_MAX = 32
+_pending_lock = threading.Lock()
+_pending: dict = {}  # path -> None, oldest first
+
 _state_lock = threading.Lock()
 _state: dict = {}  # repo root -> last known check_repo() result
 
@@ -996,7 +998,48 @@ def _due(root, now):
         return True
 
 
-def _background_check(path):
+def _park(path):
+    with _pending_lock:
+        if path not in _pending and len(_pending) >= _PENDING_MAX:
+            return
+        _pending[path] = None
+
+
+def _drain_pending(runner=None):
+    """The slot was just released: run the oldest parked open, if any. One
+    at a time and chained — each finished check starts the next — so a burst
+    of busy-slot opens is a queue, never a thread per request. Cheap and safe
+    to call from anywhere that releases `_check_slot`."""
+    with _pending_lock:
+        if not _pending:
+            return
+    if not _check_slot.acquire(blocking=False):
+        return  # the holder's own release drains
+    with _pending_lock:
+        path = next(iter(_pending), None)
+        if path is not None:
+            del _pending[path]
+    if path is None:
+        _check_slot.release()
+        return
+    _dispatch(path, runner)
+
+
+def _dispatch(path, runner=None):
+    """Run `_background_check(path)` on `runner` (default: a daemon thread).
+    The slot must already be held; it is released here only if the runner
+    cannot start (interpreter shutting down)."""
+    run = runner or (lambda fn: threading.Thread(
+        target=fn, daemon=True, name="git-upstream-check").start())
+    try:
+        run(lambda: _background_check(path, runner))
+    except RuntimeError:
+        _check_slot.release()
+        return False
+    return True
+
+
+def _background_check(path, runner=None):
     """Everything a note_app_opened dispatch does, entirely off the request
     thread: resolve `path` to a repo root (a `git rev-parse` subprocess),
     decide whether that root is due, and run the check if so. Never raises:
@@ -1008,8 +1051,7 @@ def _background_check(path):
     Splitting `repo_root` resolution OUT of `note_app_opened` and into here
     is what makes the module docstring's "the check always returns
     immediately; the real work runs off the request thread" true: resolving
-    a path to a repo root is itself a git subprocess (plus a mount-guard
-    check), and running it synchronously in `note_app_opened` — as an
+    a path to a repo root is itself a git subprocess, and running it synchronously in `note_app_opened` — as an
     earlier version of this function did — meant EVERY non-preview
     `/render` of an app paid that spawn on the request thread, whether or
     not the app was even in a git repo."""
@@ -1033,6 +1075,7 @@ def _background_check(path):
         logger.exception("git-upstream check failed for %s", path)
     finally:
         _check_slot.release()
+        _drain_pending(runner)
 
 
 def note_app_opened(path, *, _runner=None):
@@ -1058,6 +1101,9 @@ def note_app_opened(path, *, _runner=None):
     for it, so a test can run the check synchronously and inspect
     `known_repos()` immediately. Production callers never pass it.
 
+    If the slot is busy the open is parked and run when the slot frees (see
+    `_drain_pending`); the return is then False — not dispatched NOW.
+
     Returns whether a background attempt was DISPATCHED — for tests; real
     callers ignore it. Matches `index.note_folder_opened`'s own return
     convention exactly: that function also returns True as soon as its
@@ -1069,15 +1115,13 @@ def note_app_opened(path, *, _runner=None):
     knowable synchronously any more.
     """
     if not _check_slot.acquire(blocking=False):
+        # Busy: park the open rather than dropping it, then re-try once in
+        # case the holder released between the failed acquire and the park
+        # (its drain would have found the queue empty).
+        _park(path)
+        _drain_pending(_runner)
         return False
-    runner = _runner or (lambda fn: threading.Thread(
-        target=fn, daemon=True, name="git-upstream-check").start())
-    try:
-        runner(lambda: _background_check(path))
-    except RuntimeError:  # interpreter shutting down
-        _check_slot.release()
-        return False
-    return True
+    return _dispatch(path, _runner)
 
 
 def force_check(path, *, _runner=None):
@@ -1125,6 +1169,7 @@ def force_check(path, *, _runner=None):
         finally:
             _check_slot.release()
             done.set()
+            _drain_pending()
 
     runner = _runner or (lambda fn: threading.Thread(
         target=fn, daemon=True, name="git-upstream-doctor-check").start())

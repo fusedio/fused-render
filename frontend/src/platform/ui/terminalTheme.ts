@@ -81,9 +81,10 @@ const ANSI_LIGHT: typeof ANSI_DARK = {
   brightWhite: "#8c959f",
 };
 
-/** The xterm theme for the given app theme. Background stays transparent —
- * `.term-drawer` (styles/notifications.css) already paints `--bg` behind the
- * whole drawer, so xterm's own canvas has nothing to fill; every other slot
+/** The xterm theme for the given app theme. Background is the opaque `--bg`
+ * value, not "transparent": xterm only honours a transparent background with
+ * `allowTransparency` (off by default), and otherwise paints black — which
+ * made light mode dark-on-black. Every other slot
  * comes from the app's tokens (`lookup`) with the matching palette's own
  * hex as a fallback when a token resolves empty. */
 export function buildTerminalTheme(theme: Theme, lookup: CssVarLookup): ITheme {
@@ -94,7 +95,7 @@ export function buildTerminalTheme(theme: Theme, lookup: CssVarLookup): ITheme {
   const ansi = theme === "light" ? ANSI_LIGHT : ANSI_DARK;
 
   return {
-    background: "transparent",
+    background: bg,
     foreground: fg,
     // A block cursor's own fill is `cursor`, and the glyph drawn inside it
     // is `cursorAccent` — swapping fg/bg for those two is what keeps the
@@ -106,13 +107,53 @@ export function buildTerminalTheme(theme: Theme, lookup: CssVarLookup): ITheme {
   };
 }
 
-/** The app's monospace stack (styles/base.css's `--font-mono` token, with the
- * same system fallback that CSS rule itself falls back to) — xterm defaults
- * to Courier New otherwise, which does not match any other code surface in
- * the app. */
+/** The bundled JetBrainsMono Nerd Font Mono (SIL OFL 1.1; `@font-face` in
+ * styles/notifications.css, files in assets/fonts/). The terminal's own
+ * family, deliberately NOT the app-wide `--font-mono`: starship/powerline
+ * prompts and `ls` icons use Nerd Font private-use glyphs that no system
+ * monospace carries. */
+export const TERMINAL_NERD_FONT = "JetBrainsMono Nerd Font Mono";
+
+/** The terminal's font stack: the Nerd Font first, then the app's monospace
+ * stack (styles/base.css's `--font-mono` token, with the same system fallback
+ * that CSS rule itself falls back to) for anything the Nerd Font lacks and as
+ * the stand-in while the web font loads. */
 export function terminalFontFamily(lookup: CssVarLookup): string {
-  return (
-    lookup("--font-mono") ||
-    "ui-monospace, SFMono-Regular, Menlo, monospace"
-  );
+  const rest = lookup("--font-mono") || "ui-monospace, SFMono-Regular, Menlo, monospace";
+  return `"${TERMINAL_NERD_FONT}", ${rest}`;
+}
+
+/** Resolves once the terminal's web font (regular + bold) is loaded, so
+ * xterm — which measures its cell grid once, at `term.open()` — measures the
+ * real font rather than the fallback. Never rejects and never hangs: it
+ * resolves `false` after `timeoutMs`, on a load error, or where
+ * `document.fonts` does not exist; the caller then re-fits when the load
+ * eventually finishes (see `terminalFontSettled`). */
+export function loadTerminalFont(timeoutMs = 1500): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    terminalFontSettled().then((ok) => {
+      clearTimeout(timer);
+      resolve(ok);
+    });
+  });
+}
+
+/** The raw load, with no timeout: `true` when both weights loaded, `false`
+ * on error/unsupported. Never rejects. */
+export function terminalFontSettled(): Promise<boolean> {
+  try {
+    const fonts = (globalThis as { document?: { fonts?: { load?: (q: string) => Promise<unknown> } } })
+      .document?.fonts;
+    if (!fonts?.load) return Promise.resolve(false);
+    return Promise.all([
+      fonts.load(`12px "${TERMINAL_NERD_FONT}"`),
+      fonts.load(`bold 12px "${TERMINAL_NERD_FONT}"`),
+    ]).then(
+      () => true,
+      () => false,
+    );
+  } catch {
+    return Promise.resolve(false);
+  }
 }

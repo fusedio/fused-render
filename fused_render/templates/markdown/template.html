@@ -1397,7 +1397,7 @@
     //
     // THREE states, not two (MD-11). "Scanned, and this target did not resolve"
     // is a ghost: dashed, and clicking it creates the note. "Not scanned, so
-    // resolution is unknown" is neither — on a remote mount, or after a refused
+    // resolution is unknown" is neither — after a refused
     // or failed scan, `resolved` is null and nothing was ever looked up. Drawing
     // a ghost there asserts the target does not exist when we never looked, and
     // offers to create a note that may be sitting right next to this one.
@@ -2737,8 +2737,7 @@
     }
 
     // External changes are noticed on focus and on becoming visible rather than
-    // by a stat ticker: a poll is the traffic that killed a mount once already
-    // (runtime.js's fs/events note), and this view must stay mount-agnostic.
+    // by a stat ticker: a poll is wasted traffic on a file that rarely changes.
     // Clean buffer -> silent reload, exactly as Obsidian does. Dirty buffer and
     // the mtime moved -> the banner, which is the one deliberate deviation
     // (MD-17): fused-render sits on shared paths where Obsidian's
@@ -3443,7 +3442,7 @@
     // A failed or absent scan is cached exactly as hard as a successful one, and
     // the REASON is kept. Both matter: an uncached null re-ran the action on
     // every keystroke down the one path where it can never succeed (a
-    // mount-backed root, which graph.py refuses by design, MD-11), and a
+    // root graph.py refuses by design, MD-11), and a
     // reasonless null left every source silently bailing — which the popup drew
     // as "no matches" (MD-11a: unknown is not missing).
     async function ensureCandidates() {
@@ -3476,7 +3475,7 @@
     }
 
     // One informational row instead of an empty popup, in graph.py's own words
-    // where it had any — so a mount refusal, a note outside its root and a
+    // where it had any — so a refusal, a note outside its root and a
     // crashed scan each read as themselves, exactly as the sidebar does.
     // Non-selectable: `apply` deliberately inserts nothing, and `filter: false`
     // keeps the row from being typed away into an empty list again.
@@ -3953,10 +3952,8 @@
       ];
       if (!writable) {
         // An UNWRITABLE file (MD-15): the server refuses the write anyway, and
-        // opening disabled is what makes the UI honest up front — on an rclone
-        // mount with CacheMode=full a doomed write even succeeds locally and
-        // only 403s later on upload, so this reads the shell's persisted
-        // read_only flag through stat.writable rather than os.access. A
+        // opening disabled is what makes the UI honest up front, so this reads
+        // stat.writable rather than guessing. A
         // writable note is otherwise always editable (MD-1a): there is no mode
         // to gate this a second way.
         base.push(CM.EditorView.editable.of(false));
@@ -4211,7 +4208,7 @@
         linksEl.hidden = false;
         listEl.innerHTML = "";
         linksCountEl.textContent = "";
-        // graph.py's own words for why, so a mount refusal, a note outside its
+        // graph.py's own words for why, so a refusal, a note outside its
         // root and a failed scan each read as themselves.
         noticeEl.textContent = "Backlinks need a folder scan. " + scanNotice;
         noticeEl.hidden = false;
@@ -4266,7 +4263,7 @@
         const data = await fused.runPython("./graph.py",
           { action: "note", file, root }, { key: "md-note" });
         if (data.error) {
-          // A mount-backed root, or a note outside its root: the document still
+          // A refused root, or a note outside its root: the document still
           // renders and stays editable, the link layer just has nothing to say
           // (MD-11). Reading and writing one file never needed the walk. Note
           // `resolved = null` means UNKNOWN, not "nothing resolved" — every
@@ -5048,7 +5045,7 @@
         data = { error: "graph_failed", message: err.message || String(err) };
       }
       if (data.error) {
-        // A mount-backed root is refused outright rather than walked (MD-11);
+        // A refused scan (MD-11);
         // say so instead of drawing an empty canvas.
         canvas.setData({ nodes: [], edges: [] });
         graphCountEl.textContent = "";

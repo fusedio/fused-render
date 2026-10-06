@@ -865,6 +865,42 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # this repo — see the load note above.
             "defaults": {"steps": 4},
         },
+        # FLUX.1 Fill — masked INPAINTING (`fused.ai.image({image, mask})`,
+        # issue #1439), and the one row in this list that cannot render from
+        # a prompt alone: `Flux1Fill.generate_image` requires both a base
+        # image and a mask, so `/api/ai/image` refuses a plain or edit
+        # request against it and resolves to it only when `mask` is passed
+        # (`formats.MFLUX_FILL_VARIANTS`'s own comment has the mechanism).
+        # Same publisher convention as the klein rows: a one-repo 4-bit MLX
+        # conversion, loadable by mflux's own `dev_fill` config.
+        #
+        # **9.6, measured off the Hub (2026-10-06) — and it has to sort LAST.**
+        # `default_for()` is position 0 of this size-sorted list, so a Fill
+        # row that sorted ahead of a klein would make a model-less
+        # `fused.ai.image({prompt})` resolve to a checkpoint that cannot
+        # answer it. 9.6 > 9.5 holds today by one decimal; if the 9B klein's
+        # figure is ever revised upward, re-check this ordering rather than
+        # the Fill row's number, which is simply what the Hub says (two text
+        # encoders are 2.7 GB of it, which is why it is twice the 4B klein).
+        {
+            "id": "mflux-community/flux-1-dev-fill-mflux-q4",
+            "params": "12B",
+            "quantization": "MLX 4-bit",
+            "label": "FLUX.1 Fill dev (MLX 4-bit)",
+            "nickname": "FLUX.1 Fill",
+            "size_gb": 9.6,
+            "note": "Inpainting only — repaints the white region of a mask "
+                    "and leaves every other pixel of the base image "
+                    "untouched. Needs both image and mask; cannot render "
+                    "from a prompt alone.",
+            # mflux's own fill CLI defaults guidance to 30 (`DEFAULT_DEV_FILL_
+            # GUIDANCE`) — Fill is trained for far stronger guidance than a
+            # klein edit's 1.0 — and FLUX.1-dev is not distilled, so it gets
+            # a real step count rather than klein's 4. The route reads these
+            # for an inpaint the way it reads a plain render's (AI-9f's edit
+            # defaults are the one mode that bypasses the catalog).
+            "defaults": {"steps": 28, "guidance": 30.0},
+        },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper
     # list in the app: a `mlx-community` repo carries `weights.npz`,

@@ -251,3 +251,40 @@ def test_out_of_range_resize_does_not_kill_the_socket(client, scratch_registry):
         ws.send_text(json.dumps({"resize": [0, 100000]}))
         ws.send_bytes(b"echo still-alive\n")
         _read_until(ws, b"still-alive")
+
+
+def _scrollback_of(reg, sid):
+    return bytes(reg.get(sid).scrollback())
+
+
+def _stty_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pty_session, "resolve_profile",
+        lambda cwd=None: TerminalProfile(
+            shell="/bin/sh", argv=["/bin/sh", "-c", "stty size; sleep 1"],
+            env=dict(os.environ), cwd=str(tmp_path)))
+
+
+def _wait_for(reg, sid, needle):
+    deadline = time.time() + 5
+    while needle not in _scrollback_of(reg, sid) and time.time() < deadline:
+        time.sleep(0.02)
+    return needle in _scrollback_of(reg, sid)
+
+
+def test_create_passes_a_valid_initial_size(client, scratch_registry, monkeypatch, tmp_path):
+    _stty_profile(monkeypatch, tmp_path)
+    sid = client.post("/api/terminal", json={"rows": 31, "cols": 99},
+                      headers=_HEADERS).json()["id"]
+    assert _wait_for(scratch_registry, sid, b"31 99")
+
+
+@pytest.mark.parametrize("body", [
+    {"rows": 0, "cols": 80}, {"rows": 24, "cols": 70000}, {"rows": "x", "cols": 80},
+    {"rows": 24}, {"rows": True, "cols": True}, {"rows": 24.5, "cols": 80},
+])
+def test_create_ignores_an_invalid_initial_size(client, scratch_registry, monkeypatch, tmp_path, body):
+    _stty_profile(monkeypatch, tmp_path)
+    resp = client.post("/api/terminal", json=body, headers=_HEADERS)
+    assert resp.status_code == 200
+    assert _wait_for(scratch_registry, resp.json()["id"], b"0 0")

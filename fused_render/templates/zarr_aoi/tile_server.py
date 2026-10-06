@@ -13,10 +13,7 @@ directly), but nothing is ever loaded fully into memory — the existing grid
 daemon loads one whole 2D slice, which is impossible here (WSF level 0 is
 1.5M x 4M px = 6 TB).
 
-Paths under ~/.fused-render/mounts/<name>/ are resolved back to their remote
-via mounts.json + rclone.conf and read DIRECTLY over S3/HTTP (not through the
-rclone FUSE mount) so byte counts are exact. Plain local stores and s3:// or
-https:// URLs also work.
+Plain local stores and s3:// or https:// URLs are supported.
 
 Endpoints (GET, CORS *):
   /ping /quit
@@ -66,7 +63,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # need the shell dirs. appenv is stdlib-only, so the daemon's venv (numpy/zarr
 # only, no fused_render) can import it just fine.
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
-import appenv
 
 STATE = os.path.expanduser("~/.cache/fused-render-zarraoi/daemon.json")
 DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-zarraoi/venv")
@@ -324,22 +320,6 @@ def _serve():
                 "ops": deque(maxlen=40), "opened": time.time()}
 
     # ---------------- source resolution ----------------
-    def rclone_conf():
-        out, sec = {}, None
-        for p in (os.path.expanduser("~/.config/rclone/rclone.conf"),):
-            try:
-                for ln in open(p):
-                    ln = ln.strip()
-                    if ln.startswith("[") and ln.endswith("]"):
-                        sec = ln[1:-1]
-                        out[sec] = {}
-                    elif "=" in ln and sec:
-                        k, _, v = ln.partition("=")
-                        out[sec][k.strip()] = v.strip()
-            except OSError:
-                pass
-        return out
-
     def resolve_source(path):
         """path -> dict(kind, url, storage_options, label)"""
         # big parallel chunk fetches must not starve small metadata reads
@@ -352,70 +332,6 @@ def _serve():
             return {"kind": "http", "url": path, "storage_options": {},
                     "label": path}
         path = os.path.abspath(os.path.expanduser(path))
-        mroot = appenv.mounts_dir() + os.sep
-        if path.startswith(mroot):
-            # Default transport: the server's own ranged-read API. The server
-            # decides how the bytes move (rclone-serve proxy, presigned 307,
-            # local file) and holds the credentials, so private buckets work
-            # and this template never has to know what a mount is.
-            # ZARRAOI_TRANSPORT=s3 keeps the old rclone.conf back-resolution
-            # (anonymous buckets only) for A/B comparison.
-            if os.environ.get("ZARRAOI_TRANSPORT", "raw") != "s3":
-                from urllib.parse import quote
-                origin = appenv.origin()
-                if not origin:
-                    # A mount path can only be read back through the server, so
-                    # without its origin there is nowhere to go. Say that (the
-                    # handler turns it into a 500 with this message) instead of
-                    # falling back to the baseline 1777, which is a dead port
-                    # under any --port override and fails as an opaque zarr
-                    # "No group found in store".
-                    raise RuntimeError(
-                        "FUSED_RENDER_ORIGIN is not set — a mount-backed store "
-                        "can only be read through the fused-render server")
-                return {"kind": "http",
-                        "url": origin + "/api/fs/raw?path="
-                        + quote(path, safe="/"),
-                        "storage_options": {},
-                        "label": path + " (server raw API)"}
-            rel = path[len(mroot):]
-            name, _, rest = rel.partition(os.sep)
-            try:
-                mounts = json.load(open(os.path.join(
-                    appenv.home_dir(), "mounts.json")))
-            except (OSError, ValueError):
-                mounts = []
-            ent = next((m for m in mounts if m.get("name") == name), None)
-            if ent and ":" in ent.get("remote", ""):
-                rname, _, rpath = ent["remote"].partition(":")
-                key = "/".join(s for s in (rpath.strip("/"), rest.replace(os.sep, "/"))
-                               if s)
-                cfg = rclone_conf().get(rname, {})
-                if cfg.get("type") == "s3":
-                    so = dict(S3_POOL)
-                    anon = cfg.get("env_auth", "false") != "true" and \
-                        not cfg.get("access_key_id")
-                    if anon:
-                        so["anon"] = True
-                    ck = {}
-                    if cfg.get("region"):
-                        ck["region_name"] = cfg["region"]
-                    if cfg.get("endpoint"):
-                        so["endpoint_url"] = cfg["endpoint"]
-                    if ck:
-                        so["client_kwargs"] = ck
-                    return {"kind": "s3", "url": "s3://" + key,
-                            "storage_options": so,
-                            "label": f"mount '{name}' → s3://{key}"
-                                     + (" (anonymous)" if anon else "")}
-                elif cfg.get("type") == "google cloud storage":
-                    # GCS analog of the s3 branch: gcsfs takes token="anon" for
-                    # anonymous public buckets, and needs no region/endpoint.
-                    anon = cfg.get("anonymous") == "true"
-                    return {"kind": "gcs", "url": "gcs://" + key,
-                            "storage_options": {"token": "anon"} if anon else {},
-                            "label": f"mount '{name}' → gcs://{key}"
-                                     + (" (anonymous)" if anon else "")}
         return {"kind": "local", "url": path, "label": path + " (local)"}
 
     # ---------------- dataset open + discovery ----------------

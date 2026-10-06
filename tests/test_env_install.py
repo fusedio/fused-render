@@ -489,7 +489,7 @@ def test_an_explicit_uv_override_wins(tmp_path, monkeypatch):
 
 
 def test_a_stale_uv_override_is_ignored(tmp_path, monkeypatch):
-    """Same rule as rclone_bin: a wrong override must not shadow a real uv."""
+    """A wrong override must not shadow a real uv."""
     monkeypatch.setenv("FUSED_RENDER_UV_BIN", str(tmp_path / "gone"))
     assert envinstall.uv_bin() != str(tmp_path / "gone")
 

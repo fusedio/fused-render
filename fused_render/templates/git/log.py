@@ -51,14 +51,14 @@ The rules every invocation obeys, because each one is a way this could go wrong:
   flag on every command that produces a patch.
 
 Refusal is a PAYLOAD, never an exception: `{"ok": false, "reason", "message"}`.
-The view renders a calm empty state from it — a non-repo, a missing path, a
-mount-backed target or a missing git binary is an ordinary situation, not a
+The view renders a calm empty state from it — a non-repo, a missing path
+or a missing git binary is an ordinary situation, not a
 traceback overlay.
 
 And the refusals are this module's OWN, not the gate's (MD-11 / GT-4): the
 `condition.py` beside this file keeps the mode from being OFFERED on a
-mount-backed or non-repo path, but a hand-written `?_mode=git` URL bypasses the
-switcher entirely — so the mount check and the repo check are repeated here,
+non-repo path, but a hand-written `?_mode=git` URL bypasses the
+switcher entirely — so the repo check is repeated here,
 where they are a guarantee rather than a nicety.
 """
 import os
@@ -457,28 +457,6 @@ def _trim(diff, shown):
 # ----------------------------------------------------------------- the location
 
 
-def _refuse_mounts(path):
-    """Refuse a mount-backed target outright (GT-4 / MD-11).
-
-    The detector is `shared/appenv.is_mount_backed`, the app's own rule answered
-    from `FUSED_RENDER_*` rather than by importing fused_render — this module
-    runs as a child process whose PYTHONPATH is stripped, so an import of the
-    package would take its except branch on every run. An ImportError therefore
-    means we cannot tell, and "cannot tell" reads as "refuse": running git across
-    an rclone-NFS mount is the failure this exists to prevent.
-    """
-    try:
-        from appenv import is_mount_backed
-    except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
-        raise _Refused("mount", f"Mount detection unavailable ({exc}); "
-                                "refusing to run git here.") from exc
-    if is_mount_backed(path):
-        raise _Refused(
-            "mount",
-            "Git history is not available on remote mounts — git would have to "
-            "walk the mounted tree. Opening the file itself still works.")
-
-
 def _locate(file):
     """Resolve `(root, rel, is_dir)` for the open path, or refuse.
 
@@ -488,7 +466,6 @@ def _locate(file):
     """
     if not file:
         raise _Refused("missing", "No file or folder was given.")
-    _refuse_mounts(file)
     path = os.path.abspath(file)
     if not os.path.exists(path):
         raise _Refused("missing", f"{path} does not exist.")

@@ -139,7 +139,6 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
-from fused_render.shell import prefs as shell_prefs
 
 
 def _ensure_duties() -> None:
@@ -4903,12 +4902,6 @@ def _path_within(path: str, root_real: str) -> bool:
     if not path:
         return False
     expanded = os.path.expanduser(path)
-    # A mount-backed target is never under a local app folder, and realpath
-    # on one is a kernel stat over FUSE — the access pattern D548 keeps off
-    # every hot path. String test first (imported late, like the peer gates).
-    from fused_render.shell.mounts.access import is_mount_backed
-    if is_mount_backed(expanded):
-        return False
     try:
         real = os.path.realpath(expanded)
         return os.path.commonpath([real, root_real]) == root_real

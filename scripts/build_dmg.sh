@@ -217,8 +217,8 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # the HOST's OS version and MACOSX_DEPLOYMENT_TARGET does not steer it (see step
 # 4f). numpy 2.x publishes both `macosx_14_0_arm64` (Accelerate, minos 14.0) and
 # `macosx_11_0_arm64` (OpenBLAS, minos 11.0) wheels; the host gets the 14.0 one,
-# which cannot load on macOS 13 (D1320).
-# D1321: BOTH ship. The host-picked wheel stays the default install (Accelerate,
+# which cannot load on macOS 13 (D1324).
+# D1325: BOTH ship. The host-picked wheel stays the default install (Accelerate,
 # faster on macOS 14+); the older-tagged wheel fetched here is installed into a
 # separate directory of the bundle in step 4a-quater, and a `.pth` selects it at
 # interpreter startup on macOS < 14. So this step only DOWNLOADS: nothing is
@@ -303,48 +303,6 @@ fi
 FUSED_RENDER_REQUIRE_BUNDLED=1 \
   "$BUILD_VENV/bin/python" -m pytest -q -o addopts= \
   "$REPO_ROOT/tests/test_bundle_contents.py"
-
-# ---------------------------------------------------------------------------
-# 2b. Stage rclone (D103): mounts (shell/mounts.py, D102) shell out to a real
-#     rclone binary. Bundling it means mounts work with zero user setup - no
-#     brew/apt install, no PATH dependency - instead of the old "one
-#     prerequisite: rclone" ask (README). Pinned version + published sha256
-#     (arm64 only, matching this script's Apple Silicon-only py2app target -
-#     see the FRAMEWORK_PYTHON note above); bump both together to upgrade.
-#     Cached under build/ keyed by version, so re-running the script doesn't
-#     re-download unless the pin changes.
-# ---------------------------------------------------------------------------
-
-RCLONE_VERSION="v1.74.4"
-RCLONE_ZIP="rclone-${RCLONE_VERSION}-osx-arm64.zip"
-RCLONE_SHA256="c2100e2d4a4b3be04c55cd45380cafe7647e1ad772bb055f52f00876ed701167"
-RCLONE_STAGE_DIR="$BUILD_DIR/rclone-bin/${RCLONE_VERSION}"
-RCLONE_STAGED_BIN="$RCLONE_STAGE_DIR/rclone"
-
-if [[ ! -x "$RCLONE_STAGED_BIN" ]]; then
-  echo "==> downloading rclone ${RCLONE_VERSION} (osx-arm64)"
-  RCLONE_DL_DIR="$BUILD_DIR/rclone-download"
-  rm -rf "$RCLONE_DL_DIR"
-  mkdir -p "$RCLONE_DL_DIR"
-  curl -fsSL "https://downloads.rclone.org/${RCLONE_VERSION}/${RCLONE_ZIP}" \
-    -o "$RCLONE_DL_DIR/$RCLONE_ZIP"
-
-  ACTUAL_SHA256="$(shasum -a 256 "$RCLONE_DL_DIR/$RCLONE_ZIP" | cut -d' ' -f1)"
-  if [[ "$ACTUAL_SHA256" != "$RCLONE_SHA256" ]]; then
-    echo "FATAL: rclone download checksum mismatch." >&2
-    echo "       expected: $RCLONE_SHA256" >&2
-    echo "       actual:   $ACTUAL_SHA256" >&2
-    exit 1
-  fi
-
-  (cd "$RCLONE_DL_DIR" && unzip -q "$RCLONE_ZIP")
-  mkdir -p "$RCLONE_STAGE_DIR"
-  cp "$RCLONE_DL_DIR/rclone-${RCLONE_VERSION}-osx-arm64/rclone" "$RCLONE_STAGED_BIN"
-  chmod +x "$RCLONE_STAGED_BIN"
-  rm -rf "$RCLONE_DL_DIR"
-else
-  echo "==> rclone ${RCLONE_VERSION} already staged, skipping download"
-fi
 
 # ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
@@ -615,14 +573,13 @@ APP_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
 
 # ---------------------------------------------------------------------------
 # 4a-bis. Stage the packages py2app cannot carry (setup_py2app.STAGED_PACKAGES).
-#     Today that is `google` (google-auth): a PEP 420 namespace package, which
-#     py2app's package bootstrap cannot resolve, and naming its subpackages
-#     dotted instead FAILS THE BUILD - collect_packagedirs() (build_app.py:1210)
-#     maps get_bootstrap() over every `packages` entry and
-#     modulegraph.util.imp_find_module then calls imp.find_module("google"),
-#     which raises. So it is copied straight in, the same explicit staging that
-#     rclone and uv get below. The list is read from setup_py2app.py so there is
-#     exactly one declaration of it.
+#     Today the list is empty. An entry would be a PEP 420 namespace package,
+#     which py2app's package bootstrap cannot resolve (and naming its
+#     subpackages dotted FAILS THE BUILD - collect_packagedirs() in
+#     build_app.py maps get_bootstrap() over every `packages` entry). Such a
+#     package is copied straight in, the same explicit staging that uv gets
+#     below. The list is read from setup_py2app.py so there is exactly one
+#     declaration of it.
 # ---------------------------------------------------------------------------
 
 STAGED_PACKAGES="$("$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/_staged_packages.py")"
@@ -639,27 +596,10 @@ if [[ -n "$STAGED_PACKAGES" ]]; then
     cp -R "$SRC" "$APP_PYLIB/$pkg"
     find "$APP_PYLIB/$pkg" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   done
-  # Prove it IMPORTS through the bundled interpreter, the way a run would. A
-  # copied directory python cannot import is exactly the failure this step
-  # exists to prevent, and it is invisible without an actual import.
-  # `|| true` INSIDE the substitution (the idiom `UV_SRC` uses below): without it
-  # `set -euo pipefail` aborts on the ASSIGNMENT when the import fails — which is
-  # the case this step exists for — so the ERR trap fires and the check plus the
-  # `echo` below never run. The traceback `2>&1` just captured would be thrown
-  # away and the operator told only "failed at line N". The grep IS the check.
-  GOOGLE_SMOKE="$(env PYTHONHOME="$APP_DIR/Contents/Resources" \
-    "$APP_DIR/Contents/MacOS/python" -c \
-    'import google.auth, google.oauth2; print("google-auth OK", google.auth.__version__)' 2>&1 || true)"
-  if ! echo "$GOOGLE_SMOKE" | grep -q "google-auth OK"; then
-    echo "FATAL: staged google-auth does not import in the bundle:" >&2
-    echo "$GOOGLE_SMOKE" >&2
-    exit 1
-  fi
-  echo "    $GOOGLE_SMOKE"
 fi
 
 # ---------------------------------------------------------------------------
-# 4a-quater. Ship the macOS-13-compatible wheels BESIDE the defaults (D1321) and
+# 4a-quater. Ship the macOS-13-compatible wheels BESIDE the defaults (D1325) and
 #     wire the startup selector.
 #
 #     Default `numpy` (copied in by py2app) is the host-picked macosx_14_0
@@ -758,7 +698,7 @@ def main() -> dict:
         "answer": con.execute("SELECT 42").fetchone()[0],
     }
 PYEOF
-# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# `|| true` so `set -e` does not
 # abort on the assignment and take the diagnostic with it.
 # `pipefail` makes it doubly necessary here: the upstream `echo` counts too.
 SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
@@ -977,14 +917,6 @@ done
 echo "    fused --help / share --help / env list OK"
 
 # ---------------------------------------------------------------------------
-# 4d. Bundle rclone (D103, staged in step 2b above) at the same
-#     Contents/Resources/bin/ spot as the fused wrapper - a real Mach-O
-#     binary, not a script, so it's picked up and signed like any other
-#     nested binary by the signing sweep below (step 5), no extra rule
-#     needed there. shell/mounts.py's rclone_bin() looks here first.
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # 4d-bis. Bundle uv (D176). NOT a convenience: the install loader (SPEC PY-18)
 #     builds a per-script venv for the few templates whose deps are too heavy to
 #     bundle, and on macOS it has no other way to do it. `fused`'s venv builder
@@ -1020,7 +952,7 @@ UV_DEST="$APP_DIR/Contents/Resources/bin/uv"
 mkdir -p "$(dirname "$UV_DEST")"
 cp "$UV_SRC" "$UV_DEST"
 chmod +x "$UV_DEST"
-# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# `|| true` so `set -e` does not
 # abort on the assignment and take the diagnostic with it.
 UV_SMOKE_OUT="$("$UV_DEST" --version || true)"
 if ! echo "$UV_SMOKE_OUT" | grep -q "^uv "; then
@@ -1029,22 +961,6 @@ if ! echo "$UV_SMOKE_OUT" | grep -q "^uv "; then
   exit 1
 fi
 echo "    $UV_SMOKE_OUT"
-
-echo "==> bundling rclone ${RCLONE_VERSION}"
-RCLONE_DEST="$APP_DIR/Contents/Resources/bin/rclone"
-mkdir -p "$(dirname "$RCLONE_DEST")"
-cp "$RCLONE_STAGED_BIN" "$RCLONE_DEST"
-chmod +x "$RCLONE_DEST"
-
-# `|| true` for the same reason as the google-auth smoke above: `set -e` would
-# abort on the assignment and take the diagnostic with it.
-RCLONE_SMOKE_OUT="$("$RCLONE_DEST" version || true)"
-if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; then
-  echo "FATAL: bundled rclone failed to report its version:" >&2
-  echo "$RCLONE_SMOKE_OUT" >&2
-  exit 1
-fi
-echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
 # 4e. The apple tier's Swift helper (D700, fused_render/ai/apple/). Lands in
 #     Contents/MacOS beside the interpreter — `host.py` looks for it there when
@@ -1102,7 +1018,7 @@ fi
 #     13 (Ventura) is the oldest macOS the bundle is meant to run on in
 #     practice. numpy 2.x's default arm64 wheel is `macosx_14_0_arm64`, which
 #     would force 14, so step 2 fetches the same version's older-tagged wheel
-#     (`macosx_11_0_arm64`, OpenBLAS; D1320). D1321 ships BOTH: the default
+#     (`macosx_11_0_arm64`, OpenBLAS; D1324). D1325 ships BOTH: the default
 #     numpy stays minos 14.0 and is exempt below, the OpenBLAS build lives in
 #     compat/macos13 (swept at the floor) and a startup .pth selects it on
 #     macOS < 14. `LC_BUILD_VERSION`'s minos is what
@@ -1112,20 +1028,11 @@ fi
 #       - Contents/MacOS/fused-apple-ai: minos 26 by design, host.py never
 #         spawns it below that (D700).
 #       - Contents/Resources/lib/python3.12/numpy/ (incl. .dylibs): the default
-#         Accelerate build, minos 14.0; runtime-gated by the compat .pth (D1321).
-#       - Contents/Resources/bin/rclone: the rclone project's own osx-arm64
-#         build carries minos 15.0 from v1.71 on (v1.70.3 is the last at 14.0
-#         — measured across releases when this sweep first ran). It came into
-#         the bundle with that floor from the macos-14 runner too, so it is
-#         not something the runner move caused; it IS a main executable dyld
-#         refuses below macOS 15, i.e. cloud mounts on a macOS 14 Mac are
-#         already broken in the shipping DMG. Pinning rclone back is a
-#         product call (the NFS handle-cache and rcd-auth tests pin 1.74's
-#         behaviour), so it is exempted here and printed, not fixed.
+#         Accelerate build, minos 14.0; runtime-gated by the compat .pth (D1325).
 # ---------------------------------------------------------------------------
 MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-13.0}"
-MINOS_EXEMPT=("Contents/MacOS/fused-apple-ai" "Contents/Resources/bin/rclone")
-# Directory exemption (D1321): the DEFAULT numpy (Accelerate, minos 14.0) is
+MINOS_EXEMPT=("Contents/MacOS/fused-apple-ai")
+# Directory exemption (D1325): the DEFAULT numpy (Accelerate, minos 14.0) is
 # gated at runtime by the compat .pth, which swaps in the OpenBLAS build from
 # compat/macos13/ on macOS < 14. ONLY lib/python3.12/numpy (and its .dylibs) is
 # exempt; the compat dir is swept at the floor like everything else.
@@ -1141,7 +1048,7 @@ for rel in "${MINOS_EXEMPT_DIRS[@]}"; do
   echo "    exempt (runtime-gated by the numpy compat .pth): $rel/"
 done
 MINOS_REPORT="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) \
-    ! -path "$APP_DIR/Contents/MacOS/fused-apple-ai" ! -path "$APP_DIR/Contents/Resources/bin/rclone" \
+    ! -path "$APP_DIR/Contents/MacOS/fused-apple-ai" \
     ! -path "$APP_DIR/Contents/Resources/lib/python3.12/numpy/*" -print0 \
   | xargs -0 -n 64 sh -c 'for f do
       case "$(head -c 4 "$f" | od -An -tx1 | tr -d " \n")" in

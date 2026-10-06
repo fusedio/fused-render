@@ -328,8 +328,8 @@ Three consequences worth stating plainly, since they follow from choosing
 level 3:
 
 - **`server_ms` is time-to-response-object, not time-to-last-byte.** The
-  middleware resumes when `call_next` returns a `Response`; a `FileResponse` or
-  the pooled mount proxy has not streamed its body yet. For `/api/run` (a
+  middleware resumes when `call_next` returns a `Response`; a `FileResponse`
+  has not streamed its body yet. For `/api/run` (a
   `JSONResponse`, fully materialised) the two are the same. For `/api/fs/raw`
   they are not, and `result_bytes` there comes from `Content-Length`, not from
   measuring the stream. The existing access line (SV-3) already has exactly
@@ -651,7 +651,7 @@ design, not an afterthought:
 - Per-call records for anonymous internet traffic cannot be unbounded — the
   existing 30-per-5-min rate cap exists because a caller controls the request
   rate and the owner pays for the storage. The answer is almost certainly
-  **aggregate-by-default**: pre-bucketed counters per (mount, entrypoint,
+  **aggregate-by-default**: pre-bucketed counters per (entrypoint,
   minute) — count, error count, duration histogram buckets, byte totals — plus
   full records for failures (already built) and for a **sampled** slice of
   successes.
@@ -1198,12 +1198,7 @@ often call slow — panning a map. They are outside the log by construction
 file and a token) would make "why is panning slow" answerable with the same
 charts. Meaningful work, high payoff, naturally a follow-up.
 
-**10.7 Mount-aware diagnostics.** Records carry the entrypoint path, and
-`shell/mounts.py` knows which paths are mount-backed with a cold/warm prefetch
-state. Joining them answers the most common confusing slowness in the product:
-"this call took 14 s because it was a cold read over a remote mount," not
-"your code is slow." A `mount`/`cold` flag on the record is a small addition
-with a large explanatory payoff.
+**10.7** *(removed with the mount feature; the number is left as a gap.)*
 
 **10.8 Export/deploy readiness.** `export.py` statically scans a page for
 literal `runPython`/`rawUrl` calls and fails loudly on a computed target it

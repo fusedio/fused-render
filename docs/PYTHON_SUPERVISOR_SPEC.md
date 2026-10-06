@@ -67,7 +67,7 @@ crash), we keep Rust.
    quoted-exe prefix (see the installer.iss fix on the PR branch).
 6. **State isolation** (`paths.py` on the PR branch): pass the same
    `FUSED_RENDER_*` env to the child (`HOME/CACHE_DIR/RUNTIME_DIR/TEMP_DIR/
-   LOG_DIR`, `DESKTOP_INSTANCE_ID/TOKEN`, OPENFUSED/RCLONE/UV/CLAUDE/DUCKDB).
+   LOG_DIR`, `DESKTOP_INSTANCE_ID/TOKEN`, OPENFUSED/UV/CLAUDE/DUCKDB).
 
 ## Packaging
 

@@ -80,7 +80,7 @@ jobs:
     # a release, and step 4f fails the build if ANY bundled Mach-O carries a
     # minos above 13.0 — bottles and newer-tagged wheels alike (the default
     # numpy is the one runtime-gated exemption: a startup .pth swaps in the
-    # bundled OpenBLAS build below macOS 14, D1321).
+    # bundled OpenBLAS build below macOS 14, D1325).
     runs-on: macos-26
     outputs:
       version: ${{ steps.artifacts.outputs.version }}

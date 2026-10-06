@@ -354,26 +354,6 @@ def test_walk_stream_prunes_default_ignored_too(tmp_path):
     assert streamed == _rels(client, tmp_path)  # stream/non-stream parity
 
 
-# -- remote-mount clamp (mounts) ---------------------------------------------
-#
-# A walk under a mount mountpoint turns every directory into a remote LIST
-# call, so it gets a much smaller entry cap than a local walk. The clamp keys
-# off the mounts dir (home_dir()/mounts), which follows FUSED_RENDER_HOME.
-# The mount-backed side of the clamp (listing via the rc API) lives in
-# test_server_fs_list_mount.py, which has the rcd stub; this only pins that a
-# path OUTSIDE the mounts dir keeps the big local cap.
-
-
-def test_walk_outside_mounts_keeps_big_cap(tmp_path, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    for i in range(10):
-        (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES_REMOTE", 3)
-    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
-    assert data["truncated"] is False
-    assert len(data["entries"]) == 10
-
-
 def test_walk_hides_windows_hidden_system_entries(tmp_path):
     # Search must hide the same HIDDEN+SYSTEM junctions /api/fs/list hides, or
     # opening one from a search result errors (WinError 5).

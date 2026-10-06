@@ -25,6 +25,8 @@
 // styles/tasks.css.
 import {
   Fragment,
+  memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -231,6 +233,51 @@ const SHOW_ROW_ACTIONS: boolean = false;
  *  `padding-left` of `.tasks-acts-inner` (tasks.css). The strip repeats a
  *  suffix mark only when the mark's inline copy sits inside this. */
 const STRIP_FADE_PX = 28;
+
+/**
+ * ONE ResizeObserver FOR EVERY ROW'S STRIP MEASUREMENT (2026-10-05, layer 2
+ * of the Tasks list fold). The strip's "are the marks under the fade" answer
+ * used to be measured on `pointerenter`, which is a forced style + layout of
+ * the whole list inside the event, per row the pointer crosses — 125 ms on
+ * Safari 17's engine. A ResizeObserver callback runs after layout is clean,
+ * so the same rects cost nothing extra there, and the thing that actually
+ * moves the marks — the title's tail, a fit level folding a chip — is a
+ * change in the spacer's width, which is exactly what the observer reports.
+ * One observer, not one per row: the callback is the same for all of them.
+ */
+const resizeWatchers = new WeakMap<Element, () => void>();
+let resizeObserver: ResizeObserver | null = null;
+function observeResize(el: Element, cb: () => void): () => void {
+  if (typeof ResizeObserver === "undefined") {
+    cb();
+    return () => {};
+  }
+  resizeObserver ??= new ResizeObserver((entries) => {
+    for (const entry of entries) resizeWatchers.get(entry.target)?.();
+  });
+  resizeWatchers.set(el, cb);
+  resizeObserver.observe(el);
+  return () => {
+    resizeWatchers.delete(el);
+    resizeObserver?.unobserve(el);
+  };
+}
+
+/** How many rows the first paint draws in full before the observer has said
+ *  which are in view — a screen and a half of closed rows, starting a little
+ *  above where the restored scroll offset lands (`REVEAL_SEED_ABOVE`). The
+ *  rest paint as placeholders and are revealed by the observer's first
+ *  report, which lands before the next frame. */
+const REVEAL_SEED = 40;
+const REVEAL_SEED_ABOVE = 8;
+/** A closed row's height before any has been measured, for turning the
+ *  restored scroll offset into a row index. An estimate, used once: the
+ *  observer's first report replaces it. */
+const REVEAL_ROW_GUESS_PX = 38;
+/** How far past the viewport a row is still drawn in full: two viewports each
+ *  way, so a wheel fling of ordinary speed never shows a placeholder and a
+ *  row the reader is about to reach is already there. */
+const REVEAL_MARGIN = "200% 0px";
 
 
 // ---- icons -------------------------------------------------------------------
@@ -1556,7 +1603,11 @@ export function TaskFilterControls({
 
 function useReadSet() {
   const [read, setRead] = useState<Set<string>>(() => new Set());
-  const clear = (taskKey: string, m: TaskMessage) => {
+  // ONE IDENTITY EACH, FOR THE LIFE OF THE LIST (2026-10-05). Every row is
+  // handed these and the row is memoised on its props (`TaskRow`); they only
+  // ever spend `setRead`, which React keeps stable, so a fresh closure per
+  // render would re-render seven hundred rows to tell them nothing.
+  const clear = useCallback((taskKey: string, m: TaskMessage) => {
     if (!m.unread) return;
     setRead((cur) => markRead(cur, taskKey, m.message_id));
     // Fire and forget as far as the NAVIGATION goes — the click is leaving the
@@ -1568,7 +1619,7 @@ function useReadSet() {
     void markTaskMessageRead(taskKey, m.message_id).catch(() => {
       setRead((cur) => unmarkRead(cur, taskKey, m.message_id));
     });
-  };
+  }, []);
   // The whole task, on the row's own button and on any gesture that opens the
   // thread. Two halves, both from tasks-lib.markAllRead: a concrete id for every
   // message this component HOLDS, and one observation-stamped sentinel for the
@@ -1577,33 +1628,32 @@ function useReadSet() {
   // `held` is tasks-lib.heldMessages, never the listing window on its own: after
   // Show more the thread on screen is all 89, and ids off the three the listing
   // carried would zero the count over 86 dots that nothing could take back.
-  const clearAll = (task: Task, held?: TaskMessage[]) => {
+  const clearAll = useCallback((task: Task, held?: TaskMessage[]) => {
     setRead((cur) => markAllRead(cur, task, held));
-  };
+  }, []);
   // The other direction of the same seam: a thread that has only just ARRIVED,
   // under a mark that is still standing. Show more's reply is a read of the value
   // the press overrode, so its `unread` flags are pre-mark — and nothing refetches
   // them. tasks-lib.carryMarkToHeld decides whether the mark still covers them.
-  const carryAll = (task: Task, held: TaskMessage[]) => {
+  const carryAll = useCallback((task: Task, held: TaskMessage[]) => {
     setRead((cur) => carryMarkToHeld(cur, task, held));
-  };
+  }, []);
   // ...and the way back, which is the half that was missing. `held` is the list
   // the press wrote its concrete ids from, captured BEFORE the request went out:
   // a poll can replace the thread while the write is in flight, and a rollback
   // has to remove what was actually written.
-  const restoreAll = (taskKey: string, held: TaskMessage[]) => {
+  const restoreAll = useCallback((taskKey: string, held: TaskMessage[]) => {
     setRead((cur) => unmarkAllRead(cur, taskKey, held));
-  };
+  }, []);
   // The server's own answer to the mark, spent through the one rule that reads
   // it (tasks-lib.settleMarkAllRead): a non-zero count means the press did not
   // clear the row after all.
-  const settleAll = (
-    taskKey: string,
-    held: TaskMessage[],
-    answer: { unread: number },
-  ) => {
-    setRead((cur) => settleMarkAllRead(cur, taskKey, held, answer));
-  };
+  const settleAll = useCallback(
+    (taskKey: string, held: TaskMessage[], answer: { unread: number }) => {
+      setRead((cur) => settleMarkAllRead(cur, taskKey, held, answer));
+    },
+    [],
+  );
   return { read, clear, clearAll, carryAll, restoreAll, settleAll };
 }
 
@@ -1905,6 +1955,52 @@ function writeListMemory(memory: ListMemory): void {
   }
 }
 
+/**
+ * ONE FUNCTION FOR THE LIFE OF THE COMPONENT, CALLING THE LATEST ONE (2026-10-05,
+ * macOS 14 native windows).
+ *
+ * `TaskRow` is memoised on its props, and most of what the List hands a row is
+ * a closure over the List's own state — `toggle` reads `expanded` and `loaded`,
+ * `select` writes the memory, the page's handlers come down from Scheduled,
+ * which re-renders on every listing publish. A fresh closure per render is a
+ * changed prop on every row, and seven hundred rows re-rendering to receive a
+ * function that does the same thing is the exact cost the memo is there to
+ * remove. So the row is handed a function whose identity never changes and
+ * whose body is whatever the LAST COMMITTED render's closure is: the ref is
+ * rewritten on every commit, and the stable shell reads it at call time.
+ *
+ * NOT for anything read during render — a row deciding what to draw from the
+ * callback's identity would never see it change. Every caller here spends
+ * these on events only.
+ */
+function useStable<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const latest = useRef(fn);
+  // Written in a layout effect, not during render: the listing arrives as a
+  // transition now, and a transition render can be thrown away before it
+  // commits — a ref written mid-render would then point at a closure over
+  // state the page never adopted. The commit is the first moment the closure
+  // is true, and it is before any event can fire.
+  useLayoutEffect(() => {
+    latest.current = fn;
+  });
+  return useCallback((...args: A) => latest.current(...args), []);
+}
+
+/** `useStable` for an OPTIONAL handler, keeping its absence: the row reads
+ *  presence as meaning (`onEditEntry` present = the row can edit; `onPickProject`
+ *  present = the chip is a control), so a shell standing in for `undefined`
+ *  would turn every inert row into a control that does nothing. */
+function useStableOpt<A extends unknown[], R>(
+  fn: ((...args: A) => R) | undefined,
+): ((...args: A) => R) | undefined {
+  const latest = useRef(fn);
+  useLayoutEffect(() => {
+    latest.current = fn;
+  });
+  const stable = useCallback((...args: A) => latest.current!(...args), []);
+  return fn ? stable : undefined;
+}
+
 export function TaskList({
   tasks,
   home = "",
@@ -2173,6 +2269,20 @@ export function TaskList({
     }
   };
 
+  // The rows' handles — see `useStable` above for why these and not the
+  // closures themselves. `select`, `toggle` and `showMore` are the List's own
+  // and close over its state; the rest are the page's, passed through.
+  const selectRow = useStable(select);
+  const toggleRow = useStable(toggle);
+  const retryRow = useStable((task: Task) => void showMore(task));
+  const editEntry = useStableOpt(onEditEntry);
+  const openDraft = useStableOpt(onOpenDraft);
+  const openBoundDraft = useStableOpt(onOpenBoundDraft);
+  const reloadRows = useStableOpt(onReload);
+  const queued = useStableOpt(onQueued);
+  const pickProject = useStableOpt(onPickProject);
+  const pickDraft = useStableOpt(onPickDraft);
+
   // A row restored from memory was never TOGGLED, so nothing went and got the
   // rest of its thread — it would sit there showing the listing's three messages
   // with no button left to ask for the other twenty-three. Same trip the chevron
@@ -2199,6 +2309,130 @@ export function TaskList({
   // that is measured (shell/row-fit.ts states the rule and why it is not a
   // breakpoint).
   const fit = useRowFit(listRef, peekOn, floored);
+
+  // ---- the fold --------------------------------------------------------------
+  // WHICH ROWS ARE DRAWN IN FULL (2026-10-05, macOS 14 native windows). Every
+  // `.tasks-node` stays in the DOM in the list's order — the peek walk, the
+  // end-row corner rules, the hairlines, scroll memory and the row-fit sample
+  // all read the list as a DOM and none of them has to change — but a node
+  // outside the band around the viewport renders one placeholder of its last
+  // measured height instead of its row. A hover on this page is a style pass
+  // over everything mounted, and on Safari 17's engine 700 full rows cost
+  // 125 ms per pointer move; ~60 full rows and 640 one-element placeholders
+  // cost a tenth of that. `content-visibility: auto` would do this in one CSS
+  // line on engines that have it, and Safari 17 is not one of them (and its
+  // paint containment clips the count tooltip that hangs below the last ring).
+  //
+  // The band is one IntersectionObserver rooted on the scroller, two viewports
+  // each way (REVEAL_MARGIN). Before it has reported once, the first
+  // REVEAL_SEED rows are the band, so the first paint is a screen and a half
+  // of real rows and not a frame of placeholders.
+  // KEYED BY THE ROW'S REACT KEY, NOT `task.key` (Bugbot, #1384): `rowKeys`
+  // stays on the task's number through the `pending:<entry>` → session-id
+  // handoff so the row does not remount, and a fold keyed on the name would
+  // have folded that row for a frame at the exact moment `taskListKeys` was
+  // added to stop it blinking.
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set());
+  const observed = useRef(false);
+  // The registry both the observer and the focus tracking read: which node
+  // element is which task, and back.
+  const nodesByEl = useRef(new Map<Element, string>());
+  const elsByKey = useRef(new Map<string, Element>());
+  // What a folded node is sized to: the height its row had when it left the
+  // band (`clientHeight`, so the hairline the stylesheet adds between nodes is
+  // not counted twice), or the closed-row height read off the first closed row
+  // seen, for a row that has never been drawn. Measured, never typed: the row
+  // is a flex line centred on the ring slot, so its height is the tallest
+  // child's, not line-height plus padding — and Safari has no scroll anchoring
+  // to hide a two-pixel guess when rows above the viewport reveal.
+  const heights = useRef(new Map<string, number>());
+  const closedHeight = useRef<number | null>(null);
+  const io = useRef<IntersectionObserver | null>(null);
+  // THE ROW THE KEYBOARD IS ON, pinned open: a focused row that folded would
+  // blur to the document and the next Tab would start from the top of the
+  // page. Set from the scroller's own focus events, so no row has to report.
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+
+  const onNode = useCallback((key: string, el: HTMLDivElement | null) => {
+    const prev = elsByKey.current.get(key);
+    if (prev && prev !== el) {
+      nodesByEl.current.delete(prev);
+      io.current?.unobserve(prev);
+    }
+    if (el) {
+      nodesByEl.current.set(el, key);
+      elsByKey.current.set(key, el);
+      io.current?.observe(el);
+    } else {
+      elsByKey.current.delete(key);
+    }
+  }, []);
+
+  useEffect(() => {
+    const root = listRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        // THE FIRST REPORT ALWAYS RENDERS (Bugbot, #1384): `observed` is a
+        // ref, so flipping it is invisible to React, and a report that
+        // happens to match the set already held would bail out of
+        // `setRevealed` and leave the seed paint on screen for good. A fresh
+        // Set the first time, whatever it holds.
+        const first = !observed.current;
+        observed.current = true;
+        const came: string[] = [];
+        const went: string[] = [];
+        for (const entry of entries) {
+          const el = entry.target as HTMLElement;
+          const key = nodesByEl.current.get(el);
+          if (!key) continue;
+          const full = !el.classList.contains("is-folded");
+          if (entry.isIntersecting) {
+            came.push(key);
+            // A closed row in full — its row and nothing under it — is the
+            // closed-row height every never-drawn placeholder is sized to.
+            if (closedHeight.current === null && full && el.childElementCount === 1) {
+              closedHeight.current = el.clientHeight;
+            }
+          } else {
+            if (full) heights.current.set(key, el.clientHeight);
+            went.push(key);
+          }
+        }
+        if (!first && !came.length && !went.length) return;
+        setRevealed((cur) => {
+          let next: Set<string> | null = first ? new Set(cur) : null;
+          for (const key of came) {
+            if (cur.has(key)) continue;
+            next ??= new Set(cur);
+            next.add(key);
+          }
+          for (const key of went) {
+            if (!cur.has(key)) continue;
+            next ??= new Set(cur);
+            next.delete(key);
+          }
+          return next ?? cur;
+        });
+      },
+      { root, rootMargin: REVEAL_MARGIN },
+    );
+    io.current = obs;
+    for (const el of nodesByEl.current.keys()) obs.observe(el);
+    return () => {
+      obs.disconnect();
+      io.current = null;
+      // The scroller is going; when it comes back (a stale empty, see
+      // `staleEmptied`, or a filter that emptied and refilled) the seed
+      // applies again until the new observer speaks — re-centred on the
+      // offset the restore will pay, and over a cleared set, so the new
+      // observer's report is news and not a repeat (Bugbot, #1384).
+      observed.current = false;
+      setRevealed(new Set());
+    };
+    // The scroller mounts with the first rows and unmounts with the last
+    // (`hasRows`, declared below this hook), and the observer follows it.
+  }, [tasks.length > 0]);
   // The offset still owed to the reader, or null once it has been paid (or given
   // up on). Rows grow as their fetched threads land, so the wanted offset is
   // often past the end of the list for the first few frames; it is re-applied
@@ -2361,6 +2595,33 @@ export function TaskList({
     remember({ ...memory.current, scroll: 0 });
   }, [hasRows, stale]);
 
+  // WHERE THE SEED STARTS (Bugbot, #1384, twice). The scroll memory is paid
+  // in a layout effect, before the first paint, so a return visit paints the
+  // SAVED viewport — and a seed that only knew about the top of the list
+  // would have painted that viewport as placeholders until the observer's
+  // first report. So the seed is centred on the row the restore is about to
+  // land on, by estimate, and the observer corrects it within a frame.
+  //
+  // DERIVED HERE, AT RENDER, FROM WHAT THE RESTORE WILL ACTUALLY PAY — never
+  // stored: a seed computed in the observer's teardown read the memory
+  // before the empty-list effect below zeroed it, and a filter that emptied
+  // and refilled remounted at the top with the seed still down the list.
+  // `owed` is the offset the layout effect pays on this very commit. Once it
+  // is paid it is null, and the scroller is wherever `settled` says — the
+  // offset that effect last wrote, kept current by `onScroll` — so a
+  // re-render between the restore and the observer's first report (the peek
+  // host's own layout update, on every mount) seeds where the list IS, not
+  // at the top (Bugbot, #1384, third pass). A stale empty re-arms `owed`
+  // from memory in that same effect and nulls `settled` (`staleEmptied`),
+  // so the memory stands in for both there; anything else lands at the top.
+  const seedScroll =
+    owed.current
+    ?? settled.current
+    ?? (staleEmptied.current ? memory.current.scroll || 0 : 0);
+  const seedFrom = observed.current
+    ? 0
+    : Math.max(0, Math.floor(seedScroll / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE);
+
   if (!hasRows) {
     return <p className="schedule-tv-empty">{emptyLabel}</p>;
   }
@@ -2384,6 +2645,16 @@ export function TaskList({
         // would mean the first floored frame had no number yet.
         style={peekOn ? ({ "--tasks-row-need": `${fit.need}px` } as React.CSSProperties) : undefined}
         onScroll={onScroll}
+        // The fold's focus pin (see `focusedKey`): which node the focus is in,
+        // resolved through the registry, and cleared when focus leaves the list.
+        onFocus={(e) => {
+          const node = (e.target as HTMLElement).closest(".tasks-node");
+          setFocusedKey(node ? nodesByEl.current.get(node) ?? null : null);
+        }}
+        onBlur={(e) => {
+          const to = e.relatedTarget as Node | null;
+          if (!to || !listRef.current?.contains(to)) setFocusedKey(null);
+        }}
       >
       {/* THE SCROLLER ABOVE IS THE BORDERED BOX, and this frame is the plain
           wrapper inside it (styles/tasks.css): the bar runs down the inside of
@@ -2407,9 +2678,38 @@ export function TaskList({
           where a list has no frame and five headers are five interruptions in
           the one column a person is scanning. The order already says what they
           said. */}
+      {/* `TaskRow` IS `TaskNode` BEHIND `memo` (2026-10-05): a listing publish
+          hands this list a new `rows` array every twenty seconds and on every
+          change-feed delta, and before this every row re-rendered for it —
+          60–80 ms on Safari 17's engine with 700 rows, under the pointer. Now
+          a row renders when ITS props move: its task object (tasksPulse keeps
+          the held object for a row a full read did not change, and a delta
+          never touches the rest), its open/selected/peeked bits, its fetched
+          thread. Every function below is identity-stable for the life of the
+          List (`useStable`, `useReadSet`); the one prop that still moves for
+          every row at once is `read`, on a read action, which is rare and
+          wanted. */}
       {rows.map((task, ix) => (
-        <TaskNode
+        <TaskRow
           key={rowKeys[ix]}
+          // DRAWN IN FULL OR AS A PLACEHOLDER (the fold, above). Pinned open
+          // whatever the band says: an expanded row (its height is its
+          // thread's, and a row restored open from memory was never measured),
+          // the peeked and selected rows (the halo and the "where you were"
+          // wash must not vanish under the reader), and the row the keyboard
+          // is on.
+          folded={
+            (observed.current
+              ? !revealed.has(rowKeys[ix] ?? task.key)
+              : ix < seedFrom || ix >= seedFrom + REVEAL_SEED)
+            && !expanded.has(task.key)
+            && peeked !== task.key
+            && selected !== task.key
+            && focusedKey !== (rowKeys[ix] ?? task.key)
+          }
+          height={heights.current.get(rowKeys[ix] ?? task.key) ?? closedHeight.current}
+          rowKey={rowKeys[ix] ?? task.key}
+          onNode={onNode}
           task={task}
           home={home}
           showProject={showProject}
@@ -2418,20 +2718,20 @@ export function TaskList({
           peekOn={peekOn}
           peeked={peeked === task.key}
           selected={selected === task.key}
-          onSelect={() => select(task.key)}
-          onToggle={() => toggle(task)}
-          onRetry={() => void showMore(task)}
+          onSelect={selectRow}
+          onToggle={toggleRow}
+          onRetry={retryRow}
           loaded={loaded[task.key]}
           loading={!!loading[task.key]}
           error={errors[task.key]}
-          onEditEntry={onEditEntry}
-          onOpenDraft={onOpenDraft}
-          onOpenBoundDraft={onOpenBoundDraft}
-          onReload={onReload}
-          onQueued={onQueued}
-          onPickProject={onPickProject}
+          onEditEntry={editEntry}
+          onOpenDraft={openDraft}
+          onOpenBoundDraft={openBoundDraft}
+          onReload={reloadRows}
+          onQueued={queued}
+          onPickProject={pickProject}
           pinned={pinnedProjects.includes(task.project)}
-          onPickDraft={onPickDraft}
+          onPickDraft={pickDraft}
           draftOn={draftOn}
           read={read}
           onRead={clear}
@@ -2530,6 +2830,78 @@ export function TaskRowItem({
 const NO_READ: Set<string> = new Set<string>();
 const NO_OP = () => {};
 
+type TaskNodeProps = Parameters<typeof TaskNode>[0];
+
+/**
+ * THE LIST'S ROW: `TaskNode` rendered only when its own props move, and only
+ * when it is in the band (see the List's fold note) — outside it, the
+ * placeholder below. The branch lives HERE and not inside `TaskNode` because
+ * `TaskNode` is fifteen hooks and a thread's worth of derivation before its
+ * first element, and a placeholder that paid for all of that would be half a
+ * row. The row's transient state (a note under it, a confirm) goes with the
+ * row when it folds; the rows that can be mid-gesture are pinned and never
+ * fold. `TaskRowItem` above spends `TaskNode` bare — a borrowed list is short
+ * and has no scroller of its own to observe.
+ */
+const TaskRow = memo(function TaskRow({
+  folded,
+  height,
+  rowKey,
+  onNode,
+  ...props
+}: TaskNodeProps & {
+  folded: boolean;
+  /** The placeholder's height, or null to let the stylesheet's closed-row
+   *  minimum stand until a row has been measured. */
+  height: number | null;
+  /** The List's key for this row (`taskListKeys`) — what the fold's registry
+   *  is keyed on, because it survives the queue's rekey and `task.key` does
+   *  not. */
+  rowKey: string;
+  onNode: (key: string, el: HTMLDivElement | null) => void;
+}) {
+  const key = rowKey;
+  // One ref callback per task, not per render: React calls a changed ref with
+  // null and then the element, and that would be an unobserve/observe pair on
+  // every re-render of the row.
+  const nodeRef = useCallback((el: HTMLDivElement | null) => onNode(key, el), [onNode, key]);
+  return folded ? (
+    <FoldedNode task={props.task} height={height} peekOn={props.peekOn ?? false} nodeRef={nodeRef} />
+  ) : (
+    <TaskNode {...props} nodeRef={nodeRef} />
+  );
+});
+
+/**
+ * A ROW OUT OF THE BAND: the same `.tasks-node` box, sized to what the row
+ * measured, holding the title as text and nothing else. The title is there so
+ * find-in-page still lands on every task (the browser scrolls the match into
+ * view and the band reveals it), and the peek's attributes are there so the
+ * prev/next walk sees the same order whether a row is drawn or not.
+ */
+function FoldedNode({
+  task,
+  height,
+  peekOn,
+  nodeRef,
+}: {
+  task: Task;
+  height: number | null;
+  peekOn: boolean;
+  nodeRef: (el: HTMLDivElement | null) => void;
+}) {
+  return (
+    <div
+      className="tasks-node is-folded"
+      ref={nodeRef}
+      style={height !== null ? { height } : undefined}
+      {...(peekOn ? peekItemProps(task.key, peekOpenable(task)) : {})}
+    >
+      <span className="tasks-fold-title">{cardTitleLine(task).text}</span>
+    </div>
+  );
+}
+
 function TaskNode({
   task,
   home,
@@ -2562,9 +2934,13 @@ function TaskNode({
   onReadAll,
   onUnreadAll,
   onSettleAll,
+  nodeRef,
 }: {
   task: Task;
   home: string;
+  /** The List's handle on this row's `.tasks-node`, for the fold's observer.
+   *  Absent on a borrowed row. */
+  nodeRef?: (el: HTMLDivElement | null) => void;
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
@@ -2619,14 +2995,14 @@ function TaskNode({
   /** Say that this row is now that one. Spent by every gesture that LEAVES the
    * page — the row's press and a message row's — and by nothing else: expanding
    * a task is reading it in place, not going anywhere. */
-  onSelect: () => void;
-  onToggle: () => void;
+  onSelect: (taskKey: string) => void;
+  onToggle: (task: Task) => void;
   loaded?: TaskMessage[];
   loading: boolean;
   /** Fetch this task's thread again after a failure. The SAME call the disclosure
    * makes — not a second path to the same endpoint, because two ways in are two
    * ways to disagree about the guards. */
-  onRetry: () => void;
+  onRetry: (task: Task) => void;
   error?: string;
   onEditEntry?: (entryId: string) => void;
   /** See TaskList's own prop: the draft row's press. */
@@ -2893,27 +3269,41 @@ function TaskNode({
   const [discarding, setDiscarding] = useState(false);
   // WHETHER THE STRIP HIDES THE SUFFIX MARKS (Akshil, 2026-09-16: "show the
   // icon only when the overlay hides it"). Measured, never guessed from a
-  // width (see responsive-collision rule): on pointer-enter, the inline
-  // marks' right edge against where the strip's fade begins — Open's left
-  // edge less the fade — so the answer does not depend on whether the copies
-  // themselves are drawn, and cannot oscillate.
+  // width (see responsive-collision rule): the inline marks' right edge
+  // against where the strip's fade begins — Open's left edge less the fade —
+  // so the answer does not depend on whether the copies themselves are drawn,
+  // and cannot oscillate.
+  //
+  // MEASURED WHEN THE SPACER RESIZES, NOT ON POINTER-ENTER (2026-10-05). The
+  // strip is laid out at rest (`opacity: 0`, tasks.css), so the rects are
+  // readable at any time; what moves the marks is the title's tail or a fit
+  // level taking a chip away, and both change the width of the `.tasks-grow`
+  // spacer beside them. Reading rects inside a pointer event forced a style
+  // pass of the whole list per row crossed (`observeResize` above has the
+  // numbers); reading them in a ResizeObserver callback, after layout, is
+  // free — and the observer reports once on observe, so the first answer
+  // arrives with the first paint rather than with the first hover.
   const [marksUnderStrip, setMarksUnderStrip] = useState(false);
-  const measureStrip = (row: HTMLElement) => {
-    const marks = row.querySelectorAll<HTMLElement>(
-      ":scope > .tasks-row-file, :scope > .tasks-row-sched",
-    );
-    const door = row.querySelector<HTMLElement>(".tasks-acts .tasks-act--page");
-    if (!marks.length || !door) {
-      if (marksUnderStrip) setMarksUnderStrip(false);
-      return;
-    }
-    const fadeLeft = door.getBoundingClientRect().left - STRIP_FADE_PX;
-    let under = false;
-    marks.forEach((m) => {
-      if (m.getBoundingClientRect().right > fadeLeft) under = true;
+  const growRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    const grow = growRef.current;
+    const row = grow?.closest<HTMLElement>(".tasks-row");
+    if (!grow || !row) return;
+    return observeResize(grow, () => {
+      const marks = row.querySelectorAll<HTMLElement>(
+        ":scope > .tasks-row-file, :scope > .tasks-row-sched",
+      );
+      const door = row.querySelector<HTMLElement>(".tasks-acts .tasks-act--page");
+      let under = false;
+      if (marks.length && door) {
+        const fadeLeft = door.getBoundingClientRect().left - STRIP_FADE_PX;
+        marks.forEach((m) => {
+          if (m.getBoundingClientRect().right > fadeLeft) under = true;
+        });
+      }
+      setMarksUnderStrip((cur) => (cur === under ? cur : under));
     });
-    if (under !== marksUnderStrip) setMarksUnderStrip(under);
-  };
+  }, []);
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -3076,13 +3466,13 @@ function TaskNode({
     // page's Tasks tab, the flag off), and then this is the navigation it has
     // always been.
     if (openPeek(task.key, { anchor: m.anchor || null })) {
-      onSelect();
+      onSelect(task.key);
       return;
     }
     // Leaving the page, so this is the row to come back to — the thread row
     // belongs to this task, and the task's row is what is still on screen when
     // the reader returns.
-    onSelect();
+    onSelect(task.key);
     navigateUrl(to);
   };
 
@@ -3130,7 +3520,7 @@ function TaskNode({
     // trip the reader never took would make the highlight mean nothing. Every
     // way of opening this task's conversation goes through this one function
     // (the row's press, the Open chat button), so every one of them marks.
-    onSelect();
+    onSelect(task.key);
     performOpen(
       task,
       intent,
@@ -3320,14 +3710,12 @@ function TaskNode({
   };
 
   return (
-    <div className="tasks-node">
+    <div className="tasks-node" ref={nodeRef}>
       <div
         className={"tasks-row" + (open ? " is-open" : "")
           + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
           + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
           + (refiled ? " is-refiled" : "")}
-        onPointerEnter={(e) => measureStrip(e.currentTarget)}
-        onFocus={(e) => measureStrip(e.currentTarget)}
         // The side peek's two hooks: the halo's selector, and — in DOM order —
         // the prev/next walk, which on the List is simply the list's order
         // (shell/task-peek-store.ts). Absent entirely when the feature is off.
@@ -3426,7 +3814,7 @@ function TaskNode({
             title={open ? "Collapse messages" : "Expand messages"}
             onClick={(e) => {
               e.stopPropagation();
-              onToggle();
+              onToggle(task);
             }}
           >
             <span className={"tasks-caret-glyph" + (open ? " is-open" : "")} aria-hidden>
@@ -3535,7 +3923,7 @@ function TaskNode({
             <button
               type="button"
               className={"tasks-act tasks-act--" + file.kind}
-              title={file.title}
+              data-hint={file.title}
               aria-label={file.label}
               disabled={acting}
               onClick={(e) => {
@@ -3782,8 +4170,10 @@ function TaskNode({
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
-            right-hand group in the middle of the row instead of at its end. */}
-        <span className="tasks-grow" />
+            right-hand group in the middle of the row instead of at its end.
+            Also the strip measurement's trigger (`growRef`): its width is what
+            moves when the marks do. */}
+        <span className="tasks-grow" ref={growRef} />
         {/* THE HOVER STRIP FLOATS OVER THE TITLE'S TAIL (Akshil, 2026-09-16):
             a zero-width seat in the flex row, with the buttons positioned off
             its right edge, so the title takes every px the row has and the
@@ -4492,7 +4882,7 @@ function TaskNode({
                 type="button"
                 className="tasks-retry"
                 disabled={loading}
-                onClick={onRetry}
+                onClick={() => onRetry(task)}
               >
                 Retry
               </button>
@@ -5850,7 +6240,7 @@ function TaskCard({
             <button
               type="button"
               className={"tasks-act tasks-card-act tasks-act--" + file.kind}
-              title={file.title}
+              data-hint={file.title}
               aria-label={`${file.label} ${shortTaskId(task.task_id)}`}
               disabled={busy}
               onClick={() => void refile(file)}

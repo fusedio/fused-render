@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import platform
 import plistlib
@@ -78,6 +77,9 @@ INDEX_RUNS = 5
 EXCLUDED_NAMES = (
     "secrets.json",       # openfused/secrets.json
     "credentials*",       # openfused/credentials*
+    # Retired mount feature: nothing writes this any more, but an upgraded
+    # install still carries the user's remote credentials (the cleanup shim
+    # deliberately leaves them alone), so it must never enter a bundle.
     "rclone.conf",        # rclone/rclone.conf
     "lan_tls",            # LAN TLS keys
     "claude-config",      # claude CLI config + auth
@@ -88,7 +90,7 @@ EXCLUDED_NAMES = (
 
 #: Process names whose crash reports / ps lines are ours.
 _PS_NEEDLES = ("FusedRender", "fused_render", "fused-render", "fused-apple-ai",
-               "rclone", "claude")
+               "claude")
 _REDACT_KEY = re.compile(r"token|secret|key|password|credential", re.I)
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -253,9 +255,6 @@ def _plan_state(plan: _Plan) -> None:
         p = os.path.join(home, name)
         if os.path.exists(p):
             plan.add(f"state/{name}", p)
-    rcd = os.path.join(home, "rcd.log")
-    if os.path.exists(rcd):
-        plan.add("state/rcd.log", rcd, tail=TAIL_CAP)
     prefs = os.path.join(home, "prefs.json")
     if os.path.exists(prefs):
         plan.add("state/prefs.json", prefs, transform=_redact_prefs)
@@ -323,7 +322,7 @@ def _plan_app_logs(plan: _Plan) -> None:
 def _plan_diagnostic_reports(plan: _Plan) -> None:
     if sys.platform != "darwin":
         return
-    prefixes = (_bundle_executable(), "python", "Python", "fused-apple-ai", "rclone")
+    prefixes = (_bundle_executable(), "python", "Python", "fused-apple-ai")
     root = os.path.expanduser("~/Library/Logs/DiagnosticReports")
     for sub, arc_sub in ((root, ""), (os.path.join(root, "Retired"), "Retired/")):
         try:

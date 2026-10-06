@@ -886,15 +886,6 @@ def test_publish_refuses_before_spawning_when_a_remote_already_exists(tmp_path, 
         github_setup.publish_start(root, "my-repo", "private")
 
 
-def test_publish_refuses_a_mount_backed_repo(tmp_path, monkeypatch):
-    root = _repo_with_a_commit(tmp_path, monkeypatch)
-    monkeypatch.setattr(github_setup, "resolve", lambda: ("/bin/gh", "path"))
-    monkeypatch.setattr(github_setup, "executable", lambda p: True)
-    monkeypatch.setattr(github_setup.shell_mounts, "is_mount_backed", lambda p: True)
-    with pytest.raises(github_setup.PublishError, match="remote mounts"):
-        github_setup.publish_start(root, "my-repo", "private")
-
-
 def test_publish_refuses_without_gh(tmp_path, monkeypatch):
     root = _repo_with_a_commit(tmp_path, monkeypatch)
     monkeypatch.setattr(github_setup, "resolve", lambda: (None, None))

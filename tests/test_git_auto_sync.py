@@ -25,6 +25,7 @@ def _clean_state(monkeypatch):
     monkeypatch.setattr(git_upstream, "_state", {})
     monkeypatch.setattr(git_upstream, "_sync_failures", {})
     monkeypatch.setattr(git_upstream, "_pulled_events", [])
+    monkeypatch.setattr(git_upstream, "_pending", {})
     monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
     if git_upstream._check_slot.acquire(timeout=git_upstream.TIMEOUT_S + 5):
         git_upstream._check_slot.release()
@@ -358,3 +359,114 @@ def test_auth_failure_on_open_fetch_records_a_row_offline_stays_silent(tmp_path,
     git_upstream.note_app_opened(local, _runner=_sync)
     assert git_upstream.sync_failures() == []
     assert root
+
+
+# ------------------------------------------- folder-open trigger + busy slot
+
+_APP_HTML = '<html><head><meta name="fused-app" /></head><body>x</body></html>'
+
+
+def _inline_note(monkeypatch):
+    """Route the endpoint's `note_app_opened` through the inline runner."""
+    real = git_upstream.note_app_opened
+    monkeypatch.setattr(git_upstream, "note_app_opened",
+                        lambda path, **kw: real(path, _runner=_sync))
+
+
+def test_folder_open_pulls_and_does_not_record_recency(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _inline_note(monkeypatch)
+    local, _remote, other = _make(tmp_path)
+    write(local, "app.html", _APP_HTML)
+    git(local, "add", "-A")
+    git(local, "commit", "-q", "-m", "app")
+    git(local, "push", "-q", "origin", "HEAD:main")
+    git(other, "pull", "-q")
+    _advance_remote(other, "c.txt", "3\n", "c3")
+
+    from fused_render.server.routers import apps as apps_router
+    recorded = []
+    monkeypatch.setattr(apps_router, "record_app_open", lambda d: recorded.append(d))
+
+    r = client.get("/api/apps/entry", params={"path": local, "opened": 1}).json()
+    assert r["entry"].endswith("app.html")
+    assert os.path.exists(os.path.join(local, "c.txt"))
+    assert len(git_upstream.recent_pulls()) == 1
+    assert recorded == []
+
+
+def test_folder_open_on_divergence_records_a_failure_row(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _inline_note(monkeypatch)
+    local, _remote, other = _make(tmp_path)
+    write(local, "app.html", _APP_HTML)
+    git(local, "add", "-A")
+    git(local, "commit", "-q", "-m", "app")
+    git(local, "push", "-q", "origin", "HEAD:main")
+    git(other, "pull", "-q")
+    _advance_remote(other, "c.txt", "3\n", "c3")
+    _commit(local, "mine.txt", "m\n", "mine")
+
+    client.get("/api/apps/entry", params={"path": local, "opened": 1})
+    assert [f["reason"] for f in git_upstream.sync_failures()] == ["diverged"]
+
+
+def test_entry_probe_without_opened_does_not_trigger(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(git_upstream, "note_app_opened",
+                        lambda path, **kw: calls.append(path))
+    local, _remote, _other = _make(tmp_path)
+    write(local, "app.html", _APP_HTML)
+    client.get("/api/apps/entry", params={"path": local})
+    assert calls == []
+    # An entry-less folder is not an app being opened either.
+    client.get("/api/apps/entry", params={"path": str(tmp_path), "opened": 1})
+    assert calls == []
+
+
+def test_busy_slot_open_is_parked_and_runs_when_the_slot_frees(tmp_path):
+    local, _remote, other = _make(tmp_path)
+    _advance_remote(other)
+    assert git_upstream._check_slot.acquire(blocking=False)
+    try:
+        started = git_upstream.note_app_opened(local, _runner=_sync)
+        assert started is False
+        assert not os.path.exists(os.path.join(local, "b.txt"))
+    finally:
+        git_upstream._check_slot.release()
+        git_upstream._drain_pending(_sync)
+    assert os.path.exists(os.path.join(local, "b.txt"))
+    assert git_upstream._pending == {}
+
+
+def test_parked_opens_are_deduped_and_chain_one_at_a_time(tmp_path):
+    a, _ra, other_a = _make(tmp_path, "a")
+    b, _rb, other_b = _make(tmp_path, "b")
+    _advance_remote(other_a)
+    _advance_remote(other_b)
+    assert git_upstream._check_slot.acquire(blocking=False)
+    try:
+        for path in (a, a, b):
+            git_upstream.note_app_opened(path, _runner=_sync)
+        assert list(git_upstream._pending) == [a, b]
+    finally:
+        git_upstream._check_slot.release()
+        git_upstream._drain_pending(_sync)
+    assert os.path.exists(os.path.join(a, "b.txt"))
+    assert os.path.exists(os.path.join(b, "b.txt"))
+    assert git_upstream._check_slot.acquire(blocking=False)  # slot ends free
+    git_upstream._check_slot.release()
+
+
+def test_parked_open_respects_the_throttle(tmp_path):
+    local, _remote, other = _make(tmp_path)
+    git_upstream.note_app_opened(local, _runner=_sync)  # stamps the throttle
+    _advance_remote(other)
+    assert git_upstream._check_slot.acquire(blocking=False)
+    try:
+        git_upstream.note_app_opened(local, _runner=_sync)
+    finally:
+        git_upstream._check_slot.release()
+        git_upstream._drain_pending(_sync)
+    assert not os.path.exists(os.path.join(local, "b.txt"))

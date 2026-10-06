@@ -98,7 +98,7 @@ everything else, or unvisited directories would silently vanish from the index:
 
 Because ignored directories are filtered out of the cache at load time (§2), they never
 reach the keep list — which is precisely how newly-ignored folders get purged from an
-existing index without a full rescan (`scan-ignore.md §4`). Mount-backed paths are
+existing index without a full rescan (`scan-ignore.md §4`). Paths inside a fused-render home are
 refused here too, by the same `MountGuard` the walk uses: a journal replay is exactly
 the route by which a path can arrive without its ancestors having been checked.
 
@@ -134,8 +134,8 @@ again on every watch tick of a folder on screen**:
 1. The path is inside a configured root (segment-wise), else nothing. The scan started
    is always that **configured root** — a per-folder root would pollute `scans.json`
    and defeat `runner.start`'s exact-match join.
-2. Not mount-backed. This is checked before any syscall on the path, by the same pure
-   string `MountGuard` §4 uses: `os.stat` under a wedged rclone mount blocks its thread
+2. Not inside a fused-render home. This is checked before any syscall on the path, by the same pure
+   string `MountGuard` §4 uses: `os.stat` under a wedged network mount blocks its thread
    indefinitely, and this one is serving a listing.
 3. `MIN_INTERVAL_S` (60 s) since any scan of that root, read off `scans.json` — so no
    state file of its own, and a scan that just ran for any reason suppresses a trigger.

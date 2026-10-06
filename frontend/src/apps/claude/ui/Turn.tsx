@@ -146,7 +146,7 @@ export const Turn = memo(function Turn({
             below — so nothing the re-attach probe reads moves. */}
         <div className="turn-line">
           {stamp ? (
-            <span className="turn-stamp" {...(stampTitle(ts) ? { title: stampTitle(ts)! } : {})}>
+            <span className="turn-stamp" {...(stampTitle(ts) ? { "data-hint": stampTitle(ts)! } : {})}>
               {stamp}
             </span>
           ) : null}

@@ -2916,7 +2916,7 @@ async function browseTo(rawPath, addHistory = true) {
   qs("fb-error").textContent = "";
   const ticket = ++browseSeq;
   try {
-    const result = await fused.runPython("./discover.py", { dir: requested, src: location.origin });
+    const result = await fused.runPython("./discover.py", { dir: requested });
     if (ticket !== browseSeq) return false;
     browserState.roots = result.roots || browserState.roots;
     if (result.error) { qs("fb-error").textContent = result.error; renderBrowserPlaces(); return false; }

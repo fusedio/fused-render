@@ -90,7 +90,7 @@ def api_claude_config_status():
     Replaces the old `claude_config_mount_ready` flag on /api/config: the tab
     used to be gated on a builtin :archive: mount being attached, which said
     nothing about whether the user had Claude Code installed and everything
-    about whether rclone had finished. The honest gate is "is there config to
+    about whether a background setup had finished. The honest gate is "is there config to
     edit", and it is one isdir() — so it stays its own cheap endpoint rather
     than growing /api/config, which every page load reads.
 

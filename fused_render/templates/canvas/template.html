@@ -253,7 +253,7 @@
   nameEl.textContent = folderName;
 
   // ---- loading skeleton ---------------------------------------------------
-  // reader.py can take a while (S3 mount stat/list, big canvas.toml) and the
+  // reader.py can take a while (a big canvas.toml) and the
   // canvas would otherwise sit blank apart from the header until it resolves.
   // Paint a shimmering placeholder — the same dot grid plus a scatter of
   // node-card shapes — the instant the DOM is ready, and keep it animating
@@ -343,12 +343,6 @@
   }
 
   // ---- data -------------------------------------------------------------
-  // src = the server origin + the raw-bytes URL for `file`. The reader trusts
-  // it only for the origin (to reach /api/fs/stat + /api/fs/list) and stays
-  // mount-agnostic; passing it lets the reader discover that the toml's
-  // directory is mount-backed and list its siblings over HTTP instead of a
-  // kernel os.listdir that could enumerate a huge S3 prefix and drop the mount.
-  function rawURL(f) { return location.origin + "/api/fs/raw?path=" + encodeURIComponent(f); }
   // try/finally, no catch: a reader rejection still needs the skeleton's rAF
   // loop stopped, or it repaints the placeholder forever behind the overlay.
   // The finally clause only stops the loop — the rejection itself propagates
@@ -356,7 +350,7 @@
   // is already painted.
   var data;
   try {
-    data = await fused.runPython("./reader.py", { file: file, src: rawURL(file) });
+    data = await fused.runPython("./reader.py", { file: file });
   } finally {
     if (skeletonRAF) { cancelAnimationFrame(skeletonRAF); skeletonRAF = null; }
   }

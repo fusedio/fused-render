@@ -55,8 +55,7 @@ SUBPROCESS_KWARGS = {
     "errors": "replace",
 }
 
-# An explicit override beats every probe below. Named identically to
-# FUSED_RENDER_RCLONE_BIN, and it is what both the `notfound` error text and the
+# An explicit override beats every probe below. It is what both the `notfound` error text and the
 # troubleshooting guide tell users to set — so it has to be honoured by
 # everything that resolves the CLI, not merely by most things.
 BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"

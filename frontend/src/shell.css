@@ -31,11 +31,10 @@
 /* After ai-models.css: the Playground tab lives on the same page and layers its
    pg-* stage/sidebar rules over that page's chrome. */
 @import "./styles/ai-playground.css";
-@import "./styles/mounts.css";
 /* The /monitor process monitor (shell/monitor) — after fields/buttons so its
    compact toolbar controls override their 32px defaults by order. */
 @import "./styles/monitor.css";
-/* After mounts.css for the same reason mounts.css sits after preferences.css:
+/* After preferences.css:
    the scheduled-messages page is another settings-family surface that only adds
    its own row layout over the .prefs-* / .field-* / .btn vocabulary above. */
 @import "./styles/schedule.css";
@@ -68,7 +67,6 @@
    from the explorer's entry-page topbar) and layers only its checklist over
    the shared modal chrome imported far above. */
 @import "./styles/app-doctor.css";
-@import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";
 /* After home.css: the canvases listing is another page-family surface that
