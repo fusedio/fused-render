@@ -90,9 +90,7 @@ Give each flagged template a `pyproject.toml` declaring what it actually
 imports. Match the shape of the manifests already present in the 10 templates
 that have one.
 
-Two constraints:
-- Templates are **mount-agnostic** — no mount-vs-local branching belongs in a
-  template.
+One constraint:
 - `fused_render/executor.py:71` `INPROCESS_HELPERS` lists helpers that run
   in-process rather than in a spawned child; a manifest does not help those.
   `templates/structure/reader.py` is one. Note any template you skip for this

@@ -64,33 +64,6 @@ when that happens.
 > fail on the import, so this is worth grepping for rather than waiting to hit.
 > Folders whose scripts had no header are unaffected.
 
-## Remote storage (mounts)
-
-The cloud icon at the sidebar's bottom-left opens **Mounts**: remote storage —
-S3-compatible object stores, Google Drive, and anything else
-[rclone](https://rclone.org) speaks — mounted as local folders under
-`~/.fused-render/mounts/`. Everything downstream (previews, readers, tile
-servers) sees ordinary local paths.
-
-- **No setup on macOS:** the packaged app bundles rclone itself — no
-  install, nothing on PATH. Running from source, or on Linux, still needs
-  rclone (`brew install rclone` / your distro's package). macOS mounts via
-  the built-in NFS client — no macFUSE; Linux uses FUSE. Windows is not
-  supported yet.
-- **Credentials never touch fused-render** — they live in rclone's own
-  config. S3-compatible remotes can be created from the page; for Google
-  Drive and other sign-in backends, run `rclone config` in a terminal once.
-- **Mount narrow prefixes** (`bucket/prefix`), not whole buckets — every
-  folder listed inside a mount is a remote API call, and search inside a
-  mount is capped for the same reason.
-- **First open is slow, repeats are fast**: the first read of a large remote
-  file downloads what it needs; a local cache (24h retention) makes repeat
-  opens near-instant. How slow the first open is depends on the file's
-  layout — cloud-optimized formats (COGs, small parquet row groups) behave
-  far better than monolithic files.
-- Mounts stay up until you unmount them — including across app restarts, and
-  every mount is automatically remounted when the server starts.
-
 ## AI Models
 
 **AI Models** in the sidebar lists what the Hugging Face cache holds on this

@@ -45,7 +45,7 @@ fused-render open https://github.com/<owner>/<repo>/tree/main/<app>
 The full desktop explorer (`fused-render serve`) needs every feature extra,
 `pip install '<wheel-url>[all]'`; the extras on their own are `[index]` (file
 search), `[data]` (pyarrow for scripts), `[desktop]` (LAN sharing, capture,
-clipboard), `[hf]` (Hugging Face login), `[cloud]` (private buckets) and
+clipboard), `[hf]` (Hugging Face login) and
 `[fused]` (deploy, share, MCP). From a source checkout:
 
 ```
@@ -68,7 +68,7 @@ Home opens on a file search, with everything on this machine below it:
 - **Claude Code, without the terminal** — every Claude session on this machine
   in one place, and Tasks: prompts that run on a schedule.
 - **Files** — comes with apps for opening Parquet, PDF, notebook, spreadsheet,
-  point clouds, and more. Remote storage mounts as folders.
+  point clouds, and more.
 
 ## Run
 
@@ -178,7 +178,6 @@ Every built-in preview template is an HTML file on these same primitives —
 
 [docs/usage.md](docs/usage.md) covers the
 [execution engine](docs/usage.md#execution-engine),
-[remote storage mounts](docs/usage.md#remote-storage-mounts),
 the [AI Models page](docs/usage.md#ai-models),
 [preferences](docs/usage.md#preferences), and
 [export for hosted serving](docs/usage.md#export-for-hosted-serving).
