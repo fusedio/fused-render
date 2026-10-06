@@ -539,6 +539,18 @@ _QUIT_QUIESCE_BUDGET_S = 2.0
 _QUIT_UNMOUNT_BUDGET_S = _QUIT_QUIESCE_BUDGET_S + _QUIT_UNMOUNT_JOIN_BUDGET_S
 
 
+# The same two halves for a RELAUNCH-initiated quit (app.py's QUIT_FAST_*). Measured
+# on the owner's machine a restart spent up to 6 s per mount here, and the user is
+# watching a window-less app for all of it. Shortening is safe only because the
+# successor no longer trusts the predecessor to have finished: health.run_automount
+# force-unmounts a mount a dead instance left wedged (_clear_dead_mount). A normal
+# Quit keeps the budgets above untouched — there is no successor to clean up after.
+_QUIT_FAST_UNMOUNT_JOIN_BUDGET_S = 2.0
+_QUIT_FAST_QUIESCE_BUDGET_S = 1.0
+_QUIT_FAST_UNMOUNT_BUDGET_S = (_QUIT_FAST_QUIESCE_BUDGET_S
+                               + _QUIT_FAST_UNMOUNT_JOIN_BUDGET_S)
+
+
 def _unmount_for_quit(m: dict) -> None:
     """The unmount ladder for ONE mount on the quit path. Never raises — the
     caller runs these in parallel and one wedged mount must not take the others
@@ -585,7 +597,8 @@ def _unmount_for_quit(m: dict) -> None:
                        exc_info=True)
 
 
-def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S) -> None:
+def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S,
+                         quiesce_s: "float | None" = None) -> None:
     """Detach every configured mount before rcd is signalled, for app quit.
 
     The bug this closes (INCIDENT 2026-07-29): on macOS a mount is attached as
@@ -611,7 +624,13 @@ def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S) -> None:
     `budget_s` bounds the per-mount JOINS only; the tile-daemon quiesce ahead of
     them carries its own bound. The two together are `_QUIT_UNMOUNT_BUDGET_S`,
     which is what app.py's quit deadline is derived from — see those constants for
-    why the halves are separate."""
+    why the halves are separate.
+
+    `quiesce_s` overrides the quiesce bound (None = _QUIT_QUIESCE_BUDGET_S, read
+    at call time); only a relaunch quit passes it, together with a smaller
+    `budget_s` — see _QUIT_FAST_UNMOUNT_JOIN_BUDGET_S."""
+    if quiesce_s is None:
+        quiesce_s = _QUIT_QUIESCE_BUDGET_S
     from fused_render.shell.mounts import (
         _rcd_is_ours_to_reap,
         _unmount_for_quit,
@@ -658,11 +677,11 @@ def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S) -> None:
         quiesce = threading.Thread(target=_quiesce, daemon=True,
                                    name="quit-quiesce-daemons")
         quiesce.start()
-        quiesce.join(_QUIT_QUIESCE_BUDGET_S)
+        quiesce.join(quiesce_s)
         if quiesce.is_alive():
             logger.warning("quit: tile daemons did not all release within %.1fs; "
                            "unmounting anyway (the force rung covers a busy mount)",
-                           _QUIT_QUIESCE_BUDGET_S)
+                           quiesce_s)
     threads = []
     for m in mounts:
         t = threading.Thread(target=_unmount_for_quit, args=(m,), daemon=True,

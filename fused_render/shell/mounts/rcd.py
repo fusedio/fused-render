@@ -906,8 +906,25 @@ RCD_REAP_WORST_CASE_S = (
     + 2 * (_KILL_TIMEOUT_S + _LIVE_PORT_PROBE_TIMEOUT_S))
 
 
-def _kill_current_rcd() -> None:
+# SIGTERM grace for a RELAUNCH-initiated quit (stop_local_rcd(fast=True)). By then
+# every mount is detached or force-cleared, so the daemon has nothing to flush
+# that is worth 5 s of a restart; SIGKILL follows after this. The successor
+# spawns its own rcd and force-clears any mount that outlived this one
+# (health._clear_dead_mount), which is what makes the shorter grace safe.
+_FAST_KILL_TIMEOUT_S = 1.5
+
+
+# RCD_REAP_WORST_CASE_S for the fast grace — same terms, shorter kill wait.
+RCD_FAST_REAP_WORST_CASE_S = (
+    _CONFIRM_RC_TIMEOUT_S + _PS_TIMEOUT_S
+    + 2 * (_FAST_KILL_TIMEOUT_S + _LIVE_PORT_PROBE_TIMEOUT_S))
+
+
+def _kill_current_rcd(kill_timeout_s: "float | None" = None) -> None:
     """Terminate the recorded rcd daemon, if there is one to terminate.
+
+    `kill_timeout_s` is the per-signal exit wait (None = _KILL_TIMEOUT_S, read at
+    call time); only the relaunch quit shortens it (_FAST_KILL_TIMEOUT_S).
 
     Safety invariant (the single most important constraint here): only ever
     signal a pid we can PROVE is our rclone rcd. Reuses the exact gates
@@ -929,6 +946,8 @@ def _kill_current_rcd() -> None:
     alerts on quit (INCIDENT 2026-07-29). Callers that own the mounts must run
     the unmount ladder FIRST — see lifecycle.unmount_all_for_quit."""
     from fused_render.shell.mounts import _confirmed_our_rcd, _live_rcd_port, _pid_alive
+    if kill_timeout_s is None:
+        kill_timeout_s = _KILL_TIMEOUT_S
     entry = storage.read_json(_rcd_state_path())
     if not isinstance(entry, dict):
         return  # no daemon on record — nothing to kill
@@ -953,7 +972,7 @@ def _kill_current_rcd() -> None:
             if not _pid_alive(pid):
                 return
             raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
-        deadline = time.time() + _KILL_TIMEOUT_S
+        deadline = time.time() + kill_timeout_s
         while time.time() < deadline:
             # _pid_alive FIRST, and the short-circuit is the point: it is a free
             # syscall and the authoritative "our daemon is gone", while
@@ -1006,7 +1025,7 @@ def _rcd_is_ours_to_reap() -> bool:
     return True
 
 
-def stop_local_rcd() -> None:
+def stop_local_rcd(fast: bool = False) -> None:
     """Best-effort teardown of the rcd we spawned, for the app's quit path.
 
     Only needed where nothing else reaps rcd on quit — notably macOS, which has
@@ -1028,7 +1047,10 @@ def stop_local_rcd() -> None:
         if not _rcd_is_ours_to_reap():
             return
         try:
-            _kill_current_rcd()
+            if fast:
+                _kill_current_rcd(kill_timeout_s=_FAST_KILL_TIMEOUT_S)
+            else:
+                _kill_current_rcd()
         except Exception:
             logger.warning("stop_local_rcd: rcd teardown failed", exc_info=True)
 
