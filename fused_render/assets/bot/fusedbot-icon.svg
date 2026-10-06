@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- FusedBot app icon, hand-written. The master behind fusedbot-icon-1024.png
+       (scripts/build_dmg.sh resizes that PNG into the .icns). macOS grid: the
+       rounded square is 824 px with a 100 px margin, corner radius 22.5 %.
+       The face is the bots' own "cloud" avatar (frontend/src/apps/bots/lib/
+       face.ts FACE_SHAPES.cloud, Face.tsx highlight + eyes) in Orange Bot
+       orange, drawn in its 0-100 viewBox and scaled 6.1x into the square. -->
+  <defs>
+    <radialGradient id="ground" cx="30%" cy="22%" r="95%">
+      <stop offset="0" stop-color="#2c2f36" />
+      <stop offset="0.55" stop-color="#1f2226" />
+      <stop offset="1" stop-color="#16181b" />
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+    <radialGradient id="body" cx="36%" cy="30%" r="78%">
+      <stop offset="0" stop-color="#f9a160" />
+      <stop offset="0.45" stop-color="#f0762a" />
+      <stop offset="1" stop-color="#d4601b" />
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.2" />
+    </filter>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#ground)" />
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none"
+        stroke="url(#rim)" stroke-width="3" />
+
+  <g transform="translate(195 207) scale(6.1)">
+    <!-- soft contact shadow under the blob -->
+    <ellipse cx="52" cy="86" rx="34" ry="4.2" fill="#000" opacity="0.45" filter="url(#shadow)" />
+    <path d="M30 84 C16 84 10 74 12 64 C6 56 10 44 22 42 C22 28 34 20 46 26 C54 14 74 16 78 32 C92 34 94 52 84 58 C90 70 82 84 68 84 Z"
+          fill="url(#body)" />
+    <ellipse cx="37" cy="31" rx="9" ry="4.5" fill="#fff" opacity=".28" transform="rotate(-28 37 31)" />
+    <rect x="41" y="43" width="5" height="12" rx="2.5" fill="#1b1d21" />
+    <rect x="54" y="43" width="5" height="12" rx="2.5" fill="#1b1d21" />
+  </g>
+</svg>

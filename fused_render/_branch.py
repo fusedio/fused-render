@@ -17,8 +17,9 @@ import os
 import re
 import sys
 
+from fused_render import _flavor
+
 _MAX_LEN = 12
-_BASE_PORT = 1777
 _PORT_RANGE_SIZE = 1000
 _PORT_OFFSET = 1788
 
@@ -79,7 +80,7 @@ def branch_ref(ref: str | None = None) -> str:
 def branch_port(ref: str | None = None) -> int:
     r = branch_ref(ref)
     if not r:
-        return _BASE_PORT
+        return _flavor.port_base()
     digest = hashlib.sha1(r.encode()).hexdigest()
     return int(digest, 16) % _PORT_RANGE_SIZE + _PORT_OFFSET
 
