@@ -97,7 +97,22 @@ def delete(bid):
 
 # ------------------------------------------------------------- threads ---
 def _scheduler(stop: threading.Event) -> None:
+    # One scheduler per machine: Fused Render and Fused Bot share the bots
+    # tree, so each pass first makes sure this process holds the routines
+    # flock. The loser keeps looping and re-trying, so when the owner quits
+    # the lock falls to it on its next pass and routines carry on.
+    standing_down = False
     while not stop.is_set():
+        if _ROUTINES_LOCK["fh"] is None and not _take_routines_lock():
+            if not standing_down:
+                standing_down = True
+                logger.info("bots routines: another Fused app owns the scheduler on this "
+                            "machine; serving the bots without ticking them until it quits")
+            stop.wait(SCHED_EVERY_S)
+            continue
+        if standing_down:
+            standing_down = False
+            logger.info("bots routines: scheduler lock acquired, ticking routines")
         try:
             for b in all():
                 try:
@@ -135,10 +150,6 @@ def start() -> None:
     with _lock:
         t = _sched["thread"]
         if t is None or not t.is_alive():
-            if not _take_routines_lock():
-                logger.info("bots routines: another Fused app owns the scheduler on this "
-                            "machine; this one serves the bots without ticking them")
-                return
             stop = threading.Event()
             t = threading.Thread(target=_scheduler, args=(stop,), daemon=True, name="bots-routines")
             _sched.update(thread=t, stop=stop)
@@ -151,10 +162,10 @@ _ROUTINES_LOCK = {"fh": None}
 def _take_routines_lock() -> bool:
     """One routines scheduler per machine. Fused Render and Fused Bot share the
     bots tree (`<home>/bots`), so without this both would tick every routine
-    on their 20 s pass. Same flock-and-stand-down the iMessage channel uses
-    (bots/channels/imessage.py); the fd is held for the process lifetime and
-    released in shutdown(). Windows has no fcntl and only one app, so it just
-    proceeds."""
+    on their 20 s pass. Same flock the iMessage channel uses
+    (bots/channels/imessage.py), re-tried by `_scheduler` every pass while
+    not held; the fd is kept until shutdown(). Windows has no fcntl and only
+    one app, so it just proceeds."""
     try:
         import fcntl
     except ImportError:
