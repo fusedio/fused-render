@@ -212,48 +212,18 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # keep a stale _baked_branch.py from a previous ref/wheel.
 "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${WHEEL_PATH}"
 
-# Fetch macOS-13-compatible wheels for packages whose newest-tag wheel pip would
-# otherwise pick on this (macOS 14+/26) host. pip chooses the platform tag from
-# the HOST's OS version and MACOSX_DEPLOYMENT_TARGET does not steer it (see step
-# 4f). numpy 2.x publishes both `macosx_14_0_arm64` (Accelerate, minos 14.0) and
-# `macosx_11_0_arm64` (OpenBLAS, minos 11.0) wheels; the host gets the 14.0 one,
-# which cannot load on macOS 13 (D1324).
-# D1325: BOTH ship. The host-picked wheel stays the default install (Accelerate,
-# faster on macOS 14+); the older-tagged wheel fetched here is installed into a
-# separate directory of the bundle in step 4a-quater, and a `.pth` selects it at
-# interpreter startup on macOS < 14. So this step only DOWNLOADS: nothing is
-# reinstalled over the build venv's copy.
-# The version is NOT hardcoded: it is whatever the main install above resolved,
-# so extras/pins in pyproject.toml stay the single source, and the compat wheel
-# is always the same version as the default one (`--no-deps`, nothing else
-# moves). `pip download --platform` pins the search to macosx_13_0_arm64 (which
-# also accepts 11_0/12_0 tags), and `--only-binary=:all:` makes a missing wheel
-# a hard failure, never a fallback to the host-tagged one or an sdist build.
-MACOS13_WHEEL_PACKAGES=(numpy)
-MACOS13_WHEELS_DIR="$BUILD_DIR/macos13-wheels"
-rm -rf "$MACOS13_WHEELS_DIR"
-mkdir -p "$MACOS13_WHEELS_DIR"
-BUILD_PY_VER="$("$BUILD_VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-for pkg in "${MACOS13_WHEEL_PACKAGES[@]}"; do
-  pkg_ver="$("$BUILD_VENV/bin/pip" show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')"
-  if [[ -z "$pkg_ver" ]]; then
-    echo "FATAL: ${pkg} is not installed in the build venv; cannot pin its macOS 13 wheel." >&2
-    exit 1
-  fi
-  echo "==> ${pkg}==${pkg_ver}: fetching the macosx_13_0_arm64-compatible wheel"
-  if ! "$BUILD_VENV/bin/pip" download --quiet --only-binary=:all: --no-deps \
-      --platform macosx_13_0_arm64 --python-version "$BUILD_PY_VER" --implementation cp \
-      --dest "$MACOS13_WHEELS_DIR" "${pkg}==${pkg_ver}"; then
-    echo "FATAL: no ${pkg}==${pkg_ver} wheel runs on macOS 13 (arm64, cp${BUILD_PY_VER/./}); refusing to ship the host-tagged one." >&2
-    exit 1
-  fi
-  pkg_wheel="$(ls "$MACOS13_WHEELS_DIR"/"${pkg}"-"${pkg_ver}"-*.whl 2>/dev/null | head -1)"
-  if [[ -z "$pkg_wheel" ]]; then
-    echo "FATAL: pip download produced no ${pkg}-${pkg_ver} wheel in ${MACOS13_WHEELS_DIR}." >&2
-    exit 1
-  fi
-  echo "    fetched ${pkg_wheel##*/}"
-done
+# Bundle numpy's macosx_11_0_arm64 (OpenBLAS) wheel, not the host-tagged 14.0
+# (Accelerate) one pip picks on this runner, so the bundle's minos stays 13.0
+# (D1324). Same version as installed above; --only-binary makes a miss fatal.
+NUMPY_VER="$("$BUILD_VENV/bin/pip" show numpy | awk '/^Version:/{print $2}')"
+NUMPY_WHEELS="$BUILD_DIR/numpy-macos11-wheel"
+rm -rf "$NUMPY_WHEELS"
+"$BUILD_VENV/bin/pip" download --quiet --only-binary=:all: --no-deps \
+    --platform macosx_13_0_arm64 --implementation cp \
+    --python-version "$("$BUILD_VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
+    --dest "$NUMPY_WHEELS" "numpy==${NUMPY_VER}" \
+  || { echo "FATAL: no numpy==${NUMPY_VER} wheel for macOS 13 arm64" >&2; exit 1; }
+"$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "$NUMPY_WHEELS"/numpy-*.whl
 
 # ---------------------------------------------------------------------------
 # 2a-bis. Reconcile the force-list against what [bundled] actually installed.
@@ -597,72 +567,6 @@ if [[ -n "$STAGED_PACKAGES" ]]; then
     find "$APP_PYLIB/$pkg" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   done
 fi
-
-# ---------------------------------------------------------------------------
-# 4a-quater. Ship the macOS-13-compatible wheels BESIDE the defaults (D1325) and
-#     wire the startup selector.
-#
-#     Default `numpy` (copied in by py2app) is the host-picked macosx_14_0
-#     wheel (Accelerate, minos 14.0); it does not load on macOS 13. The
-#     same-version macosx_11_0 wheel fetched in step 2 (OpenBLAS) is installed
-#     with `pip install --no-deps --target` into
-#         Contents/Resources/lib/python3.12/compat/macos13/site-packages
-#     (== sys.prefix/lib/python3.12/compat/..., relative to the interpreter, so
-#     a moved .app keeps working). `scripts/dmg/fused_numpy_compat.pth` +
-#     `_fused_numpy_compat.py` go into Contents/Resources/lib/python3.12/
-#     site-packages — the directory `site` scans for .pth files for this layout
-#     (py2app puts packages in lib/python3.12 itself, which `site` does NOT
-#     scan for .pth; site-packages did not exist in the bundle before this).
-#     On macOS < 14 the .pth puts the compat dir at the front of sys.path, so
-#     `import numpy` resolves to OpenBLAS; elsewhere nothing changes.
-#     FUSED_RENDER_NUMPY_COMPAT=1|0 forces compat|default (unset = auto); the
-#     self-check below uses it to prove both paths resolve where intended.
-#     Every interpreter started from Contents/MacOS/python runs the .pth.
-#     (App venvs are `-m venv --without-pip` / `uv venv --python` WITHOUT
-#     system-site-packages: they do not inherit this site-packages, so a venv
-#     that installs its own numpy gets pip's host-independent pick, not this.)
-# ---------------------------------------------------------------------------
-echo "==> installing the macOS 13-compatible wheels into the bundle's compat dir"
-COMPAT_SITE="$APP_PYLIB/compat/macos13/site-packages"
-rm -rf "$APP_PYLIB/compat"
-mkdir -p "$COMPAT_SITE"
-for pkg in "${MACOS13_WHEEL_PACKAGES[@]}"; do
-  pkg_wheel="$(ls "$MACOS13_WHEELS_DIR"/"${pkg}"-*.whl 2>/dev/null | head -1)"
-  if [[ -z "$pkg_wheel" ]]; then
-    echo "FATAL: no ${pkg} wheel in ${MACOS13_WHEELS_DIR} to install into the compat dir." >&2
-    exit 1
-  fi
-  "$BUILD_VENV/bin/pip" install --quiet --no-deps --no-cache-dir --target "$COMPAT_SITE" "$pkg_wheel"
-  echo "    installed ${pkg_wheel##*/} -> compat/macos13/site-packages"
-done
-# Console scripts / metadata caches are dead weight in a --target dir; package
-# test suites follow the same rule as step 4a (which ran before this).
-rm -rf "$COMPAT_SITE/bin"
-find "$COMPAT_SITE" -type d \( -name tests -o -name test -o -name __pycache__ \) -prune -exec rm -rf {} +
-mkdir -p "$APP_PYLIB/site-packages"
-cp "$REPO_ROOT/scripts/dmg/_fused_numpy_compat.py" "$REPO_ROOT/scripts/dmg/fused_numpy_compat.pth" \
-   "$APP_PYLIB/site-packages/"
-
-echo "==> bundle sanity: numpy selector resolves each build where intended"
-for pkg in "${MACOS13_WHEEL_PACKAGES[@]}"; do
-  for want in 1 0; do
-    # `|| true` inside the substitution, like every smoke above.
-    NP_FILE="$(env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV FUSED_RENDER_NUMPY_COMPAT=$want \
-      "$APP_DIR/Contents/MacOS/python" -c "import ${pkg}, os; print(os.path.realpath(${pkg}.__file__))" 2>&1 | tail -1 || true)"
-    if [[ "$want" == "1" ]]; then
-      NP_EXPECT="$(cd "$COMPAT_SITE" && pwd -P)/${pkg}/__init__.py"
-    else
-      NP_EXPECT="$(cd "$APP_PYLIB" && pwd -P)/${pkg}/__init__.py"
-    fi
-    if [[ "$NP_FILE" != "$NP_EXPECT" ]]; then
-      echo "FATAL: FUSED_RENDER_NUMPY_COMPAT=${want}: ${pkg} resolved to" >&2
-      echo "       ${NP_FILE}" >&2
-      echo "       expected ${NP_EXPECT}" >&2
-      exit 1
-    fi
-    echo "    FUSED_RENDER_NUMPY_COMPAT=${want} -> ${NP_FILE#$APP_DIR/}"
-  done
-done
 
 # find -exec ... {} + (not `xargs -I{}`, which aborts with "command line
 # cannot be assembled, too long" over a large file set - see the signing loop
@@ -1011,32 +915,18 @@ fi
 #         `macosx_15_0_arm64` wheels gives us the 15_0 one on a 26 runner.
 #         MACOSX_DEPLOYMENT_TARGET does not steer that choice; do not add it
 #         here expecting it to. When this trips on a wheel, the fix is per
-#         package (add it to MACOS13_WHEEL_PACKAGES in step 2, pin a version
-#         that ships only the old tag, or build it).
+#         package (pin a version that ships only the old tag, or build it).
 #
 #     Threshold 13.0, not the Info.plist's LSMinimumSystemVersion (11.0):
-#     13 (Ventura) is the oldest macOS the bundle is meant to run on in
-#     practice. numpy 2.x's default arm64 wheel is `macosx_14_0_arm64`, which
-#     would force 14, so step 2 fetches the same version's older-tagged wheel
-#     (`macosx_11_0_arm64`, OpenBLAS; D1324). D1325 ships BOTH: the default
-#     numpy stays minos 14.0 and is exempt below, the OpenBLAS build lives in
-#     compat/macos13 (swept at the floor) and a startup .pth selects it on
-#     macOS < 14. `LC_BUILD_VERSION`'s minos is what
-#     dyld compares against the running OS; older linkers wrote
-#     `LC_VERSION_MIN_MACOSX` instead, read the same.
+#     numpy's default arm64 wheel is `macosx_14_0_arm64`; its macOS-11 wheel is
+#     forced in step 2 (D1324), so 13.0 holds. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
+#     OS; older linkers wrote `LC_VERSION_MIN_MACOSX` instead, read the same.
 #     Exempt, and listed rather than hidden:
 #       - Contents/MacOS/fused-apple-ai: minos 26 by design, host.py never
 #         spawns it below that (D700).
-#       - Contents/Resources/lib/python3.12/numpy/ (incl. .dylibs): the default
-#         Accelerate build, minos 14.0; runtime-gated by the compat .pth (D1325).
 # ---------------------------------------------------------------------------
 MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-13.0}"
 MINOS_EXEMPT=("Contents/MacOS/fused-apple-ai")
-# Directory exemption (D1325): the DEFAULT numpy (Accelerate, minos 14.0) is
-# gated at runtime by the compat .pth, which swaps in the OpenBLAS build from
-# compat/macos13/ on macOS < 14. ONLY lib/python3.12/numpy (and its .dylibs) is
-# exempt; the compat dir is swept at the floor like everything else.
-MINOS_EXEMPT_DIRS=("Contents/Resources/lib/python3.12/numpy")
 echo "==> bundle sanity: no Mach-O requires a macOS newer than ${MINOS_FLOOR}"
 for rel in "${MINOS_EXEMPT[@]}"; do
   if [[ -f "$APP_DIR/$rel" ]]; then
@@ -1044,12 +934,8 @@ for rel in "${MINOS_EXEMPT[@]}"; do
     echo "    exempt: $rel (minos ${v:-?})"
   fi
 done
-for rel in "${MINOS_EXEMPT_DIRS[@]}"; do
-  echo "    exempt (runtime-gated by the numpy compat .pth): $rel/"
-done
 MINOS_REPORT="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) \
-    ! -path "$APP_DIR/Contents/MacOS/fused-apple-ai" \
-    ! -path "$APP_DIR/Contents/Resources/lib/python3.12/numpy/*" -print0 \
+    ! -path "$APP_DIR/Contents/MacOS/fused-apple-ai" -print0 \
   | xargs -0 -n 64 sh -c 'for f do
       case "$(head -c 4 "$f" | od -An -tx1 | tr -d " \n")" in
         cffaedfe|cafebabe|feedfacf) ;;
