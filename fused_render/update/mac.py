@@ -410,12 +410,21 @@ class UpdateManager(_base.UpdateManager):
         swapping in an unexpected version."""
         try:
             with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
-                found = plistlib.load(f).get("CFBundleShortVersionString")
+                info = plistlib.load(f)
         except (OSError, plistlib.InvalidFileException) as error:
             raise RuntimeError("update app bundle has no readable Info.plist") from error
+        found = info.get("CFBundleShortVersionString")
         if found != version:
             raise RuntimeError(
                 f"update image contains version {found}, expected {version}")
+        # Same key signs both flavors' manifests, so also pin the app identity:
+        # FusedRender must never swap FusedBot.app into /Applications (or vice
+        # versa) off a mispublished or swapped manifest.
+        bundle = str(info.get("CFBundleIdentifier") or "")
+        want = _flavor.bundle_id()
+        if bundle != want and not bundle.startswith(want + "."):
+            raise RuntimeError(
+                f"update image is {bundle or 'unidentified'}, expected {want}")
 
 
 _manager: UpdateManager | None = None

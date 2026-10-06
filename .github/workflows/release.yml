@@ -386,6 +386,8 @@ jobs:
         # and script as the render manifest above.
         env:
           FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+          # fused_render/update/common.py SIGNING_CONTEXT for the bot flavor.
+          FUSED_RENDER_UPDATE_SIGNING_CONTEXT: fused-bot-update
           MACOS_PREFIX: fused-bot-macos
         run: |
           set -euo pipefail

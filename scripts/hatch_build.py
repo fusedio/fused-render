@@ -172,7 +172,12 @@ class ShellBuildHook(BuildHookInterface):
             from fused_render import _branch, _flavor
 
             ref = _branch.branch_ref()
-            name = _flavor.flavor()
+            # Env only, never the baked file: reading it back would make a
+            # stale _baked_flavor.py from an earlier local bot build
+            # self-perpetuating through every later wheel build.
+            name = os.environ.get(_flavor.ENV, "").strip().lower() or "render"
+            if name not in (_flavor.RENDER, _flavor.BOT):
+                raise RuntimeError(f"{_flavor.ENV} must be render or bot, got {name!r}")
         finally:
             sys.path.remove(self.root)
 

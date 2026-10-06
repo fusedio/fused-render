@@ -79,10 +79,15 @@ def branch_ref(ref: str | None = None) -> str:
 
 def branch_port(ref: str | None = None) -> int:
     r = branch_ref(ref)
+    base = _flavor.port_base()
     if not r:
-        return _flavor.port_base()
+        return base
     digest = hashlib.sha1(r.encode()).hexdigest()
-    return int(digest, 16) % _PORT_RANGE_SIZE + _PORT_OFFSET
+    # The branch range sits just above the flavor's baseline, so Render stays
+    # exactly where it always was ([1788, 2788)) and Bot branches land in
+    # [2788, 3788): a bot and a render build of the same ref never share a
+    # port, and no render branch can hash onto Bot's 2777 baseline.
+    return int(digest, 16) % _PORT_RANGE_SIZE + _PORT_OFFSET + (base - 1777)
 
 
 def branch_suffix(ref: str | None = None) -> str:

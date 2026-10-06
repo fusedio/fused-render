@@ -1205,5 +1205,10 @@ fi
 # ---------------------------------------------------------------------------
 
 rm -rf "$APP_DIR" "$ICONSET_DIR"
+# The wheel build baked the ref/flavor into the SOURCE tree (gitignored files).
+# Leaving them there turns the next editable dev run or pytest into that
+# branch/flavor silently (dev.sh and conftest pin the flavor, but not every
+# entry point does). The wheel already carries its own copies.
+rm -f "$REPO_ROOT/fused_render/_baked_flavor.py" "$REPO_ROOT/fused_render/_baked_branch.py"
 
 echo "==> done: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
