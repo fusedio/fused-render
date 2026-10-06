@@ -1834,13 +1834,13 @@ export default function Preferences() {
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
-                <BotsSection prefs={prefs} onChange={setPrefs} />
                 <AppSharingSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 <LivePreviewsSection prefs={prefs} onChange={setPrefs} />
                 <MonitorSection prefs={prefs} onChange={setPrefs} />
+                <BotsSection prefs={prefs} onChange={setPrefs} />
                 <DiagnosticsSection />
               </>
             )}
