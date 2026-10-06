@@ -52,6 +52,7 @@ from fused_render.index.store import (
     applied_ignore_sig,
     delete_store,
     read_manifest,
+    save_applied_ignore,  # noqa: F401 - re-exported; tests drive it as index_router.save_applied_ignore
 )
 from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
