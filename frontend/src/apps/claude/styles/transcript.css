@@ -1599,6 +1599,14 @@
 .chat-root .toolchip:focus-within > .chip-stamp {
   opacity: 1;
 }
+/* THE ✻ MARK OWNS THE FIRST ROW. A reply that opens on a tool call puts its
+   first chip level with the mark, in the same lane column, and the stamp
+   painted straight over the glyph (cmux-ux-tester, 2026-10-06). That one chip
+   goes without; its hover is still one row away on the next chip and the run's
+   own `show more` hover says the span. */
+.chat-root .turn.assistant .body > .toolchip:first-child > .chip-stamp {
+  display: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .chat-root .toolchip > .chip-stamp {
     transition: none;
