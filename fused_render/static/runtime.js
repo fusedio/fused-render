@@ -5878,8 +5878,9 @@
       if (spec.effort) body.effort = spec.effort;
       if (spec.permissionMode) body.permission_mode = spec.permissionMode;
       // `queue: false` — this task never stands in the project queue (runs
-      // beside whatever owns the folder). Only an explicit false travels.
-      if (spec.queue === false) body.queue = false;
+      // beside whatever owns the folder). Whatever was given travels, so a
+      // wrong type is the server's 400 and not a silently queued task.
+      if (spec.queue !== undefined && spec.queue !== null) body.queue = spec.queue;
       if (spec.due !== undefined && spec.due !== null) {
         body.due = spec.due instanceof Date ? spec.due.toISOString() : spec.due;
       }

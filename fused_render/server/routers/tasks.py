@@ -7744,6 +7744,13 @@ def api_task_create(body: dict = Body(...),
         # the mark onto the session id the run mints (queue_manager).
         queue_manager.get().mark_forced(key, entry_id)
     if immediate and not queue:
+        # OUT OF EVERY LINE FIRST (`forget_entry`), as the force door does:
+        # a dispatch outside the manager would otherwise leave this entry
+        # standing in its folder's line as a phantom, and the message queued
+        # behind it never got its turn once the folder freed (live QA,
+        # 2026-10-06: a plain queued task sat `upcoming` for minutes after the
+        # holder finished). Touches no owner.
+        queue_manager.get().forget_entry(entry_id)
         # THE FORCE DOOR'S OWN ROAD (`api_queue_force`), not `run_now`: with
         # the project queue on, `run_now` on a busy folder is the Skip verb —
         # it files the entry at the head of that folder's line, which is the

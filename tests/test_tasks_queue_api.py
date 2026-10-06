@@ -4002,9 +4002,19 @@ def test_create_with_queue_false_marks_the_task_forced_before_dispatch(
     flag(True)
     seen = {}
 
+    forgotten = []
+    real_forget = queue_manager.get().forget_entry
+
+    def forget_entry(entry_id):
+        forgotten.append(entry_id)
+        real_forget(entry_id)
+    monkeypatch.setattr(queue_manager.get(), "forget_entry", forget_entry)
+
     def dispatch_entry(entry_id):
         seen["forced_at_dispatch"] = queue_manager.get().is_forced(
             tasks_store.pending_key(entry_id), entry_id)
+        # Out of every line BEFORE the dispatch, as the force door does.
+        seen["forgotten_before_dispatch"] = entry_id in forgotten
         return {"run_id": "r1", "session_id": "sess-forced"}
 
     def run_now(entry_id):
@@ -4021,6 +4031,7 @@ def test_create_with_queue_false_marks_the_task_forced_before_dispatch(
     assert r.status_code == 200, r.text
     body = r.json()
     assert seen["forced_at_dispatch"] is True
+    assert seen["forgotten_before_dispatch"] is True
     assert queue_manager.get().is_forced(body["key"]) is True
     assert queue_manager.get().is_forced(body["entry_id"]) is True
     # The row reads running from the dispatch, as the manager's own does.
