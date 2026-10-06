@@ -91,10 +91,12 @@ def _quit(state, claimed=True, log=None):
     return action, log
 
 
-def test_a_relaunch_snapshots_the_windows_before_closing_them():
+def test_a_relaunch_snapshots_the_windows_and_leaves_them_open():
+    # The windows stay up (the RestartOverlay is what the user sees during the
+    # teardown); the process exit takes them. Nothing closes them.
     action, log = _quit({})
     assert action(on_claim=lambda: None) is True
-    assert log == ["snapshot", "close", ("begin", True)]
+    assert log == ["snapshot", ("begin", True)]
 
 
 def test_a_plain_quit_takes_no_snapshot():
@@ -106,7 +108,7 @@ def test_a_plain_quit_takes_no_snapshot():
 def test_a_relaunch_that_did_not_claim_the_quit_discards_its_snapshot():
     action, log = _quit({}, claimed=False)
     assert action(on_claim=lambda: None) is False
-    assert log == ["snapshot", "close", ("begin", True), "discard"]
+    assert log == ["snapshot", ("begin", True), "discard"]
 
 
 def test_a_relaunch_joining_a_quit_in_flight_never_overwrites_the_snapshot():
@@ -120,3 +122,121 @@ def test_a_relaunch_joining_a_quit_in_flight_never_overwrites_the_snapshot():
 def test_the_snapshot_age_bound_is_tied_to_the_relauncher_deadline():
     assert app_mod.RELAUNCH_SNAPSHOT_MAX_AGE_S >= app_mod.RELAUNCH_DEADLINE_S
     assert app_mod.RELAUNCH_WINDOWS_FILE.startswith(app_mod.APP_SUPPORT_DIR)
+
+
+def test_a_relaunch_never_closes_windows_even_joining_a_quit_in_flight():
+    action, log = _quit({"quitting": True}, claimed=False)
+    action(on_claim=lambda: None)
+    assert "close" not in log
+
+
+# ------------------------------------------- successor: windows before server
+
+
+class _FakeWindow:
+    def __init__(self, url):
+        self.url = url
+        self.loaded = []
+
+    def load(self, url):
+        self.loaded.append(url)
+
+
+class _FakeManager:
+    """Only what the real WindowManager has: `enabled`, `open(url, html=None)`."""
+
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+        self.opened = []
+
+    def open(self, url, html=None):
+        win = _FakeWindow(url)
+        self.opened.append((url, html, win))
+        return win
+
+
+def test_the_fake_matches_the_real_window_manager_signatures():
+    # mac_window.py is AppKit and never imports in CI: check the source.
+    from _theme_sources import read_repo_file
+
+    src = read_repo_file("fused_render/mac_window.py")
+    assert "def open(self, url: str, html: str | None = None)" in src
+    assert "def save_frames(self)" in src
+    assert "def load(self, url: str)" in src
+
+
+def _snap(tmp_path, targets, now=1000.0):
+    p = str(tmp_path / "w.json")
+    rw.write_snapshot(p, targets, now=now)
+    return p
+
+
+def test_windows_reopen_as_placeholders_before_any_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(rw.time, "time", lambda: 1002.0)
+    p = _snap(tmp_path, ["/a", "/b?x=1"])
+    m = _FakeManager()
+    restored = app_mod.reopen_windows_early(
+        m, 8123, snapshot_file=p, max_age_s=100, html=rw.RESTARTING_HTML)
+    assert [(u, h) for u, h, _ in m.opened] == [
+        ("http://127.0.0.1:8123/a", rw.RESTARTING_HTML),
+        ("http://127.0.0.1:8123/b?x=1", rw.RESTARTING_HTML)]
+    assert [u for u, _ in restored] == [u for u, _, _ in m.opened]
+    # Nothing has navigated yet: that waits for the server.
+    assert all(w.loaded == [] for _, w in restored)
+
+
+def test_restored_windows_navigate_to_their_snapshot_urls(tmp_path, monkeypatch):
+    monkeypatch.setattr(rw.time, "time", lambda: 1001.0)
+    p = _snap(tmp_path, ["/a", "/b"])
+    m = _FakeManager()
+    restored = app_mod.reopen_windows_early(
+        m, 9, snapshot_file=p, max_age_s=100, html="x")
+    app_mod.navigate_restored(restored)
+    assert [w.loaded for _, w in restored] == [
+        ["http://127.0.0.1:9/a"], ["http://127.0.0.1:9/b"]]
+
+
+def test_the_early_reopen_is_one_shot_and_honours_staleness(tmp_path, monkeypatch):
+    monkeypatch.setattr(rw.time, "time", lambda: 5000.0)
+    p = _snap(tmp_path, ["/a"], now=1000.0)  # 4000 s old
+    m = _FakeManager()
+    assert app_mod.reopen_windows_early(
+        m, 1, snapshot_file=p, max_age_s=100, html="x") == []
+    assert m.opened == []
+    import os
+    assert not os.path.exists(p)  # consumed even though stale
+
+
+def test_a_manager_that_is_off_or_missing_leaves_the_snapshot_unread(tmp_path):
+    import os
+    p = _snap(tmp_path, ["/a"])
+    for m in (None, _FakeManager(enabled=False)):
+        assert app_mod.reopen_windows_early(
+            m, 1, snapshot_file=p, max_age_s=10**9, html="x") == []
+        # still there for the browser-tab fallback at server-ready
+        assert os.path.exists(p)
+
+
+def test_the_placeholder_is_static_and_needs_no_server():
+    h = rw.RESTARTING_HTML
+    assert "Restarting" in h and "<script" not in h.lower()
+    assert "http://" not in h and "https://" not in h
+
+
+def test_take_snapshot_reports_its_age(tmp_path):
+    p = _snap(tmp_path, ["/a"], now=10.0)
+    ages = []
+    rw.take_snapshot(p, max_age_s=100, now=13.5, on_age=ages.append)
+    assert ages == [3.5]
+
+
+def test_importing_app_does_not_pull_in_the_server():
+    # The server module is ~0.7 s warm / seconds cold, before the first log
+    # line and before any window; it loads on the bootstrap thread instead.
+    import subprocess, sys
+    code = ("import sys, fused_render.app; "
+            "print(any(m in sys.modules for m in "
+            "('fastapi', 'uvicorn', 'fused_render.server')))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, check=True).stdout.strip()
+    assert out == "False"

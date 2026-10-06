@@ -25,15 +25,15 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-import uvicorn
-
 from fused_render import desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
-from fused_render.server import (
-    create_app, export_app_env, set_server_origin_env, write_server_json,
-)
-from fused_render.shell.seed import ensure_fused_dir
+
+# NOT imported here: `uvicorn` and `fused_render.server` (create_app & co, which
+# pull in FastAPI and every router) cost ~0.7 s warm and several seconds on a
+# cold signed bundle, and they ran before the first log line and before any
+# window could open. They load on the bootstrap thread in `_start_server_thread`
+# instead, so a relaunch's windows are up while the server module is importing.
 
 logger = logging.getLogger("fused_render")
 
@@ -280,11 +280,18 @@ def _remove_pidfile() -> None:
             pass
 
 
-def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
+def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]":
     """Start uvicorn serving create_app(start_dir=Fused dir) on a daemon thread.
     Returns the server and its thread (quit drains it — `should_exit` alone is
     fire-and-forget, and uvicorn never resets `started`, so the thread ending is
     the only observable "it has stopped serving")."""
+    import uvicorn
+
+    from fused_render.server import (
+        create_app, export_app_env, set_server_origin_env, write_server_json,
+    )
+    from fused_render.shell.seed import ensure_fused_dir
+
     # The D337 workspace migration does NOT run here: it runs in `main()`,
     # before the run loop and before anything reads state (see the call site).
     # This thread starts long after it, so onboarding below is still strictly
@@ -788,6 +795,7 @@ def begin_quit(state: dict, *, terminate=None, start=None,
     # teardown took, never when it was asked for — so a field report of "quit
     # took two minutes" could not be split into press-to-teardown (the restart
     # dialog's own wait) and teardown-to-exit.
+    state["pressed_at"] = time.monotonic()
     logger.info("quit requested via %s (pid %s)", surface, os.getpid())
     remove_pidfile()
     if on_claim is not None:
@@ -836,11 +844,12 @@ def bundle_path() -> str | None:
 # that was still booting (bugbot, PR #1214).
 SERVER_READY_TIMEOUT_S = 15.0
 
-# The relauncher's poll cadence while it waits for this process to die. Fast
-# enough that the relaunch feels immediate after the teardown (bounded by
-# QUIT_HARD_DEADLINE_S), slow enough to cost nothing. Also the cadence of its
+# The relauncher's poll cadence while it waits for this process to die. Every
+# tick of it is dead time between "the old windows vanish" and "the new ones
+# appear", so it is 50 ms (a `kill -0` + a sleep, 20 forks a second for a few
+# seconds) rather than the 0.2 s it was. Also the cadence of its
 # watch for the successor afterwards.
-RELAUNCH_POLL_S = 0.2
+RELAUNCH_POLL_S = 0.05
 
 # How long the relauncher waits AFTER our pid disappears before it asks
 # LaunchServices for a new instance. The pid going away is not the same event as
@@ -1162,31 +1171,94 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
 
 
 def make_windows_quit(begin, *, state: dict, close_windows, snapshot, discard):
-    """The quit action `main()` hands every surface: the windows first, then
-    the ordered teardown (`begin` — `make_quit_action`'s).
+    """The quit action `main()` hands every surface.
 
-    A RELAUNCH is the one caller that passes `on_claim`. It must record the open
-    windows BEFORE they are closed (`close_windows` empties the manager, and a
-    snapshot taken after it would be empty), so the order is
-    snapshot -> close -> claim, enforced here rather than left to statement
-    order in a closure. A quit already in flight has closed the windows itself,
-    so a snapshot then would be empty and would erase a good one — skipped. And
-    if the claim is refused (the in-flight quit was the user's own), the file
-    is withdrawn: nobody is coming back to read it."""
+    An ordinary quit (menu, popover; the AppKit hook closes its own) closes the
+    windows first, then runs the ordered teardown (`begin` — `make_quit_action`'s).
+
+    A RELAUNCH is the one caller that passes `on_claim`, and it does NOT close
+    the windows: they stay up, showing the frontend's RestartOverlay, until
+    `os._exit` takes them with the process. The user keeps a visible app for the
+    whole teardown and the successor reopens the same pages (see
+    `reopen_windows_early`). Why not closing them is safe, where the ordinary
+    quit closes them FIRST so every WKWebView deallocs before the server drains:
+    that ordering exists so a page is not left talking to a dying server and so
+    nothing is mid-teardown when AppKit's own `exit()` runs its destructors. A
+    relaunch has neither concern — the overlay is the intended answer to a
+    page whose server goes away, and the process ends in `hard_exit`
+    (`os._exit`), which runs no destructor of any kind; WebKit's web-content and
+    networking processes are XPC children that die with their UI process. A
+    close at the end would only add a main-thread hop and a dealloc of views
+    about to be unmapped anyway.
+
+    What closing used to do for free is saving each window's frame
+    (`_Window.teardown`), so the relaunch saves them itself (inside `snapshot`)
+    before the teardown starts. The snapshot is still recorded first, from the
+    live windows, and withdrawn if the claim is refused. A quit already in
+    flight has closed the windows itself, so a snapshot then would be empty and
+    would erase a good one — skipped."""
     def _do_quit(on_claim=None) -> bool:
         wrote = False
-        if on_claim is not None and not state.get("quitting"):
+        relaunch = on_claim is not None
+        if relaunch and not state.get("quitting"):
             try:
                 wrote = bool(snapshot())
             except Exception:
                 logger.warning("could not record the open windows", exc_info=True)
-        close_windows()
+        if not relaunch:
+            close_windows()
         claimed = begin(on_claim=on_claim)
         if wrote and not claimed:
             discard()
         return claimed
 
     return _do_quit
+
+
+def reopen_windows_early(manager, port: int, *, snapshot_file: str,
+                         max_age_s: float, html: str, take=None, log=None) -> list:
+    """The successor's half of a relaunch: open the predecessor's windows NOW,
+    as "Restarting…" placeholders, instead of when the server is ready.
+
+    Windows only need the AppKit run loop, not the server; the server is the
+    ~5 s tail of the boot (and the part a restart is waiting on), so tying the
+    windows to it left the screen empty for the whole of it. Returns
+    ``[(url, window)]`` for `navigate_restored`. Empty (and the snapshot left
+    unread) when there is no manager or it is switched off, so the
+    browser-tab fallback at server-ready keeps working exactly as before. The
+    snapshot is still one-shot and age-bounded — `take_snapshot` owns that."""
+    if manager is None or not getattr(manager, "enabled", False):
+        return []
+    if take is None:
+        take = relaunch_windows.take_snapshot
+    ages: list[float] = []
+    targets = take(snapshot_file, max_age_s=max_age_s, on_age=ages.append)
+    restored = []
+    for path in targets:
+        url = f"http://127.0.0.1:{port}" + path
+        win = manager.open(url, html=html)
+        if win is not None:
+            restored.append((url, win))
+    if targets:
+        (log or logger.info)(
+            "relaunch timing: %d window(s) reopened as placeholders%s",
+            len(restored),
+            f", {ages[0]:.2f}s after the press" if ages else "")
+    return restored
+
+
+def navigate_restored(restored: list) -> None:
+    """Server is serving: send every placeholder to the page it stands for.
+    Main thread (it drives WebKit)."""
+    for url, win in restored:
+        try:
+            win.load(url)
+        except Exception:
+            logger.warning("could not navigate a restored window to %s", url,
+                           exc_info=True)
+    if restored:
+        logger.info("relaunch timing: server ready, %d restored window(s) "
+                    "navigated to their pages", len(restored))
 
 
 def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None):
@@ -1464,6 +1536,7 @@ def main() -> None:
         "pin": None,         # menubar_pin.PinController, built after run loop start
         "windows": None,     # mac_window.WindowManager, built after run loop start
         "launcher": None,    # launcher_panel.LauncherController, after the windows
+        "restored": [],      # relaunch placeholders [(url, window)] awaiting the server
     }
 
     def _open_target(target: str) -> None:
@@ -1719,6 +1792,13 @@ def main() -> None:
         pending, state["pending"] = state["pending"], []
         for target in pending:
             _open_target(target)
+        # Windows `_kickoff` already reopened as placeholders: navigate them.
+        restored = state.get("restored") or []
+        if restored:
+            state["docs"] = True
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(navigate_restored, restored)
         # The windows a relaunch's predecessor had open (relaunch_windows.py).
         # Through `_open_target` like every other open: a native window, or —
         # with the preference off / no manager — a browser tab. `docs` is set
@@ -1790,6 +1870,11 @@ def main() -> None:
         # children — there is nothing AppKit's termination would
         # still do for us. os._exit is thread-safe and needs no main thread, so
         # the callAfter hop this used to need is gone with it.
+        pressed = state.get("pressed_at")
+        if state.get("relaunching") and pressed is not None:
+            logger.info("relaunch timing: exiting %.2fs after the press "
+                        "(windows were left up for the overlay)",
+                        time.monotonic() - pressed)
         hard_exit()
 
     # Returns immediately — the AppKit run loop must not block here — and lets
@@ -1809,6 +1894,10 @@ def main() -> None:
         targets = relaunch_windows.targets_from_urls(manager.snapshot_urls(), port)
         logger.info("relaunch: recording %d open window(s) for the successor",
                     len(targets))
+        state["relaunching"] = True
+        # The windows are not closed on a relaunch, so nothing else saves
+        # their frames (see make_windows_quit).
+        manager.save_frames()
         return relaunch_windows.write_snapshot(RELAUNCH_WINDOWS_FILE, targets)
 
     # The windows first (`_close_windows`), then the ordered teardown. Same
@@ -2006,6 +2095,18 @@ def main() -> None:
             )
         except Exception:
             logger.exception("popover unavailable; falling back to the status-item menu")
+        # A relaunch's windows come back NOW, before the server is up (see
+        # reopen_windows_early). With no snapshot this is a no-op.
+        try:
+            state["restored"] = reopen_windows_early(
+                state["windows"], port, snapshot_file=RELAUNCH_WINDOWS_FILE,
+                max_age_s=RELAUNCH_SNAPSHOT_MAX_AGE_S,
+                html=relaunch_windows.RESTARTING_HTML)
+        except Exception:
+            logger.exception("could not reopen the relaunch windows early")
+            state["restored"] = []
+        if state["restored"]:
+            state["docs"] = True
         threading.Thread(target=_bootstrap_server, daemon=True).start()
 
     boot_timer = rumps.Timer(_kickoff, 0.1)
