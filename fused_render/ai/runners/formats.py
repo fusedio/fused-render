@@ -2147,7 +2147,11 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # let the check below claim it and the page would offer a Diffusers
         # Load button that opens on a layout diffusers cannot read.
         return tuple(found)
-    if repo_id in MFLUX_VARIANTS and has_mflux_components(dirnames):
+    # Either mflux table (`mflux_native_mode`): a Fill checkpoint is loaded
+    # by the same runner as a Klein, only in a different mode — and
+    # `hub_cache._format_task` tags it text-to-image off this same call, so
+    # the two must not disagree about which repos are mflux's.
+    if mflux_native_mode(repo_id) and has_mflux_components(dirnames):
         found.append("mflux-image")
     if DIFFUSERS_INDEX in names:
         found.extend(DIFFUSERS_RUNNERS)
