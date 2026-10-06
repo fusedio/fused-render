@@ -2683,8 +2683,20 @@ def _spawn_env(chat_id: str = "") -> dict:
         prefix = _shell_prefix_path()
         if prefix:
             log_dir = os.path.join(CMD_LOGS, chat_id)
+            # The leaf can't stay exclusive here: the log dir is per chat, not
+            # per run, so it outlives a host (idle reap, resume, respawn).
+            # Reuse an existing one only if it is ours and private.
             try:
-                _private_dir(log_dir)
+                if os.path.isdir(log_dir):
+                    _require_private(log_dir)
+                    # It refuses group/other WRITE only; the log is readable.
+                    if os.name != "nt" and os.lstat(log_dir).st_mode & 0o077:
+                        return env
+                else:
+                    try:
+                        _private_dir(log_dir)
+                    except FileExistsError:  # raced another host
+                        _require_private(log_dir)
             except OSError:
                 return env
             env["CLAUDE_CODE_SHELL_PREFIX"] = prefix

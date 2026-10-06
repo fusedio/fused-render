@@ -58,3 +58,25 @@ def test_users_own_prefix_is_not_clobbered(agent, monkeypatch):
     env = agent._spawn_env("chat-9")
     assert env["CLAUDE_CODE_SHELL_PREFIX"] == "/their/prefix"
     assert "FUSED_CLAUDE_CMD_LOG" not in env
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX only")
+def test_second_spawn_for_same_chat_keeps_prefix(agent, monkeypatch, tmp_path):
+    monkeypatch.setattr(agent, "CMD_LOGS", str(tmp_path / "cmds"))
+    first = agent._spawn_env("chat-again")
+    second = agent._spawn_env("chat-again")
+    for env in (first, second):
+        assert env["CLAUDE_CODE_SHELL_PREFIX"].endswith("claude_shell_prefix.sh")
+        assert env["FUSED_CLAUDE_CMD_LOG"] == str(tmp_path / "cmds" / "chat-again")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX only")
+def test_preexisting_non_private_log_dir_gets_no_prefix(agent, monkeypatch, tmp_path):
+    root = tmp_path / "cmds"
+    monkeypatch.setattr(agent, "CMD_LOGS", str(root))
+    agent._spawn_env("chat-other")  # builds the private parents
+    log = root / "chat-other"
+    os.chmod(log, 0o755)
+    env = agent._spawn_env("chat-other")
+    assert "CLAUDE_CODE_SHELL_PREFIX" not in env
+    assert "FUSED_CLAUDE_CMD_LOG" not in env
