@@ -25,6 +25,7 @@ import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
+import { useBotsFeature } from "@apps/bots/feature-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
@@ -498,6 +499,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // needs both.
   const canvasesEnabled = useCanvasesFeature();
   const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
+  // BOTS AS THE FRONT DOOR (prefs `bots_enabled`, default off). Unlike the
+  // Canvases flag this does not ADD a row, it SWAPS the top one: on, the Home
+  // row is hidden and Bots sits where it sat (Bots → Tasks → …); off, there is
+  // no Bots row anywhere (Home → Tasks → …). The brand row follows the same
+  // answer, so clicking the title lands on the front door the reader chose.
+  // A route guard it is not: /home and /bots both keep answering by URL.
+  const botsEnabled = useBotsFeature();
+  const frontDoor = botsEnabled ? "/bots" : "/home";
 
   // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
   // something unread (shell/tasksPulse — one poll shared with the page, which
@@ -705,8 +714,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const setupMeter = useSetupMeter(config);
 
   const rail: SidebarRailItem[] = [
-    { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
-    { key: "bots", label: "Bots", icon: BOTS_ICON, href: "/bots", active: botsActive },
+    // The front door's row: Home, or Bots when the bots flag swaps it in.
+    botsEnabled
+      ? { key: "bots", label: "Bots", icon: BOTS_ICON, href: "/bots", active: botsActive }
+      : { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     {
       key: "tasks",
       label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
@@ -776,25 +787,31 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           always had. */}
       <SidebarFrame
         title="Render"
-        homeHref="/home"
+        homeHref={frontDoor}
         rail={rail}
         tuckOnCollapse={taskPeekOn}
       >
         <div className="sidebar-section sidebar-group">
-          <NavItem
-            href="/home"
-            id="home-link"
-            label="Home"
-            icon={HOME_ICON}
-            active={homeActive}
-          />
-          <NavItem
-            href="/bots"
-            id="bots-link"
-            label="Bots"
-            icon={BOTS_ICON}
-            active={botsActive}
-          />
+          {/* The front door's row — Home, or Bots in its place when the bots
+              flag is on (same swap as the rail above). Never both: Bots is
+              not a destination beside Home, it is what Home becomes. */}
+          {botsEnabled ? (
+            <NavItem
+              href="/bots"
+              id="bots-link"
+              label="Bots"
+              icon={BOTS_ICON}
+              active={botsActive}
+            />
+          ) : (
+            <NavItem
+              href="/home"
+              id="home-link"
+              label="Home"
+              icon={HOME_ICON}
+              active={homeActive}
+            />
+          )}
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is
               the one that can say when the work runs. Inbox is deleted. */}
