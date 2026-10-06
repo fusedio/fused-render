@@ -44,6 +44,7 @@ const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny, Ter
   TerminalDrawerModule;
 const TerminalTabStrip = (await import("@shell/TerminalTabStrip")).default;
 const TerminalView = (await import("@platform/ui/TerminalView")).default;
+const { resetTerminalFocusForTests } = await import("@platform/lib/terminalFocus");
 const { parseState, reconcileTabs, removeTab, programLabel, stateFor } = await import("@shell/terminalTabs");
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
@@ -116,6 +117,7 @@ async function fireKeyDown(over: Record<string, unknown>): Promise<{ defaultPrev
 beforeEach(() => {
   (globalThis as { localStorage?: Storage }).localStorage = fakeLocalStorage();
   keydowns.length = 0;
+  resetTerminalFocusForTests();
   const doc = globalThis.document as unknown as Record<string, unknown>;
   realAdd = doc.addEventListener;
   realRemove = doc.removeEventListener;
@@ -680,6 +682,18 @@ test("tab strip: clicking a label selects, × closes that tab, + asks for a new 
 });
 
 
+test("tab strip: Ask Claude shows only when wired and reports that tab's id", () => {
+  const { root: bare } = strip();
+  expect(bare.findAll((n) => n.type === "button" && n.props.className === "term-tab-ask")).toHaveLength(0);
+  const asked: string[] = [];
+  const { root } = strip({ onAskClaude: (id) => asked.push(id) });
+  const ask = root.findAll((n) => n.type === "button" && n.props.className === "term-tab-ask");
+  expect(ask).toHaveLength(2);
+  expect(ask[0].props["aria-label"]).toBe("Ask Claude about zsh");
+  act(() => ask[1].props.onClick());
+  expect(asked).toEqual(["b"]);
+});
+
 // ---- mounted drawer: focus, cache preservation, routing ---------------------
 // react-test-renderer gives `TerminalView` no DOM node (its mount effect bails
 // on a null ref), so the drawer can be mounted for real with `fetch` faked and
@@ -704,7 +718,7 @@ function fakeServer(opts: {
       if (opts.listFails) throw new Error("network down");
       return json(200, { sessions: (opts.live ?? []).map((s) => ({ alive: true, shell: "zsh", ...s })) });
     }
-    if (method === "DELETE") return json(200, { ok: true });
+    if (method === "DELETE" || method === "PUT") return json(200, { ok: true });
     if (String(url).endsWith("/input")) {
       return opts.inputStatus ? json(opts.inputStatus, { error: "busy" }) : json(200, { ok: true });
     }
@@ -727,6 +741,25 @@ async function mountOpen(cwd: string | null = null) {
 }
 const view = (r: ReactTestRenderer) => r.root.findByType(TerminalView).props as { id: string; autoFocus?: boolean };
 const stripProps = (r: ReactTestRenderer) => r.root.findByType(TerminalTabStrip).props;
+
+const focusPuts = (srv: { calls: Call[] }) =>
+  srv.calls.filter((c) => c.method === "PUT" && c.url === "/api/terminal/focus").map((c) => JSON.parse(c.body!).id);
+
+test("claude focus: the drawer reports its active tab on open and when the tab changes", async () => {
+  resetTerminalFocusForTests();
+  seed(["a"]);
+  const srv = fakeServer({ live: [{ id: "a" }, { id: "b" }], creates: ["b"] });
+  try {
+    const r = await mountOpen();
+    expect(focusPuts(srv)).toEqual(["a"]);
+    await act(async () => { await stripProps(r).onNew(); });
+    await tick();
+    expect(focusPuts(srv)).toEqual(["a", "b"]);
+    act(() => stripProps(r).onSelect("a"));
+    await tick();
+    expect(focusPuts(srv)).toEqual(["a", "b", "a"]);
+  } finally { srv.restore(); }
+});
 
 test("focus: the first terminal created when the drawer opens is focused", async () => {
   const srv = fakeServer({ creates: ["n1"] });

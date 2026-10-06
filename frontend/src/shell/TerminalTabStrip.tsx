@@ -10,9 +10,11 @@ export interface TerminalTabStripProps {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  /** Open a Claude chat that points at this terminal. Omitted = no button. */
+  onAskClaude?: (id: string) => void;
 }
 
-export default function TerminalTabStrip({ tabs, activeId, onSelect, onClose, onNew }: TerminalTabStripProps) {
+export default function TerminalTabStrip({ tabs, activeId, onSelect, onClose, onNew, onAskClaude }: TerminalTabStripProps) {
   return (
     <div className="term-tabs" role="tablist" aria-label="Terminals">
       {tabs.map((tab) => {
@@ -28,6 +30,17 @@ export default function TerminalTabStrip({ tabs, activeId, onSelect, onClose, on
             <button type="button" className="term-tab-label" onClick={() => onSelect(tab.id)}>
               {tab.label}
             </button>
+            {onAskClaude && (
+              <button
+                type="button"
+                className="term-tab-ask"
+                aria-label={`Ask Claude about ${tab.label}`}
+                title="Ask Claude about this terminal"
+                onClick={() => onAskClaude(tab.id)}
+              >
+                ✦
+              </button>
+            )}
             <button
               type="button"
               className="term-tab-close"

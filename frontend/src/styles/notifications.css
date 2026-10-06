@@ -247,6 +247,7 @@
 }
 
 .term-tab-label,
+.term-tab-ask,
 .term-tab-close,
 .term-tab-new {
   background: none;
@@ -267,6 +268,7 @@
   white-space: nowrap;
 }
 
+.term-tab-ask,
 .term-tab-close {
   margin: 0;
   padding: 0 6px;
@@ -275,12 +277,16 @@
   opacity: 0;
 }
 
+.term-tab:hover .term-tab-ask,
+.term-tab.is-active .term-tab-ask,
+.term-tab-ask:focus-visible,
 .term-tab:hover .term-tab-close,
 .term-tab.is-active .term-tab-close,
 .term-tab-close:focus-visible {
   opacity: 0.7;
 }
 
+.term-tab-ask:hover,
 .term-tab-close:hover {
   opacity: 1;
 }

@@ -96,6 +96,8 @@ import { getJson } from "@platform/lib/api";
 import { isMod } from "@platform/lib/platform";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
+import { askClaudeTerminalPrompt, reportFocusedTerminal } from "@platform/lib/terminalFocus";
+import { explainWithAi } from "@platform/lib/explain-with-ai";
 import {
   closeTerminalDock,
   peekPendingTerminalRequest,
@@ -568,6 +570,27 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, pendingVersion]);
 
+  // Which tab is in front, for Claude's `terminal_read()` with no id: reported
+  // on open and on every tab change. Nothing is reported while the tab list is
+  // still being verified (activeId is null then, and would clear a real focus
+  // for a moment); an emptied list reports null.
+  const activeLabel = tabs?.find((t) => t.id === activeId)?.label;
+  useEffect(() => {
+    if (!open || tabs === null) return;
+    if (activeId !== null) reportFocusedTerminal(activeId, activeLabel);
+    else if (tabs.length === 0) reportFocusedTerminal(null);
+  }, [open, tabs === null, activeId, activeLabel]);
+
+  /** "Ask Claude" on a tab: open a chat seeded with a reference to that
+   * terminal (metadata only; Claude reads it with `terminal_read`). The tab's
+   * cwd picks the folder the chat opens in; a folderless tab uses the default. */
+  function askClaude(id: string): void {
+    const tab = stateRef.current.tabs?.find((t) => t.id === id);
+    if (!tab) return;
+    reportFocusedTerminal(id, tab.label);
+    void explainWithAi(askClaudeTerminalPrompt(tab), tab.cwd);
+  }
+
   /** A terminal is gone (its shell exited, or its tab was closed): drop the
    * tab, activate the neighbour, and if that was the last one clear the cache
    * and close the drawer so the next open mints a fresh shell. */
@@ -698,7 +721,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         onPointerUp={onHandlePointerUp}
       />
       {tabs !== null && tabs.length > 0 && (
-        <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} />
+        <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} onAskClaude={askClaude} />
       )}
       {activeId !== null && <TerminalView key={activeId} id={activeId} autoFocus={focusId === activeId} onExit={() => dropTab(activeId)} />}
       {createError !== null && (
