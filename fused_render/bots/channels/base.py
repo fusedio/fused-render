@@ -1,0 +1,126 @@
+"""The channel contract (docs/bots.md §10).
+
+A bot has ONE conversation (its events.jsonl). A channel is a surface that
+conversation reaches a person on: the web page (always), iMessage, and
+whatever comes next. A channel is a small adapter: it pulls texts in
+(`poll`) and pushes one message out (`send`); routing, bot resolution,
+delivery policy, option numbering and prefixes live once, in `router.py`.
+
+    Via      {"kind": "imessage", "addr": "+15551234567"}  where a user message came from;
+             stamped on the `user` event and, through `bot.task_via`, on every event
+             of the task it started. The web is {"kind": "web", "addr": ""}; a routine's
+             task carries {"kind": "routine", "addr": ""} so policy can tell it apart.
+    Inbound  one message a channel received, before any routing.
+    Caps     what the surface can show; the engines and the router read it.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import time
+
+WEB_KIND = "web"
+ROUTINE_KIND = "routine"
+WEB = {"kind": WEB_KIND, "addr": ""}
+ROUTINE = {"kind": ROUTINE_KIND, "addr": ""}
+
+# Events a channel may carry out of the conversation. Thoughts, actions and
+# notes are the page's business.
+OUT_ROLES = ("done", "question", "approval", "error")
+
+# Forwarding categories (Settings "Also text me when…") and their default.
+FORWARDS = ("results", "questions", "errors", "builds", "routines")
+FORWARDS_DEFAULT = ("results", "questions", "errors", "builds")
+
+
+LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine"}
+
+
+def label(kind: str) -> str:
+    """The user-facing name of a channel kind."""
+    return LABELS.get(kind or WEB_KIND, kind or WEB_KIND)
+
+
+def via(kind: str, addr: str = "") -> dict:
+    return {"kind": str(kind or WEB_KIND), "addr": str(addr or "")}
+
+
+def is_web(v) -> bool:
+    return not v or (v.get("kind") or WEB_KIND) == WEB_KIND
+
+
+@dataclass(frozen=True)
+class Caps:
+    """What a surface can render. The web has everything; a phone has text."""
+    options: bool = True      # can show choice buttons (else the router numbers them)
+    buttons: bool = True      # can show approval / offer cards
+    max_len: int = 0          # 0 = unlimited; else the router shortens and points at the app
+    media: bool = True        # can show images / app cards
+    can_login: bool = True    # the user can reach the bot's browser window from here
+
+
+WEB_CAPS = Caps()
+
+
+@dataclass
+class Inbound:
+    addr: str                 # normalised sender (channel-specific form)
+    text: str
+    service: str = ""         # e.g. "iMessage" / "SMS" for Messages rows
+    ts: float = field(default_factory=time.time)
+    ext_id: str = ""          # the channel's own id for the message (chat.db rowid)
+
+
+class Channel:
+    """Base class. Subclasses set `kind` and `caps` and implement the four methods.
+    Everything here is called from the router's threads, never from a task thread."""
+    kind: str = ""
+    caps: Caps = WEB_CAPS
+
+    def poll(self) -> list[Inbound]:
+        """New messages since the last call. Raise to report a broken channel
+        (the router shows the error in Settings and retries)."""
+        return []
+
+    def send(self, addr: str, text: str, event: dict | None = None) -> None:
+        """Deliver one message. Raise on failure."""
+        raise NotImplementedError
+
+    def status(self) -> dict:
+        """What Settings shows: {running, error, last_in, last_out, …}."""
+        return {}
+
+    def identity(self) -> dict:
+        """Who the bot speaks as on this surface: {"mode": "own"|"dedicated"|"", "label": str}."""
+        return {"mode": "", "label": ""}
+
+    def owners(self) -> dict[str, list[str]]:
+        """{addr: [bot ids]} — who may command which bots from this surface.
+        Resolved from disk on every call so a Settings save takes effect without a restart."""
+        return {}
+
+    def start(self) -> None:
+        """Called once by the router before the first poll."""
+
+    def stop(self) -> None:
+        """Called once by the router on shutdown."""
+
+
+def prompt_section(v: dict | None, caps: Caps, kind_label: str = "") -> str:
+    """The CHANNEL paragraph for the model when the task came from a surface
+    other than the web. Empty for web and routine tasks."""
+    if is_web(v) or (v or {}).get("kind") == ROUTINE_KIND:
+        return ""
+    label = kind_label or (v or {}).get("kind") or "another channel"
+    lines = [f"CHANNEL: the user sent this task from {label} and is reading your replies there, on a phone, not at the Mac."]
+    if caps.max_len:
+        lines.append(f"- Your `done` message is sent as a text: lead with the answer in one short paragraph (under {caps.max_len} characters); "
+                     "details, tables and lists go in a `save` file or stay out. Everything you write still shows in full on the Mac.")
+    if not caps.options:
+        lines.append("- Every `ask` carries 2-5 short `options`; the user answers with a number or a word. Never ask an open question you could make a choice.")
+    if not caps.buttons:
+        lines.append("- No `offer` on this channel: build straight away when asked, otherwise finish the task.")
+    if not caps.can_login:
+        lines.append("- `login` still works, but the user must walk to the Mac to sign in; say so in its message and expect a wait.")
+    if not caps.media:
+        lines.append("- Screenshots and app cards do not reach this channel: describe in words, give links.")
+    return "\n".join(lines) + "\n\n"

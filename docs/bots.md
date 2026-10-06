@@ -914,3 +914,75 @@ plate-less bot tile has not been seen natively (the page rules are in
 Not exercised live: dictation (needs a microphone grant), iMessage (needs
 Full Disk Access), Chrome profile import and encryption at rest (unit
 tested in browser.py).
+
+## 10. Channels (`fused_render/bots/channels/`, 2026-10-06)
+
+A bot has ONE conversation (its `events.jsonl`). A **channel** is a surface
+that conversation reaches a person on: the web page (always), iMessage
+(macOS), and whatever comes next. Design page with the decisions D1–D11:
+<https://claude.ai/artifact/4X6pENhce7KGAfGvMMmV9W>. Phase A shipped here;
+Phase B (shared address book in `channels.json`, HTTP worker for a Mac
+without Full Disk Access, the bot-authored `summary` for phone channels) is
+open.
+
+```
+channels/base.py      Via {kind, addr} · Inbound · Caps · Channel (poll/send/status/identity/owners) · prompt_section
+channels/router.py    Router: poll thread -> resolve bot (@name, sticky, first) -> bot.receive(text, via)
+                      emit hook -> queue -> send thread -> targets() policy -> channel.send
+channels/imessage.py  ImessageChannel: the old bridge's poll/lock/echo window, service filter, identity detection
+channels/__init__.py  available() (macOS -> iMessage), caps_for(via), prompt_for(bot), login_text(bot, q), origin_label(bot)
+imessage.py           pure helpers only (chat.db queries, osascript send, handle/contact parsing); `--status` CLI
+```
+
+**Inbound.** `ImessageChannel.poll()` (every 3 s, in the router's thread) reads
+1:1 rows after the cursor; only rows whose `handle.service` is `iMessage`
+from a handle some bot lists as `imessage` count (a forwarded SMS has a
+spoofable sender and never answers an approval). The router resolves the bot:
+a leading `@name` (or a unique prefix of one) picks among the bots sharing the
+handle and sticks for that sender; else the last one addressed; else the
+first by id. A bare `@name` only switches. A reply of `2` / `b` to a numbered
+question maps back to that option. Then `bot.receive(text, via)`: the one
+entry point for user messages (`send()` is `receive(text, via=None)` for the
+web). A running task gets it as an instruction or answer; an idle bot starts
+a task with `task_via` set, `origin` = the channel kind. Super Bot refuses any
+non-web `via` in `receive` (and non-manual origins in `start_task`, for
+routines). No inbox files, no scheduler hop: ~3 s from text to task. The
+botsend file inbox stays (`drain_file_inbox` -> `receive(via botsend)`).
+
+**Outbound.** `bot.emit()` stamps the task's `via` on events written by the
+task thread (other threads pass `via` explicitly: the build watcher carries
+the via of the task that asked for the build, with `source: "build"`), then
+calls `registry.on_event`, which hands it to the router when one exists
+(tests and a lean `fused-render open` have none). `Router.targets()` is the
+policy (D5): an event of a task that came from channel X goes to X's sender,
+always; otherwise to the bot's owners on that channel only when the event's
+category is in the bot's forwards for it — `channel_forwards: {imessage:
+[results, questions, errors, builds, routines]}` in bot.json, default all but
+`routines`. `render()` turns options into `Reply 1 … · 2 …`, approvals into
+`Reply yes or no.`, and cuts a `done` over `Caps.max_len` (600) at a sentence
+with `… Full answer in the app.` In **own** identity (the owner handle is one
+of this Mac's own Messages accounts, read from `message.account` of sent
+rows; the default) every text is prefixed `@<bot name>`, the same token that
+addresses the bot, so bot lines read apart from the user's own in the
+self-thread. A **dedicated** identity (Messages signed into a bot Apple ID)
+sends bare.
+
+**Engines.** Both prompts get a `CHANNEL:` paragraph from `channels.prompt_for`
+when `task_via` is not web/routine (one short `done`, options on every `ask`,
+no `offer`, `login` means a walk to the Mac) and `task from iMessage (user is
+on their phone…)` in the YOU line; `login` questions come from
+`channels.login_text`.
+
+**Page.** A `via` chip on bubbles (`via iMessage` on a texted-in user line,
+`→ iMessage` on the bot lines texted back); Settings > Advanced gains "Also
+text me when…" under the iMessage field (hidden until a handle is typed) and
+the status line says who the bot texts as. Status reply: `channels: {imessage:
+{running, error, last_in, last_out, handles, holder, identity: {mode, label},
+caps}}` beside the old `imessage` key.
+
+**Invariants and where.** Every non-web user event carries `via`; every task
+has `task_via` (`bot.receive` / `start_task`). Nothing reaches a channel
+unless origin or an opted-in forward says so (`Router.targets`, tested in
+`tests/test_bots_channels.py`). Owner commands come over the iMessage service
+only (`ImessageChannel._tick`). One poller per Mac (flock, unchanged). The
+router is inert when `registry.start()` never ran (`registry.on_event`).

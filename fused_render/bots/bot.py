@@ -30,6 +30,7 @@ from fused_render.bots import apptools, imessage, store
 from fused_render.bots import browser as browser_mod
 from fused_render.bots import paths as bpaths
 from fused_render.bots.browser import Browser
+from fused_render.bots.channels import base as chan
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
 - Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue. "Open in browser" pops your Chrome out as a real desktop window; "Dock" brings it back. Your `login` action pops a real window the same way and waits until the user replies "done" or clicks Hand back.
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
-- iMessage (Settings > Advanced): a phone number or Apple ID that can text you tasks and gets your answers texted back; and "Contacts the bot may text", the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
+- iMessage (Settings > Advanced): a phone number or Apple ID that can text you tasks; replies to a texted task go back as texts, and "Also text me when…" picks which other results, questions, errors, build notices and routine outcomes are texted too. The bot texts through the user's own Messages account, so every text it sends starts with "@<your name>" and the user can address one bot among several by starting a text with "@<name>". "Contacts the bot may text" is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
 - Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
@@ -403,6 +404,7 @@ class Bot:
         self.task_dir = None      # this task's folder in the user's Inbox, made on first artifact
         self.task_started = 0.0   # downloads newer than this belong to the running task
         self.task_origin = "manual"
+        self.task_via = dict(chan.WEB)  # where the running task came from (channels/base.py Via); web by default
         self.engine = None        # "steps" | "agent" while a task runs
         self.wake = threading.Event()
         self.asking = False       # the task thread is blocked on a question/approval for the user
@@ -441,14 +443,27 @@ class Bot:
         The counter is re-synced to the file first: another writer on the same
         log (a second server process on this app home, a botsend.py) may have
         appended since, and a repeated seq leaves the page's thread with a
-        duplicate row key (an orphaned bubble on bot switch)."""
+        duplicate row key (an orphaned bubble on bot switch).
+
+        Events written by the task thread carry the task's `via` (the channel
+        the task came from) unless the caller set one; other threads (build
+        watcher, offer settlement, greeting) pass theirs explicitly or carry
+        none. The channels router gets every event (registry.on_event) and
+        delivers the outbound-worthy ones under its policy."""
         with self.lock:
             self.seq = max(self.seq, self._count_events()) + 1
             ev = {"seq": self.seq, "ts": time.time(), "role": role, "text": text, **extra}
+            if "via" not in ev:
+                t = self.thread
+                if t is not None and threading.get_ident() == t.ident and not chan.is_web(self.task_via):
+                    ev["via"] = dict(self.task_via)
+            elif ev["via"] is None:
+                del ev["via"]
             os.makedirs(self.dir, exist_ok=True)
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
-            return ev
+        _registry().on_event(self, ev)
+        return ev
 
     # -- step thumbnails -------------------------------------------------------
     # One small JPEG per action, under cache/<id>/steps/, referenced from the
@@ -997,12 +1012,10 @@ class Bot:
             except OSError:
                 continue
             if task:
-                src = "iMessage" if n.startswith("imessage-") else "botsend"
-                if is_super(self.meta):
-                    self.emit("system", f"Ignored a task from {src} ({n[:-4]}): Super Bot only takes tasks you type here.")
-                    continue
-                self.emit("system", f"Task received from {src} ({n[:-4]})")
-                self.send(task)
+                # botsend.py drops; an "imessage-" file is a leftover of the pre-channel bridge.
+                kind = "imessage" if n.startswith("imessage-") else "botsend"
+                self.emit("system", f"Task received from {chan.label(kind)} ({n[:-4]})")
+                self.receive(task, via=chan.via(kind, n[:-4]))
 
     def events_since(self, cursor):
         """Events after the page's cursor, by position in the file.
@@ -1201,19 +1214,34 @@ class Bot:
         return self.thread is not None and self.thread.is_alive()
 
     def send(self, text, reply_to=None):
-        """A message from the user. `reply_to` is the seq of an earlier message the
-        user is replying to: the transcript keeps the plain reply plus a quoted
-        snippet for the UI, and the bot reads the reply with that message quoted
-        above it so it knows exactly what is being referred to."""
+        """A message typed on the web page (the composer, a card button)."""
+        return self.receive(text, via=None, reply_to=reply_to)
+
+    def receive(self, text, via=None, reply_to=None):
+        """A message from the user, from any channel (docs §10): the one entry
+        point. `via` is where it came from (channels/base.py; None = the web).
+        `reply_to` is the seq of an earlier message the user is replying to: the
+        transcript keeps the plain reply plus a quoted snippet for the UI, and the
+        bot reads the reply with that message quoted above it so it knows exactly
+        what is being referred to.
+
+        A running task gets it as an instruction or an answer; an idle bot starts
+        a task from it, tagged with the channel so replies go back there."""
+        via = dict(via) if via else dict(chan.WEB)
+        if not chan.is_web(via) and is_super(self.meta):
+            # Super Bot has shell and file access: nothing but the user's own chat may drive it (docs §5).
+            self.emit("system", f"Ignored a task from {chan.label(via['kind'])}: Super Bot only takes tasks you type here.")
+            return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
         shown = text  # what the user typed; the transcript and status show this, the model reads the quoted form
+        stamp = {} if chan.is_web(via) else {"via": via}
         if quoted:
             snippet = " ".join((quoted.get("text") or "").split())
-            self.emit("user", text, reply={"seq": quoted.get("seq"), "role": quoted.get("role"), "text": snippet[:280]})
+            self.emit("user", text, reply={"seq": quoted.get("seq"), "role": quoted.get("role"), "text": snippet[:280]}, **stamp)
             who = "my own earlier message" if quoted.get("role") == "user" else "your earlier message"
             text = f"Replying to {who}:\n> {snippet[:1200]}\n\n{text}"
         else:
-            self.emit("user", text)
+            self.emit("user", text, **stamp)
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
             if not running and self.meta.get("control"):
@@ -1234,7 +1262,7 @@ class Bot:
                     # not an answer. Clearing here would settle the card for a poll.
                     self.set_status("running")
             else:
-                self.start_task(text, label=shown)
+                self.start_task(text, label=shown, via=via)
 
     def _ai_call(self, ai, prompt, **kw):
         """Every fused_ai.text call goes through here so the usage ledger sees it."""
@@ -1251,21 +1279,29 @@ class Bot:
             except Exception:  # noqa: BLE001
                 pass
 
-    def start_task(self, task, label=None, origin="manual"):
+    def start_task(self, task, label=None, origin="manual", via=None):
         """`task` is what the model reads; `label` (default: the same) is what the
         transcript and status show — a reply's quoted prefix is only for the model.
-        `origin` ("manual" | "routine") tags the usage ledger. Picks the engine
-        (docs §5): the bot's `engine` setting, `auto` = steps for a local model or
-        when no `claude` CLI resolves, else the agent engine."""
+        `via` is the channel the task came from (channels/base.py; None = web);
+        `origin` tags the usage ledger ("manual" | "routine" | a channel kind) and
+        follows `via` when one is given. Picks the engine (docs §5): the bot's
+        `engine` setting, `auto` = steps for a local model or when no `claude`
+        CLI resolves, else the agent engine."""
+        if via is None:
+            via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
+        elif not chan.is_web(via):
+            origin = via.get("kind") or origin
         if origin != "manual" and is_super(self.meta):
             # Super Bot has shell and file access: nothing but the user's own chat may start it (docs §5).
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return
         self.task_origin = origin
+        self.task_via = dict(via)
         self.stop_flag.clear()
         self.pause_flag.clear()
         self.inbox = []
-        self.set_status("running", task=label or task, step=0, note="", waiting_on=None)
+        self.set_status("running", task=label or task, step=0, note="", waiting_on=None,
+                        task_via=None if chan.is_web(via) else dict(via))
         engine = _engine_for(self.meta)
         run = None
         if engine == "agent":
@@ -1561,7 +1597,9 @@ class Bot:
             "prompt": _build_prompt(name, d, spec, update=update), "target": d, "title": f"{'Update' if update else 'Build'} · {name}",
             "model": BUILD_MODEL, "effort": BUILD_EFFORT, "permission_mode": mode})
         bd = {"entry_id": r.get("entry_id") or "", "key": r.get("key") or "", "name": name, "dir": d,
-              "mode": mode, "created_at": time.time()}
+              "mode": mode, "created_at": time.time(),
+              # the channel the asking task came from: the "ready" message goes back there (router D5)
+              "via": None if chan.is_web(getattr(self, "task_via", None)) else dict(self.task_via)}
         with self.lock:
             self.meta["builds"] = (self.meta.get("builds") or [])[-39:] + [bd]
             self.save()
@@ -1599,7 +1637,8 @@ class Bot:
                     seen_running = True
                 if st in ("needs_attention", "blocked") and not bd.get("nudged"):
                     bd["nudged"] = True
-                    self.emit("question", f"The build of \"{bd['name']}\" is waiting for you: answer Claude under Builds.")
+                    self.emit("question", f"The build of \"{bd['name']}\" is waiting for you: answer Claude under Builds.",
+                              source="build", via=bd.get("via"))
                 if st in ("done", "archived") and seen_running:
                     if stable != st:      # status can flicker for ~15 s after a turn: want it twice in a row
                         stable = st
@@ -1607,7 +1646,7 @@ class Bot:
                     reply = " ".join(((row or {}).get("last_reply") or "").split())[:400]
                     # `app` lets the chat render an app card under this message (open inline / beside the chat).
                     self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
-                              app={"name": bd["name"], "dir": bd["dir"]})
+                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     with self.lock:
                         bd["done_at"] = time.time()
                         self.save()

@@ -8,6 +8,8 @@ import { askConfirm } from "./ask";
 export interface BotDialogValue {
   name: string; model: string; effort: string; instructions: string; memory: string; approval: string; buildAccess: string;
   encrypt: boolean; profile: string; face: Face; imessage: string; imessageTo: string;
+  /** iMessage "Also text me when…" categories (docs §10 FORWARDS). */
+  forwards: string[];
   /** The preset key the bot was made from ("" for a blank bot, and always "" in Settings). */
   preset: string;
   /** "super" for Super Bot (docs §5), else "bot". */
@@ -25,7 +27,8 @@ export async function createBot(v: BotDialogValue): Promise<void> {
     kind: v.kind || "bot", super_access: v.superAccess }));
   const id = r?.id;
   if (id && (v.imessage || v.imessageTo || v.trustedApps.length)) {
-    await act(() => api.settings(id, { name: v.name, imessage_handle: v.imessage, imessage_to: v.imessageTo, trusted_apps: v.trustedApps }));
+    await act(() => api.settings(id, { name: v.name, imessage_handle: v.imessage, imessage_to: v.imessageTo, trusted_apps: v.trustedApps,
+      channel_forwards: { imessage: v.forwards } }));
   }
   if (id && v.profile) await act(() => api.profile(id, v.profile));
   if (id && v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));  // Super Bot's mark is set by the backend
@@ -38,7 +41,7 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
   if (!v.name) return;
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
     build_access: v.buildAccess, encrypt: v.encrypt, imessage_handle: v.imessage, imessage_to: v.imessageTo, super_access: v.superAccess,
-    trusted_apps: v.trustedApps }));
+    trusted_apps: v.trustedApps, channel_forwards: { imessage: v.forwards } }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));
   if (v.profile) await act(() => api.profile(id, v.profile));
 }

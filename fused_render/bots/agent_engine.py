@@ -55,7 +55,7 @@ import traceback
 from collections import deque
 from urllib.parse import quote
 
-from fused_render.bots import apptools, claude_cli, paths, tools
+from fused_render.bots import apptools, channels, claude_cli, paths, tools
 
 MAX_STEPS = 60                 # OpenBot's cap; --max-turns does not exist on this CLI, so tool calls are counted here
 SUPER_MAX_STEPS = 200             # Super Bot's cap: Claude Code tasks (read, edit, run, re-run) take many more calls than browsing
@@ -301,14 +301,14 @@ def first_message(bot, task: str, past=None, page: dict | None = None) -> str:
     tr = apptools.clean_trusted_apps(m.get("trusted_apps"))
     if tr:
         appr += f" (trusted apps, never ask: {', '.join(tr)})"
-    origin = "routine (user may be away)" if getattr(bot, "task_origin", "manual") == "routine" else "chat"
+    origin = channels.origin_label(bot)
     ea_s = ""
     if tools.is_super(bot):
         ea_s = (" · Mac access: " + ("unattended (Claude Code's own judgement approves safe calls; the rest ask)"
                                      if (m.get("super_access") or "ask") == "full" else "ask before writes, edits and shell commands"))
     cfg_s = (f"YOU: {m.get('name')!r} · model {m.get('model') or DEFAULT_MODEL} · effort {m.get('effort') or DEFAULT_EFFORT} · "
              f"approvals: {appr}{ea_s} · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. "
-             "Only the user changes settings.\n\n")
+             "Only the user changes settings.\n\n" + channels.prompt_for(bot))
     guide_s = ""
     botmod = _botmod()
     if botmod is not None and botmod.APP_GUIDE_TRIGGER.search(task or ""):
@@ -1151,9 +1151,7 @@ def _ask(bot, sess: TaskSession, args: dict):
 def _login(bot, sess: TaskSession, args: dict):
     q = (args.get("message") or "").strip() or "This page needs you to sign in."
     bot.window(True)
-    ev = bot.emit("question", f"{q} I've opened a real browser window for you — sign in there "
-                  "(your password manager and passkeys work normally), then reply 'done' or "
-                  "click Hand back when you're finished.")
+    ev = bot.emit("question", channels.login_text(bot, q))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
     try:

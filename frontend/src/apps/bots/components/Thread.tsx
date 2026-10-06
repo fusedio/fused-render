@@ -142,9 +142,14 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside }: RowProps
     );
   }
   const actable = ACTABLE.has(e.role);
+  const viaLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "botsend" ? "botsend" : k);
   // Bot text is markdown (bold, lists, code…); what the user typed stays verbatim.
+  // A channel chip (docs §10): a user line that arrived by text, and the bot lines the router texted back.
+  const viaChip = e.via?.kind && e.via.kind !== "web" && e.via.kind !== "routine"
+    ? `<span class="via" title="${esc(e.role === "user" ? `Received over ${viaLabel(e.via.kind)} from ${e.via.addr || "?"}` : `Also sent over ${viaLabel(e.via.kind)}`)}">${e.role === "user" ? "via " : "→ "}${esc(viaLabel(e.via.kind))}</span>`
+    : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
-    + (e.role === "user" ? esc(e.text) : md(e.text))
+    + (e.role === "user" ? esc(e.text) : md(e.text)) + viaChip
     + (actable ? `<span class="rx" data-react="${e.seq}" title="Change reaction">${esc(reaction)}</span>` : "");
   const cls = `msg ${e.role}${e.role === "user" ? "" : " md"}${actable && reaction ? " has-rx" : ""}`;
   const bubble = <HtmlMsg className={cls} title={title} seq={actable ? e.seq : undefined} html={html} />;

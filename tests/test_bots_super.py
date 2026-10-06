@@ -118,7 +118,14 @@ def test_only_chat_starts_an_ea_task(client, ws, monkeypatch):
 
 def test_super_ignores_the_file_inbox(client, ws, monkeypatch):
     sent = []
-    monkeypatch.setattr(botmod.Bot, "send", lambda self, text, reply_to=None: sent.append(text))
+    real = botmod.Bot.receive
+
+    def receive(self, text, via=None, reply_to=None):
+        # Super Bot refuses inside receive() (docs §10): let that run; record what an ordinary bot would start.
+        if botmod.is_super(self.meta):
+            return real(self, text, via=via, reply_to=reply_to)
+        sent.append(text)
+    monkeypatch.setattr(botmod.Bot, "receive", receive)
     st, out = j(client.post("/api/bots", {"kind": "super"}))
     b = registry.get(out["id"])
     os.makedirs(b.inbox_dir, exist_ok=True)

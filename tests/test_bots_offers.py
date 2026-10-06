@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from fused_render.bots import apptools, imessage
+from fused_render.bots import apptools
 from fused_render.bots import bot as agents
 from fused_render.bots import paths as bpaths
 
@@ -313,9 +313,11 @@ def test_past_conversation_labels_offers(bot):
     assert lines[1] == "USER: Build it"
 
 
-# ---- iMessage reply hints -------------------------------------------------------
+# ---- iMessage reply hints (channels/router.py render, docs §10) ------------------
 def test_outbound_text_adds_how_to_answer():
-    assert imessage.outbound_text({"role": "question", "text": "Want it?", "options": ["Build it", "Not now"]}) == \
-        "Want it?\n\nReply with one of: Build it / Not now"
-    assert imessage.outbound_text({"role": "approval", "text": "About to text Ali. Approve?"}).endswith("Reply yes or no.")
-    assert imessage.outbound_text({"role": "done", "text": "All done."}) == "All done."
+    from fused_render.bots.channels import router as _router
+    from fused_render.bots.channels.imessage import CAPS as _caps
+    assert _router.render({"role": "question", "text": "Want it?", "options": ["Build it", "Not now"]}, _caps) == \
+        ("Want it?\n\nReply 1 Build it · 2 Not now", ["Build it", "Not now"])
+    assert _router.render({"role": "approval", "text": "About to text Ali. Approve?"}, _caps)[0].endswith("Reply yes or no.")
+    assert _router.render({"role": "done", "text": "All done."}, _caps) == ("All done.", [])

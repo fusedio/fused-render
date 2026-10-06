@@ -187,7 +187,8 @@ def bots_status(cursors: str = Query(default=""), shot_for: str = Query(default=
     # Full-screen polls run 2-3x/s; they skip the usage summary like the liveness probe.
     return {"bots": out, "ts": time.time(),
             "usage": None if quick else _store().usage_summary(),
-            "imessage": None if quick else registry.imessage_state()}
+            "imessage": None if quick else registry.imessage_state(),   # the old key; `channels` carries every channel (§10)
+            "channels": None if quick else registry.channel_states()}
 
 
 @router.post("/api/bots")
@@ -454,6 +455,14 @@ def _settings(bid, body):
         b.meta["imessage"] = imessage.norm_handle(body["imessage_handle"])
     if body.get("imessage_to") is not None:
         b.meta["imessage_to"] = str(body["imessage_to"]).strip()
+    if isinstance(body.get("channel_forwards"), dict):
+        # {kind: [category…]} — what else than its own replies a channel gets (channels/base.py FORWARDS, docs §10)
+        from fused_render.bots.channels.base import FORWARDS
+        fw = {}
+        for kind, cats in body["channel_forwards"].items():
+            if isinstance(cats, list):
+                fw[str(kind)] = [c for c in FORWARDS if c in cats]
+        b.meta["channel_forwards"] = fw
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):

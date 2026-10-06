@@ -24,7 +24,7 @@ import re
 import time
 import traceback
 
-from fused_render.bots import apptools, tools
+from fused_render.bots import apptools, channels, tools
 from fused_render.bots import bot as botmod
 
 SYSTEM_PROMPT = """You are a web-browsing agent controlling a real Chrome browser for a user.
@@ -311,9 +311,7 @@ def run(bot, task, label=None):
             if act == "login":
                 q = decision.get("message") or "This page needs you to sign in."
                 bot.window(True)
-                ev = bot.emit("question", f"{q} I've opened a real browser window for you — sign in there "
-                              "(your password manager and passkeys work normally), then reply 'done' or "
-                              "click Hand back when you're finished.")
+                ev = bot.emit("question", channels.login_text(bot, q))
                 bot.set_status("waiting", waiting_on=ev["seq"])
                 bot.asking = True
                 try:
@@ -446,9 +444,10 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
     instr_s = f"YOUR STANDING INSTRUCTIONS (set by the user, always apply):\n{instr}\n\n" if instr else ""
     m = bot.meta
     appr = "ask before irreversible actions" if (m.get("approval") or "ask") != "auto" else "never ask"
-    origin = "routine (user may be away)" if getattr(bot, "task_origin", "manual") == "routine" else "chat"
+    origin = channels.origin_label(bot)
     cfg_s = (f"YOU: {m.get('name')!r} · model {m.get('model') or botmod.DEFAULT_MODEL} · effort {m.get('effort') or botmod.DEFAULT_EFFORT} · approvals: {appr}"
-             f" · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. Only the user changes settings.\n\n")
+             f" · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. Only the user changes settings.\n\n"
+             + channels.prompt_for(bot))
     # The app guide is mounted like a skill: only when the task or a recent user line asks about the app itself.
     recent_user = " ".join(h for h in history[-14:] if h.startswith(("USER INSTRUCTION:", "USER ANSWER:")))
     guide_s = (botmod.app_guide() + f"\nCounts now: {sum(1 for r in m.get('routines') or [] if r.get('enabled'))} active routine(s), "

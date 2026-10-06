@@ -358,6 +358,9 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .msg .when { position: absolute; top: 50%; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; opacity: 0; transition: opacity .12s; pointer-events: none; }
 .bots-page .msg.thought .when, .bots-page .msg.done .when { left: 100cqw; transform: translate(-100%, -50%); }
 .bots-page .msg.user .when { right: 100cqw; transform: translate(100%, -50%); }
+/* Channel chip (docs §10): "via iMessage" on a texted-in user line, "→ iMessage" on the bot lines texted back. */
+.bots-page .msg .via { display: inline-block; margin-left: .5em; padding: 0 .45em; border-radius: 999px; font-size: 10.5px; line-height: 1.6; letter-spacing: .02em; vertical-align: baseline; color: var(--muted); background: var(--bg-alt); white-space: nowrap; }
+.bots-page .msg.user .via { background: rgba(255, 255, 255, .22); color: inherit; }
 .bots-page .msg:hover .when { opacity: 1; }
 @container (max-width: 560px) { .bots-page .msg .when { display: none; } }
 /* The chosen reaction sits on the bubble's bottom corner. */
@@ -601,6 +604,14 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .modal .field textarea { font: inherit; font-size: 12px; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; resize: vertical; min-height: 54px; }
 .bots-page .modal .field small { color: var(--muted); font-weight: 300; }
 .bots-page .modal .field small.stat { font-size: 11px; margin-top: 4px; line-height: 1.4; }  /* bridge status under the iMessage field */
+/* "Also text me when…" (docs §10): a fieldset styled as one field, its checkboxes as rows in the inset. */
+.bots-page #bmodal fieldset.field.forwards { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
+.bots-page #bmodal fieldset.field.forwards legend { padding: 0; margin-bottom: 5px; font-size: 11px; font-weight: 300; color: var(--muted); }
+.bots-page #bmodal fieldset.field.forwards .check { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--inset); color: var(--text); font-size: 12px; cursor: pointer; }
+.bots-page #bmodal fieldset.field.forwards .check:first-of-type { border-radius: 10px 10px 0 0; }
+.bots-page #bmodal fieldset.field.forwards .check:last-of-type { border-radius: 0 0 10px 10px; }
+.bots-page #bmodal fieldset.field.forwards .check + .check { border-top: 1px solid var(--bg); }
+.bots-page #bmodal fieldset.field.forwards .check input { margin: 0; accent-color: var(--accent); }
 .bots-page .modal .field input:not([type=checkbox]) { font: inherit; font-size: 12px; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; }
 .bots-page .modal h3 { margin: 0 0 12px; font-size: 16px; font-weight: 400; }
 .bots-page .modal p { margin: 0 0 14px; color: var(--muted); }

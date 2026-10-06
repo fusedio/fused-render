@@ -14,6 +14,9 @@ export interface Offer { kind: "use" | "build"; name: string; dir: string; spec:
 export interface AppRef { name: string; dir: string; params?: Record<string, string> | string; tools?: unknown }
 export interface ReplyRef { seq: number; role: Role; text: string }
 
+/** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend"; the web is never stamped. */
+export interface Via { kind: string; addr: string }
+
 export interface BotEvent {
   seq: number;
   ts: number;
@@ -29,6 +32,10 @@ export interface BotEvent {
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;
+  /** Where the message came from / which channel the bot's reply went to (docs §10). Absent = the web page. */
+  via?: Via;
+  /** "build": a build watcher's notice (routed under the "builds" forward). */
+  source?: string;
   trace?: unknown;
   artifacts?: unknown;
 }
@@ -109,6 +116,10 @@ export interface Bot {
   chrome_profile?: string;
   imessage?: string;
   imessage_to?: string;
+  /** {channel kind: categories it also gets} — "results" | "questions" | "errors" | "builds" | "routines" (docs §10). Absent = the default set. */
+  channel_forwards?: Record<string, string[]>;
+  /** The channel the running task came from; null/absent for a web task. */
+  task_via?: Via | null;
   builds?: unknown;
   pending_offer?: { seq: number; [k: string]: unknown } | null;
   offers_declined?: unknown;
@@ -142,9 +153,15 @@ export interface UsageSummary {
   days: { day: string; n: number }[];
 }
 
-export interface ImessageState { running: boolean; error: string; last_in: number | null; last_out: number | null; handles: number; holder: string; ts?: number; [k: string]: unknown }
+export interface ChannelIdentity { mode: "own" | "dedicated" | ""; label: string }
+export interface ImessageState {
+  running: boolean; error: string; last_in: number | null; last_out: number | null; handles: number; holder: string; ts?: number;
+  /** Who the bot speaks as: "own" = the user's own Messages account (texts carry "@name"), "dedicated" = a bot Apple ID. */
+  identity?: ChannelIdentity;
+  [k: string]: unknown;
+}
 
-export interface StatusReply { bots: Bot[]; ts: number; usage: UsageSummary | null; imessage: ImessageState | null }
+export interface StatusReply { bots: Bot[]; ts: number; usage: UsageSummary | null; imessage: ImessageState | null; channels?: Record<string, ImessageState> | null }
 
 export interface AppRow { folder: string; dir: string; name: string; desc: string; tools: unknown; skill: unknown; icon: string | null; mtime: number }
 export interface BuildRow { entryId: string; name: string; dir: string; createdAt: number; doneAt?: number }
@@ -226,6 +243,7 @@ export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
   build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; super_access?: string;
   trusted_apps?: string[];
+  channel_forwards?: Record<string, string[]>;
 }
 export type RoutineBody =
   | { op: "add"; text: string; kind: Routine["kind"]; minutes?: number; time?: string; weekdays?: number[]; at?: number }

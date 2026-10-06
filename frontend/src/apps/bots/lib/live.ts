@@ -100,11 +100,14 @@ export function rankUsage<T extends { live: boolean; today: number; models?: Rec
 }
 
 /** One line under the iMessage field: is the bridge reading Messages, and if not, why. */
-export function imessageStatus(handle: string, s: { running: boolean; error: string; last_in: number | null; last_out: number | null } | null, nowMs: number = Date.now()): string {
+export function imessageStatus(handle: string, s: { running: boolean; error: string; last_in: number | null; last_out: number | null; identity?: { mode: string; label: string } } | null, nowMs: number = Date.now()): string {
   if (!handle) return "Off. Enter a number and save; texts from it start tasks within a few seconds.";
   if (!s) return "Bridge status unknown yet.";
   if (s.error) return "Bridge not running: " + s.error;
   if (!s.running) return "Bridge starting…";
   const ago = (t: number | null) => (t ? `${Math.max(0, Math.round((nowMs / 1000 - t) / 60))} min ago` : "never");
-  return `Bridge running · last text in ${ago(s.last_in)}, last reply out ${ago(s.last_out)}.`;
+  // Who the bot speaks as (docs §10 D7): through your own account its texts carry "@name"; a bot Apple ID needs no prefix.
+  const who = s.identity?.mode === "dedicated" ? ` Texting as ${s.identity.label || "a separate account"}.`
+    : s.identity?.mode === "own" ? " Texting from your own account, so each text starts with @name." : "";
+  return `Bridge running · last text in ${ago(s.last_in)}, last reply out ${ago(s.last_out)}.${who}`;
 }
