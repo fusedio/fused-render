@@ -177,8 +177,13 @@ const GLOSS = " \u2014 ";
  *  the facts are the digits. A digit run with its unit glued on (`4s`, `22:42`,
  *  `2026`) stays as is; everything else wears `.hint-word`. Text nodes and
  *  spans only — the caption is still never parsed as markup. */
+/** A digit run with its unit (`4s`, `22:42`, `2026`) — and the month that
+ *  follows a day (`6 Oct`), which is the date's own word, not grammar
+ *  (Akshil, 2026-10-06: "Oct should still be heavy"). */
+const NUMBER_RUN = /(\d[\d:.]*[a-z]?(?: (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b)?)/g;
+
 function renderWords(p: HTMLDivElement, text: string): void {
-  for (const part of text.split(/(\d[\d:.]*[a-z]?)/g)) {
+  for (const part of text.split(NUMBER_RUN)) {
     if (!part) continue;
     if (/^\d/.test(part)) {
       p.appendChild(document.createTextNode(part));
