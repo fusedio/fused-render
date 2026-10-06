@@ -15,6 +15,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/s
 import { cn } from "@platform/lib/utils";
 
 import { chipHint, chipWhen } from "./run-when";
+import { StampText } from "./StampText";
 
 import {
   ANSWERABLE_TOOL,
@@ -388,7 +389,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipPr
           row carried no clock. */}
       {chipWhen(seg.ts) ? (
         <span className="chip-stamp" aria-hidden="true" {...(chipHint(seg) ? { "data-hint": chipHint(seg)! } : {})}>
-          {chipWhen(seg.ts)}
+          <StampText text={chipWhen(seg.ts)!} />
         </span>
       ) : null}
       <CollapsibleTrigger

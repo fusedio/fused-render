@@ -137,9 +137,9 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
     const json = r.toJSON() as Json | Json[];
     const trigger = byClass(json, "run-trigger")[0]!;
     const props = trigger.props as WhenProps;
-    // The run's own span — first call to last result, 2m 10s — in Claude's
-    // shape, on the app's one instant tooltip (`data-hint`, platform/lib/hints).
-    expect(props["data-hint"]).toMatch(/^Worked for 2m 10s · (just now|\d+m ago|\d+h ago|yesterday|\d+d ago)$/);
+    // When the first call was made, then the run's own span — first call to
+    // last result, 2m 10s — on the app's one instant tooltip (`data-hint`).
+    expect(props["data-hint"]).toMatch(/^\d{1,2} [A-Z][a-z]{2} \d{4}, \d\d:\d\d:\d\d · ran 2m 10s$/);
     // NOT a `title`: the OS tooltip waits a second (Akshil, 2026-10-05).
     expect(props.title).toBeUndefined();
     // And the opened run is the chips alone — no clock line inside it
@@ -174,7 +174,7 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
 
   test("a bare run (no prose either side) wears the hover too", () => {
     const json = view([stamped("a", T0, T0 + 9)]).toJSON() as Json | Json[];
-    expect((byClass(json, "run-trigger")[0]!.props as WhenProps)["data-hint"]).toMatch(/^Worked for 9s · /);
+    expect((byClass(json, "run-trigger")[0]!.props as WhenProps)["data-hint"]).toMatch(/ · ran 9s$/);
   });
 
   test("two runs in one reply wear their OWN words — the number is each run's", () => {
@@ -183,8 +183,8 @@ describe("when the run happened (Akshil, 2026-10-04)", () => {
     const json = view(segs).toJSON() as Json | Json[];
     const whens = byClass(json, "run-trigger").map((t) => (t.props as WhenProps)["data-hint"]);
     expect(whens).toHaveLength(2);
-    expect(whens[0]).toMatch(/^Worked for 4s · /);
-    expect(whens[1]).toMatch(/^Worked for 1m · /);
+    expect(whens[0]).toMatch(/ · ran 4s$/);
+    expect(whens[1]).toMatch(/ · ran 1m$/);
   });
 });
 

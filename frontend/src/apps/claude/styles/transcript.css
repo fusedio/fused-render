@@ -148,6 +148,13 @@
    element the pointer cannot land on has no tooltip. It is still not a control:
    nothing here is clickable, and `user-select: none` keeps the minute out of a
    copied conversation. */
+/* NUMBERS AT WEIGHT, WORDS LIGHTER (StampText, Akshil 2026-10-06): `41m` is
+   the fact, `ago` the grammar. Both lane stamps. */
+.chat-root .turn-stamp .stamp-word,
+.chat-root .chip-stamp .stamp-word {
+  font-weight: 300;
+  opacity: 0.85;
+}
 .chat-root .turn.user .turn-stamp {
   position: absolute;
   left: 0;

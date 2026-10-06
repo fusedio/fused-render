@@ -51,18 +51,17 @@ describe("runSpan", () => {
   });
 });
 
-describe("the hover words (Akshil, 2026-10-06: the RUN's number, Claude's shape)", () => {
-  test("run from the run's first stamp to its last result", () => {
-    expect(runWhenWords([think(T0 + 1), tool("a", T0 + 2, T0 + 130)], now)).toBe("Worked for 2m 9s · just now");
+describe("the hover words (Akshil, 2026-10-06: the RUN's number, in the chip hover's order)", () => {
+  test("say when the first call was made, then how long the run took", () => {
+    expect(runWhenWords([think(T0 + 1), tool("a", T0 + 2, T0 + 130)])).toMatch(
+      /^\d{1,2} [A-Z][a-z]{2} \d{4}, \d\d:\d\d:\d\d · ran 2m 9s$/,
+    );
   });
-  test("measure 'ago' from the END, not the start", () => {
-    expect(runWhenWords([tool("a", T0 - 420, T0)], now)).toBe("Worked for 7m · 3m ago");
-  });
-  test("say only when, for a run whose stamps all agree", () => {
-    expect(runWhenWords([tool("a", T0)], now)).toBe("3m ago");
+  test("say only the instant, for a run whose stamps all agree", () => {
+    expect(runWhenWords([tool("a", T0)])).toMatch(/^\d{1,2} [A-Z][a-z]{2} \d{4}, \d\d:\d\d:\d\d$/);
   });
   test("say nothing for a run still streaming, with no clocks", () => {
-    expect(runWhenWords([tool("a"), think()], now)).toBeNull();
+    expect(runWhenWords([tool("a"), think()])).toBeNull();
   });
 });
 
