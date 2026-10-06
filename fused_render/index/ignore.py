@@ -1,5 +1,5 @@
 """Prune rules for the scan: the user-editable ignore list, the hardcoded
-device/synthetic-filesystem skips, and the structural mount guard.
+device/synthetic-filesystem skips, and the structural home-tree guard.
 
 Three layers, deliberately distinct:
 
@@ -15,12 +15,10 @@ Three layers, deliberately distinct:
     knowing about but never worth looking inside. Cheaper than an ignore rule,
     too, since ignore rules prune subdirectories but not the files sitting
     directly in the pruned directory.
-  * `MountGuard` — remote buckets mounted by fused-render. `default_ignore()`
-    already names the mounts dir, but that list is user-editable and a kernel
-    `scandir`/`stat` on an rclone NFS mount path can wedge the mount
-    permanently (a single READDIR on a flat million-key S3 prefix has killed
-    mounts in production). So the crawler ALSO refuses these paths
-    structurally, and deleting the ignore entry cannot re-expose the hazard.
+  * `MountGuard` — the fused-render home trees (caches, sidecars, the index
+    itself). The name is historical: it used to also guard the mounts
+    dir, which no longer exists. The ignore list is user-editable, so the
+    crawler ALSO refuses these paths structurally.
 
 See specs/scan-ignore.md.
 """
@@ -222,10 +220,8 @@ def default_home_dirs() -> list[str]:
 
     BOTH matter to the guard, not just the active one. A dev server, a test
     run, or a branch checkout redirects FUSED_RENDER_HOME — and then a scan of
-    the user's home directory walks straight into the DEFAULT home's mounts,
-    which the active config knows nothing about. That is not hypothetical: it
-    is what a live home scan did, blocking ten scan processes for minutes on
-    S3 prefix listings before anything was indexed."""
+    the user's home directory walks straight into the DEFAULT home, which the
+    active config knows nothing about."""
     homes = [os.path.expanduser("~/.fused-render")]
     env = os.environ.get("FUSED_RENDER_HOME")
     if env:
@@ -234,18 +230,7 @@ def default_home_dirs() -> list[str]:
 
 
 def default_ignore() -> list[str]:
-    """The starting ignore list, INCLUDING the mounts dir for this machine and
-    `~/Library/Caches`.
-
-    The mounts entries are resolved at call time rather than hardcoded as
-    `~/.fused-render/**/mounts`: FUSED_RENDER_HOME moves the whole shell home
-    (every test and dev server redirects it), and a pattern naming a directory
-    nobody uses would silently leave the real mounts dir walkable. Both homes
-    are listed when they differ, for the same reason `MountGuard` covers both:
-    a redirected home does not stop the DEFAULT home's mounts from sitting in
-    the middle of the tree being scanned. `**/` spans zero or more levels, so
-    one pattern per home also covers every branch-nested checkout's own mounts
-    folder.
+    """The starting ignore list, INCLUDING `~/Library/Caches`.
 
     `~/Library/Caches` is a PATH pattern (it contains a slash), so it matches
     that one path only — not the whole `~/Library` tree, which was tried on
@@ -261,13 +246,7 @@ def default_ignore() -> list[str]:
     list from whenever they saved it and does not receive this pattern
     retroactively. Changing how saved configs merge in new defaults is a
     separate change."""
-    seen, out = set(), []
-    for base in default_home_dirs():
-        pattern = norm(os.path.join(base, "**", "mounts"))
-        if pattern not in seen:
-            seen.add(pattern)
-            out.append(pattern)
-    out.append(norm(os.path.expanduser("~/Library/Caches")))
+    out = [norm(os.path.expanduser("~/Library/Caches"))]
     return DEFAULT_IGNORE_NAMES + out
 
 
@@ -285,7 +264,7 @@ def clean_patterns(pats) -> list[str]:
 
 def _path_regex(pat: str) -> str:
     """Glob source for a path pattern. `**/` spans any number of directory
-    levels *including none* (so `~/.fr/**/mounts` matches `~/.fr/mounts` too),
+    levels *including none* (so `~/.fr/**/cache` matches `~/.fr/cache` too),
     a lone `**` spans anything, and `*`/`?` stay inside one segment."""
     out, i, n = [], 0, len(pat)
     while i < n:
@@ -396,12 +375,8 @@ class MountGuard:
     """Structural refusal of every path inside a fused-render home — the layer
     that survives a user emptying the ignore list.
 
-    It blocks the WHOLE home tree, not only its `mounts` subdirectory. A home
-    holds mounts (one per branch checkout, `branches/<ref>/mounts`), caches,
-    sidecars and the index itself: none of it is user content anyone searches
-    for, and naming the tree rather than the mount points means a mounts dir
-    the guard has not been told about — another home's, a future layout's —
-    is covered anyway.
+    It blocks the WHOLE home tree. A home holds caches, sidecars and the index
+    itself: none of it is user content anyone searches for.
 
     Hot-path cheap on purpose: the roots are resolved ONCE at construction and
     every per-directory decision is then a pure string comparison, no syscall.
@@ -411,20 +386,15 @@ class MountGuard:
 
     `blocks_root()` is the authoritative check for a path arriving from
     outside the walk (a scan root a user typed, which CAN be a symlink into
-    the mounts dir); it defers to `mounts.is_mount_backed`, which pays a
-    realpath to resolve exactly that case.
+    a home); it pays a realpath to resolve exactly that case.
 
     This is one of two defences. The other — refusing to cross onto another
     filesystem at all (`scan.scan_dir_once`'s `root_dev`) — is what covers
     every mount nobody named: iCloud, SMB, an external disk."""
 
-    def __init__(self, mounts_dir: str | None = None, home_dirs=None):
-        if mounts_dir is None:
-            from fused_render.shell.mounts import mounts_dir as _mounts_dir
-            mounts_dir = _mounts_dir()
-        candidates = [mounts_dir]
-        candidates += (list(home_dirs) if home_dirs is not None
-                       else default_home_dirs())
+    def __init__(self, home_dirs=None):
+        candidates = (list(home_dirs) if home_dirs is not None
+                      else default_home_dirs())
         roots = set()
         for c in candidates:
             if not c:
@@ -445,5 +415,7 @@ class MountGuard:
         symlinks) because a root is user-supplied, and paid once per run."""
         if self.blocks(path):
             return True
-        from fused_render.shell.mounts import is_mount_backed
-        return is_mount_backed(path)
+        try:
+            return self.blocks(os.path.realpath(path))
+        except OSError:
+            return False

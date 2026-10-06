@@ -17,7 +17,6 @@ import contextlib
 import importlib.util
 import inspect
 import os
-import sys
 from unittest import mock
 
 import pytest
@@ -33,21 +32,6 @@ def graph():
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
-
-
-@pytest.fixture()
-def appenv(graph):
-    """`templates/shared/appenv.py`, the module graph.py asks about mounts.
-
-    Importing `graph` puts `../shared` on sys.path, so this is the SAME module
-    object the template's lazy `from appenv import is_mount_backed` resolves to —
-    patching an attribute here is patching what the template sees. Most mount
-    tests below drive `FUSED_RENDER_MOUNTS_DIR` instead, which is the real
-    contract; this exists for the one case that needs a detector saying "this
-    exact path and nothing under it"."""
-    import appenv as mod
-
     return mod
 
 
@@ -582,119 +566,6 @@ def test_the_climb_is_bounded_and_gives_up_rather_than_reaching_the_top(graph, t
     assert graph.vault_root(os.path.dirname(start)) == root
 
 
-def test_the_climb_stops_at_a_mount_boundary(graph, appenv, tmp_path, monkeypatch):
-    """A remote mount must not become the scan root through the ascent (MD-11).
-
-    The refusal in `_refuse_mounts` would catch it afterwards, but then opening a
-    perfectly local note under a mounted folder would answer `mount_unsupported`
-    instead of scanning the folder it is actually in.
-    """
-    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
-    start = os.path.join(root, "docs")
-    assert graph.vault_root(start) == root  # the control: same tree, no mount
-
-    # Only the ancestor is mount-backed: `is_mount_backed` is prefix-based, so a
-    # real mounts dir at `root` would make `start` mount-backed too and the test
-    # would prove the wrong thing.
-    monkeypatch.setattr(
-        appenv, "is_mount_backed", lambda path: os.path.abspath(path) == root)
-    with _no_enumeration():
-        assert graph.vault_root(start) == start
-
-
-def test_a_note_on_a_mount_is_never_probed_at_all(graph, tmp_path, monkeypatch):
-    """The ascent must not touch a mount-backed path even ONCE.
-
-    `test_the_climb_stops_at_a_mount_boundary` covers the note that merely lives
-    under a mounted ancestor. This covers the note that is itself on the mount,
-    where the bound alone would not save us: 8 levels of `isdir`/`isfile` against
-    a remote is 8 levels too many. Each probe is a kernel GETATTR on a live NFS
-    mount, and this repo has already wedged one that way — so this asserts the
-    absence of the syscall, not merely that the answer came out right.
-
-    Every filesystem primitive the probes could reach is counted, because
-    `_has_vault_marker` is free to change which one it calls; what may not change
-    is that none of them see the mount.
-    """
-    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
-    start = os.path.join(root, "docs")
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
-
-    touched = []
-    real = {name: getattr(os.path, name) for name in ("isdir", "isfile", "exists")}
-
-    def watched(name):
-        def probe(path, *args, **kwargs):
-            if str(path).startswith(root):
-                touched.append((name, str(path)))
-            return real[name](path, *args, **kwargs)
-        return probe
-
-    with mock.patch.object(os.path, "isdir", watched("isdir")), \
-            mock.patch.object(os.path, "isfile", watched("isfile")), \
-            mock.patch.object(os.path, "exists", watched("exists")), \
-            _no_enumeration():
-        # `start` is its own root, so nothing above it is consulted...
-        assert graph.vault_root(start) == start
-    assert touched == [], touched
-
-    # ...and the refusal is what the user actually sees, so the walk never runs
-    # even though the ascent handed back a mount-backed path.
-    out = graph.main(action="note", file=os.path.join(start, "note.md"))
-    assert out["error"] == "mount_unsupported"
-
-
-@contextlib.contextmanager
-def _no_appenv():
-    """Make `from appenv import ...` fail, i.e. mount detection unavailable.
-
-    This is a real shape, not a hypothetical: a copy of the template folder taken
-    without its `../shared/` sibling has no appenv at all. It used to be the
-    EVERYDAY shape under the fused engine (PYTHONPATH stripped => the old
-    `from fused_render.shell.mounts import ...` always failed), so the fail-closed
-    branch has to keep working now that it is the rare one."""
-    import builtins
-
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("blocked")
-        return real_import(name, *args, **kwargs)
-
-    saved = sys.modules.pop("appenv", None)
-    builtins.__import__ = blocked
-    try:
-        yield
-    finally:
-        builtins.__import__ = real_import
-        if saved is not None:
-            sys.modules["appenv"] = saved
-
-
-def test_an_unavailable_mount_detector_does_not_climb(graph, tmp_path):
-    # "Cannot tell" reads as "do not ascend", the same way the gate and
-    # `_refuse_mounts` read it as "refuse".
-    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
-    with _no_appenv():
-        assert graph.vault_root(os.path.join(root, "docs")) == os.path.join(root, "docs")
-
-
-def test_an_unavailable_mount_detector_refuses_the_walk(graph, tmp_path):
-    """The other half of MD-11's fail-closed rule: no detector => no walk.
-
-    `vault_root` merely declining to climb is not enough — `scan_root` is what
-    would actually `readdir` a remote, so it must refuse outright, and `main`
-    must surface that as `mount_unsupported` rather than a partial graph."""
-    root = _vault(tmp_path, {"A.md": "[[B]]\n"})
-    with _no_appenv():
-        with pytest.raises(graph.MountUnsupported):
-            graph.scan_root(root)
-        out = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
-        assert out["error"] == "mount_unsupported"
-        assert graph.main(action="candidates", root=root)["error"] == "mount_unsupported"
-
-
 def test_an_explicit_root_still_wins_over_the_marker(graph, tmp_path):
     root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
     out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"),
@@ -739,32 +610,6 @@ def test_main_coerces_a_string_depth(graph, chain):
         action="graph", file=focus, root=root, depth=2)["nodes"]
     # Nonsense falls back rather than throwing: this is a URL param.
     assert graph.main(action="graph", file=focus, root=root, depth="x")["depth"] == 1
-
-
-# ------------------------------------------------------------ mount refusal
-
-
-def test_a_mount_backed_root_is_refused_outright(graph, tmp_path, monkeypatch):
-    """The recursive walk is exactly the shape that wedges an rclone NFS mount,
-    so the graph refuses a mount-backed root instead of bounding the risk
-    (MD-11/D156). A clear result, never a partial walk."""
-    root = _vault(tmp_path, {"A.md": "[[B]]\n"})
-    # The contract path: the server exports the resolved mounts dir and appenv
-    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
-    out = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
-    assert out["error"] == "mount_unsupported"
-    # And no walk happened: scan_root itself refuses, so nothing can slip past
-    # a caller that forgot to check.
-    with pytest.raises(graph.MountUnsupported):
-        graph.scan_root(root)
-
-
-def test_a_local_root_is_not_refused_when_a_mounts_dir_merely_exists(
-        graph, tmp_path, monkeypatch):
-    root = _vault(tmp_path, {"A.md": "hi\n"})
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", str(tmp_path / "elsewhere"))
-    assert graph.main(action="note", file=os.path.join(root, "A.md"), root=root)["error"] is None
 
 
 # ------------------------------------------------------- autocomplete candidates
@@ -912,14 +757,6 @@ def test_the_suffix_index_answers_exactly_what_the_endswith_scan_answered(graph)
                     == graph.resolve_link(target, from_rel, paths, index)), (target, from_rel)
 
 
-def test_candidates_refuses_a_mount_backed_root(graph, tmp_path, monkeypatch):
-    root = _vault(tmp_path, {"A.md": "x\n"})
-    # The contract path: the server exports the resolved mounts dir and appenv
-    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
-    assert graph.main(action="candidates", root=root)["error"] == "mount_unsupported"
-
-
 # --------------------------------------------------------------- the index
 
 
@@ -1019,16 +856,6 @@ def test_a_corrupt_index_falls_back_to_a_full_walk(graph, tmp_path, home):
         handle.write(b"not a database")
     # The index is a cache: an unusable one costs a walk, never a failure.
     assert list(graph.scan_indexed(root)["notes"]) == ["A.md"]
-
-
-def test_the_index_is_never_touched_for_a_mount_backed_root(graph, tmp_path, home, monkeypatch):
-    root = _vault(tmp_path, {"A.md": "x\n"})
-    # The contract path: the server exports the resolved mounts dir and appenv
-    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
-    with pytest.raises(graph.MountUnsupported):
-        graph.scan_indexed(root)
-    assert not os.path.exists(os.path.join(home, "graph"))
 
 
 # ---------------------------------------------------------- graph assembly
@@ -1167,16 +994,6 @@ def test_an_embedded_asset_is_not_a_graph_node(graph, tmp_path, home):
     # A picture is not a note; it would otherwise dominate a vault of screenshots.
     root = _vault(tmp_path, {"A.md": "![[pic.png]]\n", "pic.png": "x"})
     assert _ids(graph.main(action="graph", root=root)) == ["A.md"]
-
-
-def test_the_graph_refuses_a_mount_backed_root(graph, tmp_path, home, monkeypatch):
-    root = _vault(tmp_path, {"A.md": "x\n"})
-    # The contract path: the server exports the resolved mounts dir and appenv
-    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
-    out = graph.main(action="graph", root=root)
-    assert out["error"] == "mount_unsupported"
-    assert "remote mounts" in out["message"]
 
 
 def test_an_unwritable_index_home_still_answers_from_a_plain_walk(graph, tmp_path, home):

@@ -108,22 +108,6 @@ def test_ready_has_no_desktop_instance_without_env(tmp_path, monkeypatch):
     assert "desktop_instance" not in client.get("/api/desktop/ready").json()
 
 
-def test_readiness_is_independent_of_mount_health(tmp_path, desktop_env, monkeypatch):
-    # A broken mount subsystem must not gate readiness: make the live rcd call /api/config depends on explode, and confirm /api/desktop/ready is unaffected.
-    import fused_render.shell.mounts as shell_mounts
-
-    def boom(*_a, **_k):
-        raise RuntimeError("rcd is down / mount wedged")
-
-    monkeypatch.setattr(shell_mounts, "mounted_paths", boom)
-    client = TestClient(create_app(start_dir=str(tmp_path)))
-    body = client.get("/api/desktop/ready", headers={"X-Fused-Desktop-Token": desktop_env}).json()
-    assert body["desktop_instance"] == {
-        "id": desktop_probe.DESKTOP_INSTANCE_ID,
-        "token": desktop_env,
-    }
-
-
 # ---- the probe against a real local port -----------------------------------
 
 

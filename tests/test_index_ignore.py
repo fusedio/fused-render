@@ -90,21 +90,6 @@ def test_ignore_sig_is_order_sensitive_and_stable():
     assert ignore_sig(["a", "b"]) != ignore_sig(["b", "a"])
 
 
-def test_default_ignore_covers_the_mounts_dir_under_the_current_home(monkeypatch, tmp_path):
-    """The mounts dir must be ignored wherever FUSED_RENDER_HOME puts it — a
-    hardcoded ~/.fused-render/**/mounts would miss a redirected home entirely,
-    and walking a mount means kernel I/O on an rclone NFS path."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    r = IgnoreRules(default_ignore())
-    # `default_ignore()` compiles a `**/mounts` GLOB that is already `norm`ed
-    # (ignore.py) — the paths tested against it need the same forward-slash
-    # form, not the native (backslash, on Windows) spelling `str(Path)` gives.
-    assert r.is_ignored(norm(str(tmp_path / "home" / "mounts")))
-    assert r.is_ignored_tree(norm(str(tmp_path / "home" / "mounts" / "s3" / "deep")))
-    # branch-nested checkouts get their own mounts folder
-    assert r.is_ignored(norm(str(tmp_path / "home" / "branches" / "featureX" / "mounts")))
-
-
 def test_the_walk_and_the_index_share_one_ignore_floor():
     """The two corpus sources must not disagree about what exists. Search is
     answered by the live walk or by the index depending on whether a scan has

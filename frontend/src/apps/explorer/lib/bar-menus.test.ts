@@ -193,12 +193,10 @@ test("fileMenu draws no divider for an empty or absent group and never ends in o
 // the current folder) gains a "Rename…" item — this pins the guard that
 // decides when, and the shape it produces.
 
-test("canRenameBase allows an ordinary folder anywhere, including inside a mount", () => {
-  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
+test("canRenameBase allows an ordinary folder anywhere", () => {
+  const guard = { home: "/Users/x" };
   expect(canRenameBase("/Users/x/Projects", guard)).toBe(true);
   expect(canRenameBase("/Users/x/Projects/sub", guard)).toBe(true);
-  // A folder nested INSIDE a mount (not the mount root itself) is ordinary.
-  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket/inner", guard)).toBe(true);
 });
 
 test("canRenameBase refuses the filesystem root", () => {
@@ -208,30 +206,22 @@ test("canRenameBase refuses the filesystem root", () => {
 });
 
 test("canRenameBase refuses the home folder", () => {
-  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
+  const guard = { home: "/Users/x" };
   expect(canRenameBase("/Users/x", guard)).toBe(false);
   expect(canRenameBase("/Users/x/Documents", guard)).toBe(true);
 });
 
-test("canRenameBase refuses a mount root but not what's inside or beside it", () => {
-  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
-  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket", guard)).toBe(false);
-  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket/inner", guard)).toBe(true);
-  // The mounts_root directory itself is refused too: renaming it breaks every
-  // mount at once (review, PR #1049). Trailing slashes in the config are fine.
-  expect(canRenameBase("/Users/x/.fused-render/mounts", guard)).toBe(false);
-  const slashed = { home: "/Users/x/", mountsRoot: "/Users/x/.fused-render/mounts/" };
+test("canRenameBase tolerates a trailing slash on the configured home", () => {
+  const slashed = { home: "/Users/x/" };
   expect(canRenameBase("/Users/x", slashed)).toBe(false);
-  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket", slashed)).toBe(false);
   expect(canRenameBase("/Users/x/Projects", slashed)).toBe(true);
 });
 
-test("canRenameBase fails closed while config hasn't loaded (home/mountsRoot undefined)", () => {
-  // Nothing is renameable until BOTH are known (bugbot, PR #1049): an empty
-  // guard used to allow home and mount roots through.
+test("canRenameBase fails closed while config hasn't loaded (home undefined)", () => {
+  // Nothing is renameable until home is known (bugbot, PR #1049): an empty
+  // guard used to allow the home folder through.
   expect(canRenameBase("/", {})).toBe(false);
   expect(canRenameBase("/Users/x", {})).toBe(false);
   expect(canRenameBase("/Users/x/Projects", {})).toBe(false);
-  expect(canRenameBase("/Users/x/Projects", { home: "/Users/x" })).toBe(false);
-  expect(canRenameBase("/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" })).toBe(true);
+  expect(canRenameBase("/Users/x/Projects", { home: "/Users/x" })).toBe(true);
 });

@@ -16,7 +16,7 @@ plausibly `os.path.isdir` in `fused_render/index/query.py::_walk_from`, which wa
 width 2 to width 1 (or 0), every subsequent keystroke serialises behind it, CPU stays low,
 and only a process restart clears it.
 
-This repo has a known failure class of wedged NFS/rclone mounts parking threads on
+This repo has a known failure class of wedged network-filesystem mounts parking threads on
 `stat`/read indefinitely, curable only by force-unmount or restart. That is the trigger.
 
 Six changes below: one removes the trigger, the rest make the damage non-permanent and
@@ -32,8 +32,8 @@ Today it does `if not os.path.isdir(candidate): break` on path segments derived 
 user's raw query text. Against a wedged mount that call never returns.
 
 - Before any `os.path.isdir` / `os.stat` on a candidate path, consult `MountGuard`
-  (`fused_render/server/...mounts` — same class `_rank_reason` uses:
-  `MountGuard(mounts_dir=...).blocks_root(path)`) and skip/abort the walk for a blocked path
+  (`fused_render/index/ignore.py` — same class `_rank_reason` uses:
+  `MountGuard(...).blocks_root(path)`) and skip/abort the walk for a blocked path
   rather than stat it.
 - `query.py` is a library module — do **not** introduce a server-layer import cycle. If
   `MountGuard` is not cleanly importable there, thread an optional guard/predicate callable
@@ -87,7 +87,7 @@ every other `asyncio.to_thread` caller in the app.
 site in `api_index_rank`.
 
 On a cache miss `_rank_reason` calls `MountGuard(...).blocks_root(root)`, whose own comment
-says a stat under a wedged rclone mount blocks the thread indefinitely — and it currently
+says a stat under a wedged network mount blocks the thread indefinitely — and it currently
 runs **on the event loop**, so it can stall the whole server, not just one request.
 
 - Compute the reason inside the worker (in `_rank_body`, or as a second

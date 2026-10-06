@@ -59,7 +59,7 @@ export function bookmarkFsPath(url: string): string {
 // The folder a FILE DRAG may be dropped onto for this bookmark, or null when
 // the bookmark isn't a place on this filesystem at all. Only explorer view
 // urls qualify: bookmarkFsPath falls through to the raw pathname for anything
-// else (a "/mounts" page, a cloud url), and "moving files into /mounts" is not
+// else (a shell page route, a url that is not a place on disk), and "moving files into a page" is not
 // a thing. Whether the path is a DIRECTORY is a question for the server — see
 // the kind probe in BookmarksSection.
 function bookmarkDropPath(url: string): string | null {

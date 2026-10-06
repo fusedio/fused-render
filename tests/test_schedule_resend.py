@@ -464,18 +464,3 @@ def test_the_route_carries_the_d3_write_guard(client, target, spawned):
     assert len(schedule.list_entries()) == 1
 
 
-def test_the_route_refuses_a_mount_backed_target(client, target, spawned,
-                                                  monkeypatch):
-    """Re-checked rather than inherited from creation: it passed the gate
-    whenever it was scheduled, and a path can become mount-backed after that."""
-    from fused_render.shell import mounts
-
-    original = _ran_and_broke(target)
-    monkeypatch.setattr(mounts, "is_mount_backed", lambda path: True)
-
-    r = client.post("/api/schedule/resend", json={"entry_id": original["id"]},
-                    headers=WRITE)
-    assert r.status_code == 400
-    assert "remote mount" in r.json()["error"]
-    assert spawned == []
-    assert len(schedule.list_entries()) == 1

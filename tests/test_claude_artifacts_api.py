@@ -283,31 +283,6 @@ def test_republish_without_description_keeps_the_earlier_metadata(
     assert entry["session_id"] == "s2"
 
 
-def test_mount_backed_file_is_not_stated_and_reports_not_local(
-    client, projects_dir, tmp_path, monkeypatch
-):
-    # A path under the mounts dir must never reach the kernel stat — that
-    # GETATTR is what wedges a dead mount, once per card per listing. `exists`
-    # is None there, not False: "not checked" is a different claim from "gone
-    # from disk", and a UI that hides the known-gone must not also hide these.
-    from fused_render.shell.mounts import access as mounts_access
-
-    page = tmp_path / "mounts-root" / "s3" / "page.html"
-    page.parent.mkdir(parents=True)
-    page.write_text("<title>On a mount</title>")
-    monkeypatch.setattr(mounts_access, "mounts_dir", lambda: str(tmp_path / "mounts-root"))
-    _session(projects_dir, "-tmp-proj", "s1", "/tmp/proj", [
-        _frame_link("s1", page, URL_A, "Mounted", "2026-07-16T09:00:00Z"),
-    ])
-    stats = []
-    real_isfile = claude_artifacts_mod.os.path.isfile
-    monkeypatch.setattr(claude_artifacts_mod.os.path, "isfile",
-                        lambda p: (stats.append(p), real_isfile(p))[1])
-    artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
-    assert artifacts[0]["exists"] is None
-    assert str(page) not in stats
-
-
 def test_cwd_param_scopes_listing_to_one_directory(client, projects_dir, tmp_path):
     # ?cwd= narrows the listing to sessions run in that directory — the claude
     # template's "artifacts for this file/folder" section. Comparison is on the

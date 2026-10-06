@@ -318,7 +318,7 @@ def _force_platform(monkeypatch, name: str):
     Patches the module's own _platform() and NOT sys.platform: a module's `sys`
     attribute IS the real sys module, so setting `platform` on it is a
     process-wide change other live code reads — shell/mounts/rcd.py and
-    lifecycle.py branch on sys.platform, and _fs_delete calls into shell.mounts,
+    lifecycle.py branch on sys.platform, and _fs_delete is exercised here,
     so forcing "win32" here would have any concurrent thread on a Mac take the
     Windows path. The real dispatcher still runs; only its answer to "which OS is
     this?" is substituted."""
@@ -677,7 +677,7 @@ def test_delete_win32_aborted_operation_is_a_failure(tmp_path, monkeypatch):
 def test_forcing_a_platform_does_not_leak_into_the_real_sys(tmp_path, monkeypatch):
     # The seam's whole point. Patching `_server_fs_mutate.sys.platform` would have
     # patched the REAL sys module — shell/mounts/rcd.py and lifecycle.py read it
-    # live, and _fs_delete calls into shell.mounts — so a Windows-forcing case on a
+    # live, and _fs_delete runs live — so a Windows-forcing case on a
     # Mac changed what every other thread in the process believed about the OS.
     import sys as real_sys
 

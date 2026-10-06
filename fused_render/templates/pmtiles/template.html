@@ -392,7 +392,7 @@ async function refreshExplorer(dir){
       <span class="skel-bar" style="flex:1;max-width:${72 - i * 9}%"></span>
       <span class="skel-bar" style="width:32px;flex:0 0 auto"></span>
     </div>`).join('');
-  const r = await fused.runPython('./browse.py', { dir, exts: '.pmtiles', show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
+  const r = await fused.runPython('./browse.py', { dir, exts: '.pmtiles', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
   if (!r || r.error){ els.explorerList.innerHTML = '<div class="row" style="color:#6b7178">failed to load</div>'; return; }
   els.crumbs.innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' / ');
   els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));

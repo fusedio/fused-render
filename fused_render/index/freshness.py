@@ -154,7 +154,7 @@ def note_folder_opened(cfg: IndexConfig, path: str, roots,
 
     Returns a `FreshnessCheck`. Every gate is ordered cheapest-first, so the
     duckdb lookup is unreachable for the common cases: outside the roots,
-    mount-backed, recently scanned, still churning. That ordering means a
+    inside a home tree, recently scanned, still churning. That ordering means a
     change that turns out not to be stale can still come back with
     `retry_after` set if it is also within the quiet window — the staleness
     lookup that would have ruled it out for good has not run yet — so a
@@ -166,11 +166,8 @@ def note_folder_opened(cfg: IndexConfig, path: str, roots,
     root = enclosing_root(roots, path)
     if root is None:
         return FreshnessCheck()
-    # BEFORE any kernel syscall on the caller's path, and pure string work
-    # against the mount records: os.stat under a wedged rclone mount blocks the
-    # calling thread indefinitely (this repo's documented mount-wedge class),
-    # and this runs on the thread serving a listing request.
-    if MountGuard(mounts_dir=runner._mounts_dir()).blocks(path):
+    # Pure string work, and this runs on the thread serving a listing request.
+    if MountGuard().blocks(path):
         return FreshnessCheck()
     last = runner.last_scan(cfg, root)
     if last is not None and (now - last) < MIN_INTERVAL_S:

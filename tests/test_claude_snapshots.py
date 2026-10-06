@@ -404,23 +404,6 @@ def test_a_directory_cannot_be_planned_or_reverted(agent, claude_home, tmp_path)
                                  version_id="sess-a@v1")
 
 
-def test_a_mount_backed_target_is_refused_before_anything_stats_it(
-    agent, claude_home, tmp_path
-):
-    # Every action on this panel refuses a path under the mounts dir: the bytes
-    # come from a remote over FUSE and a wedged mount turns an ordinary kernel
-    # stat into a hang. Same answer condition.py gives, so this is a state the
-    # page cannot reach — the module is the guarantee (MD-11).
-    mounted = tmp_path / "home" / "mounts" / "src" / "notes.md"
-    mounted.parent.mkdir(parents=True)
-    mounted.write_text("remote\n")
-    for action in ("snapshots", "snapshot_plan", "snapshot_revert"):
-        got = agent.main(action=action, file=str(mounted),
-                         version_id="sess-a@v1")
-        assert "error" in got, action
-        assert "mount" in got["error"]
-
-
 def test_the_store_is_never_written_by_a_revert(agent, claude_home, tmp_path):
     # Still strictly read-only: the revert writes the TARGET,
     # never Claude Code's own edit history.

@@ -645,7 +645,7 @@ def test_resolve_never_stats_a_path_under_a_blocked_mount(_home, monkeypatch, tm
     path is ever stat'ed."""
     from fused_render.index.ignore import MountGuard
 
-    guard = MountGuard(mounts_dir=str(tmp_path / "mounts"), home_dirs=[_home])
+    guard = MountGuard(home_dirs=[_home])
     real_isdir = os.path.isdir
     monkeypatch.setattr(
         os.path, "isdir",
@@ -678,8 +678,7 @@ def test_resolve_captures_the_blocked_candidate_even_though_base_stops_short(
     on any platform, including this one."""
     from fused_render.index.ignore import MountGuard
 
-    guard = MountGuard(mounts_dir=str(tmp_path / "mounts"),
-                       home_dirs=[_home + "/guarded"])
+    guard = MountGuard(home_dirs=[_home + "/guarded"])
     blocked_out: list = []
     out = resolve_query("/box", "~/guarded/x.csv", guard=guard,
                         blocked_out=blocked_out)

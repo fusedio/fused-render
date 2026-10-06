@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import pathops, storage
+from fused_render.shell import storage
 
 router = APIRouter()
 
@@ -139,12 +139,12 @@ def _sanitize_tree(items: list) -> bool:
 # GET and never written into bookmarks.json or round-tripped through PUT (the
 # whole-tree PUT contract, D75, stays exactly the tree the frontend sent).
 # Existence checks fan out concurrently under one wall-clock budget and are
-# mount-safe (pathops.exists), mirroring recents.py's CHECK_BUDGET_S/_CHECK_POOL
-# — the tree is "a handful of items" (module intro) but one could still sit on
-# a hung/slow mount, and this endpoint must stay bounded regardless. A check
+# bounded, mirroring recents.py's CHECK_BUDGET_S/_CHECK_POOL — the tree is "a
+# handful of items" (module intro) but one could still sit on a slow
+# filesystem, and this endpoint must stay bounded regardless. A check
 # that outlives the budget is NOT flagged (fail open): a possibly-stale row
 # beats a stalled sidebar. Unlike recents (files-only, D22), a bookmark may
-# target a directory listing too, so this uses pathops.exists, not is_file.
+# target a directory listing too, so this uses os.path.exists, not isfile.
 
 _MISSING_CHECK_BUDGET_S = 1.5
 _MISSING_CHECK_POOL = ThreadPoolExecutor(
@@ -175,13 +175,13 @@ def _flatten_bookmarks(items: list) -> list:
 
 def _bookmark_missing(url: str) -> bool:
     """Whether a bookmark's target is CONFIRMED gone: only when its url decodes
-    to a real fs path (_decode_fs_path) AND a mount-safe probe proves absence. A
+    to a real fs path (_decode_fs_path) AND a probe proves absence. A
     url naming no fs target at all (sentinel, unparseable) is never flagged —
     there's nothing to confirm missing, so it reads as present."""
     fs_path = _decode_fs_path(url)
     if fs_path is None:
         return False
-    return not pathops.exists(fs_path)
+    return not os.path.exists(fs_path)
 
 
 async def _compute_missing(leaves: list) -> list:

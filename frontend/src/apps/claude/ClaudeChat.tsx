@@ -238,8 +238,6 @@ export interface ClaudeChatProps {
    * PR3 hangs the notes off the same getter.
    */
   annotateTarget?: () => HTMLIFrameElement | null;
-  /** `_remote=1`. */
-  remote?: boolean;
   /** `_preview=1` — this mount is a thumbnail, so the pane's own render is too. */
   preview?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED

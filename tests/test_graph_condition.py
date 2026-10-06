@@ -121,34 +121,6 @@ def test_a_missing_path_is_not_offered(gate, tmp_path):
     assert gate(str(tmp_path / "nope")) is False
 
 
-def test_a_mount_backed_folder_is_never_offered(gate, folder, monkeypatch):
-    target = folder("index.md")
-    assert gate(target) is True  # the same folder, before it looks mount-backed
-    # The env contract the app exports (FUSED_RENDER_MOUNTS_DIR), which is how
-    # the gate learns the mounts root now — no fused_render import.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", target)
-    assert gate(target) is False
-
-
-def test_an_unavailable_mount_detector_fails_closed(gate, folder, monkeypatch):
-    # "Cannot tell" must read as "refuse": the gate exists to keep a walk off a
-    # mount, and a guess is not good enough for that.
-    import builtins
-    import sys
-
-    target = folder("index.md")
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("blocked")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    monkeypatch.delitem(sys.modules, "appenv", raising=False)
-    assert gate(target) is False
-
-
 def test_a_probe_error_fails_closed(gate, folder, monkeypatch):
     target = folder("index.md")
     monkeypatch.setattr(os.path, "isfile", lambda p: (_ for _ in ()).throw(OSError("boom")))

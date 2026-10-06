@@ -136,19 +136,7 @@ def artifact_dict(
     was in a scratchpad and got cleaned up), so it must never come out of the
     per-transcript cache the rest of these fields do.
 
-    A mount-backed path is never stat'ed and reports `exists: False`. The
-    kernel os.stat is the GETATTR that wedges a dead mount (see
-    server/mount.py), and this runs once per artifact on every listing — one
-    bad mount would hang the whole page. False is also the SAFE answer, not
-    just the cheap one: `exists: True` would make the UI render a live iframe
-    preview per card, each of which is a read through the same mount. The card
-    falls back to its hosted claude.ai link, which is always openable.
     """
-    # Lazy import, following server/mount.py's own use of this helper: the
-    # mounts machinery would be a heavy top-level dependency for a module that
-    # is otherwise pure transcript parsing.
-    from fused_render.shell.mounts import is_mount_backed
-
     return {
         # The local file that was published, in the shell's canonical form
         # (forward slashes — see canonical_fs_path, and the same call in the
@@ -157,13 +145,7 @@ def artifact_dict(
         # re-resolved: that string is what the publish actually used, and it is
         # already absolute.
         "file_path": canonical_fs_path(file_path),
-        # Tri-state: True/False are real answers from a local stat; None means
-        # "not checked" — the path sits on a managed mount, where the kernel
-        # stat is the GETATTR that wedges a dead mount (see server/mount.py),
-        # once per artifact per listing. None rather than False because the two
-        # claims differ: False is "gone from disk" and a UI may hide it; None
-        # is "unknowable cheaply" and the hosted page is still the safe door.
-        "exists": None if is_mount_backed(file_path) else os.path.isfile(file_path),
+        "exists": os.path.isfile(file_path),
         "remote_url": remote_url,
         "title": title,
         "description": description,

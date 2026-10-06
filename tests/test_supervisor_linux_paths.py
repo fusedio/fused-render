@@ -115,7 +115,7 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
         "FUSED_RENDER_HOME", "FUSED_RENDER_CACHE_DIR", "FUSED_RENDER_RUNTIME_DIR",
         "FUSED_RENDER_TEMP_DIR", "FUSED_RENDER_LOG_DIR", "FUSED_RENDER_BRANCH",
         "FUSED_RENDER_DESKTOP_INSTANCE_ID", "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN",
-        "OPENFUSED_ENVS_FILE", "RCLONE_CONFIG", "UV_CACHE_DIR",
+        "OPENFUSED_ENVS_FILE", "UV_CACHE_DIR",
     ):
         assert key in env, key
     assert env["FUSED_RENDER_DESKTOP_INSTANCE_ID"] == "inst-id"
@@ -173,18 +173,16 @@ def test_child_environment_points_all_temp_vars_at_temp(monkeypatch, tmp_path):
 def test_dev_shell_iteration_flags_are_forced_off(monkeypatch, tmp_path):
     # The packaged supervisor (and its children) must not inherit dev-shell
     # iteration flags from the launching environment: FUSED_RENDER_BRANCH
-    # (branch-isolated state) and FUSED_RENDER_RCLONE_PERSIST (detached rcd
-    # that outlives the app) are both forced to the explicit empty opt-out.
+    # (branch-isolated state) is forced to the explicit empty opt-out.
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("FUSED_RENDER_RCLONE_PERSIST", "1")  # a dev shell leak
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "leak")  # a dev shell leak
     p = paths_mod.DesktopPaths.discover_linux()
     for env in (p.self_environment(), p.child_environment("i", "t", tmp_path / "tools")):
         assert env["FUSED_RENDER_BRANCH"] == ""
-        assert env["FUSED_RENDER_RCLONE_PERSIST"] == ""
 
 
 def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
-    # The DuckDB extension dir, the rclone binary, and the PATH prefix must all
+    # The DuckDB extension dir and the PATH prefix must all
     # live under the SAME tools_dir — the build scripts stage them together, so
     # a split would point the child at a path the payload never populated.
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -193,12 +191,6 @@ def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
     tools = tmp_path / "tools"
     env = paths_mod.DesktopPaths.discover_linux().child_environment("i", "t", tools)
     assert env["FUSED_RENDER_DUCKDB_EXTENSION_DIR"] == str(tools / "duckdb_extensions")
-    # child_environment names the binary "rclone.exe" on win32 (it's bundled
-    # that way), "rclone" everywhere else — match that rather than assume the
-    # POSIX name, since this test's whole point is the shared tools_dir, not
-    # the platform-specific filename.
-    rclone_name = "rclone.exe" if sys.platform == "win32" else "rclone"
-    assert env["FUSED_RENDER_RCLONE_BIN"] == str(tools / rclone_name)
     assert env["PATH"].split(os.pathsep)[0] == str(tools)
 
 
@@ -216,12 +208,11 @@ def test_desktop_template_uses_url_field_code():
 def test_linux_build_stages_tools_in_python_bin():
     # On Linux tools_dir resolves to $PYTHON_ROOT/bin (python-build-standalone
     # puts python3 there), so the build script MUST stage the DuckDB extensions,
-    # uv, and rclone under that same bin/ — matching child_environment above.
+    # and uv under that same bin/ — matching child_environment above.
     # This is the single-source-of-truth guard for the payload layout.
     script = (_SCRIPTS / "build_linux_appimage.sh").read_text()
     assert 'DUCKDB_EXTENSIONS="$PYTHON_ROOT/bin/duckdb_extensions"' in script
     assert '"$PYTHON_ROOT/bin/uv"' in script
-    assert '"$PYTHON_ROOT/bin/rclone"' in script
 
 
 # -- autostart round-trip --------------------------------------------------

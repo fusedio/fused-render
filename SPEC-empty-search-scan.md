@@ -21,7 +21,7 @@ Almost all of this is built. Read these before writing anything:
 * `POST /api/index/scan-folder` — `api_index_scan_folder`,
   `fused_render/server/routers/index.py:1514`. Built for a search box:
   never errors, every refusal is durable (`refused` / `debounced` /
-  `joined`), honours the indexing gate, refuses mount-backed roots before
+  `joined`), honours the indexing gate, refuses roots `MountGuard` blocks before
   any syscall, and is debounced by the scheduler's own `SCAN_DEBOUNCE_S`
   specifically so a keystroke-rate caller cannot storm it. Its docstring
   already describes the intended UX: "the box asks, the scan runs, and the

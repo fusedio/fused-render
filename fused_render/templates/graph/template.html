@@ -282,9 +282,8 @@
         return;
       }
       if (data.error) {
-        // A mount-backed root is refused outright rather than partially walked
-        // (MD-11). The gate normally means this view is never even offered
-        // there; this is the guarantee behind it.
+        // A scan the server refuses (or that failed) is shown as its own
+        // message rather than a partial walk.
         setStatus(data.message || data.error, "error");
         return;
       }

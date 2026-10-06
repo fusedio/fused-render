@@ -196,11 +196,11 @@ def _write_json(path: str, data: dict) -> bool:
 
 def write_run(app_dir: str, record: dict) -> bool:
     """Best-effort: a read-only `.fused` clone (`appfile._make_read_only`) or
-    a mount-backed folder `app_fused_dir.ensure` refuses just means the
+    an unwritable folder `app_fused_dir.ensure` refuses just means the
     check cannot be cached here — and since the session would not be able to
     write its verdict either, the router refuses to create the task."""
     if not app_fused_dir.ensure(app_dir):
-        # A mount-backed or unwritable folder: `ensure` declining is the
+        # An unwritable folder: `ensure` declining is the
         # signal to leave it alone, not to makedirs around it.
         return False
     return _write_json(run_path(app_dir), record)
@@ -462,7 +462,7 @@ def begin(app_dir: str, force: bool = False) -> tuple[dict | None, str | None, b
             return gathered, None, True
     if not app_fused_dir.ensure(app_dir):
         return None, ("this folder cannot hold the check's verdict (read-only or "
-                      "mount-backed), so there is nothing for the task to write to"), False
+                      "unwritable), so there is nothing for the task to write to"), False
     clear_verdict(app_dir)
     return gathered, None, False
 

@@ -581,7 +581,7 @@ def is_log_file(path: str | None) -> bool:
     open a big log is worth knowing, and a blanket exclusion would be a special
     case in the record contract. What makes that safe is that the runtime never
     *watches* a call-log file (`calls_dir`/`calls_suffix` in /api/config, applied
-    beside the existing mount-backed exclusion): viewing the file appends to it,
+    as the watch exclusion): viewing the file appends to it,
     so a watcher would reload, re-read, append and reload forever. Removing the
     watch kills the loop at its source rather than by suppressing the data, and
     it costs nothing — the viewers that want live updates (log_studio's Tail, the

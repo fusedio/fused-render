@@ -43,18 +43,10 @@ asks a single question of both kinds:
   less worth it because there is nothing to render beside the conversation; if
   anything the reverse, since the full width goes to the transcript.
 
-WHY THIS GATE STILL EXISTS. Everything above reduces to "the path exists",
-which the shell already knows before it calls a gate — so the gate would be
-pure overhead were it not for ONE remaining refusal: a **mount-backed** path.
-The bytes under the mounts dir come from a remote over FUSE, and an agent
-turned loose there walks and rewrites the tree through the mount, which is the
-same reason every peer gate refuses those paths. (The deleted plain chat
-template shipped no gate at all and therefore *did* offer a chat over a remote
-mount;
-narrowing that is deliberate, not an oversight carried forward.) Deleting
-`condition.py` outright was the other option and was rejected for that one
-question alone — an always-true gate would be worth removing, a gate that still
-says no to remote mounts is not.
+WHY THIS GATE STILL EXISTS. It answers the one question the shell does not:
+is the path an existing regular file or an existing directory? A path that does
+not exist (a stale URL, a deleted file) must read as "refuse", not as a chat
+over nothing.
 
 The file/directory split is `os.path.isdir`, ONE stat — deliberately the same
 question `app/condition.py` never has to ask, because that gate is bound to "/"
@@ -62,28 +54,14 @@ alone and this one is not.
 
 CRITICAL: this never lists or walks the directory (`os.listdir`,
 `os.scandir`, `glob`, recursion) and never resolves symlinks — the gate runs
-for every directory the explorer stats, some on remote mounts, and pure path
-arithmetic on the already-known path is the only I/O-free answer.
+for every directory the explorer stats, so it costs at most two stats.
 """
 
 
 def main(path: str) -> bool:
     import os
-    import sys
 
     try:
-        shared = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
-        # Guarded insert: _run_condition re-execs this module on every stat.
-        if shared not in sys.path:
-            sys.path.insert(0, shared)
-        try:
-            from appenv import is_mount_backed
-        except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
-            return False
-        if is_mount_backed(path):
-            return False
-
         # A file target is the file-scoped chat: allowed anywhere on disk. The
         # test is `isfile`, an EXISTING regular file — deliberately not
         # `not isdir`, which would also swallow every path that does not exist.

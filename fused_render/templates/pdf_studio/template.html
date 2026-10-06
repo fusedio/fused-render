@@ -781,11 +781,8 @@ function dialog({ title, message = "", label = "", value = "", okText = "OK", da
 const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
 const docDir = () => state.doc.split("/").slice(0, -1).join("/");
 
-// pdf.py's folder listing. `src` (origin only) lets the worker route a
-// mount-backed folder via /api/fs/list instead of a kernel scan that could
-// drop the mount.
-const listDir = (path, exts) => py({ action: "listdir", path, exts,
-  src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
+// pdf.py's folder listing.
+const listDir = (path, exts) => py({ action: "listdir", path, exts });
 
 // The in-page browser: the fallback for a machine that can't raise its own
 // file dialog (see pickFile/pickFolder). Picks a file of `exts`, or with
@@ -899,7 +896,7 @@ const hasNativeDialogs = () => (nativeDialogs ||= fetch("/api/config")
 // undefined when it could not be asked — no dialog on this machine, or any
 // step failing — which is the caller's cue for the in-page browser. It opens
 // at an absolute folder: `start` (~, relative, or a file) resolved by the
-// same mount-safe listing the in-page browser uses.
+// same listing the in-page browser uses.
 async function nativePick(kind, { start, ...body }) {
   if (!(await hasNativeDialogs())) return undefined;
   return listDir(start || defaultDir(), ".pdf")

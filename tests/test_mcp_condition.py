@@ -198,33 +198,6 @@ def test_an_unparseable_entrypoint_alone_is_not_offered(gate, tmp_path):
     assert gate(_app(tmp_path, py="def main(:\n")) is False
 
 
-# ----------------------------------------------------------------- mount refusal
-
-
-def test_a_mount_backed_path_is_never_offered(gate, tmp_path, monkeypatch):
-    app = _app(tmp_path)
-    assert gate(app) is True  # the same folder, before it looks mount-backed
-    # The env contract the app exports (FUSED_RENDER_MOUNTS_DIR) — how the gate
-    # learns the mounts root without importing fused_render (SPEC PY-15).
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", app)
-    assert gate(app) is False
-
-
-def test_an_unavailable_mount_detector_fails_closed(gate, tmp_path, monkeypatch):
-    # "Cannot tell" reads as "refuse": the gate exists to keep reads off a mount,
-    # and a guess is not good enough for that.
-    import builtins
-
-    app = _app(tmp_path)
-    real_import = builtins.__import__
-
-    def deny(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("no appenv")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", deny)
-    assert gate(app) is False
 
 
 # ------------------------------------------------------------- bounded, and cheap

@@ -55,7 +55,6 @@ immediately without showing a plan.
 - Git-view user commits are never auto-pushed.
 - Background git must never hang on credentials (keep the existing
   `GIT_TERMINAL_PROMPT=0` etc. env; timeouts). Fail fast and notify, except offline (silent).
-- Mount-backed repos still refused, as today.
 - Fix with Claude must not change files before approval nor push without asking.
 - Setting off ⇒ identical to today.
 - Auto-push must not block the Claude turn / app lifecycle request path — run it in the background.
@@ -84,7 +83,7 @@ immediately without showing a plan.
 - `fused_render/git_upstream.py` — `note_app_opened` (:683-761), `check_repo` (:223-245),
   `CHECK_TTL_S=300` (:102), `_check_slot`, in-memory `_state` (:680), `known_repos()` (:821),
   `is_known_repo()` (:845), `update_repo` (:503, `pull --ff-only origin <default>`),
-  `_mutation_preflight` (:354), `_mutation_slot` (:474), git env (:82-96), mount refusal (:154-170).
+  `_mutation_preflight` (:354), `_mutation_slot` (:474), git env (:82-96).
   Failures are deliberately silent today (:37-41) — that changes for non-offline failures.
 - `fused_render/server/routers/git_upstream.py:36-61` — GET/POST `/api/git-upstream`.
 - `fused_render/server/routers/render.py:~104` — the single "app opened" trigger.

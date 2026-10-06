@@ -20,7 +20,6 @@ What is pinned here beyond the happy path:
 * Previewing is read-only: nothing appears beside the bundle unless the user
   explicitly clones.
 """
-import builtins
 import importlib.util
 import os
 import subprocess
@@ -412,18 +411,6 @@ def test_a_dest_in_a_read_only_parent_is_refused(reader, bundle, tmp_path):
         os.chmod(holder, 0o755)
 
 
-def test_a_mount_backed_dest_is_refused(reader, bundle, tmp_path, monkeypatch):
-    # Same reasoning as /api/fs/compress: a clone's write pattern through the
-    # rclone VFS is pathological, so it is refused rather than attempted.
-    mnt = tmp_path / "mounts"
-    mnt.mkdir()
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", str(mnt))
-    out = reader.main(bundle, action="clone", dest=str(mnt / "remote" / "here"))
-    assert out["ok"] is False
-    assert out["reason"] == "mount-unsupported"
-    assert not (mnt / "remote").exists()
-
-
 @pytest.fixture
 def fresh_appenv():
     """Make the sys.path hop actually HAPPEN, whatever ran before in this worker.
@@ -453,47 +440,6 @@ def fresh_appenv():
             sys.modules.pop("appenv", None)
         else:
             sys.modules["appenv"] = saved_mod
-
-
-def test_the_mount_check_reaches_shared_appenv_at_all(reader, bundle, tmp_path,
-                                                      fresh_appenv):
-    # `from appenv import is_mount_backed` (reader.py's _is_mount_backed) resolves
-    # through a sys.path hop to `../shared`, not through a normal import, so a
-    # type checker cannot see it and neither can a reader of the file. It is not
-    # latent, though: a successful clone has to have gone through it, and the
-    # module really is the shipped one next door.
-    out = reader.main(bundle, action="clone", dest=str(tmp_path / "ok"))
-    assert out["ok"] is True, out
-    appenv = sys.modules["appenv"]
-    assert os.path.realpath(appenv.__file__) == os.path.realpath(
-        os.path.join(os.path.dirname(READER), "..", "shared", "appenv.py"))
-
-
-def test_an_unreachable_appenv_refuses_the_clone_instead_of_crashing(
-        reader, bundle, tmp_path, monkeypatch):
-    # The fail-CLOSED branch, the one no happy path covers. A copy of the
-    # template folder taken WITHOUT its `shared/` sibling (the degradation
-    # test_template_appenv.py documents for the same helper) must produce the
-    # readable "can't tell whether that folder is on a mount" refusal — not an
-    # ImportError the page shows as a stuck spinner.
-    real_import = builtins.__import__
-
-    def no_appenv(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("no module named appenv")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.delitem(sys.modules, "appenv", raising=False)
-    monkeypatch.setattr(builtins, "__import__", no_appenv)
-    dest = tmp_path / "never"
-    out = reader.main(bundle, action="clone", dest=str(dest))
-    assert out["ok"] is False
-    assert out["reason"] == "mount-unsupported"
-    # The "cannot tell" wording specifically, not the "this IS a mount" wording —
-    # tmp_path is not mount-backed, so a pass on the other message would mean the
-    # test proved nothing about this branch.
-    assert "Can't tell" in out["message"], out["message"]
-    assert not dest.exists()
 
 
 def test_a_dest_inside_the_scratch_tree_is_refused(reader, bundle, tmp_path, monkeypatch):

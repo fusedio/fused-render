@@ -467,7 +467,7 @@ zero-separator-only** (fixed this round, worktree-search-trailing-space).
 Reported defect: `fused render` (two literal runs, `["fused", "render"]`,
 `total_len == 11`) resolved `nm_exact` to true ONLY for `nm == "fusedrender"`
 (the one 11-character, zero-separator spelling), so `~/ios/FusedRender` and two
-`.../rclone/vfs/Volumes/FusedRender*` cache directories outranked the
+`.../cache/vfs/Volumes/FusedRender*` cache directories outranked the
 obviously-wanted `~/Work/fused-render` (`nm == "fused-render"`, 12 characters,
 so not "exact" under the length test) — `nm_exact` is the FIRST `ORDER BY`
 column, so the tie never reached `depth`, where the shallow, correct answer

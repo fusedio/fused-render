@@ -226,8 +226,8 @@ def _kick_workbench_skills() -> None:
     field: hanging the fetch on /clone alone meant a canvas that already existed
     (i.e. nearly every real canvas) never got the skills at all, and a session
     that cannot find the `workbench:canvas-toml` skills its own seeded CLAUDE.md
-    names goes looking for the format elsewhere — a `find /` that wedges every
-    rclone mount on the machine is not a hypothetical, it is what happened.
+    names goes looking for the format elsewhere — a `find /` over the whole disk is not a
+    hypothetical, it is what happened.
 
     Off-thread because both callers are requests the canvas page AWAITS before it
     renders, and a shallow clone against a dead network sits there for
@@ -692,10 +692,7 @@ for the skills, and do not try to install anything.
 -R`, `grep -r`, glob or any other recursive walk over `/`, your home
 directory, `~/.fused-render`, or the fused-render source tree — the app's
 internal files are not documentation and looking through them is a detour
-that ends nowhere. In particular **never list, walk, glob or read anything
-under `~/.fused-render/mounts`**: those are network mounts, and a recursive
-walk wedges them permanently for every app on the machine, including this
-one. If this folder does not answer the question, say what you could not
+that ends nowhere. If this folder does not answer the question, say what you could not
 determine and stop there — do not go looking for it elsewhere on disk.
 
 ## How the sync works (know this before running sync commands yourself)

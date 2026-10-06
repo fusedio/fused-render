@@ -4,7 +4,7 @@
 // is turned on in Preferences AND this machine is signed in to Fused), the
 // explorer's Bookmarks below it, and a
 // single Settings trigger pinned to the bottom that opens a menu holding
-// everything else (Config for now, plus Templates / Mounts /
+// everything else (Config for now, plus Templates /
 // Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
@@ -96,12 +96,6 @@ const TEMPLATES_ICON = (
     <rect x="14" y="3" width="7" height="7" rx="1" />
     <rect x="3" y="14" width="7" height="7" rx="1" />
     <rect x="14" y="14" width="7" height="7" rx="1" />
-  </svg>
-);
-
-const MOUNTS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
   </svg>
 );
 
@@ -625,7 +619,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   if (claudeConfigAvailable) menuEntries.push("separator");
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
-    { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
     // No /tasks entry here on purpose: Tasks is primary nav now (see the
     // rail below). Listing the same route in the menu too would light the Tasks
     // row and the Preferences trigger at once, since `prefsActive` treats every
@@ -769,7 +762,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       pinBottom: !setupMeter,
       active: prefsActive,
       // Same Settings popover as the expanded row, not a straight nav — the
-      // collapsed rail otherwise has no way to reach Templates/Mounts/etc.
+      // collapsed rail otherwise has no way to reach Templates/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
       // No update dot any more (SPEC-update-notifications.md): the manual
       // check moved into Preferences, and the two decision moments the app

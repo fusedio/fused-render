@@ -37,9 +37,6 @@ What this module will NOT do, ever (GT-15):
 * **Touch an ignored file.** `git clean` is run without `-x`, always. An ignored
   path is where a `.env`, a virtualenv and a build tree live, and "discard my
   edit" must never be able to mean "delete those".
-* **Reach a mount-backed repository** (GT-4 / MD-11). The gate keeps the mode
-  from being offered there; this module refuses regardless, because a
-  hand-written `?_mode=git` URL bypasses the switcher entirely.
 
 The security rules, each one a way this could go wrong:
 
@@ -407,30 +404,9 @@ def _git_ok(root, *args, allow=(0,)):
 
 # ----------------------------------------------------------------- the location
 #
-# `_refuse_mounts`, `_locate` and `_pathspec` are log.py's twins. Kept duplicated
+# `_locate` and `_pathspec` are log.py's twins. Kept duplicated
 # rather than imported (see the module docstring): a template is exec'd
 # standalone, and a sibling import depends on a sys.path the host builds.
-
-
-def _refuse_mounts(path):
-    """Refuse a mount-backed target outright (GT-4 / MD-11), write path included.
-
-    The detector is `shared/appenv.is_mount_backed`, the app's own rule answered
-    from `FUSED_RENDER_*` rather than by importing fused_render. An ImportError
-    means we cannot tell, and "cannot tell" reads as "refuse" — which matters
-    more here than in the reader: the thing being avoided is not a slow listing
-    but a `git add` / `git commit` running across an rclone-NFS mount.
-    """
-    try:
-        from appenv import is_mount_backed
-    except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
-        raise _Refused("mount", f"Mount detection unavailable ({exc}); "
-                                "refusing to run git here.") from exc
-    if is_mount_backed(path):
-        raise _Refused(
-            "mount",
-            "Git operations are not available on remote mounts — git would have "
-            "to walk the mounted tree, and a write would do it holding a lock.")
 
 
 def _locate(file):
@@ -442,7 +418,6 @@ def _locate(file):
     """
     if not file:
         raise _Refused("missing", "No file or folder was given.")
-    _refuse_mounts(file)
     path = os.path.abspath(file)
     if not os.path.exists(path):
         raise _Refused("missing", f"{path} does not exist.")
@@ -850,7 +825,7 @@ def _require_app_dir(root, file):
     top of this file) rather than `fused_render.app_listing.enclosing_app_dir`
     — the server-side twin of the same rule — because a template must not
     import `fused_render` (SPEC PY-15 / D166). An unreachable `app_entry` is
-    "cannot tell", which reads as a refusal, exactly like `_refuse_mounts`.
+    "cannot tell", which reads as a refusal, like any other "cannot tell" refusal.
     """
     try:
         from app_entry import entry_html

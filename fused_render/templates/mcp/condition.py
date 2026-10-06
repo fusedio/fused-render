@@ -16,17 +16,9 @@ nothing the user asked for, and the runtime modules still tolerate a file target
 rather than crash on one (MD-11: the gate is the UX, the module is the
 guarantee).
 
-Three questions, in this order, because the order is what makes the gate cheap:
+Two questions, in this order, because the order is what makes the gate cheap:
 
-1. **Is the path mount-backed?** Then False, always, and before any read. The
-   panel's backend reads every `.py` in the folder and writes a manifest into
-   it; over an rclone-NFS mount that is the stat-and-list pattern that wedges a
-   flat million-key prefix, and the write half has nowhere sane to land. Same
-   refusal as `git`/`graph`, through the same `../shared/appenv.is_mount_backed`
-   — not a second copy. If that import fails we cannot tell, and "cannot tell"
-   must read as "refuse" (CT-12).
-
-2. **Is there a TAGGED entry page?** An app's page is the first non-hidden
+1. **Is there a TAGGED entry page?** An app's page is the first non-hidden
    top-level `.html` (name order) carrying `<meta name="fused-app">` — the
    marker is THE only signal and a filename declares nothing, `index.html`
    included (D301). This gate must not invent a second answer to "which page is
@@ -34,7 +26,7 @@ Three questions, in this order, because the order is what makes the gate cheap:
    (`../shared/app_entry.has_fused_meta`), never a regex of its own; only the
    listing and the cap below are this gate's.
 
-3. **Is there a top-level `def main` in a top-level `.py`?** A page over no
+2. **Is there a top-level `def main` in a top-level `.py`?** A page over no
    callable entrypoint has nothing to curate into a tool.
 
 Both halves read the folder's names, so they share ONE single-level
@@ -78,8 +70,7 @@ half-written app file must not hide the mode for the folder's other files).
 Fails closed: an unreadable path, a listing error, a decode error, any
 exception at all → False.
 
-Self-contained apart from `../shared/appenv.py` (itself stdlib-only, env vars
-only) — the module is exec'd standalone (not imported as part of a package), so
+The module is exec'd standalone (not imported as part of a package), so
 nothing here imports fused_render (SPEC PY-15).
 """
 
@@ -197,31 +188,12 @@ def _has_entrypoint(path: str, names) -> bool:
 
 def main(path: str) -> bool:
     import os
-    import sys
 
     try:
-        # (1) A mount-backed path is refused before any read of the folder.
-        #
-        # Through `shared/appenv` (env vars only, stdlib only) rather than by
-        # importing fused_render, so the mount rule has ONE home for every
-        # template (SPEC PY-15).
-        shared = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
-        # Guarded insert: _run_condition re-execs this module on EVERY stat, so
-        # an unconditional insert would grow sys.path without bound.
-        if shared not in sys.path:
-            sys.path.insert(0, shared)
-        try:
-            from appenv import is_mount_backed
-        except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
-            return False
-        if is_mount_backed(path):
-            return False
-
         if not path:
             return False
 
-        # (2) Folder-only. `isdir` rather than `not isfile` so a path that does
+        # Folder-only. `isdir` rather than `not isfile` so a path that does
         # not exist reads as "refuse".
         if not os.path.isdir(path):
             return False

@@ -51,12 +51,9 @@ def _is_cache_repo(path: str) -> bool:
 
 def _has_model_config(path: str) -> bool:
     config = os.path.join(path, "config.json")
-    # `isfile` FIRST, and the stat only after it says yes. The two are not
-    # interchangeable over a mount: isfile/isdir/exists can be answered from the
-    # listing the endpoint already has, and stat cannot — so probing with stat
-    # would make every non-model folder pay a remote round trip for a name the
-    # listing had already proven absent. The stat exists only to capture the
-    # atime, which is worth paying on the folders that ARE models.
+    # `isfile` FIRST, and the stat only after it says yes: the stat exists only
+    # to capture the atime, which is worth paying on the folders that ARE
+    # models, not on every non-model folder.
     if not os.path.isfile(config):
         return False
     try:

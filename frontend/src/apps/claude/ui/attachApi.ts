@@ -244,7 +244,7 @@ export async function previewSrcFor(path: string | null): Promise<string | null>
     // of a page, not an open the recents list should record, and the framed page
     // may not steal the keyboard — the viewer is modal, and Escape has to keep
     // belonging to it.
-    return paneSrcFor(entry, path, !!st.remote, { preview: true, noFocus: true });
+    return paneSrcFor(entry, path, { preview: true, noFocus: true });
   } catch {
     return null;
   }

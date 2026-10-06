@@ -31,7 +31,7 @@ Flat object; same key grammar as built-in `fused_render/templates/registry.json`
 
 ## condition.py
 
-`def main(path) -> bool` beside template.html — show this template for this file? No file = always shown. Runs after registry resolution, evaluated in background (`GET /api/fs/conditions?path=…`), verdicts cached ~60 s; multiple gates for one extension run concurrently (cost = slowest gate, all still run). May read file, keep reads bounded (headers/footers — remote mounts exist). Broken gate = template dropped, reason in `error` on conditions response. Gated template never default while ungated one exists. Shows "conditional" badge in Templates → Library.
+`def main(path) -> bool` beside template.html — show this template for this file? No file = always shown. Runs after registry resolution, evaluated in background (`GET /api/fs/conditions?path=…`), verdicts cached ~60 s; multiple gates for one extension run concurrently (cost = slowest gate, all still run). May read file, keep reads bounded (headers/footers). Broken gate = template dropped, reason in `error` on conditions response. Gated template never default while ungated one exists. Shows "conditional" badge in Templates → Library.
 
 ## Guardrail
 

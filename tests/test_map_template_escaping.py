@@ -11,7 +11,7 @@ strings that arrive incidentally and land in this template's own chrome:
   * backend error text that echoes those params back (discover.py returns
     f"Not a directory: {base}"), rendered by the toast;
   * filenames, directory names and absolute paths from a listing — a shared
-    folder, an unzipped archive or a mounted bucket can name an entry
+    folder or an unzipped archive can name an entry
     anything, and `"` in a path breaks out of a title="..." attribute;
   * sub-layer names read out of a GPKG/KML;
   * geocoder results from a third-party API.

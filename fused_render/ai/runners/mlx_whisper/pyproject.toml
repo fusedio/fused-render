@@ -12,7 +12,7 @@
 #
 # **No system ffmpeg**, and here that costs a dependency rather than coming
 # free. The rule is the one `faster_whisper/pyproject.toml` states: this app
-# bundles rclone, not ffmpeg, so a runner that shells out works on the machine
+# does not bundle ffmpeg, so a runner that shells out works on the machine
 # it was written on and fails on a user's with a subprocess error nobody can
 # act on. faster-whisper decodes through PyAV and so gets this for nothing;
 # `mlx_whisper.transcribe(path)` instead calls openai-whisper's `load_audio()`,

@@ -22,9 +22,7 @@ Ship FusedRender as a single-file Linux desktop app with the same user-visible
 guarantees the Windows build ships — single instance, file "Open with", tray,
 start-at-login, no orphaned process trees on crash, clean upgrade — packaged as
 an **AppImage** (download, `chmod +x`, run; no admin, no package-manager
-matrix). rclone is bundled in the payload so remote mounts work with zero user
-setup; `fusermount3` stays host-provided (a setuid binary cannot ship in an
-AppImage).
+matrix).
 
 ## Requirements → Linux mechanism
 
@@ -36,7 +34,7 @@ AppImage).
 | Tray | Native **StatusNotifierItem over D-Bus** (`dbus-fast`); works on any StatusNotifier host — waybar, KDE, AppIndicator-GNOME. No X11/XEmbed, so it renders on Wayland. Absence on a session with no StatusNotifier host (stock GNOME w/o extension) is an accepted degraded mode (gate (c)). |
 | Start at login | `~/.config/autostart/fused-render.desktop` (`$XDG_CONFIG_HOME` honored). |
 | Dialogs / shell-open | `_linux/ui.py`: first available of `zenity` → `kdialog` → bundled tkinter; `xdg-open` for open_path/open_uri/open_url (same pattern as `server.py`'s reveal-in-file-manager). |
-| Paths | Durable state IS the flat dotdir `~/.fused-render` — the same dir the dev/CLI and macOS app use, shared by design (all user config in one known place; mounts at `~/.fused-render/mounts`); `logs/` and `temp/` are subdirs of it. Disposable cache stays OS-native at `$XDG_CACHE_HOME/fused-render` (fallback `~/.cache`), runtime at `$XDG_RUNTIME_DIR/fused-render` (fallback: a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
+| Paths | Durable state IS the flat dotdir `~/.fused-render` — the same dir the dev/CLI and macOS app use, shared by design (all user config in one known place); `logs/` and `temp/` are subdirs of it. Disposable cache stays OS-native at `$XDG_CACHE_HOME/fused-render` (fallback `~/.cache`), runtime at `$XDG_RUNTIME_DIR/fused-render` (fallback: a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
 | Installer / upgrade | Replace the `.AppImage` file; old instance shuts down via the same `--shutdown-for-upgrade` command over the socket. |
 
 The `.desktop` `Exec` uses `%u` (a **single** URL/file field code), not `%F`, to
@@ -65,8 +63,8 @@ never stolen.
 
 ## Acceptance gates (go / no-go)
 
-- **(a) No orphans on `SIGKILL` of the supervisor.** Server + template daemons +
-  rclone mounts all die. This is the riskiest guarantee; it is encoded as a CI
+- **(a) No orphans on `SIGKILL` of the supervisor.** Server + template daemons
+  all die. This is the riskiest guarantee; it is encoded as a CI
   test (`tests/test_supervisor_linux_tree.py`) so it is enforced forever, not
   just measured once.
 - **(b) Port does not clash** with a running dev server (ephemeral port; the
@@ -109,8 +107,7 @@ Decision section below.
   the item is **omitted from the Linux menu** entirely (rather than shown as a
   dead entry). `_linux/ui.open_default_apps` still exists and raises `OSError`
   for any other caller, a logged no-op. Cosmetic, not a launch blocker.
-- **Template daemons that outlive the server on purpose** (rclone rcd serves,
-  tile daemons started with `start_new_session`): under either tree-kill they die
+- **Template daemons that outlive the server on purpose** (tile daemons started with `start_new_session`): under either tree-kill they die
   with the app, matching Windows Job semantics but differing from dev/macOS.
   Same accepted trade-off as Windows.
 - **glibc floor.** python-build-standalone needs glibc ≥ 2.17; `[bundled]`
@@ -118,8 +115,6 @@ Decision section below.
   template's own `pyproject.toml` resolves at runtime (rasterio, geopandas…). Ubuntu 22.04 /
   Debian 12 clear all of them. musl/Alpine is out of scope.
 - **x86_64 only** first. aarch64 is a follow-up once the pipeline exists.
-- **fusermount3 host-side.** rclone ships in the payload; `fusermount3` is
-  setuid and cannot. A host without FUSE gets the existing mount-error surface.
 
 ## Native app windows (WebKitGTK window host)
 
@@ -228,7 +223,7 @@ target including hosts that disable unprivileged userns by hardening;
 who want it and whose hosts allow userns. This is revisited to make `namespace`
 the default only if the VM walk shows userns is reliably available across the
 target matrix AND the escaped-grandchild case matters in practice (the escaping
-daemons the app spawns — rclone rcd, tile daemons — are the same ones the spec
+daemons the app spawns — tile daemons — are the same ones the spec
 already accepts dying with the app). `tests/test_supervisor_linux_tree.py`
 measures both mechanisms wherever userns is available.
 
@@ -242,10 +237,10 @@ measures both mechanisms wherever userns is available.
   every push. The `namespace` parametrization (and thus the escaped-grandchild
   guarantee) runs only where userns is enabled: a self-hosted/privileged runner
   or the manual VM walk. **Action for the VM walk:** confirm on Ubuntu 22.04 +
-  Debian 12 that `kill -9` of the supervisor leaves zero `fused`/server/rclone
+  Debian 12 that `kill -9` of the supervisor leaves zero `fused`/server
   processes under each mechanism the host supports.
 - **(b)–(f):** pending the manual VM walk (see the "Which gates run where"
-  table). The AppImage build + its import/`_child.py`/rclone smoke tests run in
+  table). The AppImage build + its import/`_child.py` smoke tests run in
   the CI job (a slice of (f)); tray/dialogs/upgrade are the manual
   desktop-session checklist. For **(d)** the logic below the DE boundary is now
   CI-tested headlessly — the standard-MIME tiering + XML/MimeType generation

@@ -78,7 +78,6 @@ def test_the_shell_actually_declares_routes():
     routes = shell_routes()
     assert len(routes) >= 8, routes
     assert "/tasks" in routes, "the page this test was written for"
-    assert "/mounts" in routes
     # The predicate-dispatched page, which the App.tsx scrape cannot see.
     assert "/ai-models" in routes
     assert "/ai-models/playground" in routes

@@ -552,7 +552,6 @@ els.browse.onclick = async () => {
   if (!open) refreshExplorer();
 };
 els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
-const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
 const SKEL_WIDTHS = [130, 90, 150, 70, 115, 160, 95];
 function skeletonRows(){
   return SKEL_WIDTHS.map(w =>
@@ -563,7 +562,7 @@ async function refreshExplorer(dir){
   dir = dir || P.dir();
   els.crumbs.classList.add('skel');
   els.explorerList.innerHTML = skeletonRows();
-  const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
+  const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
   els.crumbs.classList.remove('skel');
   if (!r || r.error){
     els.explorerList.innerHTML = '<div class="row" style="color:#ff7b72">failed to list this folder</div>';

@@ -22,7 +22,7 @@ flipped the engine PREF's default to fused-when-available, so from then on the
 executor an incidental `/api/run` test exercises depends on whether the optional
 `fused` package happens to be importable in the environment — which is exactly
 the install-order dependence D204 accepts for users and must not inherit into the
-suite, where it would mean the call-log, template and mount tests silently cover
+suite, where it would mean the call-log and template tests silently cover
 a different runner on a machine with the extra installed. The tests that are
 ABOUT the engine or the pref clear or set this variable themselves (see
 test_server_engine.py and test_shell_prefs.py::_client).
@@ -34,7 +34,6 @@ never use. The dirs we create are removed at process exit.
 import atexit
 import os
 import shutil
-import signal
 import tempfile
 import types
 
@@ -256,11 +255,10 @@ def warm_fused_backend_venv(tmp_path_factory):
 # it serves, and `templates/shared/appenv.py` is the only reader. They are set
 # with a plain os.environ assignment by design — every child process has to
 # inherit them — which means a test that starts a server (or calls
-# export_app_env / export_ro_mounts_env directly) leaves them behind for every
+# export_app_env directly) leaves them behind for every
 # later test in the same worker. That leak is invisible and one-directional: the
-# next test's mount detection quietly answers against the previous test's home.
-_APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
-                "FUSED_RENDER_RO_MOUNTS", "FUSED_RENDER_ORIGIN",
+# next test quietly answers against the previous test's home.
+_APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
                 # D216: the skill plugin root a spawned claude session is handed.
                 # Leaks the same way — a test that calls export_app_env would
                 # otherwise leave a previous test's plugin path on every later
@@ -461,7 +459,7 @@ def _no_schedule_loop_thread(monkeypatch):
     and the request under test, at which point cancel rightly refuses it —
     test_archiving_cancels_the_work_and_files_the_session lost exactly that
     race on CI (`cancelled == 0`, fused-engine, 2026-08-19), with no spawn in
-    its own window to explain it. Same shape of hole as the mount threads
+    its own window to explain it. Same shape of hole as the background threads
     below, with a sharper edge: a claimed entry SENDS — a real
     `claude --resume` against whatever the tmp store says.
 
@@ -572,7 +570,7 @@ def _no_real_user_plugin_sync(monkeypatch):
     restores it at all), a still-running thread from THIS test resolves
     `lib.CLAUDE_DIR` fresh and can land on the DEVELOPER'S REAL `~/.claude`. The
     only sound boundary is stopping the spawn itself, same reasoning as
-    `_no_schedule_loop_thread`/`_no_background_mount_threads` above.
+    `_no_schedule_loop_thread` above.
 
     Flips the module's OWN once-per-process flag rather than stubbing `start`
     itself: `start()` already refuses to spawn a second time once `_started` is
@@ -593,39 +591,20 @@ def _no_real_user_plugin_sync(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_background_mount_threads(monkeypatch):
-    """`create_app` starts two daemon threads that reach for a real rclone;
-    neither may run in a test.
+def _no_legacy_mounts_cleanup(monkeypatch):
+    """The lifespan startup hook fires the one-time upgrade shim (legacy_mounts_cleanup) on a
+    daemon thread; it must never run against a test's environment. The tests
+    ABOUT the shim call `legacy_mounts_cleanup.run(...)` directly with fakes."""
+    from fused_render import legacy_mounts_cleanup
 
-    `shell_mounts.startup()` runs run_automount -> attach_mount -> ensure_rcd,
-    and `start_health_monitor()` re-attaches a mount it finds disconnected the
-    same way. Both are started from the create_app BODY, so every
-    `TestClient(create_app(...))` in the suite starts them — on CI, which
-    installs rclone, ensure_rcd then genuinely execs a daemon. Two consequences,
-    both observed:
-
-      - the thread outlives the test that made the app (daemon, never joined),
-        so `write_rcd_state` lands in whatever tmp home is current when it gets
-        there. A LATER test then reads an rcd.json pointing at a real live
-        daemon it never started: test_ensure_rcd_reuses_live_daemon got that
-        daemon's port back instead of its stub's (`assert 59165 == 42993`,
-        CI 2026-08-07) — with no spawn inside its own window to explain it.
-      - each spawn leaks a real daemon until session teardown reaps it
-        (_reap_test_rcd_daemons below, which exists because of this).
-
-    No test asserts either function spawns anything; the tests that are ABOUT
-    automount call `run_automount()` directly against the stub rcd."""
-    from fused_render.shell import mounts
-
-    monkeypatch.setattr(mounts, "startup", lambda: None)
-    monkeypatch.setattr(mounts, "start_health_monitor", lambda: None)
+    monkeypatch.setattr(legacy_mounts_cleanup, "start_background", lambda: None)
 
 
 @pytest.fixture(autouse=True)
 def _no_startup_index_scan(monkeypatch):
     """`create_app` schedules a background scan of the user's HOME dir.
 
-    Same hazard as the mount threads above, one step worse: a test that runs
+    Same hazard as the background threads above, one step worse: a test that runs
     the lifespan (`with TestClient(create_app(...))`) would spawn a detached
     worker that walks the developer's real home directory and writes an index
     — outliving the test, and pointed at whatever FUSED_RENDER_HOME happened
@@ -677,7 +656,7 @@ def _no_startup_index_scan(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_startup_engine_warm(monkeypatch):
     """Neutralize create_app's fused-engine warm daemon in tests (same leaked-thread
-    hazard as the mounts/index fixtures above; it leaks os.scandir into test_index_scan)."""
+    hazard as the index fixtures above; it leaks os.scandir into test_index_scan)."""
     from fused_render import engine
 
     monkeypatch.setattr(engine, "warm_in_background", lambda: None)
@@ -692,7 +671,7 @@ def _no_ai_idle_reaper_thread(monkeypatch):
     (SPEC AI-13, D414) the moment any local model becomes resident; no test
     may let it run.
 
-    Same hazard as `_no_schedule_loop_thread`/`_no_background_mount_threads`/
+    Same hazard as `_no_schedule_loop_thread`/
     `_no_startup_index_scan` above, same root cause: `supervisor.start_reaper()`
     is reached from `_start_resident`, which plenty of AI tests call directly
     (never through a lifespan), so letting it run spawns a daemon that is
@@ -856,58 +835,6 @@ def _no_hub_catalog_background_build(monkeypatch):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _no_real_rcd_spawn():
-    """Make spawning a REAL rclone rcd from the suite impossible, loudly.
-
-    The flake this kills (PR #407's own CI run proved the mechanism): a
-    background mount thread leaked by an earlier test finishes its ensure_rcd
-    spawn-wait AFTER the FUSED_RENDER_HOME env var has moved on to a later
-    test's home, so write_rcd_state (rcd.py, post-liveness) lands a real
-    daemon's {port, pid} in THAT test's rcd.json — and its ensure_rcd then
-    "reuses" a foreign daemon (assert 55455 == 37291). Per-test patches can't
-    stop it: env vars and monkeypatches are process-global, so a leaked thread
-    always sees whatever the current test sees. The only sound boundary is the
-    spawn itself: no real daemon can ever exist, so no foreign state write can
-    ever land — and the leaked thread now raises, which pytest surfaces as an
-    unhandled-thread-exception warning NAMING the leaking thread.
-
-    Session-scoped and applied to rcd's module namespace only, so:
-      * tests that fake the spawn by patching `mounts_mod.subprocess.Popen`
-        (the stdlib module object — test_mounts_rcd_persist/_auth,
-        test_mount_nfs_handle_cache) still work: the shim delegates whenever
-        global Popen is not the real one;
-      * every other user of subprocess (StubRcd helpers, node runners, the
-        reaper's `ps` via subprocess.run) is untouched.
-    """
-    import subprocess as _sp
-
-    from fused_render.shell.mounts import rcd as _rcd
-
-    real_popen = _sp.Popen
-    real_module = _rcd.subprocess
-
-    class _NoRealSpawn:
-        def __getattr__(self, name):
-            return getattr(_sp, name)
-
-        @staticmethod
-        def Popen(*args, **kwargs):
-            popen = _sp.Popen
-            if popen is real_popen:
-                raise AssertionError(
-                    "test attempted to spawn a real rclone rcd daemon "
-                    "(patch subprocess.Popen or rclone_bin, or fix the "
-                    "leaked background thread this raised in)")
-            return popen(*args, **kwargs)
-
-    _rcd.subprocess = _NoRealSpawn()
-    try:
-        yield
-    finally:
-        _rcd.subprocess = real_module
-
-
-@pytest.fixture(scope="session", autouse=True)
 def _real_core_templates_stay_untouched():
     """Fail the session loudly if it restaged the developer's REAL core templates.
 
@@ -947,49 +874,3 @@ def _real_core_templates_stay_untouched():
             f"FUSED_RENDER_HOME redirect — a process resolved home_dir() to the "
             f"real ~/.fused-render and restaged it with this checkout's "
             f"templates.", pytrace=False)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _reap_test_rcd_daemons():
-    """Kill any REAL rclone rcd daemon a test spawned, on session teardown.
-
-    The rcd daemon is spawned detached and "outlives the server on purpose"
-    (mounts.ensure_rcd) — nothing in the app kills it. A test that drives a real
-    spawn (not the StubRcd stand-in) therefore leaks a daemon that survives the
-    pytest process, which is exactly how days-old orphaned rcd daemons pile up.
-
-    We wrap mounts.write_rcd_state — the one call every spawn makes to record its
-    {port, pid} — to track every (pid, home) recorded during the session, then
-    on teardown SIGTERM the ones that are ALL of:
-      (a) recorded under a throwaway temp home (never a user's real
-          ~/.fused-render daemon — that's the strict provenance guard), AND
-      (b) still alive, AND
-      (c) provably an rclone rcd (mounts._pid_looks_like_rcd).
-    The StubRcd fixture records a FAKE pid (4242); guard (c) means we never
-    signal it, nor whatever unrelated process happens to hold a recycled pid."""
-    import fused_render.shell.mounts as mounts
-
-    tracked = []  # (pid, home) recorded this session
-    original = mounts.write_rcd_state
-
-    def _tracking_write_rcd_state(port, pid, log_path=None, auth=None):
-        original(port, pid, log_path, auth)
-        try:
-            tracked.append((pid, mounts.storage.home_dir()))
-        except Exception:
-            pass
-
-    mounts.write_rcd_state = _tracking_write_rcd_state
-    try:
-        yield
-    finally:
-        mounts.write_rcd_state = original
-        tmp_root = os.path.realpath(tempfile.gettempdir())
-        for pid, home in tracked:
-            try:
-                if not os.path.realpath(str(home)).startswith(tmp_root):
-                    continue  # provenance guard: only temp-home test daemons
-                if mounts._pid_alive(pid) and mounts._pid_looks_like_rcd(pid):
-                    os.kill(pid, signal.SIGTERM)
-            except Exception:
-                pass

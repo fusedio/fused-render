@@ -3,7 +3,6 @@ import json
 import os
 import stat as stat_mod
 import sys
-import time
 from fused_render.core_templates import ensure_core_templates
 from fused_render.shell import storage
 from fused_render.shell.storage import home_dir
@@ -35,8 +34,8 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 KNOWN_SENTINELS = {"_render", "_listing"}
 
 
-# /api/fs/conditions evaluates template condition.py gates, which over a remote
-# mount costs ~6.8s and was recomputed on every call. A small check-on-read TTL
+# /api/fs/conditions evaluates template condition.py gates, which can do real
+# I/O and was recomputed on every call. A small check-on-read TTL
 # cache lets re-navigation to the same directory reuse the verdict. Only success
 # payloads (plain dicts) are cached; error/404 responses are JSONResponse and are
 # never stored. No background eviction — a stale entry is overwritten on the next
@@ -52,7 +51,6 @@ _CONDITIONS_CACHE: dict[str, tuple[float, float, dict]] = {}
 def _prefs_mtime() -> float:
     # Local import keeps module import order unchanged; shell never imports
     # server so this direction is safe.
-    from fused_render.shell import storage
     try:
         return os.path.getmtime(os.path.join(storage.home_dir(), "prefs.json"))
     except OSError:
@@ -117,7 +115,7 @@ def _resolve_name(name):
     # (`claude`) used to be an iframe page, so a user who once forked it has a
     # stale `~/.fused-render/templates/claude/template.html` — and letting that
     # win would resurrect the retired page under a hand-typed /render URL and
-    # hand its folder's condition.py and icon to the mount gate. The shell
+    # hand its folder's condition.py and icon to the condition gate. The shell
     # renders the mode; a user copy has nothing left to override.
     core_marker = os.path.join(TEMPLATES_DIR, name, NATIVE_MARKER)
     if _native_folder(os.path.join(TEMPLATES_DIR, name)):
@@ -219,230 +217,7 @@ def _condition_file(template_path: str):
     return condition_file if os.path.isfile(condition_file) else None
 
 
-# Per-gate probe budget (SPEC CT-12 fail-closed). One condition gate evaluation
-# shares this wall-clock deadline across ALL its mount probes. On a
-# non-direct-capable mount each operations/stat can burn the full rc timeout
-# resolving a miss (rclone lists the whole parent prefix), so a gate's serialized
-# probes would otherwise stack to N * that timeout. 5s bounds a whole gate to
-# roughly one slow probe; direct-capable mounts probe in ~1s and rarely reach it.
-GATE_PROBE_BUDGET_S = 5.0
-
-# One bounded direct-listing page fed to the gate seed (fix #3/#4). All zarr
-# group-root markers are immediate children of the store dir, so a COMPLETE
-# (untruncated) page of the dir's children answers all three marker isfile
-# probes with zero extra network calls; 1000 keys comfortably covers a store
-# root's immediate children in one unsigned request.
-_GATE_LIST_MAX_KEYS = 1000
-
-
-class _GateSeed:
-    """What `_conditions_payload` already knows about the target dir, threaded
-    into the gate shim so it answers isdir/isfile locally instead of reprobing.
-
-    - `kinds`: exact path -> "dir"|"file"|"missing" (a verdict already taken by
-      the endpoint's rc is_dir probe; consulted before any rc call).
-    - `dir_path`: the normalized (rstrip("/")) dir the listing describes.
-    - `file_children`: set of immediate FILE basenames from a COMPLETE listing,
-      or None when no complete listing is available.
-    - `listing_complete`: True only when the listing was NOT truncated, so an
-      absent marker is provably absent (a truncated listing can't prove that).
-    """
-
-    def __init__(self, kinds=None, dir_path=None, file_children=None,
-                 listing_complete=False):
-        self.kinds = kinds or {}
-        self.dir_path = dir_path
-        self.file_children = file_children
-        self.listing_complete = listing_complete
-
-
-def _mount_gate_builtins(target_path: str, seed=None):
-    """Custom `__builtins__` for a condition gate whose target is MOUNT-backed,
-    so the gate's own filesystem primitives route through the rclone rc API
-    instead of the kernel NFS mount.
-
-    Kernel NFS is the enemy: a cold NEGATIVE os.path.isfile over an rclone-NFS
-    mount is a kernel LOOKUP miss that forces rclone to LIST the whole parent S3
-    prefix to resolve it (~18-24s on a world-scale store), tripping the macOS NFS
-    deadman so the mount is declared dead. This is the same "route via rc, never
-    the kernel" hardening api_fs_list / rc_list_dir already carry; the gate path
-    never got it because gates run raw os.path against the mount.
-
-    The gate is exec'd stdlib-only and calls os.path directly (we can't ask
-    arbitrary gate code to call an rc helper), so we intercept at the os / open
-    layer. `import os` inside the gate resolves through __import__, so a fake
-    `os` injected into the module globals would just be overwritten by the real
-    one — instead we override __import__ (and open) in the gate module's OWN
-    __builtins__. That dict is built per _run_condition call on a fresh module,
-    so this is thread-safe under the concurrent ThreadPoolExecutor fan-out
-    (_evaluate_conditions) — NEVER a global monkeypatch of os.path.*, which would
-    race across threads and the rest of the server.
-
-    Fail-closed (SPEC CT-12): any rc error / timeout / unreachable rcd makes the
-    routed call behave as the kernel exception would today (isfile/isdir/exists
-    -> False, os.stat -> OSError, open -> OSError), so the gate returns False
-    quietly. A mount path NEVER falls back to the kernel os.* — that reintroduces
-    the wedge. Non-mount paths a gate might also touch pass straight through to
-    the real os / open. `os.utime` (the model gates' atime restoration, MV-5) is
-    the one WRITE a gate makes: on a mount it is dropped rather than routed —
-    there is no atime there worth preserving, and the kernel SETATTR is the very
-    call this shim exists to prevent.
-    """
-    import builtins
-    import io
-
-    from fused_render.shell import mounts
-
-    real_os = os
-
-    # The gate's probes run SERIALLY in this one thread; give them ONE shared
-    # deadline (GATE_PROBE_BUDGET_S from now). Each probe is bounded to the budget
-    # REMAINING, and once it is spent every further probe fails closed instantly
-    # (isfile/isdir/exists -> False, stat -> OSError) instead of issuing another
-    # slow rc call — so a hung/slow backend can't stack timeouts across a gate.
-    deadline = time.monotonic() + GATE_PROBE_BUDGET_S
-
-    def _probe_budget():
-        return deadline - time.monotonic()
-
-    def _isfile(p):
-        if not mounts.is_mount_backed(p):
-            return real_os.path.isfile(p)
-        # A listing of the dir answers marker isfile with no network call
-        # (fix #3/#4). PRESENCE in the page is conclusive even if the page was
-        # TRUNCATED (the marker demonstrably exists); ABSENCE is only provable
-        # from a COMPLETE (untruncated) page. So a truncated page that captured
-        # the marker still short-circuits True, and only a truncated-and-absent
-        # marker falls through to the rc probe below. real_os.path is the real
-        # (captured) os.path.
-        if (seed is not None and seed.file_children is not None
-                and real_os.path.dirname(p) == seed.dir_path):
-            if real_os.path.basename(p) in seed.file_children:
-                return True
-            if seed.listing_complete:
-                return False
-        # Else a verdict the endpoint already took for this exact path (fix #2).
-        if seed is not None and p in seed.kinds:
-            return seed.kinds[p] == "file"
-        left = _probe_budget()
-        if left <= 0:
-            return False  # budget spent -> fail closed
-        return mounts.rc_kind_for(p, timeout=left) == "file"
-
-    def _isdir(p):
-        if not mounts.is_mount_backed(p):
-            return real_os.path.isdir(p)
-        if seed is not None and p in seed.kinds:
-            return seed.kinds[p] == "dir"  # no reprobe of the target (fix #2)
-        left = _probe_budget()
-        if left <= 0:
-            return False
-        return mounts.rc_kind_for(p, timeout=left) == "dir"
-
-    def _exists(p):
-        if not mounts.is_mount_backed(p):
-            return real_os.path.exists(p)
-        if seed is not None and p in seed.kinds:
-            return seed.kinds[p] in ("file", "dir")
-        left = _probe_budget()
-        if left <= 0:
-            return False
-        return mounts.rc_kind_for(p, timeout=left) in ("file", "dir")
-
-    def _stat(p, *a, **k):
-        if not mounts.is_mount_backed(p):
-            return real_os.stat(p, *a, **k)
-        left = _probe_budget()
-        if left <= 0:
-            raise OSError(f"probe budget exhausted for {p}")
-        return mounts.rc_stat_result(p, timeout=left)
-
-    def _utime(p, *a, **k):
-        # Restoring an atime is a LOCAL cache concern: the model gates read a
-        # file and put its atime back so a gate is not what marks a model as
-        # recently used (SPEC MV-5). A mount has no such atime to preserve, and
-        # a kernel SETATTR on the mount is precisely the class of call this shim
-        # exists to keep gates from making — so it is DROPPED, not routed. The
-        # gates wrap it in try/except anyway; silence matches what they expect.
-        if isinstance(p, str) and mounts.is_mount_backed(p):
-            return None
-        return real_os.utime(p, *a, **k)
-
-    def _listdir(p="."):
-        # A kernel listing over a mount is the mur-sst wedge; the gate is
-        # forbidden from enumerating anyway (constant-time by design), so fail
-        # closed rather than route a listing it should never issue.
-        if mounts.is_mount_backed(p):
-            raise OSError(f"listing not permitted for mount path {p} in a gate")
-        return real_os.listdir(p)
-
-    def _scandir(p="."):
-        if mounts.is_mount_backed(p):
-            raise OSError(f"scandir not permitted for mount path {p} in a gate")
-        return real_os.scandir(p)
-
-    class _OsPathShim:
-        # Instance attrs win over __getattr__, so only these three route via rc;
-        # join / basename / everything else delegate to the real os.path.
-        isfile = staticmethod(_isfile)
-        isdir = staticmethod(_isdir)
-        exists = staticmethod(_exists)
-
-        def __getattr__(self, name):
-            return getattr(real_os.path, name)
-
-    class _OsShim:
-        path = _OsPathShim()
-        stat = staticmethod(_stat)
-        utime = staticmethod(_utime)
-        listdir = staticmethod(_listdir)
-        scandir = staticmethod(_scandir)
-
-        def __getattr__(self, name):
-            return getattr(real_os, name)
-
-    os_shim = _OsShim()
-    real_import = builtins.__import__
-    real_open = open
-
-    def _import(name, globals=None, locals=None, fromlist=(), level=0):
-        # Route every import form of `os`/`os.path` to the shim. __import__'s
-        # return-value contract differs by form: `import os` / `import os as o`
-        # (name "os") and `import os.path` (name "os.path", empty fromlist) bind
-        # the TOP package, then the import machinery walks .path off it via
-        # getattr — so return os_shim. `from os import ...` (name "os", non-empty
-        # fromlist) also wants the top package. Only `from os.path import x`
-        # (name "os.path", non-empty fromlist) wants the SUBMODULE — return the
-        # shim's path object so the names bind to shimmed functions.
-        # NOTE: this covers os / os.path only. A gate reaching the mount through
-        # a different stdlib module (pathlib, io, glob, ...) would still hit the
-        # kernel — a known, deliberately out-of-scope escape (low likelihood;
-        # the builtin gates use os).
-        if name == "os":
-            return os_shim
-        if name == "os.path":
-            return os_shim.path if fromlist else os_shim
-        return real_import(name, globals, locals, fromlist, level)
-
-    def _open(file, *args, **kwargs):
-        if isinstance(file, str) and mounts.is_mount_backed(file):
-            # The one bounded gate read (zarr.json node_type). Ranged HTTP read
-            # over the mount's serve — never a kernel open. OSError -> the gate's
-            # own except -> fail closed.
-            data = mounts.rc_read_bounded(file)
-            mode = args[0] if args else kwargs.get("mode", "r")
-            if "b" in mode:
-                return io.BytesIO(data)
-            return io.StringIO(data.decode(kwargs.get("encoding") or "utf-8"))
-        return real_open(file, *args, **kwargs)
-
-    b = dict(vars(builtins))
-    b["__import__"] = _import
-    b["open"] = _open
-    return b
-
-
-def _run_condition(condition_file: str, target_path: str, seed=None):
+def _run_condition(condition_file: str, target_path: str):
     """Load+exec a `condition.py` and call `main(target_path)`. Returns
     (allowed: bool, error: str|None).
 
@@ -454,12 +229,6 @@ def _run_condition(condition_file: str, target_path: str, seed=None):
     template and surfaces the reason as `template_error`, mirroring how an
     unresolvable name is dropped (SPEC CT-6): a template gated by code that
     can't decide is not silently shown.
-
-    For a MOUNT-backed target the gate runs under a per-call, thread-safe shim
-    (_mount_gate_builtins) that routes its os.path / os.stat / open off the
-    kernel NFS mount and onto the rclone rc API — a cold negative os.path.isfile
-    over a mount otherwise lists the whole S3 prefix and wedges the mount.
-    Templates stay mount-agnostic; all mount-awareness lives here.
     """
     import importlib.util
 
@@ -468,11 +237,6 @@ def _run_condition(condition_file: str, target_path: str, seed=None):
             "__fused_condition__", condition_file
         )
         mod = importlib.util.module_from_spec(spec)
-        # Local import keeps shell ↛ server acyclic; resolves the attr at call
-        # time so the mount routing is monkeypatchable in tests.
-        from fused_render.shell.mounts import is_mount_backed
-        if is_mount_backed(target_path):
-            mod.__dict__["__builtins__"] = _mount_gate_builtins(target_path, seed)
         spec.loader.exec_module(mod)
         fn = getattr(mod, "main", None)
         if not callable(fn):
@@ -488,7 +252,7 @@ def _mark_conditions(entries: list):
     (`path is None`, D73) and folders with no gate are left untouched.
 
     Stat no longer *evaluates* gates — a gate may do real I/O (the H3 gate
-    reads a parquet footer), and over a remote mount that stalled every stat
+    reads a parquet footer), and that stalled every stat
     of the extension. Marking is just an isfile() per entry (~1µs); the client
     renders unconditional templates immediately and resolves the marked ones
     in the background via /api/fs/conditions. A conditional entry is never the
@@ -500,7 +264,7 @@ def _mark_conditions(entries: list):
             entry["conditional"] = True
 
 
-def _evaluate_conditions(gated: list, target_path: str, seed=None):
+def _evaluate_conditions(gated: list, target_path: str):
     """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
     returns {key: (allowed: bool, error: str|None)}.
 
@@ -513,7 +277,7 @@ def _evaluate_conditions(gated: list, target_path: str, seed=None):
 
     def _serial():
         for k, cf in gated:
-            results[k] = _run_condition(cf, target_path, seed)
+            results[k] = _run_condition(cf, target_path)
 
     if len(gated) == 1:
         _serial()
@@ -529,7 +293,7 @@ def _evaluate_conditions(gated: list, target_path: str, seed=None):
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-                futures = {pool.submit(_run_condition, cf, target_path, seed): k for k, cf in gated}
+                futures = {pool.submit(_run_condition, cf, target_path): k for k, cf in gated}
                 for fut, k in futures.items():
                     results[k] = fut.result()
         except BaseException:
@@ -549,44 +313,11 @@ def _conditions_payload(path: str):
     carries the first gate error in list order (a broken gate reports False —
     fail closed — with the reason), matching stat's `template_error` posture.
     """
-    from fused_render.shell.mounts import (
-        direct_list_capable,
-        direct_list_page,
-        is_mount_backed,
-        rc_kind_for,
-    )
-
-    seed = None
-    if is_mount_backed(path):
-        # A mount is_dir probe off the kernel (a kernel os.stat here is a
-        # GETATTR that can force an S3 re-list and wedge the mount). "missing" is
-        # a trustworthy 404; "indeterminate" (rcd down / rc error / probe budget
-        # exhausted) must NOT 404 a path the user just opened — proceed treating
-        # it as a dir, and the gates then fail closed on their own indeterminate
-        # probes, so the endpoint still returns 200 with all-False conditions
-        # rather than a spurious 404. The probe is bounded by GATE_PROBE_BUDGET_S
-        # so a stalled non-direct-capable backend can't hang this endpoint before
-        # the gates (each also budgeted) even start.
-        kind = rc_kind_for(path, timeout=GATE_PROBE_BUDGET_S)
-        if kind == "missing":
-            return _error(f"no such file or directory: {path}", status=404)
-        is_dir = kind != "file"
-        # Feed a DEFINITIVE verdict to the gate shim so the gate answers its own
-        # isdir(path) with no rc call instead of reprobing this exact path
-        # (fix #2). An "indeterminate" kind (rcd blip / budget exhausted) is NOT
-        # seeded: seeding it would make the gate's isdir return False without a
-        # probe and pin a spurious all-False verdict (and the TTL cache would
-        # hold it). Leaving seed=None lets the gate do its OWN probe, which may
-        # recover, and otherwise fail closed on its own budget — the posture the
-        # is_dir comment above describes.
-        if kind in ("dir", "file"):
-            seed = _GateSeed(kinds={path: kind})
-    else:
-        try:
-            st = os.stat(path)
-        except OSError:
-            return _error(f"no such file or directory: {path}", status=404)
-        is_dir = stat_mod.S_ISDIR(st.st_mode)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return _error(f"no such file or directory: {path}", status=404)
+    is_dir = stat_mod.S_ISDIR(st.st_mode)
     entries, _ = _templates_for(path, is_dir)
 
     gated = []  # [(mode, condition_file)] — mode keys are unique per list
@@ -596,26 +327,7 @@ def _conditions_payload(path: str):
             if cf is not None:
                 gated.append((entry["mode"], cf))
 
-    # Only now that we know a gate will actually consume it is the bounded
-    # listing worth its network cost. For a direct-list-capable mount (anonymous
-    # S3/GCS), one unsigned listing of the dir's immediate children answers all
-    # three marker isfile probes locally (fix #3/#4) — the markers are always
-    # immediate children, so a COMPLETE page proves each present/absent without
-    # a per-marker rc probe. Fail-open: any error leaves the seed marker-less and
-    # the gate falls back to today's per-marker probes (logged, not silent).
-    if gated and seed is not None and is_dir and direct_list_capable(path):
-        try:
-            listing, next_token = direct_list_page(
-                path, max_keys=_GATE_LIST_MAX_KEYS, timeout=GATE_PROBE_BUDGET_S)
-            seed.file_children = {
-                e["Name"] for e in listing if not e.get("IsDir")}
-            seed.listing_complete = next_token is None
-        except Exception:
-            logger.debug("gate seed listing failed for %s; falling back to "
-                         "per-marker probes", path, exc_info=True)
-        seed.dir_path = path.rstrip("/")
-
-    results = _evaluate_conditions(gated, path, seed)
+    results = _evaluate_conditions(gated, path)
     conditions, error = {}, None
     for mode, _cf in gated:
         allowed, err = results[mode]

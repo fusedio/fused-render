@@ -2309,7 +2309,7 @@
       showToast(outcome);
       // Displayed here, so the carry slot is spent — and nothing writes to it
       // after this point. That ordering is the whole lifetime rule: the reload
-      // never arriving (an unwatched mount-backed file, the user navigating away,
+      // never arriving (an unwatched file, the user navigating away,
       // the race simply lost) used to leave the note behind for the NEXT open of
       // the file to show as fresh news, and a failing refresh on a dying page
       // used to write it back after a newer boot had already consumed it.

@@ -2,7 +2,7 @@
 
 `main(path)` returns True only when `path` is (or should be previewed as) a
 Zarr store, so the AOI streamer stops being offered on every directory. It runs
-on EVERY directory the user opens — including slow/large remote mounts — so
+on EVERY directory the user opens — including slow/large stores — so
 efficiency is the whole design, and the gate never does more I/O than it must:
 
 1. **Zero-I/O name fast path.** A directory whose basename ends (case-
@@ -34,9 +34,8 @@ efficiency is the whole design, and the gate never does more I/O than it must:
      blank `node_type`, or any read/JSON error, fails closed (not offered).
 
 CRITICAL: this never lists or walks the directory (`os.listdir`, `os.scandir`,
-`glob`, recursion). On a world-scale remote store a listing scales with entry
-count and blows past the mount's timeout — the exact failure this gate exists to
-avoid. A targeted `isfile`/HEAD — and the single named-file read for `zarr.json`
+`glob`, recursion). On a world-scale store a listing scales with entry
+count and is very slow — the exact cost this gate exists to avoid. A targeted `isfile`/HEAD — and the single named-file read for `zarr.json`
 above — stays constant-time regardless of store size (the ban is on directory
 enumeration, not on reading one known file).
 

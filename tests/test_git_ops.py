@@ -898,20 +898,6 @@ def test_remote_add_refuses_when_a_remote_already_exists(ops, repo, tmp_path):
     assert git(repo, "remote").split() == ["origin"], "nothing new was added"
 
 
-def test_set_identity_and_remote_add_refused_on_a_mount_backed_repo(
-        ops, repo, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
-    for call in (dict(op="set_identity", name="Jane", email="jane@example.com"),
-                 dict(op="remote_add", url="https://example.com/x.git")):
-        got = ops.main(repo, **call)
-        assert got["ok"] is False, call
-        assert got["reason"] == "mount", (call, got)
-    # `_seed` gave this repo its own identity already — the mount refusal must
-    # leave it untouched, not merely leave it non-empty.
-    assert git(repo, "config", "--local", "--get", "user.name").strip() == "Fixture Author"
-    assert git(repo, "remote").strip() == ""
-
-
 # --------------------------------------------------- dirty-tree guard / app dir
 
 
@@ -1116,15 +1102,6 @@ def test_app_restore_refuses_when_already_at_that_version(ops, app_repo):
     got = ops.main(_app_file(root), op="app_restore", sha=head_sha)
 
     assert got["ok"] is False and got["reason"] == "no-op-restore", got
-
-
-def test_app_restore_refuses_on_a_mount_backed_repo(ops, app_repo, monkeypatch):
-    root, old_sha = app_repo
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
-
-    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
-
-    assert got["ok"] is False and got["reason"] == "mount", got
 
 
 def _install_rejecting_hook(root, name):
@@ -1774,39 +1751,6 @@ def test_reverting_a_nonexistent_sha_refuses_without_a_bogus_mid_revert_warning(
 
 
 # ------------------------------------------------------------------ refusals
-
-
-def test_a_mount_backed_target_is_refused_for_a_MUTATING_op(ops, repo, monkeypatch):
-    # The write path's half of MD-11 / GT-4. The gate keeps the mode from being
-    # offered; this keeps a hand-written `?_mode=git` URL from reaching a
-    # mutating git call across an rclone/NFS mount.
-    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
-    write(repo, "pkg/mod.py", "two\n")
-    for call in (dict(op="stage", paths=["pkg/mod.py"]),
-                 dict(op="discard_all"),
-                 dict(op="commit", message="nope"),
-                 dict(op="push")):
-        got = ops.main(repo, **call)
-        assert got["ok"] is False, call
-        assert got["reason"] == "mount", (call, got)
-    assert status(repo)["pkg/mod.py"] == " M", "and nothing happened"
-
-
-def test_an_unavailable_mount_detector_refuses_a_mutating_op(ops, repo, monkeypatch):
-    import builtins
-    import sys
-
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "appenv":
-            raise ImportError("blocked")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    monkeypatch.delitem(sys.modules, "appenv", raising=False)
-    got = ops.main(repo, op="stage_all")
-    assert got["ok"] is False and got["reason"] == "mount"
 
 
 def test_a_non_repository_is_refused(ops, tmp_path):

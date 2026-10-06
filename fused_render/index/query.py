@@ -739,20 +739,18 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None,
     `guard`, when given, is consulted BEFORE `os.path.isdir` on every
     candidate (SPEC-index-search-wedge.md item 1): this walk runs directly
     against the user's raw typed string, segment by segment, and a candidate
-    that lands under a wedged NFS/rclone mount would otherwise park this
-    thread on `os.path.isdir` forever — the exact failure this repo already
-    knows that class of mount can cause (`MountGuard`'s own docstring).
+    that lands under a wedged network mount would otherwise park this
+    thread on `os.path.isdir` forever.
 
     The check is `guard.blocks()`, deliberately NOT `guard.blocks_root()`:
     `blocks()` is pure string comparison against `MountGuard`'s own
     (once-resolved-at-construction) roots, no syscall at all, whereas
-    `blocks_root()` falls through to `mounts.is_mount_backed`, which pays an
-    `os.path.realpath` — itself a readlink/lstat per path component — on
-    every miss. Calling that per SEGMENT, per KEYSTROKE, on the hot path
+    `blocks_root()` pays an `os.path.realpath` — itself a readlink/lstat per
+    path component — on every call. Calling that per SEGMENT, per KEYSTROKE, on the hot path
     item 5 exists to shave milliseconds off would add back exactly the class
     of blocking syscall this item exists to remove, just relocated from
-    `isdir` into the guard. `blocks()` only covers fused's OWN rclone
-    mounts/home tree — a wedge in an arbitrary system mount outside that
+    `isdir` into the guard. `blocks()` only covers fused's OWN
+    home tree — a wedge in an arbitrary system mount outside that
     tree (an external SMB share, iCloud) cannot be detected here without a
     syscall, and this walk deliberately does not pay one; item 2's bounded
     permit (`ABANDON_S`, routers/index.py) is the backstop for that case,
@@ -762,7 +760,7 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None,
     same `break`), never raised: the walk just stops one segment early, the
     same as a folder that doesn't exist yet. The blocked candidate's path is
     also returned (the 4th tuple element, `None` when nothing was blocked)
-    so a caller can still answer "this typed path is mount-backed" from a
+    so a caller can still answer "this typed path is inside a home tree" from a
     string alone, even though `base` itself lands short of it (see
     `resolve_query`'s `blocked_out` parameter, SPEC-index-search-wedge.md
     item C / D-number TBD). `guard=None` (every existing caller) preserves
@@ -2191,7 +2189,7 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     That length test is only correct for a SINGLE literal run, where "matched
     the whole name and nothing more" is a fair reading of "exact". Reported
     defect: `fused render` (two literal runs, `["fused", "render"]`,
-    `total_len == 11`) made `~/ios/FusedRender` and two rclone cache
+    `total_len == 11`) made `~/ios/FusedRender` and two cache
     directories named `FusedRender` (`nm` == `"fusedrender"`, 11 characters —
     the ONLY 11-character spelling) rank above `~/Work/fused-render` (`nm`
     == `"fused-render"`, 12 characters, so not "exact" by the length test),
@@ -2476,7 +2474,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
     m = read_manifest(cfg)
     # `reason` is the miss's cause, and it is what the in-folder search box
-    # switches on: a package or a mount-backed folder goes to the live walk, an
+    # switches on: a package or a home-tree folder goes to the live walk, an
     # uncovered one is scanned on demand. Decided here rather than in the
     # client, so there is one copy of the rule. The mount half is the server
     # layer's to add (MountGuard); this package/uncovered half is the index's.

@@ -1,8 +1,7 @@
-"""Mount-safe filesystem discovery for the Map Viewer file-picker modal, and
+"""Filesystem discovery for the Map Viewer file-picker modal, and
 the staging directory OS drag-and-drops upload into (action="drops_dir")."""
 from __future__ import annotations
 
-import json
 import os
 import re
 import stat
@@ -10,9 +9,6 @@ import string
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -118,42 +114,6 @@ def roots() -> list[dict[str, str]]:
     return list(deduplicated.values())
 
 
-def _server_url(src: str, endpoint: str, path: str) -> str:
-    origin = urllib.parse.urlsplit(src)
-    return (
-        f"{origin.scheme}://{origin.netloc}{endpoint}?path="
-        + urllib.parse.quote(path)
-    )
-
-
-def _stat(src: str, path: str) -> tuple[str, dict[str, Any] | None]:
-    try:
-        with urllib.request.urlopen(
-            _server_url(src, "/api/fs/stat", path), timeout=10
-        ) as response:
-            return "ok", json.load(response)
-    except urllib.error.HTTPError as error:
-        return ("missing", None) if error.code == 404 else ("unreachable", None)
-    except Exception:
-        return "unreachable", None
-
-
-def _list_remote(src: str, path: str, cap: int = 5000) -> list[dict[str, Any]]:
-    """Use the mount-routed API and never fall back to a kernel listing."""
-    entries: list[dict[str, Any]] = []
-    cursor = ""
-    while True:
-        url = _server_url(src, "/api/fs/list", path)
-        if cursor:
-            url += "&cursor=" + urllib.parse.quote(cursor)
-        with urllib.request.urlopen(url, timeout=30) as response:
-            payload = json.load(response)
-        entries.extend(payload.get("entries") or [])
-        cursor = payload.get("cursor") or ""
-        if len(entries) >= cap or not payload.get("truncated") or not cursor:
-            return entries[:cap]
-
-
 ZARR_MARKERS = ("zarr.json", ".zmetadata", ".zgroup", ".zarray")
 
 
@@ -161,8 +121,7 @@ def _is_zarr_directory(path: str, name: str) -> bool:
     """Whether a directory is a zarr store rather than a lookalike name.
 
     A store always carries one of the metadata objects at its root. When the
-    directory cannot be read here — a remote listing arrives as names alone —
-    the name is all there is to go on, which is the old behaviour.
+    directory cannot be read here, the name is all there is to go on.
     """
     if not re.search(r"\.zarr(-[^.]*)?$", name.lower()):
         return False
@@ -345,43 +304,8 @@ def _drops_dir() -> dict[str, Any]:
     return {"dir": DROPS}
 
 
-def main(dir: str = "", src: str = "", action: str = "") -> dict[str, Any]:
+def main(dir: str = "", action: str = "") -> dict[str, Any]:
     if action == "drops_dir":
         return _drops_dir()
     requested = os.path.abspath(clean_path(dir) or str(Path.home()))
-    if src:
-        status, metadata = _stat(src, requested)
-        if status == "missing":
-            return {
-                "error": f"Not found: {requested}",
-                "dir": requested,
-                "entries": [],
-                "roots": roots(),
-            }
-        if status == "ok" and metadata and metadata.get("remote"):
-            selected = ""
-            directory = requested
-            if not metadata.get("is_dir", True):
-                selected = requested
-                directory = os.path.dirname(requested) or os.path.sep
-            try:
-                remote_entries = _list_remote(src, directory)
-            except Exception as error:
-                return {
-                    "error": f"Could not list remote directory: {directory}",
-                    "detail": str(error),
-                    "dir": directory,
-                    "entries": [],
-                    "roots": roots(),
-                }
-            triples = [
-                (
-                    str(entry.get("name") or ""),
-                    bool(entry.get("is_dir")),
-                    entry.get("size"),
-                )
-                for entry in remote_entries
-                if entry.get("name")
-            ]
-            return _payload(directory, triples, selected=selected)
     return _local_payload(requested)

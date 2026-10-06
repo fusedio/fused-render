@@ -1,30 +1,21 @@
-"""Mount-safety of the netcdf/zarr grid reader (_zarr_core) + grid daemon.
+"""Directory-enumeration invariants of the netcdf/zarr grid reader (_zarr_core)
++ grid daemon.
 
-The FATAL operation on a mount-backed zarr store is DIRECTORY ENUMERATION
-(os.walk / os.scandir / os.listdir): rclone services one readdir by listing the
-whole parent S3 prefix, and on a flat array (millions of chunk files, e.g. MUR
-SST) that trips the macOS NFS deadman and DROPS THE MOUNT. Reading a file by its
-EXACT path is a single round-trip and is safe.
-
-These tests pin the invariants added on branch fix/template-kernel-listing:
+A flat zarr array can hold millions of chunk files, so enumerating an array's
+chunk directory (os.walk / os.scandir / os.listdir) must never be the way
+metadata is discovered. Reading a file by its EXACT path is a single read.
 
   * _load_meta's non-consolidated fallback discovers arrays WITHOUT ever
     scandir-ing an array/chunk directory (the live, daemon-reachable path).
-  * _chunk_stats / _store_summary skip their enumerations for remote stores
-    (the legacy _zarr_core.main() 'pure' path).
-  * the grid daemon's /meta no longer walks a directory store at all.
+  * the grid daemon's /meta does not walk a directory store at all.
 
-Pure-python only (os/json + a threaded localhost stat server); no numpy/zarr
-needed, so they run in any repo venv.
+Pure-python only (os/json); no numpy/zarr needed, so they run in any repo venv.
 """
 import importlib.util
 import json
 import os
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import pytest
 
 from _thread_scoped import this_thread_only
 
@@ -50,63 +41,6 @@ Z = _load_module()
 
 
 # --------------------------------------------------------------------------
-# a threaded stand-in for /api/fs/stat (only endpoint _is_remote needs)
-# --------------------------------------------------------------------------
-class _FakeStat:
-    def __init__(self, remote=True, exists=True):
-        self.remote = remote
-        self.exists = exists
-        fs = self
-
-        class H(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                if not self.path.startswith("/api/fs/stat"):
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-                if not fs.exists:
-                    self.send_response(404)
-                    self.end_headers()
-                    self.wfile.write(b'{"error":"nope"}')
-                    return
-                body = json.dumps(
-                    {"remote": fs.remote, "size": 0, "is_dir": True}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-        self._srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.port = self._srv.server_address[1]
-        threading.Thread(target=self._srv.serve_forever, daemon=True).start()
-
-    @property
-    def src(self):
-        return f"http://127.0.0.1:{self.port}/api/fs/raw?path=%2Fstore"
-
-    def stop(self):
-        self._srv.shutdown()
-
-
-@pytest.fixture
-def fake_stat():
-    made = []
-
-    def make(remote=True, exists=True):
-        s = _FakeStat(remote=remote, exists=exists)
-        made.append(s)
-        return s
-
-    yield make
-    for s in made:
-        s.stop()
-
-
-# --------------------------------------------------------------------------
 # store builders
 # --------------------------------------------------------------------------
 def _write(path, obj):
@@ -128,7 +62,7 @@ def _flat_store(tmp_path, consolidated=False, n_chunks=2000):
               "zarr_format": 2}
     _write(str(arr / ".zarray"), zarray)
     _write(str(arr / ".zattrs"), {"_ARRAY_DIMENSIONS": ["lat", "lon"]})
-    # a pile of chunk files — a walk/scandir here is what drops the mount
+    # a pile of chunk files — a walk/scandir here is what must be avoided
     for i in range(n_chunks):
         (arr / f"{i}.0").write_bytes(b"\x00")
     if consolidated:
@@ -142,8 +76,8 @@ def _flat_store(tmp_path, consolidated=False, n_chunks=2000):
 
 class _ScandirTrap:
     """Patches os.scandir to record every directory scanned and to RAISE if a
-    forbidden directory (an array/chunk dir) is ever enumerated — modelling the
-    mount deadman firing on that listing."""
+    forbidden directory (an array/chunk dir) is ever enumerated — modelling a
+    forbidden listing."""
 
     def __init__(self, monkeypatch, forbidden=()):
         self.scanned = []
@@ -155,7 +89,7 @@ class _ScandirTrap:
             self.scanned.append(ap)
             if ap in self.forbidden:
                 raise AssertionError(
-                    f"scandir on chunk dir {ap} — would drop the mount")
+                    f"scandir on chunk dir {ap} — enumerating a chunk dir is forbidden")
             return self._real(path)
 
         # Thread-scoped: `Z.os` is the real `os` module, so this patch is
@@ -164,30 +98,6 @@ class _ScandirTrap:
         # _thread_scoped.py). Recording ITS scandir made `scanned` a list of
         # paths this code never touched.
         monkeypatch.setattr(Z.os, "scandir", this_thread_only(self._real, fake))
-
-
-# --------------------------------------------------------------------------
-# _is_remote / _stat over HTTP (mount knowledge behind the server API)
-# --------------------------------------------------------------------------
-def test_is_remote_true(fake_stat):
-    s = fake_stat(remote=True)
-    assert Z._is_remote(s.src, "/store") is True
-
-
-def test_is_remote_false(fake_stat):
-    s = fake_stat(remote=False)
-    assert Z._is_remote(s.src, "/store") is False
-
-
-def test_is_remote_no_src_presumes_local():
-    # no src -> never touch the network, presume local (matches pyramid)
-    assert Z._is_remote("", "/store") is False
-
-
-def test_is_remote_unreachable_presumes_local():
-    # nothing listening -> unreachable -> presumed local
-    src = "http://127.0.0.1:1/api/fs/raw?path=%2Fstore"
-    assert Z._is_remote(src, "/store") is False
 
 
 # --------------------------------------------------------------------------
@@ -220,40 +130,14 @@ def test_load_meta_consolidated_does_not_scandir_at_all(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# cosmetic enumerations skipped for remote stores (legacy main() pure path)
+# cosmetic chunk count (legacy main() pure path)
 # --------------------------------------------------------------------------
-def test_chunk_stats_remote_skips_scandir(tmp_path, monkeypatch):
-    store, arr = _flat_store(tmp_path, consolidated=False)
-
-    def boom(path):
-        raise AssertionError("os.scandir called for a remote chunk_stats")
-
-    monkeypatch.setattr(Z.os, "scandir", this_thread_only(os.scandir, boom))
-    za = {"shape": [100, 100], "chunks": [10, 10]}
-    present, total = Z._chunk_stats(store, "temperature", za, remote=True)
-    assert present is None
-    assert total == 100          # ceil(100/10) * ceil(100/10)
-
-
 def test_chunk_stats_local_still_counts(tmp_path):
     store, arr = _flat_store(tmp_path, consolidated=False, n_chunks=5)
     za = {"shape": [100, 100], "chunks": [10, 10]}
-    present, total = Z._chunk_stats(store, "temperature", za, remote=False)
+    present, total = Z._chunk_stats(store, "temperature", za)
     assert present == 5
     assert total == 100
-
-
-def test_store_summary_remote_skips_walk(tmp_path, monkeypatch):
-    store, arr = _flat_store(tmp_path, consolidated=False)
-
-    def boom(*a, **k):
-        raise AssertionError("os.walk called for a remote store_summary")
-
-    monkeypatch.setattr(Z.os, "walk", boom)
-    summ = Z._store_summary(store, remote=True)
-    assert summ["remote"] is True
-    assert summ["size"] is None
-    assert summ["files"] is None
 
 
 # --------------------------------------------------------------------------

@@ -817,7 +817,7 @@ async function listFolder(folder) {
   $("opFilesSec").hidden = false;
   box.innerHTML = '<div class="op-empty">Listing…</div>';
   let res;
-  try { res = await fused.runPython("./browse.py", { folder, src: location.origin }); }
+  try { res = await fused.runPython("./browse.py", { folder }); }
   catch (err) { box.innerHTML = `<div class="op-empty">${esc((err && err.message) || err)}</div>`; return; }
   $("opFolderLabel").textContent = res.folder || folder;
   if (res.error) { box.innerHTML = `<div class="op-empty">${esc(res.error)}</div>`; return; }

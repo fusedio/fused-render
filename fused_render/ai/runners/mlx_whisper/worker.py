@@ -12,7 +12,7 @@ being a library rather than a streaming decoder:
 
 * **This process decodes the audio itself, with `av`.** `mlx_whisper.transcribe`
   accepts a path, and on that path it calls openai-whisper's `load_audio()`,
-  which SPAWNS `ffmpeg`. This app bundles rclone, not ffmpeg (see this folder's
+  which SPAWNS `ffmpeg`. This app does not bundle ffmpeg (see this folder's
   `pyproject.toml`), so that path is closed: `_decode_audio` turns the file into
   16 kHz mono float32 through PyAV's in-process ffmpeg libraries and the
   waveform is what `transcribe()` is given. The library takes an ndarray on the

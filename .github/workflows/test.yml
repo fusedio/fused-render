@@ -79,7 +79,6 @@ jobs:
             # filter — pre-existing behavior, left unchanged.)
             linux_desktop:
               - 'fused_render/supervisor/**'
-              - 'fused_render/shell/mounts/**'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
               - *linux_packaging
@@ -96,7 +95,6 @@ jobs:
               - 'fused_render/supervisor/**'
               - 'fused_render/app.py'
               - 'fused_render/menubar_pin.py'
-              - 'fused_render/shell/mounts/**'
               # The NSPasteboard backend: its round-trips need a real macOS
               # login session, so this job is the only place they can run.
               - 'fused_render/shell/pasteboard/**'
@@ -181,31 +179,6 @@ jobs:
 
       - name: Install fused-render (dev extra)
         run: pip install -e ".[dev]"
-
-      # shell/mounts.py shells out to rclone (D102/D103); not bundled outside
-      # the packaged macOS app, so CI installs the real binary like a dev
-      # machine would (README's "Remote storage (mounts)" section).
-      #
-      # Downloaded directly rather than `apt-get install rclone`: that needs a
-      # full `apt-get update` against the Ubuntu archive mirror just to install
-      # one package, and that mirror has hung outright (see the timeout-minutes
-      # note above) rather than erroring. Same pinned version + published
-      # SHA256 the desktop builds bundle (scripts/build_linux_appimage.sh) —
-      # verified before use, so a bad download fails in seconds, not silently.
-      - name: Install rclone
-        run: |
-          set -euo pipefail
-          RCLONE_VERSION="1.74.4"
-          RCLONE_SHA256="fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
-          RCLONE_ZIP="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
-          curl -fsSL --max-time 120 --retry 2 \
-            "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ZIP}" \
-            -o "$RCLONE_ZIP"
-          echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
-            || { echo "::error::rclone zip SHA256 mismatch"; exit 1; }
-          sudo unzip -jo "$RCLONE_ZIP" "*/rclone" -d /usr/local/bin
-          sudo chmod +x /usr/local/bin/rclone
-          rclone version
 
       # `-q`, not `-v`: `-v` prints one line per test, and there are >11,000 of
       # them, so it buried this job's actual output ~5:1 and pushed the log past
@@ -301,33 +274,6 @@ jobs:
       - name: Install fused-render (dev extra)
         run: python -m pip install -e ".[dev]"
 
-      # Same pinned version + published SHA256 as the Windows installer bundles
-      # (scripts/build_windows_installer.ps1) and the same discipline as the
-      # Linux job's rclone install above — a bad download fails in seconds, not
-      # silently. Added to GITHUB_PATH (not FUSED_RENDER_RCLONE_BIN) so
-      # shutil.which("rclone") finds it exactly the way a dev machine's PATH
-      # would.
-      - name: Install rclone
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $RcloneVersion = "1.74.4"
-          $RcloneSha256 = "ef097ef9de37a57feb7d9f9c7afb34148ad3c65be8025f1d8f7f521554a701ea"
-          $rcloneZip = Join-Path $env:RUNNER_TEMP "rclone.zip"
-          Invoke-WebRequest -Uri "https://downloads.rclone.org/v$RcloneVersion/rclone-v$RcloneVersion-windows-amd64.zip" -OutFile $rcloneZip
-          $actualSha = (Get-FileHash -LiteralPath $rcloneZip -Algorithm SHA256).Hash.ToLower()
-          if ($actualSha -ne $RcloneSha256) {
-            throw "rclone zip SHA256 mismatch: expected $RcloneSha256, got $actualSha"
-          }
-          $rcloneDir = Join-Path $env:RUNNER_TEMP "rclone-bin"
-          Expand-Archive -Path $rcloneZip -DestinationPath $rcloneDir -Force
-          $rcloneExe = Get-ChildItem -Path $rcloneDir -Recurse -Filter "rclone.exe" | Select-Object -First 1
-          if (-not $rcloneExe) {
-            throw "rclone.exe not found in the downloaded zip"
-          }
-          Add-Content -Path $env:GITHUB_PATH -Value $rcloneExe.DirectoryName
-          & $rcloneExe.FullName version
-
       # `-q` for the reason the Linux job above spells out: this job collects
       # ~11,200 tests, and one `-v` line each is most of a 10k+ line log.
       - name: Run tests
@@ -393,24 +339,6 @@ jobs:
       - name: Install fused-render (dev + fused extras)
         run: pip install -e ".[dev,fused]"
 
-      # shell/mounts.py shells out to rclone (D102/D103), as in test-python —
-      # same pinned-zip install as that job (see its comment for why apt is
-      # avoided here).
-      - name: Install rclone
-        run: |
-          set -euo pipefail
-          RCLONE_VERSION="1.74.4"
-          RCLONE_SHA256="fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
-          RCLONE_ZIP="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
-          curl -fsSL --max-time 120 --retry 2 \
-            "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ZIP}" \
-            -o "$RCLONE_ZIP"
-          echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
-            || { echo "::error::rclone zip SHA256 mismatch"; exit 1; }
-          sudo unzip -jo "$RCLONE_ZIP" "*/rclone" -d /usr/local/bin
-          sudo chmod +x /usr/local/bin/rclone
-          rclone version
-
       - name: Prove the engine tests run rather than skip
         # The failure mode this job exists to avoid is looking like coverage
         # while providing none, so it is asserted twice over:
@@ -420,7 +348,7 @@ jobs:
         #     cross-engine binding parity table, and the install-loader HTTP
         #     surface — must report ZERO skips on 3.11 with the extra
         #     installed. Every OTHER reason those files can skip is provisioned
-        #     by the steps above (the extra itself, uv, rclone, and node for the
+        #     by the steps above (the extra itself, uv, and node for the
         #     loader's JS tests), so any skip means the extra didn't take
         #     effect. tests/test_ci_engine_gate.py keeps that list honest.
         #     test_server_env_install
@@ -756,9 +684,6 @@ jobs:
 
       # desktop-file-utils provides desktop-file-validate, which appimagetool
       # runs against the bundled .desktop file during the AppImage build smoke.
-      # (No rclone install here: every test file below monkeypatches or never
-      # execs rclone, and the build script downloads its own pinned binary.)
-      #
       # libgirepository1.0-dev + libcairo2-dev + pkg-config + gcc are BUILD-time
       # only: PyGObject (the [linux-desktop] extra, for the native windows) has
       # no manylinux wheel and compiles from its sdist against these headers.
@@ -782,7 +707,7 @@ jobs:
       - name: Run the Linux backend + packaging suite
         # These skip on macOS but execute here: the process-tree gate,
         # Unix-socket IPC, XDG paths/autostart/UI resolution, the tray retry
-        # contract, the association-table sync, and rclone_bin resolution.
+        # contract, and the association-table sync.
         env:
           # pystray picks its backend at import time; on a headless runner the
           # X11 backend raises DisplayNameError during test collection. The
@@ -802,12 +727,11 @@ jobs:
           tests/test_native_window_deps.py
           tests/test_supervisor_tray.py
           tests/test_file_associations.py
-          tests/test_mounts_rclone_bin.py
 
       - name: Build the AppImage (smoke)
         # Exercises the full pipeline (wheel → relocatable CPython → desktop
-        # extra → DuckDB extensions → bundled uv + rclone → import/_child.py/
-        # rclone smoke tests → AppDir → appimagetool with the static runtime).
+        # extra → DuckDB extensions → bundled uv → import/_child.py/
+        # smoke tests → AppDir → appimagetool with the static runtime).
         # Step-gated to desktop/packaging changes: it's minutes of toolchain
         # downloads, pointless on a server-only PR.
         if: needs.detect-changes.outputs.linux_desktop == 'true'
@@ -877,19 +801,14 @@ jobs:
 
   # macOS menu-bar app (SPEC DM-3/DM-7). darwin has no supervisor backend (only
   # win32/linux), so the supervisor-core tests skip here; what this job uniquely
-  # covers is the darwin-only code the Linux matrix never runs — the nfsmount
-  # options in shell/mounts.py (test_shell_mounts.py's @skipif(platform != darwin)
-  # tests) — plus the macOS app entry (view-url mapping, in-process desktop
+  # covers is the macOS app entry (view-url mapping, in-process desktop
   # instance/token) and the NSPasteboard clipboard bridge on real macOS.
-  # test_pasteboard_darwin.py is here for the same reason as the mounts tests
-  # and no other: its round-trips drive the real login-session pasteboard, so
-  # the Linux matrix skips every one of them. Without this job running it, the
-  # backend had no coverage anywhere on any platform — which is how a missing
-  # pyobjc went unnoticed while the bridge reported `supported: false` on every
-  # dev machine (the tests skipped for the very import that was absent).
-  # test_shell_mounts.py starts the HTTP server
-  # (create_app) through its client fixture, which refuses without the React
-  # shell, so this job depends on `frontend` and downloads shell-dist.
+  # test_pasteboard_darwin.py is here because its round-trips drive the real
+  # login-session pasteboard, so the Linux matrix skips every one of them.
+  # Without this job running it, the backend had no coverage anywhere on any
+  # platform — which is how a missing pyobjc went unnoticed while the bridge
+  # reported `supported: false` on every dev machine (the tests skipped for the
+  # very import that was absent).
   macos-desktop:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
@@ -944,7 +863,6 @@ jobs:
       - name: Run the macOS backend suite
         run: >
           python -m pytest -q
-          tests/test_shell_mounts.py
           tests/test_app_desktop_instance.py
           tests/test_app_view_url.py
           tests/test_pasteboard_darwin.py

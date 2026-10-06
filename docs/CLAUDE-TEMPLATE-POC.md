@@ -392,7 +392,7 @@ claude (headless)                    agent.py / browser
    approval card is not part of the transcript, so the card vanishes on a reload
    — the call it authorised does not.
 7. **`claude` binary discovery:** `FUSED_RENDER_CLAUDE_BIN` (explicit
-   override, mirroring `FUSED_RENDER_RCLONE_BIN`), then `shutil.which`, then
+   override), then `shutil.which`, then
    the platform's install locations — `~/.local/bin`, `/opt/homebrew/bin`,
    `/usr/local/bin` on POSIX; see **Windows** below for that list. The server
    env's PATH (Finder-launched .app! GUI-launched .exe!) may lack it; the

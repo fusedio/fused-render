@@ -4,7 +4,6 @@ Skipped when duckdb isn't installed. (It's now a core dependency, but the base
 test env may still lack it; guard so the suite degrades gracefully.)
 """
 import importlib.util
-import json
 import os
 
 import pytest
@@ -29,22 +28,6 @@ def _load(name):
 
 reader = _load("reader.py")
 writer = _load("writer.py")
-
-
-@pytest.fixture(autouse=True)
-def _no_leaked_quit_latch():
-    """Fail LOUDLY if another test in this worker left the reader's quit latch set
-    on the shared duckdb module (tests/test_app_quit.py trips it on purpose, and a
-    fixture that only conditionally restored it once leaked it here).
-
-    Without this the failure mode is silent, not loud: `_http_connection` raises
-    past the latch, and the remote fast path is *designed* to swallow that and read
-    the local file instead — so the source_url tests below would keep passing while
-    asserting on the fallback path rather than the shared-connection one they name."""
-    assert not getattr(duckdb, reader._HTTP_CON_LATCH, False), (
-        "the duckdb HTTP-connection quit latch leaked from an earlier test; "
-        "the remote-read tests here would silently exercise the local-path fallback")
-    yield
 
 
 # ---------------------------------------------------------------- fixtures
@@ -247,20 +230,17 @@ def test_parquet_unsorted_page_sql_prunes_by_file_row_number_range(parquet_file)
     assert "LIMIT ? OFFSET ?" in filtered_sql
 
 
-def test_page_branch_keys_on_scan_ext_not_file_ext(tmp_path):
-    # The natural-order pruning branch must be chosen by the SCAN's logical ext
-    # (what _page_sql itself branches on), not the file's. They can diverge — a
-    # source_url whose splitext-visible extension isn't .parquet while the local
-    # file is. If the branch keyed on the file ext it would take the no-bind
-    # range path while _page_sql emits a LIMIT ? OFFSET ? query -> a bind-count
-    # error. Here scan is a real .json (non-parquet ext) with the file ext
-    # forced to .parquet: the robust LIMIT/OFFSET path must run and read it.
+def test_page_branch_keys_on_passed_ext_not_file_ext(tmp_path):
+    # The natural-order pruning branch must be chosen by the logical ext passed
+    # to _read_flat (what _page_sql itself branches on), not the file's name.
+    # Here the file is a real .json with the ext forced to .parquet: the robust
+    # LIMIT/OFFSET path must run and read it.
     jp = _make(tmp_path, "s.json",
                "SELECT range AS id, 'n'||range AS name FROM range(5)")
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
     try:
-        out = reader._read_flat(jp, jp, con, ".parquet", 0, 3,
+        out = reader._read_flat(jp, con, ".parquet", 0, 3,
                                 None, None, "page")
     finally:
         con.close()
@@ -288,30 +268,6 @@ def test_pruned_page_matches_limit_offset_scan(grouped_parquet):
         expected = _direct_page_positions(grouped_parquet, offset, 50)
         assert out["ids"] == expected, offset
         assert [r["seq"] for r in out["rows"]] == expected, offset
-
-
-def test_pruned_page_over_http_preserves_file_order(grouped_parquet):
-    # The pruned first page has no ORDER BY — it relies on
-    # preserve_insertion_order to return rows in file_row_number order. Prove
-    # that holds on the remote path this fix actually targets: the shared
-    # _http_connection runs SET threads=32, where an unordered parallel scan
-    # could otherwise interleave row groups. Windows straddling the 2048-row
-    # group boundary exercise the multi-group case.
-    srv, hits = _serve_dir(os.path.dirname(grouped_parquet))
-    try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/g.parquet"
-        try:
-            reader.main(grouped_parquet, mode="page", limit=1, source_url=url)
-        except Exception:
-            pytest.skip("duckdb httpfs extension unavailable")
-        for offset in (0, 2000, 2048, 4096, 6000):
-            out = reader.main(grouped_parquet, mode="page", offset=offset,
-                              limit=100, source_url=url)
-            expected = list(range(offset, offset + 100))
-            assert out["ids"] == expected, offset
-            assert [r["seq"] for r in out["rows"]] == expected, offset
-    finally:
-        srv.shutdown()
 
 
 def test_pruned_page_projection_matches_scan(grouped_parquet):
@@ -804,151 +760,6 @@ def test_writer_refuses_readonly_file(readonly_parquet):
                     edits=[{"row": 0, "column": "name", "value": "x"}])
     assert os.stat(readonly_parquet).st_size == before  # bytes untouched
 
-
-
-# ---------------------------------------------------- remote source_url path
-# The page passes source_url (the app's /api/fs/raw URL) when the shell marks
-# the file remote; the reader scans that URL instead of the local path, and
-# falls back to the path on any failure. The reader itself knows nothing about
-# mounts — just "bytes are also available here".
-
-
-def _require_httpfs():
-    """Skip the calling test when the httpfs extension can't be loaded (e.g.
-    no network access to extensions.duckdb.org from this CI environment).
-
-    reader.main() itself never raises on a missing httpfs — it's designed to
-    fall back to a plain local read (see reader.py's `_http_connection`
-    docstring) — so probing it directly here, instead of wrapping the
-    reader.main() call in try/except, is what actually catches this case
-    rather than silently exercising the fallback path and failing later on
-    the "reader never hit the URL" assertion."""
-    con = duckdb.connect(":memory:")
-    try:
-        con.execute("LOAD httpfs")
-    except duckdb.Error:
-        pytest.skip("duckdb httpfs extension unavailable")
-    finally:
-        con.close()
-
-
-def _serve_dir(directory):
-    """A local HTTP server over `directory` that records request paths."""
-    import functools
-    import http.server
-    import threading
-
-    hits = []
-
-    class H(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_GET(self):
-            hits.append(self.path)
-            return super().do_GET()
-
-        def do_HEAD(self):
-            hits.append(self.path)
-            return super().do_HEAD()
-
-    srv = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), functools.partial(H, directory=directory))
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, hits
-
-
-def test_source_url_reads_over_http(parquet_file):
-    _require_httpfs()
-    srv, hits = _serve_dir(os.path.dirname(parquet_file))
-    try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
-        out = reader.main(parquet_file, limit=5, source_url=url)
-        assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
-        assert any("s.parquet" in h for h in hits), "reader never hit the URL"
-    finally:
-        srv.shutdown()
-
-
-def test_http_connection_persists_across_reads(parquet_file):
-    # The shared connection is stashed on the duckdb module so it outlives a
-    # single reader run; with parquet_metadata_cache=true set once at build,
-    # the SECOND open in a server session reuses the parsed footer instead of
-    # re-downloading/re-parsing it (the ~7s cold DESCRIBE is paid only once).
-    _require_httpfs()
-    srv, hits = _serve_dir(os.path.dirname(parquet_file))
-    try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
-        reader.main(parquet_file, limit=5, source_url=url)
-        con1 = getattr(duckdb, "_fused_render_http_con_v3", None)
-        assert con1 is not None                   # stashed for reuse
-        reader.main(parquet_file, limit=5, source_url=url)
-        con2 = getattr(duckdb, "_fused_render_http_con_v3", None)
-        assert con2 is con1                        # same connection -> warm cache
-    finally:
-        srv.shutdown()
-
-
-def test_source_url_falls_back_when_dead(parquet_file):
-    import socket
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        dead = s.getsockname()[1]
-    out = reader.main(parquet_file, limit=5,
-                      source_url=f"http://127.0.0.1:{dead}/s.parquet")
-    assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
-    assert out["total_rows"] == 250
-
-
-def test_source_url_ignored_unless_http(parquet_file):
-    # A non-URL value must not be handed to DuckDB as a scan target.
-    out = reader.main(parquet_file, limit=3, source_url="garbage; DROP TABLE x")
-    assert len(out["rows"]) == 3
-
-
-def test_source_url_reads_csv_over_http(csv_file):
-    # CSV/TSV/JSON take the URL too, not just parquet: a mount-backed file is
-    # scanned over the serve where hammering the NFS mount with the scan risks
-    # dropping the whole mount. Reading the whole file over HTTP is slow-but-
-    # safe (and the serve's shared VFS cache makes the repeat reads cheap).
-    _require_httpfs()
-    srv, hits = _serve_dir(os.path.dirname(csv_file))
-    try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/s.csv"
-        out = reader.main(csv_file, limit=3, source_url=url)
-        assert out["rows"][0]["zip"] == "00000"   # all-varchar preserved
-        assert any("s.csv" in h for h in hits), "reader never hit the URL"
-    finally:
-        srv.shutdown()
-
-
-def test_source_url_reads_json_over_http(tmp_path):
-    _require_httpfs()
-    p = _make(tmp_path, "s.json",
-              "SELECT range AS id, 'n'||range AS name FROM range(5)")
-    srv, hits = _serve_dir(os.path.dirname(p))
-    try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/s.json"
-        out = reader.main(p, limit=3, source_url=url)
-        assert [r["id"] for r in out["rows"]] == [0, 1, 2]
-        assert out["editable"] is False           # JSON stays view-only
-        assert any("s.json" in h for h in hits), "reader never hit the URL"
-    finally:
-        srv.shutdown()
-
-
-def test_source_url_csv_falls_back_when_dead(csv_file):
-    # A dead serve URL must not error the CSV read — fall back to the path.
-    import socket
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        dead = s.getsockname()[1]
-    out = reader.main(csv_file, limit=3,
-                      source_url=f"http://127.0.0.1:{dead}/s.csv")
-    assert out["rows"][0]["zip"] == "00000"
-    assert out["total_rows"] == 250
 
 
 # ------------------------------------- schema mode / per-column projection

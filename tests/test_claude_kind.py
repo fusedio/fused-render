@@ -129,22 +129,6 @@ def test_a_directory_that_does_not_exist_is_refused(tmp_path):
     assert _gate().main(str(tmp_path / "gone")) is False
 
 
-def test_a_mount_backed_path_is_still_refused(tmp_path, monkeypatch):
-    """The ONE thing the gate still answers, and the reason it was not deleted
-    outright once the directory branch widened: bytes under the mounts dir come
-    from a remote over FUSE, and an agent turned loose there walks and rewrites
-    the tree through the mount. Both kinds are refused — a file and a directory
-    alike — because the objection is about the transport, not the target."""
-    mounts = tmp_path / "home" / "mounts"
-    (mounts / "pub").mkdir(parents=True)
-    f = mounts / "pub" / "page.html"
-    f.write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    gate = _gate()
-    assert gate.main(str(f)) is False
-    assert gate.main(str(mounts / "pub")) is False
-
-
 def test_the_gate_never_walks_the_directory():
     """It runs for every directory the explorer stats, some of them on remote
     mounts, so listing one would turn a stat into a directory read. Pinned as

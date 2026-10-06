@@ -69,22 +69,6 @@ and neither changes the trust model above:
   in the daemon's state file, so it is only as private as the local
   filesystem — which is consistent with the trust model above (local read is
   already out of scope; this guards the *browser* boundary).
-- **rclone rc daemon access token.** `shell/mounts.py` drives mounts through
-  `rclone rcd` on a loopback port, and the same reasoning applies to it: a
-  page in the user's browser can POST to `http://127.0.0.1:<port>/...`, and
-  because rclone merges URL query parameters into the rc call's arguments, a
-  CORS-*simple* request (POST, `text/plain`, no custom header — so no
-  preflight) is enough to drive it blind even though the reply is unreadable.
-  The daemon therefore mints a random secret at spawn and requires HTTP basic
-  auth on every call; the secret is handed to the child in the environment
-  (`RCLONE_RC_USER`/`RCLONE_RC_PASS`), never on argv, so it does not appear in
-  `ps`. Like the tile-daemon token it is recorded in the daemon's state file
-  and is only as private as the local filesystem. The child's environment also
-  has the whole `RCLONE_RC_*` namespace replaced rather than merged: rclone
-  configures every flag from an env var named after it, so an inherited
-  `RCLONE_RC_ALLOW_ORIGIN` would otherwise make the daemon answer with
-  `Access-Control-Allow-Origin: *` and hand a foreign page the ability to read
-  replies.
 - **`/api/fs/raw` never serves a document on the app's origin.** The route
   reads any absolute path with a content-type guessed from its name, and it is
   a plain GET, so a foreign page can *navigate* the browser to it (navigation
@@ -111,8 +95,6 @@ narrow exceptions that fetch something on first use:
   `typst` and `tectonic` binaries from GitHub Releases on first use.
 - `zarr_aoi/tile_server.py` builds a dedicated venv via `uv` (from PyPI) on
   first use of that daemon.
-- An rclone mount talks to remote cloud storage, by definition, once you
-  configure one.
 
 Treat these the same as any other tool that fetches pinned third-party
 binaries on demand: review the source before relying on it in a sensitive
@@ -149,13 +131,6 @@ model-download processes** (they call hf and find it themselves), and **Log out
 removes the active login from that shared store**, so it signs the machine out
 of Hugging Face rather than only out of this app. Grant the login read access if
 you only intend to download models.
-
-Cloud storage mounts (`shell/mounts.py`) store no credentials of their own —
-access keys live exclusively in rclone's own config file, subject to
-rclone's default (reversible) obfuscation rather than strong encryption
-unless you separately configure an rclone config password. This is outside
-fused-render's control; be aware of it if you mount credentialed remotes on
-a shared machine.
 
 ## Reporting a vulnerability
 

@@ -7,10 +7,10 @@ process's environment block.
 
 Durable state IS the flat ~/.fused-render dotdir on both Linux and Windows —
 byte-for-byte the same dir the dev/CLI and the released macOS app use
-(shell/storage.home_dir() with no FUSED_RENDER_HOME set), so mounts land at
-~/.fused-render/mounts and all user config lives in one known place. Sharing
+(shell/storage.home_dir() with no FUSED_RENDER_HOME set), so all user
+config lives in one known place. Sharing
 with the dev/CLI is the product intent, not an accident: the desktop app and
-the CLI operate on the same mounts.json, prefs, and templates. logs/ and temp/
+the CLI operate on the same prefs, and templates. logs/ and temp/
 are subdirs of that root. The disposable cache stays OS-native
 ($XDG_CACHE_HOME on Linux, %LOCALAPPDATA% on Windows) to stay out of backup
 scope; on Linux runtime stays on $XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
@@ -113,11 +113,10 @@ class DesktopPaths:
     def discover_linux(cls) -> "DesktopPaths":
         """Flat dotdir layout: durable state IS ~/.fused-render — the exact dir
         the dev/CLI and the released macOS app use (shell/storage.home_dir()
-        with no FUSED_RENDER_HOME), shared with them by design so mounts land
-        at ~/.fused-render/mounts and all user config lives in one known
-        place. logs/ and temp/ are subdirs of that root. The disposable cache
+        with no FUSED_RENDER_HOME), shared with them by design so all user
+        config lives in one known place. logs/ and temp/ are subdirs of that root. The disposable cache
         stays OS-native under $XDG_CACHE_HOME (~/.cache) so its GBs of
-        uv/rclone/duckdb caches stay out of backup scope; runtime stays under
+        uv/duckdb caches stay out of backup scope; runtime stays under
         $XDG_RUNTIME_DIR (see linux_runtime_dir — tmpfs, 0700, socket-safe).
         XDG_DATA_HOME no longer steers the root. child_environment() is
         contract-identical to Windows regardless — same FUSED_RENDER_* keys.
@@ -181,18 +180,12 @@ class DesktopPaths:
             # root, never nested under a branch subfolder — _branch.py treats
             # an explicitly-set empty FUSED_RENDER_BRANCH as "no isolation".
             "FUSED_RENDER_BRANCH": "",
-            # Same rationale: RCLONE_PERSIST is a dev-shell iteration flag
-            # (dev.sh sets it so rcd outlives watchfiles restarts). The
-            # packaged app must never inherit it — a persisted, detached rcd
-            # would outlive the app and dodge teardown.
-            "FUSED_RENDER_RCLONE_PERSIST": "",
         }
 
     def child_environment(
         self, instance_id: str, token: str, tools_dir: Path
     ) -> dict[str, str]:
         openfused = self.state / "openfused"
-        rclone = self.state / "rclone"
         env = {
             "FUSED_RENDER_HOME": str(self.state),
             "FUSED_RENDER_CACHE_DIR": str(self.cache),
@@ -202,19 +195,12 @@ class DesktopPaths:
             # supervisor must agree on one app-log home.
             "FUSED_RENDER_LOG_DIR": str(self.logs / "app"),
             "FUSED_RENDER_BRANCH": "",
-            # Explicit production opt-out, mirroring self_environment: the
-            # supervisor's children must not inherit dev-shell iteration flags
-            # (dev.sh doesn't go through this method, so its own flag keeps
-            # working).
-            "FUSED_RENDER_RCLONE_PERSIST": "",
             "FUSED_RENDER_DESKTOP_INSTANCE_ID": instance_id,
             "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN": token,
             "OPENFUSED_ENVS_FILE": str(openfused / "envs.json"),
             "OPENFUSED_FUSED_CLOUD_CREDENTIALS": str(openfused / "fused-cloud-credentials.json"),
             "OPENFUSED_SECRETS_FILE": str(openfused / "secrets.json"),
             "OPENFUSED_WORKSPACES_DIR": str(openfused / "workspaces"),
-            "RCLONE_CONFIG": str(rclone / "rclone.conf"),
-            "RCLONE_CACHE_DIR": str(self.cache / "rclone"),
             "UV_CACHE_DIR": str(self.cache / "uv"),
             # CLAUDE_CONFIG_DIR is deliberately NOT set here. It used to point at
             # <state>/claude to keep our run transcripts out of ~/.claude/projects,
@@ -228,12 +214,6 @@ class DesktopPaths:
             # CLAUDE_CONFIG_DIR through untouched, so a user who sets one still wins.
             "FUSED_RENDER_DUCKDB_EXTENSION_DIR": str(tools_dir / "duckdb_extensions"),
             "FUSED_RENDER_DUCKDB_TEMP_DIR": str(self.cache / "duckdb" / "temp"),
-            # rclone is bundled in the payload next to the interpreter (and uv),
-            # so mounts need zero user setup. mounts.rclone_bin() prefers this
-            # over PATH guessing; a dev checkout without the file falls through.
-            "FUSED_RENDER_RCLONE_BIN": str(
-                tools_dir / ("rclone.exe" if sys.platform == "win32" else "rclone")
-            ),
             "TEMP": str(self.temp),
             "TMP": str(self.temp),
             # POSIX tempfile consults TMPDIR first (TEMP/TMP are the Windows

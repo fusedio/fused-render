@@ -4,37 +4,21 @@ SPEC PY-15 / DECISIONS D166.
 
 This module is the supported contract between the server and a template: the
 server exports a handful of `FUSED_RENDER_*` variables before it starts serving
-(`server.export_app_env`, plus `shell.mounts.export_ro_mounts_env` for the
-read-only list), every child process inherits them, and the helpers here are the
-one place that knows how to read them.
+(`server.export_app_env`), every child process inherits them, and the
+helpers here are the one place that knows how to read them.
 
-Templates must NOT import `fused_render`. They used to reach into the app for
-exactly these facts (`from fused_render.shell.mounts import mounts_dir, ...`,
-behind a try/except), which works only when the template happens to run as a
-child of a Python that can see the package. Under the fused local execution
-backend it cannot: `PYTHONPATH` is stripped from child processes, the guarded
-import silently takes its fallback branch, and a mount-backed path is quietly
-treated as local. Environment variables survive that boundary, so the facts
-travel as data instead of as an import.
+Templates must NOT import `fused_render`. Under the fused local execution
+backend `PYTHONPATH` is stripped from child processes, so a guarded import would
+silently take its fallback branch. Environment variables survive that boundary,
+so the facts travel as data instead of as an import.
 
 Stdlib only, for the same reason — a template must stay runnable as a standalone
 copy of its folder, with nothing but `../shared/` beside it.
 
 Everything is resolved PER CALL from `os.environ`, never cached at import time:
-some templates are long-lived daemons (`zarr_aoi/tile_server.py`) and the
-read-only mount list changes underneath them as mounts attach and detach.
-
-The store schema stays behind in `shell/mounts.py` — nothing here reads
-`mounts.json`. A template gets the *derived answers* (which dirs, which
-mountpoints are read-only), so the on-disk format can change freely without
-breaking any template.
+some templates are long-lived daemons (`zarr_aoi/tile_server.py`).
 """
 import os
-
-# The mounts dir's basename under the home dir, and the separator for the
-# read-only mountpoint list. Kept as names so the env-var contract is greppable.
-_MOUNTS_SUBDIR = "mounts"
-_RO_MOUNTS_VAR = "FUSED_RENDER_RO_MOUNTS"
 
 
 def home_dir() -> str:
@@ -74,72 +58,6 @@ def workspace_dir() -> str:
     return os.path.abspath(
         os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Fused")
     )
-
-
-def mounts_dir() -> str:
-    """The dir holding one subdir per mounted remote.
-
-    `normpath` on the fallback for the reason recorded at `shell/mounts.py`'s
-    `mounts_dir()`: `expanduser("~/...")` on Windows keeps its forward slash,
-    and a mixed-separator mountpoint never string-matches a normalized path —
-    which would defeat every prefix check below.
-    """
-    d = os.environ.get("FUSED_RENDER_MOUNTS_DIR")
-    if d:
-        return d
-    return os.path.normpath(os.path.join(home_dir(), _MOUNTS_SUBDIR))
-
-
-def is_mount_backed(path: str) -> bool:
-    """True when `path` sits under the mounts dir — i.e. its bytes come from a
-    remote. Mirrors `shell/mounts.py:is_mount_backed`; keep the two in step.
-
-    The abspath prefix check goes first because it settles the common case with
-    no I/O at all. The `realpath` retry is not redundant: a symlink whose TARGET
-    is inside the mounts dir slips past a pure string check and gets classified
-    LOCAL, which is the one wrong answer that matters (a template would then
-    hammer the mount with kernel stats instead of routing through the server).
-    A genuine mount path matches on abspath and never reaches `realpath`, so the
-    hot path pays no extra syscall — only local-looking paths pay one.
-    """
-    root = os.path.abspath(mounts_dir())
-    ap = os.path.abspath(path)
-    if ap == root or ap.startswith(root + os.sep):
-        return True
-    real_root = os.path.realpath(mounts_dir())
-    rp = os.path.realpath(path)
-    return rp == real_root or rp.startswith(real_root + os.sep)
-
-
-def read_only_mountpoints() -> list:
-    """The absolute mountpoints of mounts whose remote rejects writes.
-
-    Read from `FUSED_RENDER_RO_MOUNTS`, an `os.pathsep`-joined list the shell
-    re-exports whenever the mount store changes; absent or empty means "none
-    known". Empty segments are dropped so a trailing separator (or an
-    accidental `":"`) can never produce a `""` entry that prefix-matches
-    everything.
-    """
-    raw = os.environ.get(_RO_MOUNTS_VAR) or ""
-    return [p for p in raw.split(os.pathsep) if p]
-
-
-def mount_read_only(path: str) -> bool:
-    """True when `path` sits under a read-only mount. Mirrors
-    `shell/mounts.py:mount_read_only`; keep the two in step.
-
-    Local paths are never read-only *for this reason*, hence the
-    `is_mount_backed` gate first (it is also the cheap check). Beyond that this
-    is a plain abspath prefix match — exact mountpoint or anything below it.
-    Like the app's version it ignores whether the mount is currently attached:
-    bytes written into a detached read-only mountpoint would be shadowed by the
-    next attach, so refusing is right either way.
-    """
-    if not is_mount_backed(path):
-        return False
-    p = os.path.abspath(path)
-    return any(p == mp or p.startswith(mp + os.sep)
-               for mp in read_only_mountpoints())
 
 
 def origin() -> str | None:

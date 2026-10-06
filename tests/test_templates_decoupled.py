@@ -121,112 +121,18 @@ def test_the_guard_actually_sees_an_import(tmp_path):
     sample = tmp_path / "sample.py"
     sample.write_text(
         '"""A docstring mentioning fused_render, which is NOT an import."""\n'
-        "# neither is this comment about fused_render.shell.mounts\n"
+        "# neither is this comment about fused_render.shell.storage\n"
         "NAME = 'fused_render.calls'\n"
         "import os\n"
         "from . import sibling\n"
         "def f():\n"
-        "    from fused_render.shell.mounts import is_mount_backed\n"
+        "    from fused_render.shell.storage import home_dir\n"
         "    import fused_render.calls\n",
         encoding="utf-8")
     hits = _fused_render_imports(str(sample))
     assert [src for _, src in hits] == [
-        "from fused_render.shell.mounts import is_mount_backed",
+        "from fused_render.shell.storage import home_dir",
         "import fused_render.calls",
     ], hits
 
 
-# ------------------------------------------------------- the sanctioned route
-# (`shared/appenv.py` being stdlib-only is pinned in tests/test_template_appenv.py,
-# alongside the rest of its contract.)
-
-# Each migrated site, asked about BOTH a read-only-mount path (MOUNTED) and an
-# equivalent local one (LOCAL). Both answers matter: several of these sites fail
-# CLOSED when they cannot tell, so the mounted answer alone would be satisfied by
-# a site whose appenv import is broken. The local answer is what proves the site
-# can actually reach appenv and is discriminating rather than merely refusing.
-MIGRATED = [
-    # (relpath, expression over `mod` returning [mounted, local], expected)
-    (os.path.join("markdown", "graph.py"),
-     "[mod.main(action='note', file=MOUNTED)['error'],"
-     " mod.main(action='note', file=LOCAL)['error']]",
-     ["mount_unsupported", None]),
-    # The claude snapshot gate consults appenv.is_mount_backed: a mounted
-    # target is refused with a sentence, a local one gets the empty "allowed"
-    # answer — which is the discriminating pair this table wants. (The
-    # sidecar-path rows that used to sit here went with the sidecar, D359;
-    # annotate.py no longer touches appenv directly at all, so it has no row.)
-    # agent.py left templates/ for the package (fused_render/claude_agent) but
-    # is still loaded BY PATH in children that cannot import the package
-    # (session_host, the permission server's config), so it keeps its row:
-    # relative to TEMPLATES, through `..`.
-    (os.path.join("..", "claude_agent", "agent.py"),
-     "[bool(mod._snap_target(MOUNTED)), bool(mod._snap_target(LOCAL))]",
-     [True, False]),
-    (os.path.join("zarr_aoi", "tile_server.py"),
-     "[mod.appenv.is_mount_backed(MOUNTED), mod.appenv.is_mount_backed(LOCAL)]",
-     [True, False]),
-    (os.path.join("graph", "condition.py"),
-     "[mod.main(os.path.dirname(MOUNTED)), mod.main(os.path.dirname(LOCAL))]",
-     [False, True]),
-]
-
-
-@pytest.mark.parametrize("rel,expr,expected", MIGRATED,
-                         ids=[m[0] for m in MIGRATED])
-def test_a_migrated_site_answers_with_fused_render_unimportable(
-        rel, expr, expected, tmp_path):
-    """The end-to-end property, in the interpreter the fused backend actually
-    gives a template: PYTHONPATH cleared, every `fused_render`-bearing sys.path
-    entry stripped, cwd outside the repo.
-
-    The no-import guard above is necessary but not sufficient — a site could pass
-    it and still fail at runtime by forgetting to put `../shared` on sys.path,
-    which is exactly the silent wrong-answer failure PY-15 exists to end. So each
-    site is asked a real question about a real read-only mount path and must get
-    it right with the package unreachable.
-    """
-    import json
-    import subprocess
-    import sys
-    import textwrap
-
-    # Two structurally identical trees, one under the read-only mountpoint the
-    # env names and one plainly local — `index.md` in both so the graph gate has
-    # a reason to say True for the local one.
-    mounts = tmp_path / "home" / "mounts"
-    mounted_dir = mounts / "pub"
-    local_dir = tmp_path / "local"
-    for d in (mounted_dir, local_dir):
-        d.mkdir(parents=True)
-        (d / "index.md").write_text("# i\n", encoding="utf-8")
-        (d / "note.md").write_text("# x\n", encoding="utf-8")
-
-    script = textwrap.dedent(f"""
-        import importlib.util, json, os, sys
-        sys.path = [p for p in sys.path
-                    if not os.path.isdir(os.path.join(p, "fused_render"))]
-        try:
-            import fused_render
-            raise SystemExit("fused_render was importable; test setup is wrong")
-        except ImportError:
-            pass
-
-        MOUNTED = {str(mounted_dir / "note.md")!r}
-        LOCAL = {str(local_dir / "note.md")!r}
-        spec = importlib.util.spec_from_file_location(
-            "_under_test", {os.path.join(TEMPLATES, rel)!r})
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        print(json.dumps({{"value": {expr}}}))
-    """)
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    env["FUSED_RENDER_HOME_DIR"] = str(tmp_path / "home")
-    env["FUSED_RENDER_MOUNTS_DIR"] = str(mounts)
-    env["FUSED_RENDER_RO_MOUNTS"] = str(mounted_dir)
-
-    out = subprocess.run([sys.executable, "-c", script], cwd=str(tmp_path),
-                         env=env, capture_output=True, text=True, timeout=120)
-    assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout.strip().splitlines()[-1])["value"] == expected

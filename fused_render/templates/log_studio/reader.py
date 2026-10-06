@@ -644,10 +644,8 @@ def main(
     tail: bool = False,
     bins: int = 100,
     context: int = 5,
-    # `path`/`src` are gone with the Browse-files picker: they existed so the
-    # in-template file browser could ask the server whether a directory was
-    # mount-backed before listing it. Opening a log is the app's job now, so the
-    # reader only ever reads the file it is handed.
+    # No `path` param: opening a log is the app's job, so the reader only ever
+    # reads the file it is handed.
     **params: str,
 ) -> dict:
     from_epoch = float(params.get("from") or from_epoch)

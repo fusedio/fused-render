@@ -220,7 +220,7 @@ def api_current_apps_rename(patch: RenamePatch):
         # The witness fired: ensure settles the move — stores, sessions, meta.
         app_fused_dir.ensure(new)
     else:
-        # No witness could be written (read-only folder, mount-backed): settle
+        # No witness could be written (read-only folder): settle
         # best-effort. No meta means nowhere to record a pending live session,
         # the same standing an out-of-band move of such a folder has.
         app_state_move.rewrite_stores(folder, new)

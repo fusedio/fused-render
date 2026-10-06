@@ -5,15 +5,9 @@ import time
 import traceback
 import uuid
 from urllib.parse import unquote
-import httpx
 from fastapi import Request
 from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
     JSONResponse,
-    RedirectResponse,
-    Response,
-    StreamingResponse,
 )
 
 from fused_render import calls as shell_calls
@@ -202,21 +196,6 @@ def resolve_py(py, html):
     return os.path.normpath(os.path.join(os.path.dirname(html), py)), None
 
 
-def _is_file_mount_safe(path: str) -> bool:
-    """os.path.isfile, but NEVER a kernel stat on a mount-backed path — a cold
-    os.path.isfile there is the GETATTR that lists the whole parent prefix and
-    wedges the mount (the /api/recents open-flow wedge). Mount paths answered
-    via rc_kind_for; only a confirmed "file" passes (a "dir" is not a file,
-    matching os.path.isfile), while an "indeterminate" rc probe fails OPEN so a
-    transient rcd hiccup never 404s a file the user just opened.
-
-    Lived in server/session.py until the per-file session restore was removed
-    (D329); it is mount-safety, not session logic, and /render is now its only
-    caller."""
-    from fused_render.shell import pathops
-    return pathops.is_file(path)
-
-
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Guard for the mutating/executing POSTs. Read endpoints are already safe
     # cross-origin because the browser blocks a foreign page from reading our
@@ -229,25 +208,6 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
         return _error("missing or invalid X-Fused header", status=403)
     return None
 
-
-# Shared keep-alive HTTP pool for the opt-in pooled /api/fs/raw proxy
-# (TASK F). The pyramid/geotiff workers range-read a store's signed URL one
-# ~64KB block at a time; a per-block urllib GET (and, before this, a 307
-# they re-followed per block) pays a fresh TLS handshake every read — serial,
-# multi-second cold. One AsyncClient with a connection pool lets those range
-# reads reuse sockets to the store. Created at startup, closed at shutdown,
-# stashed on app.state so api_fs_raw can await through it.
-async def open_pooled_client(app):
-    app.state.pooled_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(120.0),
-        limits=httpx.Limits(max_keepalive_connections=32,
-                            max_connections=64),
-    )
-
-async def close_pooled_client(app):
-    client = getattr(app.state, "pooled_client", None)
-    if client is not None:
-        await client.aclose()
 
 async def unhandled_exception(request, exc):
     # A bare "Internal Server Error" with an empty body is undebuggable on

@@ -2651,10 +2651,7 @@ async function saveAsDialog() {
   async function show(path) {
     $("flist").innerHTML = flistSkelHtml();
     try {
-      // src (origin only) lets the worker route a mount-backed dir via
-      // /api/fs/list instead of a kernel scan that could drop the mount.
-      const res = await pyRun( { action: "listdir", file: path,
-        src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
+      const res = await pyRun( { action: "listdir", file: path });
       if (res.error) { $("flist").textContent = res.error; return; }
       dir = res.path;
       $("crumbs").innerHTML = crumbHtml(res.path);
