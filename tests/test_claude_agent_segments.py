@@ -96,6 +96,52 @@ def _rows():
     ]
 
 
+# ------------------------------------------------------------ when, and how long
+
+
+def test_segments_carry_the_clock_of_the_row_that_opened_them(agent):
+    """Akshil, 2026-10-04: "I am trying to get a sense of how long the job
+    took, which is very hard". The persisted transcript stamps every row, so
+    a segment says WHEN it began (`ts`, epoch seconds) and a tool says when
+    its result landed (`ended`); the page draws the pair on `show more`."""
+    rows = [
+        {"type": "assistant", "timestamp": "2026-10-04T10:00:00.000Z",
+         "message": {"content": [
+             {"type": "text", "text": "Let me look."},
+             {"type": "tool_use", "id": "tu1", "name": "Bash",
+              "input": {"command": "ls"}}]}},
+        {"type": "user", "timestamp": "2026-10-04T10:02:10.000Z",
+         "message": {"content": [
+             {"type": "tool_result", "tool_use_id": "tu1", "content": "ok"}]}},
+    ]
+    segs = agent._segments_from_rows(rows)
+    assert [s["kind"] for s in segs] == ["text", "tool"]
+    assert segs[0]["ts"] == 1791108000.0
+    assert segs[1]["ts"] == 1791108000.0
+    assert segs[1]["ended"] == 1791108130.0
+
+
+def test_a_row_with_no_clock_leaves_the_keys_absent(agent, tmp_path):
+    """The live stream's delta rows carry no `timestamp`, and `0` would be a
+    real instant (1970): the key is simply not there."""
+    segs = _poll_rows(agent, tmp_path, _rows())["segments"]
+    assert segs and all("ts" not in s and "ended" not in s for s in segs)
+
+
+def test_a_result_that_lands_before_its_tool_use_still_carries_ended(agent):
+    rows = [
+        {"type": "user", "timestamp": "2026-10-04T10:00:05.000Z",
+         "message": {"content": [
+             {"type": "tool_result", "tool_use_id": "tu1", "content": "ok"}]}},
+        {"type": "assistant", "timestamp": "2026-10-04T10:00:00.000Z",
+         "message": {"content": [
+             {"type": "tool_use", "id": "tu1", "name": "Bash",
+              "input": {"command": "ls"}}]}},
+    ]
+    seg = agent._segments_from_rows(rows)[0]
+    assert (seg["status"], seg["ts"], seg["ended"]) == ("ok", 1791108000.0, 1791108005.0)
+
+
 # ------------------------------------------------------------ order and joins
 
 def test_segments_order_and_tool_join(agent, tmp_path):
@@ -1195,3 +1241,23 @@ def test_a_twice_written_app_state_call_is_one_notice(agent):
     rows.insert(1, rows[0])  # the finalized assistant row, written again
     segs = agent._segments_from_rows(rows, app_reads=True)
     assert [s["kind"] for s in segs].count("notice") == 1
+
+
+def test_a_streamed_text_segment_learns_when_it_ended_from_its_finalized_row(
+        agent, tmp_path):
+    """The deltas carry no clock; the finalized `assistant` row that repeats
+    them is written when the message completes, so its stamp is the END of
+    the streamed text — the point the page measures "Worked for" to."""
+    rows = [
+        _delta("text_delta", "Let me edit."),
+        {"type": "assistant", "timestamp": "2026-10-04T10:00:09.000Z",
+         "message": {"content": [{"type": "text", "text": "Let me edit."}]}},
+        _STOP,
+        {"type": "result", "result": "Let me edit.", "session_id": "s1"},
+    ]
+    segs = _poll_rows(agent, tmp_path, rows)["segments"]
+    assert [s["kind"] for s in segs] == ["text"]
+    assert "ts" not in segs[0]          # a delta opened it: no start clock
+    assert segs[0]["ended"] == 1791108009.0
+    assert segs[0]["text"] == "Let me edit."
+

@@ -14,6 +14,9 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
 import { cn } from "@platform/lib/utils";
 
+import { chipHint, chipWhen } from "./run-when";
+import { useMinuteTick } from "./useMinuteTick";
+
 import {
   ANSWERABLE_TOOL,
   CHIP_DIFF_CLIP_LINES,
@@ -377,8 +380,25 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipPr
   const parts = toolChipSummaryParts(seg);
   const full = toolChipSummary(seg);
   const status = String(seg.status || "running");
+  // The lane stamp says how long AGO: re-rendered on the page's minute tick
+  // so a chip left on screen does not keep saying `just now` (Bugbot, PR #1430).
+  useMinuteTick();
   return (
-    <Collapsible open={open} onOpenChange={toggle} className={cn("toolchip", open && "is-open")}>
+    <Collapsible
+      open={open}
+      onOpenChange={toggle}
+      className={cn("toolchip", open && "is-open")}
+    >
+      {/* WHEN THIS CALL WAS MADE, in the lane beside the chip — the message
+          stamp's words (`chipWhen`), shown on hover like the message stamp is,
+          and its hover says the exact instant and how long the call ran
+          (`chipHint`, the app's one instant tooltip). Nothing on a chip whose
+          row carried no clock. */}
+      {chipWhen(seg.ts) ? (
+        <span className="chip-stamp" aria-hidden="true" {...(chipHint(seg) ? { "data-hint": chipHint(seg)! } : {})}>
+          {chipWhen(seg.ts)}
+        </span>
+      ) : null}
       <CollapsibleTrigger
         className="chip-summary"
         {...(pretty !== raw ? { title: raw } : {})}

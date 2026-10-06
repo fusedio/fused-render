@@ -1553,6 +1553,7 @@
    edge and nothing else. Fifteen boxed rows read as fifteen separate things
    each asking to be considered; fifteen rail lines read as one transcript. */
 .chat-root .toolchip {
+  position: relative;
   padding: 2px 0 2px 12px;
   border-left: 1px solid var(--c-border);
   border-radius: 0;
@@ -1574,6 +1575,64 @@
   border-radius: 0 8px 8px 0;
   margin: 8px 0;
   padding: 4px 0 6px 12px;
+}
+/* WHEN THE CALL WAS MADE, in the lane beside the chip (ToolChip `chip-stamp`,
+   Akshil 2026-10-06). The message stamp's register — small, faint, tabular — in
+   the column the ✻ mark sits in, right-aligned to the chip's rail with a gap,
+   and sized so the longest form (`12h ago`) still leaves the column's own
+   margin on its left: the lane is ~54px (the mark's 24px, its 10px gap, the
+   log's 20px padding), and at 11px `41m ago` ran to the pane's edge (Akshil:
+   "the ui is bad, check padding"). ON HOVER OF THAT CHIP ONLY (Akshil: "when I
+   hover over a bash then and only then show me that time"), never the whole
+   reply — a column of times down a run is noise; the one a reader wants is
+   beside the chip they are pointing at — and an OPEN chip keeps its stamp up
+   (Akshil, 2026-10-06), since a reader who unfolded a call is reading it.
+   Centred on the chip's head row. */
+.chat-root .toolchip > .chip-stamp {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 0;
+  font-size: 10px;
+  line-height: 25px;
+  color: var(--c-faint);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.chat-root .toolchip:hover > .chip-stamp,
+.chat-root .toolchip:focus-within > .chip-stamp,
+.chat-root .toolchip.is-open > .chip-stamp {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .toolchip > .chip-stamp {
+    transition: none;
+  }
+}
+/* THE ✻ MARK SHARES THE FIRST ROW. A reply that opens on a tool call puts its
+   first chip level with the mark, in the same lane column, so that one stamp
+   cannot use the lane. It OVERLAYS THE CHIP'S OWN LEFT END instead (Akshil,
+   2026-10-06: "overlay it here instead of shifting it to a weird location"):
+   over the ▶ marker, on the panel's ground, while that chip is hovered. The
+   marker is not the only way to open the chip — the whole head row is the
+   button — and the mark beside it stays untouched and clickable. */
+.chat-root .turn.assistant .body > .toolchip:first-child > .chip-stamp {
+  right: auto;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  padding: 0 6px 0 4px;
+  border-radius: 4px;
+  background: var(--c-panel);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .toolchip > .chip-stamp {
+    transition: none;
+  }
 }
 .chat-root .toolchip .chip-body {
   padding-right: 10px;
