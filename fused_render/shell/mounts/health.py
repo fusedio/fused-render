@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 
@@ -204,6 +205,40 @@ def health_snapshot() -> dict:
     return {"mounts": mounts_out, "events": events}
 
 
+def _clear_dead_mount(mp: str, live: set) -> None:
+    """Force-unmount `mp` if it is a kernel mount left by a DEAD instance.
+
+    A quit leaves a mount attached when its unmount did not finish inside the
+    budget (a relaunch's budget is deliberately tight, see
+    QUIT_FAST_* in app.py), and rcd is then reaped under it. The kernel keeps
+    the entry; every stat on it answers ENOTCONN, `attach_mount` refuses the
+    path as wedged, and a plain `umount` does not clear it — only the force
+    rung (`_force_unmount`) does. Left alone, the mount stays dead until the
+    user finds Reconnect.
+
+    Only what is provably a leftover: the path is one of OUR mountpoints
+    (called per record), the kernel says its backend is gone, AND no live rcd
+    lists it. A mount rcd still serves is the split-brain case Reconnect owns —
+    never forced from under a running daemon. POSIX only: win32 has no
+    per-mount detach, and attach_mount clears an orphaned reparse point itself.
+    Never raises; a failure leaves the old behaviour (attach_mount reports it).
+    """
+    if sys.platform == "win32":
+        return
+    from fused_render.shell.mounts import _force_unmount, _mount_wedged
+    try:
+        if mp in live or not _mount_wedged(mp):
+            return
+        logger.info("automount: %s is a dead mount from a previous instance; "
+                    "force-unmounting it", mp)
+        err = _force_unmount(mp)
+        if err:
+            logger.warning("automount: %s", err)
+    except Exception:
+        logger.warning("automount: clearing the dead mount at %s failed", mp,
+                       exc_info=True)
+
+
 def run_automount() -> None:
     """Remount every mount that isn't already mounted. All mounts are
     remounted at startup — there is no per-mount opt-in. Adoption is implicit:
@@ -225,6 +260,7 @@ def run_automount() -> None:
         live = mounted_paths()
         for m in mounts:
             mp = mountpoint(m)
+            _clear_dead_mount(mp, live)
             if mp in live and not _ismount(mp):
                 # Split-brain: rcd lists the mount but the kernel dropped it.
                 # mount/mount over rcd's own stale entry would fail — leave it

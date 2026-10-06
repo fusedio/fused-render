@@ -7038,3 +7038,69 @@ def test_health_monitor_notifies_once_per_episode(monkeypatch):
     # Monotonic, distinct ids; and NOT ONCE did the monitor auto-reconnect.
     assert [e["id"] for e in mounts_mod._health_events] == [1, 2]
     assert reconnects == []
+
+
+# -- stale mounts left by a dead predecessor (restart fast-teardown) ---------------
+
+
+def _force_spy(monkeypatch, wedged_paths, calls):
+    """Wedged-mount fakes: `_mount_wedged` reads the set, `_force_unmount`
+    records and un-wedges. sys.platform is pinned off win32 (the heal is a
+    POSIX kernel-umount rung; win32 has no per-mount detach)."""
+    monkeypatch.setattr(mounts_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(mounts_mod, "_mount_wedged", lambda p: p in wedged_paths)
+
+    def force(mp):
+        calls.append(mp)
+        wedged_paths.discard(mp)
+        return None
+
+    monkeypatch.setattr(mounts_mod, "_force_unmount", force)
+
+
+def test_run_automount_force_clears_a_dead_mount_a_predecessor_left(home, rcd, monkeypatch):
+    # A relaunch's teardown may leave a mount behind (its unmount budget is tight);
+    # rcd died with it, so the kernel entry answers ENOTCONN and attach_mount would
+    # refuse the mountpoint. The successor must heal it, not wait for a Reconnect.
+    c = mounts_mod.add_mount("data", "r:one")
+    mp = mounts_mod.mountpoint(c)
+    calls = []
+    _force_spy(monkeypatch, {mp}, calls)
+    mounts_mod.run_automount()
+    assert calls == [mp]
+    assert [b["fs"] for m, b in rcd.calls if m == "mount/mount"] == ["r:one"]
+
+
+def test_run_automount_leaves_a_wedged_mount_a_live_rcd_still_lists(home, rcd, monkeypatch):
+    # rcd knows it: that is the split-brain case Reconnect owns, not a leftover
+    # of a dead instance — force-unmounting under a live daemon is not ours to do.
+    c = mounts_mod.add_mount("data", "r:one")
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "r:one", "MountPoint": mp}]}
+    calls = []
+    _force_spy(monkeypatch, {mp}, calls)
+    mounts_mod.run_automount()
+    assert calls == []
+
+
+def test_run_automount_does_not_force_a_healthy_mount(home, rcd, monkeypatch):
+    mounts_mod.add_mount("data", "r:one")
+    calls = []
+    _force_spy(monkeypatch, set(), calls)
+    mounts_mod.run_automount()
+    assert calls == []
+
+
+def test_a_failing_stale_mount_heal_does_not_stop_the_other_mounts(home, rcd, monkeypatch):
+    a = mounts_mod.add_mount("a", "r:a")
+    mounts_mod.add_mount("b", "r:b")
+    monkeypatch.setattr(mounts_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(mounts_mod, "_mount_wedged",
+                        lambda p: p == mounts_mod.mountpoint(a))
+
+    def boom(mp):
+        raise OSError("umount blew up")
+
+    monkeypatch.setattr(mounts_mod, "_force_unmount", boom)
+    mounts_mod.run_automount()
+    assert "r:b" in [b["fs"] for m, b in rcd.calls if m == "mount/mount"]
