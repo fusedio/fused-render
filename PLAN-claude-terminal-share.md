@@ -181,3 +181,7 @@ same read-only tab after each command completes (not live). Note in report.
 - **Drawer.** Reports its active tab when open and on every tab change (nothing while the list is still unverified; null only when the list is emptied; the last tab stays reported after the drawer closes). Tab strip gets an optional `onAskClaude` button (`.term-tab-ask`) that reuses the existing `explainWithAi` seam: stages the prompt `[terminal t3: zsh - cwd]` + "use terminal_read with id ..." and navigates to the tab's cwd (default folder when none) so the folder chat opens seeded with it.
 - **Not done.** "Send selection to Claude" (xterm selection lives inside TerminalView; not cheap). The queued-send road (`admitQueueSend`) carries no hint: only the live `start`/`send` calls do.
 - Tests: `tests/test_claude_terminal_hint.py`, `terminalFocus.test.ts`, additions to `TerminalDrawer.test.tsx` (fake server now answers PUT) and `run-controller.test.ts`.
+
+### Fix round (review findings)
+
+- `pyte` added to `_IMPORT_TO_DIST` (suite failure). zsh shim now unsets ZDOTDIR when FUSED_USER_ZDOTDIR is empty too (was left empty, so .zlogin was looked up in `/`). bash `__fr_debug` records `$HISTCMD` in `__fr_post` and only trusts `history 1` when it advanced; otherwise it reports `$BASH_COMMAND` (the executing simple command, not the whole line, for unsaved lines).

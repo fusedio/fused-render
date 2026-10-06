@@ -123,14 +123,15 @@ def test_integrate_bash_uses_init_file_and_login_flag_env():
 
 # -- real shells --------------------------------------------------------------
 
-def _session_for(shell, tmp_path, monkeypatch, home=None):
+def _session_for(shell, tmp_path, monkeypatch, home=None, login=False):
     exe = shutil.which(shell)
     if exe is None:
         pytest.skip(f"{shell} not installed")
     home = home or tmp_path / "home"
     home.mkdir(exist_ok=True)
     env = {"PATH": os.environ["PATH"], "HOME": str(home), "TERM": "xterm-256color"}
-    prof = integrate(TerminalProfile(shell=exe, argv=[exe], env=env, cwd=str(tmp_path)))
+    prof = integrate(TerminalProfile(shell=exe, argv=[exe, "-l"] if login else [exe], env=env,
+                                        cwd=str(tmp_path)))
     monkeypatch.setattr(pty_session, "resolve_profile", lambda cwd=None: prof)
     reg = pty_session.PtySessionRegistry()
     session = reg.create()
@@ -168,6 +169,38 @@ def test_real_shell_sources_the_users_rc_files(shell, tmp_path, monkeypatch):
         assert _wait_until(lambda: s.shell_is_foreground() and s.shell_state.cwd is not None)
         s.write(b"echo mark=$FR_RC_MARK\n")
         assert _wait_until(lambda: b"mark=loaded-from-user-rc" in s.scrollback())
+    finally:
+        reg.shutdown_all()
+
+
+def test_zsh_without_user_zdotdir_still_finds_zlogin_in_home(tmp_path, monkeypatch):
+    # No ZDOTDIR, no ~/.zshenv, no ~/.zshrc: the shim must unset ZDOTDIR (not
+    # leave it empty, which makes zsh look for .zlogin in "/").
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".zlogin").write_text("export FR_ZLOGIN_MARK=zlogin-ran\n")
+    reg, s = _session_for("zsh", tmp_path, monkeypatch, home=home, login=True)
+    try:
+        assert _wait_until(lambda: s.shell_is_foreground() and s.shell_state.cwd is not None)
+        s.write(b"echo \"mark=$FR_ZLOGIN_MARK zd=[${ZDOTDIR-unset}]\"\n")
+        assert _wait_until(lambda: b"mark=zlogin-ran zd=[unset]" in s.scrollback()), s.scrollback()[-400:]
+    finally:
+        reg.shutdown_all()
+
+
+def test_bash_unsaved_command_is_not_reported_as_the_previous_one(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".bashrc").write_text("HISTCONTROL=ignorespace\n")
+    reg, s = _session_for("bash", tmp_path, monkeypatch, home=home)
+    try:
+        assert _wait_until(lambda: s.shell_is_foreground() and s.shell_state.cwd is not None)
+        s.write(b"echo first\n")
+        assert _wait_until(lambda: s.shell_state.last_command == "echo first")
+        s.write(b" echo second\n")
+        assert _wait_until(lambda: s.shell_state.last_command is not None
+                           and s.shell_state.last_command.strip() == "echo second"), \
+            s.shell_state.last_command
     finally:
         reg.shutdown_all()
 

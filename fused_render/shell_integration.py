@@ -103,7 +103,7 @@ preexec_functions=($preexec_functions __fr_preexec)
 
 # Give the user's own ZDOTDIR back (or none) so .zlogin, HISTFILE and nested
 # shells behave as if this shim had never been there.
-if [[ $FUSED_USER_ZDOTDIR == $HOME ]]; then
+if [[ -z $FUSED_USER_ZDOTDIR || $FUSED_USER_ZDOTDIR == $HOME ]]; then
   unset ZDOTDIR
 else
   ZDOTDIR=$FUSED_USER_ZDOTDIR
@@ -135,6 +135,7 @@ __fr_post() {
   p=${p// /%20}
   builtin printf '\e]7;file://%s%s\a\e]133;A\a' "${HOSTNAME:-localhost}" "$p"
   __fr_armed=1
+  __fr_hist=$HISTCMD
   return $ec
 }
 __fr_debug() {
@@ -142,10 +143,15 @@ __fr_debug() {
   [ -z "$COMP_LINE" ] || return
   case "$BASH_COMMAND" in __fr_*) return ;; esac
   __fr_armed=0
-  local c
-  c=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null)
-  c=${c#"${c%%[![:space:]]*}"}
-  c=${c#*[[:space:]]}
+  local c=
+  # `history 1` is only this command when history advanced since the prompt;
+  # an unsaved line (ignorespace/ignoredups, history off) would hand back the
+  # PREVIOUS command, so fall back to $BASH_COMMAND then.
+  if [ "$HISTCMD" != "$__fr_hist" ]; then
+    c=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null)
+    c=${c#"${c%%[![:space:]]*}"}
+    c=${c#*[[:space:]]}
+  fi
   [ -n "${c//[[:space:]]/}" ] || c=$BASH_COMMAND
   c=${c//\\/\\\\}
   c=${c//;/\\x3b}

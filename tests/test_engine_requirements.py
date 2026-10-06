@@ -120,6 +120,7 @@ _IMPORT_TO_DIST = {
     "rasterio": "rasterio",
     "rio_tiler": "rio-tiler",
     "zarr": "zarr",
+    "pyte": "pyte",
     # Never named in `[bundled]`, but on the app interpreter until D276 all the
     # same — they arrived with geopandas and rasterio, which is precisely why
     # `map/vector_engine.py` could import both directly and nothing complained.
