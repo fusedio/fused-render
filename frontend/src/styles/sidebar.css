@@ -1515,3 +1515,46 @@ a.bookmark-name::after {
 .sidebar-rail-dot.is-update {
   background: var(--accent);
 }
+
+/* Fused Bot's corner gear (shell/BotShellMenu.tsx) — the bot flavor mounts no
+   sidebar, so this sits where the sidebar's Preferences trigger would be and
+   opens the shell pages the Bots page has no row for. Fixed, over the page;
+   the Bots page measures its own <main>, so it costs no width. */
+.bot-shell-menu {
+  position: fixed;
+  left: 10px;
+  bottom: 10px;
+  z-index: 1000;
+}
+.bot-shell-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.bot-shell-menu-btn:hover,
+.bot-shell-menu-btn[aria-expanded="true"] {
+  color: var(--fg);
+}
+.bot-shell-menu .bot-shell-menu-list {
+  position: absolute;
+  left: 0;
+  bottom: 36px;
+  min-width: 180px;
+}
+.bot-shell-menu-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}

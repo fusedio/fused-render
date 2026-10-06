@@ -73,7 +73,11 @@ INTERNAL_ENV = "FUSED_RENDER_CANVAS_PUSH_INTERNAL"
 # canvases here would pull FastAPI into the startup path of every `fused`
 # command. Keep the two in step.
 _CANVASES_DIR_ENV = "FUSED_RENDER_CANVASES_DIR"
-_DEFAULT_CANVASES_DIR = "~/.fused-render/canvases"
+# Under the app home, as canvases_root() does since the Fused Bot flavor: the
+# server sets FUSED_RENDER_HOME (~/.fused-bot there) before it spawns anything,
+# so a `fused` child sees the same root the server resolved.
+_HOME_ENV = "FUSED_RENDER_HOME"
+_DEFAULT_HOME = "~/.fused-render"
 
 # The server's own bound origin, published by server/app.py:set_server_origin_env
 # before it serves, so every spawned session inherits it. Absent means "no
@@ -144,7 +148,11 @@ def _skip_global_options(args: list[str]) -> list[str]:
 
 
 def canvases_root() -> str:
-    return os.environ.get(_CANVASES_DIR_ENV) or os.path.expanduser(_DEFAULT_CANVASES_DIR)
+    override = os.environ.get(_CANVASES_DIR_ENV)
+    if override:
+        return override
+    home = os.environ.get(_HOME_ENV) or os.path.expanduser(_DEFAULT_HOME)
+    return os.path.join(home, "canvases")
 
 
 def _clone_name(source_dir: str) -> str | None:
