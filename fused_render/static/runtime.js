@@ -4309,7 +4309,7 @@
     // the option it does not have, not about the field it also got wrong —
     // "add a prompt" would "fix" the error and land the caller right back
     // in the silent-drop illusion this whole change exists to end.
-    const imageKeys = ["prompt", "model", "provider", "width", "height", "steps", "guidance", "seed", "image"];
+    const imageKeys = ["prompt", "model", "provider", "width", "height", "steps", "guidance", "seed", "image", "mask"];
     const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress", "abortSignal"], "fused.ai.image");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -4329,7 +4329,8 @@
     // call with no `image` sends an unused `base` the server simply never
     // reads, rather than this bridge having to know which calls need it.
     // Decision 4: `image` is a single string here already, forwarded as-is —
-    // there is no array to normalise, on purpose.
+    // there is no array to normalise, on purpose. `mask` (issue #1439) rides
+    // the same `base`: one string, page-relative, resolved server-side.
     const ownPath = new URLSearchParams(window.location.search).get("path");
     if (ownPath) body.base = ownPath;
     const signal = abortSignalOf(opts);
@@ -4365,7 +4366,7 @@
           warnings: started.warnings, usage: { imagesGenerated: 1 },
           metadata: { seed: started.seed, width: started.width, height: started.height,
                       steps: started.steps, guidance: started.guidance, image: started.image,
-                      prompt: started.prompt, previewPath: started.previewPath } });
+                      mask: started.mask, prompt: started.prompt, previewPath: started.previewPath } });
       // The record is COPIED rather than annotated: it is the same object the
       // job manager is drawing from, and a field written onto it here would
       // travel to every other watcher of that row.

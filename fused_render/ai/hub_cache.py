@@ -658,7 +658,9 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return "automatic-speech-recognition", "its CTranslate2 Whisper layout"
     if formats.is_mlx_whisper_snapshot(names, config):
         return "automatic-speech-recognition", "its MLX Whisper weights"
-    if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
+    # Either mflux table — a Fill checkpoint is as much text-to-image here as
+    # a Klein one; `mflux_native_mode` is the one membership test for both.
+    if formats.mflux_native_mode(repo_id) and formats.has_mflux_components(dirnames):
         return "text-to-image", "its MLX diffusion components"
     if formats.is_laya_snapshot(names, dirnames):
         # Decisive for the same reason `weights.npz` is: `rl_agent_config.json`

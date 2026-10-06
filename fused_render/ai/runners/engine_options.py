@@ -102,15 +102,27 @@ _DIFFUSERS_NO_EDIT = (
     "on the AI Models page's Engines tab to edit an existing image, or drop "
     "'image' to render a fresh one."
 )
+#: …and `mask` (masked inpainting, issue #1439), refused by the same three
+#: codes for the same kind of reason: diffusers ships a `FluxFillPipeline`,
+#: but this app's diffusers runner loads one pipeline class per recipe and
+#: nobody has run that one on any machine here. Its own sentence rather than
+#: `_DIFFUSERS_NO_EDIT`'s, because the way out differs — the mflux engine AND
+#: a Fill checkpoint, not just the engine.
+_DIFFUSERS_NO_INPAINT = (
+    "the Diffusers image engine has no masked inpainting here. Switch this "
+    "capability to the mflux engine on the AI Models page's Engines tab and "
+    "use a FLUX.1 Fill model (mflux-community/flux-1-dev-fill-mflux-q4), or "
+    "drop 'mask'."
+)
 UNSUPPORTED = {
-    "diffusers-image": {"image": _DIFFUSERS_NO_EDIT},
-    "diffusers-image-cuda": {"image": _DIFFUSERS_NO_EDIT},
-    "diffusers-image-rocm": {"image": _DIFFUSERS_NO_EDIT},
+    "diffusers-image": {"image": _DIFFUSERS_NO_EDIT, "mask": _DIFFUSERS_NO_INPAINT},
+    "diffusers-image-cuda": {"image": _DIFFUSERS_NO_EDIT, "mask": _DIFFUSERS_NO_INPAINT},
+    "diffusers-image-rocm": {"image": _DIFFUSERS_NO_EDIT, "mask": _DIFFUSERS_NO_INPAINT},
 }
 
 
 def unsupported_or_raise(runner_code, *, task=None, language=None,
-                         initial_prompt=None, image=None):
+                         initial_prompt=None, image=None, mask=None):
     """`ValueError` if `runner_code` cannot honour one of these, else None.
 
     Named arguments rather than the request dict, because the two callers hold
@@ -137,6 +149,11 @@ def unsupported_or_raise(runner_code, *, task=None, language=None,
         raise ValueError(rules["language"])
     if initial_prompt and "initialPrompt" in rules:
         raise ValueError(rules["initialPrompt"])
+    # `mask` BEFORE `image`: a request carrying both is an inpaint, and the
+    # inpaint sentence names the fuller way out (engine AND model). Refusing
+    # on `image` first would tell a masked caller only half of it.
+    if mask and "mask" in rules:
+        raise ValueError(rules["mask"])
     if image and "image" in rules:
         raise ValueError(rules["image"])
     return None
