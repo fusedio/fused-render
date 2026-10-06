@@ -33,7 +33,7 @@ import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection from "@shell/CurrentAppsSection";
-import UpdateChip, { updateChipActive } from "@shell/UpdateChip";
+import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
 import { useSidebarArrowNav } from "@shell/sidebarArrowNav";
@@ -195,10 +195,7 @@ function useDismiss(
   }, [onClose]);
 }
 
-// The expanded-sidebar trigger row. `trailing` (the version chip, the update
-// chip) sits OUTSIDE the <button> in an overlay: the update chip is itself a
-// button, and a button inside a button is invalid HTML. The overlay lets
-// pointer events fall through to the row except on the interactive chip.
+// The expanded-sidebar trigger row.
 function PreferencesTrigger({
   open,
   dot,
@@ -212,27 +209,25 @@ function PreferencesTrigger({
       the only sidebar chrome that can show it. */
   active: boolean;
   /** Trailing-edge content, same slot NavItem gives Tasks its count — this
-      row's is the update chip and the version chip. */
+      row's is the version chip. */
   trailing?: React.ReactNode;
   onToggle: (el: HTMLElement) => void;
 }) {
   return (
-    <div className="sidebar-prefs-row">
-      <button
-        type="button"
-        className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={(e) => onToggle(e.currentTarget)}
-      >
-        <span className="icon">
-          {PREFERENCES_ICON}
-          {dot}
-        </span>{" "}
-        Settings
-      </button>
-      {trailing && <span className="sidebar-item-trail sidebar-prefs-trail">{trailing}</span>}
-    </div>
+    <button
+      type="button"
+      className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      onClick={(e) => onToggle(e.currentTarget)}
+    >
+      <span className="icon">
+        {PREFERENCES_ICON}
+        {dot}
+      </span>{" "}
+      Settings
+      {trailing && <span className="sidebar-item-trail">{trailing}</span>}
+    </button>
   );
 }
 
@@ -459,11 +454,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // its icon; and it is border-box against the other's `content-box`, so its 1px
   // ring ate the dot down to 5px of fill beside a 7px neighbour. One dot
   // vocabulary in this sidebar, one class that draws it.
-  // The collapsed rail's stand-in for the expanded row's UpdateChip.
+  // The collapsed rail's stand-in for the expanded footer's UpdateCard.
   const updateStatus = useUpdateStatus();
   const restartFlow = useRestartFlow();
-  const updateDot = updateChipActive(updateStatus, restartFlow.stage) ? (
-    <span className="sidebar-rail-dot is-update" title="Update available — open the sidebar to act on it" />
+  const updateDot = updateCardActive(updateStatus, restartFlow.stage) ? (
+    <span className="sidebar-rail-dot is-update" title="Update available. Open the sidebar to act on it" />
   ) : undefined;
 
   const residentDot = residentModels.length ? (
@@ -779,8 +774,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
-      // The expanded row carries the UpdateChip; the collapsed rail has no
-      // room for words, so the same two decision moments show as a dot.
+      // The expanded footer carries the UpdateCard; the collapsed rail has no
+      // room for it, so the same moments show as a dot.
       badge: updateDot,
     },
   ];
@@ -859,6 +854,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
+          <UpdateCard />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
           {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the
@@ -872,14 +868,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             open={prefsPos !== null}
             active={prefsActive}
             trailing={
-              <>
-                <UpdateChip />
-                {config.version && (
-                  <span className="version-chip" title={`Fused Render v${config.version}`}>
-                    v{config.version}
-                  </span>
-                )}
-              </>
+              config.version ? (
+                <span className="version-chip" title={`Fused Render v${config.version}`}>
+                  v{config.version}
+                </span>
+              ) : undefined
             }
             onToggle={togglePrefsMenu}
           />
