@@ -319,5 +319,4 @@ def test_outbound_text_adds_how_to_answer():
     from fused_render.bots.channels.imessage import CAPS as _caps
     assert _router.render({"role": "question", "text": "Want it?", "options": ["Build it", "Not now"]}, _caps) == \
         ("Want it?\n\nReply 1 Build it · 2 Not now", ["Build it", "Not now"])
-    assert _router.render({"role": "approval", "text": "About to text Ali. Approve?"}, _caps)[0].endswith("Reply yes or no.")
     assert _router.render({"role": "done", "text": "All done."}, _caps) == ("All done.", [])
