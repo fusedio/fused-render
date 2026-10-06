@@ -214,7 +214,7 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 
 # Bundle numpy's macosx_11_0_arm64 (OpenBLAS) wheel, not the host-tagged 14.0
 # (Accelerate) one pip picks on this runner, so the bundle's minos stays 13.0
-# (D1324). Same version as installed above; --only-binary makes a miss fatal.
+# (D1325). Same version as installed above; --only-binary makes a miss fatal.
 NUMPY_VER="$("$BUILD_VENV/bin/pip" show numpy | awk '/^Version:/{print $2}')"
 NUMPY_WHEELS="$BUILD_DIR/numpy-macos11-wheel"
 rm -rf "$NUMPY_WHEELS"
@@ -919,7 +919,7 @@ fi
 #
 #     Threshold 13.0, not the Info.plist's LSMinimumSystemVersion (11.0):
 #     numpy's default arm64 wheel is `macosx_14_0_arm64`; its macOS-11 wheel is
-#     forced in step 2 (D1324), so 13.0 holds. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
+#     forced in step 2 (D1325), so 13.0 holds. `LC_BUILD_VERSION`'s minos is what dyld compares against the running
 #     OS; older linkers wrote `LC_VERSION_MIN_MACOSX` instead, read the same.
 #     Exempt, and listed rather than hidden:
 #       - Contents/MacOS/fused-apple-ai: minos 26 by design, host.py never

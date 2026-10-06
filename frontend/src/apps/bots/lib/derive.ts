@@ -1,6 +1,6 @@
 // Per-bot derived values shared by the list, the chat header, the preview and the live view (OpenBot core.js
 // helpers). Pure: each takes the bot and, where needed, its merged event list from the store.
-import type { Bot, BotEvent, Routine } from "./api";
+import type { Bot, BotEvent, Handoff, Routine } from "./api";
 import { fmtWhenShort } from "./format";
 
 /** The newest event of `role`'s seq, or -1. */
@@ -29,6 +29,14 @@ export function routineNote(b: Bot): { warn: true; text: string } | { warn: fals
   const bad = rs.find((r) => (r.fails || 0) > 0 || r.last_result === "error");
   if (bad) return { warn: true, text: `routine failed ×${bad.fails || 1}` };
   return isFinite(next) ? { warn: false, text: `next run ${fmtWhenShort(next)}` } : null;
+}
+
+/** Super Bot's newest hand-off still in flight (queued / running / waiting), or null: the list row says "waiting on <Bot>". */
+export function activeHandoff(b: Pick<Bot, "handoffs">): Handoff | null {
+  let best: Handoff | null = null;
+  for (const h of b.handoffs || [])
+    if ((h.state === "queued" || h.state === "running" || h.state === "waiting") && (!best || (h.created_at || 0) >= (best.created_at || 0))) best = h;
+  return best;
 }
 
 /** "running · step 3" ("running · step 3/60" with a step cap), "waiting for you", "idle · browser off", … */

@@ -1,37 +1,22 @@
 #!/usr/bin/env python3
-"""iMessage bridge: texts from an allowlisted number become bot tasks, and the
-bot's answers go back as texts (port of OpenBot imessage.py; docs/bots.md §1).
+"""iMessage helpers: chat.db queries, the osascript send, handle and contact
+parsing (docs/bots.md §10). The poll loop that turns texts into tasks is the
+channel in fused_render/bots/channels/imessage.py; the delivery policy is the
+router. This module has no threads.
 
-Runs as a thread inside the fused-render server (registry.py starts it whenever
-any bot has an `imessage` handle set in Settings), or standalone from a Terminal:
+    python -m fused_render.bots.imessage --status   # what this Mac can see, and why it can't
 
-    python -m fused_render.bots.imessage            # run the bridge in the foreground (Ctrl+C stops)
-    python -m fused_render.bots.imessage --status   # what the bridge can see, and why it can't
-
-Only one bridge runs at a time: whichever process holds <home>/bots/data/imessage.lock.
-Start the standalone one when fused-render itself has no Full Disk Access; the
-server's thread notices the lock and stands down until it is released.
-
-Inbound  ~/Library/Messages/chat.db (read-only sqlite): new rows from the bot's
-         handle, not from me, not in a group chat -> <home>/bots/data/bots/<id>/inbox/
-         imessage-<rowid>.txt, which the bot runs like a typed message.
-Outbound tail of each bot's events.jsonl: done / question / approval / error
-         events after the cursor -> `osascript` tells Messages.app to send.
-Cursor   <home>/bots/data/imessage.json {rowid, line: {bot_id: transcript lines handled}, sent: {text: ts}}.
-         On the very first run it starts at "now", so nothing old is replayed. `sent`
-         drops echoes: texting your own number makes every reply arrive as incoming too.
-State    <home>/bots/data/imessage-state.json, rewritten every poll by the lock holder
-         so the Settings dialog shows the real status whichever process answers.
-
-Paths resolve on every use (functions below, plus the OpenBot names DATA,
-BOTS, CURSOR, LOCK, STATE as lazy module attributes) so FUSED_RENDER_HOME
-can be redirected after import.
+Inbound  ~/Library/Messages/chat.db (read-only sqlite): 1:1 rows not from me,
+         with the handle's service, so the channel can keep SMS out.
+Outbound `osascript` tells Messages.app to send to a participant of the
+         iMessage account.
+Cursor   <home>/bots/data/imessage.json {rowid, sent: {text: ts}}; the lock
+         and state files sit beside it (paths.imessage_dir).
 
 Needs: Messages signed in on this Mac; Full Disk Access for the process that
 reads chat.db (System Settings > Privacy & Security > Full Disk Access); and
 Automation consent for Messages the first time a text is sent.
 """
-import fcntl
 import json
 import os
 import re
@@ -44,11 +29,8 @@ import time
 from fused_render.bots import paths as _bpaths
 
 CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
-POLL_S = 3
-OUT_ROLES = ("done", "question", "approval", "error")
-MAX_TEXT = 3000          # one iMessage; longer replies are split at line breaks
+MAX_TEXT = 3000          # one iMessage; longer texts are split at line breaks
 SEND_TIMEOUT_S = 30
-ECHO_WINDOW_S = 10 * 60   # an incoming text identical to one we sent this recently is our own echo, not a task
 
 _SEND_SCRIPT = """
 on run argv
@@ -144,24 +126,24 @@ def resolve_contact(who, contacts):
     return None
 
 
-def bots_with_handles():
-    """{normalized handle: bot id} for every bot with an iMessage handle set."""
-    out = {}
+def super_door():
+    """(Super Bot's id, its normalized iMessage handle) or (None, ""): the one bot
+    a text reaches, and the one sender it takes texts from (docs §10). Other
+    bots' `imessage` keys are ignored. Read from disk on every call (no Bot objects)."""
     bots = bots_dir()
     try:
         ids = sorted(os.listdir(bots))
     except OSError:
-        return out
+        return None, ""
     for bid in ids:
         try:
             with open(os.path.join(bots, bid, "bot.json")) as f:
                 m = json.load(f)
         except (OSError, ValueError):
             continue
-        h = norm_handle(m.get("imessage"))
-        if h and h not in out:
-            out[h] = bid
-    return out
+        if isinstance(m, dict) and m.get("kind") == "super":
+            return bid, norm_handle(m.get("imessage"))
+    return None, ""
 
 
 def decode_attributed_body(blob):
@@ -196,11 +178,12 @@ def load_cursor():
     try:
         with open(cursor_path()) as f:
             c = json.load(f)
-            c.pop("seq", None)  # the first version's cursor; "line" replaced it (see events_after)
-            c.setdefault("line", {})
+            c.pop("seq", None)   # the first version's cursor
+            c.pop("line", None)  # the second's per-bot transcript cursor; the router delivers live now
+            c.setdefault("sent", {})
             return c
     except (OSError, ValueError):
-        return {"rowid": None, "line": {}}
+        return {"rowid": None, "sent": {}}
 
 
 def save_cursor(c):
@@ -229,16 +212,17 @@ def open_db():
 
 
 def new_messages(db, after_rowid):
-    """[(rowid, handle, text)] for 1:1 texts from others after `after_rowid`."""
+    """[(rowid, handle, text, service)] for 1:1 texts from others after `after_rowid`.
+    `service` is the handle's ("iMessage", "SMS", "RCS"); the channel trusts only iMessage."""
     rows = db.execute(
-        """select m.ROWID, h.id, m.text, m.attributedBody, c.chat_identifier
+        """select m.ROWID, h.id, m.text, m.attributedBody, c.chat_identifier, h.service
            from message m
            left join handle h on h.ROWID = m.handle_id
            left join chat_message_join j on j.message_id = m.ROWID
            left join chat c on c.ROWID = j.chat_id
            where m.ROWID > ? and m.is_from_me = 0 order by m.ROWID""", (after_rowid,)).fetchall()
     out, seen = [], set()
-    for rowid, handle, text, body, chat_id in rows:
+    for rowid, handle, text, body, chat_id, service in rows:
         if rowid in seen:
             continue
         seen.add(rowid)
@@ -246,7 +230,7 @@ def new_messages(db, after_rowid):
             continue  # group chat
         t = (text or "").strip() or decode_attributed_body(body).strip()
         if t and t != "￼":  # U+FFFC = attachment-only message
-            out.append((rowid, norm_handle(handle), t))
+            out.append((rowid, norm_handle(handle), t, service or ""))
     return out
 
 
@@ -284,7 +268,23 @@ def format_texts(label, rows):
     return f"TEXTS with {label} (oldest first):\n" + "\n".join(lines)
 
 
+# The cursor file is shared by the channel's poll (router poll thread) and every
+# sender (router send thread, a bot's `text` action on its task thread): one lock.
+CURSOR_LOCK = threading.RLock()
+
+
 def send_text(handle, text):
+    """Send one text (split at MAX_TEXT). Every chunk is first recorded in the
+    cursor's `sent` window, so its echo (texting your own number makes each
+    reply come back as an incoming row) is never read as a command — whoever
+    sends: the channel's replies or a bot's `text` action."""
+    now = time.time()
+    with CURSOR_LOCK:
+        cur = load_cursor()
+        sent = cur.setdefault("sent", {})
+        for chunk in chunks(text):
+            sent[chunk] = now
+        save_cursor(cur)
     for chunk in chunks(text):
         r = subprocess.run(["osascript", "-"] + [handle, chunk], input=_SEND_SCRIPT, capture_output=True,
                            text=True, timeout=SEND_TIMEOUT_S, close_fds=False)
@@ -305,218 +305,28 @@ def chunks(text):
         yield text
 
 
-def outbound_text(ev):
-    """The text to send for one event: the message plus, when it waits on the user, how
-    to answer it (the page shows buttons; a phone only has the reply box)."""
-    text = (ev.get("text") or "").strip()
-    opts = [str(o).strip() for o in (ev.get("options") or []) if str(o).strip()]
-    if opts:
-        text += "\n\nReply with one of: " + " / ".join(opts)
-    elif ev.get("role") == "approval":
-        text += "\n\nReply yes or no."
-    return text
-
-
-def events_after(bid, line_no):
-    """Outbound-worthy events after line `line_no` of the bot's transcript, and
-    the new line count. Cursor by line, not `seq`: several writers append to the
-    same file with their own counters, so seq numbers interleave (…40, 90, 41…)."""
-    path = os.path.join(bots_dir(), bid, "events.jsonl")
-    out, n = [], 0
-    try:
-        with open(path, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                if n <= line_no:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                if ev.get("role") in OUT_ROLES and (ev.get("text") or "").strip():
-                    out.append((n, ev))
-    except OSError:
-        pass
-    return out, max(n, line_no)
-
-
-def drop_task(bid, rowid, text):
-    inbox = os.path.join(bots_dir(), bid, "inbox")
-    os.makedirs(inbox, exist_ok=True)
-    name = f"imessage-{rowid}"
-    with open(os.path.join(inbox, name + ".tmp"), "w", encoding="utf-8") as f:
-        f.write(text + "\n")
-    os.replace(os.path.join(inbox, name + ".tmp"), os.path.join(inbox, name + ".txt"))
-
-
-# ------------------------------------------------------------------- bridge ---
-class Bridge:
-    """One poll loop. `state` is what the page shows in Settings."""
-
-    def __init__(self):
-        self.state = {"running": False, "error": "", "last_in": None, "last_out": None, "handles": 0, "holder": ""}
-        self.lock_fh = None
-        self.db = None
-
-    def acquire(self):
-        lp = lock_path()
-        os.makedirs(os.path.dirname(lp), exist_ok=True)
-        fh = open(lp, "a+")
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            fh.seek(0)
-            self.state["holder"] = fh.read().strip()
-            fh.close()
-            return False
-        fh.seek(0)
-        fh.truncate()
-        fh.write(f"pid {os.getpid()}")
-        fh.flush()
-        self.lock_fh = fh
-        self.state["holder"] = ""
-        return True
-
-    def release(self):
-        if self.lock_fh:
-            try:
-                self.lock_fh.seek(0)
-                self.lock_fh.truncate()
-                self.lock_fh.flush()
-                fcntl.flock(self.lock_fh, fcntl.LOCK_UN)
-                self.lock_fh.close()
-            except OSError:
-                pass
-            self.lock_fh = None
-        if self.db:
-            self.db.close()
-            self.db = None
-        self.state["running"] = False
-
-    def tick(self):
-        handles = bots_with_handles()
-        self.state["handles"] = len(handles)
-        if not handles:
-            return
-        cur = load_cursor()
-        if self.db is None:
-            self.db = open_db()
-        if cur.get("rowid") is None:  # first run: start from now, never replay history
-            cur["rowid"] = self.db.execute("select coalesce(max(ROWID), 0) from message").fetchone()[0]
-            save_cursor(cur)
-        # Texts we sent recently, to drop their echoes: when the allowlisted number is this
-        # Mac's own iMessage account, every reply also lands in chat.db as an incoming row.
-        now = time.time()
-        sent = {t: ts for t, ts in (cur.get("sent") or {}).items() if now - ts < ECHO_WINDOW_S}
-        cur["sent"] = sent
-        # inbound
-        for rowid, handle, text in new_messages(self.db, int(cur["rowid"])):
-            bid = handles.get(handle)
-            if bid and text.strip() in sent:
-                self.state["echoes"] = self.state.get("echoes", 0) + 1
-            elif bid:
-                drop_task(bid, rowid, text)
-                self.state["last_in"] = time.time()
-            cur["rowid"] = rowid
-        # outbound
-        for handle, bid in handles.items():
-            evs, last = events_after(bid, int(cur["line"].get(bid) or 0))
-            if bid not in cur["line"]:  # handle just set (or cursor upgraded): don't replay that bot's past
-                cur["line"][bid] = last
-                continue
-            for n, ev in evs:
-                text = outbound_text(ev)
-                if text in sent and ev.get("role") == "error":
-                    cur["line"][bid] = n
-                    continue  # the same error again within the window: one text is enough
-                send_text(handle, text)
-                sent[text] = time.time()
-                self.state["last_out"] = time.time()
-                cur["line"][bid] = n
-            cur["line"][bid] = last
-        save_cursor(cur)
-
-    def publish(self):
-        """Write state for the processes that don't hold the lock (see current_state)."""
-        try:
-            sp = state_path()
-            tmp = sp + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump({**self.state, "pid": os.getpid(), "ts": time.time()}, f)
-            os.replace(tmp, sp)
-        except OSError:
-            pass
-
-    def run(self, stop):
-        """Loop until `stop` is set. Retries on error; the error text is shown in Settings."""
-        while not stop.is_set():
-            if self.lock_fh is None and not self.acquire():  # flock is per open file: re-opening would block on our own lock
-                self.state["running"] = False
-                self.state["error"] = f"another bridge is running ({self.state['holder'] or 'standalone'})"
-                stop.wait(POLL_S * 3)
-                continue
-            try:
-                self.tick()
-                self.state["running"] = True
-                self.state["error"] = ""
-            except Exception as e:  # noqa: BLE001
-                self.state["running"] = False
-                self.state["error"] = str(e).strip()[:300] or e.__class__.__name__
-                if self.db:
-                    self.db.close()
-                    self.db = None
-            self.publish()
-            stop.wait(POLL_S)
-        self.release()
-
-
-def current_state(local):
-    """What Settings shows: the lock holder's published state when it is fresh
-    (another process may run the loop), else `local`."""
-    if local.get("holder"):
-        try:
-            with open(state_path()) as f:
-                s = json.load(f)
-            if time.time() - float(s.get("ts") or 0) < POLL_S * 5:
-                return s
-        except (OSError, ValueError):
-            pass
-    return dict(local)
-
-
-def start_thread():
-    """Used by registry.py: returns (Bridge, stop Event)."""
-    b, stop = Bridge(), threading.Event()
-    threading.Thread(target=b.run, args=(stop,), daemon=True, name="imessage").start()
-    return b, stop
-
-
 # ---------------------------------------------------------------------- cli ---
 def main(argv):
-    if argv[:1] == ["--status"]:
-        handles = bots_with_handles()
-        print(f"bots with a handle: {', '.join(f'{h} -> {b}' for h, b in handles.items()) or 'none'}")
-        try:
-            db = open_db()
-            print(f"chat.db: readable, {db.execute('select count(*) from message').fetchone()[0]} messages")
-        except Exception as e:  # noqa: BLE001
-            print(f"chat.db: {e}")
-        print(f"cursor: {load_cursor()}")
-        return 0
-    b, stop = Bridge(), threading.Event()
-    print("bridge running; Ctrl+C stops")
-    t = threading.Thread(target=b.run, args=(stop,), daemon=True)
+    if argv[:1] != ["--status"]:
+        print("The iMessage bridge runs inside the fused-render server (bots/channels/imessage.py).\n"
+              "  python -m fused_render.bots.imessage --status   # what this Mac can see")
+        return 2
+    sid, handle = super_door()
+    print(f"Super Bot: {sid or 'none'}; texts it from: {handle or 'no handle set'}")
     try:
-        last = None
-        t.start()
-        while t.is_alive():
-            s = json.dumps(b.state, sort_keys=True)
-            if s != last:
-                print(s, flush=True)
-                last = s
-            time.sleep(1)
-    except KeyboardInterrupt:
-        stop.set()
-        t.join(5)
+        db = open_db()
+        print(f"chat.db: readable, {db.execute('select count(*) from message').fetchone()[0]} messages")
+        own = [r[0] for r in db.execute("select distinct account from message where is_from_me = 1 and account != '' "
+                                        "order by ROWID desc limit 10")]
+        print(f"this Mac sends as: {', '.join(own) or 'unknown'}")
+    except Exception as e:  # noqa: BLE001
+        print(f"chat.db: {e}")
+    print(f"cursor: {load_cursor()}")
+    try:
+        with open(state_path()) as f:
+            print(f"bridge state: {f.read().strip()}")
+    except OSError:
+        print("bridge state: none written yet (server not running, or Super Bot has no handle)")
     return 0
 
 

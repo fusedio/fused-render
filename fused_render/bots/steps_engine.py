@@ -24,7 +24,7 @@ import re
 import time
 import traceback
 
-from fused_render.bots import apptools, tools
+from fused_render.bots import apptools, channels, tools
 from fused_render.bots import bot as botmod
 
 SYSTEM_PROMPT = """You are a web-browsing agent controlling a real Chrome browser for a user.
@@ -42,6 +42,7 @@ Reply with strict JSON only, no prose, no code fences:
  "tab": "<for tab: new|switch|close>", "index": <tab number for switch/close>,
  "risky": true|false (only for irreversible actions, see Rules),
  "message": "<for done: final answer/summary; for ask: the question; for offer: what the app would do for them, plus your findings so far when the task is otherwise complete; for login: a short reason shown to the user>",
+ "summary": "<for done / ask when a CHANNEL section is present: the message in one or two plain sentences for the text message; omit otherwise>",
  "options": ["<for ask, optional: 2-5 short answers the user can pick with one click>"]}
 
 Actions:
@@ -253,10 +254,12 @@ def run(bot, task, label=None):
                 history.append(f"save -> {res}")
                 continue
             if act == "done":
-                msg = decision.get("message") or "Done."
+                msg, summary = channels.base.split_summary(decision.get("message") or "Done.", decision.get("summary") or "")
                 final_msg = msg
                 arts = bot.collect_task_artifacts(msg)
                 extra = {"artifacts": [{"name": r["name"], "path": r["path"], "kind": r["kind"]} for r in arts]} if arts else {}
+                if summary:
+                    extra["summary"] = summary  # D11: what a phone channel gets instead of the cut message
                 app = botmod._app_in_text(msg)   # a done that links a built app gets the app card too
                 if app:
                     extra["app"] = app
@@ -277,7 +280,8 @@ def run(bot, task, label=None):
                                    "you see; they are not yours. Reply with a JSON browser action (start with goto).")
                     continue
                 opts = [str(o).strip()[:80] for o in (decision.get("options") or []) if str(o).strip()][:5]
-                ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}))
+                q, q_sum = channels.base.split_summary(q, decision.get("summary") or "")
+                ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"summary": q_sum} if q_sum else {}))
                 bot.set_status("waiting", waiting_on=ev["seq"])
                 bot.asking = True
                 drove = False
@@ -311,9 +315,7 @@ def run(bot, task, label=None):
             if act == "login":
                 q = decision.get("message") or "This page needs you to sign in."
                 bot.window(True)
-                ev = bot.emit("question", f"{q} I've opened a real browser window for you — sign in there "
-                              "(your password manager and passkeys work normally), then reply 'done' or "
-                              "click Hand back when you're finished.")
+                ev = bot.emit("question", channels.login_text(bot, q))
                 bot.set_status("waiting", waiting_on=ev["seq"])
                 bot.asking = True
                 try:
@@ -446,9 +448,10 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
     instr_s = f"YOUR STANDING INSTRUCTIONS (set by the user, always apply):\n{instr}\n\n" if instr else ""
     m = bot.meta
     appr = "ask before irreversible actions" if (m.get("approval") or "ask") != "auto" else "never ask"
-    origin = "routine (user may be away)" if getattr(bot, "task_origin", "manual") == "routine" else "chat"
+    origin = channels.origin_label(bot)
     cfg_s = (f"YOU: {m.get('name')!r} · model {m.get('model') or botmod.DEFAULT_MODEL} · effort {m.get('effort') or botmod.DEFAULT_EFFORT} · approvals: {appr}"
-             f" · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. Only the user changes settings.\n\n")
+             f" · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. Only the user changes settings.\n\n"
+             + channels.prompt_for(bot))
     # The app guide is mounted like a skill: only when the task or a recent user line asks about the app itself.
     recent_user = " ".join(h for h in history[-14:] if h.startswith(("USER INSTRUCTION:", "USER ANSWER:")))
     guide_s = (botmod.app_guide() + f"\nCounts now: {sum(1 for r in m.get('routines') or [] if r.get('enabled'))} active routine(s), "

@@ -642,7 +642,7 @@ class _Window:
     """One open window: the NSWindow, its WKWebView, and the strong delegate."""
 
     def __init__(self, manager: "WindowManager", url: str, configuration,
-                 load: bool = True):
+                 load: bool = True, html: str | None = None):
         self.manager = manager
         # What the window shows NOW (an app folder or a file path, or None):
         # kept current by the URL observer. Plain Python attribute, so the
@@ -693,7 +693,15 @@ class _Window:
         # A popup WebKit asked us to create (`window.open`) loads itself once
         # we hand the view back; loading here too would race it.
         if load:
-            self.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
+            if html is not None:
+                # A placeholder shown until the caller `load`s the real page
+                # (a relaunch's successor opens windows before its server is
+                # up). The base URL is the real one, so the web view's URL --
+                # and with it `key`/`view` and the snapshot -- stay the page
+                # this window stands for.
+                self.webview.loadHTMLString_baseURL_(html, _nsurl(url))
+            else:
+                self.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
 
     def set_theme_pref(self, pref: str) -> None:
         """Apply the shell's light/dark/system preference to the window
@@ -1054,13 +1062,16 @@ class WindowManager:
 
     # ---- what app.py calls --------------------------------------------------
 
-    def open(self, url: str) -> _Window | None:
+    def open(self, url: str, html: str | None = None) -> _Window | None:
         """Open ``url`` in a NEW window and bring it to the front — or, with
-        native windows switched off, in the default browser (None)."""
+        native windows switched off, in the default browser (None).
+
+        ``html`` shows that static page in the window instead of loading
+        ``url``; the caller `load`s ``url`` itself when it is ready."""
         if not self.enabled:
             _open_external(url)
             return None
-        win = _Window(self, url, self._configuration)
+        win = _Window(self, url, self._configuration, html=html)
         self._windows.append(win)
         win.show()
         return win
@@ -1148,6 +1159,13 @@ class WindowManager:
             if u:
                 urls.append(u)
         return urls
+
+    def save_frames(self) -> None:
+        """Persist every window's frame now. A relaunch leaves its windows up
+        and ends in `os._exit`, so no `close` runs `teardown` -> `save_frame`;
+        the successor places each window by that saved frame. Main thread."""
+        for w in list(self._windows):
+            w.save_frame()
 
     def has_windows(self) -> bool:
         return bool(self._windows)

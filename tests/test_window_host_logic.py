@@ -8,6 +8,7 @@ exposes exactly the methods the adapter implements; nothing GTK is imported.
 import json
 import signal
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -353,6 +354,36 @@ def test_load_toolkit_reports_missing_typelib(monkeypatch):
     assert "WebKit2" in str(e.value) or "typelib" in str(e.value)
 
 
+def test_pick_unix_signal_add_prefers_glib_unix_when_it_loads():
+    glib_unix = SimpleNamespace(signal_add=lambda *a: "glib_unix")
+    glib = SimpleNamespace(unix_signal_add=lambda *a: "glib")
+    assert wh.pick_unix_signal_add(glib, lambda: glib_unix) is glib_unix.signal_add
+
+
+def test_pick_unix_signal_add_falls_back_to_glib_when_glib_unix_is_absent():
+    def loader():
+        raise ValueError("Namespace GLibUnix not available")
+
+    glib = SimpleNamespace(unix_signal_add=lambda *a: "glib")
+    assert wh.pick_unix_signal_add(glib, loader) is glib.unix_signal_add
+
+
+def test_pick_unix_signal_add_falls_back_on_import_error_too():
+    def loader():
+        raise ImportError("no module named 'gi.repository.GLibUnix'")
+
+    glib = SimpleNamespace(unix_signal_add=lambda *a: "glib")
+    assert wh.pick_unix_signal_add(glib, loader) is glib.unix_signal_add
+
+
+def test_pick_unix_signal_add_is_none_when_neither_exists():
+    def loader():
+        raise ValueError("Namespace GLibUnix not available")
+
+    glib = SimpleNamespace()  # no unix_signal_add attribute either
+    assert wh.pick_unix_signal_add(glib, loader) is None
+
+
 def test_main_exits_with_the_toolkit_code_when_unavailable(monkeypatch, capsys, tmp_path):
     def boom():
         raise wh.ToolkitUnavailable("no display")
@@ -532,7 +563,8 @@ def test_main_sets_app_identity_and_a_sigterm_handler_before_serving(monkeypatch
             calls.append(("main",))
 
     fake_tk = SimpleNamespace(Gtk=FakeGtk, GLib=FakeGLib,
-                             Gdk=SimpleNamespace(), WebKit2=SimpleNamespace())
+                             Gdk=SimpleNamespace(), WebKit2=SimpleNamespace(),
+                             unix_signal_add=FakeGLib.unix_signal_add)
     monkeypatch.setattr(wh, "load_toolkit", lambda: fake_tk)
     monkeypatch.setattr(wh, "GtkBackend",
                         lambda *a, **k: SimpleNamespace(run_on_main=lambda fn: fn(), quit=lambda: None))
@@ -546,6 +578,50 @@ def test_main_sets_app_identity_and_a_sigterm_handler_before_serving(monkeypatch
     assert ("main",) in calls
     # identity is set before GtkBackend/Host (and so any window) exist
     assert calls.index(("prgname", "fused-render")) < calls.index(("main",))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the host serves a unix socket")
+def test_main_runs_without_a_sigterm_handler_when_neither_api_exists(monkeypatch, capsys, tmp_path):
+    """Neither GLibUnix.signal_add nor GLib.unix_signal_add existing must not
+    crash the host into browser-tab fallback: it just runs with no SIGTERM
+    handler, logging why."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    class FakeGLib:
+        PRIORITY_DEFAULT = 0
+
+        @staticmethod
+        def set_prgname(name):
+            calls.append(("prgname", name))
+
+        @staticmethod
+        def set_application_name(name):
+            calls.append(("app_name", name))
+
+    class FakeWindowClass:
+        @staticmethod
+        def set_default_icon_name(name):
+            calls.append(("icon", name))
+
+    class FakeGtk:
+        Window = FakeWindowClass
+
+        @staticmethod
+        def main():
+            calls.append(("main",))
+
+    fake_tk = SimpleNamespace(Gtk=FakeGtk, GLib=FakeGLib, Gdk=SimpleNamespace(),
+                             WebKit2=SimpleNamespace(), unix_signal_add=None)
+    monkeypatch.setattr(wh, "load_toolkit", lambda: fake_tk)
+    monkeypatch.setattr(wh, "GtkBackend",
+                        lambda *a, **k: SimpleNamespace(run_on_main=lambda fn: fn(), quit=lambda: None))
+
+    code = wh.main(["--port", "1", "--socket", str(tmp_path / "s"), "--state", str(tmp_path)])
+    assert code == 0
+    assert ("main",) in calls
+    assert "unix_signal_add" in capsys.readouterr().err
 
 
 def test_present_with_activation_token_sets_startup_id_then_present():

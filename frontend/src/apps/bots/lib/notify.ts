@@ -21,7 +21,9 @@ export function notifyEvents(bot: Bot, evs: BotEvent[]): void {
   if (!ev) return;
   if (notifyOk && "Notification" in window) {
     try {
-      const n = new Notification(`${bot.name} ${NOTIFY_ROLES[ev.role]}`, { body: ev.text.slice(0, 160), tag: "bot-" + bot.id, silent: ev.role !== "question" });
+      // A hand-off line (docs §11) is about the other bot: "<Bot> needs you at the laptop" / "<Bot> finished", not Super Bot.
+      const who = ev.source === "handoff" && ev.handoff?.target_name ? ev.handoff.target_name : bot.name;
+      const n = new Notification(`${who} ${NOTIFY_ROLES[ev.role]}`, { body: ev.text.slice(0, 160), tag: "bot-" + bot.id, silent: ev.role !== "question" });
       n.onclick = () => { window.focus(); select(bot.id); n.close(); };
     } catch { /* notifications unavailable */ }
   }

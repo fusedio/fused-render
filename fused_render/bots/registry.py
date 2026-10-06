@@ -29,7 +29,7 @@ SLOW_CALL_MS = 1500
 _lock = threading.Lock()
 _bots: dict = {}           # bot dir -> Bot (keyed by dir so a redirected home never serves a stale Bot)
 _sched = {"thread": None, "stop": None}
-_imsg = {"bridge": None, "stop": None}
+_chan = {"router": None}   # the channels router (bots/channels/router.py); None until start()
 
 
 def _botmod():
@@ -110,7 +110,28 @@ def _scheduler(stop: threading.Event) -> None:
 
 
 def start() -> None:
-    """Start the scheduler and the iMessage bridge (idempotent)."""
+    """Start the channels router, then the scheduler (idempotent). Router first:
+    the scheduler's first pass builds every Bot, and a Bot's __init__ may emit
+    (an interrupted hand-off's result card) that must reach the phone."""
+    with _lock:
+        need_router = _chan["router"] is None
+    if need_router:  # outside the lock: a channel may look bots up as it starts
+        try:
+            from fused_render.bots import channels
+            from fused_render.bots.channels.router import Router
+            import fused_render.bots.registry as me
+            r = Router(me)
+            for ch in channels.available():
+                r.add(ch)
+            with _lock:
+                if _chan["router"] is None:
+                    _chan["router"] = r
+                else:
+                    r = None  # a concurrent start() won
+            if r is not None:
+                r.start()
+        except Exception:  # noqa: BLE001 — no channels is a missing feature, not a broken server
+            logger.warning("channels router not started", exc_info=True)
     with _lock:
         t = _sched["thread"]
         if t is None or not t.is_alive():
@@ -118,32 +139,41 @@ def start() -> None:
             t = threading.Thread(target=_scheduler, args=(stop,), daemon=True, name="bots-routines")
             _sched.update(thread=t, stop=stop)
             t.start()
-        need_bridge = _imsg["bridge"] is None
-    if need_bridge:  # outside the lock: the bridge may look bots up as it starts
-        try:
-            from fused_render.bots import imessage
-            br, stop = imessage.start_thread()
-            with _lock:
-                if _imsg["bridge"] is None:
-                    _imsg.update(bridge=br, stop=stop)
-                else:
-                    stop.set()  # a concurrent start() won
-        except Exception:  # noqa: BLE001 — no iMessage bridge is a missing feature, not a broken server
-            logger.warning("iMessage bridge not started", exc_info=True)
 
 
-def bridge():
-    """The iMessage bridge object (its `.state`), or None when not started."""
-    return _imsg["bridge"]
+def router():
+    """The channels router, or None when start() has not run (tests, a lean `open`)."""
+    return _chan["router"]
+
+
+def on_event(bot, ev: dict) -> None:
+    """bot.emit() -> the router, when there is one. Never raises into a task thread."""
+    r = _chan["router"]
+    if r is None:
+        return
+    try:
+        r.on_event(bot, ev)
+    except Exception:  # noqa: BLE001
+        logger.debug("channels on_event failed", exc_info=True)
+
+
+def channel_states() -> dict | None:
+    r = _chan["router"]
+    if r is None:
+        return None
+    try:
+        return r.states()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def imessage_state():
-    br = _imsg["bridge"]
-    if br is None:
+    """The iMessage channel's state (the old status key; `channels` carries every channel)."""
+    r = _chan["router"]
+    if r is None:
         return None
     try:
-        from fused_render.bots import imessage
-        return imessage.current_state(br.state)
+        return r.state("imessage")
     except Exception:  # noqa: BLE001
         return None
 
@@ -151,11 +181,16 @@ def imessage_state():
 def shutdown() -> None:
     """Stop the threads, then every loaded bot's task and Chrome."""
     with _lock:
-        for slot in (_sched, _imsg):
-            if slot.get("stop") is not None:
-                slot["stop"].set()
+        if _sched.get("stop") is not None:
+            _sched["stop"].set()
+        r, _chan["router"] = _chan["router"], None
+    if r is not None:
+        try:
+            r.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    with _lock:
         _sched.update(thread=None, stop=None)
-        _imsg.update(bridge=None, stop=None)
     for b in loaded():
         try:
             b.shutdown()
@@ -166,12 +201,16 @@ def shutdown() -> None:
 def reset_for_tests() -> None:
     """Forget every Bot and thread handle (tests; never in the app)."""
     with _lock:
-        for slot in (_sched, _imsg):
-            if slot.get("stop") is not None:
-                slot["stop"].set()
+        if _sched.get("stop") is not None:
+            _sched["stop"].set()
         _sched.update(thread=None, stop=None)
-        _imsg.update(bridge=None, stop=None)
+        r, _chan["router"] = _chan["router"], None
         _bots.clear()
+    if r is not None:
+        try:
+            r.stop()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ------------------------------------------------------------ slow log ---

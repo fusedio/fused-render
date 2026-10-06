@@ -187,7 +187,8 @@ def bots_status(cursors: str = Query(default=""), shot_for: str = Query(default=
     # Full-screen polls run 2-3x/s; they skip the usage summary like the liveness probe.
     return {"bots": out, "ts": time.time(),
             "usage": None if quick else _store().usage_summary(),
-            "imessage": None if quick else registry.imessage_state()}
+            "imessage": None if quick else registry.imessage_state(),   # the old key; `channels` carries every channel (§10)
+            "channels": None if quick else registry.channel_states()}
 
 
 @router.post("/api/bots")
@@ -451,6 +452,7 @@ def _settings(bid, body):
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
     if body.get("imessage_handle") is not None:
+        # Meaningful on Super Bot only (the one bot a text reaches, docs §10); kept and ignored on the others.
         b.meta["imessage"] = imessage.norm_handle(body["imessage_handle"])
     if body.get("imessage_to") is not None:
         b.meta["imessage_to"] = str(body["imessage_to"]).strip()

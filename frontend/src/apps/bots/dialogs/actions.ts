@@ -7,7 +7,10 @@ import { askConfirm } from "./ask";
 /** What the bot dialog hands back on OK (OpenBot botDialog's read()). */
 export interface BotDialogValue {
   name: string; model: string; effort: string; instructions: string; memory: string; approval: string; buildAccess: string;
-  encrypt: boolean; profile: string; face: Face; imessage: string; imessageTo: string;
+  encrypt: boolean; profile: string; face: Face;
+  /** The owner's phone handle; the dialog only shows it for Super Bot, the one bot reachable over iMessage (docs §10). */
+  imessage: string;
+  imessageTo: string;
   /** The preset key the bot was made from ("" for a blank bot, and always "" in Settings). */
   preset: string;
   /** "super" for Super Bot (docs §5), else "bot". */
@@ -18,6 +21,10 @@ export interface BotDialogValue {
   trustedApps: string[];
 }
 
+/** The owner handle goes only with Super Bot's settings: the field is hidden for other bots, and sending their old
+ *  value back (or "") would keep or wipe a key the router no longer reads (docs §10). */
+const handle = (v: BotDialogValue): { imessage_handle?: string } => (v.kind === "super" ? { imessage_handle: v.imessage } : {});
+
 /** "+ New bot": create (with the preset, whose playbooks the backend copies), then the iMessage fields, the Chrome
  *  profile and the face; select it and drop focus into the composer. */
 export async function createBot(v: BotDialogValue): Promise<void> {
@@ -25,7 +32,7 @@ export async function createBot(v: BotDialogValue): Promise<void> {
     kind: v.kind || "bot", super_access: v.superAccess }));
   const id = r?.id;
   if (id && (v.imessage || v.imessageTo || v.trustedApps.length)) {
-    await act(() => api.settings(id, { name: v.name, imessage_handle: v.imessage, imessage_to: v.imessageTo, trusted_apps: v.trustedApps }));
+    await act(() => api.settings(id, { name: v.name, ...handle(v), imessage_to: v.imessageTo, trusted_apps: v.trustedApps }));
   }
   if (id && v.profile) await act(() => api.profile(id, v.profile));
   if (id && v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));  // Super Bot's mark is set by the backend
@@ -37,7 +44,7 @@ export async function createBot(v: BotDialogValue): Promise<void> {
 export async function saveSettings(id: string, v: BotDialogValue): Promise<void> {
   if (!v.name) return;
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
-    build_access: v.buildAccess, encrypt: v.encrypt, imessage_handle: v.imessage, imessage_to: v.imessageTo, super_access: v.superAccess,
+    build_access: v.buildAccess, encrypt: v.encrypt, ...handle(v), imessage_to: v.imessageTo, super_access: v.superAccess,
     trusted_apps: v.trustedApps }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));
   if (v.profile) await act(() => api.profile(id, v.profile));

@@ -283,6 +283,24 @@ def _is_home(url: str | None) -> bool:
 # GTK / WebKitGTK (Linux desktop only; never imported at module level)
 # ---------------------------------------------------------------------------
 
+def pick_unix_signal_add(glib, glib_unix_loader):
+    """The `(priority, signum, callback)` function that arms a unix signal on
+    the GLib main loop, picked without needing a real `gi`: `glib_unix_loader`
+    takes no arguments and returns the `GLibUnix` module, raising
+    `ValueError`/`ImportError` the same way `gi.require_version` plus
+    `from gi.repository import GLibUnix` would when that namespace is not
+    installed. `GLibUnix.signal_add` is preferred when it loads, since on a
+    recent GLib (unix_signal_add moved out of `GLib` itself) it is the only
+    one that exists; `glib.unix_signal_add` is the fallback for a GLib old
+    enough to still carry it directly. Returns `None` when neither exists, so
+    the caller can skip installing a SIGTERM handler instead of crashing."""
+    try:
+        glib_unix = glib_unix_loader()
+    except (ValueError, ImportError):
+        return getattr(glib, "unix_signal_add", None)
+    return glib_unix.signal_add
+
+
 def load_toolkit() -> SimpleNamespace:
     """Import GTK3 + WebKit2 4.1 through PyGObject or say exactly why not."""
     try:
@@ -305,7 +323,15 @@ def load_toolkit() -> SimpleNamespace:
     ok = result[0] if isinstance(result, tuple) else bool(result)
     if not ok or Gdk.Display.get_default() is None:
         raise ToolkitUnavailable("no graphical display available (DISPLAY/WAYLAND_DISPLAY unset?)")
-    return SimpleNamespace(Gtk=Gtk, Gdk=Gdk, GLib=GLib, WebKit2=WebKit2)
+
+    def _load_glib_unix():
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix  # noqa: PLC0415
+        return GLibUnix
+
+    unix_signal_add = pick_unix_signal_add(GLib, _load_glib_unix)
+    return SimpleNamespace(Gtk=Gtk, Gdk=Gdk, GLib=GLib, WebKit2=WebKit2,
+                           unix_signal_add=unix_signal_add)
 
 
 class _Win:
@@ -600,11 +626,18 @@ def main(argv: list[str] | None = None) -> int:
     # SIGTERM is how the supervisor's Job.close() stops this process after
     # (or instead of, if the `quit` IPC command never got through) asking
     # nicely; without a handler it would drop whatever `quit` didn't already
-    # save. unix_signal_add runs the callback on the GLib main loop itself
-    # (a plain `signal.signal` handler would starve behind the C poll()),
-    # so `host.quit()` needs no run_on_main marshalling here.
-    tk.GLib.unix_signal_add(tk.GLib.PRIORITY_DEFAULT, signal.SIGTERM,
-                            lambda: _on_sigterm(holder["host"]))
+    # save. `tk.unix_signal_add` (resolved in `load_toolkit`, from whichever
+    # of `GLibUnix.signal_add` / `GLib.unix_signal_add` this system's GLib
+    # actually has) runs the callback on the GLib main loop itself (a plain
+    # `signal.signal` handler would starve behind the C poll()), so
+    # `host.quit()` needs no run_on_main marshalling here. Neither existing
+    # is only a nicety lost: the supervisor still stops this process over the
+    # `quit` IPC command, or failing that a bare SIGTERM with no handler.
+    if tk.unix_signal_add is not None:
+        tk.unix_signal_add(tk.GLib.PRIORITY_DEFAULT, signal.SIGTERM,
+                           lambda: _on_sigterm(holder["host"]))
+    else:
+        log("no unix_signal_add available on this GLib; SIGTERM will not save open windows first")
     try:
         tk.Gtk.main()
     finally:

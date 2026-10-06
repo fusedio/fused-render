@@ -572,3 +572,11 @@ def test_a_stranded_helper_child_is_not_mistaken_for_the_app(monkeypatch, tmp_pa
     assert len(opens) > 1, opens
     assert any(line.startswith("-n -a ") for line in opens), opens
     assert "still booting" not in "\n".join(log)
+
+
+def test_the_relauncher_polls_the_dying_pid_at_most_every_100ms():
+    # Each tick is dead time between the old windows vanishing and the new ones
+    # appearing.
+    assert 0 < app_mod.RELAUNCH_POLL_S <= 0.1
+    script = _script_for(4242)
+    assert f"kill -0 4242 2>/dev/null; do /bin/sleep {app_mod.RELAUNCH_POLL_S}" in script

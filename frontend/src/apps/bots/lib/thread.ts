@@ -6,8 +6,13 @@ import { lastSeqOf } from "./derive";
 /** Silence that starts a new "session" and earns a centered timestamp (seconds). */
 export const SESSION_GAP_S = 15 * 60;
 
-/** System notes surface as toasts, never in the thread (an empty .ev wrapper keeps the row count aligned). */
-export const isNoise = (e: BotEvent): boolean => e.role === "system";
+/** A hand-off line (docs §11): Super Bot's "Asked <Bot> …" card, or the target's "Sent to Super Bot: …". Shown in the
+ *  thread though some are `system` rows, and never an ask Super Bot itself waits on. */
+export const isHandoff = (e: BotEvent): boolean => e.source === "handoff";
+
+/** Rows that render nothing of their own: system lines (they surface as toasts; an empty .ev wrapper keeps the row
+ *  count aligned), and delivery rows (D12), which the thread joins to the bubble they refer to. Hand-off lines show. */
+export const isNoise = (e: BotEvent): boolean => (e.role === "system" && !isHandoff(e)) || e.role === "delivery";
 
 /** A `.day` divider goes above `e`: the first event, or one after more than SESSION_GAP_S of silence. `prev` is the raw previous event (system notes included). */
 export const sessionBreak = (prev: BotEvent | undefined, e: BotEvent): boolean => !prev || e.ts - prev.ts > SESSION_GAP_S;
@@ -30,8 +35,10 @@ export const answerTo = (evs: BotEvent[], seq: number): BotEvent | undefined => 
  * status to running before the engine has read the message; the card must not settle for that poll), except on an
  * idle or errored bot, where a leftover seq means a task that ended without its reset.
  * Without `waiting_on` (older backend), the live card is the last ask nobody has answered yet.
+ * Hand-off questions ("<Bot> needs you at the laptop") are the other bot's ask, answered in its own thread: never live here.
  */
-export function liveCards(evs: BotEvent[], b: Pick<Bot, "status" | "pending_offer" | "waiting_on">): Set<number> {
+export function liveCards(all: BotEvent[], b: Pick<Bot, "status" | "pending_offer" | "waiting_on">): Set<number> {
+  const evs = all.some(isHandoff) ? all.filter((e) => !isHandoff(e)) : all;
   if (typeof b.waiting_on === "number" && b.status !== "idle" && b.status !== "error") {
     const w = b.waiting_on;
     return new Set(evs.some((e) => e.seq === w && (e.role === "approval" || e.role === "question")) ? [w] : []);
