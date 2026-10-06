@@ -5,8 +5,7 @@ Ported from OpenIndex's `runner.py` (`_scan_dir_once`, `_scan_subtree`,
 `_scan_dirs_threaded`, `_worker`). Two changes beyond de-globalization:
 
   * every prune decision also consults a `MountGuard`, so the crawler cannot
-    descend into an rclone mount even if the ignore list is emptied — a kernel
-    scandir/stat there can wedge the mount permanently;
+    descend into a fused-render home tree even if the ignore list is emptied;
   * the run's configuration travels in `spec.json` rather than being
     re-derived from module state in each pool child.
 
@@ -81,7 +80,7 @@ def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None):
     detection).
 
     `root_dev` confines the walk to the scan root's own filesystem. A mount —
-    rclone, iCloud, SMB, an external disk — is always its own device, so this
+    iCloud, SMB, an external disk — is always its own device, so this
     one comparison refuses every mount, including the ones no ignore rule or
     guard has been told about. It costs nothing: the `stat` it reads is the
     one this function already takes, and the check happens at the mount's own
@@ -181,7 +180,7 @@ def _child_init(run_dir, no_cache):
     with open(os.path.join(run_dir, "spec.json")) as f:
         spec = json.load(f)
     cfg = IndexConfig.from_dict(spec.get("config") or {})
-    guard = MountGuard(mounts_dir=spec.get("mounts_dir"))
+    guard = MountGuard()
     cache = {} if no_cache else load_dir_cache(cfg, spec["root"], pq)
     _CHILD.update(
         pool=ThreadPoolExecutor(max_workers=16),
@@ -332,7 +331,7 @@ def run_scan(run_dir: str) -> None:
     with open(os.path.join(run_dir, "spec.json")) as f:
         spec = json.load(f)
     cfg = IndexConfig.from_dict(spec.get("config") or {})
-    guard = MountGuard(mounts_dir=spec.get("mounts_dir"))
+    guard = MountGuard()
     rules = cfg.rules
     root = spec["root"]
     # The filesystem the walk stays on (scan_dir_once). Decided here, before

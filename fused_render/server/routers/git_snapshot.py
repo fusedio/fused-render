@@ -36,7 +36,7 @@ request to serve as complete. Oldest-mtime trees are garbage-collected past a
 cap on every miss.
 
 FOUR CLEAN ERRORS, never a traceback (mirroring `git_show.py`'s contract):
-  400  a relative `path`, a non-hex `sha`, a mount-backed path
+  400  a relative `path`, a non-hex `sha`
   404  no app folder encloses `path`; the sha is unknown; the app folder did
        not exist at that revision
   502  git (or tar) is missing, hung, or failed for a reason of its own
@@ -111,7 +111,6 @@ from starlette.concurrency import run_in_threadpool
 
 from fused_render.app_listing import app_entry, enclosing_app_dir
 from fused_render.server.common import _error
-from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import storage as shell_storage
 
 logger = logging.getLogger(__name__)
@@ -219,7 +218,7 @@ def _popen_kwargs(
 
 def _cache_root() -> str:
     """`~/.fused-render/app-versions` — resolved per call, not at import: the
-    same reason `mount.py::_is_under_snapshot_root` resolves it per call.
+    same reason `fs_stat.py::_is_under_snapshot_root` resolves it per call.
     home_dir() depends on FUSED_RENDER_HOME and the branch ref, and a frozen
     value would write into a directory the server is not using."""
     return os.path.join(shell_storage.home_dir(), "app-versions")
@@ -404,11 +403,6 @@ def _resolve_app_dir(path: str) -> tuple[str, str]:
     """
     if not path or not os.path.isabs(path):
         raise _Refused("'path' must be an absolute filesystem path")
-    if shell_mounts.is_mount_backed(path):
-        # Refused before any filesystem walk, like git_show.py: `git archive`
-        # over an rclone-NFS mount walks the remote tree, the known
-        # mount-wedging pattern.
-        raise _Refused("git is not available on remote mounts")
 
     cwd = path if os.path.isdir(path) else os.path.dirname(path)
     while cwd and not os.path.isdir(cwd):

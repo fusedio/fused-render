@@ -144,15 +144,12 @@ class _IgnoreRoots:
       cascades the `.gitignore` files between it and the app.
     * a nested `.git` (or, with no repo in scope, a nested `.gitignore`) met
       during the walk re-roots below it, as the explorer walk does.
-    * mount-backed folder, no git, nothing found -> no filtering (today's
-      behaviour). git MISSING fails open too; git BREAKING mid-walk does not
+    * no git, nothing found -> no filtering. git MISSING fails open too; git BREAKING mid-walk does not
       (see `ignored`) — a half-filtered artifact is worse than no export.
     """
 
     def __init__(self, app_dir: str):
         from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
-        from fused_render.shell import mounts as shell_mounts
-
         self._Oracle = _IgnoreOracle
         self._oracles: dict[str, object] = {}
         # dirpath -> (oracle root or None, inside a real repo). Resolved for
@@ -164,20 +161,19 @@ class _IgnoreRoots:
         self._by_dir: dict[str, tuple[str | None, bool]] = {}
         root: str | None = None
         in_repo = False
-        if not shell_mounts.is_mount_backed(app_dir):
-            top = _repo_toplevel(app_dir)
-            if top is not None:
-                root, in_repo = top, True
-            else:
-                d = app_dir
-                while True:
-                    if os.path.isfile(os.path.join(d, ".gitignore")):
-                        root = d
-                        break
-                    parent = os.path.dirname(d)
-                    if parent == d:
-                        break
-                    d = parent
+        top = _repo_toplevel(app_dir)
+        if top is not None:
+            root, in_repo = top, True
+        else:
+            d = app_dir
+            while True:
+                if os.path.isfile(os.path.join(d, ".gitignore")):
+                    root = d
+                    break
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
         self._by_dir[app_dir] = (root, in_repo)
 
     def enter(self, dirpath: str, names: set[str]) -> None:

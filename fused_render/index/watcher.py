@@ -80,7 +80,7 @@ RUST_TIMEOUT_MS = 1000
 MAX_VANISHED_REPLANS = 3
 
 
-def make_dropped(rules, mounts_dir: str, index_dir: str | None = None):
+def make_dropped(rules, index_dir: str | None = None):
     """A `path -> bool` filter: True when the watcher must never act on
     `path`. Four structural refusals — the real analogue is not
     `index_touch._real_blocked` (that one filters a scan ROOT, chosen by
@@ -92,10 +92,9 @@ def make_dropped(rules, mounts_dir: str, index_dir: str | None = None):
       * `ignored_for_index(rules, path, tree=True)` — the ignore list,
         checked tree-wise because a watched path arrives with no vetted
         ancestors (same reason the FSEvents journal gate uses `tree=True`).
-        Every branch's mounts folder is already in `default_ignore()`.
-      * `MountGuard(mounts_dir=...).blocks(path)` — the structural refusal
+      * `MountGuard().blocks(path)` — the structural refusal
         that survives a user emptying the ignore list; it blocks the WHOLE
-        fused-render home tree, not only the mounts subdirectory — which is
+        fused-render home tree — which is
         what covers the index store's own directory (`cfg.dir`) WHEN it
         sits at its default location, but `cfg.dir` is a settable config
         key, not a fixed one.
@@ -117,7 +116,7 @@ def make_dropped(rules, mounts_dir: str, index_dir: str | None = None):
 
     Returning True for any means: this path or a change under it must never
     cause a flush. That is load-bearing, not an optimization."""
-    guard = MountGuard(mounts_dir=mounts_dir)
+    guard = MountGuard()
     idx = norm(str(index_dir or ""))
 
     def dropped(path: str) -> bool:
@@ -154,11 +153,11 @@ class Pruner:
     the root's device, never a leaf dir, and never anything `make_dropped`
     refuses (which adds the index's own directory)."""
 
-    def __init__(self, root: str, rules, mounts_dir: str,
+    def __init__(self, root: str, rules,
                  index_dir: str | None = None):
         self.rules = rules
-        self.guard = MountGuard(mounts_dir=mounts_dir)
-        self.dropped = make_dropped(rules, mounts_dir, index_dir=index_dir)
+        self.guard = MountGuard()
+        self.dropped = make_dropped(rules, index_dir=index_dir)
         self.root_dev = os.stat(root).st_dev
 
     def rule_kept(self, path: str) -> bool:
@@ -431,7 +430,6 @@ def main(argv=None) -> int:
     root = spec["root"]
     try:
         pruner = Pruner(root, IgnoreRules(spec.get("ignore") or []),
-                        spec.get("mounts_dir") or "",
                         index_dir=spec.get("index_dir"))
     except OSError as e:
         out.send(error=f"{type(e).__name__}: {e}")

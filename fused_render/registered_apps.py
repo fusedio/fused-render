@@ -67,8 +67,7 @@ def _in_or_over_workspace(folder: str) -> bool:
     can't poison the listing either way.
 
     PURE STRING WORK on abspaths, deliberately — `read_entries` runs this per
-    entry with no MountGuard in front, and a resolve is a syscall a wedged
-    mount can block on. The symlink-alias hole that leaves (a link whose
+    entry with no MountGuard in front, and a resolve is a syscall. The symlink-alias hole that leaves (a link whose
     TARGET is the workspace) is closed by `_resolves_into_workspace`, which
     the two callers that have already passed the guard run as well."""
     from fused_render.shell.seed import fused_dir
@@ -145,7 +144,7 @@ def write_entries(entries: list[dict]) -> None:
 def record_open(path: str) -> bool:
     """Register `path` as an external app (or refresh its `openedAt` if it
     already is one). False when the path isn't a registrable app folder —
-    relative, inside the workspace, behind a wedged mount, unreadable, gone, or
+    relative, inside the workspace, unreadable, gone, or
     page-less — the same benign no-op posture as the recents endpoint.
 
     Server-authoritative on purpose: the button's client-side gate ("this
@@ -160,9 +159,8 @@ def record_open(path: str) -> bool:
         # An opened .fused's extract dir: its hub identity is the .fused FILE
         # (exported_apps.record_open, fed by POST /api/appfile/open — D396).
         return False
-    # BEFORE any syscall on the candidate, same ordering as the walk: a stat
-    # under a wedged rclone mount blocks the serving thread, and the guard
-    # answers from mount records with pure string work.
+    # BEFORE any syscall on the candidate, same ordering as the walk: the guard
+    # answers with pure string work, so it runs before any stat.
     if MountGuard().blocks(path):
         return False
     if _resolves_into_workspace(path):
@@ -184,7 +182,7 @@ def registered_apps(limit: int | None = None, *,
     """Registry entries as app listing dicts (tag = ``linked``), shaped by the
     same `app_listing.app_dict` contract as workspace apps, each carrying its
     own `opened_at` (epoch seconds, from the entry's `openedAt`). An entry
-    whose folder is missing, unreadable, page-less, or behind a wedged mount is
+    whose folder is missing, unreadable, or page-less is
     skipped, not deleted — read-only, the folder may come back. ``limit``
     stops after that many valid entries, preserving the registry's newest-first
     order for Home without hydrating the rest. With ``opened_only``, a corrupt

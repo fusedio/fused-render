@@ -148,8 +148,7 @@ def _query_read_concurrency() -> asyncio.Semaphore:
 # `asyncio.to_thread` dispatches onto the process-wide DEFAULT executor, which
 # every other `asyncio.to_thread` caller in the app shares. `asyncio.to_thread`
 # cannot kill the thread it starts — nothing in Python can — so a worker that
-# parks on an uninterruptible filesystem syscall (a wedged NFS/rclone mount,
-# this repo's known failure class) is abandoned, not stopped, the moment its
+# parks on an uninterruptible filesystem syscall (a wedged network mount) is abandoned, not stopped, the moment its
 # caller stops waiting (item 2 below). An abandoned thread sitting in the
 # DEFAULT executor would tie up a slot every unrelated `asyncio.to_thread`
 # caller in the app depends on. Routing index reads through their OWN pool
@@ -549,7 +548,7 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     is carried out on `out["blocked_query_path"]` so `_rank_reason` can still
     answer `"mount"` for a typed path into a mount even though the walk never
     reached it."""
-    guard = MountGuard(mounts_dir=runner._mounts_dir())
+    guard = MountGuard()
     blocked_out: list = []
     resolved = resolve_query(root, q, guard=guard, blocked_out=blocked_out,
                              token=token)
@@ -574,8 +573,7 @@ def _rank_worker(cfg: IndexConfig, root: str, q: str, limit: int,
     `_rank_reason` used to run directly on the event loop, in
     `api_index_rank`, AFTER the worker thread had already finished and the
     lane semaphore had already been released — so its own `MountGuard(...)
-    .blocks_root(root)` call, whose docstring already warns that a stat
-    under a wedged rclone mount blocks the thread indefinitely, could stall
+    .blocks_root(root)` call, which does a realpath syscall, could stall
     the WHOLE server (every request sharing the loop), not merely this one.
     Folding it in here costs no extra thread hop — this function already
     runs on a worker thread — and keeps the exact reason values/precedence
@@ -710,9 +708,8 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict,
         if token is not None:
             token.check()
         # BEFORE any kernel syscall of ours on the caller's path: blocks_root
-        # is string work against the mount records plus one realpath, where a
-        # stat under a wedged rclone mount blocks this thread indefinitely.
-        if MountGuard(mounts_dir=runner._mounts_dir()).blocks_root(root):
+        # is string work plus one realpath.
+        if MountGuard().blocks_root(root):
             return "mount"
         if out.get("reason") == "package":
             return "package"
@@ -768,12 +765,9 @@ def run_startup_warm() -> None:
         # could only answer `covered: false` — after aiming kernel I/O at a
         # mount path, which is the one thing this codebase never does
         # speculatively. Exactly the check `runner.start` makes, and what it
-        # guarantees is what matters here: a path INSIDE the mounts dir matches
-        # on `abspath` alone and is refused before any syscall touches it. It
-        # is not free for everyone else — a local home falls through to
-        # `is_mount_backed`, which realpaths the mounts dir and the path — but
-        # those two realpaths are off the mount by construction.
-        if MountGuard(mounts_dir=runner._mounts_dir()).blocks_root(root):
+        # guarantees is what matters here: a path INSIDE a fused-render home tree is
+        # refused before any syscall touches it (one realpath for the rest).
+        if MountGuard().blocks_root(root):
             return
         cfg = load_config()
         out = index_search(cfg, root)
@@ -850,8 +844,7 @@ INDEX_JOB_IDLE_S = 10.0
 def _display_root(root: str) -> str:
     """`root` the way a user would type it, not the canonical absolute form
     `runner.canonical_root` stores it as. No shared "~/..." helper exists
-    anywhere in this repo for this (checked `shell/pathops.py`,
-    `envinstall.py`'s `projectenv.display_name`, and the frontend's
+    anywhere in this repo for this (checked `envinstall.py`'s `projectenv.display_name`, and the frontend's
     `platform/lib` — none of them shorten a path against home), so this is
     the smallest version that does it, scoped to this one call site.
 
@@ -1153,8 +1146,8 @@ INDEX_JOB_BRIDGE_THREAD_NAME = "index-job-bridge"
 
 
 def start_index_job_bridge() -> None:
-    """Start the background tick loop. Idempotent, same pattern as
-    `shell.mounts.health.start_health_monitor` — safe to call once at server
+    """Start the background tick loop. Idempotent, same pattern as the other
+    singleton starts — safe to call once at server
     startup; a redundant call while the thread is alive is a no-op."""
     global _index_job_thread
     with _index_job_started:
@@ -1524,14 +1517,14 @@ def api_index_scan_folder(body: dict = Body(default={}),
         # as `refused` does that asking again will not change the answer.
         return {"ok": True, "started": False, "why": blocked,
                 "run_id": None, "root": root}
-    # THE MOUNT GUARD FIRST, and the order is the point rather than a
-    # preference: `blocks` is pure string work against the mount records,
-    # while `foreign_device` stats the path — and a stat under a wedged rclone
-    # mount blocks this thread indefinitely, which is the failure mode every
+    # THE HOME GUARD FIRST, and the order is the point rather than a
+    # preference: `blocks` is pure string work, while `foreign_device` stats
+    # the path — and a stat under a wedged network mount blocks this thread
+    # indefinitely, which is the failure mode every
     # other entry into the scanner is ordered around (`runner.start`,
     # `index_touch._real_blocked`). Answering "refused" a moment later is
     # worth nothing if getting there hangs the request.
-    if MountGuard(mounts_dir=runner._mounts_dir()).blocks(root):
+    if MountGuard().blocks(root):
         logger.info("index: not scanning %s on demand (mount-backed)", root)
         return {"ok": True, "started": False, "why": "refused",
                 "error": f"{root} is mount-backed; indexing remote mounts is "

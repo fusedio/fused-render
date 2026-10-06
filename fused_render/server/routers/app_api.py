@@ -29,7 +29,6 @@ from fastapi import APIRouter
 from fused_render.core_templates import PACKAGE_TEMPLATES_DIR
 from fused_render.server import walk as _server_walk
 from fused_render.server.common import _error
-from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
 
 router = APIRouter()
@@ -135,15 +134,6 @@ def api_app_py(path: str):
     root = path.replace("\\", "/").rstrip("/")
     if not root:
         return _error("path is required", status=400)
-    # No kernel stat under a mount: os.path.isdir there is the GETATTR that
-    # lists the whole parent prefix and can wedge the mount (/api/fs/walk has
-    # the same guard). _walk_bfs lists mount dirs via the rc API and yields
-    # nothing for a non-directory root, so the check is local-only.
-    if not shell_mounts.is_mount_backed(root) and not os.path.isdir(root):
+    if not os.path.isdir(root):
         return _error(f"not a directory: {path}", status=404)
-    try:
-        return describe_folder(root)
-    except shell_mounts.RcListError as e:
-        # A mount-backed app folder whose listing failed (dead mount, timeout):
-        # the same structured answer /api/fs/walk gives, not a bare 500.
-        return _server_walk._mount_list_error_response(root, e)
+    return describe_folder(root)

@@ -1111,7 +1111,7 @@ def _pid_alive(pid: int) -> bool:
     # the pid is not a child of ours AFTER the reap has already happened. `pid`
     # comes out of `progress.json`, a not-`done` record survives a server crash
     # mid-install, and that pid can since have been recycled onto a child of the
-    # CURRENT server — an rclone rcd, a template tile daemon, a pyramid build
+    # CURRENT server — a template tile daemon, a pyramid build
     # worker. Reaping one of those makes its owner's `poll()`/`wait()` fail with
     # ECHILD, which subprocess reports as **exit status 0**: a crashed or
     # still-needed child read as "finished successfully", and every one of those
@@ -1524,11 +1524,9 @@ def _claim_is_stale(key: str, claim: str) -> bool:
 def uv_bin() -> str | None:
     """Path to the uv binary the venv builder should use, or None.
 
-    Same resolution order as `shell.mounts.rclone_bin`, and for the same reason —
-    a packaged build must not depend on the user's PATH:
+    A packaged build must not depend on the user's PATH, so the resolution order is:
 
-      1. FUSED_RENDER_UV_BIN, if it points at a real file (the Linux/Windows
-         supervisors already set an equivalent for rclone);
+      1. FUSED_RENDER_UV_BIN, if it points at a real file;
       2. the interpreter's OWN directory — where the Linux AppImage
          (`usr/python/bin/uv`, build_linux_appimage.sh:88) and the Windows
          installer (`<PythonRoot>/uv.exe`, .ps1:185) put it;
@@ -1549,7 +1547,7 @@ def uv_bin() -> str | None:
     uv on the worker's PATH the install loader cannot build anything on macOS.
 
     Step 2 is a plain path probe and deliberately does NOT gate on
-    `sys.frozen == "macosx_app"` the way `shell.mounts.rclone_bin` does. py2app's
+    `sys.frozen == "macosx_app"`. py2app's
     boot script is what sets `sys.frozen`, so anything that reaches this code
     without going through the app launcher — a subprocess, a smoke test, a future
     entry point — would silently miss the bundled uv and fall back to a `venv`

@@ -10,7 +10,7 @@ to have the app running (`schedule_wake`).
 **Why the app owns the send rather than cron/launchd owning it.** An external
 scheduler can run `claude -p` perfectly well — and would run it in a different
 world. `supervisor/paths.py:child_environment` injects some twenty variables
-into every child the app spawns (state dir, cache dirs, the bundled rclone and
+into every child the app spawns (state dir, cache dirs, the bundled
 uv, `TMPDIR`, and the `CLAUDE_CONFIG_DIR` passthrough that a relocation once
 broke), and `_plugin_argv` hands the session fused-render's skills only when
 that env contract is present. A crontab line reproduces none of it, so the
@@ -210,7 +210,7 @@ PERMISSION_MODES = ("prompt", "auto", "acceptEdits", "plan")
 #     is parked on a permission card nobody has answered.
 #   the EVENT LOG below answers "what happened while I was away": an
 #     append-only, monotonically-ided log the shell polls and turns into toasts,
-#     exactly the shape the mount-health monitor established.
+#     a bounded, polled log.
 #
 # Both are best-effort and neither is authoritative: the store is the record.
 
@@ -219,7 +219,7 @@ PERMISSION_MODES = ("prompt", "auto", "acceptEdits", "plan")
 # re-report after a server restart re-attaches to the same row.
 _JOB_PREFIX = "sys:schedule:"
 
-# Bounded like the mount-health log: this is a running narration for the UI to
+# Bounded: this is a running narration for the UI to
 # toast, not history. The store holds every entry's outcome durably.
 _EVENTS_MAX = 100
 
@@ -250,11 +250,10 @@ _events: list[dict] = []
 _event_seq = 0
 # The highest event id a client has confirmed it narrated. **Server-side on
 # purpose**, and the correction to the first shape of this feature, which copied
-# the mount-health poller's "first successful poll is a silent baseline" rule.
+# a "first successful poll is a silent baseline" rule.
 #
-# That rule is right for mounts and exactly wrong here. Mount health emits
-# nothing at startup by design (a mount already broken at boot is left alone),
-# so its baseline only ever swallows a previous session's log. THIS log's most
+# That rule is exactly wrong here: a baseline only ever swallows a previous
+# session's log, whereas THIS log's most
 # important events — the `missed` verdicts from the catch-up pass — are emitted
 # by the loop's first tick, which lands well before the shell has loaded. A
 # client-side baseline therefore marked them seen and never said a word, which is
@@ -1627,10 +1626,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
     remove a directory something else had already raced into.
 
     Raises ValueError for everything a caller can get wrong (the router maps it
-    to a 400). The one validation deliberately NOT here is "is this path
-    mount-backed" — that needs the mounts registry, which lives above this
-    module; the router refuses those before calling, exactly as the claude
-    template's own gate does."""
+    to a 400). The router does any path-level gating before calling."""
     if not isinstance(message, str) or not message.strip():
         raise ValueError("message: cannot be empty")
     if not isinstance(target, str) or not target.strip():

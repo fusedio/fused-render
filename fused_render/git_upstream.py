@@ -29,7 +29,7 @@ route to it, and it is exec'd standalone with no `fused_render` import
 allowed (SPEC PY-15), so a server-side caller cannot import it either. This
 is the same shape `server/routers/git_snapshot.py` and `server/routers/
 git_repos.py` already use for the same reason: the non-interactive git
-environment, the repo-root resolution, and the mount refusal below are
+environment and the repo-root resolution below are
 DUPLICATED from `ops.py`/`log.py` on purpose, each noting its twin. Keep them
 in step.
 
@@ -57,10 +57,6 @@ push, an auth failure. Those are recorded as one standing failure per repo
 (`sync_failures`, served by GET /api/git-upstream) until dismissed or a
 later sync succeeds. It only ever fast-forwards: never merge, rebase or force.
 
-MOUNT-BACKED REPOS ARE REFUSED OUTRIGHT, before any subprocess — the same
-rule `ops.py`'s `_refuse_mounts` (GT-4 / MD-11) enforces for the same
-reason: a background fetch across an rclone-NFS mount is exactly the wedge
-that refusal exists to prevent.
 """
 import contextlib
 import logging
@@ -70,8 +66,6 @@ import subprocess
 import sys
 import threading
 import time
-
-from fused_render.shell import mounts as shell_mounts
 
 logger = logging.getLogger(__name__)
 
@@ -170,12 +164,8 @@ def _ok(result):
 
 def repo_root(path):
     """The work-tree root containing `path`, or None — not inside a repo, git
-    unavailable, or mount-backed (refused before any subprocess: the pattern
-    `ops.py:_refuse_mounts` enforces, for the reason the module docstring
-    gives)."""
+    unavailable."""
     if not path:
-        return None
-    if shell_mounts.is_mount_backed(path):
         return None
     cwd = path if os.path.isdir(path) else os.path.dirname(path)
     if not cwd or not os.path.isdir(cwd):
@@ -372,8 +362,7 @@ def _operation_in_flight(root):
 
 def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     """Every check both mutations need before touching anything: the repo
-    still exists, isn't mount-backed (GT-4 / MD-11 — the same wedge
-    `ops.py:_refuse_mounts` exists to prevent), isn't already mid an
+    still exists, isn't already mid an
     operation left in flight — a rebase may be in progress for any reason,
     not only one this module started — has a clean working tree, an
     attached branch (unless `allow_detached`), and a
@@ -394,9 +383,6 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     refusal for it — only `switch_repo` passes `allow_detached=True`."""
     if not os.path.isdir(root):
         return None, None, _refuse("missing", f"{root} no longer exists.")
-    if shell_mounts.is_mount_backed(root):
-        return None, None, _refuse(
-            "mount", "Git operations are not available on remote mounts.")
     operation = _operation_in_flight(root)
     if operation is not None:
         # Checked BEFORE the dirty check on purpose: a mid-rebase tree
@@ -523,7 +509,7 @@ _BUSY_REFUSAL = (
 def update_repo(root):
     """--ff-only pull of `origin/<default>` — the card's primary action, on
     the default branch. Refuses on a dirty tree, a detached HEAD, a missing
-    or unresolvable remote, or a mount-backed repo; a non-fast-forward pull
+    or unresolvable remote; a non-fast-forward pull
     (should not happen for the default branch under normal use, but the tree
     may have moved between the check and the click) is reported in git's own
     words, exactly like ops.py's `_pull`."""
@@ -852,7 +838,7 @@ def _sync_locked(root, *, action, push):
     whenever the fetch succeeded, so the caller can refresh `_state`.
 
     Never raises for a git problem; the background callers wrap it anyway."""
-    if not os.path.isdir(root) or shell_mounts.is_mount_backed(root):
+    if not os.path.isdir(root):
         return _skipped("unavailable")
     if not _ok(_run(root, "remote", "get-url", "origin")):
         return _skipped("no-remote")
@@ -1065,8 +1051,7 @@ def _background_check(path, runner=None):
     Splitting `repo_root` resolution OUT of `note_app_opened` and into here
     is what makes the module docstring's "the check always returns
     immediately; the real work runs off the request thread" true: resolving
-    a path to a repo root is itself a git subprocess (plus a mount-guard
-    check), and running it synchronously in `note_app_opened` — as an
+    a path to a repo root is itself a git subprocess, and running it synchronously in `note_app_opened` — as an
     earlier version of this function did — meant EVERY non-preview
     `/render` of an app paid that spawn on the request thread, whether or
     not the app was even in a git repo."""

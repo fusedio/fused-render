@@ -129,20 +129,10 @@ def ensure(app_dir: str) -> bool:
     were carried over (`_after_move`); a copy's divergence is left for the app
     to see (module docstring). Otherwise only a missing file is written.
 
-    Refuses a mount-backed folder outright. A remote mount is not an app's
-    private disk, `makedirs` on one is a network round trip on the render path,
-    and a recursive-walk-shaped access pattern against a wedged mount is how
-    this codebase has repeatedly killed the mount itself. The prefix check is
-    pure string work, so the common local case pays nothing for it.
     """
     try:
         if not os.path.isdir(app_dir):
             logger.debug("ensure .fused skipped: %s is not a directory", app_dir)
-            return False
-        from fused_render.shell import mounts as shell_mounts
-
-        if shell_mounts.is_mount_backed(app_dir):
-            logger.debug("ensure .fused skipped: %s is mount-backed", app_dir)
             return False
         os.makedirs(data_dir(app_dir), exist_ok=True)
         os.makedirs(cache_dir(app_dir), exist_ok=True)

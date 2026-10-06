@@ -476,8 +476,7 @@ BAD_ANSWER = ("The answer could not be matched to the question that was asked, "
 def _claude_bin() -> str:
     """Path to the claude executable to run.
 
-    FUSED_RENDER_CLAUDE_BIN (an explicit override, mirroring
-    FUSED_RENDER_RCLONE_BIN) beats PATH, which beats the platform's known
+    FUSED_RENDER_CLAUDE_BIN (an explicit override) beats PATH, which beats the platform's known
     install locations. A stale override that isn't a file is ignored rather
     than allowed to shadow a real install."""
     override = os.environ.get("FUSED_RENDER_CLAUDE_BIN")
@@ -6066,31 +6065,16 @@ def _snapshots(file: str, enrich: bool, deltas: bool) -> dict:
 def _snap_target(file: str) -> str:
     """Empty when this panel may touch `file`, else the sentence saying why not.
 
-    One gate for all three actions, cheapest and most dangerous first, so a
+    One gate for all three actions, cheapest first, so a
     hand-written call cannot reach a target the panel does not offer (MD-11):
 
       * no target at all;
-      * a MOUNT-BACKED path. This runs BEFORE any stat, deliberately: the bytes
-        under the mounts dir come from a remote over FUSE and an ordinary kernel
-        stat on a wedged mount hangs the worker — the very reason
-        `condition.py` refuses to offer this template there at all. `appenv`
-        unreachable means we cannot tell, which reads as refuse (CT-12), and it
-        can only happen for a copy of this folder taken without its `shared/`
-        sibling;
       * a DIRECTORY. The store keys on one absolute FILE path
         (`sha256(abspath)[:16]@vN`), so a folder has no checkpoint chain to
         show, plan against, or write back.
     """
     if not file:
         return "missing target file (no _file param?)"
-    try:
-        from appenv import is_mount_backed
-    except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
-        return ("cannot tell whether this path is on a remote mount, so "
-                "file history is not offered here")
-    if is_mount_backed(file):
-        return ("this file is on a remote mount, where file history is not "
-                "offered")
     if os.path.isdir(file):
         return "file history is per-file; a folder has no checkpoints"
     return ""

@@ -277,11 +277,10 @@ def _watcher_argv(root: str) -> list:
     process needs to prune the watch and filter its events the same way
     `WatchLoop.dropped` does."""
     from fused_render.index.config import load_config
-    from fused_render.index.runner import _mounts_dir
 
     cfg = load_config()
     spec = {"root": root, "ignore": list(cfg.rules.patterns),
-            "mounts_dir": _mounts_dir(), "index_dir": cfg.dir}
+            "index_dir": cfg.dir}
     return [sys.executable, "-m", WATCHER_MODULE, json.dumps(spec)]
 
 
@@ -396,7 +395,7 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
     return WatchLoop(
         root,
         open_source=lambda r: _real_open_source(r, stop_event),
-        dropped=make_dropped(load_config().rules, runner._mounts_dir(),
+        dropped=make_dropped(load_config().rules,
                               index_dir=load_config().dir),
         # `WatchLoop` calls `forward(folders)` (or `forward(folders,
         # hinted=False)` for the burst-overflow, error-recovery and
@@ -429,8 +428,7 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
 def start() -> None:
     """Start one watcher thread per configured root. Idempotent — a second
     call while already running is a no-op, the same convention every other
-    singleton start in this codebase follows (e.g. `shell_mounts.
-    start_health_monitor`). Never starts anything a test can see: tests
+    singleton start in this codebase follows (e.g. `start_index_job_bridge`). Never starts anything a test can see: tests
     build apps without running lifespan, so this is only ever called from
     `create_app`'s startup handler.
 

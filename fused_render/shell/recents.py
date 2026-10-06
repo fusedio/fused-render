@@ -19,7 +19,7 @@ verbatim including the query string — same "URL is the whole state" posture as
 bookmarks (D20). `collapsed` lives in the data file itself, matching D44's
 persisted folder collapse. Entries whose file has since been deleted are
 hidden from the GET response but never deleted from disk — the file may come
-back (a mount reconnect, an undeleted trash item).
+back (an undeleted trash item).
 """
 import asyncio
 import os
@@ -119,14 +119,7 @@ def _file_path_from_url(url: str) -> str | None:
     fs_path = _decoded_fs_path(url)
     if fs_path is None:
         return None
-    # NEVER a raw os.path.isfile on a mount-backed path: a cold GETATTR there
-    # lists the whole parent prefix and wedges the mount (the open-flow wedge —
-    # POST /api/recents/open resolves the just-opened file through here). Route
-    # mounts via the rc API (_mount_exists), locals via the kernel (_local_exists).
-    from fused_render.shell import mounts as shell_mounts
-    exists = (_mount_exists(fs_path) if shell_mounts.is_mount_backed(fs_path)
-              else _local_exists(fs_path))
-    return fs_path if exists else None
+    return fs_path if _local_exists(fs_path) else None
 
 
 def _is_app_entry(fs_path: str) -> bool:
@@ -150,49 +143,22 @@ def _is_app_entry(fs_path: str) -> bool:
 
 
 def _local_exists(fs_path: str) -> bool:
-    """Existence of a LOCAL (non-mount-backed) path. A plain os.path.isfile is
-    safe and cheap here — the mount-wedging GETATTR concern only applies under a
-    managed mount, which _keep_entry routes away from this call. Delegates to the
-    shared local leaf (pathops.local_is_file) so the local existence check is
-    single-sourced with server._is_file_mount_safe."""
-    from fused_render.shell import pathops
-
-    return pathops.local_is_file(fs_path)
-
-
-def _mount_exists(fs_path: str) -> bool:
-    """Whether a MOUNT-BACKED path is an existing FILE, answered by the rclone
-    rc API (mounts.rc_kind_for) — NEVER os.path.isfile. A raw os.stat/isfile on
-    a hung NFS mount is the exact GETATTR that wedges it (see rc_kind_for/
-    rc_mtime_for in mounts.py); the rc route keeps the kernel out of the loop
-    entirely.
-
-    Files only, matching recents' D22 files-only contract (and _local_exists'
-    os.path.isfile): a confirmed "dir" filters the entry just like a "missing"
-    would. Only a "file" or an "indeterminate" probe (rcd down / timed out /
-    errored — rc can't prove anything) keeps it: we fail open rather than hide a
-    live recent on a transient rc hiccup. The rc_kind_for probe and its
-    file/indeterminate fail-open contract are single-sourced in
-    pathops.mount_is_file (shared with server._is_file_mount_safe)."""
-    from fused_render.shell import pathops
-
+    """Whether `fs_path` is an existing FILE (recents are files-only, D22)."""
     try:
-        return pathops.mount_is_file(fs_path)
-    except Exception:
-        return True  # unexpected error -> fail open, keep the entry
+        return os.path.isfile(fs_path)
+    except OSError:
+        return False
 
 
 async def _keep_entry(url: str) -> bool:
     """Whether a recents entry should appear in the GET response: True to keep,
     False to filter (file confirmed gone). Runs the existence check off the
-    event loop and routes mount-backed paths through the rc API. Only a check
+    event loop. Only a check
     that COMPLETES False filters; anything indeterminate keeps (fail open)."""
     fs_path = _decoded_fs_path(url)
     if fs_path is None:
         return False  # not a file-naming url (sentinel / non-/view/) -> filtered
-    from fused_render.shell import mounts as shell_mounts
-
-    check = _mount_exists if shell_mounts.is_mount_backed(fs_path) else _local_exists
+    check = _local_exists
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(_CHECK_POOL, check, fs_path)
@@ -218,8 +184,7 @@ async def get_recents():
     GET, like bookmarks; the file may reappear).
 
     Existence checks fan out concurrently under a single CHECK_BUDGET_S deadline
-    and are mount-safe (mount-backed paths route through the rclone rc API, not
-    a kernel os.stat). An entry whose check outlives the budget is KEPT (fail
+    and are bounded. An entry whose check outlives the budget is KEPT (fail
     open) — a possibly-dead row beats a stalled sidebar."""
     data = _read()
     raw = [e for e in data["entries"] if isinstance(e.get("url"), str)]

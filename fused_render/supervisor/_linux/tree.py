@@ -4,7 +4,7 @@ This holds the one guarantee the whole desktop supervisor hinges on
 (docs/LINUX_DESKTOP_SPEC.md gate (a), the "no-orphans-on-crash" analog of the
 Windows Job Object's KILL_ON_JOB_CLOSE): when the supervisor dies — including a
 hard `kill -9` — the server it spawned and that server's descendants must die
-too, not linger as orphans holding a port and FUSE mounts.
+too, not linger as orphans holding a port.
 
 Same surface `core.py` consumes via `_backend`:
   Job()              — a supervised process tree
@@ -70,9 +70,7 @@ _MECHANISM_ENV = "FUSED_RENDER_LINUX_TREE_KILL"
 _DEFAULT_MECHANISM = "pgroup"
 
 # How long close() gives the SIGTERM'd group to exit before escalating to
-# SIGKILL. rclone unmounts its FUSE mounts cleanly on SIGTERM; an immediate
-# SIGKILL strands any mount rcd was serving as a wedged FUSE endpoint, so
-# deliberate teardown always offers the graceful path first.
+# SIGKILL. Deliberate teardown always offers the graceful path first.
 _TERM_GRACE_S = 5.0
 
 
@@ -227,9 +225,7 @@ class Job:
         bounded grace (_TERM_GRACE_S) for it to exit, then SIGKILL whatever is
         left, then reap. Idempotent.
 
-        SIGTERM-first matters because the group contains rclone's rcd: it
-        unmounts its FUSE mounts cleanly on SIGTERM, whereas an immediate
-        SIGKILL strands every mount as a wedged FUSE endpoint.
+        SIGTERM-first lets descendants shut down cleanly before the SIGKILL.
 
         For the "namespace" mechanism, killing the group kills the `unshare`
         keeper, which `--kill-child` turns into a SIGKILL of pid 1 of the pid

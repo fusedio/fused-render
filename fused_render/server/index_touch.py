@@ -33,9 +33,8 @@ it exists because the caller is a mutation endpoint rather than a person:
     gather for `COALESCE_S` and the folders they touch are scanned once.
   * **Outermost only.** A scan covers everything under its root, so a pending
     folder inside another pending folder is dropped.
-  * **Never a mount, never `/`.** The first is the structural refusal every
-    path into the scanner carries (a kernel crawl of an rclone mount can wedge
-    it); the second is a whole-disk crawl one loose file in the root would
+  * **Never a fused-render home, never `/`.** The first is the structural
+    refusal every path into the scanner carries; the second is a whole-disk crawl one loose file in the root would
     otherwise buy.
   * **Waits out a scan already covering the folder** instead of racing it —
     and does not JOIN it, which is what `runner.start` would do on an exact
@@ -389,21 +388,19 @@ def _real_blocked(root: str) -> bool:
 
     One question, three answers, and the caller does not care which:
 
-      * mount-backed — `blocks`, not `blocks_root`: this is pure string work
-        against the mount records, and the realpath `blocks_root` adds is a
-        syscall on a path we have no reason to trust yet. `runner.start` pays
-        it authoritatively.
+      * inside a fused-render home — `blocks`, not `blocks_root`: this is pure
+        string work, and the realpath `blocks_root` adds is a syscall on a path
+        we have no reason to trust yet. `runner.start` pays it authoritatively.
       * excluded by the ignore rules — a save inside a `node_modules` would
         otherwise spawn a worker that walks it, indexes nothing, and rewrites
         the whole store to say so. It is the same reason the ranked route
         answers `ignored` rather than asking for a scan.
       * on another filesystem — see `foreign_device`.
     """
-    from fused_render.index import runner
     from fused_render.index.config import load_config
     from fused_render.index.ignore import MountGuard, ignored_for_index
 
-    if MountGuard(mounts_dir=runner._mounts_dir()).blocks(root):
+    if MountGuard().blocks(root):
         return True
     if ignored_for_index(load_config().rules, root, tree=True):
         return True
@@ -418,22 +415,18 @@ def foreign_device(path: str) -> bool:
 
     Before this phase every scan root came from the configured roots — the
     user's home, in practice. An on-demand scan takes an arbitrary folder, and
-    `MountGuard` only knows about fused-render's OWN mounts dir: a user's SMB
-    or NFS volume at /Volumes/share is not mount-backed as far as it is
-    concerned. `scan.scan_dir_once`'s `root_dev` guard is what normally stops a
+    `MountGuard` only knows about fused-render's OWN home trees: a user's SMB
+    or NFS volume at /Volumes/share is not known to it. `scan.scan_dir_once`'s `root_dev` guard is what normally stops a
     crawl leaving the home filesystem, and it is defeated by construction when
     the root ITSELF is the network volume — the whole subtree is then fair game
     for a detached worker nobody is watching.
 
     The old live walk did crawl such paths, so this is not a new capability
     being taken away for nothing. But the walk was abortable, entry-capped and
-    tied to a search box somebody had open; a scan is none of those, and this
-    repo's history has a kernel walk permanently wedging a mount in it more
-    than once. A refused folder falls back to the live walk exactly as it did
+    tied to a search box somebody had open; a scan is none of those. A refused folder falls back to the live walk exactly as it did
     before phase 2, which is the honest cost and a small one.
 
-    Paid AFTER the mount guard, so a wedged fused mount is never stat'd here,
-    and never raising: a path we cannot stat is one we should not scan.
+    Paid AFTER the home guard, and never raising: a path we cannot stat is one we should not scan.
     """
     import os
 
