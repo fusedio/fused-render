@@ -4,7 +4,9 @@
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
 import { memo, useId } from "react";
 
+import { SquareTerminal } from "lucide-react";
 import { cn } from "@platform/lib/utils";
+import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 
 import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/controller-api";
 import { viewKind, type SegmentKind } from "../protocol/segments";
@@ -126,6 +128,10 @@ export const Turn = memo(function Turn({
     // pulls the words back into the box, so a queued line is never a bubble the
     // reader can only watch.
     const pending = turn.pending;
+    // A terminal ask (Ask Claude / Fix with AI) is drawn as a chip + selection
+    // block, not its raw `[terminal id: ...]` line and code fences.
+    const termAsk = isMarkerOnly(turn.text) ? null : parseTerminalAsk(turn.text);
+    const termDir = termAsk?.cwd ? termAsk.cwd.replace(/\/+$/, "").split("/").pop() || "/" : "";
     return (
       <div
         className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending")}
@@ -155,8 +161,25 @@ export const Turn = memo(function Turn({
             the same lucide glyph the chip and the receipt wear (P2-7). Anything
             the reader actually typed is their own words and gets none. The
             bubble's TEXT is identical either way. */}
-          <div className="bubble">
-            {isMarkerOnly(turn.text) ? <MarkerText text={turn.text} /> : turn.text}
+          <div className={cn("bubble", termAsk && "is-terminal-ask")}>
+            {termAsk ? (
+              <>
+                <div
+                  className="term-ask-chip"
+                  title={"Terminal " + termAsk.id + (termAsk.cwd ? " — " + termAsk.cwd : "")}
+                >
+                  <SquareTerminal size={12} aria-hidden="true" />
+                  <span>{termAsk.label}</span>
+                  {termAsk.cwd ? <span className="term-ask-cwd">{termDir}</span> : null}
+                </div>
+                {termAsk.selection !== undefined ? <pre className="term-ask-sel">{termAsk.selection}</pre> : null}
+                <div className="term-ask-body">{termAsk.body}</div>
+              </>
+            ) : isMarkerOnly(turn.text) ? (
+              <MarkerText text={turn.text} />
+            ) : (
+              turn.text
+            )}
           </div>
         </div>
         {pending ? (

@@ -135,6 +135,39 @@ export function fixTerminalFailurePrompt(
   );
 }
 
+/** The inverse of the three builders above: lets the chat draw a terminal ask
+ * as a chip + selection block instead of its raw id line and fences. Null for
+ * any text that does not open with the `[terminal id: label — cwd]` line. */
+export function parseTerminalAsk(
+  text: string,
+): { id: string; label: string; cwd?: string; selection?: string; body: string } | null {
+  const lines = text.split("\n");
+  const head = lines[0] ?? "";
+  if (!head.startsWith("[terminal ") || !head.endsWith("]")) return null;
+  const inner = head.slice("[terminal ".length, -1);
+  const colon = inner.indexOf(": ");
+  if (colon < 0) return null;
+  const id = inner.slice(0, colon);
+  const rest = inner.slice(colon + 2);
+  const dash = rest.indexOf(" — ");
+  const label = dash < 0 ? rest : rest.slice(0, dash);
+  const cwd = dash < 0 ? undefined : rest.slice(dash + 3) || undefined;
+  if (!id || !label) return null;
+  let body = lines.slice(1).join("\n");
+  let selection: string | undefined;
+  if (lines[1] === "Selected from this terminal:") {
+    const open = /^(`{3,})text$/.exec(lines[2] ?? "");
+    if (open) {
+      const close = lines.indexOf(open[1], 3);
+      if (close >= 0) {
+        selection = lines.slice(3, close).join("\n");
+        body = lines.slice(close + 1).join("\n").replace(/^\n+/, "");
+      }
+    }
+  }
+  return cwd === undefined ? { id, label, selection, body } : { id, label, cwd, selection, body };
+}
+
 /** Test-only: reset module state between tests. */
 export function resetTerminalFocusForTests(): void {
   focused = null;

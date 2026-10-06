@@ -12,6 +12,7 @@ const {
   askClaudeTerminalPrompt,
   askClaudeSelectionPrompt,
   fixTerminalFailurePrompt,
+  parseTerminalAsk,
   resetTerminalFocusForTests,
 } = await import("@platform/lib/terminalFocus");
 
@@ -121,4 +122,44 @@ test("fix prompt: command, empty command, backticks", () => {
     "[terminal t3: zsh]\nThe last command failed with exit code 1. Read",
   );
   expect(fixTerminalFailurePrompt(tabA, { command: "echo `x`", exitCode: 1 })).toContain("`` echo `x` `` failed");
+});
+
+// parseTerminalAsk: the chat draws a terminal ask as a chip + selection block.
+test("parseTerminalAsk round-trips the tab prompt, with and without cwd", () => {
+  const a = parseTerminalAsk(askClaudeTerminalPrompt({ id: "t1", label: "zsh", cwd: "/a/b" }))!;
+  expect(a.id).toBe("t1");
+  expect(a.label).toBe("zsh");
+  expect(a.cwd).toBe("/a/b");
+  expect(a.selection).toBeUndefined();
+  expect(a.body).toContain("terminal_read");
+  const b = parseTerminalAsk(askClaudeTerminalPrompt({ id: "t1", label: "zsh" }))!;
+  expect(b.cwd).toBeUndefined();
+  expect(b.label).toBe("zsh");
+});
+
+test("parseTerminalAsk round-trips selections, including a 4-backtick fence and truncation", () => {
+  const tab = { id: "cc0c", label: "zsh", cwd: "/x/y" };
+  const plain = parseTerminalAsk(askClaudeSelectionPrompt(tab, "line1\nline2"))!;
+  expect(plain.selection).toBe("line1\nline2");
+  expect(plain.body.startsWith("Explain this.")).toBe(true);
+  const fenced = parseTerminalAsk(askClaudeSelectionPrompt(tab, "a\n```\nb"))!;
+  expect(fenced.selection).toBe("a\n```\nb");
+  expect(fenced.body.startsWith("Explain this.")).toBe(true);
+  const long = parseTerminalAsk(askClaudeSelectionPrompt({ id: "t", label: "zsh" }, "x".repeat(9000)))!;
+  expect(long.selection!.startsWith("…(truncated)\n")).toBe(true);
+  expect(long.cwd).toBeUndefined();
+});
+
+test("parseTerminalAsk round-trips the fix prompt", () => {
+  const f = parseTerminalAsk(fixTerminalFailurePrompt({ id: "t2", label: "bash", cwd: "/p" }, { command: "ls /nope", exitCode: 2 }))!;
+  expect(f.id).toBe("t2");
+  expect(f.selection).toBeUndefined();
+  expect(f.body).toContain("failed with exit code 2");
+});
+
+test("parseTerminalAsk is null for anything else", () => {
+  expect(parseTerminalAsk("hello there")).toBeNull();
+  expect(parseTerminalAsk("[terminal t1: zsh\nbody")).toBeNull();
+  expect(parseTerminalAsk("intro\n[terminal t1: zsh]\nbody")).toBeNull();
+  expect(parseTerminalAsk("[terminal ]\nbody")).toBeNull();
 });

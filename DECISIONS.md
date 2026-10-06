@@ -6546,3 +6546,7 @@ Supersedes the "Partial" bullet of D1324: the Part 2 probe was run by hand on cl
 - **Fix pill.** Shell-integration OSC 633;E and 133;C/D are observed in the browser (handlers return false, xterm unaffected). A nonzero exit other than 130 shows "Fix with AI" until the next command; Ctrl+C never nags. Not offered on the Claude tab (no shell integration there). A reattach replays scrollback, so the pill reflects the last replayed command.
 - **Logic lives in `platform/lib/terminalAi.ts`** (reducer, pill geometry, chord) because TerminalView stays untested. xterm typings call `getSelectionPosition()` 1-based; the implementation returns 0-based buffer rows, which is what the geometry uses.
 - **Review fix.** `claude_cmd_log` ps spawns now use the posix_spawn-safe shape (absolute path, close_fds=False, no cwd=); fork() with libproj resident SIGSEGVs the server.
+
+## D1327 — Terminal asks render as a chip + selection block in the chat (2026-10-06, worktree-claude-terminal-share)
+
+The Ask Claude / Fix with AI / tab prompts keep their raw text on the wire (the model needs the id line and fences), but the user bubble in `Turn.tsx` now parses it with `parseTerminalAsk` (next to the builders in `terminalFocus.ts`) and draws a terminal chip (label, cwd basename), the selection as a scrolling `pre`, then the words. Same `.bubble` element with an `is-terminal-ask` class; plain turns are unchanged. Presentation only: stored transcripts and the server never see a different string.
