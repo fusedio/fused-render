@@ -17,9 +17,7 @@ const tool = (id: string, ts?: number, ended?: number): ToolSegment => ({
 });
 const think = (ts?: number): Segment => ({ kind: "thinking", text: "hmm", ...(ts !== undefined ? { ts } : {}) });
 
-// A fixed "now" 3 minutes after the run began, in ms as `Date.now` reports it.
 const T0 = 1_791_108_000; // 2026-10-04T10:00:00Z
-const now = () => (T0 + 180) * 1000;
 
 describe("spanWords", () => {
   test("floors at every unit and drops a zero second unit", () => {
