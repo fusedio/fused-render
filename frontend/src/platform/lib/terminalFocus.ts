@@ -89,6 +89,52 @@ export function askClaudeTerminalPrompt(tab: { id: string; label: string; cwd?: 
   );
 }
 
+const SELECTION_CAP = 6000;
+
+function backtickRun(text: string): number {
+  return (text.match(/`+/g) ?? []).reduce((m, r) => Math.max(m, r.length), 0);
+}
+
+/** Prompt for "Ask Claude" on a terminal selection. */
+export function askClaudeSelectionPrompt(tab: { id: string; label: string; cwd?: string }, selection: string): string {
+  let text = selection
+    .split("\n")
+    .map((l) => l.replace(/\s+$/, ""))
+    .join("\n")
+    .replace(/\n+$/, "");
+  // Errors sit at the end, so a long selection keeps its tail.
+  if (text.length > SELECTION_CAP) text = "…(truncated)\n" + text.slice(-SELECTION_CAP);
+  const fence = "`".repeat(Math.max(3, backtickRun(text) + 1));
+  const where = tab.cwd ? ` — ${tab.cwd}` : "";
+  return (
+    `[terminal ${tab.id}: ${tab.label}${where}]\n` +
+    `Selected from this terminal:\n${fence}text\n${text}\n${fence}\n` +
+    `Explain this. If it is an error, say why it happened and how to fix it. ` +
+    `Use terminal_read with id "${tab.id}" if you need more context. ` +
+    `Do not type into the terminal or change anything yet.`
+  );
+}
+
+/** Prompt for "Fix with AI" on a failed shell command. */
+export function fixTerminalFailurePrompt(
+  tab: { id: string; label: string; cwd?: string },
+  failure: { command: string; exitCode: number },
+): string {
+  const where = tab.cwd ? ` — ${tab.cwd}` : "";
+  let subject = "The last command";
+  if (failure.command) {
+    const t = "`".repeat(backtickRun(failure.command) + 1);
+    const pad = failure.command.startsWith("`") || failure.command.endsWith("`") ? " " : "";
+    subject = `${t}${pad}${failure.command}${pad}${t}`;
+  }
+  return (
+    `[terminal ${tab.id}: ${tab.label}${where}]\n` +
+    `${subject} failed with exit code ${failure.exitCode}. Read its output with terminal_read ` +
+    `(id "${tab.id}"), explain why it failed, and propose a fix. ` +
+    `Do not type into the terminal or run anything yet.`
+  );
+}
+
 /** Test-only: reset module state between tests. */
 export function resetTerminalFocusForTests(): void {
   focused = null;

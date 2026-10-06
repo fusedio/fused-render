@@ -10,6 +10,8 @@ const {
   terminalHint,
   terminalHintObject,
   askClaudeTerminalPrompt,
+  askClaudeSelectionPrompt,
+  fixTerminalFailurePrompt,
   resetTerminalFocusForTests,
 } = await import("@platform/lib/terminalFocus");
 
@@ -89,4 +91,34 @@ test("the Ask Claude prompt names the terminal for terminal_read", () => {
   const p = askClaudeTerminalPrompt({ id: "t3", label: "zsh", cwd: "/x" });
   expect(p).toContain("[terminal t3: zsh — /x]");
   expect(p).toContain('terminal_read with id "t3"');
+});
+
+const tabA = { id: "t3", label: "zsh", cwd: "/w" };
+test("selection prompt: header with and without cwd", () => {
+  expect(
+    askClaudeSelectionPrompt(tabA, "boom").startsWith("[terminal t3: zsh — /w]\nSelected from this terminal:\n```text\nboom\n```\n"),
+  ).toBe(true);
+  expect(askClaudeSelectionPrompt({ id: "t3", label: "zsh" }, "x").startsWith("[terminal t3: zsh]\n")).toBe(true);
+  expect(askClaudeSelectionPrompt(tabA, "x")).toContain('terminal_read with id "t3"');
+});
+test("selection prompt: fence escalates past backtick runs", () => {
+  expect(askClaudeSelectionPrompt(tabA, "a ```` b")).toContain("`````text\na ```` b\n`````\n");
+});
+test("selection prompt: trims trailing whitespace and blank lines", () => {
+  expect(askClaudeSelectionPrompt(tabA, "a  \nb\t\n\n  \n")).toContain("```text\na\nb\n```");
+});
+test("selection prompt: truncation keeps the tail", () => {
+  const p = askClaudeSelectionPrompt(tabA, "HEAD" + "x".repeat(7000) + "TAIL");
+  expect(p).toContain("```text\n…(truncated)\n");
+  expect(p).toContain("xTAIL\n```");
+  expect(p).not.toContain("HEAD");
+});
+test("fix prompt: command, empty command, backticks", () => {
+  expect(fixTerminalFailurePrompt(tabA, { command: "ls /nope", exitCode: 2 })).toBe(
+    '[terminal t3: zsh — /w]\n`ls /nope` failed with exit code 2. Read its output with terminal_read (id "t3"), explain why it failed, and propose a fix. Do not type into the terminal or run anything yet.',
+  );
+  expect(fixTerminalFailurePrompt({ id: "t3", label: "zsh" }, { command: "", exitCode: 1 })).toContain(
+    "[terminal t3: zsh]\nThe last command failed with exit code 1. Read",
+  );
+  expect(fixTerminalFailurePrompt(tabA, { command: "echo `x`", exitCode: 1 })).toContain("`` echo `x` `` failed");
 });
