@@ -25,6 +25,11 @@
 >   **`~/.fused-render/bots/`** (`FUSED_RENDER_HOME` overrides; FusedBot used
 >   `~/.fused-render-app/bots/` and `FUSED_RENDER_APP_HOME`). Inbox
 >   `~/Fused/bots/<bot>/` and apps root `~/Fused/app` are unchanged.
+>   **First start on a machine with a FusedBot tree copies it in**
+>   (`fused_render/bots/fusedbot_import.py`: `data/` + `cache/`, never
+>   overwriting, never touching the source, stamped in
+>   `<home>/bots/imported-from-fusedbot.json`; Chrome's `Singleton*` runtime
+>   files skipped; a profile held by a live Chrome is copied and logged).
 > - Server origin: `FUSED_RENDER_ORIGIN` (exported by
 >   `set_server_origin_env` before serving), else `<home>/server.json`
 >   (`write_server_json`), else the bare `fused-render` port
