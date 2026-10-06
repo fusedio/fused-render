@@ -1612,11 +1612,12 @@
 }
 /* THE ✻ MARK OWNS THE FIRST ROW. A reply that opens on a tool call puts its
    first chip level with the mark, in the same lane column, and the stamp
-   painted straight over the glyph (cmux-ux-tester, 2026-10-06). That one chip
-   goes without; its hover is still one row away on the next chip and the run's
-   own `show more` hover says the span. */
+   painted straight over the glyph (cmux-ux-tester, 2026-10-06). It was hidden
+   for a day, which left a one-call reply with no time at all (Akshil's edge
+   case). It sits one row lower instead, just under the mark: only the hovered
+   chip's stamp is ever visible, so nothing is there to collide with. */
 .chat-root .turn.assistant .body > .toolchip:first-child > .chip-stamp {
-  display: none;
+  top: 25px;
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-root .toolchip > .chip-stamp {
