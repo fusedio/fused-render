@@ -131,6 +131,12 @@ def port_base() -> int:
     return _IDENTITY[flavor()]["port_base"]
 
 
+def all_port_bases() -> frozenset[int]:
+    """Every flavor's baseline port, whichever flavor is running — the ports a
+    branch build of any flavor must never hash onto."""
+    return frozenset(v["port_base"] for v in _IDENTITY.values())
+
+
 def scheme() -> str:
     return _get("scheme")
 

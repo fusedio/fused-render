@@ -19,7 +19,7 @@
 /** The download page's four troubleshooting tabs, verbatim (`data-err`). */
 export type TroubleKind = "notfound" | "login" | "limit" | "raw";
 
-import { bundleName, displayName } from "@platform/lib/flavor";
+import { bundleName, displayName, userDataDir as flavorUserDataDir } from "@platform/lib/flavor";
 
 export const HELP_BASE = "https://render.fused.io";
 
@@ -200,7 +200,9 @@ export function findInstallCommands(): string[] {
 /** User data — NOT the installation, and the distinction is load-bearing: a
     reinstall replaces one and never touches the other. It holds the template
     registry, which is itself one of the four failures here (§42). */
-export const USER_DATA_DIR = "~/.fused-render";
+export function userDataDir(): string {
+  return flavorUserDataDir();
+}
 
 /** This session's log. Per-pid in the persistent log home (fused_render/logs.py:
     `~/Library/Logs/fused-render/` on macOS, where Console.app lists it;
@@ -227,7 +229,7 @@ function whereToLook(ctx: TroubleContext): string[] {
     findInstallCommands().forEach((cmd) => lines.push(`    ${cmd}`));
   }
   lines.push(
-    `- Settings, the template registry and the staged core templates: ${USER_DATA_DIR}`,
+    `- Settings, the template registry and the staged core templates: ${userDataDir()}`,
     "  (a different place from the installation — a reinstall does not touch it)",
     `- This session's log: ${LOG_LIST_COMMAND}`,
     ""
