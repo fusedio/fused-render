@@ -1577,27 +1577,38 @@
   padding: 4px 0 6px 12px;
 }
 /* WHEN THE CALL WAS MADE, in the lane beside the chip (ToolChip `chip-stamp`,
-   Akshil 2026-10-06). The message stamp's register — 11px, faint, tabular — in
-   the column the ✻ mark sits in, right-aligned to the chip's rail. On hover of
-   the reply only, as the message stamp is: a column of times down every run is
-   noise, the one a reader wants is beside the chip they are pointing at. */
+   Akshil 2026-10-06). The message stamp's register — small, faint, tabular — in
+   the column the ✻ mark sits in, right-aligned to the chip's rail with a gap,
+   and sized so the longest form (`12h ago`) still leaves the column's own
+   margin on its left: the lane is ~54px (the mark's 24px, its 10px gap, the
+   log's 20px padding), and at 11px `41m ago` ran to the pane's edge (Akshil:
+   "the ui is bad, check padding"). ON HOVER OF THAT CHIP ONLY (Akshil: "when I
+   hover over a bash then and only then show me that time"), never the whole
+   reply — a column of times down a run is noise; the one a reader wants is
+   beside the chip they are pointing at. Centred on the chip's head row. */
 .chat-root .toolchip > .chip-stamp {
   position: absolute;
-  right: calc(100% + 10px);
-  top: 2px;
-  font-size: 11px;
-  line-height: 20px;
+  right: calc(100% + 8px);
+  top: 0;
+  font-size: 10px;
+  line-height: 25px;
   color: var(--c-faint);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   cursor: default;
   user-select: none;
   opacity: 0;
   transition: opacity 0.12s ease;
 }
-.chat-root .turn.assistant:hover .toolchip > .chip-stamp,
+.chat-root .toolchip:hover > .chip-stamp,
 .chat-root .toolchip:focus-within > .chip-stamp {
   opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .toolchip > .chip-stamp {
+    transition: none;
+  }
 }
 /* THE ✻ MARK OWNS THE FIRST ROW. A reply that opens on a tool call puts its
    first chip level with the mark, in the same lane column, and the stamp
