@@ -2292,16 +2292,24 @@ def _strip_machinery(text: str) -> str:
 # "terminal-hint" is in `_MACHINERY_STRIP`, so restored transcripts and the
 # Tasks list never show it as something the user typed.
 TERMINAL_HINT_TAG = "terminal-hint"
-# One LEADING hint block only: the hint is always written first (after the
-# app-state block is gone), so a tag the human typed mid-message must survive.
-_TERMINAL_HINT_LEAD = re.compile(
-    r"<%s>.*?</%s>\s*" % (TERMINAL_HINT_TAG, TERMINAL_HINT_TAG), re.DOTALL)
+# The hint sits behind whatever leading machinery blocks the send carried
+# (app state, pane-shot, annotations), so the strip walks those blocks the way
+# `_with_terminal_hint` does and cuts the hint out wherever it is in that run.
+# It stops at the first real words, so a tag the human typed mid-message survives.
 
 
 def _strip_terminal_hint(text: str) -> str:
-    text = text.lstrip()
-    m = _TERMINAL_HINT_LEAD.match(text)
-    return (text[m.end():] if m else text).strip()
+    out = text.lstrip()
+    pos = 0
+    while True:
+        m = _LEADING_MACHINERY.match(out, pos)
+        if not m:
+            return out.strip()
+        if m.group(1) == TERMINAL_HINT_TAG:
+            return (out[:m.start()] + out[m.end():]).strip()
+        pos = m.end()
+
+
 _HINT_FIELD_MAX = 120
 
 

@@ -101,3 +101,27 @@ def test_restore_keeps_a_typed_hint_tag_mid_message(agent, tmp_path):
     text = "see <terminal-hint>x</terminal-hint> here"
     turns = _restored_turns(agent, tmp_path, text)
     assert [t["text"] for t in turns] == [text]
+
+
+_SHOT = ("<pane-shot>\nScreenshots the user attached to this message.\n"
+         '[{"kind":"pane","view":"/tmp/pane-1.png","viewNote":null}]\n'
+         "</pane-shot>")
+_NOTES = ("<annotations>\nThe user annotated 1 thing.\n\n"
+          "**A** — `#x`  · 0:04\nmove it\n</annotations>")
+_WORDS = "[terminal abc: zsh — /tmp]\nhi"
+_HINT_BLOCK = "<terminal-hint>cc0c (zsh)</terminal-hint>"
+
+
+@pytest.mark.parametrize("block", [_SHOT, _NOTES])
+def test_restore_strips_hint_behind_other_leading_blocks(agent, tmp_path, block):
+    text = ("<live-app-state>{\"a\": 1}</live-app-state>\n\n" + block + "\n\n"
+            + _HINT_BLOCK + "\n\n" + _WORDS)
+    turns = _restored_turns(agent, tmp_path, text)
+    assert [t["text"] for t in turns] == [block + "\n\n" + _WORDS]
+
+
+def test_strip_inverts_with_terminal_hint(agent):
+    msg = _SHOT + "\n\n" + _NOTES + "\n\n" + _WORDS
+    sent = agent._with_terminal_hint(msg, HINT)
+    assert "<terminal-hint>" in sent
+    assert agent._strip_terminal_hint(sent) == msg
