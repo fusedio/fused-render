@@ -20,7 +20,9 @@ const LEGACY_SENTINELS: Record<string, string> = {
   "/view/_home": "/apps",
   "/view/_prefs": "/preferences",
   "/view/_templates": "/templates",
-  "/view/_mounts": "/mounts",
+  "/view/_mounts": "/",
+  // The Mounts page is gone; a stale bookmark or a typed url lands home.
+  "/mounts": "/",
   "/view/_account": "/preferences",
 };
 

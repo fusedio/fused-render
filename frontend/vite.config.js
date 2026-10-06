@@ -50,7 +50,7 @@ export default defineConfig({
         // NO `markdown` GROUP HERE, deliberately. Naming a package in
         // `manualChunks` makes its chunk a STATIC node of the entry graph, so
         // marked + DOMPurify + highlight.js shipped as a `modulepreload` on
-        // BOTH entries — 75 kB gzipped downloaded by Home, Preferences, Mounts,
+        // BOTH entries — 75 kB gzipped downloaded by Home, Preferences,
         // Scheduled and the LAN phone grid to render no chat at all. (Naming CJS
         // packages also hoisted rollup's commonjs interop helper in there, which
         // is how even the LAN entry came to pull it.) The split the chat wants

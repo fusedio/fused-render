@@ -45,7 +45,6 @@ function installFetchStub(opts: { failPath?: string }): () => void {
         fused_dir: "/home/Fused",
         version: "0",
         installed_version: null,
-        mounts_root: "/home/.fused-render/mounts",
         cache_dir: "/home/.fused-render/cache",
         native_dir_picker: false,
       });

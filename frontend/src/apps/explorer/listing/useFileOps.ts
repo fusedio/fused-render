@@ -136,7 +136,6 @@ export function useFileOps({
       guardLoadedRef.current = true;
       setRenameGuard({
         home: String(c.home ?? "").replace(/\\/g, "/"),
-        mountsRoot: String(c.mounts_root ?? "").replace(/\\/g, "/"),
       });
     }, () => {}).finally(() => {
       guardInFlightRef.current = false;

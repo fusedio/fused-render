@@ -1765,8 +1765,6 @@ function TemplatePreview({
   // "_render" sentinel (PT-12): render the target file itself, no _file param.
   // Ordinary entries: target file rides on the iframe's own URL as _file —
   // the shell URL's pathname already names the file, so no duplication there.
-  // `_remote=1` forwards stat's remote flag (bytes come from a mount) so a
-  // page can prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
   // `_listing` builds no src — it renders a shell component, not an iframe.
   //
   // `_snapshot` rides here and on the shell's OWN url, unlike the deleted
@@ -1814,7 +1812,6 @@ function TemplatePreview({
   // same "sha matches AND app_dir actually encloses THIS file" check this
   // used to re-derive here by hand (code review finding [3], round 2: two
   // apps in one repo share shas, so matching the sha alone is not enough).
-  const remote = stat.remote ? "&_remote=1" : "";
   // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
   // every render it triggers, so peeking at an app's entry page is not
   // recorded as opening the app (D301 records on GET /render by default).
@@ -1874,7 +1871,7 @@ function TemplatePreview({
           // but not enforced either) that it happens to sit under this
           // app's `app_dir`.
           rewritePath: false,
-          extra: `&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
+          extra: `&_file=${encodeURIComponent(fsPath)}${thumbFlags}`,
         })
       : null;
   };
@@ -1889,9 +1886,7 @@ function TemplatePreview({
   //   WHAT `_file` NAMES. For the companions of this file, this file. For a
   //   borrowed `git`, the PARENT DIRECTORY — the template is unchanged and asks
   //   git about whatever `_file` names, so aiming it at the folder is the whole
-  //   of the borrowing. `_remote` does not travel with it either: that flag says
-  //   where THIS FILE's bytes come from, and the git gate refuses a mount-backed
-  //   directory outright, so a borrowed target is never remote.
+  //   of the borrowing.
   //
   // Null while the mode's gate is unresolved — a pending borrowed entry has no
   // template path yet — and the column holds a spinner. The CHAT is a mount,
@@ -1905,10 +1900,9 @@ function TemplatePreview({
     if (m === CHAT_MODE) return "";
     const borrowed = isBorrowedMode(m);
     const target = borrowed ? parentDir : fsPath;
-    const rem = borrowed ? "" : remote;
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${thumbFlags}`
+      `&_file=${encodeURIComponent(target)}${thumbFlags}`
     );
   };
   // The MCP dialog's document: the same URL shape `sideSrcFor` builds for a
@@ -2383,7 +2377,6 @@ function TemplatePreview({
                   mountClassName={"preview-frame" + (m === shown ? " is-shown" : "")}
                   file={fsPath}
                   paramsSource="url"
-                  {...(stat.remote ? { remote: true } : {})}
                   /* THE RECAP OPT-IN, and one of only two sites that take it:
                      this pane and the `?_side=claude` sidebar are the full chat
                      the reader opened. A thumbnail is neither — `IS_PREVIEW`
@@ -2589,7 +2582,6 @@ function TemplatePreview({
                    never appeared in this file's Recent list. */
                 annotateTarget={annotateTargetFrame}
                 paramsSource="url"
-                {...(stat.remote ? { remote: true } : {})}
                 /* THE RECAP OPT-IN, and one of only two sites that take it:
                    this pane and the `?_side=claude` sidebar are the full chat
                    the reader opened. A thumbnail is neither — `IS_PREVIEW`

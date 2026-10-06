@@ -84,11 +84,6 @@ describe("paneSrcFor", () => {
     );
   });
 
-  test("_remote=1 is forwarded exactly as the shell's own iframe does", () => {
-    expect(paneSrcFor(tpl("code"), "/w/x.py", true)).toContain("&_remote=1");
-    expect(paneSrcFor(tpl("code"), "/w/x.py", false)).not.toContain("_remote");
-  });
-
   test("the _render sentinel (PT-12) is a bare /render on the FILE", () => {
     expect(paneSrcFor({ mode: "_render", path: null }, "/w/page.html")).toBe("/render?path=%2Fw%2Fpage.html");
   });
@@ -98,7 +93,7 @@ describe("paneSrcFor", () => {
   });
 
   test("the shell-mounted flags ride on the end, and are idempotent", () => {
-    const once = paneSrcFor(tpl("code"), "/w/x.py", false, { noFocus: true, preview: true });
+    const once = paneSrcFor(tpl("code"), "/w/x.py", { noFocus: true, preview: true });
     expect(once).toContain("_nofocus=1");
     expect(once).toContain("_preview=1");
     expect(once.match(/_nofocus/g)?.length).toBe(1);
@@ -135,7 +130,7 @@ describe("decidePane — the four kinds", () => {
     const d = decidePane({
       file: "/w/notes.md",
       chatOnly: false,
-      stat: stat({ templates: [tpl("markdown"), tpl("claude"), tpl("code")], remote: true }),
+      stat: stat({ templates: [tpl("markdown"), tpl("claude"), tpl("code")] }),
     });
     expect(d.kind).toBe("file");
     expect(d.noun).toBe("file");
@@ -143,8 +138,6 @@ describe("decidePane — the four kinds", () => {
     expect(d.leftModes.map((e) => e.mode)).toEqual(["markdown", "code"]);
     expect(d.framedMode).toBe("markdown");
     expect(d.entry).toBe("/w/notes.md");
-    expect(d.remote).toBe(true);
-    expect(d.src).toContain("&_remote=1");
   });
 
   test("FILE with leftmode: the named view is what is framed", () => {
@@ -237,12 +230,12 @@ describe("the picker's labels and icons", () => {
 
 describe("the framing flags' EXACT shape", () => {
   test("`_preview` comes before `_nofocus`, as T spells it", () => {
-    // T:10717 is the one site that emits both: `paneSrcFor(t, path, remote) +
+    // T:10717 is the one site that emits both: `paneSrcFor(t, path) +
     // "&_preview=1&_nofocus=1"`. Nothing reads either flag positionally, so
     // this is literal parity — but the inventory pins these URLs as an EXACT
     // shape, and a snapshot test or a log grep written to T's spelling misses
     // on a src that reads `&_nofocus=1&_preview=1`.
-    const src = paneSrcFor(tpl("markdown"), "/w/a.md", false, {
+    const src = paneSrcFor(tpl("markdown"), "/w/a.md", {
       preview: true,
       noFocus: true,
     });
@@ -250,10 +243,10 @@ describe("the framing flags' EXACT shape", () => {
   });
 
   test("either flag alone still lands", () => {
-    expect(paneSrcFor(tpl("markdown"), "/w/a.md", false, { preview: true })).toContain(
+    expect(paneSrcFor(tpl("markdown"), "/w/a.md", { preview: true })).toContain(
       "_preview=1",
     );
-    const only = paneSrcFor(tpl("markdown"), "/w/a.md", false, { noFocus: true });
+    const only = paneSrcFor(tpl("markdown"), "/w/a.md", { noFocus: true });
     expect(only).toContain("_nofocus=1");
     expect(only).not.toContain("_preview");
   });

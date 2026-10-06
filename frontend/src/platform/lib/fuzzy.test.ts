@@ -115,7 +115,7 @@ describe("the span bound", () => {
       ["explorersearch", "frontend/src/apps/explorer/listing/useListingSearch.ts"],
       ["fusedindex", "fused_render/index/freshness.py"],
       ["indexstore", "fused_render/index/specs/index-store.md"],
-      ["storepy", "fused_render/shell/mounts/store.py"],
+      ["storepy", "fused_render/shell/bookmarks/store.py"],
       ["srcstyles", "frontend/src/styles/account.css"],
       ["fris", "frontend/src/platform/ui/Skeleton.tsx"],
       ["specsscanmd", "fused_render/index/specs/scan-incremental.md"],

@@ -349,8 +349,7 @@ export function IndexingPanel({
           under it. Lines starting with <code>#</code> are comments.
         </p>
         <p className="deploy-muted">
-          Remote mounts are never indexed and cannot be added here: reading them means network
-          round-trips per folder, and a background crawl of one can break the mount.
+          The fused-render data folder is never indexed and cannot be added here.
         </p>
         {!config && !error && <SkeletonLines rows={4} label="Loading skip rules" />}
         {config && (

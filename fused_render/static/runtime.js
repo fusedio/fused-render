@@ -1631,7 +1631,7 @@
   // (the removed KNOWN GAP: a `.py` reader now opens the commit's own file,
   // because its path argument was rewritten before the request left this
   // script). The server backstops writes unconditionally regardless of any
-  // of this (`mount.py::_is_under_snapshot_root` refuses a mutation under
+  // of this (`fs_stat.py::_is_under_snapshot_root` refuses a mutation under
   // ~/.fused-render/app-versions/ no matter how it got there); the
   // client-side refusal below (`snapshotWritable`/`snapshotRefusal`) exists
   // only to give a friendlier, sha-naming message instead of a bare
@@ -1827,7 +1827,7 @@
     // Without also checking `resolvedSnapshot.dir`, the client-side gate
     // silently stopped applying to exactly the one frame shape (`_render`)
     // that most needs its friendlier, sha-naming message — the server still
-    // refuses (`mount.py::_is_under_snapshot_root`), so nothing was ever
+    // refuses (`fs_stat.py::_is_under_snapshot_root`), so nothing was ever
     // actually AT RISK, but the user saw a bare `readonly` instead.
     return !(resolvedSnapshot && typeof path === "string" &&
              (path === resolvedSnapshot.app_dir ||
@@ -1841,7 +1841,7 @@
   // This is a RUNTIME-LEVEL refusal, giving a friendlier message than the
   // server's own — /api/fs/write and friends refuse a path under
   // ~/.fused-render/app-versions/ unconditionally already
-  // (`mount.py::_is_under_snapshot_root`), because the rewrite above sends a
+  // (`fs_stat.py::_is_under_snapshot_root`), because the rewrite above sends a
   // write there the same as a read. Checked here too so a template's error
   // handling sees the sha and the word "snapshot" rather than a bare
   // `readonly` with no context.
@@ -4053,21 +4053,8 @@
   let resubscribeTimer = null;
   let reloadTimer = null;
 
-  // Root of the mounts dir, fetched once from /api/config at start. Paths under
-  // it are mount-backed: their bytes come from a read-only remote bucket that
-  // never changes, so watching them for auto-reload buys nothing while every
-  // poll is remote traffic. That traffic is exactly what killed a mount in the
-  // fs/events stat-storm incident (a preview pane watching its mounted data
-  // file, plus a huge .zarr). We drop those from the watch set entirely; the
-  // template/py code that CAN change is always local and stays watched.
-  // Kept mount-agnostic in the template: the server hands us the prefix.
-  let mountsRoot = null;
-  function isMountBacked(p) {
-    return !!(mountsRoot && p && p.indexOf(mountsRoot + "/") === 0);
-  }
-
-  // A call-log file (fused_render/calls.py) is excluded from the watch set for a
-  // sharper reason than mount-backed files: viewing one APPENDS TO IT, because
+  // A call-log file (fused_render/calls.py) is excluded from the watch set:
+  // viewing one APPENDS TO IT, because
   // reading it is itself a logged API call. A watcher would therefore reload,
   // re-read, append, and reload again — forever, on any viewer that doesn't opt
   // out (log_studio only does with Tail on; duckdb and tree not at all). Killing
@@ -4084,7 +4071,7 @@
     return !!(callsDir && p.indexOf(callsDir + "/") === 0);
   }
 
-  // mountsRoot/callsDir/callsSuffix arrive from one memoized /api/config
+  // callsDir/callsSuffix arrive from one memoized /api/config
   // fetch. The assignment lives INSIDE loadConfig's own promise chain, not in
   // startAutoReload's separate .then() below: startAutoReload only begins on
   // DOMContentLoaded (LR-5), but an inline template can reach loadConfig()
@@ -4094,7 +4081,6 @@
   function loadConfig() {
     if (!configPromise) {
       configPromise = fetch("/api/config").then((res) => res.json()).then((cfg) => {
-        if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
         if (cfg && typeof cfg.calls_dir === "string") callsDir = cfg.calls_dir;
         if (cfg && typeof cfg.calls_suffix === "string") callsSuffix = cfg.calls_suffix;
         return cfg;
@@ -4104,7 +4090,7 @@
   }
 
   function isUnwatchable(p) {
-    return isMountBacked(p) || isCallLog(p);
+    return isCallLog(p);
   }
 
   function resubscribe() {
@@ -4151,8 +4137,7 @@
 
   function watchPath(p) {
     if (!p || watched.has(p)) return;
-    // Never watch mount-backed data files (see mountsRoot): read-only remote
-    // bytes don't change, and the poll traffic is the mount-killing hazard.
+    // Never watch call logs (see isCallLog).
     if (isUnwatchable(p)) return;
     watched.add(p);
     if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
@@ -4178,15 +4163,13 @@
 
   function startAutoReload() {
     started = true;
-    // Learn the mounts root before opening any socket, so a mount-backed
+    // Learn the call-log prefix before opening any socket, so a call-log
     // _file is never watched even for the first subscribe. The `path` template
     // and any `_file` are added here (LR-1); watchPath callers (runPython's
-    // resolved_py, template code) come later and are always local, so they're
-    // safe even if this fetch is still in flight. On fetch failure we keep the
-    // prior behavior (watch everything) — the server-side registry (items 1-4)
-    // already makes a mount stat non-fatal, so this is defense in depth.
+    // resolved_py, template code) come later and are never call logs. On
+    // fetch failure we keep the prior behavior (watch everything).
     const begin = () => {
-      // Drop anything mount-backed that accumulated before we knew the root.
+      // Drop any call log that accumulated before we knew the prefix.
       for (const p of [...watched]) {
         if (isUnwatchable(p)) watched.delete(p);
       }
@@ -4197,7 +4180,7 @@
       if (file && !isUnwatchable(file)) watched.add(file);
       if (autoReloadEnabled) resubscribe();
     };
-    // loadConfig's own promise chain does the mountsRoot/callsDir/callsSuffix
+    // loadConfig's own promise chain does the callsDir/callsSuffix
     // assignment now — this just waits on it. loadConfig
     // never rejects (its own .catch(() => ({})) absorbs a fetch failure).
     loadConfig().then(begin);
@@ -6719,7 +6702,7 @@
     autoReload,
     // Whether THIS frame is inside a git snapshot, and what it resolved to —
     // `null` when there is none (no `_snapshot` on this frame's url, or the
-    // resolve failed: no app folder here, a mount-backed path, git trouble),
+    // resolve failed: no app folder here, git trouble),
     // else `{sha, dir, app_dir}`. A function returning the one resolve this
     // module already kicked off at init (`snapshotReady`), not a bare value:
     // the resolve is a network round trip, so there is no synchronous answer

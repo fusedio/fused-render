@@ -8,7 +8,7 @@
 //   "/claude-md"             -> legacy; redirects into the Claude config panel
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
-//   "/preferences|/templates|/mounts" -> settings pages
+//   "/preferences|/templates" -> settings pages
 //   "/monitor"               -> whole-machine process monitor (shell/monitor)
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
@@ -33,11 +33,8 @@ import {
   appIconUrl,
   getAppIcon,
   statPath,
-  getMounts,
-  reconnectMount,
   type Config,
   type HttpError,
-  type Mount,
   type StatResult,
 } from "@platform/lib/api";
 import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
@@ -47,7 +44,6 @@ import {
   useFavicon,
   useRefreshOnReturn,
 } from "@platform/lib/hooks";
-import { useMountHealth } from "@platform/lib/mountHealth";
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
 import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
@@ -114,7 +110,6 @@ let autoShowDecided = false;
 // "chunks larger than 500 kB" build warning without just raising the limit.
 const Preferences = lazy(() => import("@shell/Preferences"));
 const Templates = lazy(() => import("@shell/templates/Templates"));
-const Mounts = lazy(() => import("@shell/Mounts"));
 const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
@@ -168,9 +163,8 @@ type StatState =
   // read (403 → the Full Disk Access card) from missing/broken.
   | { status: "error"; message: string; httpStatus?: number };
 
-// `reloadKey` re-runs the stat without a navigation — used to recover after a
-// disconnected mount is reconnected in place (StatErrorView), where fsPath and
-// epoch are both unchanged.
+// `reloadKey` re-runs the stat without a navigation (Preview's onReload),
+// where fsPath and epoch are both unchanged.
 function useStat(
   fsPath: string | null,
   epoch: number,
@@ -197,90 +191,18 @@ function useStat(
   return state;
 }
 
-// A file on a mount goes unreachable when the mount is disconnected or wedged.
-// The raw stat error is a dead end, so detect that the failing path sits under
-// a known mount and offer to reconnect it in place. `state` is a real health
-// probe (rcd listing + a timed listdir, shell/mounts.py), but a stat can fail
-// under a mount for reasons the probe misses, so the button shows whenever the
-// path is under a mount — not only when it reports down.
 function StatErrorView({
   fsPath,
   message,
   httpStatus,
-  onReload,
 }: {
   fsPath: string;
   message: string;
   httpStatus?: number;
-  onReload: () => void;
 }) {
-  // undefined = still checking; null = not under any mount.
-  const [mount, setMount] = useState<Mount | null | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const [mountErr, setMountErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getMounts().then(
-      (r) => {
-        if (!alive) return;
-        // Longest matching mountpoint wins (nested mounts).
-        const hit = r.mounts
-          .filter(
-            (m) =>
-              fsPath === m.mountpoint || fsPath.startsWith(m.mountpoint + "/"),
-          )
-          .sort((a, b) => b.mountpoint.length - a.mountpoint.length)[0];
-        setMount(hit ?? null);
-      },
-      () => alive && setMount(null),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [fsPath]);
-
-  const reconnect = async () => {
-    if (!mount) return;
-    setBusy(true);
-    setMountErr(null);
-    try {
-      // reconnectMount handles every bad state in one call: clears rcd's
-      // tracking, force-unmounts a dead kernel mount that rejects a plain
-      // umount (the wedged-NFS case), then mounts fresh.
-      await reconnectMount(mount.id);
-      setBusy(false);
-      onReload(); // re-stat; success replaces this view with the preview
-    } catch (e) {
-      setMountErr((e as Error).message);
-      setBusy(false);
-    }
-  };
-
-  // Mount lookup still in flight: hold off rather than flash the generic
-  // stat error and then flip it to the reconnect card a beat later.
-  if (mount === undefined) return null;
-  if (mount) {
-    const wedged = mount.state !== "unmounted";
-    return (
-      <div className="status-message error">
-        <p>
-          <strong>{mount.name}</strong>{" "}
-          {wedged ? "isn’t responding" : "is disconnected"} — this file is on a
-          mount that isn’t currently available.
-        </p>
-        <button type="button" disabled={busy} onClick={reconnect}>
-          {busy ? "Reconnecting…" : wedged ? "Reconnect" : "Mount"}
-        </button>
-        {mountErr && <div className="deploy-error">{mountErr}</div>}
-      </div>
-    );
-  }
   // A refused stat (403 — a file or folder macOS/TCC or mode bits won't let us
   // read) gets the access card with the Full Disk Access strip in place of
-  // the raw errno plate (explorer/AccessDenied.tsx). Checked after the mount
-  // branch: a dead mount can surface as EPERM too, and reconnecting is the
-  // right offer there.
+  // the raw errno plate (explorer/AccessDenied.tsx).
   if (isAccessDenied({ status: httpStatus, message })) {
     return (
       <div className="status-message">
@@ -394,7 +316,7 @@ function StatView({
   epoch: number;
   home: string;
 }) {
-  // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
+  // Bumped by Preview's onReload to re-stat in place.
   const [reloadKey, setReloadKey] = useState(0);
   // Directory hint from the navigation that mounted this view (see router
   // navHintIsDir). Captured ONCE at mount — StatView is keyed by epoch+fsPath
@@ -456,7 +378,6 @@ function StatView({
         fsPath={fsPath}
         message={stat.message}
         httpStatus={stat.httpStatus}
-        onReload={() => setReloadKey((k) => k + 1)}
       />
     );
   } else if (stat.status === "ok") {
@@ -589,10 +510,6 @@ export default function App({ config }: { config: Config }) {
   // for the identical reason: `ActivityDock` is the one place with the full
   // poll snapshot, and `NotificationHost` is the one column that draws it.
   const [popupJob, setPopupJob] = useState<Job | null>(null);
-
-  // Background mount-health poll → global disconnect/reconnect toasts. Mounted
-  // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
-  useMountHealth();
 
   // The same shape, for scheduled messages: nobody is looking at /tasks when
   // one fires, so "it ran" / "it failed" / "it was missed" has to arrive on its
@@ -773,10 +690,8 @@ export default function App({ config }: { config: Config }) {
     pathname === "/explorer/view/_tab" || pathname === "/explorer/embed/_tab";
   const isPrefs = pathname === "/preferences";
   const isTemplates = pathname === "/templates";
-  // PROTOTYPE: mounts page (see shell/Mounts.tsx).
-  const isMounts = pathname === "/mounts";
-  // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
-  // pattern as Mounts.
+  // Scheduled Claude messages (shell/Scheduled.tsx) — chrome-free settings
+  // pattern.
   const isTasks = pathname === "/tasks";
   // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
   // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
@@ -834,7 +749,6 @@ export default function App({ config }: { config: Config }) {
     isTabs ||
     isPrefs ||
     isTemplates ||
-    isMounts ||
     isTasks ||
     isMonitor ||
     isAiModels ||
@@ -857,9 +771,7 @@ export default function App({ config }: { config: Config }) {
           ? "Preferences"
           : isTemplates
             ? "Templates"
-            : isMounts
-              ? "Mounts"
-              : isTasks
+            : isTasks
                 ? "Tasks"
                 : isMonitor
                 ? "Monitor"
@@ -970,15 +882,6 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Templates key={epoch} />
-        </Suspense>
-      </div>
-    );
-  } else if (isMounts) {
-    // PROTOTYPE — remote-storage mounts, same chrome-free settings pattern.
-    main = (
-      <div id="content" key={epoch}>
-        <Suspense fallback={<RouteFallback />}>
-          <Mounts key={epoch} />
         </Suspense>
       </div>
     );

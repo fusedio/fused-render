@@ -1,13 +1,8 @@
 // URL forms the path bar (Ctrl/Cmd+L, Breadcrumb) accepts besides a plain
-// local path. Two kinds, resolved very differently:
-//
-//  - file:// — a pure client-side rewrite to the local path it names. No
-//    server round trip: the explorer already browses the whole filesystem, so
-//    a file URL is just a spelling of a path the user could have typed.
-//  - s3:// / gs:// / gcs:// — resolved by the SERVER (GET /api/mounts/resolve),
-//    which is where the mount records and the rclone config live. The shell
-//    has no cloud browser, so these only open when a mount already covers the
-//    bucket; the server's error text is what the user is shown.
+// local path: file:// only — a pure client-side rewrite to the local path it
+// names. No server round trip: the explorer already browses the whole
+// filesystem, so a file URL is just a spelling of a path the user could have
+// typed.
 //
 // Anything else (http://, ftp://, …) is rejected by name rather than silently
 // treated as a path — "https:/home" is not a folder anyone meant to open.
@@ -17,16 +12,10 @@
 // relative path with a colon out of this branch entirely.
 const SCHEME_RE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
 
-const CLOUD_SCHEMES = new Set(["s3", "gs", "gcs"]);
-
 // The lowercased scheme of a URL-looking string, else null (= treat as a path).
 export function urlScheme(value: string): string | null {
   const m = SCHEME_RE.exec(value);
   return m ? m[1].toLowerCase() : null;
-}
-
-export function isCloudScheme(scheme: string): boolean {
-  return CLOUD_SCHEMES.has(scheme);
 }
 
 // file:// URL -> local path. Throws (message is user-facing) for a form that
