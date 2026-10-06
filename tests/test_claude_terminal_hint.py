@@ -69,3 +69,35 @@ def test_hint_is_machinery_in_both_copies(agent):
 def test_start_send_and_main_accept_the_hint(agent):
     for fn in (agent._start, agent._send, agent.main):
         assert "terminal_hint" in inspect.signature(fn).parameters
+
+
+def _restored_turns(agent, tmp_path, text):
+    project = tmp_path / "proj"
+    project.mkdir()
+    agent.PROJECTS = str(tmp_path / "projects")
+    session = os.path.join(agent.PROJECTS, agent._munge(str(project)))
+    os.makedirs(session)
+    with open(os.path.join(session, "sid.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"message": {"role": "user", "content": [
+            {"type": "text", "text": text}]}}) + "\n")
+    return agent._history(str(project), "sid")["turns"]
+
+
+def test_restore_strips_hint_after_app_state(agent, tmp_path):
+    text = ("<live-app-state>{\"a\": 1}</live-app-state>\n\n"
+            "<terminal-hint>cc0c (zsh)</terminal-hint>\n\n"
+            "[terminal abc: zsh — /tmp]\nhello")
+    turns = _restored_turns(agent, tmp_path, text)
+    assert [t["text"] for t in turns] == ["[terminal abc: zsh — /tmp]\nhello"]
+
+
+def test_restore_strips_hint_without_app_state(agent, tmp_path):
+    text = "<terminal-hint>cc0c (zsh)</terminal-hint>\n\nhello"
+    turns = _restored_turns(agent, tmp_path, text)
+    assert [t["text"] for t in turns] == ["hello"]
+
+
+def test_restore_keeps_a_typed_hint_tag_mid_message(agent, tmp_path):
+    text = "see <terminal-hint>x</terminal-hint> here"
+    turns = _restored_turns(agent, tmp_path, text)
+    assert [t["text"] for t in turns] == [text]

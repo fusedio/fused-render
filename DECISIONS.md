@@ -6550,3 +6550,8 @@ Supersedes the "Partial" bullet of D1324: the Part 2 probe was run by hand on cl
 ## D1327 — Terminal asks render as a chip + selection block in the chat (2026-10-06, worktree-claude-terminal-share)
 
 The Ask Claude / Fix with AI / tab prompts keep their raw text on the wire (the model needs the id line and fences), but the user bubble in `Turn.tsx` now parses it with `parseTerminalAsk` (next to the builders in `terminalFocus.ts`) and draws a terminal chip (label, cwd basename), the selection as a scrolling `pre`, then the words. Same `.bubble` element with an `is-terminal-ask` class; plain turns are unchanged. Presentation only: stored transcripts and the server never see a different string.
+
+
+## D1328 — Restored transcripts strip a leading terminal-hint (2026-10-06, worktree-claude-terminal-share)
+
+D1324 said the `<terminal-hint>` block was stripped on restore, but `_history` only removed app-state (`_MACHINERY_STRIP` is applied by `_strip_machinery` for session names and the Tasks list, not by `_history`). Reopened chats showed the raw hint in the user bubble and `parseTerminalAsk` never matched. `_history` now also calls `_strip_terminal_hint`, which removes one block at the very start of the text (after app-state removal), so a tag typed mid-message survives. This also makes the D1327 terminal chip render on reopened chats.

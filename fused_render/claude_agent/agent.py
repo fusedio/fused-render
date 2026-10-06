@@ -2292,6 +2292,16 @@ def _strip_machinery(text: str) -> str:
 # "terminal-hint" is in `_MACHINERY_STRIP`, so restored transcripts and the
 # Tasks list never show it as something the user typed.
 TERMINAL_HINT_TAG = "terminal-hint"
+# One LEADING hint block only: the hint is always written first (after the
+# app-state block is gone), so a tag the human typed mid-message must survive.
+_TERMINAL_HINT_LEAD = re.compile(
+    r"<%s>.*?</%s>\s*" % (TERMINAL_HINT_TAG, TERMINAL_HINT_TAG), re.DOTALL)
+
+
+def _strip_terminal_hint(text: str) -> str:
+    text = text.lstrip()
+    m = _TERMINAL_HINT_LEAD.match(text)
+    return (text[m.end():] if m else text).strip()
 _HINT_FIELD_MAX = 120
 
 
@@ -6736,7 +6746,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
             # block comes back on every restore. The user never typed it and
             # never saw it — showing them a screenful of JSON they don't
             # recognise is the whole reason it is stripped here.
-            text = _strip_app_state(text)
+            text = _strip_terminal_hint(_strip_app_state(text))
             # Claude Code's own synthetic `user` records are not turns: nobody
             # typed them and the reader has no use for their XML. Two of them
             # were named literally here; the rest — `<task-notification>` the
