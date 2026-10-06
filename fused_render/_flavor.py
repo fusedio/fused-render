@@ -2,11 +2,17 @@
 
 One package, two macOS apps. ``render`` is Fused Render (the default,
 everything unchanged); ``bot`` is Fused Bot — the same code with the Bots
-page as its only front door, its own bundle id, name, icon, home dir, port
-base, deep-link scheme and update feed. The flavor is orthogonal to the
-branch ref in ``_branch.py``: a bot build off a feature branch still gets the
-branch suffix nested inside the bot identity (``io.fused.bot.<ref>``,
-``~/.fused-bot/branches/<ref>``).
+page as its only front door, its own bundle id, name, icon, port base,
+deep-link scheme and update feed. User state is ONE tree for both
+(``~/.fused-render``, ``~/Fused``; owner's call 2026-10-06): a bot made in
+either app is the same bot in the other. Only process identity is per app
+(Application Support dir with the pid/port files and update downloads), so
+the two can run side by side without one taking the other's single-instance
+probe. Routines and the iMessage bridge are single-owner across the two via
+flocks in the shared tree (bots/registry.py, bots/channels/imessage.py).
+The flavor is orthogonal to the branch ref in ``_branch.py``: a bot build off
+a feature branch still gets the branch suffix nested inside the bot identity
+(``io.fused.bot.<ref>``).
 
 Resolution priority (cached on first access within a process):
 1. ``FUSED_RENDER_FLAVOR`` env var, if set (``render`` or ``bot``).
@@ -15,9 +21,7 @@ Resolution priority (cached on first access within a process):
 3. ``render``.
 
 Stdlib only, no package imports: ``_branch.py`` imports this for the port
-base, and ``fused_render/__init__`` calls ``apply_env()`` before anything
-else in the package loads, so the ~20 modules that re-derive
-``FUSED_RENDER_HOME or ~/.fused-render`` at import time see the bot home.
+base.
 """
 import os
 import sys
@@ -35,7 +39,7 @@ _IDENTITY = {
         "app_name": "FusedRender",          # bundle, binary, DMG, /Applications
         "display_name": "Fused Render",     # window title, copy
         "bundle_id": "io.fused.render",
-        "home_dir_name": ".fused-render",   # ~/.fused-render
+        "home_dir_name": ".fused-render",   # ~/.fused-render — shared by both
         "app_support_name": "fused-render",  # ~/Library/Application Support/<name>
         "port_base": 1777,
         "scheme": "fused-render",           # fused-render:// deep links
@@ -47,7 +51,7 @@ _IDENTITY = {
         "app_name": "FusedBot",
         "display_name": "Fused Bot",
         "bundle_id": "io.fused.bot",
-        "home_dir_name": ".fused-bot",
+        "home_dir_name": ".fused-render",   # one state tree, see module doc
         "app_support_name": "fused-bot",
         "port_base": 2777,                  # FusedBot's historical port
         "scheme": "fused-bot",
@@ -152,15 +156,6 @@ def cask() -> str:
 def menubar_icon() -> str:
     """Path under fused_render/assets/."""
     return _get("menubar_icon")
-
-
-def apply_env() -> None:
-    """Point ``FUSED_RENDER_HOME`` at the flavor's home when the caller has not
-    set it. Called from ``fused_render/__init__`` so it runs before any module
-    computes a home-rooted constant at import; children inherit it."""
-    if flavor() == RENDER:
-        return
-    os.environ.setdefault("FUSED_RENDER_HOME", default_home_dir())
 
 
 if __name__ == "__main__":

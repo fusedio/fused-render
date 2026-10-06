@@ -135,10 +135,53 @@ def start() -> None:
     with _lock:
         t = _sched["thread"]
         if t is None or not t.is_alive():
+            if not _take_routines_lock():
+                logger.info("bots routines: another Fused app owns the scheduler on this "
+                            "machine; this one serves the bots without ticking them")
+                return
             stop = threading.Event()
             t = threading.Thread(target=_scheduler, args=(stop,), daemon=True, name="bots-routines")
             _sched.update(thread=t, stop=stop)
             t.start()
+
+
+_ROUTINES_LOCK = {"fh": None}
+
+
+def _take_routines_lock() -> bool:
+    """One routines scheduler per machine. Fused Render and Fused Bot share the
+    bots tree (`<home>/bots`), so without this both would tick every routine
+    on their 20 s pass. Same flock-and-stand-down the iMessage channel uses
+    (bots/channels/imessage.py); the fd is held for the process lifetime and
+    released in shutdown(). Windows has no fcntl and only one app, so it just
+    proceeds."""
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    path = os.path.join(bpaths.data_root(), "routines.lock")
+    try:
+        fh = open(path, "a+")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    _ROUTINES_LOCK["fh"] = fh
+    return True
+
+
+def _drop_routines_lock() -> None:
+    fh, _ROUTINES_LOCK["fh"] = _ROUTINES_LOCK["fh"], None
+    if fh is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        fh.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def router():
@@ -191,6 +234,7 @@ def shutdown() -> None:
             pass
     with _lock:
         _sched.update(thread=None, stop=None)
+    _drop_routines_lock()
     for b in loaded():
         try:
             b.shutdown()

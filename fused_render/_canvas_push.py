@@ -73,9 +73,9 @@ INTERNAL_ENV = "FUSED_RENDER_CANVAS_PUSH_INTERNAL"
 # canvases here would pull FastAPI into the startup path of every `fused`
 # command. Keep the two in step.
 _CANVASES_DIR_ENV = "FUSED_RENDER_CANVASES_DIR"
-# Under the app home, as canvases_root() does since the Fused Bot flavor: the
-# server sets FUSED_RENDER_HOME (~/.fused-bot there) before it spawns anything,
-# so a `fused` child sees the same root the server resolved.
+# Under the app home, as canvases_root() does: the server passes
+# FUSED_RENDER_HOME through to anything it spawns, so a `fused` child sees the
+# same root the server resolved.
 _HOME_ENV = "FUSED_RENDER_HOME"
 _DEFAULT_HOME = "~/.fused-render"
 

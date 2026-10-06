@@ -57,11 +57,11 @@ export function bundleName(): string {
   return state.displayName.replace(/\s+/g, "");
 }
 
-/** The running app's own state home — `~/.fused-render` / `~/.fused-bot`
- *  (fused_render/_flavor.py home_dir_name). Prefs, template registry, staged
- *  core templates live here, never under the installation. */
+/** The state home both apps share — `~/.fused-render` for Render and Bot
+ *  alike (fused_render/_flavor.py). Prefs, template registry, staged core
+ *  templates live here, never under the installation. */
 export function userDataDir(): string {
-  return isBot() ? "~/.fused-bot" : "~/.fused-render";
+  return "~/.fused-render";
 }
 
 /** The custom URL scheme the running app answers — `fused-render` /

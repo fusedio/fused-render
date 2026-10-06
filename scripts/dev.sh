@@ -96,7 +96,7 @@ if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
 fi
 # Pin the flavor too: a stale fused_render/_baked_flavor.py left by a local
 # `FUSED_RENDER_FLAVOR=bot bash scripts/build_dmg.sh` must not silently turn
-# the dev server into Fused Bot (other home, other port, other bundle id).
+# the dev server into Fused Bot (other port, other bundle id, Bots-only shell).
 export FUSED_RENDER_FLAVOR="${FUSED_RENDER_FLAVOR:-render}"
 
 # ---------------------------------------------------------------------------
