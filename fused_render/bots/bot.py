@@ -57,7 +57,6 @@ BUILD_MAX_S = 3 * 3600     # stop watching after this long
 HANDOFF_POLL_S = 2         # how often a hand-off watcher looks at the target bot
 HANDOFF_MAX_S = BUILD_MAX_S  # a target may wait on the user at the Mac (login, approval) for a long time
 HANDOFF_KEEP = 40          # meta["handoffs"] rows kept on Super Bot
-HANDOFF_STATES = ("queued", "running", "waiting", "done", "error", "stopped")
 INBOX_LIST = 12            # artifacts the page shows per bot
 
 MODELS = ("haiku", "sonnet", "opus", "fable", "local-4b", "local-9b")  # fused.ai aliases the model picker offers
@@ -1852,18 +1851,24 @@ class Bot:
                 self._handoff_finish(None, hd, "error", f"{hd['target_name']} no longer exists.")
                 return
             deadline = float(hd.get("created_at") or time.time()) + HANDOFF_MAX_S
-            while time.time() < deadline:
-                time.sleep(HANDOFF_POLL_S)
-                if hd.get("done_at"):
-                    return  # settled elsewhere (handoff_stop on a queued hand-off)
-                if hd.get("state") == "queued":
-                    self._handoff_start(t, hd, from_queue=True)
-                    continue
-                th = self._handoff_threads.get(hd["id"])
-                if th is not None and th.is_alive():
-                    self._handoff_progress(t, hd)
-                    continue
-                self._handoff_settle(t, hd)
+            try:
+                while time.time() < deadline:
+                    time.sleep(HANDOFF_POLL_S)
+                    if hd.get("done_at"):
+                        return  # settled elsewhere (handoff_stop on a queued hand-off)
+                    if hd.get("state") == "queued":
+                        self._handoff_start(t, hd, from_queue=True)
+                        continue
+                    th = self._handoff_threads.get(hd["id"])
+                    if th is not None and th.is_alive():
+                        self._handoff_progress(t, hd)
+                        continue
+                    self._handoff_settle(t, hd)
+                    return
+            except Exception as e:  # noqa: BLE001 — a dead watcher must not leave the row "running" forever
+                logger.warning("hand-off %s: watcher failed", hd.get("id"), exc_info=True)
+                self._handoff_finish(t if hd.get("start_seq") is not None else None, hd, "error",
+                                     f"Lost track of {hd['target_name']}'s task ({e}); its chat has the details.")
                 return
             with t.lock:
                 key = (self.id, hd["id"])

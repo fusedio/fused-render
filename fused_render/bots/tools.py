@@ -558,7 +558,9 @@ def ui_detail(name: str, result: str, summary: str, change: str = "") -> str | N
     would only repeat the summary. `show` never gets one and `build` loses its
     "Now `done` …" tail: both are written to the model, not the user."""
     raw = (result or "").strip()
-    if name in ("show", *HANDOFF_TOOLS) and not raw.startswith("error"):
+    if name == "show":
+        return None
+    if name in HANDOFF_TOOLS and not raw.startswith("error"):
         return None  # the chip says it all; the rest is written to the model
     if name == "build":
         raw = _NOW_DONE.sub("", raw).strip()

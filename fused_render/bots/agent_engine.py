@@ -36,7 +36,8 @@ window, window_closed, _closed_window_note, _recover_popup,
 collect_task_artifacts, _routine_outcome, _offer, _offer_hints, build,
 run_tool, run_py, show_app, _step_thumb, _skill_dirs, memory_for_prompt,
 skills_for_prompt, past_conversation, contacts, contact, py_ref, all_files,
-task_artifacts, declined_offers, task_origin, task_started, task_dir.
+task_artifacts, declined_offers, task_origin, task_started, task_dir; Super Bot
+also handoff, handoff_stop (tools.execute) and bot.py bots_section.
 """
 from __future__ import annotations
 
