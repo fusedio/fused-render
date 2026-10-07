@@ -206,9 +206,14 @@ def test_start_ready_server_closes_job_when_spawn_raises(monkeypatch):
     def failing_start(job, paths, port, token):
         raise pywintypes.error(5, "AssignProcessToJobObject", "access denied")
 
+    class _Paths:
+        @staticmethod
+        def log(message):
+            pass
+
     monkeypatch.setattr(core, "_start_server", failing_start)
     with pytest.raises(pywintypes.error):
-        core._start_ready_server(object(), "tok")
+        core._start_ready_server(_Paths(), "tok")
     assert len(closed) == 3  # every retry attempt's job was closed
 
 
@@ -282,7 +287,7 @@ def test_forwarded_open_never_blocks_the_loop_thread(monkeypatch):
     release_open = threading.Event()
     open_started = threading.Event()
 
-    def hung_open(port, command):
+    def hung_open(port, command, relaunch=None):
         open_started.set()
         release_open.wait(30)  # stands in for a disconnected-UNC Path.exists()
         raise OSError("host unreachable")
@@ -334,7 +339,7 @@ def test_initial_open_never_blocks_startup(monkeypatch):
     release_open = threading.Event()
     open_started = threading.Event()
 
-    def hung_open(port, command):
+    def hung_open(port, command, relaunch=None):
         open_started.set()
         release_open.wait(30)  # stands in for a disconnected-UNC Path.exists()
         raise OSError("host unreachable")
