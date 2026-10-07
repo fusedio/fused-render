@@ -271,9 +271,15 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
               </div>
             ) : (
               <div className="hw-stage-box">
-                <span className="hw-stage-in" style={{ zoom: stageZoom(source, format) }}>
-                  <FormatPreview source={source} format={format} />
-                </span>
+                <div className="hw-stage-card">
+                  <div className="hw-stage-card-head">
+                    {spec.label}
+                    <span>See all ›</span>
+                  </div>
+                  <span className="hw-stage-in" style={{ zoom: stageZoom(source, format) }}>
+                    <FormatPreview source={source} format={format} />
+                  </span>
+                </div>
               </div>
             )}
             <div className="hw-opts">

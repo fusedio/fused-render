@@ -1,5 +1,6 @@
 // One grid cell: the frame (title, "See all", and in edit mode the toolbar)
 // around a body chosen by source.
+import { ChevronDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
@@ -101,7 +102,8 @@ function EditPopover({
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        Edit ▾
+        Edit
+        <ChevronDown aria-hidden="true" />
       </button>
       {open ? (
         <div
@@ -186,15 +188,10 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
       onDragEnd={edit ? p.onDragEnd : undefined}
       onKeyDown={edit ? p.onKeyDown : undefined}
     >
-      {edit ? (
-        <button type="button" className="hw-remove" aria-label={`Remove ${title}`} onClick={p.onRemove}>
-          ×
-        </button>
-      ) : null}
       {bare ? null : <div className="hw-head">
         {edit ? (
           <span className="hw-grip" aria-hidden="true" title="Drag to reorder">
-            ⋮⋮
+            <svg viewBox="0 0 10 14" fill="currentColor" aria-hidden="true"><circle cx="3" cy="2.5" r="1.4"/><circle cx="7" cy="2.5" r="1.4"/><circle cx="3" cy="7" r="1.4"/><circle cx="7" cy="7" r="1.4"/><circle cx="3" cy="11.5" r="1.4"/><circle cx="7" cy="11.5" r="1.4"/></svg>
           </span>
         ) : null}
         <h2 className="hw-title">
@@ -207,7 +204,12 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           )}
         </h2>
         {edit ? (
-          <EditPopover widget={widget} title={title} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
+          <>
+            <EditPopover widget={widget} title={title} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
+            <button type="button" className="hw-remove" aria-label={`Remove ${title}`} onClick={p.onRemove}>
+              ×
+            </button>
+          </>
         ) : embedded ? (
           <OpenAppLink app={embedded} />
         ) : seeAll ? (

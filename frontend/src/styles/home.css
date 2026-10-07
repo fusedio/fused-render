@@ -536,7 +536,8 @@
 .hw-toolbar {
   display: flex;
   justify-content: flex-end;
-  margin: 0 0 10px;
+  min-height: 30px;
+  margin: 0 0 12px;
 }
 
 .hw-customize {
@@ -575,7 +576,7 @@
 .hw-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-auto-rows: minmax(120px, auto);
+  grid-auto-rows: auto;
   /* dense: a later, smaller widget backfills the hole a full-row one leaves.
      Keyboard order still follows array order. */
   grid-auto-flow: row dense;
@@ -596,6 +597,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 120px;
   padding: 12px 14px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -799,6 +801,8 @@ button.hw-row:hover {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
   gap: 8px;
+  height: 100%;
+  align-content: center;
 }
 
 .hw-tile {
@@ -866,6 +870,17 @@ button.hw-row:hover {
 
 a.hw-more:hover {
   color: var(--fg);
+}
+
+.hw-body:has(> .hw-empty) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hw-empty {
+  text-align: center;
+  padding: 8px 0;
 }
 
 .hw-empty,
@@ -1182,6 +1197,7 @@ a.hw-more:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-height: 30px;
   margin: 0 0 12px;
 }
 
@@ -1262,8 +1278,14 @@ a.hw-more:hover {
 .hw-widget.is-edit {
   position: relative;
   overflow: visible;
-  border-color: rgba(var(--accent-rgb), 0.45);
+  border-color: var(--border);
+  box-shadow: 0 0 0 1px transparent;
+  transition: border-color 0.12s, box-shadow 0.12s;
   cursor: grab;
+}
+
+.hw-widget.is-edit:hover {
+  border-color: rgba(var(--accent-rgb), 0.5);
 }
 
 .hw-widget.is-edit:has(.hw-pop) {
@@ -1272,7 +1294,7 @@ a.hw-more:hover {
 
 .hw-widget.is-edit .hw-body {
   pointer-events: none;
-  opacity: 0.7;
+  opacity: 0.55;
   overflow: hidden;
 }
 
@@ -1292,33 +1314,39 @@ a.hw-more:hover {
 
 .hw-grip {
   flex: none;
-  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  width: 10px;
+  color: var(--fg-faint);
   font-size: 13px;
-  letter-spacing: -2px;
   line-height: 1;
+  cursor: grab;
+}
+
+.hw-grip svg {
+  width: 10px;
+  height: 14px;
 }
 
 .hw-remove {
-  position: absolute;
-  top: -8px;
-  left: -8px;
-  z-index: 2;
   width: 22px;
   height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: none;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 50%;
-  background: var(--bg-alt);
+  background: transparent;
   color: var(--fg-muted);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
   cursor: pointer;
 }
 
 .hw-remove:hover {
+  background: var(--bg-alt);
   color: var(--error);
 }
 
@@ -1333,9 +1361,17 @@ a.hw-more:hover {
   background: transparent;
   color: var(--fg-muted);
   font-size: 11.5px;
-  padding: 2px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px 3px 10px;
   border-radius: 999px;
   cursor: pointer;
+}
+
+.hw-editbtn svg {
+  width: 12px;
+  height: 12px;
 }
 
 .hw-editbtn:hover,
@@ -1490,7 +1526,7 @@ a.hw-more:hover {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  border: 1px dashed rgba(var(--accent-rgb), 0.55);
+  border: 1px dashed color-mix(in srgb, var(--fg-faint) 55%, transparent);
   border-radius: 16px;
   background: transparent;
   color: var(--fg-muted);
@@ -1499,8 +1535,9 @@ a.hw-more:hover {
 }
 
 .hw-add-tile:hover {
+  border-color: var(--accent);
   color: var(--fg);
-  background: var(--bg-alt);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .hw-add-plus {
@@ -1532,7 +1569,7 @@ a.hw-more:hover {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: 0 24px 60px var(--shadow-md);
+  box-shadow: 0 24px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
   color: var(--fg);
 }
 
@@ -1588,11 +1625,19 @@ a.hw-more:hover {
   width: 26px;
   height: 26px;
   border-radius: 7px;
+  background: var(--bg-panel);
+  color: var(--fg-muted);
+}
+
+.hw-src.is-on .hw-src-sq,
+.hw-src:hover .hw-src-sq {
   background: rgba(var(--accent-rgb), 0.14);
   color: var(--accent);
 }
 
 .hw-src-sq.is-lg {
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent);
   width: 44px;
   height: 44px;
   border-radius: 11px;
@@ -1631,9 +1676,9 @@ a.hw-more:hover {
   min-height: 140px;
   display: grid;
   place-items: center;
-  padding: 18px;
+  padding: 20px 24px;
   overflow: hidden;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 70%, var(--bg-panel));
   border: 1px solid var(--border);
   border-radius: 12px;
 }
@@ -1642,6 +1687,12 @@ a.hw-more:hover {
   display: block;
   max-width: 100%;
 }
+
+.hw-stage-card { width: min(100%, 540px); display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+.hw-stage-card-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--fg); }
+.hw-stage-card-head span { font-size: 12px; font-weight: 400; color: var(--fg-muted); }
+.hw-stage-card .hw-stage-in { width: 100%; }
+.hw-stage-card .fp-strip { mask-image: linear-gradient(90deg, #000 82%, transparent); -webkit-mask-image: linear-gradient(90deg, #000 82%, transparent); }
 
 .hw-stage-box.is-folders {
   place-items: stretch;
@@ -1913,9 +1964,10 @@ a.hw-more:hover {
 /* View mode: the widget is the bar itself — no card, no header, minimal padding,
    like the hero it replaced. Edit mode keeps the normal card and chrome. */
 .hw-widget.is-search {
-  align-self: center;
+  min-height: 0;
+  align-self: stretch;
   width: 100%;
-  padding: 0;
+  padding: 4px 0 12px;
   background: none;
   border-color: transparent;
   border-radius: 0;
