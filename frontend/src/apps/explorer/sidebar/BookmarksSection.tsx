@@ -724,7 +724,15 @@ export default function BookmarksSection() {
   // pointer-driven and clears its own highlight from whatever it painted, on
   // every path out including Escape (listing/row-drag.ts).
   useEffect(() => {
-    const onEnd = () => clearDragClasses();
+    // Refs too: a row that unmounted mid-drag (unpinned elsewhere, store
+    // refresh) never fires its own dragend, and a stale dragged id would let
+    // a later outside drag (a file, text) pass the pinned/tree checks.
+    const onEnd = () => {
+      draggedIdRef.current = null;
+      draggedIsFolderRef.current = false;
+      draggedIsPinnedRef.current = false;
+      clearDragClasses();
+    };
     document.addEventListener("dragend", onEnd);
     document.addEventListener("drop", onEnd);
     return () => {

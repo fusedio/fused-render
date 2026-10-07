@@ -61,7 +61,7 @@ export const HOME_PLACEHOLDER = "Ask Claude…";
  *  NOT focused — once the caret is here the hint has nothing left to say. */
 export const SLASH_HINT = "press / to focus";
 export function withSlashHint(placeholder: string): string {
-  return placeholder + "   ·   " + SLASH_HINT;
+  return placeholder + " · " + SLASH_HINT;
 }
 
 /** The disabled Send's tooltip when the caller hands no reason (P4R1-2). The
@@ -2002,7 +2002,9 @@ export function ComposerCard({
           placeholder={
             blocked && blockedPlaceholder
               ? blockedPlaceholder
-              : (boxFocused ? (t: string) => t : withSlashHint)(
+              : // No hint on a blocked box either: "/" skips a disabled
+                // composer (chat-focus registration), so it would be a lie.
+                (boxFocused || blocked ? (t: string) => t : withSlashHint)(
                   variant === "home"
                     ? // `homePlaceholderFor` names the KIND once the pane has decided
                       // it ("Ask Claude about this project…"); the markup's own

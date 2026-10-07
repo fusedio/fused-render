@@ -4,7 +4,7 @@
 // frame with its own sections, so the platform stays ignorant of bookmarks,
 // recents, and app lists. Width/collapsed state is shared across all owners
 // (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
-import React, { useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { FusedMark } from "@platform/ui/FusedMark";
 import { navigateUrl } from "@platform/lib/router";
@@ -245,6 +245,9 @@ export function SidebarFrame({
   const [resizing, setResizing] = useState(false);
   // The collapsed rail's tooltip: which label, at which y (the icon's centre).
   const [railTip, setRailTip] = useState<{ label: string; y: number } | null>(null);
+  // Mouseleave/blur never fire for an item that unmounts under the pointer or
+  // a rail that expands by shortcut: drop the tip on every collapse toggle.
+  useEffect(() => setRailTip(null), [sidebarCollapsed]);
   const tip: RailTip = {
     show: (label, el) => {
       const r = el.getBoundingClientRect();
@@ -415,7 +418,7 @@ export function SidebarFrame({
           <div className="sidebar-rail-items">
             {railRuns(rail).map((run) =>
               run.scrolls ? (
-                <div className="sidebar-rail-scroll" key={run.items[0].key}>
+                <div className="sidebar-rail-scroll" key={run.items[0].key} onScroll={tip.hide}>
                   {run.items.map((item) => renderRailItem(item, tip))}
                 </div>
               ) : (
