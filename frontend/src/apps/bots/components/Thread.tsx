@@ -103,7 +103,7 @@ function HandoffCard({ e, state, targetLive }: { e: BotEvent; state: string; tar
   const h = e.handoff!, who = h.target_name || "the bot";
   const head = e.role === "system" ? `Asked ${who}`
     : e.role === "question" ? `${who} needs you at the laptop`
-    : state === "error" ? `${who} failed` : state === "stopped" ? `${who} stopped` : `${who} finished`;
+    : state === "failed" ? `${who} failed` : state === "cancelled" ? `${who} stopped` : `${who} finished`;
   const lead = e.role === "system" ? /^Asked .+? to:\s*/ : e.role === "question" ? /^.+? needs you at the laptop:\s*/ : null;
   const text = lead ? e.text.replace(lead, "") : e.text;
   return (

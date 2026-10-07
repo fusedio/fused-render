@@ -31,11 +31,11 @@ export function routineNote(b: Bot): { warn: true; text: string } | { warn: fals
   return isFinite(next) ? { warn: false, text: `next run ${fmtWhenShort(next)}` } : null;
 }
 
-/** Super Bot's newest hand-off still in flight (queued / running / waiting), or null: the list row says "waiting on <Bot>". */
+/** Super Bot's newest hand-off still in flight (received / working / blocked), or null: the list row says "waiting on <Bot>". */
 export function activeHandoff(b: Pick<Bot, "handoffs">): Handoff | null {
   let best: Handoff | null = null;
   for (const h of b.handoffs || [])
-    if ((h.state === "queued" || h.state === "running" || h.state === "waiting") && (!best || (h.created_at || 0) >= (best.created_at || 0))) best = h;
+    if ((h.state === "received" || h.state === "working" || h.state === "blocked") && (!best || (h.created_at || 0) >= (best.created_at || 0))) best = h;
   return best;
 }
 

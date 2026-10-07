@@ -54,9 +54,10 @@ BUILD_MODES = {"scoped": "default", "full": "auto"}
 BUILD_POLL_S = 15          # how often a build watcher asks the server for the task's status
 BUILD_MAX_S = 3 * 3600     # stop watching after this long
 # Hand-offs (docs §11): Super Bot gives an ordinary bot a task and gets ONE result back.
-HANDOFF_POLL_S = 2         # how often a hand-off watcher looks at the target bot
 HANDOFF_MAX_S = BUILD_MAX_S  # a target may wait on the user at the Mac (login, approval) for a long time
 HANDOFF_KEEP = 40          # meta["handoffs"] rows kept on Super Bot
+_LEGACY_HANDOFF_STATES = {"queued": "received", "running": "working", "waiting": "blocked",
+                          "error": "failed", "stopped": "cancelled"}  # read once at load, never written
 INBOX_LIST = 12            # artifacts the page shows per bot
 
 MODELS = ("haiku", "sonnet", "opus", "fable", "local-4b", "local-9b")  # fused.ai aliases the model picker offers
@@ -428,7 +429,6 @@ class Bot:
         self._tool_apps = set()
         self._skills_loaded = []
         self._handoff_queue = []  # hand-offs waiting for this bot to go idle: [(super bot id, hand-off id)], FIFO
-        self._handoff_threads = {}  # hand-off id -> the target's task thread it started (Super Bot side, in memory)
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
@@ -440,9 +440,16 @@ class Bot:
         # Hand-offs still open when the server last stopped: their target's task died with it.
         interrupted = []
         for hd in self.meta.get("handoffs") or []:
+            # Rows written before the event-driven states (docs §11): rename, drop the watcher's fields.
+            if hd.get("state") in _LEGACY_HANDOFF_STATES or "start_seq" in hd or "asked" in hd:
+                hd["state"] = _LEGACY_HANDOFF_STATES.get(hd.get("state"), hd.get("state"))
+                hd.pop("start_seq", None)
+                hd.pop("asked", None)
+                dirty = True
             if not hd.get("done_at"):
                 text = f"Interrupted by a restart; {hd.get('target_name') or 'the bot'}'s chat has what it got to."
-                hd.update(state="error", done_at=time.time(), result=text)
+                hd.update(state="failed", done_at=time.time(), result=text, updated_at=time.time())
+                hd.pop("blocked", None)
                 interrupted.append((hd, text))
                 dirty = True
         if dirty:
@@ -1944,10 +1951,12 @@ class Bot:
 
     # -- hand-offs: Super Bot gives a bot a task (docs §11) ---------------------
     # meta["handoffs"] on Super Bot: [{id, target, target_name, task, origin_via, created_at,
-    #   state: queued|running|waiting|done|error|stopped, done_at?, result?}], last HANDOFF_KEEP.
+    #   state: received|working|blocked|done|failed|cancelled, started_at?, done_at?, result?,
+    #   blocked?: {kind, text}, notes: [str], updated_at}], last HANDOFF_KEEP.
     # Task text goes down, status and ONE result come up. The target's ask / login / approvals stay
-    # in its own chat for the user at the Mac; Super Bot never answers for it. Every change to a
-    # row happens under Super Bot's lock (summary() copies the rows under it).
+    # in its own chat for the user at the Mac; Super Bot never answers for it. Transitions are
+    # driven by the target's events (handoffs.on_event) and the scheduler's pass (handoffs.sweep).
+    # Every change to a row happens under Super Bot's lock (summary() copies the rows under it).
     def _handoff_via(self, hd):
         return chan.handoff_via(self.id, hd["id"])
 
@@ -2015,7 +2024,6 @@ class Bot:
                 t.meta["control"] = False  # a fresh task means the bot drives again (as receive() does)
             if t.deleted:
                 return False
-            start_seq = t.seq
             if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):
                 return False
             # After the start, so a refusal writes nothing; the engine thread's first emit waits on t.lock
@@ -2023,16 +2031,19 @@ class Bot:
             t.emit("user", hd["task"], via=hv)
             if from_queue and q and q[0] == key:
                 q.pop(0)
-            self._handoff_threads[hd["id"]] = t.thread
             with self.lock:
-                hd.update(state="running", start_seq=start_seq, started_at=time.time())
+                if not hd.get("done_at"):
+                    hd["state"] = "working"
+                hd.setdefault("started_at", time.time())
+                hd["updated_at"] = time.time()
                 if self._exists(self.id):
                     self.save()
         return True
 
     def handoff(self, target_name, task):
-        """`handoff`: give an ordinary bot a task and watch it (Super Bot only).
-        A busy bot gets it queued; its watcher starts it when the bot is idle.
+        """`handoff`: give an ordinary bot a task (Super Bot only). A busy bot
+        gets it queued; handoffs.sweep starts it when the bot is idle, and the
+        target's own events move the row along (handoffs.on_event).
         Returns the (label, result) pair the engine hands back to the model."""
         task = (task or "").strip()
         label = f"handoff \"{' '.join((target_name or '').split())[:60] or '?'}\""
@@ -2048,7 +2059,7 @@ class Bot:
         hd = {"id": uuid.uuid4().hex[:8], "target": t.id, "target_name": name, "task": task,
               # the channel the asking task came from: the result goes back there (router origin rule)
               "origin_via": None if chan.is_web(getattr(self, "task_via", None)) else dict(self.task_via),
-              "created_at": time.time(), "state": "queued"}
+              "created_at": time.time(), "state": "received", "notes": [], "updated_at": time.time()}
         with self.lock:
             self.meta["handoffs"] = (self.meta.get("handoffs") or [])[-(HANDOFF_KEEP - 1):] + [hd]
             self.save()
@@ -2057,14 +2068,13 @@ class Bot:
             if not started:
                 with t.lock:
                     t._handoff_queue.append((self.id, hd["id"]))
-        except Exception as e:  # noqa: BLE001 — never leave a row "queued" with no watcher behind it
+        except Exception as e:  # noqa: BLE001 — never leave a row open that nothing will start
             logger.warning("hand-off %s to %s did not start", hd["id"], t.id, exc_info=True)
             with self.lock:
-                hd.update(state="error", done_at=time.time(), result=f"could not start: {e}"[:400])
+                hd.update(state="failed", done_at=time.time(), result=f"could not start: {e}"[:400], updated_at=time.time())
                 self.save()
             return label, f"error: could not hand the task to {name}: {e}"
         self.emit("system", f"Asked {name} to: {task}", source="handoff", handoff=self._handoff_ref(hd))
-        self._watch_handoff(hd)
         if started:
             return label, (f"started; {name} is working on it now (it may pause for the user's approval in its own chat). "
                            f"Now finish: tell the user you asked {name}, in one short sentence, and that they will hear when it is done.")
@@ -2072,9 +2082,8 @@ class Bot:
                        f"you asked {name}, in one short sentence, and that they will hear when it is done.")
 
     def _handoff_is_running(self, t, hd):
-        """`t` is running THIS hand-off's task right now (its via and the thread it started)."""
-        return (t.running() and dict(getattr(t, "task_via", None) or {}) == self._handoff_via(hd)
-                and self._handoff_threads.get(hd["id"]) is t.thread)
+        """`t` is running THIS hand-off's task right now (the via is unique per hand-off)."""
+        return t.running() and dict(getattr(t, "task_via", None) or {}) == self._handoff_via(hd)
 
     def handoff_stop(self, target_name):
         """`handoff_stop`: cancel what THIS Super Bot handed to a bot: a queued
@@ -2094,143 +2103,47 @@ class Bot:
         with t.lock:
             for hd in mine:
                 key = (self.id, hd["id"])
-                if hd.get("state") == "queued" and key in t._handoff_queue:
+                if hd.get("state") == "received" and key in t._handoff_queue:
                     t._handoff_queue.remove(key)
                     dropped.append(hd)
             running = any(self._handoff_is_running(t, hd) for hd in mine)
         for hd in dropped:
-            self._handoff_finish(None, hd, "stopped", f"Cancelled before {name} started it.")
+            self._handoff_finish(None, hd, "cancelled", f"Cancelled before {name} started it.")
         if running:
-            t.stop()  # the watcher reports the outcome (state "stopped") once the task has ended
+            t.stop()  # its `system "Stopped"` closes the row "cancelled" (handoffs.on_event)
         if not dropped and not running:
             return label, f"error: {name} is not working on anything you handed off; only your own hand-offs can be stopped"
         return label, (f"stopped; {name} will not finish what you handed off. Now finish: tell the user it is "
                        "cancelled, in one short sentence.")
 
-    def _watch_handoff(self, hd):
-        """Background: start a queued hand-off when its bot is free, tell the
-        user once when the bot waits on them at the Mac, then report the ONE
-        result to Super Bot's chat (and, by the origin rule, to the phone the
-        asking task came from). Both bots are looked up again on every poll: a
-        deleted one is never written back. Emits carry `via` explicitly: this
-        is not the task thread."""
-        def run():
-            name = hd.get("target_name") or "the bot"
-            t = None
-            try:
-                deadline = float(hd.get("created_at") or time.time()) + HANDOFF_MAX_S
-                while time.time() < deadline:
-                    time.sleep(HANDOFF_POLL_S)
-                    if hd.get("done_at"):
-                        return  # settled elsewhere (handoff_stop on a queued hand-off)
-                    if self.deleted or not self._exists(self.id):
-                        return  # Super Bot was deleted: nobody to report to, and nothing to save
-                    try:
-                        t = _registry().get(hd["target"]) if self._exists(hd["target"]) else None
-                    except ValueError:
-                        t = None
-                    if t is not None and t.deleted:
-                        t = None
-                    if t is None:
-                        self._handoff_finish(None, hd, "error", f"{name} was deleted before it finished.")
-                        return
-                    if hd.get("state") == "queued":
-                        self._handoff_start(t, hd, from_queue=True)
-                        continue
-                    th = self._handoff_threads.get(hd["id"])
-                    if th is not None and th.is_alive():
-                        self._handoff_progress(t, hd)
-                        continue
-                    self._handoff_settle(t, hd)
-                    return
-                started = hd.get("start_seq") is not None
-                if t is not None and started and self._handoff_is_running(t, hd):
-                    t.stop()  # its late result would be lost: end it rather than leave it running unwatched
-                self._handoff_finish(t if started else None, hd, "error",
-                                     f"No result from {name} after {HANDOFF_MAX_S // 3600} hours, so it was stopped; "
-                                     "its chat has what it got to.")
-            except Exception as e:  # noqa: BLE001 — a dead watcher must not leave the row "running" forever
-                logger.warning("hand-off %s: watcher failed", hd.get("id"), exc_info=True)
-                self._handoff_finish(t if hd.get("start_seq") is not None else None, hd, "error",
-                                     f"Lost track of {name}'s task ({e}); its chat has the details.")
-            finally:
-                # Never leave this hand-off at the head of the bot's queue: later ones would stall behind it.
-                try:
-                    tq = t if t is not None else _registry().get(hd["target"])
-                    with tq.lock:
-                        key = (self.id, hd["id"])
-                        if key in tq._handoff_queue:
-                            tq._handoff_queue.remove(key)
-                except Exception:  # noqa: BLE001
-                    pass
-        threading.Thread(target=run, name=f"handoff-{hd['id']}", daemon=True).start()
-
-    def _handoff_progress(self, t, hd):
-        """While the target works: mirror running / waiting, and the first time
-        it waits on the user, one line in Super Bot's chat (texted back by the
-        origin rule). Super Bot never answers for it."""
-        new = "waiting" if t.meta.get("status") == "waiting" else "running"
-        with self.lock:
-            if new == hd.get("state"):
-                return
-            hd["state"] = new
-            ask = new == "waiting" and not hd.get("asked")
-            if ask:
-                hd["asked"] = True
-            if not self._exists(self.id):
-                return
-            self.save()
-        if ask:
-            ws = t.meta.get("waiting_on")
-            ev = t.event_by_seq(ws) if ws else None
-            reason = " ".join(((ev or {}).get("text") or "").split())
-            reason = re.sub(r"\s*Approve\?\s*$", "", reason)[:300] or "it is waiting for you"
-            self.emit("question", f"{hd.get('target_name') or 'A bot'} needs you at the laptop: {reason} Answer it at the Mac.",
-                      source="handoff", handoff=self._handoff_ref(hd), via=hd.get("origin_via"))
-
-    def _handoff_settle(self, t, hd):
-        """The target's task ended: read what it wrote since the hand-off
-        started (events stamped with this hand-off's via) and report it."""
-        hv = self._handoff_via(hd)
-        name = hd.get("target_name") or "The bot"
-        start = int(hd.get("start_seq") or 0)
-        stopped, done, error = False, None, None
-        for _, ev in _iter_events(t.events_path):
-            if int(ev.get("seq") or 0) <= start or dict(ev.get("via") or {}) != hv:
-                continue
-            role = ev.get("role")
-            if role == "system" and (ev.get("text") or "").strip() == "Stopped":
-                stopped = True
-            elif role == "done" and ev.get("source") != "build":
-                done = ev
-            elif role == "error":
-                error = ev
-        last = getattr(t, "last_task_dir", None)  # (via, folder) of the task that ended last
-        task_dir = (last[1] or "") if isinstance(last, tuple) and dict(last[0] or {}) == hv else ""
-        if stopped and done is None:
-            self._handoff_finish(t, hd, "stopped", f"{name} was stopped before it finished.", task_dir=task_dir)
-        elif done is not None:
-            self._handoff_finish(t, hd, "done", (done.get("text") or "").strip() or "(no answer text)",
-                                 summary=(done.get("summary") or "").strip(), task_dir=task_dir)
-        elif error is not None:
-            self._handoff_finish(t, hd, "error", (error.get("text") or "").strip() or "error", task_dir=task_dir)
-        else:
-            self._handoff_finish(t, hd, "error", f"{name} ended without a result; its chat has the details.",
-                                 task_dir=task_dir)
-
     def _handoff_finish(self, t, hd, state, text, summary="", task_dir=""):
-        """Record the outcome, put the result card in Super Bot's chat (via the
-        asking task's origin) and, when the target ran it, the line in the
-        target's chat that says what went up. Nothing is written for a bot
-        that has been deleted."""
+        """The one writer of a terminal row (done | failed | cancelled): record
+        the outcome, put the result card in Super Bot's chat (via the asking
+        task's origin) and, when the target ran it, the line in the target's
+        chat that says what went up. Nothing is written for a bot that has
+        been deleted. Called without Super Bot's lock held (it emits)."""
         with self.lock:
             if hd.get("done_at"):
                 return
-            hd.update(state=state, done_at=time.time(), result=text[:4000])
-            self._handoff_threads.pop(hd["id"], None)
+            now = time.time()
+            hd.update(state=state, done_at=now, result=text[:4000], updated_at=now)
+            hd.pop("blocked", None)
+            if state == "done":
+                # A bot's result is text off the web: Super Bot's next turn asks before every write (docs §11).
+                self.meta.setdefault("conversation", {})["web_touched"] = True
             if self.deleted or not self._exists(self.id):
                 return
             self.save()
+        # Never leave this hand-off in the target's queue: later ones would stall behind it.
+        try:
+            tq = t if t is not None else (_registry().get(hd["target"]) if self._exists(hd.get("target")) else None)
+            if tq is not None:
+                with tq.lock:
+                    key = (self.id, hd["id"])
+                    if key in tq._handoff_queue:
+                        tq._handoff_queue.remove(key)
+        except Exception:  # noqa: BLE001
+            pass
         if not summary:
             flat = " ".join(text.split())
             m = re.match(r"(.+?[.!?])(?:\s|$)", flat)
@@ -2717,6 +2630,9 @@ def delete(bid):
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
     shutil.rmtree(bpaths.bot_cache_dir(bid), ignore_errors=True)
     reg.forget(bid)
+    # Close Super Bot's open hand-offs to this bot now rather than on the next scheduler pass.
+    from fused_render.bots import handoffs
+    handoffs.sweep(reg)
 
 
 # Your own Chrome's profiles (~/Library/Application Support/Google/Chrome/<dir>),

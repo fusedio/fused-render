@@ -224,6 +224,10 @@ TOOL_SPECS: dict[str, dict] = {
                                   task=({"type": "string", "description": "the task in plain words, self-contained"}, True))},
     "handoff_stop": {"description": "Cancel a task you handed to one of the BOTS (only when the user asks you to cancel it).",
                      "inputSchema": _s(bot=({"type": "string", "description": "the bot's name from BOTS"}, True))},
+    # Every bot (docs §11): on a hand-off the line also lands on Super Bot's board (handoffs.on_event).
+    "note": {"description": "One short progress line for the user (and, on a hand-off, for Super Bot's board). Not a "
+                            "result; no more than one every few steps.",
+             "inputSchema": _s(text=REQ)},
 }
 
 HANDOFF_TOOLS = ("handoff", "handoff_stop")
@@ -684,6 +688,8 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return f"hand \"{d.get('bot') or d.get('name') or '?'}\" the task: {task[:160]}{'…' if len(task) > 160 else ''}"
     if act == "handoff_stop":
         return f"stop what you handed \"{d.get('bot') or d.get('name') or '?'}\""
+    if act == "note":
+        return f"note \"{' '.join(str(d.get('text') or '').split())[:120]}\""
     return f"{act} {what}".strip()
 
 
@@ -868,6 +874,12 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             if not is_super(bot):
                 return "handoff_stop", "error: only Super Bot hands tasks to other bots"
             return bot.handoff_stop(d.get("bot") or d.get("name") or "")
+        if act == "note":
+            text = " ".join(str(d.get("text") or d.get("message") or "").split())[:300]
+            if not text:
+                return "note", "error: note needs `text`"
+            bot.emit("note", text, progress=True)  # `progress`: the board keeps these, not the harness's own notes
+            return "note", "ok"
         if act == "readfile":
             from fused_render.bots import filereader
             name = d.get("file") or d.get("name") or d.get("text") or ""

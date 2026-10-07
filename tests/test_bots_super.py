@@ -6,13 +6,16 @@ test_bots_agent_engine.py."""
 from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures (app_home, client, …)
 import json
 import os
+import threading
+import time
 
 import pytest
 
-from fused_render.bots import agent_engine, apptools
+from fused_render.bots import agent_engine, apptools, handoffs, steps_engine
 from fused_render.bots import bot as botmod
 from fused_render.bots import paths as bpaths
 from fused_render.bots import registry
+from fused_render.bots.channels import base as chan
 
 
 @pytest.fixture
@@ -161,3 +164,146 @@ def test_super_bot_avatar_is_fixed_and_its_mark_reserved(client, ws):
     assert st == 400 and "Super Bot" in out["error"]
     st, out = j(client.post(f"/api/bots/{oid}/flag", {"face": {"shape": "", "color": "#ff0000", "icon": "youtube"}}))
     assert st == 200 and bots(client)[oid]["face"]["icon"] == "youtube"
+
+
+# ------------------------------------------------------------- hand-offs ---
+# docs/bots.md §11: a row's state is driven by the target's own events
+# (handoffs.on_event, reached through bot.emit -> registry.on_event) and the
+# scheduler's pass (handoffs.sweep, called by hand here: tests run no scheduler).
+@pytest.fixture
+def pair(ws, monkeypatch):
+    """(Super Bot, an ordinary bot "Scout", gate): the target's task runs a fake engine
+    that writes `Task started` and then blocks on `gate` until the test releases it."""
+    gate = threading.Event()
+
+    def run(bot, task, label=None):
+        bot.emit("system", f"Task started: {label or task}")
+        gate.wait(10)
+    monkeypatch.setattr(steps_engine, "run", run)
+    monkeypatch.setattr(agent_engine, "run", run)
+    sb = registry.create(kind="super")
+    t = registry.create(name="Scout")
+    yield sb, t, gate
+    gate.set()
+    if t.thread is not None:
+        t.thread.join(5)
+
+
+def rows(sb):
+    return {h["id"]: h for h in sb.meta.get("handoffs") or []}
+
+
+def cards(b, role):
+    return [e for e in b.events_since(0) if e["role"] == role and e.get("source") == "handoff"]
+
+
+def release(t, gate):
+    gate.set()
+    t.thread.join(5)
+    gate.clear()
+
+
+def test_handoff_runs_blocks_and_reports_one_result(pair):
+    sb, t, gate = pair
+    label, out = sb.handoff("scout", "find the cheapest flight to Lisbon")
+    assert out.startswith("started"), out
+    (hd,) = rows(sb).values()
+    assert hd["state"] == "working" and hd["started_at"] and "start_seq" not in hd and "asked" not in hd
+    hv = chan.handoff_via(sb.id, hd["id"])
+    # the target waits on the user: blocked, and ONE "needs you at the laptop" card on Super Bot
+    t.emit("approval", "About to submit the form. Approve?", via=hv)
+    assert hd["state"] == "blocked" and hd["blocked"]["kind"] == "approval"
+    t.emit("question", "Which airport?", via=hv)
+    assert hd["blocked"] == {"kind": "question", "text": "Which airport?"}
+    (ask,) = cards(sb, "question")
+    assert ask["text"] == "Scout needs you at the laptop: About to submit the form. Answer it at the Mac."
+    assert ask["handoff"]["state"] == "blocked" and "via" not in ask  # web-started: never texted
+    # the wait ends when the bot acts again; a `note` progress line lands on the row
+    t.emit("action", "goto kayak.com", via=hv)
+    assert hd["state"] == "working" and "blocked" not in hd
+    handoffs.on_event(t, {"role": "note", "text": "comparing three fares", "progress": True, "via": hv})
+    assert hd["notes"] == ["comparing three fares"]
+    t.emit("note", "Already ran py; using the result above.", via=hv)  # a harness note is not a progress line
+    assert hd["notes"] == ["comparing three fares"]
+    sec = handoffs.handoffs_section(sb)
+    assert "working" in sec and "comparing three fares" in sec and "HAND-OFF RESULTS" not in sec
+    t.emit("done", "TAP, 212 EUR on 3 May.", via=hv)
+    assert hd["state"] == "done" and hd["result"] == "TAP, 212 EUR on 3 May." and hd["done_at"]
+    (res,) = cards(sb, "done")
+    assert res["text"] == "TAP, 212 EUR on 3 May." and res["handoff"]["state"] == "done"
+    assert any(e["text"].startswith("Sent to Super Bot: TAP") for e in t.events_since(0) if e["role"] == "system")
+    assert sb.meta["conversation"]["web_touched"] is True
+    sec = handoffs.handoffs_section(sb)
+    assert "done" in sec and "HAND-OFF RESULTS" in sec and "TAP, 212 EUR" in sec
+    # terminal is final: a late event changes nothing
+    t.emit("error", "boom", trace="x", via=hv)
+    assert hd["state"] == "done" and len(cards(sb, "done")) == 1
+    # a result older than Super Bot's last turn drops off the board
+    sb.meta["conversation"]["last_turn_ts"] = time.time() + 1
+    assert handoffs.handoffs_section(sb) == ""
+    assert handoffs.handoffs_section(t) == ""
+
+
+def test_handoff_retry_error_is_not_terminal_but_a_fatal_one_is(pair):
+    sb, t, gate = pair
+    sb.handoff("Scout", "read the news")
+    (hd,) = rows(sb).values()
+    hv = chan.handoff_via(sb.id, hd["id"])
+    t.emit("error", "Model returned no usable JSON; retrying", via=hv)
+    assert hd["state"] == "working"
+    t.emit("error", "RuntimeError: model kept returning invalid JSON", trace="tb", via=hv)
+    assert hd["state"] == "failed" and cards(sb, "done")[0]["handoff"]["state"] == "failed"
+
+
+def test_handoff_step_cap_is_failed(pair):
+    sb, t, gate = pair
+    sb.handoff("Scout", "read the news")
+    (hd,) = rows(sb).values()
+    t.emit("done", "Stopped after 60 steps without finishing.", via=chan.handoff_via(sb.id, hd["id"]))
+    assert hd["state"] == "failed"
+
+
+def test_handoff_queue_sweep_and_stop(pair):
+    sb, t, gate = pair
+    assert t.start_task("the user's own task")  # busy: the hand-off queues behind it
+    label, out = sb.handoff("Scout", "check the weather")
+    assert out.startswith("queued"), out
+    (hd,) = rows(sb).values()
+    assert hd["state"] == "received" and t._handoff_queue == [(sb.id, hd["id"])]
+    handoffs.sweep(registry)
+    assert hd["state"] == "received"  # still busy
+    release(t, gate)
+    handoffs.sweep(registry)
+    assert hd["state"] == "working" and t._handoff_queue == []
+    # a running hand-off is stopped through the target: its `Stopped` closes the row cancelled
+    _, out = sb.handoff_stop("Scout")
+    assert out.startswith("stopped"), out
+    t.emit("system", "Stopped", via=chan.handoff_via(sb.id, hd["id"]))
+    assert hd["state"] == "cancelled"
+    release(t, gate)
+    # a queued one is dropped and closed cancelled at once
+    assert t.start_task("another task of the user's")
+    sb.handoff("Scout", "and the tides")
+    hd2 = [h for h in rows(sb).values() if h["id"] != hd["id"]][0]
+    sb.handoff_stop("Scout")
+    assert hd2["state"] == "cancelled" and hd2["result"].startswith("Cancelled before Scout") and t._handoff_queue == []
+
+
+def test_handoff_sweep_closes_dead_timed_out_and_orphaned_rows(pair):
+    sb, t, gate = pair
+    sb.handoff("Scout", "one")
+    (hd,) = rows(sb).values()
+    release(t, gate)  # the task ends without done / error / Stopped
+    handoffs.sweep(registry)
+    assert hd["state"] == "failed" and "ended without a result" in hd["result"]
+    sb.handoff("Scout", "two")
+    hd2 = [h for h in rows(sb).values() if h["id"] != hd["id"]][0]
+    hd2["created_at"] = time.time() - botmod.HANDOFF_MAX_S - 1
+    handoffs.sweep(registry)
+    assert hd2["state"] == "failed" and "No result from Scout" in hd2["result"]
+    release(t, gate)
+    sb.handoff("Scout", "three")
+    hd3 = [h for h in rows(sb).values() if h["id"] not in (hd["id"], hd2["id"])][0]
+    gate.set()
+    registry.delete(t.id)  # deletion sweeps at once
+    assert hd3["state"] == "failed" and "was deleted" in hd3["result"]
