@@ -56,6 +56,8 @@ BUILD_MAX_S = 3 * 3600     # stop watching after this long
 # Hand-offs (docs §11): Super Bot gives an ordinary bot a task and gets ONE result back.
 HANDOFF_MAX_S = BUILD_MAX_S  # a target may wait on the user at the Mac (login, approval) for a long time
 HANDOFF_KEEP = 40          # meta["handoffs"] rows kept on Super Bot
+_LEGACY_HANDOFF_STATES = {"queued": "received", "running": "working", "waiting": "blocked",
+                          "error": "failed", "stopped": "cancelled"}  # read once at load, never written
 INBOX_LIST = 12            # artifacts the page shows per bot
 
 MODELS = ("haiku", "sonnet", "opus", "fable", "local-4b", "local-9b")  # fused.ai aliases the model picker offers
@@ -438,6 +440,12 @@ class Bot:
         # Hand-offs still open when the server last stopped: their target's task died with it.
         interrupted = []
         for hd in self.meta.get("handoffs") or []:
+            # Rows written before the event-driven states (docs §11): rename, drop the watcher's fields.
+            if hd.get("state") in _LEGACY_HANDOFF_STATES or "start_seq" in hd or "asked" in hd:
+                hd["state"] = _LEGACY_HANDOFF_STATES.get(hd.get("state"), hd.get("state"))
+                hd.pop("start_seq", None)
+                hd.pop("asked", None)
+                dirty = True
             if not hd.get("done_at"):
                 text = f"Interrupted by a restart; {hd.get('target_name') or 'the bot'}'s chat has what it got to."
                 hd.update(state="failed", done_at=time.time(), result=text, updated_at=time.time())
