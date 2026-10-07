@@ -1165,8 +1165,10 @@ export default function Listing({
       armFocusOnRegister();
       // Not `selectSide`: a keystroke is no explicit pick, so the remembered
       // tab (lib/side-tab-store) is left alone.
-      if (!(paneOpen && paneSide === "claude"))
-        setSide({ open: true, mode: paneSides[0] === "claude" ? null : "claude" });
+      // An EXPLICIT "claude" mode even where claude is the folder's first
+      // companion: a null mode would follow the remembered tab, and the key
+      // would open Git (Bugbot, #1479).
+      if (!(paneOpen && paneSide === "claude")) setSide({ open: true, mode: "claude" });
       return true;
     };
   });
