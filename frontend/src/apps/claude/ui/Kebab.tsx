@@ -37,6 +37,7 @@ import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
 import { canRunInTerminal, useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
 
@@ -439,12 +440,14 @@ export function Kebab({
   const onTerminal = useCallback(async () => {
     busy.current = true;
     try {
-      const command = await fetchTerminalCommand();
       if (canRunInTerminal()) {
-        openTerminal({ command });
+        openTerminal({ command: await fetchTerminalCommand() });
         setTerminalLabel("Opened in terminal");
       } else {
-        await navigator.clipboard.writeText(command);
+        // The write starts before any await: WebKit drops the click's
+        // activation across the fetch and rejects a later writeText
+        // (platform/lib/clipboard.ts).
+        if (!(await copyPendingText(fetchTerminalCommand()))) throw new Error("clipboard refused");
         setTerminalLabel("Copied — paste in your terminal");
       }
       // The result shows INSIDE the item, then the menu goes away on its own:
@@ -475,8 +478,7 @@ export function Kebab({
   const onCopyTerminalCommand = useCallback(async () => {
     busy.current = true;
     try {
-      const command = await fetchTerminalCommand();
-      await navigator.clipboard.writeText(command);
+      if (!(await copyPendingText(fetchTerminalCommand()))) throw new Error("clipboard refused");
       setCopyLabel("Copied — paste in your terminal");
       later(() => {
         busy.current = false;

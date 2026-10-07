@@ -12,11 +12,18 @@
 // sharing this would mean threading a toast-vs-label choice through it for a
 // single caller.
 import { canRunInTerminal, openTerminal } from "./terminalDockStore";
-import { copyToClipboard } from "./clipboard";
+import { copyPendingText, copyToClipboard } from "./clipboard";
 import { notify } from "./notifications";
 
 export async function runOrCopyInTerminal(
-  command: string,
+  /** The command, or a promise of one for a caller that has to ask the server
+   *  for it. Pass the PROMISE in that case, not the awaited string: on the
+   *  clipboard path the write has to start inside the click, before any
+   *  await, or WebKit refuses it (see copyPendingText in clipboard.ts). A
+   *  promise that rejects makes THIS reject with the same error, on both
+   *  paths: a command that never arrived is the caller's to report, not a
+   *  "Could not copy" toast. */
+  command: string | Promise<string>,
   opts: {
     /** Where the drawer `cd`s to before typing/running `command`. */
     cwd?: string;
@@ -41,13 +48,14 @@ export async function runOrCopyInTerminal(
   if (canRunInTerminal()) {
     openTerminal({
       cwd: opts.cwd,
-      command,
+      command: await command,
       ...(opts.execute === false ? { execute: false as const } : {}),
     });
     if (opts.ranMessage) notify({ title: opts.ranMessage, tone: "info" });
     return true;
   }
-  const ok = await copyToClipboard(opts.copyCommand ?? command);
+  const toCopy = opts.copyCommand ?? command;
+  const ok = await (typeof toCopy === "string" ? copyToClipboard(toCopy) : copyPendingText(toCopy));
   notify({
     title: ok ? (opts.copiedMessage ?? "Command copied — paste it in your terminal") : "Could not copy the command",
     tone: ok ? "info" : "error",

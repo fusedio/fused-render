@@ -32,7 +32,7 @@ import {
 import type { Task } from "@platform/lib/api";
 import { shortTaskId } from "@platform/lib/task-id";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
-import { copyToClipboard } from "@platform/lib/clipboard";
+import { copyPendingText } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
 import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
@@ -912,8 +912,9 @@ export function TaskPeek({
   const toTerminal = async () => {
     if (!task || !terminalHere) return;
     try {
-      const command = await fetchTerminalCommand();
-      await runOrCopyInTerminal(command, { ranMessage: "Opened in terminal" });
+      // The promise, not the awaited string: where this falls back to a copy,
+      // the clipboard write has to start inside the click (clipboard.ts).
+      await runOrCopyInTerminal(fetchTerminalCommand(), { ranMessage: "Opened in terminal" });
     } catch (e) {
       notify({ title: (e as Error).message, tone: "error" });
     }
@@ -924,8 +925,9 @@ export function TaskPeek({
   const copyTerminalCommand = async () => {
     if (!task || !terminalHere) return;
     try {
-      const command = await fetchTerminalCommand();
-      const ok = await copyToClipboard(command);
+      // No await before the write: WebKit rejects a clipboard write once the
+      // click's activation has been spent on a round-trip (clipboard.ts).
+      const ok = await copyPendingText(fetchTerminalCommand());
       notify({
         title: ok ? "Command copied — paste it in your terminal" : "Could not copy the command",
         tone: ok ? "info" : "error",
