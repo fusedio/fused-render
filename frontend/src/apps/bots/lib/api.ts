@@ -143,6 +143,8 @@ export interface Bot {
   chrome_profile?: string;
   /** The browser (one set of logins) this bot runs on; the bot's own id when it has a browser of its own. */
   browser_id?: string;
+  /** That browser's display name (the Logins menus, the Browsers dialog). */
+  browser_name?: string;
   /** The other bots on the same browser; empty = private logins. */
   shared_with?: { id: string; name: string }[];
   /** Super Bot only (docs §10; the keys are dropped from every other bot on load): the owner's phone handle, the
@@ -207,8 +209,15 @@ export interface StatusReply { bots: Bot[]; ts: number; usage: UsageSummary | nu
 export interface AppRow { folder: string; dir: string; name: string; desc: string; tools: unknown; skill: unknown; icon: string | null; mtime: number }
 export interface BuildRow { entryId: string; name: string; dir: string; createdAt: number; doneAt?: number }
 export interface ChromeProfile { dir: string; name: string; email: string }
-/** GET /api/bots/browsers: one set of logins and the bots that drive it. */
-export interface BrowserRow { id: string; name: string; encrypt: boolean; chrome_profile: string; running: boolean; bots: { id: string; name: string }[] }
+/** GET /api/bots/browsers: one set of logins and the bots that drive it. `sites`: where it is signed in (best effort, may be []). */
+export interface BrowserRow { id: string; name: string; encrypt: boolean; chrome_profile: string; sites: string[]; running: boolean; bots: { id: string; name: string }[] }
+/** POST /api/bots/browsers/<id>. signin pops the browser out as a real window via one of its bots (`bot` in the reply),
+ *  dock brings it back headless, delete gives every bot on it a fresh logged-out browser of its own. */
+export type BrowserOpBody =
+  | { op: "rename"; name: string }
+  | { op: "encrypt"; on: boolean }
+  | { op: "profile"; profile: string }
+  | { op: "signin" | "dock" | "delete" };
 /** GET /api/bots/presets: a site the bot knows. `skills` are the playbook titles it comes with. */
 export interface Preset { key: string; name: string; color: string; order: number; model: string; instructions: string; apps: string[]; skills: string[] }
 /** GET /api/bot-apps/starters: an app that ships with fused-render (FusedBot starters), with its install state under the apps root. */
@@ -305,6 +314,8 @@ export const api = {
     get<StatusReply>(`${B}?cursors=${encodeURIComponent(JSON.stringify(p.cursors))}&shot_for=${encodeURIComponent(p.shot_for)}&fast=${p.fast ? 1 : 0}`, "status"),
   create: (body: NewBotBody) => post<{ ok: true; id: string }>(B, body, "create"),
   browsers: () => get<{ ok: true; browsers: BrowserRow[] }>(`${B}/browsers`, "browsers"),
+  browserOp: (id: string, body: BrowserOpBody) =>
+    post<{ ok: true; name?: string; bot?: string }>(`${B}/browsers/${encodeURIComponent(id)}`, body, `browser ${body.op}`),
   profiles: () => get<{ ok: true; profiles: ChromeProfile[] }>(`${B}/profiles`, "profiles"),
   presets: () => get<{ ok: true; presets: Preset[] }>(`${B}/presets`, "presets"),
   usage: () => get<UsageSummary>(`${B}/usage`, "usage"),

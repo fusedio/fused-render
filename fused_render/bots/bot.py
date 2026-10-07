@@ -102,7 +102,31 @@ SUPER_INSTRUCTIONS = ("You are my assistant on this Mac. Use Claude Code's tools
 # be linked yet, and `greet()`'s fallback after a failed call would make an error the user's first impression. The page
 # appends a "Connect your phone" button to this line (source "seed", components/Thread.tsx).
 SUPER_GREETING = ("Hi, I'm Super Bot. I use Claude Code's tools on this Mac (files, PDFs, images, shell, code) plus a "
-                  "browser. Ask me for anything here, or connect your phone to text me.")
+                  "browser. Once Claude is linked I'll ask you to sign in to Google in my browser, then offer the social "
+                  "bots that can share it. Ask me for anything here, or connect your phone to text me.")
+# Super Bot's first task (owner's ask, 2026-10-07): sign the shared browser in to Google, then offer the
+# social presets, each made on Super Bot's browser (`bot_create` with logins_from) so one sign-in serves
+# them all. Seeded Super Bot: held in meta["setup"] until Claude is linked (tick_routines); a Super Bot made
+# from the chooser runs it right after its greeting like a preset's setup. SOCIAL_PRESETS is the offer list.
+SOCIAL_PRESETS = ("linkedin", "youtube", "x", "reddit", "instagram", "facebook", "tiktok")
+SUPER_SETUP = ("Open https://accounts.google.com/. If it asks you to sign in, use login so I can sign in to Google in your "
+               "browser; wait until I'm signed in (the account page loads). If I'm already signed in, say so. "
+               "Then offer me the social bots: ask (one `ask`, with these as `options`) which ones I want to start with: "
+               "@SOCIAL@. I may name several, or none. For each one I pick, call `bot_create` once with `preset` set to its "
+               "key, `name` set to its site name, and `logins_from` set to \"Super Bot\" so it shares your browser and my "
+               "Google sign-in; your browser is already signed in to Google, so bots on it are too. "
+               "Finish with one line saying which bots exist now and that each will ask for its own site's sign-in once.")
+
+
+def super_setup_text() -> str:
+    """SUPER_SETUP with the social presets that exist on this install filled in."""
+    try:
+        from fused_render.bots import presets as presets_mod
+        have = {p["key"]: p for p in presets_mod.presets()}
+        names = [f"{have[k]['name']} ({k})" for k in SOCIAL_PRESETS if k in have]
+    except Exception:  # noqa: BLE001
+        names = []
+    return SUPER_SETUP.replace("@SOCIAL@", ", ".join(names) if names else "none are installed, so skip this step")
 
 
 def _builds_root() -> str:
@@ -1132,6 +1156,28 @@ class Bot:
         self.thread = threading.Thread(target=go, daemon=True, name=f"greet-{self.id}")
         self.thread.start()
 
+    def _maybe_super_setup(self):
+        """The seeded Super Bot's setup (SUPER_SETUP), run once Claude is linked and the
+        bot is idle. A Super Bot the user already talked to runs it at the first quiet
+        moment too: the sign-in is worth asking for whenever it is possible."""
+        if not is_super(self.meta) or not (self.meta.get("setup") or "").strip():
+            return
+        if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
+            return
+        try:
+            from fused_render import claude_health
+            c = claude_health.cached() or {}
+            if not c.get("found") or not c.get("signed_in"):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        with self.lock:
+            setup = (self.meta.pop("setup", None) or "").strip()
+            self.save()
+        if setup:
+            self.emit("system", "Claude is linked. Opening Google's sign-in so every bot on my browser can use it.")
+            self.start_task(setup, label="Sign in to Google", origin="setup")
+
     def learn_from_last(self):
         """Condense the last finished task into a playbook, in a background
         thread (the model call takes a while). Progress lands in the thread."""
@@ -1445,6 +1491,7 @@ class Bot:
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
         return {**meta, "id": self.id, "seq": self.seq, "browser": bs, "browser_id": self.browser_id,
+                "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None,
@@ -1576,6 +1623,7 @@ class Bot:
 
     def tick_routines(self):
         self.drain_file_inbox()
+        self._maybe_super_setup()
         now = time.time()
         for r in list(self.routines()):
             if not r.get("enabled"):
@@ -2819,12 +2867,15 @@ def manage_create_check(bot, args):
         return None, f"error: `bot_create` takes {', '.join(CREATE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
     logins_from, browser = str(args.get("logins_from") or "").strip(), ""
     if logins_from:
-        src = next((b for b in _registry().all() if (b.meta.get("name") or "").lower() == logins_from.lower()), None)
-        if src is None:
-            return None, f"error: no bot named {logins_from!r} to share logins with"
-        if is_super(src.meta):
-            return None, "error: Super Bot's logins are not shared"
-        logins_from, browser = src.meta.get("name") or logins_from, src.browser_id
+        bots = _registry().all()
+        src = next((b for b in bots if (b.meta.get("name") or "").lower() == logins_from.lower()), None)
+        if src is not None:
+            logins_from, browser = src.meta.get("name") or logins_from, src.browser_id
+        else:  # a browser's own name (Settings > Browsers)
+            row = next((r for r in browsers.listing(bots) if r["name"].lower() == logins_from.lower()), None)
+            if row is None:
+                return None, f"error: no bot or browser named {logins_from!r} to share logins with"
+            logins_from, browser = row["name"], row["id"]
     return {"name": name, "instructions": str(args.get("instructions") or "").strip(), "model": model or DEFAULT_MODEL,
             "effort": effort or DEFAULT_EFFORT, "preset": preset, "face": face, "logins_from": logins_from, "browser": browser}, ""
 
@@ -2987,7 +3038,7 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
     if kind == "super":
         meta["browser_id"] = bid  # Super Bot's logins are its own
         meta.update({"kind": "super", "super_access": "ask", "handoffs": [], "name": name or SUPER_NAME, "face": dict(SUPER_FACE),
-                     "instructions": meta["instructions"] or SUPER_INSTRUCTIONS,
+                     "instructions": meta["instructions"] or SUPER_INSTRUCTIONS, "setup": super_setup_text(),
                      "imessage_enabled": False,  # the phone switch (Settings > Phone) starts off
                      "pinned": True})  # the one bot per Mac starts pinned (sidebar); the user can unpin it
     _write_new_meta(bid, meta)
@@ -3063,13 +3114,15 @@ def clone(src_id, name="", share=True):
     return b
 
 
-def set_browser(b, target):
+def set_browser(b, target, fresh=False):
     """Move bot `b` onto browser `target` ("" or its own id = a browser of its
     own). Its old browser is removed when no other bot still uses it (the
-    dialog says so). Refused mid-task: the engine holds a view of the old one."""
+    dialog says so). `fresh` forces a brand-new browser whatever it is on now
+    (deleting a browser moves every bot off it). Refused mid-task: the engine
+    holds a view of the old one."""
     target = os.path.basename(target or "") or b.id
-    own = target == b.id
-    if own and target == b.browser_id and browsers.used_on_disk(target, except_id=b.id) is not False:
+    own = target == b.id or fresh
+    if fresh or (own and target == b.browser_id and browsers.used_on_disk(target, except_id=b.id) is not False):
         target = uuid.uuid4().hex[:8]  # others joined ITS browser: "this bot only" means a new one, they keep the old
     if target == b.browser_id:
         return False

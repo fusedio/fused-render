@@ -19,7 +19,7 @@ import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
 import { api, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
-import { EFFORTS, loginGroups, loginValue, modelsFor, normApp } from "../lib/botform";
+import { EFFORTS, loginGroups, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { act, getState } from "../state/store";
 import type { BotDialogValue } from "./actions";
@@ -69,7 +69,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [trustedApps, setTrustedApps] = useState<string[]>(init.trustedApps);
   const [appRows, setAppRows] = useState<AppRow[]>([]);
   const [browserId, setBrowserId] = useState(init.browserId);
-  // The Logins menu: one option per other browser (bots sharing one collapse into one), listed as the dialog opened.
+  // The Logins menu: one option per other browser (bots sharing one collapse into one; Super Bot's browser included),
+  // listed as the dialog opened. Super Bot's own row is hidden.
   const [groups] = useState(() => (isSuper ? [] : loginGroups(getState().bots, bot.id)));
   const sharedNames = (bot.shared_with || []).map((o) => o.name).join(", ");
   const appliesToAll = sharedNames ? ` Applies to every bot sharing these logins (${sharedNames}).` : "";
@@ -220,7 +221,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   <Row title="Logins" text="Bots sharing logins drive one browser, each in its own tabs. Switching removes this bot's current logins unless another bot still uses them." htmlFor="bmlogins">
                     <NativeSelect className="w-full" id="bmlogins" value={browserId} onChange={(e) => setBrowserId(e.target.value)}>
                       <NativeSelectOption value="">This bot only</NativeSelectOption>
-                      {groups.map((g) => <NativeSelectOption key={g.id} value={g.id}>Same as {g.names.join(", ")}</NativeSelectOption>)}
+                      {groups.map((g) => <NativeSelectOption key={g.id} value={g.id}>Same as {loginLabel(g)}</NativeSelectOption>)}
                     </NativeSelect>
                   </Row>
                 ) : null}

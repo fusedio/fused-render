@@ -150,7 +150,7 @@ div.bots-page:not(.rcol) #rcol { display: none; }
 /* usage meter: the always-visible answer to "are the bots doing something?" */
 .bots-page .bots header #usage { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; width: auto; height: 26px; padding: 0 10px; border-radius: 13px; font-size: 11.5px; font-weight: 500; background: var(--inset); color: var(--muted); white-space: nowrap; }
 .bots-page .bots header #usage:hover { color: var(--text); }
-div.bots-page:is(.lcol, .lfit) .bots header #usage { display: none; }
+div.bots-page:is(.lcol, .lfit) .bots header #usage, div.bots-page:is(.lcol, .lfit) .bots header #browsers { display: none; }
 .bots-page .ustats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 6px; }
 .bots-page .ustats div { background: var(--inset); border-radius: 12px; padding: 8px 10px; }
 .bots-page .ustats b { display: block; font-size: 20px; font-weight: 500; }

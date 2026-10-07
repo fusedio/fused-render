@@ -240,8 +240,8 @@ TOOL_SPECS: dict[str, dict] = {
                                   "and must be new; `instructions` are its standing rules (what it does for the user, which site, "
                                   "what never to do); `model` haiku|sonnet|opus|fable|local-4b|local-9b; `effort` low|medium|high|"
                                   "xhigh; `preset` a preset key (github, gmail, linkedin, …) gives it that site's playbooks, mark "
-                                  "and default rules; `face` {shape, color, icon} is its avatar; `logins_from` (a bot's name from BOTS) "
-                                  "puts it on that bot's browser so they share logins (log in once, both stay in), otherwise it "
+                                  "and default rules; `face` {shape, color, icon} is its avatar; `logins_from` (a bot's name from BOTS, or a browser's name from Settings > Browsers) "
+                                  "puts it on that browser so they share logins (log in once, both stay in), otherwise it "
                                   "starts logged out. The user approves the card before anything is created, every time.",
                    "inputSchema": _s(name=REQ, instructions=STR, model=STR, effort=STR, preset=STR, logins_from=STR,
                                      face={"type": "object", "description": FACE_DESC})},

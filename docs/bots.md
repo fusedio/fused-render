@@ -163,7 +163,7 @@ title, note, updated, approval, build_access, trusted_apps, face, routines, pinn
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, visible, dl_pct`) plus
 `seq`, `browser: {running, url, title, visible, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
-`shared_with: [{id, name}]` (the other bots on this bot's browser),
+`browser_name`, `shared_with: [{id, name}]` (the other bots on this bot's browser),
 `memory` (detail only), `skills` (detail only), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
 (since the page's cursor).
@@ -195,7 +195,9 @@ POST   /api/bots                      {name, model, effort, instructions, approv
                                        (preset: a key from /api/bots/presets, "" = blank; unknown key -> 400, no bot made)
 GET    /api/bots/presets              -> {ok, presets: [{key, name, color, order, model, instructions, setup, apps, skills: [title]}]}
 GET    /api/bots/profiles             -> {ok, profiles: [{dir, name, email}]}
-GET    /api/bots/browsers             -> {ok, browsers: [{id, name, encrypt, chrome_profile, running, bots: [{id, name}]}]}
+GET    /api/bots/browsers             -> {ok, browsers: [{id, name, encrypt, chrome_profile, sites, running, bots: [{id, name}]}]}
+POST   /api/bots/browsers/<bid>       {op: rename {name} | encrypt {on} | profile {profile} | signin | dock | delete}
+                                      -> {ok, name?|bot?}   (Settings > Browsers; delete moves each bot to a fresh browser)
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
 POST   /api/bots/<id>/send            {text, reply_to?}                     -> {ok}      (also answers approvals/questions/offers)
@@ -412,6 +414,18 @@ Chrome stops and the folder goes; refused mid-task. Clone shares by default.
 Bots from before browsers existed are adopted on first load
 (`browsers.adopt`: `bots/<id>/profile` moves to `browsers/<id>/`, nothing is
 copied). `browsers.sweep` at `registry.start` removes folders no bot names.
+
+A browser has a name (browser.json `name`, the creating bot's; `browsers.rename`)
+and reports the sites it is signed in to (`browsers.sites`: the cookie jar's
+`host_key`/`name` pairs against SIGNED_IN, read off a copy, never a value).
+The Browsers dialog (Bots page header) lists them with rename, sign-in (pops
+one bot's window), encrypt, Chrome-profile import and delete. Super Bot's
+browser is named "Super Bot" and is the default choice in New bot: the seeded
+Super Bot carries `meta["setup"]` (SUPER_SETUP) until Claude is linked
+(`Bot._maybe_super_setup` on the routines tick), then signs its browser in to
+Google and offers the social presets (SOCIAL_PRESETS), creating each chosen
+one with `bot_create logins_from "Super Bot"` so one Google sign-in serves
+them all. `logins_from` takes a bot's name or a browser's name.
 
 Everything in `agents.py` that is not the model loop: create/clone/delete,
 greet, rename/settings, flag, react, routines (`_next_run`, spacing from

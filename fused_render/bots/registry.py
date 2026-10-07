@@ -159,7 +159,7 @@ def seed_super() -> str | None:
     stamp = seed_stamp_path()
     if os.path.exists(stamp) or bm.super_id() is not None:
         return None
-    b = bm.create(kind="super", greet=False)
+    b = bm.create(kind="super", greet=False)  # meta["setup"] waits for Claude (bot._maybe_super_setup)
     b.emit("done", bm.SUPER_GREETING, source="seed")
     try:
         os.makedirs(os.path.dirname(stamp), exist_ok=True)

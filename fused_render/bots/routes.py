@@ -233,6 +233,42 @@ def bots_browsers():
     return {"ok": True, "browsers": browsers.listing(registry.all())}
 
 
+@router.post("/api/bots/browsers/{bid}")
+@_handled
+def bots_browser_op(bid: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Settings > Browsers: {op: rename {name} | encrypt {on} | profile {profile} | signin | dock | delete}.
+    Encrypt, profile import and sign-in go through a bot on the browser (any: the flag and the
+    profile belong to the browser; sign-in pops that bot's window). Delete moves every bot on it
+    to a fresh browser of its own, which takes the old one down with the last of them."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.bots import browsers
+    bm = _botmod()
+    bid = os.path.basename(bid or "")
+    bots = [b for b in registry.all() if b.browser_id == bid]
+    if not bots or not browsers.exists(bid):
+        raise ValueError("no such browser")
+    op = body.get("op") or ""
+    if op == "rename":
+        return {"ok": True, "name": browsers.rename(bid, body.get("name") or "")}
+    if op == "encrypt":
+        bots[0].set_encrypt(_truthy(body.get("on")))
+        return {"ok": True}
+    if op == "profile":
+        bm.import_profile(bots[0], body.get("profile") or "")
+        return {"ok": True}
+    if op in ("signin", "dock"):
+        b = next((x for x in bots if x.meta.get("visible")), None) or bots[0]
+        b.window(op == "signin")
+        return {"ok": True, "bot": b.id}
+    if op == "delete":
+        for b in bots:
+            bm.set_browser(b, "", fresh=True)  # each gets a logged-out browser of its own; the last move removes this one
+        return {"ok": True}
+    raise ValueError("op must be rename, encrypt, profile, signin, dock or delete")
+
+
 @router.get("/api/bots/profiles")
 @_handled
 def bots_profiles():

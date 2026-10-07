@@ -14,7 +14,7 @@ import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Face } from "../components/Face";
 import type { Face as FaceT } from "../lib/api";
-import { browserOf, EFFORTS, modelsFor } from "../lib/botform";
+import { browserOf, EFFORTS, loginGroups, loginLabel, modelsFor } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { newBotInit, type NewBotPick } from "../lib/presets";
 import { getState } from "../state/store";
@@ -36,10 +36,12 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
   const [instructions, setInstructions] = useState(fresh.instructions || "");
   const [face, setFace] = useState<FaceT | null | undefined>(fresh.face);
   const [more, setMore] = useState(false);
-  // Logins: a fresh browser (the default) or another ordinary bot's sign-ins. Super Bot never shares, either way.
-  const [others] = useState(() => (isSuper ? [] : getState().bots.filter((b) => b.kind !== "super")));
-  const [share, setShare] = useState(false);
-  const [shareWith, setShareWith] = useState(() => others[0]?.id || "");
+  // Logins: a fresh browser or another browser's sign-ins, listed per browser. With a Super Bot around, the default is
+  // its browser, so a new bot starts signed in wherever Super Bot is (Google, usually). Making Super Bot asks nothing.
+  const [groups] = useState(() => (isSuper ? [] : loginGroups(getState().bots)));
+  const [superBrowser] = useState(() => { const s = getState().bots.find((b) => b.kind === "super"); return s ? browserOf(s) : ""; });
+  const [share, setShare] = useState(() => !!superBrowser && groups.some((g) => g.id === superBrowser));
+  const [shareWith, setShareWith] = useState(() => (groups.some((g) => g.id === superBrowser) ? superBrowser : groups[0]?.id || ""));
   const busy = useRef(false);  // the face picker (a sibling modal) is up: its clicks are not outside presses to act on
 
   // The avatar subject: the face is hashed from the name the dialog opened with until one is picked.
@@ -54,7 +56,7 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
     name: name.trim(), model, effort, instructions, memory: "", approval: "ask", buildAccess: "scoped", encrypt: false, profile: "",
     face: faceOf(bm), imessage: "", imessageEnabled: false, imessageTo: "", preset: fresh.preset || "",
     kind: isSuper ? "super" : "bot", superAccess: "ask", trustedApps: [],
-    browserId: (() => { const o = share ? others.find((b) => b.id === shareWith) : undefined; return o ? browserOf(o) : ""; })(),
+    browserId: share && groups.some((g) => g.id === shareWith) ? shareWith : "",
   });
   const ok = () => { if (name.trim()) onClose(read()); };
   const editAvatar = async () => {
@@ -81,7 +83,7 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
             <Input id="bmname" placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") ok(); }} />
           </Field>
-          {others.length ? (
+          {groups.length ? (
             <Field>
               <FieldLabel>Logins</FieldLabel>
               <RadioGroup value={share ? "share" : "fresh"} onValueChange={(v) => setShare(v === "share")} className="gap-3">
@@ -98,11 +100,11 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
                     <span className="text-sm">Same logins as</span>
                   </label>
                   <div className="flex flex-col gap-1.5 pl-[26px]">
-                    <NativeSelect className="w-full" id="bmshare" aria-label="Bot whose logins to share" value={shareWith}
+                    <NativeSelect className="w-full" id="bmshare" aria-label="Browser whose logins to share" value={shareWith}
                       onChange={(e) => { setShareWith(e.target.value); setShare(true); }} onFocus={() => setShare(true)}>
-                      {others.map((b) => <NativeSelectOption key={b.id} value={b.id}>{b.name}</NativeSelectOption>)}
+                      {groups.map((g) => <NativeSelectOption key={g.id} value={g.id}>{loginLabel(g)}</NativeSelectOption>)}
                     </NativeSelect>
-                    <span className="text-[13px] text-muted-foreground">Shares its sign-ins. Log in once, both stay in.</span>
+                    <span className="text-[13px] text-muted-foreground">Shares that browser's sign-ins. Log in once, every bot on it stays in.</span>
                   </div>
                 </div>
               </RadioGroup>
