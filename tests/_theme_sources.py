@@ -19,6 +19,7 @@ TEMPLATES_DIR = os.path.join(REPO_ROOT, "fused_render", "templates")
 
 # The single localStorage key holding the user's System/Light/Dark choice.
 THEME_KEY = "fused-render:theme"
+PRESET_KEY = "fused-render:theme-preset"
 
 # The <html> attribute a built-in template sets to ask the injected runtime to
 # keep its `data-theme` in sync with the shell. Absent = no theme signal, which
@@ -147,6 +148,11 @@ def read_shared_asset(name):
 # `:root { … }` and `:root[data-theme="light"] { … }`, quotes optional.
 _DARK_ROOT = re.compile(r"(?<![\w\-\]])\:root\s*\{([^{}]*)\}")
 _LIGHT_ROOT = re.compile(r":root\[data-theme=[\"']?light[\"']?\]\s*\{([^{}]*)\}")
+# Colour-preset palettes (`data-theme-name`): palette blocks too, so colour
+# literals are allowed inside them and nowhere else.
+_PRESET_ROOT = re.compile(
+    r":root\[data-theme-name=[\"']?[\w-]+[\"']?\](?:\[data-theme=[\"']?light[\"']?\])?\s*\{([^{}]*)\}"
+)
 
 _DECL = re.compile(r"(--[\w-]+|color-scheme)\s*:\s*([^;]+)")
 _COMMENT = re.compile(r"/\*[\s\S]*?\*/")
@@ -220,7 +226,7 @@ def style_color_literals(source, palette_selectors=()):
     found = []
     for sheet in sheets:
         # Blank out the palette blocks: those are exactly where literals belong.
-        sheet = _DARK_ROOT.sub("", _LIGHT_ROOT.sub("", sheet))
+        sheet = _DARK_ROOT.sub("", _LIGHT_ROOT.sub("", _PRESET_ROOT.sub("", sheet)))
         for selector in palette_selectors:
             sheet = _selector_block(selector).sub("", sheet)
         sheet = _COMMENT.sub("", sheet)

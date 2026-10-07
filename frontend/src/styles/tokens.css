@@ -286,9 +286,10 @@
        already tuned in this file for the same weight in both themes, so the
        palette gains a role rather than a colour. */
   --status-upcoming: var(--fg-muted);
-  --status-progress: #facc15;
+  /* The in-progress yellow IS the brand accent, so the app has one yellow. */
+  --status-progress: var(--accent);
 
-  /* WAITING IS THE RUNNING YELLOW, AND THE RING IS DASHED (Akshil, 2026-09-12).
+  /* WAITING IS THE RUNNING YELLOW (THE ACCENT), AND THE RING IS DASHED (Akshil, 2026-09-12).
      The state spent a day in `--activity`'s blue and a day in a gold of its own;
      both are retired. `queued` is drawn INSIDE In Progress (schedule-lib.laneOf),
      and two hues in one lane read as two unrelated kinds of work — while a third
@@ -532,7 +533,8 @@
   /* Upcoming tracks --fg-muted in both themes (see the dark block) — the same
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
-  --status-progress: #ca8a04;
+  /* The accent again, so the app has one yellow in both palettes. */
+  --status-progress: var(--accent);
   /* The alias again (see the dark block): waiting is the running yellow on both
      grounds and the dash is the whole difference. Restated because the light
      palette must redefine every token (test_theme.py); it resolves against this
@@ -614,4 +616,140 @@
      number for the code that clamps a drag, and pane-metrics.test.ts pins the
      two together so neither can move without the other. */
   --side-pane-min: 400px;
+}
+
+/* -- PRESET PALETTES (D1335) ---------------------------------------------------
+   A preset is orthogonal to Appearance: `data-theme-name` on <html> picks the
+   hues, `data-theme` still picks the light/dark base. Each preset therefore has
+   a dark block (`data-theme-name` alone, which also covers a document with no
+   `data-theme`) and a light block that out-specifies both it and the default
+   light palette. Only the surface, ink and accent tokens are overridden; every
+   other token keeps the base palette's value. The --row-bg-* fills are the
+   same pre-composited washes the base blocks describe, recomputed over each
+   preset's --bg-alt. */
+
+:root[data-theme-name="high-contrast"] {
+  --bg: #000000;
+  --bg-alt: #0a0a0a;
+  --bg-panel: #0f0f0f;
+  --bg-popover: #0f0f0f;
+  --fg: #ffffff;
+  --fg-muted: #d0d0d0;
+  --fg-faint: #b0b0b0;
+  --border: #8a8a8a;
+  --accent: #ffff00;
+  --accent-rgb: 255, 255, 0;
+  --sel: #1f3a66;
+  --row-bg-hover: #191919;
+  --row-bg-active: #2a2a09;
+  --row-bg-selected: #272727;
+  --fg-muted-rgb: 208, 208, 208;
+  --peek-halo: #ffff00;
+  --peek-halo-rgb: 255, 255, 0;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
+  --accent-soft: var(--accent);
+  --icon-html: var(--accent);
+  --app-icon-yellow: var(--accent);
+}
+
+:root[data-theme-name="high-contrast"][data-theme="light"] {
+  --bg: #ffffff;
+  --bg-alt: #f2f2f2;
+  --bg-panel: #ffffff;
+  --bg-popover: #ffffff;
+  --fg: #000000;
+  --fg-muted: #222222;
+  --fg-faint: #444444;
+  --border: #000000;
+  --accent: #4a5a00;
+  --accent-rgb: 74, 90, 0;
+  --sel: #b9d4ff;
+  --row-bg-hover: #e3e3e3;
+  --row-bg-active: #dcded3;
+  --row-bg-selected: #d5d5d5;
+  --fg-muted-rgb: 34, 34, 34;
+  --peek-halo: #4a5a00;
+  --peek-halo-rgb: 74, 90, 0;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
+  --accent-soft: var(--accent);
+  --icon-html: var(--accent);
+  --app-icon-yellow: var(--accent);
+}
+
+:root[data-theme-name="midnight"] {
+  --bg: #000000;
+  --bg-alt: #0d0d0f;
+  --bg-panel: #0d0d0f;
+  --bg-popover: #1c1c1e;
+  --fg: #f5f5f7;
+  --fg-muted: #8e8e93;
+  --fg-faint: #5a5a5f;
+  --border: #1f1f21;
+  --sel: #262628;
+  --row-bg-hover: #1c1c1e;
+  --row-bg-active: #2c2c2e;
+  --row-bg-selected: #262628;
+  --fg-muted-rgb: 142, 142, 147;
+  --accent: #facc15;
+  --accent-rgb: 250, 204, 21;
+  --on-accent: #10131a;
+  --accent-soft: #eab308;
+  --peek-halo: #facc15;
+  --peek-halo-rgb: 250, 204, 21;
+  --icon-html: #facc15;
+  --app-icon-yellow: #facc15;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
+}
+
+:root[data-theme-name="midnight"][data-theme="light"] {
+  --bg: #ffffff;
+  --bg-alt: #f5f5f7;
+  --bg-panel: #ffffff;
+  --bg-popover: #ffffff;
+  --fg: #000000;
+  --fg-muted: #5f5f63;
+  --fg-faint: #8a8a8f;
+  --border: #e2e2e5;
+  --sel: #e6e6e9;
+  --row-bg-hover: #f0f0f2;
+  --row-bg-active: #dcdce0;
+  --row-bg-selected: #e6e6e9;
+  --fg-muted-rgb: 95, 95, 99;
+  --accent: #a16207;
+  --accent-rgb: 161, 98, 7;
+  --on-accent: #ffffff;
+  --accent-soft: #a16207;
+  --peek-halo: #a16207;
+  --peek-halo-rgb: 161, 98, 7;
+  --icon-html: #a16207;
+  --app-icon-yellow: #a16207;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
 }

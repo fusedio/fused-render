@@ -94,7 +94,7 @@ import { displayName, isBot } from "@platform/lib/flavor";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import { useThemePref } from "@platform/lib/theme";
+import { THEME_PRESETS, useThemePref, useThemePreset } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 import { FusedAccountSection } from "@shell/FusedAccountSection";
 import {
@@ -117,6 +117,7 @@ type PrefsTab = "render" | "ai" | "indexing" | "lan" | "account";
 // synchronous, hence no busy/locked/error plumbing.
 function AppearanceSection() {
   const [pref, setPref] = useThemePref();
+  const [preset, setPreset] = useThemePreset();
   return (
     <section className="prefs-section">
       <h2>Appearance</h2>
@@ -158,6 +159,24 @@ function AppearanceSection() {
           <b>Dark</b> — always dark, whatever your desktop is set to.
         </span>
       </label>
+      <h2>Theme</h2>
+      <p className="deploy-muted">
+        Colour palette for the app shell. Works with every appearance above: each theme has a
+        light and a dark variant. Pages you open keep following light or dark only.
+      </p>
+      {THEME_PRESETS.map((p) => (
+        <label className="prefs-radio" key={p.id}>
+          <input
+            type="radio"
+            name="theme-preset"
+            checked={preset === p.id}
+            onChange={() => setPreset(p.id)}
+          />
+          <span>
+            <b>{p.label}</b>
+          </span>
+        </label>
+      ))}
     </section>
   );
 }
