@@ -46,14 +46,36 @@ export function filterCards(cards: PickCard[], query: string): { shown: PickCard
   const words = queryWords(query), shown = cards.filter((c) => matchQ(c.q, words));
   return { shown, none: !!words.length && !shown.length };
 }
-/** The first playbook title of `p` that contains a query word, for the card to show WHY it matched (the card otherwise
- *  only says "6 playbooks", so a hit on a playbook title looked like a name-only search). "" when the name itself matched
- *  or the query is empty. */
-export function matchedSkill(p: Pick<Preset, "name" | "key" | "skills">, words: string[]): string {
-  if (!words.length) return "";
-  const name = `${p.name} ${p.key}`.toLowerCase();
-  if (words.every((w) => name.includes(w))) return "";
-  return (p.skills || []).find((sk) => words.some((w) => sk.toLowerCase().includes(w))) || "";
+/** One line of the search result list (the grid gives way to it while the box has text): a card itself (a site,
+ *  a blank or Super Bot, matched on its name) or one playbook of a site whose title matched. `pick` is what a click
+ *  opens; `title` / `sub` are the two texts shown; `key` is unique per row. */
+export interface SearchRow { key: string; pick: NewBotPick; face: Face; name: string; title: string; sub: string; kind: "card" | "skill" }
+
+/** Rows for `query`: cards whose VISIBLE name holds every word first (sites, blanks, Super Bot — in card order; the
+ *  grid's hidden search text, with its "assistant mac shell" tokens, is not what a row can show lit), then one
+ *  row per playbook whose title holds every word, in site order. A site matched only through its playbooks has no
+ *  card row: its playbook rows are the reason it shows. [] for an empty query (the grid shows then). */
+export function searchRows(cards: PickCard[], query: string): SearchRow[] {
+  const words = queryWords(query);
+  if (!words.length) return [];
+  const own: SearchRow[] = [], skills: SearchRow[] = [];
+  for (const c of cards) {
+    if (c.pick.kind === "super") {
+      if (matchQ(SUPER_NAME.toLowerCase(), words)) own.push({ key: "super", pick: c.pick, face: SUPER_FACE, name: SUPER_NAME, title: SUPER_NAME, sub: SUPER_BLURB, kind: "card" });
+      continue;
+    }
+    if (c.pick.kind === "blank") {
+      const b = c.pick.blank;
+      if (matchQ(b.name.toLowerCase(), words)) own.push({ key: `blank:${b.name}`, pick: c.pick, face: b.face, name: b.name, title: b.name, sub: "From scratch", kind: "card" });
+      continue;
+    }
+    const p = c.pick.preset, face: Face = { icon: p.key, color: p.color };
+    if (matchQ(`${p.name} ${p.key}`.toLowerCase(), words)) own.push({ key: p.key, pick: c.pick, face, name: p.key, title: p.name, sub: `${p.skills.length} playbooks`, kind: "card" });
+    for (const sk of p.skills || []) {
+      if (matchQ(sk.toLowerCase(), words)) skills.push({ key: `${p.key}:${sk}`, pick: c.pick, face, name: p.key, title: sk, sub: p.name, kind: "skill" });
+    }
+  }
+  return [...own, ...skills];
 }
 
 /** `text` split into plain and matched runs for highlighting: [[run, hit], ...]. Case-insensitive, every query word. */

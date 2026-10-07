@@ -77,9 +77,9 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
         </DialogHeader>
         <FieldGroup className="min-h-0 overflow-y-auto px-6 pb-5">
           <button type="button" disabled={isSuper} onClick={() => { void editAvatar(); }}
-            className="group flex w-fit cursor-pointer appearance-none flex-col items-center gap-1.5 self-start rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
+            className="group flex w-fit cursor-pointer appearance-none flex-col items-center gap-2 self-center rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
             title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
-            <span className="size-12 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
+            <span className="size-20 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
             {isSuper ? null : <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit avatar</span>}
           </button>
           <Field>
@@ -156,9 +156,9 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
           </FieldDescription>
         </FieldGroup>
         <DialogFooter className={cn(FOOTER_CLASS, "shrink-0 sm:justify-between")}>
-          <Button variant="ghost" size="sm" aria-pressed={more} title={more ? "Hide the thinking setting" : "Show the thinking setting"}
-            className={cn("gap-1.5 text-muted-foreground", more && "bg-accent text-foreground")} onClick={() => setMore((m) => !m)}>
-            <Settings2Icon />{more ? "Hide thinking" : "Thinking"}
+          <Button variant="outline" size="icon" aria-pressed={more} aria-label="Thinking effort" title={more ? "Hide the thinking setting" : "Thinking effort"}
+            className={cn(more && "bg-foreground text-background hover:bg-foreground hover:text-background dark:bg-foreground dark:text-background dark:hover:bg-foreground")} onClick={() => setMore((m) => !m)}>
+            <Settings2Icon />
           </Button>
           <div className="flex gap-2">
             <Button variant="outline" onClick={onBack} title="Back to the bot picker">Cancel</Button>
