@@ -655,15 +655,15 @@
   --fg-muted: #4c566a;
   --fg-faint: #6b7486;
   --border: #d8dee9;
-  --accent: #5e81ac;
-  --accent-rgb: 94, 129, 172;
+  --accent: #4c6a92;
+  --accent-rgb: 76, 106, 146;
   --sel: #d8dee9;
   --row-bg-hover: #d7dbe2;
-  --row-bg-active: #d3dbe7;
+  --row-bg-active: #cfd7e2;
   --row-bg-selected: #cacdd3;
   --fg-muted-rgb: 76, 86, 106;
-  --peek-halo: #5e81ac;
-  --peek-halo-rgb: 94, 129, 172;
+  --peek-halo: #4c6a92;
+  --peek-halo-rgb: 76, 106, 146;
 }
 
 :root[data-theme-name="solarized"] {
