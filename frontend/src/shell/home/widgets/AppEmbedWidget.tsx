@@ -4,7 +4,7 @@
 // ("App embed widget"): it would make a Claude chat inside the app read-only.
 import { useEffect, useState } from "react";
 import { getApps, type AppInfo } from "@platform/lib/api";
-import { hrefFor, isBrowserHandledClick, openApp } from "@platform/lib/appEntry";
+import { hrefFor, isBrowserHandledClick, openApp, openTargetFor } from "@platform/lib/appEntry";
 import { useNearViewport } from "@platform/lib/preview-start";
 import { embedUrlForFsPath } from "@platform/lib/router";
 import type { Widget } from "../layout";
@@ -96,7 +96,8 @@ export function AppEmbedWidget({
   const [ref, near] = useNearViewport<HTMLDivElement>();
   const [loaded, setLoaded] = useState(false);
   const app = apps?.find((a) => a.path === widget.appPath) ?? null;
-  const src = app ? embedUrlForFsPath(app.path) : null;
+  // Frame the entry page when the app has one (the folder otherwise), the same rule hrefFor/Open uses; framing the folder renders a directory listing.
+  const src = app ? embedUrlForFsPath(openTargetFor(app).path) : null;
   // A new frame (another app, or remounted after scrolling away) starts unpainted.
   useEffect(() => {
     setLoaded(false);

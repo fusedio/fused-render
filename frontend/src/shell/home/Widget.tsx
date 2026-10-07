@@ -175,6 +175,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         ` hw-size-${widget.size}` +
         (bare ? " is-search" : "") +
         (edit ? " is-edit" : "") +
+        (widget.source === "app" ? " is-app" : "") +
         (p.dragging ? " is-dragging" : "") +
         (p.dropTarget ? " is-drop" : "")
       }

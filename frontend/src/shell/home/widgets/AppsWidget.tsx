@@ -5,7 +5,7 @@ import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import type { AppInfo } from "@platform/lib/api";
 import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
-import { MAX_ROW, useStripCount } from "../strip";
+import { MAX_ROW, softNavigate, useStripCount } from "../strip";
 import { useHomeApps } from "../data";
 import { dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
@@ -65,9 +65,17 @@ export function AppsWidget({ widget }: { widget: Widget }) {
           </CardStrip>
         ) : (
           <div className="hw-icons">
-            {apps.slice(0, cap).map((app) => (
+            {apps.slice(0, apps.length > cap ? cap - 1 : cap).map((app) => (
               <AppTile key={app.path} app={app} />
             ))}
+            {apps.length > cap && (
+              <a className="hw-tile is-more" href="/apps" onClick={(e) => softNavigate(e, "/apps")} aria-label="All apps">
+                <span className="hw-tile-icon" aria-hidden="true">
+                  <span className="hw-tile-glyph">›</span>
+                </span>
+                <span className="hw-tile-name">All apps</span>
+              </a>
+            )}
           </div>
         )
       ) : appsError ? (

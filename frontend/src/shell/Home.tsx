@@ -10,6 +10,7 @@
 // import together (scripts/check-boundaries.mjs). The widgets themselves are
 // in shell/home/.
 import { useEffect, useState } from "react";
+import { SlidersHorizontal } from "lucide-react";
 import type { Config } from "@platform/lib/api";
 import { useRecentsVersion } from "@apps/explorer/lib/recents";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
@@ -105,6 +106,7 @@ export default function Home({ config }: { config: Config }) {
                   aria-pressed={false}
                   onClick={() => setEdit(true)}
                 >
+                  <SlidersHorizontal size={13} aria-hidden="true" />
                   Customize
                 </button>
               </div>
