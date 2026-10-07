@@ -15,6 +15,7 @@ never persisted or round-tripped through PUT.
 import asyncio
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote, urlsplit
 
@@ -52,7 +53,7 @@ def _path() -> str:
 
 HOME_PIN_URL = "/home"
 HOME_PIN = {"id": "home-pin", "name": "Home", "url": HOME_PIN_URL,
-            "created_at": 0, "icon": "🏠", "pinned": True}
+            "icon": "🏠", "pinned": True}
 
 
 def _home_pin_marker() -> str:
@@ -74,7 +75,9 @@ def _seed_home_pin(items: list) -> bool:
     if any(isinstance(b, dict) and b.get("url") == HOME_PIN_URL
            for b in _flatten_bookmarks(items)):
         return False
-    items.insert(0, dict(HOME_PIN))
+    # Stamped NOW, not 0: `_dedupe_names` lets the OLDEST holder of a name keep
+    # it, and a user's own "Home" bookmark must not be renamed around ours.
+    items.insert(0, {**HOME_PIN, "created_at": int(time.time() * 1000)})
     return True
 
 

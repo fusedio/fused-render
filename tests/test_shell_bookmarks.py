@@ -444,3 +444,12 @@ def test_home_pin_is_not_seeded_with_bots_off_or_when_home_is_bookmarked(tmp_pat
     client.put("/api/bookmarks", json=tree, headers=FUSED)
     assert client.get("/api/bookmarks").json()["bookmarks"] == tree
     assert (home / "bookmarks.home-pin").exists()
+
+
+def test_home_pin_yields_its_name_to_an_existing_home_bookmark(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _bots_on(monkeypatch)
+    tree = [{"id": "1", "name": "Home", "url": "/view/elsewhere", "created_at": 1}]
+    client.put("/api/bookmarks", json=tree, headers=FUSED)
+    got = client.get("/api/bookmarks").json()["bookmarks"]
+    assert [(b["id"], b["name"]) for b in got] == [("home-pin", "Home-1"), ("1", "Home")]

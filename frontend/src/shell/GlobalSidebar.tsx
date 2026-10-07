@@ -20,8 +20,18 @@ import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { availableTours, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
-import { useBookmarksVersion, useSidebarState, useUrlVersion } from "@platform/lib/hooks";
-import { armBookmark, loadBookmarks, pinnedBookmarks } from "@platform/lib/bookmarks";
+import {
+  notifyBookmarksChanged,
+  useBookmarksVersion,
+  useSidebarState,
+  useUrlVersion,
+} from "@platform/lib/hooks";
+import {
+  armBookmark,
+  loadBookmarks,
+  pinnedBookmarks,
+  refreshBookmarks,
+} from "@platform/lib/bookmarks";
 import { AppStar } from "@platform/ui/AppStar";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { appPageUrl, appPathFromPath, type CurrentApp } from "@shell/current-apps-lib";
@@ -538,6 +548,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // answer, so clicking the title lands on the front door the reader chose.
   // A route guard it is not: /home and /bots both keep answering by URL.
   const botsEnabled = useBotsFeature();
+  // Bots ON hides the Home row and the server seeds a pinned Home bookmark in
+  // its place (shell/bookmarks.py) — on the next GET. Pull that GET now, or
+  // Home has no door until the 30 s poll (Bugbot, #1479). `false` → nothing
+  // to fetch for; the row is back.
+  useEffect(() => {
+    if (!botsEnabled) return;
+    void refreshBookmarks().then((changed) => {
+      if (changed) notifyBookmarksChanged();
+    });
+  }, [botsEnabled]);
   const frontDoor = botsEnabled ? "/bots" : "/home";
 
   // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
