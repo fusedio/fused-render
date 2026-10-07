@@ -4090,3 +4090,25 @@ def test_create_refuses_a_queue_that_is_not_a_boolean(client, tmp_path):
                     headers={"X-Fused": "1"})
     assert r.status_code == 400
     assert "queue" in r.json()["error"]
+
+
+def test_create_with_queue_false_and_the_flag_off_never_touches_the_manager(
+        client, tmp_path, monkeypatch):
+    """With the project queue off there is no line to leave: the opt-out is
+    the ordinary road, and the manager is not built for it (Bugbot, PR #1429 —
+    an early `get()` made a later flip-on skip its first build)."""
+    assert project_queue.enabled() is False
+    monkeypatch.setattr(queue_manager, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("manager built")))
+    ran = []
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: ran.append(entry_id) or {"ok": True})
+    monkeypatch.setattr(schedule, "dispatch_entry",
+                        lambda entry_id: (_ for _ in ()).throw(AssertionError("dispatch_entry")))
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": False},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert ran == [r.json()["entry_id"]]
+

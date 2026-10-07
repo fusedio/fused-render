@@ -7731,6 +7731,12 @@ def api_task_create(body: dict = Body(...),
     queue = body.get("queue", True)
     if not isinstance(queue, bool):
         return _error("queue: expected true or false", status=400)
+    # WITH THE PROJECT QUEUE OFF THERE IS NO LINE TO LEAVE: `queue: false` is
+    # then the ordinary road, and must not touch the manager at all — a
+    # `queue_manager.get()` here would build the process-wide manager early,
+    # so a later flip-on no longer reads as a first build (Bugbot, PR #1429).
+    if not project_queue.enabled():
+        queue = True
     try:
         entry = schedule.create(
             resolved, prompt, when, immediate=immediate,
