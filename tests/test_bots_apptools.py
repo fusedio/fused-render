@@ -775,7 +775,10 @@ def test_readme_summary(tmp_path):
 # ---- app Python, called directly (`py` action; fused-render SPEC §49) ----
 def test_apps_root_follows_fused_render_dir(monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_DIR", "/tmp/fx")
-    assert apptools.apps_root() == "/tmp/fx/app"
+    # fused_dir() runs the env value through os.path.abspath, which on Windows
+    # prefixes the current drive onto a drive-less absolute path — comparing
+    # through the same call keeps this portable instead of assuming POSIX.
+    assert apptools.apps_root() == os.path.join(os.path.abspath("/tmp/fx"), "app")
 
 
 def test_is_owned_matches_realpath_only():
@@ -880,10 +883,15 @@ def test_run_py_unwraps_envelope(monkeypatch):
             "ok": False, "error": {"type": "ParamError", "message": "missing required param: 'm'",
                                    "traceback": "tb1\ntb2"}, "stdout": "out"}
     monkeypatch.setattr(apptools, "_api", fake_api)
-    ok = apptools.run_py("http://o", "/tmp/fx/app/x", "s.py", {"m": "a"})
+    # A real (native-separator) directory: run_py joins it with os.path.join,
+    # which on Windows means a backslash app_dir, not the always-forward-slash
+    # string a hardcoded POSIX literal would be.
+    app_dir = os.path.join(os.sep, "tmp", "fx", "app", "x")
+    ok = apptools.run_py("http://o", app_dir, "s.py", {"m": "a"})
     assert ok.ok and ok.text == '{"n": 2}'
-    assert calls[0] == ("POST", "/api/run", {"py": "/tmp/fx/app/x/s.py", "html": "/tmp/fx/app/x/index.html", "params": {"m": "a"}})
-    bad = apptools.run_py("http://o", "/tmp/fx/app/x", "s.py", {"zz": 1})
+    assert calls[0] == ("POST", "/api/run", {"py": os.path.join(app_dir, "s.py"),
+                                             "html": os.path.join(app_dir, "index.html"), "params": {"m": "a"}})
+    bad = apptools.run_py("http://o", app_dir, "s.py", {"zz": 1})
     assert not bad.ok and bad.text.startswith("error: ParamError") and "re-read its section" in bad.text and "stdout:" in bad.text
 
 
@@ -916,10 +924,14 @@ def test_run_py_against_a_real_http_server():
     t.start()
     try:
         origin = f"http://127.0.0.1:{srv.server_address[1]}/"
-        ok = apptools.run_py(origin, "/a", "s.py", {"m": 1}, html="/a/view.html")
+        # A real (native-separator) directory, not a hardcoded POSIX literal: run_py
+        # joins it with os.path.join, which on Windows means a backslash "py" field.
+        app_dir = os.path.join(os.sep, "a")
+        html = os.path.join(app_dir, "view.html")
+        ok = apptools.run_py(origin, app_dir, "s.py", {"m": 1}, html=html)
         assert ok.ok and ok.text == "[1, 2]"
-        assert seen[0] == ("/api/run", "1", {"py": "/a/s.py", "html": "/a/view.html", "params": {"m": 1}})
-        bad = apptools.run_py(origin, "/a", "s.py", {"fail": True})
+        assert seen[0] == ("/api/run", "1", {"py": os.path.join(app_dir, "s.py"), "html": html, "params": {"m": 1}})
+        bad = apptools.run_py(origin, app_dir, "s.py", {"fail": True})
         assert not bad.ok and bad.text == "error: nope"
     finally:
         srv.shutdown()
