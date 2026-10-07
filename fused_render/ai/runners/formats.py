@@ -387,7 +387,7 @@ DIFFUSERS_MODULAR_INDEX = "modular_model_index.json"
 #: Read off the config rather than the repo id, for `is_parakeet_checkpoint`'s
 #: reason: a fine-tune under somebody's own account is the same format and
 #: deserves the same tag.
-DUAL_EMBED_MODEL_TYPES = frozenset({"siglip", "clip"})
+DUAL_EMBED_MODEL_TYPES = frozenset({"siglip", "clip", "embedding_gemma2"})
 
 #: …and the TEXT-ONLY encoders, which the `embeddings` capability also serves:
 #: one tower, no vision half, hundreds or thousands of tokens of context instead
@@ -494,7 +494,9 @@ def has_task_head(config: dict) -> bool:
 #: Mac that resolved to MLX must not be offered a Load for a checkpoint its
 #: engine has no module for.
 MLX_EMBED_MODEL_TYPES = frozenset({"siglip", "bert", "xlm-roberta",
-                                   "modernbert"})
+                                   "modernbert", "embedding_gemma2"})
+
+MLX_VLM_EMBED_MODEL_TYPES = frozenset({"embedding_gemma2"})
 
 #: …and the subset the ONNX runner reads, which is the same idea as
 #: `MLX_EMBED_MODEL_TYPES` and exists for the same sentence: an engine must not
@@ -631,6 +633,7 @@ TEXT_EMBED_SCHEMES = {
     # modernbert-embed-base` matched neither this table nor any hint, so every
     # query embedded unprefixed — the same silent recall loss, one repo over.
     "mlx-community/nomicai-modernbert-embed-base-bf16": "nomic",
+    "mlx-community/embeddinggemma-2-bf16": "gemma-embedding",
     "intfloat/multilingual-e5-small": "e5",
     # Not curated in `catalog.py` — see the ONNX block's comment on why its
     # 0.44 GB would make it the default — but named here anyway, so a user who
