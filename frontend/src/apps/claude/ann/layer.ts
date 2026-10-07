@@ -43,7 +43,7 @@ export const ANN_LAYER_CSS: string = [
   // app's cannot reach in; `annBarTheme` then overrides them inline on the bar
   // node with the shell's live `--c-*` values, so these are the fallbacks for a
   // token that has not arrived rather than the answer.
-  ":host { --bg: #191a1e; --surface: #26282f; --border: #34363e;"
+  ":host { --bg: var(--c-bg, #191a1e); --surface: var(--c-surface, #26282f); --border: var(--c-border, #34363e);"
   + " --fg: #ececf1; --dim: #9a9fa9; --accent: #d97757; --on-accent: #1a1a1a;"
   + " --error: #f26d6d; --shadow: rgba(0, 0, 0, .4); }",
   // The reset this file's own `* { box-sizing: border-box }` gives every rule
@@ -166,14 +166,14 @@ export const ANN_LAYER_CSS: string = [
   // typed in. `position: absolute` inside a `fixed` host means annPlacePop's
   // coordinates are the framed viewport's — the same space the pins use.
   "#annpop { position: absolute; display: none; width: 280px; padding: 10px;"
-  + " background: #26282f; border: 1px solid rgba(255, 255, 255, .22);"
+  + " background: var(--c-surface, #26282f); border: 1px solid rgba(255, 255, 255, .22);"
   + " border-radius: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, .45);"
   + " font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
   + " color: #ececf1; pointer-events: auto; }",
   // `font: inherit` in the page's copy; spelled out here because `:host { all:
   // initial }` means there is nothing above to inherit but the UA default.
-  "#annpop textarea { display: block; width: 100%; background: #191a1e;"
-  + " border: 1px solid #34363e; border-radius: 8px; color: #ececf1;"
+  "#annpop textarea { display: block; width: 100%; background: var(--c-bg, #191a1e);"
+  + " border: 1px solid var(--c-border, #34363e); border-radius: 8px; color: #ececf1;"
   + " font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
   + " padding: 7px 9px; margin: 0; resize: none; outline: none; }",
   "#annpop .hint { color: #8a8f99; font-size: 11px; margin-top: 5px;"
