@@ -589,7 +589,7 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
    (routines) cannot bleed a negative bottom margin: its bottom padding goes and the footer sits flush instead. */
 .bots-page #fmodal .box > .row:last-child { margin-top: 0; align-self: stretch; }
 .bots-page #rmodal .box { padding-bottom: 0; }
-.bots-page #rmodal .box > .row:last-child { margin-bottom: 0; position: sticky; bottom: 0; }
+.bots-page #rmodal .box > .row:last-child { margin-bottom: 0; position: sticky; bottom: 0; background: #121212; }  /* opaque: it pins over the list when it scrolls */
 .bots-page .modal .box input:not([type=checkbox]), .bots-page .modal .box select, .bots-page .modal .box textarea { color: #fafafa; }
 /* The seeded greeting's door to Settings > Phone (components/Thread.tsx). */
 .bots-page .msg .opt.seed { justify-content: center; }

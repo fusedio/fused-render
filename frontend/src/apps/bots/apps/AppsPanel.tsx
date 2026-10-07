@@ -168,7 +168,7 @@ export function AppsPanel() {
             {!open || grid.kind === "blank" ? null
               : grid.kind === "looking" ? <div className="empty">Looking for apps…</div>
               : grid.kind === "error" ? <div className="empty">Could not read the apps folder.<br />{grid.msg}</div>
-              : !grid.rows.length ? <div className="empty">No apps yet.<br />Start one with New build; it shows up here when Claude has written its page.</div>
+              : !grid.rows.length ? <div className="empty">No apps yet.<br />Start one with New app; it shows up here when Claude has written its page.</div>
               : grid.rows.map((a) => <Card key={a.dir} a={a} starter={starterOf(starters, a.dir)} reloadApps={loadApps} />)}
           </div>
         </div>
