@@ -3,11 +3,13 @@
 // embed route. `_preview=1` is deliberately NOT added — see SPEC-home-widgets.md
 // ("App embed widget"): it would make a Claude chat inside the app read-only.
 import { useEffect, useState } from "react";
-import { getApps, type AppInfo } from "@platform/lib/api";
+import { getApps, statPath, type AppInfo, type HttpError } from "@platform/lib/api";
 import { hrefFor, isBrowserHandledClick, openApp, openTargetFor } from "@platform/lib/appEntry";
 import { useNearViewport } from "@platform/lib/preview-start";
-import { embedUrlForFsPath } from "@platform/lib/router";
+import { embedUrlForFsPath, urlForFsPath } from "@platform/lib/router";
 import type { Widget } from "../layout";
+import { pageTitle } from "../appPicker";
+import { softNavigate } from "../strip";
 import { EmptyLine, ErrorLine } from "./bits";
 
 // One shared fetch for every app widget on a page and the frame's title lookup.
@@ -67,6 +69,17 @@ export function appName(app: AppInfo): string {
   return app.title || app.name;
 }
 
+export { pageTitle };
+
+export function OpenPageLink({ path }: { path: string }) {
+  const href = urlForFsPath(path);
+  return (
+    <a className="home-sec-more" href={href} onClick={(e) => softNavigate(e, href)}>
+      Open ↗
+    </a>
+  );
+}
+
 export function OpenAppLink({ app }: { app: AppInfo }) {
   return (
     <a
@@ -96,36 +109,52 @@ export function AppEmbedWidget({
   const [ref, near] = useNearViewport<HTMLDivElement>();
   const [loaded, setLoaded] = useState(false);
   const app = apps?.find((a) => a.path === widget.appPath) ?? null;
-  // Frame the entry page when the app has one (the folder otherwise), the same rule hrefFor/Open uses; framing the folder renders a directory listing.
-  const src = app ? embedUrlForFsPath(openTargetFor(app).path) : null;
+  const path = widget.appPath ?? "";
+  // The apps list only decides app vs plain path. A path widget frames at once;
+  // if the list later says it IS an app, src flips to the entry page and the
+  // frame reloads once. The entry page (the folder otherwise) is the same rule
+  // hrefFor/Open uses; framing an app folder renders a directory listing.
+  const src = app ? embedUrlForFsPath(openTargetFor(app).path) : path ? embedUrlForFsPath(path) : null;
+  const [gone, setGone] = useState(false);
+  useEffect(() => {
+    setGone(false);
+    if (apps === null || app || !path) return;
+    let alive = true;
+    statPath(path).catch((e: HttpError) => {
+      if (alive && (e.status === undefined || e.status === 404)) setGone(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [apps, app, path]);
   // A new frame (another app, or remounted after scrolling away) starts unpainted.
   useEffect(() => {
     setLoaded(false);
   }, [src, near]);
 
   let inner;
-  if (error) {
-    inner = <ErrorLine message="Couldn't load apps." onRetry={retry} />;
-  } else if (apps === null) {
-    inner = <span className="hw-app-skel skel-bar" role="status" aria-busy="true" aria-label="Loading app" />;
-  } else if (!app) {
+  if (gone) {
     inner = (
       <div className="hw-error">
-        <EmptyLine>This app was removed.</EmptyLine>
+        <EmptyLine>This page is gone.</EmptyLine>
         <button type="button" className="hw-btn" onClick={onRemove}>
           Remove widget
         </button>
       </div>
     );
+  } else if (!src && error) {
+    inner = <ErrorLine message="Couldn't load apps." onRetry={retry} />;
+  } else if (!src) {
+    inner = <span className="hw-app-skel skel-bar" role="status" aria-busy="true" aria-label="Loading app" />;
   } else {
     inner = (
       <div className="hw-app-frame">
         {!loaded ? <span className="hw-app-skel skel-bar" role="status" aria-busy="true" aria-label="Loading app" /> : null}
-        {near && src ? (
+        {near ? (
           <iframe
             className={"hw-app-iframe" + (loaded ? " is-loaded" : "")}
             src={src}
-            title={appName(app)}
+            title={app ? appName(app) : pageTitle(path)}
             onLoad={() => setLoaded(true)}
             onError={() => setLoaded(true)}
           />

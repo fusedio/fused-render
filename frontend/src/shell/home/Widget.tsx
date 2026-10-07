@@ -12,7 +12,7 @@ import { BotsWidget } from "./widgets/BotsWidget";
 import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
 import { SearchWidget } from "./widgets/SearchWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
-import { AppEmbedWidget, OpenAppLink, appName, useWidgetApp } from "./widgets/AppEmbedWidget";
+import { AppEmbedWidget, OpenAppLink, OpenPageLink, appName, pageTitle, useWidgetApp } from "./widgets/AppEmbedWidget";
 import { FormatPicks, SizeChips } from "./Pickers";
 
 const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
@@ -161,8 +161,12 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
   const title =
     widget.source === "folder"
       ? (folder?.name ?? spec.label)
-      : widget.source === "app" && embedded
-        ? appName(embedded)
+      : widget.source === "app"
+        ? embedded
+          ? appName(embedded)
+          : widget.appPath
+            ? pageTitle(widget.appPath)
+            : spec.label
         : spec.label;
   const seeAll = SEE_ALL[widget.source];
   // The search widget IS the bar: no header in view mode.
@@ -213,6 +217,8 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           </>
         ) : embedded ? (
           <OpenAppLink app={embedded} />
+        ) : widget.source === "app" && widget.appPath ? (
+          <OpenPageLink path={widget.appPath} />
         ) : seeAll ? (
           <a className="home-sec-more" href={seeAll} onClick={(e) => softNavigate(e, seeAll)}>
             See all

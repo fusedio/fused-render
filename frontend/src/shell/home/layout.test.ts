@@ -12,6 +12,7 @@ import {
   setSize,
   type HomeLayout,
 } from "./layout";
+import { pageTitle } from "./appPicker";
 
 const w = (id: string, source: any = "apps", size: any = "4x1", format: any = "cards") => ({
   id,
@@ -162,4 +163,11 @@ test("only one search widget: duplicates dropped, add is a no-op", () => {
   expect(ids(out)).toEqual(["s1"]);
   expect(addWidget(out, "search")).toBe(out);
   expect(addWidget(lay(w("a")), "search", { id: "s" }).widgets[1]).toEqual({ id: "s", source: "search", size: "4x1", format: "bar" });
+});
+
+test("pageTitle is the last path segment", () => {
+  expect(pageTitle("/a/b/c.md")).toBe("c.md");
+  expect(pageTitle("/a/b/")).toBe("b");
+  expect(pageTitle("C:\\x\\y.html")).toBe("y.html");
+  expect(pageTitle("/")).toBe("/");
 });

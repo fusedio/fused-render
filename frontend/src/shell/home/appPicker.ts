@@ -32,3 +32,9 @@ export function filterPickerApps(apps: AppInfo[], query: string, home?: string):
       appFolderLine(a, home).toLowerCase().includes(q),
   );
 }
+
+/** The last path segment (either separator, trailing slashes ignored); the full path when there is none. */
+export function pageTitle(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}

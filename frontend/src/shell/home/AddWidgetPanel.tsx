@@ -2,7 +2,8 @@
 // on the right, a large preview of the chosen look plus the format and size
 // picks. "Add to Home" appends with the chosen format and size.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { useHome } from "../../apps/explorer/listing/home-path";
+import { contractHome, useHome } from "../../apps/explorer/listing/home-path";
+import { listDir, statPath, type FsEntry } from "@platform/lib/api";
 import { appFolderLine, filterPickerApps, pickerApps } from "./appPicker";
 import {
   AppWindow,
@@ -10,6 +11,8 @@ import {
   Bot,
   Clock,
   Database,
+  FileText,
+  Folder,
   FolderGit2,
   LayoutGrid,
   ListChecks,
@@ -60,6 +63,9 @@ function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): Bookmark
   return out;
 }
 
+const joinPath = (dir: string, name: string) => dir.replace(/[\\/]+$/, "") + "/" + name;
+const parentDir = (dir: string) => dir.replace(/[\\/]+$/, "").replace(/[^\\/]*$/, "").replace(/(.)[\\/]+$/, "$1") || "/";
+
 const ALL_SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
 
 export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: () => void }) {
@@ -79,8 +85,75 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   const rawApps = appsState.apps;
   const allApps = useMemo(() => (rawApps ? pickerApps(rawApps) : null), [rawApps]);
   const chosenApp = allApps?.find((a) => a.path === appPath) ?? allApps?.[0] ?? null;
-  const noApps = source === "app" && allApps !== null && !allApps.length;
   const shownApps = filterPickerApps(allApps ?? [], appQuery, home);
+  const [pageMode, setPageMode] = useState<"apps" | "file">("apps");
+  const [filePath, setFilePath] = useState<string>("");
+  const [pathInput, setPathInput] = useState("");
+  const [browseDir, setBrowseDir] = useState<string | null>(null);
+  const [fileCheck, setFileCheck] = useState<{ path: string; ok: boolean; reason?: string; mode?: string } | null>(null);
+  const dirCache = useRef(new Map<string, FsEntry[]>());
+  const [dirEntries, setDirEntries] = useState<FsEntry[] | null>(null);
+  const [dirError, setDirError] = useState(false);
+  const dir = browseDir ?? home ?? null;
+  const fileMode = source === "app" && pageMode === "file";
+  const noApps = source === "app" && pageMode === "apps" && allApps !== null && !allApps.length;
+  useEffect(() => {
+    if (!fileMode || !dir) return;
+    const hit = dirCache.current.get(dir);
+    if (hit) {
+      setDirEntries(hit);
+      setDirError(false);
+      return;
+    }
+    setDirEntries(null);
+    setDirError(false);
+    let alive = true;
+    listDir(dir).then(
+      (r) => {
+        dirCache.current.set(dir, r.entries);
+        if (alive) setDirEntries(r.entries);
+      },
+      () => alive && setDirError(true),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [fileMode, dir]);
+  useEffect(() => {
+    if (!filePath) return;
+    let alive = true;
+    setFileCheck(null);
+    statPath(filePath).then(
+      (r) => alive && setFileCheck({ path: filePath, ok: r.templates.length > 0, mode: r.templates[0]?.mode }),
+      () => alive && setFileCheck({ path: filePath, ok: false, reason: "Can't read that path." }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [filePath]);
+  const fileOk = !!fileCheck?.ok && fileCheck.path === filePath;
+  const commitPath = async () => {
+    let p = pathInput.trim();
+    if (!p) return;
+    if (home && (p === "~" || p.startsWith("~/"))) p = home + p.slice(1);
+    try {
+      const r = await statPath(p);
+      if (r.is_dir) {
+        setBrowseDir(p);
+        // A directory that itself renders (a .zarr store) can also be chosen.
+        if (r.templates.length) setFilePath(p);
+      } else setFilePath(p);
+    } catch {
+      setFilePath(p);
+    }
+  };
+  const shownEntries = useMemo(
+    () =>
+      (dirEntries ?? [])
+        .filter((e) => !e.name.startsWith(".") && !e.ignored)
+        .sort((a, b) => Number(b.is_dir) - Number(a.is_dir) || a.name.localeCompare(b.name)),
+    [dirEntries],
+  );
   const folders = allFolders(loadBookmarks());
   const spec = SOURCES[source];
   const full = api.layout.widgets.length >= MAX_WIDGETS;
@@ -140,13 +213,13 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   };
 
   const add = () => {
-    if (full || noFolders || noApps || (source === "app" && !chosenApp)) return;
+    if (full || noFolders || noApps || (source === "app" && (fileMode ? !fileOk : !chosenApp))) return;
     api.add(
       source,
       source === "folder"
         ? { folderId: chosenFolder?.id, format, size }
         : source === "app"
-          ? { appPath: chosenApp?.path, format, size }
+          ? { appPath: fileMode ? filePath : chosenApp?.path, format, size }
           : { format, size },
     );
     onClose();
@@ -219,7 +292,93 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
               </div>
             ) : source === "app" ? (
               <div className="hw-stage-box is-folders">
-                {appsState.error ? (
+                <div className="hw-chips" role="radiogroup" aria-label="Pick from">
+                  {(["apps", "file"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={m === pageMode}
+                      className={"hw-sizechip" + (m === pageMode ? " is-on" : "")}
+                      onClick={() => setPageMode(m)}
+                    >
+                      {m === "apps" ? "Apps" : "Any file"}
+                    </button>
+                  ))}
+                </div>
+                {fileMode ? (
+                  <>
+                    <input
+                      className="hw-appsearch"
+                      type="text"
+                      placeholder="Path, e.g. ~/notes/todo.md"
+                      aria-label="File path"
+                      value={pathInput}
+                      onChange={(e) => setPathInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void commitPath();
+                        }
+                      }}
+                      onBlur={() => void commitPath()}
+                    />
+                    <div className="hw-filepick">
+                      {dir ? (
+                        <div className="hw-filepick-crumb">
+                          {dir !== "/" ? (
+                            <button type="button" className="hw-filepick-up" aria-label="Up one folder" onClick={() => setBrowseDir(parentDir(dir))}>
+                              ..
+                            </button>
+                          ) : null}
+                          <span>{contractHome(dir, home)}</span>
+                        </div>
+                      ) : null}
+                      <div className="hw-filepick-list" role="radiogroup" aria-label="File">
+                        {dirError ? <span className="hw-empty">Can't read that folder.</span> : null}
+                        {!dirError && dirEntries === null ? (
+                          <span className="hw-app-skel skel-bar" role="status" aria-busy="true" aria-label="Loading folder" />
+                        ) : null}
+                        {shownEntries.slice(0, 200).map((e) => {
+                          const p = joinPath(dir ?? "", e.name);
+                          const on = !e.is_dir && p === filePath;
+                          return (
+                            <button
+                              key={e.name}
+                              type="button"
+                              role="radio"
+                              aria-checked={on}
+                              className={"hw-appopt" + (on ? " is-on" : "")}
+                              onClick={() => {
+                                if (e.is_dir) setBrowseDir(p);
+                                else {
+                                  setFilePath(p);
+                                  setPathInput(contractHome(p, home));
+                                }
+                              }}
+                            >
+                              <span className="hw-tile-icon" aria-hidden="true">
+                                {e.is_dir ? <Folder size={18} /> : <FileText size={18} />}
+                              </span>
+                              <span className="hw-appopt-name">{e.name}</span>
+                            </button>
+                          );
+                        })}
+                        {shownEntries.length > 200 ? <span className="hw-empty">Showing the first 200 — type a path above.</span> : null}
+                        {!dirError && dirEntries !== null && !shownEntries.length ? <span className="hw-empty">Nothing here.</span> : null}
+                      </div>
+                    </div>
+                    {filePath ? (
+                      <div className={"hw-filepick-status" + (fileCheck?.path === filePath ? (fileCheck.ok ? " is-ok" : " is-err") : "")}>
+                        {fileCheck?.path !== filePath
+                          ? "Checking…"
+                          : fileCheck.ok
+                            ? `Will show as ${fileCheck.mode}`
+                            : (fileCheck.reason ?? "The explorer has no view for this file.")}
+                      </div>
+                    ) : null}
+                  </>
+                ) : appsState.error ? (
                   <div className="hw-nofolders">
                     <SourceIcon source="app" large />
                     <b>Couldn't load apps.</b>
@@ -300,7 +459,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
           <button type="button" className="hw-tb is-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="hw-tb is-primary" disabled={full || noFolders || noApps || (source === "app" && !chosenApp)} onClick={add}>
+          <button type="button" className="hw-tb is-primary" disabled={full || noFolders || noApps || (source === "app" && (fileMode ? !fileOk : !chosenApp))} onClick={add}>
             Add to Home
           </button>
         </div>

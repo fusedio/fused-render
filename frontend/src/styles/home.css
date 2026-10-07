@@ -1875,6 +1875,16 @@ a.hw-more:hover {
   gap: 2px;
 }
 
+.hw-filepick { display: flex; flex-direction: column; min-height: 0; gap: 6px; }
+.hw-filepick-crumb { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); min-width: 0; }
+.hw-filepick-crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hw-filepick-up { border: 0; background: transparent; color: var(--fg-muted); font: inherit; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.hw-filepick-up:hover { background: var(--ctl-quiet-bg-hover); color: var(--fg); }
+.hw-filepick-list { overflow-y: auto; min-height: 0; max-height: 260px; display: flex; flex-direction: column; gap: 2px; }
+.hw-filepick-status { font-size: 11px; color: var(--fg-muted); padding: 2px 4px; }
+.hw-filepick-status.is-err { color: var(--error); }
+.hw-filepick-status.is-ok { color: var(--success); }
+
 .hw-appopt {
   display: flex;
   align-items: center;
