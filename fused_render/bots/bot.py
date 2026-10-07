@@ -1178,7 +1178,7 @@ class Bot:
 
     _setup_probe_at = 0.0  # last Claude-health measure made for the setup (one per minute at most)
     _opened_at = 0.0       # the last `opened()`: a probe finishing within SETUP_OPEN_WINDOW_S of it completes the open
-    SETUP_OPEN_WINDOW_S = 120.0
+    SETUP_OPEN_WINDOW_S = 20.0    # the measure itself is 1-2.5 s; the page re-asks every 3 s while it still shows the bot
 
     def opened(self):
         """`POST /api/bots/<id>/open`: the Bots page shows this bot (landing on it,
