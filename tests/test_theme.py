@@ -411,3 +411,18 @@ def test_preset_blocks_have_a_pre_paint_background():
     for pid in _preset_ids()[1:]:
         assert f'html[data-theme-name="{pid}"]' in html
         assert f'html[data-theme-name="{pid}"][data-theme="light"]' in html
+
+
+def test_bootstrap_preset_ids_match_theme_ts_in_index_and_lan():
+    expected = [i for i in _preset_ids() if i != "default"]
+    for path in ("frontend/index.html", "frontend/lan.html"):
+        html = read_repo_file(path)
+        head = html[: html.index("</head>")]
+        guard = re.search(
+            r'getItem\("fused-render:theme-preset"\);\s*if \(([^)]*)\)', head
+        )
+        assert guard, f"{path}: no preset guard in the bootstrap"
+        assert re.findall(r'"([\w-]+)"', guard.group(1)) == expected, path
+        for pid in expected:
+            assert f'html[data-theme-name="{pid}"]' in head, (path, pid)
+            assert f'html[data-theme-name="{pid}"][data-theme="light"]' in head, (path, pid)
