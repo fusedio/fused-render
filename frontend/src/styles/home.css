@@ -1844,6 +1844,23 @@ a.hw-more:hover {
   height: 22px;
 }
 
+.hw-appopt-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.hw-appopt-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+  opacity: 0.75;
+}
+
 .hw-appopt-name {
   min-width: 0;
   overflow: hidden;

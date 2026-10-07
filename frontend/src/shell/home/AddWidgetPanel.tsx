@@ -1,7 +1,9 @@
 // The "Add a widget" sheet: a centred modal with the sources on the left and,
 // on the right, a large preview of the chosen look plus the format and size
 // picks. "Add to Home" appends with the chosen format and size.
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useHome } from "../../apps/explorer/listing/home-path";
+import { appFolderLine, filterPickerApps, pickerApps } from "./appPicker";
 import {
   AppWindow,
   Bookmark,
@@ -69,10 +71,12 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   const [appPath, setAppPath] = useState<string | null>(null);
   const [appQuery, setAppQuery] = useState("");
   const appsState = useAllApps(source === "app");
-  const allApps = appsState.apps;
+  const home = useHome();
+  const rawApps = appsState.apps;
+  const allApps = useMemo(() => (rawApps ? pickerApps(rawApps) : null), [rawApps]);
   const chosenApp = allApps?.find((a) => a.path === appPath) ?? allApps?.[0] ?? null;
   const noApps = source === "app" && allApps !== null && !allApps.length;
-  const shownApps = (allApps ?? []).filter((a) => appName(a).toLowerCase().includes(appQuery.trim().toLowerCase()));
+  const shownApps = filterPickerApps(allApps ?? [], appQuery, home);
   const folders = allFolders(loadBookmarks());
   const spec = SOURCES[source];
   const full = api.layout.widgets.length >= MAX_WIDGETS;
@@ -250,7 +254,10 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
                           onClick={() => setAppPath(a.path)}
                         >
                           <AppGlyph app={a} />
-                          <span className="hw-appopt-name">{appName(a)}</span>
+                          <span className="hw-appopt-text">
+                            <span className="hw-appopt-name">{appName(a)}</span>
+                            <span className="hw-appopt-dir">{appFolderLine(a, home)}</span>
+                          </span>
                         </button>
                       ))}
                       {!shownApps.length ? <span className="hw-empty">No apps match.</span> : null}
