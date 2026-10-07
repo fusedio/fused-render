@@ -1321,8 +1321,11 @@ def _act(bot, sess: TaskSession, name: str, args: dict, notes: list | None = Non
     parts = pre + [result]
     if name == "py" and result.startswith("RESULT:"):
         parts.extend(_loaded_skill(bot, args))
-    if ckey is not None and name == "handoff" and not result.startswith("error"):
-        sess.ran_calls[ckey] = result  # the same hand-off twice in one instruction is refused like a repeated `py`
+    if ckey is not None and name in ("handoff",) + tools.MANAGE_TOOLS and not result.startswith("error") \
+            and not result.startswith("SETTINGS of "):
+        # The same hand-off / create / change twice in one instruction is refused like a repeated `py`
+        # (a second `bot_create` would mint a second bot). A read (`bot_settings {bot}`) may repeat.
+        sess.ran_calls[ckey] = result
     if ckey is not None and result.startswith("RESULT:"):
         sess.ran_calls[ckey] = result
         sess.current_result = {"label": label, "args": args.get("args") if isinstance(args.get("args"), dict) else {},

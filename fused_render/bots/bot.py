@@ -2502,6 +2502,21 @@ def face_words(face) -> str:
 MANAGE_FIELDS = ("name", "instructions", "model", "effort", "face")
 
 
+def _name_taken(name, except_id=None) -> bool:
+    """Another bot (not `except_id`) already carries `name`, case-insensitive. Two bots
+    with one name make every later resolve (`handoff`, `bot_settings`) ambiguous."""
+    want = " ".join((name or "").split()).lower()
+    for bid in _list_ids():
+        if bid == except_id:
+            continue
+        try:
+            if " ".join((_read_meta(bid).get("name") or "").split()).lower() == want:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def manage_create_check(bot, args):
     """Validate a `bot_create` call before anything is written: (clean fields, "") or
     (None, "error: …"). Shared by the approval preview and the run, so a refused call
@@ -2514,12 +2529,8 @@ def manage_create_check(bot, args):
         return None, "error: give the bot a name"
     if name.lower() == SUPER_NAME.lower():
         return None, f"error: {name!r} is Super Bot's name"
-    for bid in _list_ids():
-        try:
-            if " ".join((_read_meta(bid).get("name") or "").split()).lower() == name.lower():
-                return None, f"error: a bot named {name!r} already exists; pick another name"
-        except Exception:  # noqa: BLE001
-            continue
+    if _name_taken(name):
+        return None, f"error: a bot named {name!r} already exists; pick another name"
     model, effort, preset = str(args.get("model") or ""), str(args.get("effort") or ""), str(args.get("preset") or "")
     try:
         check_settings({}, model, effort)
@@ -2579,6 +2590,8 @@ def manage_changes(bot, target_name, args):
         if new_name and new_name != (t.meta.get("name") or ""):
             if new_name.lower() == SUPER_NAME.lower():
                 raise ValueError(f"{new_name!r} is Super Bot's name")
+            if _name_taken(new_name, except_id=t.id):
+                raise ValueError(f"a bot named {new_name!r} already exists; pick another name")
             changes.append(("name", t.meta.get("name") or "", new_name))
         if args.get("instructions") is not None:
             old_i, ni = (t.meta.get("instructions") or "").strip(), str(args["instructions"]).strip()
