@@ -1914,7 +1914,8 @@ a.hw-more:hover {
    like the hero it replaced. Edit mode keeps the normal card and chrome. */
 .hw-widget.is-search {
   align-self: center;
-  padding: 0 4%;
+  width: 100%;
+  padding: 0;
   background: none;
   border-color: transparent;
   border-radius: 0;
@@ -1929,7 +1930,22 @@ a.hw-more:hover {
   align-self: start;
 }
 
+/* The bar spans the whole widget, whatever its size. */
+.hw-widget.is-search > *,
+.hw-widget.is-search .files-search-wrap {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+/* Takeover: the old hero's breathing room above the bar. */
+.hw-grid.is-searching .hw-widget.is-search {
+  padding-top: 18px;
+}
+
 .hw-search-ph {
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 8px;
