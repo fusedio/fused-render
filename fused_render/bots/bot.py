@@ -1177,13 +1177,19 @@ class Bot:
         self.thread.start()
 
     _setup_probe_at = 0.0  # last Claude-health measure made for the setup (one per minute at most)
+    _opened_at = 0.0       # the last `opened()`: a probe finishing within SETUP_OPEN_WINDOW_S of it completes the open
+    SETUP_OPEN_WINDOW_S = 20.0    # the measure itself is 1-2.5 s; the page re-asks every 3 s while it still shows the bot
 
     def opened(self):
         """`POST /api/bots/<id>/open`: the Bots page shows this bot (landing on it,
         a click, a deep link). The one door to Super Bot's first task; nothing on
         another page, no poll by itself and no background tick starts it (owner's
         rule, 2026-10-07). Returns {setup: "started" | "pending" | "none"}:
-        pending = Claude is not linked yet, the page asks again later."""
+        pending = Claude is not linked yet (or not measured yet), the page asks
+        again later. A cold health cache is measured in the background and that
+        measure finishes THIS open (`_maybe_super_setup`): the user's own click,
+        completed a couple of seconds late, not a tick starting it."""
+        self._opened_at = time.time()
         return {"setup": self._maybe_super_setup(opened=True)}
 
     def _maybe_super_setup(self, opened=False):
@@ -1193,8 +1199,12 @@ class Bot:
         is linked and the bot is idle; never from a poll or the routines tick, so
         onboarding, a background pass or the page landing on Super Bot by default
         cannot pop the sign-in window.
-        The health check reads the cached snapshot; an empty cache is measured
-        once a minute in the background."""
+        The health check reads the cached snapshot (claude_health.cached, valid
+        for a minute). A cold cache is measured once a minute in the background,
+        and the measure then re-runs this check itself when the open is recent
+        (SETUP_OPEN_WINDOW_S): on a fresh install the onboarding's snapshot has
+        aged out by the time the user reaches Bots, so without that the sign-in
+        waited for the page's next ask (the symptom: nothing until a reload)."""
         if not opened or not is_super(self.meta) or not (self.meta.get("setup") or "").strip():
             return "none"
         if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
@@ -1206,7 +1216,7 @@ class Bot:
                 now = time.time()
                 if now - self._setup_probe_at > 60:
                     self._setup_probe_at = now
-                    threading.Thread(target=lambda: claude_health.snapshot(), daemon=True, name=f"setup-probe-{self.id}").start()
+                    threading.Thread(target=self._setup_probe, daemon=True, name=f"setup-probe-{self.id}").start()
                 return "pending"
             if not c.get("found") or not c.get("signed_in"):
                 return "pending"
@@ -1220,6 +1230,20 @@ class Bot:
         self.emit("system", "Opening Google's sign-in in my browser: once you are signed in, every bot sharing it is too.")
         self.start_task(setup, label="Sign in to Google", origin="setup")
         return "started"
+
+    def _setup_probe(self):
+        """The background measure behind a cold health cache, then the open it
+        was made for, completed: the user opened Super Bot moments ago and only
+        the measure was missing. An old open (the page may be gone) is left to
+        the page's next ask. Errors stay in this thread (a measure that fails
+        is just a cache still cold; the next open probes again)."""
+        try:
+            from fused_render import claude_health
+            claude_health.snapshot()
+            if time.time() - self._opened_at <= self.SETUP_OPEN_WINDOW_S:
+                self._maybe_super_setup(opened=True)
+        except Exception:  # noqa: BLE001
+            logger.warning("bot %s: setup probe failed", self.id, exc_info=True)
 
     def learn_from_last(self):
         """Condense the last finished task into a playbook, in a background
