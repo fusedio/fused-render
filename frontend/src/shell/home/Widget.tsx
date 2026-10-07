@@ -28,7 +28,7 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
 function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; onRemove: () => void }) {
   switch (widget.source) {
     case "search":
-      return <SearchWidget edit={edit} />;
+      return <SearchWidget edit={edit} size={widget.size} />;
     case "build":
       return <BuildWidget edit={edit} />;
     case "spacer":
@@ -91,11 +91,12 @@ function EditPopover({
     };
   }, [open]);
   // Right-aligned under the button; a widget near the left edge would push the
-  // 360px card off-screen, so flip it to grow rightwards there.
+  // 360px card off-screen, so flip it to grow rightwards there. Re-measured
+  // after a size pick, which moves the button.
   useLayoutEffect(() => {
     if (!open || !button.current) return;
     setAlignLeft(button.current.getBoundingClientRect().right - 360 < 8);
-  }, [open]);
+  }, [open, widget.size]);
   const spec = SOURCES[widget.source];
   return (
     <span className="hw-menu-wrap" ref={root}>

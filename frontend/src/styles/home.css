@@ -2130,6 +2130,12 @@ a.hw-more:hover {
   box-sizing: border-box;
 }
 
+/* One column is too narrow for the CTA and the long placeholder; the bar
+   alone still searches and the All files link lives in the sidebar. */
+.hw-widget.is-search.hw-size-1x1 .files-search-allfiles {
+  display: none;
+}
+
 /* Takeover: the old hero's breathing room above the bar. */
 .hw-grid.is-searching .hw-widget.is-search {
   padding-top: 18px;

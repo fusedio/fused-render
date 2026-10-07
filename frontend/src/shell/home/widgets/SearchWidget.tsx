@@ -5,6 +5,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { FilesSearch } from "@apps/explorer/FilesHome";
+import type { WidgetSize } from "../layout";
 
 export interface SearchHost {
   home: string;
@@ -29,7 +30,7 @@ export function useSearchHost(home: string): SearchHost {
   return { home, initialQuery, searching, setSearching, indexScan, requestScan: () => setNonce((n) => n + 1) };
 }
 
-export function SearchWidget({ edit }: { edit: boolean }) {
+export function SearchWidget({ edit, size }: { edit: boolean; size: WidgetSize }) {
   const host = useContext(SearchHostContext);
   const setSearching = host?.setSearching;
   // A box that goes away mid-query must not leave Home stuck in takeover.
@@ -48,6 +49,7 @@ export function SearchWidget({ edit }: { edit: boolean }) {
     <FilesSearch
       home={host.home}
       initialQuery={host.initialQuery}
+      compact={size === "1x1"}
       indexScan={host.indexScan}
       onActiveChange={host.setSearching}
       onScanRequested={host.requestScan}
