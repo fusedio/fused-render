@@ -64,7 +64,7 @@ export function CardStrip({
       <div
         ref={scroller}
         className={(icons ? "hw-icons is-strip" : "home-row hw-cards") + (overflowing ? " is-overflowing" : "")}
-        style={(icons ? { "--hw-rows": rows } : { "--hw-n": count ?? 1, "--hw-rows": rows }) as CSSProperties}
+        style={({ ...(icons ? {} : { "--hw-n": count ?? 1 }), "--hw-rows": rows }) as CSSProperties}
         onScroll={update}
       >
         {children}
