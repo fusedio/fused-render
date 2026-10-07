@@ -12,12 +12,15 @@ import { postJson } from "./api";
 // Ask for the app's window. `path` is the app folder (or a `.fused` file).
 // Resolves false when the server has no window manager to ask (404: the app
 // was relaunched without native windows, or this is `fused-render serve`) or
-// the request failed — the caller then navigates in place, so a click never
+// the request failed, or the `apps_open_in_home` preference says the app
+// opens inside this window (`in_home`) — the caller then navigates in place, so a click never
 // does nothing.
 export async function openAppWindow(path: string): Promise<boolean> {
   try {
-    await postJson<{ ok: boolean }>("/api/windows/open", { path });
-    return true;
+    const res = await postJson<{ ok: boolean; in_home?: boolean }>("/api/windows/open", { path });
+    // `apps_open_in_home`: the server declined to spawn a window — the app
+    // opens inside this window's explorer, so the caller navigates in place.
+    return !res?.in_home;
   } catch {
     return false;
   }

@@ -59,6 +59,7 @@ import {
   putCanvasesEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
+  putAppsOpenInHome,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
   putAutoDownloadUpdates,
@@ -953,6 +954,20 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
   const nw = prefs.native_windows;
   if (!nw || !nw.available) return null;
   const enabled = nw.enabled;
+  const inHome = prefs.apps_open_in_home?.enabled === true;
+
+  const toggleInHome = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putAppsOpenInHome(!inHome));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toggle = async () => {
     if (busy) return;
@@ -979,6 +994,22 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
           <b>Use native windows</b> instead of browser tabs.
+        </span>
+      </label>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={inHome}
+          disabled={busy || !enabled}
+          onChange={toggleInHome}
+        />
+        <span>
+          <b>Open apps in the Home window</b>
+          <br />
+          <span className="deploy-muted">
+            Apps open inside the Home window's file explorer, like in a browser, instead of each in
+            its own window.
+          </span>
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
