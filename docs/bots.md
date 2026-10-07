@@ -452,9 +452,31 @@ sets `bot.deleted` before its shutdown: `start_task` refuses, `save` and
 `emit` write nothing, so nothing racing the teardown can bring the bot back. Super Bot hands browsing work to
 the other bots (§11). The harness side
 is in §6 ("The Super Bot on the harness"). Page: the chooser's Super Bot card
-(shown while no Super Bot exists), the dialog hides local models and Builds
-for it, shows its iMessage handle field (and only for it) and "Mac access",
+(shown while no Super Bot exists), Settings hides local models and Builds
+for it, shows its Phone section (and only for it) and "On this Mac",
 the list shows a Super Bot badge, the menu drops Routines and Clone.
+
+**Seeded by default** (`registry.seed_super`, 2026-10-07). `registry.start()`
+first makes Super Bot when none exists and `<home>/bots/super-seeded.json`
+is absent, then writes that witness, so a Super Bot the user deletes stays
+deleted (the chooser card is the way back; the same stamp-not-emptiness
+rule as the FusedBot import, which runs before it and may already carry
+one). `create(kind="super", greet=False)` skips the model-written hello;
+the seed emits `SUPER_GREETING` as a `done` with `source: "seed"`, which
+the page renders with a "Connect your phone" button (Settings > Phone).
+Both flavors seed: the tree is shared. The store selects Super Bot when
+nothing is selected, so a first open lands in its chat. Tests: the bots
+fixture no-ops `registry.start`, so `seed_super()` is called directly.
+
+**Dialogs** (2026-10-07). "+ New bot" is `dialogs/CreateBot.tsx`: name,
+what it should do, model; effort behind the cog; every other setting takes
+its first-run default. Settings is `dialogs/BotSettings.tsx`: a rail of
+sections — General (avatar, name, instructions, model, thinking),
+Permissions (On this Mac for Super Bot; before it buys/deletes/posts;
+builds for ordinary bots; apps it may use without asking), Browser (Chrome
+profile, encryption), Memory, and Phone on Super Bot (`PhoneSection.tsx`,
+§10). `openDialog({kind: "settings", id, tab})` opens a section;
+`/bots?phone=1` (Preferences' Phone row) opens Super Bot's Phone tab.
 
 **Presets** (`bots/presets.py`, data in `fused_render/bots/presets/<key>/`,
 shipped inside the package). One folder per site: `preset.json` (`name`,
@@ -1047,6 +1069,26 @@ allow-list; the page hides the row (`isNoise`) and joins it to the bubble by
 bubble (summary, numbered options, cut), `→ iMessage` when it is the same,
 `Not sent to iMessage: <error>` when every retry failed. Unread counting
 ignores delivery rows (`isNoiseEv`).
+
+**The phone switch** (`meta.imessage_enabled` on Super Bot, 2026-10-07).
+Settings > Phone is a switch, "Text Super Bot from your phone", then a
+four-step checklist (Full Disk Access from the shell's one `fda.ts` store,
+Messages signed in, your number, a test text), then the connected view.
+Off keeps the handle: `imessage.super_door()` answers `""` while the switch
+is off, which rides `ImessageChannel._tick`'s existing no-handle gate, so
+nothing is read from or sent to Messages. On with no handle yet, `_tick`
+opens chat.db anyway and publishes `own_handles` (this Mac's Messages
+accounts, `message.account` of sent rows) so the page can offer "use my own
+number"; picking one of those is the `own` identity (`@name` prefix), typing
+another a `dedicated` one. `GET /api/bots/imessage` adds `super_id`,
+`enabled`, `handle`; `POST /api/bots/imessage/test` sends "Connected…" to
+the handle, which proves the send path and triggers macOS's Automation
+consent for Messages at a moment the user expects it. A bot.json written
+before the switch existed reads as on when it has a handle (`Bot.__init__`
+stamps the key). **Ordinary bots have no phone keys**: `imessage` and
+`imessage_to` are dropped on load, Settings refuses them for `kind != super`,
+`contacts()` is empty, so `text`/`texts` leave their roster; a bot reaches
+the phone only through Super Bot's hand-off result (§11).
 
 **Engines.** Both prompts get a `CHANNEL:` paragraph from `channels.prompt_for`
 when `task_via` is a phone channel (one short `done`, options on every `ask`,

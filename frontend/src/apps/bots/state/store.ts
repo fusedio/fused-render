@@ -257,7 +257,8 @@ export async function pollOnce(): Promise<void> {
       if (toast) showToast(toast);
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
       if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
-      if (!S.sel && r.bots.length) select(r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id);
+      // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
+      if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id);
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null);
       updateTitle();
     });

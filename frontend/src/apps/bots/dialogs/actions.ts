@@ -4,12 +4,15 @@ import { api, type Bot, type Face } from "../lib/api";
 import { act, cur, getState, select, setState } from "../state/store";
 import { askConfirm } from "./ask";
 
-/** What the bot dialog hands back on OK (OpenBot botDialog's read()). */
+/** What the bot dialogs hand back on OK (OpenBot botDialog's read()). CreateBot fills the fields it does not show
+ *  with the first-run defaults (ask before risky things, scoped builds, own profile, no encryption). */
 export interface BotDialogValue {
   name: string; model: string; effort: string; instructions: string; memory: string; approval: string; buildAccess: string;
   encrypt: boolean; profile: string; face: Face;
-  /** The owner's phone handle; the dialog only shows it for Super Bot, the one bot reachable over iMessage (docs §10). */
+  /** Super Bot's phone (docs §10): the owner's handle, the Settings > Phone switch, the people it may text. Ignored
+   *  for every other bot (the backend drops the keys on load and refuses them in Settings). */
   imessage: string;
+  imessageEnabled: boolean;
   imessageTo: string;
   /** The preset key the bot was made from ("" for a blank bot, and always "" in Settings). */
   preset: string;
@@ -17,23 +20,22 @@ export interface BotDialogValue {
   kind: string;
   /** Super Bot's Mac access: "ask" | "full" (ignored for other bots). */
   superAccess: string;
-  /** App folders whose tools never ask this bot for approval (Settings → Advanced → Trusted apps). */
+  /** App folders whose tools never ask this bot for approval (Settings > Permissions > Trusted apps). */
   trustedApps: string[];
 }
 
-/** The owner handle goes only with Super Bot's settings: the field is hidden for other bots, and sending their old
- *  value back (or "") would keep or wipe a key the router no longer reads (docs §10). */
-const handle = (v: BotDialogValue): { imessage_handle?: string } => (v.kind === "super" ? { imessage_handle: v.imessage } : {});
+/** The phone keys go only with Super Bot's settings: sending another bot's old value back (or "") would plant a key
+ *  the backend drops on load (docs §10). */
+const phone = (v: BotDialogValue): { imessage_handle?: string; imessage_enabled?: boolean; imessage_to?: string } =>
+  (v.kind === "super" ? { imessage_handle: v.imessage, imessage_enabled: v.imessageEnabled, imessage_to: v.imessageTo } : {});
 
-/** "+ New bot": create (with the preset, whose playbooks the backend copies), then the iMessage fields, the Chrome
- *  profile and the face; select it and drop focus into the composer. */
+/** "+ New bot": create (with the preset, whose playbooks the backend copies), then the face; select it and drop
+ *  focus into the composer. Everything else is a Settings matter once the bot exists. */
 export async function createBot(v: BotDialogValue): Promise<void> {
   const r = await act(() => api.create({ name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, approval: v.approval, build_access: v.buildAccess, encrypt: v.encrypt, preset: v.preset || "",
     kind: v.kind || "bot", super_access: v.superAccess }));
   const id = r?.id;
-  if (id && (v.imessage || v.imessageTo || v.trustedApps.length)) {
-    await act(() => api.settings(id, { name: v.name, ...handle(v), imessage_to: v.imessageTo, trusted_apps: v.trustedApps }));
-  }
+  if (id && v.trustedApps.length) await act(() => api.settings(id, { name: v.name, trusted_apps: v.trustedApps }));
   if (id && v.profile) await act(() => api.profile(id, v.profile));
   if (id && v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));  // Super Bot's mark is set by the backend
   if (id) select(id);
@@ -44,7 +46,7 @@ export async function createBot(v: BotDialogValue): Promise<void> {
 export async function saveSettings(id: string, v: BotDialogValue): Promise<void> {
   if (!v.name) return;
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
-    build_access: v.buildAccess, encrypt: v.encrypt, ...handle(v), imessage_to: v.imessageTo, super_access: v.superAccess,
+    build_access: v.buildAccess, encrypt: v.encrypt, ...phone(v), super_access: v.superAccess,
     trusted_apps: v.trustedApps }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));
   if (v.profile) await act(() => api.profile(id, v.profile));

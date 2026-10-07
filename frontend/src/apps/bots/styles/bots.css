@@ -586,19 +586,60 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page #bmodal .trusted .trow:hover { background: var(--raised); }
 .bots-page #bmodal .trusted .trow input { margin: 0; accent-color: var(--accent); }
 .bots-page #bmodal .trusted .trow small { margin-left: auto; font-size: 11px; color: var(--muted); }
-.bots-page #bmodal .row { margin-top: 14px; }
-/* Advanced: approvals, browser profile and encryption fold away so the common fields fit without scrolling. */
-.bots-page #bmodal .adv summary { list-style: none; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 300; color: var(--muted); cursor: pointer; padding: 4px 0; margin-bottom: 4px; user-select: none; }
-.bots-page #bmodal .adv summary::-webkit-details-marker { display: none; }
-.bots-page #bmodal .adv summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; margin: 0 3px 1px 2px; }
-.bots-page #bmodal .adv[open] summary::before { transform: rotate(45deg); }
-.bots-page #bmodal .adv summary:hover { color: var(--text); }
-.bots-page #bmodal .adv summary:focus { outline: none; } .bots-page #bmodal .adv summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
-.bots-page #bmodal .adv[open] summary { margin-bottom: 10px; }
-.bots-page #bmodal .adv { margin-bottom: 4px; }
+.bots-page #bmodal .row { margin-top: 14px; align-items: center; }
+.bots-page #bmodal .row .spacer { flex: 1; }
+.bots-page #bmodal .row.left { justify-content: flex-start; margin-top: 0; }
+/* Create: the cog holds the one advanced control (effort); it sits at the left of the button row. */
+.bots-page #bmodal .cog { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--muted); }
+.bots-page #bmodal .cog svg { width: 16px; height: 16px; }
+.bots-page #bmodal .cog[aria-pressed="true"], .bots-page #bmodal .cog:hover { color: var(--text); background: var(--raised); }
 .bots-page #bminstr, .bots-page #bmmem { resize: none; max-height: 45vh; overflow-y: auto; box-sizing: border-box; }  /* grows with the text; caps so the dialog still fits */
-.bots-page #bmodal .adv[open] summary small { display: none; }
-.bots-page #bmodal .adv .field:last-child { margin-bottom: 4px; }
+/* One line of why under a control (Settings): what the choice does, in the user's words. */
+.bots-page #bmodal .why { display: block; font-size: 11px; font-weight: 300; color: var(--muted); line-height: 1.4; margin: 0; }
+.bots-page #bmodal p.why { margin: 2px 0 10px; }
+/* Settings: a rail of sections on the left, one section's controls on the right (no fold, no box in a box). */
+.bots-page #bmodal.wide .box { width: 640px; }
+.bots-page #bmodal .rail { display: grid; grid-template-columns: 124px 1fr; gap: 16px; min-height: 0; flex: 1; }
+.bots-page #bmodal .rail nav { display: flex; flex-direction: column; gap: 2px; align-self: start; }
+.bots-page #bmodal .railtab { text-align: left; background: none; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; color: var(--muted); }
+.bots-page #bmodal .railtab:hover { color: var(--text); background: var(--raised); }
+.bots-page #bmodal .railtab.on { color: var(--text); background: var(--inset); font-weight: 400; }
+.bots-page #bmodal .railtab.live::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok, #2f9e5b); margin-left: 8px; vertical-align: middle; }
+.bots-page #bmodal .rail .body { min-height: 300px; }
+/* Phone (Super Bot): the switch, the four-step checklist, the connected view. */
+.bots-page #bmodal .switchrow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; background: var(--inset); border-radius: 12px; margin-bottom: 12px; cursor: pointer; }
+.bots-page #bmodal .switchrow > span { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--text); }
+.bots-page #bmodal .switchrow input { appearance: none; -webkit-appearance: none; width: 36px; height: 22px; border-radius: 999px; background: var(--raised); position: relative; margin: 0; flex: none; cursor: pointer; transition: background .15s; }
+.bots-page #bmodal .switchrow input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left .15s; }
+.bots-page #bmodal .switchrow input:checked { background: var(--accent); }
+.bots-page #bmodal .switchrow input:checked::after { left: 17px; }
+.bots-page #bmodal .switchrow input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bots-page #bmodal .phone .stat { font-size: 11px; color: var(--muted); line-height: 1.4; margin: 0 0 12px; }
+.bots-page #bmodal .steps { list-style: none; margin: 0; padding: 0; }
+.bots-page #bmodal .steps li { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--line, var(--raised)); }
+.bots-page #bmodal .steps li:last-child { border-bottom: 0; }
+.bots-page #bmodal .steps li.wait { opacity: .5; }
+.bots-page #bmodal .steps li > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12.5px; color: var(--text); }
+.bots-page #bmodal .steps li > div input { width: 100%; box-sizing: border-box; margin-top: 4px; }
+.bots-page #bmodal .steps li > button, .bots-page #bmodal .steps li > a.btn { align-self: center; white-space: nowrap; font-size: 11.5px; padding: 5px 11px; border-radius: 8px; background: var(--raised); color: var(--text); text-decoration: none; }
+.bots-page #bmodal .steps li > button.primary { background: var(--accent); color: var(--accent-ink); }
+.bots-page #bmodal .steps .dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--raised); display: inline-grid; place-items: center; font-size: 10px; color: var(--muted); margin-top: 1px; box-sizing: border-box; }
+.bots-page #bmodal .steps .dot.ok { border-color: var(--ok, #2f9e5b); background: var(--ok, #2f9e5b); color: #fff; }
+.bots-page #bmodal .steps .dot.need { border-color: var(--accent); color: var(--accent); }
+.bots-page #bmodal .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.bots-page #bmodal .chip { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: var(--inset); color: var(--text); border: 1px solid transparent; }
+.bots-page #bmodal .chip.on { border-color: var(--accent); color: var(--accent); }
+.bots-page #bmodal button.link { background: none; padding: 0; color: var(--accent); text-decoration: underline; font-size: inherit; }
+.bots-page #bmodal .bad { color: var(--err); }
+/* The seeded greeting's door to Settings > Phone (components/Thread.tsx). */
+.bots-page .msg .opt.seed { justify-content: center; }
+/* Chat header: Super Bot's phone glyph, green once connected. */
+.bots-page .chat header #cphone.on { color: var(--ok, #2f9e5b); }
+@media (max-width: 720px) {
+  .bots-page #bmodal.wide .box { width: 94vw; }
+  .bots-page #bmodal .rail { grid-template-columns: 1fr; }
+  .bots-page #bmodal .rail nav { flex-direction: row; flex-wrap: wrap; }
+}
 .bots-page #rmodal .box { width: 540px; max-height: 90vh; overflow: auto; }
 /* In-app confirm: sits above the other modals (routines/skills can ask from inside theirs). */
 .bots-page #cmodal { z-index: 60; }

@@ -90,6 +90,11 @@ SUPER_FACE = {"shape": "", "color": "#262624", "icon": RESERVED_ICON}  # the dar
 SUPER_INSTRUCTIONS = ("You are my assistant on this Mac. Use Claude Code's tools for files, PDFs, images, shell and code, "
                    "and the browser tools for the web. Keep what you make for me in your Inbox folder unless I name "
                    "another place. Before anything destructive (deleting, overwriting, sending), tell me what you are about to do.")
+# The seeded Super Bot's first line (registry.seed_super): fixed text, no model call. On a fresh install Claude may not
+# be linked yet, and `greet()`'s fallback after a failed call would make an error the user's first impression. The page
+# appends a "Connect your phone" button to this line (source "seed", components/Thread.tsx).
+SUPER_GREETING = ("Hi, I'm Super Bot. I use Claude Code's tools on this Mac (files, PDFs, images, shell, code) plus a "
+                  "browser. Ask me for anything here, or connect your phone to text me.")
 
 
 def _builds_root() -> str:
@@ -432,6 +437,17 @@ class Bot:
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
+        if not is_super(self.meta):
+            # iMessage is Super Bot's alone (docs §10): an ordinary bot's leftover handle and contacts grant nothing
+            # and show nowhere, so they go the way channel_forwards went (and `text`/`texts` leave its roster).
+            for k in ("imessage", "imessage_to"):
+                if self.meta.pop(k, None) is not None:
+                    dirty = True
+        elif "imessage_enabled" not in self.meta:
+            # The phone switch (docs §10): a handle set before the switch existed stays live, so nobody who set
+            # the bridge up under the old field loses it on upgrade.
+            self.meta["imessage_enabled"] = bool(imessage.norm_handle(self.meta.get("imessage")))
+            dirty = True
         # A server restart leaves "running" on disk with no thread behind it.
         if self.meta.get("status") in ("running", "waiting", "paused"):
             self.meta["status"] = "idle"
@@ -2400,10 +2416,12 @@ class Bot:
 
     # -- contacts --------------------------------------------------------------
     def contacts(self):
-        """[(label, handle)] the `text` action may message: Settings' contacts, plus Super Bot's own
-        iMessage handle on Super Bot (on any other bot the `imessage` key is a leftover and grants nothing)."""
-        owner = (self.meta.get("imessage") or "") if is_super(self.meta) else ""
-        return imessage.parse_contacts(self.meta.get("imessage_to") or "", owner)
+        """[(label, handle)] the `text` action may message: Super Bot's Settings > Phone contacts plus its own
+        handle. Empty on every other bot (docs §10: the phone is Super Bot's alone), which is what drops
+        `text`/`texts` from their roster (tools.roster)."""
+        if not is_super(self.meta):
+            return []
+        return imessage.parse_contacts(self.meta.get("imessage_to") or "", self.meta.get("imessage") or "")
 
     def contact(self, d):
         """(label, handle) | None for a `text`/`texts` target (`to` / `ref` / `name`)."""
@@ -2456,12 +2474,13 @@ def _write_new_meta(bid, meta):
     store.write_meta(bid, meta)
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind=""):
+def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True):
     """A new bot: bot.json, a `created` line, the greeting (background). Returns the Bot.
     With `preset` (a key under bots/presets/) its playbooks, brand face, standing
     rules and starter apps are applied before the greeting, so it introduces them.
     `kind="super"` makes Super Bot (KINDS): one per install, a Claude model, its own
-    face and standing rules unless the user typed some; a preset does not apply."""
+    face and standing rules unless the user typed some; a preset does not apply.
+    `greet=False` skips the model-written hello (the seeded Super Bot writes a fixed line)."""
     preset = (preset or "").strip()
     kind = kind if kind in KINDS else "bot"
     if kind == "super":
@@ -2482,13 +2501,15 @@ def create(name="", model="", effort="", instructions="", preset="", kind=""):
     if kind == "super":
         meta.update({"kind": "super", "super_access": "ask", "handoffs": [], "name": name or SUPER_NAME, "face": dict(SUPER_FACE),
                      "instructions": meta["instructions"] or SUPER_INSTRUCTIONS,
+                     "imessage_enabled": False,  # the phone switch (Settings > Phone) starts off
                      "pinned": True})  # the one bot per Mac starts pinned (sidebar); the user can unpin it
     _write_new_meta(bid, meta)
     b = _registry().get(bid)
     if preset:
         presets_mod.apply_preset(b, preset)  # before the greeting, so it introduces the playbooks it has
     b.emit("system", f"{meta['name']} created." + (f" Comes with {len(b.skills())} {b.meta['preset']} playbooks." if preset else ""))
-    b.greet()
+    if greet:
+        b.greet()
     return b
 
 

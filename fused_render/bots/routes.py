@@ -285,7 +285,41 @@ def bots_usage():
 @router.get("/api/bots/imessage")
 @_handled
 def bots_imessage():
-    return registry.imessage_state() or {}
+    """The bridge's state plus the switch and the stored handle (Settings > Phone reads this one reply;
+    `own_handles`, this Mac's Messages accounts, comes from the channel state once chat.db was read)."""
+    from fused_render.bots import imessage
+    out = dict(registry.imessage_state() or {})
+    sid, m = imessage.super_meta()
+    out.update({"super_id": sid, "enabled": imessage.super_switch(m) if sid else False,
+                "handle": imessage.norm_handle(m.get("imessage")) if sid else ""})
+    return out
+
+
+@router.post("/api/bots/imessage/test")
+@_handled
+def bots_imessage_test():
+    """Settings > Phone "Send a test text": one text from this Mac to Super Bot's handle. Proves the send path and
+    triggers macOS's Automation consent for Messages at a moment the user expects a prompt, instead of during
+    their first real task. The echo window keeps the text from coming back as a command."""
+    from fused_render.bots import imessage
+    sid, m = imessage.super_meta()
+    handle = imessage.norm_handle(m.get("imessage")) if sid else ""
+    if not sid:
+        raise ValueError("there is no Super Bot to text from")
+    if not handle:
+        raise ValueError("set your number first")
+    try:
+        imessage.send_text(handle, "Connected. Text me a task any time.")
+    except Exception as e:  # noqa: BLE001
+        msg = str(e).strip() or e.__class__.__name__
+        low = msg.lower()
+        if "not permitted" in low or "not allowed" in low or "-1743" in low:
+            msg = ("macOS blocked this app from controlling Messages. Allow it under System Settings > Privacy & Security > "
+                   "Automation, then try again.")
+        elif "account" in low or "service" in low:
+            msg = "Messages is not signed in with an iMessage account on this Mac. Open Messages, sign in, then try again."
+        raise ValueError(msg)
+    return {"ok": True, "handle": handle}
 
 
 @router.get("/api/bots/builds")
@@ -451,11 +485,15 @@ def _settings(bid, body):
         b.meta["instructions"] = str(body["instructions"]).strip()
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
-    if body.get("imessage_handle") is not None:
-        # Meaningful on Super Bot only (the one bot a text reaches, docs §10); kept and ignored on the others.
-        b.meta["imessage"] = imessage.norm_handle(body["imessage_handle"])
-    if body.get("imessage_to") is not None:
-        b.meta["imessage_to"] = str(body["imessage_to"]).strip()
+    if bm.is_super(b.meta):
+        # The phone is Super Bot's alone (docs §10): on any other bot these keys are dropped on load, and a stale
+        # client sending them back must not plant them again.
+        if body.get("imessage_handle") is not None:
+            b.meta["imessage"] = imessage.norm_handle(body["imessage_handle"])
+        if body.get("imessage_to") is not None:
+            b.meta["imessage_to"] = str(body["imessage_to"]).strip()
+        if body.get("imessage_enabled") is not None:
+            b.meta["imessage_enabled"] = bool(body["imessage_enabled"])
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):
