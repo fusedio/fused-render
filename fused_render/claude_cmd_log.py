@@ -243,20 +243,53 @@ def _ps_exe() -> str:
     return "/bin/ps" if os.path.exists("/bin/ps") else "/usr/bin/ps"
 
 
-def _descendants(pid: int) -> list[int]:
+def _has_proc() -> bool:
+    return os.path.isdir("/proc")
+
+
+def _proc_ppid(pid: int) -> int | None:
+    """`pid`'s parent pid, read straight from /proc/<pid>/stat, or None if the
+    pid is gone or the file can't be parsed. The second field (comm) is the
+    process name in parens and may itself contain ")", so split on the LAST
+    ")" rather than tokenizing the whole line."""
     try:
-        # Generous timeout: this runs on the Stop button's path, not a hot loop, and a
-        # busy host can leave a freshly forked `ps` sitting in the run queue for seconds
-        # before it gets scheduled at all, well before it does any actual work.
-        res = subprocess.run([_ps_exe(), "-A", "-o", "pid=,ppid="], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=20, close_fds=False)
-    except (OSError, subprocess.SubprocessError):
-        return []
+        with open("/proc/%d/stat" % pid, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    _, _, rest = data.rpartition(b")")
+    fields = rest.split()
+    # fields[0] is state; fields[1] is ppid (pid and comm are already gone).
+    if len(fields) < 2 or not fields[1].lstrip(b"-").isdigit():
+        return None
+    return int(fields[1])
+
+
+def _descendants(pid: int) -> list[int]:
     kids: dict[int, list[int]] = {}
-    for line in res.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    if _has_proc():
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            names = []
+        for name in names:
+            if name.isdigit():
+                ppid = _proc_ppid(int(name))
+                if ppid is not None:
+                    kids.setdefault(ppid, []).append(int(name))
+    else:
+        try:
+            # ps fallback (macOS, or anywhere without /proc): see _ps_exe for why
+            # the invocation is shaped the way it is.
+            res = subprocess.run([_ps_exe(), "-A", "-o", "pid=,ppid="], capture_output=True,
+                                 text=True, encoding="utf-8", errors="replace", timeout=5, close_fds=False)
+        except (OSError, subprocess.SubprocessError):
+            res = None
+        if res is not None:
+            for line in res.stdout.splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    kids.setdefault(int(parts[1]), []).append(int(parts[0]))
     found, todo = [], [pid]
     while todo:
         for k in kids.get(todo.pop(), []):
@@ -268,11 +301,19 @@ def _descendants(pid: int) -> list[int]:
 def _is_wrapper(pid: int) -> bool:
     """Guard against a recycled pid: the live process must be our wrapper.
 
-    Same generous timeout as `_descendants`, and for the same reason: under
-    contention the wait is for `ps` to get scheduled at all, not for it to run."""
+    Reads /proc/<pid>/cmdline directly when /proc exists (Linux, including a
+    loaded CI runner where a forked `ps` can sit unscheduled for a while), and
+    falls back to `ps` elsewhere (macOS)."""
+    if _has_proc():
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                argv = f.read()
+        except OSError:
+            return False
+        return b"claude_shell_prefix" in argv
     try:
         res = subprocess.run([_ps_exe(), "-o", "command=", "-p", str(pid)],
-                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, close_fds=False)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return "claude_shell_prefix" in res.stdout

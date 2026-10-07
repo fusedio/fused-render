@@ -149,6 +149,31 @@ def test_stop_requires_guard_and_known_chat(client, logroot):
     assert client.post("/api/terminal/claude:none/stop", headers=H).status_code == 404
 
 
+def _diagnose_stop_failure(chat, logroot):
+    """Everything relevant to why `_is_wrapper`/`stop()` might have missed the
+    chat's running command, for the assertion message below."""
+    lines = ["diagnostics for chat %r:" % chat]
+    for cmd in claude_cmd_log.commands(chat):
+        meta_path = logroot / chat / (cmd.ident + ".meta")
+        try:
+            meta = meta_path.read_text()
+        except OSError as e:
+            meta = "<unreadable: %s>" % e
+        lines.append("cmd %s: pid=%d .meta=%r" % (cmd.ident, cmd.pid, meta))
+        try:
+            with open("/proc/%d/cmdline" % cmd.pid, "rb") as f:
+                lines.append("/proc/%d/cmdline = %r" % (cmd.pid, f.read()))
+        except OSError as e:
+            lines.append("/proc/%d/cmdline missing (%s)" % (cmd.pid, e))
+        ps = subprocess.run([claude_cmd_log._ps_exe(), "-o", "command=", "-p", str(cmd.pid)],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        lines.append("ps -o command= -p %d -> rc=%d stdout=%r stderr=%r"
+                     % (cmd.pid, ps.returncode, ps.stdout, ps.stderr))
+        lines.append("_is_wrapper(%d) = %r" % (cmd.pid, claude_cmd_log._is_wrapper(cmd.pid)))
+        lines.append("_descendants(%d) = %r" % (cmd.pid, claude_cmd_log._descendants(cmd.pid)))
+    return "\n".join(lines)
+
+
 def test_stop_kills_running_command_tree(client, logroot, tmp_path):
     chat = "c-stop"
     env = dict(os.environ, SHELL="/bin/sh", FUSED_CLAUDE_CMD_LOG=str(logroot / chat))
@@ -168,7 +193,8 @@ def test_stop_kills_running_command_tree(client, logroot, tmp_path):
                     if s.get("kind") == "claude"]
         assert entry["running"] is True
         r = client.post("/api/terminal/claude:%s/stop" % chat, headers=H)
-        assert r.status_code == 200 and r.json()["stopped"] == 1
+        assert r.status_code == 200
+        assert r.json()["stopped"] == 1, _diagnose_stop_failure(chat, logroot)
         assert p.wait(timeout=15) != 0
         (ident,) = {n.split(".")[0] for n in os.listdir(logroot / chat)
                     if n.endswith(".exit")}
@@ -183,6 +209,9 @@ def test_stop_kills_running_command_tree(client, logroot, tmp_path):
 @pytest.mark.parametrize("call", [lambda: claude_cmd_log._descendants(1),
                                   lambda: claude_cmd_log._is_wrapper(1)])
 def test_ps_spawns_are_posix_spawn_safe(monkeypatch, call):
+    # Both functions prefer /proc on Linux and only shell out to ps as a
+    # fallback (e.g. macOS), so force that fallback path to exercise it here.
+    monkeypatch.setattr(claude_cmd_log, "_has_proc", lambda: False)
     seen = {}
 
     def fake_run(argv, **kw):
