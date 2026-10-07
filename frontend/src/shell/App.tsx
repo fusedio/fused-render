@@ -47,7 +47,7 @@ import {
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
 import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
-import { useThemeSync } from "@platform/lib/theme";
+import { useThemePresetSync, useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { isBot } from "@platform/lib/flavor";
@@ -582,6 +582,7 @@ export default function App({ config }: { config: Config }) {
   // cause a flash, and it only ever writes an attribute — no re-render reaches
   // a live iframe.
   useThemeSync();
+  useThemePresetSync();
 
   // The app's ONE instant tooltip (platform/lib/hints.ts). Installed here
   // because it is a document-level listener set rather than anything React
