@@ -67,7 +67,7 @@
      they follow the token rather than a literal. */
   --c-card-bg: var(--row-bg-hover);
   --c-card-bg-2: #383c47;
-  --c-card-border: var(--border);
+  --c-card-border: color-mix(in srgb, var(--fg-muted) 45%, var(--bg));
   --c-code-bg: #2a2c33;
   --c-code-fg: #e8c07d;
   --c-pre-bg: #141519;
@@ -111,7 +111,7 @@
      own light value, measured `rgb(244,244,246)` (FIX-22). */
   --c-card-bg: var(--row-bg-hover);
   --c-card-bg-2: #e4e6ec;
-  --c-card-border: var(--border);
+  --c-card-border: color-mix(in srgb, var(--fg-muted) 45%, var(--bg));
   --c-code-bg: #f0f1f3;
   --c-code-fg: #8a5a12;
   --c-pre-bg: #f7f8f9;
