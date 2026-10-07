@@ -49,19 +49,13 @@
      side of the app, then the conversation on a lighter surface again. The
      gutters belong to the body they are cut out of, not to the page behind it.
 
-     STATED HERE AS A LITERAL, which is the one thing this file does that its
-     neighbours do not, and the reason is that the chat's palette is LAZY:
-     `apps/claude/styles/chat.css` arrives with `ClaudeChat`, which is a
-     `lazy()` import and is never loaded at all for a reader on the legacy
-     iframe chat. `var(--c-panel)` would therefore resolve to nothing exactly
-     half the time. The value is `--c-panel`'s, both themes, and
-     `task-peek-flag.test.ts` reads the two files and fails if they ever
-     disagree. */
-  --peek-chat-bg: #1e2025;
-}
-
-:root[data-theme="light"] {
-  --peek-chat-bg: #fafafa;
+     It mirrors chat.css's `--c-panel` alias (`var(--bg-alt)`), but names the
+     shell token directly because chat.css is LAZY (it arrives with
+     `ClaudeChat` and is never loaded for the legacy iframe chat), so
+     `var(--c-panel)` would resolve to nothing half the time. `--bg-alt`
+     already follows light/dark and every preset.
+     `task-peek-flag.test.ts` pins the two files to each other. */
+  --peek-chat-bg: var(--bg-alt);
 }
 
 /* -- the row the two halves live in ---------------------------------------- */
