@@ -11,6 +11,8 @@ fused_render/server/app.py beside the router include.
 
 `bot.py` is imported lazily so importing this module (and `routes.py`, and so
 the server) never pulls in Chrome/CDP code until a bot is actually touched.
+(One exception: the onboarding meter imports `browser.py` for its
+CHROME_CANDIDATES walk on `/api/config` — a module load, no Chrome spawned.)
 """
 from __future__ import annotations
 

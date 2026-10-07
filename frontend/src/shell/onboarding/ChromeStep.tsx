@@ -99,7 +99,7 @@ export function ChromeStep({
           {
             icon: <Globe className="size-4" />,
             title: "Chromium works too",
-            body: "Chromium, Microsoft Edge or Brave in /Applications are found the same way. Google Chrome is the one we test with.",
+            body: "An installed Chromium, Microsoft Edge or Brave is found the same way. Google Chrome is the one we test with.",
           },
         ].map((c) => (
           <li key={c.title} className="flex flex-col gap-1.5 rounded-xl border border-border bg-card p-4">
@@ -129,8 +129,7 @@ export function ChromeStep({
           <>
             <ol className="m-0 flex list-none flex-col gap-1.5 p-0 text-sm">
               {[
-                "Download Chrome from google.com/chrome and open the .dmg.",
-                "Drag Google Chrome into your Applications folder.",
+                "Download Chrome from google.com/chrome and install it like any other app.",
                 "Come back here — the check runs again on its own.",
               ].map((s, i) => (
                 <li key={s} className="flex gap-2">
@@ -149,7 +148,7 @@ export function ChromeStep({
                 Check again
               </Button>
               <span className="text-xs text-muted-foreground" role="status">
-                {stage ? "No Chrome found in /Applications." : "Checking…"}
+                {stage ? "No Chrome found on this machine." : "Checking…"}
               </span>
             </div>
           </>
