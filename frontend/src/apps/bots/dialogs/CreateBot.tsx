@@ -58,12 +58,12 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
 
   return (
     <Dialog open modal={false} onOpenChange={(open) => { if (!open && !busy.current) onClose(null); }}>
-      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "sm:max-w-[480px]")}>
-        <DialogHeader className="gap-1 px-6 pt-5 pb-4">
+      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "flex max-h-[90vh] flex-col sm:max-w-[480px]")}>
+        <DialogHeader className="shrink-0 gap-1 px-6 pt-5 pb-4">
           <DialogTitle>{fresh.title}</DialogTitle>
           <DialogDescription className="sr-only">Name it, say what it should do, pick a model.</DialogDescription>
         </DialogHeader>
-        <FieldGroup className="px-6 pb-5">
+        <FieldGroup className="min-h-0 overflow-y-auto px-6 pb-5">
           <button type="button" disabled={isSuper} onClick={() => { void editAvatar(); }}
             className="group flex w-fit cursor-pointer appearance-none flex-col items-center gap-1.5 self-start rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
             title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
@@ -101,7 +101,7 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
             {isSuper ? "" : "It asks you before anything it cannot undo; change that and more under Settings once it exists."}
           </FieldDescription>
         </FieldGroup>
-        <DialogFooter className={cn(FOOTER_CLASS, "sm:justify-between")}>
+        <DialogFooter className={cn(FOOTER_CLASS, "shrink-0 sm:justify-between")}>
           <Button variant="ghost" size="icon" aria-pressed={more} aria-label="More options" title="Thinking effort" onClick={() => setMore((m) => !m)}>
             <Settings2Icon />
           </Button>

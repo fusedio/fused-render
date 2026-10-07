@@ -100,8 +100,8 @@ SUPER_INSTRUCTIONS = ("You are my assistant on this Mac. Use Claude Code's tools
 # The seeded Super Bot's first line (registry.seed_super): fixed text, no model call. On a fresh install Claude may not
 # be linked yet, and `greet()`'s fallback after a failed call would make an error the user's first impression. The page
 # appends a "Connect your phone" button to this line (source "seed", components/Thread.tsx).
-SUPER_GREETING = ("Hi, I'm Super Bot. I use Claude Code's tools on this Mac (files, PDFs, images, shell, code) plus a "
-                  "browser. Ask me for anything here, or connect your phone to text me.")
+SUPER_GREETING = ("Hi, I'm Super Bot. I run on this Mac through the Claude Code you're signed in to, with its tools (files, "
+                  "PDFs, images, shell, code) plus a browser. Ask me for anything here, or connect your phone to text me.")
 
 
 def _builds_root() -> str:

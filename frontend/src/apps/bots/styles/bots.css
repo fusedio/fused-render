@@ -433,6 +433,9 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .composer .ctl button { font-size: 11px; padding: 4px 10px; }
 .bots-page .composer .ctl button:disabled { display: none; }
 .bots-page .composer .ctl:not(:has(button:not(:disabled))) { display: none; }
+/* Beside Pause / Stop: the bot's state and how long since its last step (components/Composer.tsx). */
+.bots-page .composer .ctl .stat { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bots-page .composer .ctl .stat .dot { width: 7px; height: 7px; }
 .bots-page .composer .row { display: flex; flex-direction: column; gap: 6px; background: var(--panel2); border-radius: 28px; padding: 7px; box-shadow: 0 0 0 1px var(--raised); transition: box-shadow .15s; }
 .bots-page .composer .line { display: flex; gap: 6px; align-items: flex-end; }
 /* Reply: the message being answered sits above the input until sent or cancelled. */
@@ -703,6 +706,9 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page #pmodal .psearch svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
 .bots-page #pmodal .pgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 10px -8px 0; padding: 2px 8px 6px; max-height: 56vh; overflow: auto; }
 .bots-page #pnone { margin-top: 10px; }
+/* Search hits: the matched run in a card's name, and the playbook title that matched in place of "N playbooks". */
+.bots-page #pmodal .pcard mark { background: none; color: var(--accent); font-weight: 600; }
+.bots-page #pmodal .pcard small.hit { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
 .bots-page #pmodal .pcard { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 6px 10px; border-radius: 14px; background: var(--inset); border: 2px solid transparent; color: var(--text); cursor: pointer; transition: .15s; }
 .bots-page #pmodal .pcard:hover { border-color: var(--accent); transform: translateY(-2px); }
 .bots-page #pmodal .pcard .av { width: 48px; height: 48px; margin-bottom: 4px; }

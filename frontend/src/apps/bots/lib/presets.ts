@@ -18,8 +18,9 @@ export type NewBotPick = { kind: "preset"; preset: Preset } | { kind: "blank"; b
 /** Super Bot card (bot.py SUPER_FACE / SUPER_NAME): Claude Code's own tools on this Mac plus the browser. */
 export const SUPER_NAME = "Super Bot";
 export const SUPER_FACE: Face = { icon: "claude", color: "#262624" };  // the locked Claude mark (lib/face.ts BRANDS.claude)
-export const SUPER_BLURB = "Your Mac · files, shell, browser";
-export const SUPER_NOTE = "Your assistant on this Mac: Claude Code's tools (files, PDFs, images, shell, code) plus the browser. "
+export const SUPER_BLURB = "Runs on this Mac through your Claude Code login · files, shell, browser";
+export const SUPER_NOTE = "Your assistant on this Mac. It runs locally through the Claude Code you are already signed in to (your Claude "
+  + "subscription, nothing extra to set up) and gets Claude Code's tools (files, PDFs, images, shell, code) plus the browser. "
   + "Writes and commands ask you first; only your chat can give it tasks. One per Mac.";
 export const superQ = "super bot assistant mac files shell claude code";
 
@@ -45,6 +46,31 @@ export function filterCards(cards: PickCard[], query: string): { shown: PickCard
   const words = queryWords(query), shown = cards.filter((c) => matchQ(c.q, words));
   return { shown, none: !!words.length && !shown.length };
 }
+/** The first playbook title of `p` that contains a query word, for the card to show WHY it matched (the card otherwise
+ *  only says "6 playbooks", so a hit on a playbook title looked like a name-only search). "" when the name itself matched
+ *  or the query is empty. */
+export function matchedSkill(p: Pick<Preset, "name" | "key" | "skills">, words: string[]): string {
+  if (!words.length) return "";
+  const name = `${p.name} ${p.key}`.toLowerCase();
+  if (words.every((w) => name.includes(w))) return "";
+  return (p.skills || []).find((sk) => words.some((w) => sk.toLowerCase().includes(w))) || "";
+}
+
+/** `text` split into plain and matched runs for highlighting: [[run, hit], ...]. Case-insensitive, every query word. */
+export function highlightRuns(text: string, words: string[]): [string, boolean][] {
+  if (!words.length || !text) return [[text, false]];
+  const re = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi");
+  const out: [string, boolean][] = [];
+  let i = 0;
+  for (const m of text.matchAll(re)) {
+    if (m.index! > i) out.push([text.slice(i, m.index), false]);
+    out.push([m[0], true]);
+    i = m.index! + m[0].length;
+  }
+  if (i < text.length) out.push([text.slice(i), false]);
+  return out;
+}
+
 /** Enter in the search box picks the first preset still showing (not a blank, unless nothing else is left). */
 export const firstPick = (shown: PickCard[]): PickCard | undefined => shown.find((c) => c.key) || shown[0];
 

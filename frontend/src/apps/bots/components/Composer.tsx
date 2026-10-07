@@ -7,8 +7,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject } from "react";
 import { api, rawFileUrl, request, type Bot } from "../lib/api";
 import { jobNote } from "../lib/dictation";
-import { fmtBytes, fmtSecs } from "../lib/format";
-import { act, errMsg, markSeen, setBase, setScrollToEnd, showBanner } from "../state/store";
+import { statusLabel } from "../lib/derive";
+import { fmtAgo, fmtBytes, fmtSecs } from "../lib/format";
+import { act, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
 
 export interface ReplyTo { seq: number; text: string }
 
@@ -245,6 +246,14 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   };
 
   const running = b?.status === "running" || b?.status === "waiting";
+  // The status line beside Pause / Stop: what the bot is doing and how long since its last step, so a long wait (a
+  // login that takes minutes, a slow page) reads as "working, quiet for 3 min" rather than as a hang. Re-renders on
+  // the poll (the selector) and once a second meanwhile for the clock.
+  const lastStepTs = useBotsSelector(() => { const evs = b ? eventsOf(b.id) : []; for (let i = evs.length - 1; i >= 0; i--) if (evs[i].role !== "user" && evs[i].role !== "delivery") return evs[i].ts; return 0; });
+  const [, tick] = useState(0);
+  useEffect(() => { if (!running) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [running]);
+  const quiet = running && lastStepTs ? fmtAgo(lastStepTs) : "";
+  const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for your answer" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
   const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…" : reply ? "Reply…" : b.status === "waiting" ? "The bot asked you a question — answer here"
     : running ? "Add an instruction mid-task…" : `Message ${b.name}`;
   const ctl = (fn: (id: string) => Promise<unknown>) => () => { if (b) void act(() => fn(b.id)); };
@@ -252,9 +261,12 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   return (
     <div className="composer">
       <div className="ctl">
-        <button id="pause" disabled={!on || b?.status !== "running"} onClick={ctl(api.pause)}>Pause</button>
-        <button id="resume" disabled={!on || b?.status !== "paused"} onClick={ctl(api.resume)}>Resume</button>
-        <button id="stop" className="danger" disabled={!on || !(running || b?.status === "paused")} onClick={ctl(api.stop)}>Stop</button>
+        {stat ? <span className="stat" title={b?.title || undefined}><span className={`dot ${b?.status}`} />{stat}</span> : null}
+        <button id="pause" disabled={!on || b?.status !== "running"} onClick={ctl(api.pause)}
+          title="Hold the task before its next step. The browser and everything done so far stay; Resume carries on from here.">Pause</button>
+        <button id="resume" disabled={!on || b?.status !== "paused"} onClick={ctl(api.resume)} title="Carry on from where it paused.">Resume</button>
+        <button id="stop" className="danger" disabled={!on || !(running || b?.status === "paused")} onClick={ctl(api.stop)}
+          title="End the task for good. What it found so far stays in the chat; a new message starts a fresh task.">Stop</button>
       </div>
       <div className={`chips${pending.length ? " show" : ""}`} id="attach">
         {pending.map((f, i) => (
