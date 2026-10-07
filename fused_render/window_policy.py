@@ -83,6 +83,23 @@ def app_window_path(fs_path: str) -> str:
     return shell_path_for(fs_path)
 
 
+def app_home_path(fs_path: str) -> str:
+    """The URL PATH an app opens at INSIDE the Home window (the
+    ``apps_open_in_home`` preference): the explorer view of its entry page,
+    or of the folder when it has none — what the browser shell navigates to
+    on an app click, NOT the chrome-free embed of `app_window_path`."""
+    fs_path = os.path.abspath(fs_path)
+    target = fs_path
+    if os.path.isdir(fs_path):
+        try:
+            from fused_render.app_listing import app_entry
+
+            target = app_entry(fs_path) or fs_path
+        except OSError:
+            pass
+    return explorer_view_path(target)
+
+
 def edit_target(view: str | None, key: str | None) -> str | None:
     """The explorer URL PATH the Edit button opens for a window showing
     ``key`` in ``view`` (`window_view_of`), or None when there is nothing to

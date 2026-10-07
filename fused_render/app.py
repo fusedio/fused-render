@@ -1948,6 +1948,7 @@ def main() -> None:
         from PyObjCTools import AppHelper
 
         from fused_render import window_policy
+        from fused_render.shell import prefs as prefs_mod
         from fused_render.shell.prefs import native_windows_enabled
 
         def _apply_windows(on: bool) -> None:
@@ -1990,6 +1991,9 @@ def main() -> None:
             manager = state["windows"]
             if manager is None:
                 webbrowser.open(url.rstrip("/") + window_policy.app_window_path(fs_path))
+                return
+            if prefs_mod.apps_open_in_home():
+                manager.open_app_in_home(fs_path)
                 return
             manager.focus_or_open_app(fs_path)
 
@@ -2040,6 +2044,9 @@ def main() -> None:
                     # this app forward or the window opens behind the caller.
                     # An app lands in its own run window, as a shell click does.
                     NSApp.activateIgnoringOtherApps_(True)
+                    if prefs_mod.apps_open_in_home():
+                        manager.open_app_in_home(fs_path)
+                        return
                     manager.focus_or_open_app(fs_path)
 
                 def _home_from_launcher() -> None:

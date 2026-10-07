@@ -35,6 +35,13 @@ def api_windows_open(body: dict = Body(default={}),
         return _error("'path' must be an absolute path")
     if not os.path.exists(path):
         return _error("no such path", 404)
+    from fused_render.shell import prefs
+
+    if prefs.apps_open_in_home():
+        # `apps_open_in_home`: no window of its own — the caller navigates
+        # in place (native-window.ts `openAppWindow` reads this as "not
+        # handled"), so the app takes over the window the click came from.
+        return {"ok": True, "in_home": True}
     hook = window_policy.native_hooks.get("open_app")
     if hook is None:
         return _error("native windows are not available here", 404)
