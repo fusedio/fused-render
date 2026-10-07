@@ -40,6 +40,10 @@ class FakeBackend:
         self.urls[handle] = url
         return handle
 
+    def load(self, handle, url):
+        self.urls[handle] = url
+        self.loaded = getattr(self, "loaded", []) + [(handle, url)]
+
     def present(self, handle, activation_token=None):
         self.presented.append(handle)
         self.presented_tokens.append(activation_token)
@@ -732,3 +736,29 @@ def test_new_window_enables_media_stream_and_webrtc_when_available(tmp_path):
     win = backend.new_window("http://x/", "frame")
     assert ("media_stream", True) in win.view.settings.calls
     assert ("webrtc", True) in win.view.settings.calls
+
+
+def test_open_in_home_loads_into_the_home_window(host):
+    h, b = host
+    h.dispatch({"cmd": "open", "url": BASE + "/"})
+    h.dispatch({"cmd": "open", "url": BASE + "/tasks"})
+    url = BASE + "/explorer/view/home/me/app/index.html"
+    assert h.dispatch({"cmd": "open_in_home", "url": url}) == {"ok": True}
+    assert b.loaded == [(1, url)] and b.created == 2 and b.presented[-1] == 1
+
+
+def test_open_in_home_falls_back_to_the_latest_window_then_a_new_one(host):
+    h, b = host
+    url = BASE + "/explorer/view/home/me/app/index.html"
+    h.dispatch({"cmd": "open_in_home", "url": url})
+    assert b.created == 1 and getattr(b, "loaded", []) == []
+    h.dispatch({"cmd": "open_in_home", "url": BASE + "/explorer/view/home/me/b.html"})
+    assert b.loaded == [(1, BASE + "/explorer/view/home/me/b.html")] and b.created == 1
+
+
+def test_open_in_home_rejects_foreign_urls_and_when_disabled(host):
+    h, b = host
+    assert h.dispatch({"cmd": "open_in_home", "url": "http://example.com/"})["ok"] is False
+    assert h.dispatch({"cmd": "open_in_home"})["ok"] is False
+    h.enabled = False
+    assert h.dispatch({"cmd": "open_in_home", "url": BASE + "/"})["reason"] == "disabled"

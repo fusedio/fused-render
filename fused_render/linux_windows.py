@@ -63,9 +63,16 @@ def install(port: int, environ=None, platform: str | None = None) -> bool:
         return True
 
     def open_app(fs_path: str) -> None:
-        url = f"http://127.0.0.1:{port}" + window_policy.app_window_path(fs_path)
+        from fused_render.shell import prefs
+
+        if prefs.apps_open_in_home():
+            # The app takes over the Home window's explorer (`apps_open_in_home`).
+            cmd, path = "open_in_home", window_policy.app_home_path(fs_path)
+        else:
+            cmd, path = "open", window_policy.app_window_path(fs_path)
+        url = f"http://127.0.0.1:{port}" + path
         try:
-            shown = bool(ipc.request(sock, {"cmd": "open", "url": url},
+            shown = bool(ipc.request(sock, {"cmd": cmd, "url": url},
                                      timeout=ipc.CALLER_TIMEOUT_S).get("ok"))
         except ipc.HostUnavailable as error:
             logger.info("window host unavailable (%s); opening a browser tab", error)

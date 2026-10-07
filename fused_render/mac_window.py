@@ -1233,6 +1233,38 @@ class WindowManager:
         return self.focus_or_open_url(
             f"http://127.0.0.1:{self.port}" + window_policy.app_window_path(fs_path))
 
+    def open_app_in_home(self, fs_path: str) -> _Window:
+        """`apps_open_in_home`: the app loads into the Home window's
+        explorer (`window_policy.app_home_path`) instead of a window of its
+        own. The Home window, else the most recently used one, else a fresh
+        window. Once loaded the URL observer re-keys that window, so the next
+        app falls to the MRU rule — intended: apps take over Home.
+
+        The window changes hands for its frame like `edit`: its size and
+        place are saved where they are, and it takes the explorer's saved
+        frame for this target, kept as it is if there is none yet."""
+        url = f"http://127.0.0.1:{self.port}" + window_policy.app_home_path(fs_path)
+        homes = [w for w in self._windows if w.ns is not None and self._is_home(w)]
+        win = homes[-1] if homes else None
+        if win is not None:
+            for w in reversed(homes):  # prefer the key/front one
+                if w is self.key() or w is self.front():
+                    win = w
+                    break
+        elif self._windows:
+            win = self.front()
+        if win is None:
+            return self.open(url)
+        name = window_policy.frame_autosave_name(window_policy.window_key_of(url), "view")
+        if win.ns is not None and name != win.frame_name and self.frame_owner(name) is None:
+            win.save_frame()
+            win.ns.setFrameAutosaveName_("")
+            win.ns.setFrameUsingName_(name)
+            win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
+        win.load(url)
+        win.show()
+        return win
+
     def edit(self, win: _Window) -> _Window | None:
         """The Edit button: ``win`` itself switches to the explorer view of
         what it runs (owner's call — no second window). The URL observer
