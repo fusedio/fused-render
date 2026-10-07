@@ -682,6 +682,14 @@
   --row-bg-active: #2c2c2e;
   --row-bg-selected: #262628;
   --fg-muted-rgb: 142, 142, 147;
+  --accent: #facc15;
+  --accent-rgb: 250, 204, 21;
+  --on-accent: #10131a;
+  --accent-soft: #eab308;
+  --peek-halo: #facc15;
+  --peek-halo-rgb: 250, 204, 21;
+  --icon-html: #facc15;
+  --app-icon-yellow: #facc15;
 }
 
 :root[data-theme-name="midnight"][data-theme="light"] {
@@ -698,4 +706,11 @@
   --row-bg-active: #dcdce0;
   --row-bg-selected: #e6e6e9;
   --fg-muted-rgb: 95, 95, 99;
+  --accent: #a16207;
+  --accent-rgb: 161, 98, 7;
+  --on-accent: #ffffff;
+  --accent-soft: #a16207;
+  --peek-halo: #a16207;
+  --peek-halo-rgb: 161, 98, 7;
+  --app-icon-yellow: #a16207;
 }

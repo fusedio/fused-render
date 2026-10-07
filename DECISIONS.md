@@ -6594,10 +6594,12 @@ New global pref (default off, desktop app on macOS and Linux). The decision poin
 
 A preset (`default`, `high-contrast`, `midnight`) is a second attribute, `data-theme-name`, on the top-level shell `<html>`, stored in `localStorage["fused-render:theme-preset"]`; the existing `fused-render:theme` key and its values are unchanged. Each preset has a dark and a light variant in `tokens.css`, so `data-theme` still means the light/dark BASE and every consumer (Tailwind dark variant, runtime.js, templates, `=== "dark"` checks) works untouched. Phase 1 overrides only the shell's surface, ink and accent tokens, and leaves views and templates alone: they keep receiving only light/dark, and runtime.js never learns about presets. Phase 2 bridges the tailwind.css shadcn palette, the Claude chat, bots and the terminal theme. Phase 3 reaches the templates.
 
-Midnight preset: true black (OLED), it keeps the brand accent (no accent overrides).
+Midnight preset: true black (OLED), it uses a golden accent (#facc15 dark, #a16207 light).
 
 Nord and Solarized were dropped before merge to avoid maintaining presets nobody asked for; stale stored ids fall back to default.
 
 Claude chat surfaces, text and border (`--c-bg`, `--c-panel`, `--c-surface`, `--c-surface-2`, `--c-bubble-user`, `--c-fg`, `--c-dim`, `--c-faint`, `--c-border`, `--c-card-bg`, `--c-card-border`) now alias the shell tokens in `apps/claude/styles/chat.css`, so the side panel follows every preset; the accent stays Claude orange.
 
 In-progress/running status colour (`--status-progress`) is now the accent (was `#facc15` / `#ca8a04`) so the app has one yellow.
+
+Midnight now uses a golden accent (#facc15 dark, #a16207 light) instead of the brand lime; the running status follows via `--accent`, so it is still one yellow per theme.
