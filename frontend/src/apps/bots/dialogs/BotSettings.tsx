@@ -8,7 +8,7 @@
 // Base UI only coordinates dialogs through the React tree: the page's own confirm and face picker are siblings in
 // the bots portal host, so a click in either reads as an OUTSIDE press here and would fire onOpenChange(false). The
 // `busy` ref covers the time one of them is up, and the dialog is non-modal so its focus trap never fights theirs.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@platform/shadcn/ui/dialog";
@@ -91,8 +91,13 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     setTrustedApps((cur) => on ? (cur.includes(k) ? cur : [...cur, k]) : cur.filter((x) => x !== k));
   };
 
-  const nameRef = useRef<HTMLInputElement>(null);
-  useLayoutEffect(() => { if (tab === "general") { nameRef.current?.focus(); nameRef.current?.select(); } }, [tab]);
+  // Focus by id, not ref: the shadcn Input is a plain function component (no forwardRef on React 18), and the dialog
+  // sets its own initial focus on open, so this waits a tick to land after it.
+  useEffect(() => {
+    if (tab !== "general") return;
+    const t = window.setTimeout(() => { const el = document.getElementById("bmname") as HTMLInputElement | null; el?.focus(); el?.select(); }, 0);
+    return () => window.clearTimeout(t);
+  }, [tab]);
 
   const ok = () => { if (!okDisabled) onClose(read()); };
   const editAvatar = async () => {
@@ -130,7 +135,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
             {tab === "general" ? (
               <Rows>
                 <Row title="Name" htmlFor="bmname">
-                  <Input id="bmname" ref={nameRef} placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
+                  <Input id="bmname" placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") ok(); }} />
                 </Row>
                 {/* Super Bot's avatar is the fixed Claude mark: no picker (the backend refuses a change too). */}

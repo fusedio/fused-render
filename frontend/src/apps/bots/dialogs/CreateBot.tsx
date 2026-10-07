@@ -2,7 +2,7 @@
 // model; the effort menu sits behind the cog. Everything else (approvals, builds, browser profile, encryption,
 // trusted apps, the phone) has a first-run default that is right and lives in Settings once the bot exists. Enter
 // in Name creates; Escape, the backdrop and Cancel dismiss (null). Same black dialog as BotSettings.
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Settings2Icon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
@@ -35,12 +35,15 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
   const [instructions, setInstructions] = useState(fresh.instructions || "");
   const [face, setFace] = useState<FaceT | null | undefined>(fresh.face);
   const [more, setMore] = useState(false);
-  const nameRef = useRef<HTMLInputElement>(null);
   const busy = useRef(false);  // the face picker (a sibling modal) is up: its clicks are not outside presses to act on
 
   // The avatar subject: the face is hashed from the name the dialog opened with until one is picked.
   const bm = useMemo(() => ({ name: fresh.name, face }), [fresh.name, face]);
-  useLayoutEffect(() => { nameRef.current?.focus(); nameRef.current?.select(); }, []);
+  // Focus by id, not ref (the shadcn Input forwards no ref on React 18), a tick after the dialog sets its own.
+  useEffect(() => {
+    const t = window.setTimeout(() => { const el = document.getElementById("bmname") as HTMLInputElement | null; el?.focus(); el?.select(); }, 0);
+    return () => window.clearTimeout(t);
+  }, []);
 
   const read = (): BotDialogValue => ({
     name: name.trim(), model, effort, instructions, memory: "", approval: "ask", buildAccess: "scoped", encrypt: false, profile: "",
@@ -69,7 +72,7 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
           </button>
           <Field>
             <FieldLabel htmlFor="bmname">Name</FieldLabel>
-            <Input id="bmname" ref={nameRef} placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
+            <Input id="bmname" placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") ok(); }} />
           </Field>
           <Field>
