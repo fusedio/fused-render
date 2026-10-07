@@ -83,12 +83,13 @@ export function highlightSearch(th: HTMLElement, q: string): number {
   const ranges: Range[] = [];
   // Matched on the node's own text with a case-insensitive pattern — never on a lower-cased copy, whose length
   // can differ (İ, ß) and put the offsets off or past the node. Chrome (time, reactions, the day and New
-  // dividers) is not message text and is skipped.
+  // dividers) is not message text and is skipped; a "Texted" line is text the row filter matched on, so it is tinted
+  // like the bubble (else a row could show as a hit with nothing lit).
   const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
   const walker = document.createTreeWalker(th, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const el = node.parentElement;
-    if (!el || !el.closest(".hit") || el.closest("time, .when, .rx, .acts, .day, .new, .texted")) continue;
+    if (!el || !el.closest(".hit") || el.closest("time, .when, .rx, .acts, .day, .new")) continue;
     const text = node.textContent || "";
     for (const m of text.matchAll(re)) {
       if (!m[0]) break;
