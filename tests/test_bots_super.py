@@ -318,8 +318,20 @@ def _carry_on_turns(sb):
     return [e for e in sb.events_since(0) if e["role"] == "system" and e["text"].startswith("Task started: Carrying on:")]
 
 
-def test_handoff_done_carries_the_request_on(pair):
+def _record_starts(sb, monkeypatch):
+    """start_task's (origin, via) per call: the task may end (and reset task_via) before the test looks."""
+    seen, real = [], sb.start_task
+
+    def start_task(task, label=None, origin="manual", via=None):
+        seen.append((origin, dict(via) if via else None))
+        return real(task, label=label, origin=origin, via=via)
+    monkeypatch.setattr(sb, "start_task", start_task)
+    return seen
+
+
+def test_handoff_done_carries_the_request_on(pair, monkeypatch):
     sb, t, gate = pair
+    starts = _record_starts(sb, monkeypatch)
     sb.meta["task"] = "summarize my X timeline and email it to me"
     label, out = sb.handoff("scout", "read the timeline")
     assert out.startswith("started")
@@ -330,8 +342,7 @@ def test_handoff_done_carries_the_request_on(pair):
     assert hd["state"] == "done" and hd["continued"] is True
     # Super Bot started a turn of its own: the note, the task label, the engine's first line
     assert any(e["role"] == "note" and e["text"] == "Scout is done; carrying on with your request." for e in sb.events_since(0))
-    assert sb.meta["task"] == "Carrying on: summarize my X timeline and email it to me"
-    assert sb.task_origin == botmod.HANDOFF_CONTINUE_ORIGIN
+    assert starts == [(botmod.HANDOFF_CONTINUE_ORIGIN, None)]  # the chat's own channel
     if sb.thread is not None:
         gate.set(); sb.thread.join(5)
     assert len(_carry_on_turns(sb)) == 1
@@ -355,8 +366,9 @@ def test_handoff_chain_keeps_the_whole_request(pair):
         gate.set(); sb.thread.join(5)
 
 
-def test_handoff_from_the_phone_carries_on_over_the_phone(pair):
+def test_handoff_from_the_phone_carries_on_over_the_phone(pair, monkeypatch):
     sb, t, gate = pair
+    starts = _record_starts(sb, monkeypatch)
     sb.meta["task"] = "text me my X digest"
     sb.task_via = {"kind": "imessage", "addr": "+15550100"}  # the asking task came in by text
     sb.handoff("scout", "read X")
@@ -366,7 +378,7 @@ def test_handoff_from_the_phone_carries_on_over_the_phone(pair):
     release(t, gate)
     assert hd["continued"] is True
     # the carry-on runs on the phone's channel (replies go back there) under its own ledger origin
-    assert sb.task_via == {"kind": "imessage", "addr": "+15550100"} and sb.task_origin == botmod.HANDOFF_CONTINUE_ORIGIN
+    assert starts == [(botmod.HANDOFF_CONTINUE_ORIGIN, {"kind": "imessage", "addr": "+15550100"})]
     if sb.thread is not None:
         gate.set(); sb.thread.join(5)
     assert len(_carry_on_turns(sb)) == 1
