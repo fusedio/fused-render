@@ -2035,8 +2035,14 @@ a.hw-more:hover {
 .fp-search svg { flex: none; }
 .fp-search .fp-ln { flex: 1 1 auto; width: auto; max-width: 70%; }
 
-.hw-widget.is-app { padding: 8px; }
-.hw-widget.is-app .hw-head { margin: 0 6px 6px; }
+.hw-widget.is-app { padding: 0; }
+.hw-widget.is-app .hw-head {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.hw-widget.is-app .hw-body { display: flex; flex-direction: column; min-height: 0; }
+.hw-widget.is-app .hw-app-iframe { border-radius: 0; }
 
 .hw-tile.is-more .hw-tile-icon {
   border: 1px dashed color-mix(in srgb, var(--fg-faint) 55%, transparent);
