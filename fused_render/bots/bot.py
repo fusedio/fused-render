@@ -1160,12 +1160,13 @@ class Bot:
 
     def _maybe_super_setup(self, opened=False):
         """The seeded Super Bot's setup (SUPER_SETUP): the Google sign-in, then the
-        social-bot offer. Runs the first time the user opens Super Bot (`opened`, the
-        page's status poll with it selected) or, failing that, on the routines tick,
-        as soon as Claude is linked and the bot is idle. The health check reads the
-        cached snapshot; an empty cache is measured once a minute in the background,
-        so a fresh install does not wait on something else to probe Claude first."""
-        if not is_super(self.meta) or not (self.meta.get("setup") or "").strip():
+        social-bot offer. Runs the first time the user OPENS Super Bot (`opened`:
+        the Bots page's status poll with it selected), once Claude is linked and
+        the bot is idle; never from the routines tick, so onboarding or a
+        background pass cannot pop the sign-in window while the user is elsewhere.
+        The health check reads the cached snapshot; an empty cache is measured
+        once a minute in the background."""
+        if not opened or not is_super(self.meta) or not (self.meta.get("setup") or "").strip():
             return
         if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
             return
@@ -1634,7 +1635,6 @@ class Bot:
 
     def tick_routines(self):
         self.drain_file_inbox()
-        self._maybe_super_setup()
         now = time.time()
         for r in list(self.routines()):
             if not r.get("enabled"):
