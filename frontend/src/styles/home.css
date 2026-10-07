@@ -1594,7 +1594,7 @@ a.hw-more:hover {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: 0 24px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
+  box-shadow: 0 24px 60px var(--shadow-ink-deep), 0 0 0 1px var(--glass-highlight);
   color: var(--fg);
 }
 
@@ -1717,7 +1717,7 @@ a.hw-more:hover {
 .hw-stage-card-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--fg); }
 .hw-stage-card-head span { font-size: 12px; font-weight: 400; color: var(--fg-muted); }
 .hw-stage-card .hw-stage-in { width: 100%; }
-.hw-stage-card .fp-strip { mask-image: linear-gradient(90deg, #000 82%, transparent); -webkit-mask-image: linear-gradient(90deg, #000 82%, transparent); }
+.hw-stage-card .fp-strip { mask-image: linear-gradient(90deg, black 82%, transparent); -webkit-mask-image: linear-gradient(90deg, black 82%, transparent); }
 
 .hw-stage-box.is-folders {
   place-items: stretch;
