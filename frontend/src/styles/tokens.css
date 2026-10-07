@@ -646,6 +646,17 @@
   --fg-muted-rgb: 208, 208, 208;
   --peek-halo: #ffff00;
   --peek-halo-rgb: 255, 255, 0;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
+  --accent-soft: var(--accent);
+  --icon-html: var(--accent);
+  --app-icon-yellow: var(--accent);
 }
 
 :root[data-theme-name="high-contrast"][data-theme="light"] {
@@ -666,6 +677,17 @@
   --fg-muted-rgb: 34, 34, 34;
   --peek-halo: #4a5a00;
   --peek-halo-rgb: 74, 90, 0;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
+  --accent-soft: var(--accent);
+  --icon-html: var(--accent);
+  --app-icon-yellow: var(--accent);
 }
 
 :root[data-theme-name="midnight"] {
@@ -690,6 +712,14 @@
   --peek-halo-rgb: 250, 204, 21;
   --icon-html: #facc15;
   --app-icon-yellow: #facc15;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
 }
 
 :root[data-theme-name="midnight"][data-theme="light"] {
@@ -714,4 +744,12 @@
   --peek-halo-rgb: 161, 98, 7;
   --icon-html: #a16207;
   --app-icon-yellow: #a16207;
+  --tasks-lane-bg: var(--bg-alt);
+  --tasks-card-bg: var(--row-bg-hover);
+  --pg-card-bg: var(--bg-alt);
+  --ctl-quiet-border: var(--border);
+  --status-item-hover: var(--row-bg-hover);
+  --tour-next-hover: var(--accent-soft);
+  --am-surface-none: var(--bg-alt);
+  --am-surface-have: var(--row-bg-hover);
 }
