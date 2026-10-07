@@ -408,9 +408,9 @@ else
   case "$(printf '%s' "${FUSED_RENDER_BRANCH:-}" | tr '[:upper:]' '[:lower:]')" in
     ""|main|master|head)
       echo "==> dev port: $PORT — NO branch isolation (branch '${FUSED_RENDER_BRANCH:-?}'):"
-      echo "    this is the installed desktop app's port and state dir (~/.fused-render)."
-      echo "    If the app is running, the bind fails below ('port … is already in use');"
-      echo "    pass --port N or FUSED_RENDER_BRANCH=<name> to run isolated."
+      echo "    state dir is the installed desktop app's (~/.fused-render), and without"
+      echo "    --port so is the port — if the app is running, the bind fails below"
+      echo "    ('port … is already in use'). FUSED_RENDER_BRANCH=<name> runs isolated."
       ;;
     *)
       echo "==> dev port: $PORT (branch '$FUSED_RENDER_BRANCH'; state under ~/.fused-render/branches/)"

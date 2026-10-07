@@ -22,10 +22,10 @@ nohup scripts/dev.sh --no-browser > /abs/dev.log 2>&1 &
 Then wait for the one line that means "accepting connections":
 
 ```bash
-until grep -q '==> ready:' /abs/dev.log; do sleep 2; done; grep -E '==> (dev port|ready|NOT ready)' /abs/dev.log
+until grep -qE '==> (ready|NOT ready):' /abs/dev.log; do sleep 2; done; grep -E '==> (dev port|ready|NOT ready)' /abs/dev.log
 ```
 
-- `==> dev port: N …` is in the first lines: the port this run binds. `==> ready: http://127.0.0.1:N/` arrives when uvicorn is bound. `==> NOT ready:` after 120 s means look above it for the cause.
+- `==> dev port: N …` is in the first lines: the port this run binds. `==> ready: http://127.0.0.1:N/` arrives when uvicorn is bound. `==> NOT ready:` after 120 s means look above it for the cause — the loop must match both, or a port-guard exit or import traceback leaves it spinning. (Only the `FUSED_RENDER_NO_RELOAD=1` fallback path prints neither; poll `/api/health` there.)
 - Do **not** wait for cli.py's `fused-render serving at …` line: it prints *before* the bind, so a `curl` right after it is refused. Do not grep `Uvicorn running` either — use the `==> ready:` line, or `curl -fsS http://127.0.0.1:N/api/health`.
 - Timing: first run on a fresh worktree ≈ 1–2 min (uv venv + npm install + build); later runs ≈ 20–40 s. Never use fixed sleeps.
 - The log is noisy with vite chunk lines. Filter: `grep -v 'vite:reporter\|imported by\|kB │' /abs/dev.log | tail -20`.
