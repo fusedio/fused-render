@@ -194,9 +194,18 @@ def test_reap_dead_runs_on_create_and_list(registry, tmp_path, monkeypatch):
     # gone by the time this reads it back.
     assert dead.id not in [s.id for s in registry.list()]
 
+    # `live` needs to still be alive by the time the assertions below run,
+    # so re-patch `resolve_profile` to a long-running command instead of
+    # reusing the `printf hi` profile above, which could itself exit and
+    # get reaped before `list()` runs.
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "sleep 30"]))
     live = registry.create()
-    assert live.id in [s.id for s in registry.list()]
-    assert dead.id not in [s.id for s in registry.list()]
+    try:
+        assert live.id in [s.id for s in registry.list()]
+        assert dead.id not in [s.id for s in registry.list()]
+    finally:
+        live.kill()
 
 
 def test_failed_popen_does_not_leak_the_master_fd(tmp_path, monkeypatch):
