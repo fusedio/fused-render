@@ -110,6 +110,8 @@ test("itemCapacity grows with size", () => {
   expect(itemCapacity("4x1", "list")).toBe(4);
   expect(itemCapacity("2x1", "icons")).toBe(6);
   expect(itemCapacity("4x1", "icons")).toBe(12);
+  expect(itemCapacity("1x2", "list")).toBe(6);
+  expect(itemCapacity("1x2", "icons")).toBe(6);
 });
 
 test("removeWidget / setSize / setFormat", () => {
@@ -117,6 +119,9 @@ test("removeWidget / setSize / setFormat", () => {
   expect(ids(removeWidget(l, "a"))).toEqual(["b"]);
   expect(setSize(l, "b", "4x1").widgets[1].size).toBe("4x1");
   expect(setSize(l, "b", "1x1")).toBe(l);
+  expect(setSize(l, "b", "1x2").widgets[1].size).toBe("1x2");
+  const ix = lay(w("c", "index", "4x1", "cards"));
+  expect(setSize(ix, "c", "1x2")).toBe(ix);
   expect(setFormat(l, "b", "board").widgets[1].format).toBe("board");
   expect(setFormat(l, "b", "cards")).toBe(l);
   expect(setFormat(l, "zzz", "board")).toBe(l);

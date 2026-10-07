@@ -576,6 +576,7 @@
 
 .hw-size-1x1 { grid-column: span 1; grid-row: span 1; }
 .hw-size-2x1 { grid-column: span 2; grid-row: span 1; }
+.hw-size-1x2 { grid-column: span 1; grid-row: span 2; }
 .hw-size-2x2 { grid-column: span 2; grid-row: span 2; }
 .hw-size-4x1 { grid-column: span 4; grid-row: span 1; }
 
@@ -1823,11 +1824,13 @@ a.hw-more:hover {
   min-height: 320px;
 }
 
-.hw-widget.hw-size-2x2:has(.hw-app-body) {
+.hw-widget.hw-size-2x2:has(.hw-app-body),
+.hw-widget.hw-size-1x2:has(.hw-app-body) {
   min-height: 420px;
 }
 
-.hw-widget.hw-size-2x2 .hw-app-body {
+.hw-widget.hw-size-2x2 .hw-app-body,
+.hw-widget.hw-size-1x2 .hw-app-body {
   min-height: 360px;
 }
 

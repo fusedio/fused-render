@@ -92,6 +92,13 @@ def test_app_widget_roundtrips_app_path(tmp_path, monkeypatch):
     assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
 
 
+def test_tall_size_roundtrips(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {"version": 1, "widgets": [{"id": "t", "source": "tasks", "size": "1x2", "format": "list"}]}
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
+
+
 def test_app_path_dropped_on_other_sources_and_when_oversized(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     lay = {

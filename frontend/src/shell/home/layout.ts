@@ -13,7 +13,7 @@ export type WidgetSource =
   | "folder"
   | "index"
   | "app";
-export type WidgetSize = "1x1" | "2x1" | "2x2" | "4x1"; // cols x rows
+export type WidgetSize = "1x1" | "2x1" | "1x2" | "2x2" | "4x1"; // cols x rows
 export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count" | "live" | "bar";
 
 export interface Widget {
@@ -57,49 +57,49 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
   apps: {
     label: "Fused Apps",
     description: "Your most recently used apps.",
-    sizes: ["4x1", "2x1", "2x2"],
+    sizes: ["4x1", "2x1", "1x2", "2x2"],
     formats: ["cards", "icons"],
   },
   app: {
     label: "Page",
     description: "Show one of your apps, or any file the explorer can render, live on Home.",
-    sizes: ["2x2", "2x1", "4x1"],
+    sizes: ["2x2", "2x1", "1x2", "4x1"],
     formats: ["live"],
   },
   playground: {
     label: "AI Playground",
     description: "Run AI models on this machine.",
-    sizes: ["4x1", "2x1", "2x2"],
+    sizes: ["4x1", "2x1", "1x2", "2x2"],
     formats: ["cards", "list"],
   },
   sessions: {
     label: "Claude Sessions",
     description: "Folders where you recently used Claude Code.",
-    sizes: ["4x1", "2x1", "2x2"],
+    sizes: ["4x1", "2x1", "1x2", "2x2"],
     formats: ["cards", "list"],
   },
   recents: {
     label: "Recent files",
     description: "Files you opened lately.",
-    sizes: ["4x1", "2x1", "2x2"],
+    sizes: ["4x1", "2x1", "1x2", "2x2"],
     formats: ["cards", "list"],
   },
   tasks: {
     label: "Tasks",
     description: "Open Claude tasks: queued, running, and waiting on you.",
-    sizes: ["2x2", "2x1", "4x1"],
+    sizes: ["2x2", "2x1", "1x2", "4x1"],
     formats: ["list", "board", "count"],
   },
   bots: {
     label: "Bots",
     description: "What your bots are doing right now.",
-    sizes: ["1x1", "2x1", "2x2"],
+    sizes: ["1x1", "2x1", "1x2", "2x2"],
     formats: ["list", "count"],
   },
   folder: {
     label: "Bookmark folder",
     description: "The contents of one of your bookmark folders.",
-    sizes: ["2x1", "1x1", "2x2", "4x1"],
+    sizes: ["2x1", "1x2", "1x1", "2x2", "4x1"],
     formats: ["list", "icons"],
   },
   index: {
@@ -259,6 +259,7 @@ export function dims(size: WidgetSize): { cols: number; rows: number } {
 export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
   const { cols, rows } = dims(size);
   if (format === "icons") return cols * 3 * rows;
+  // 1x2 (cols 1, rows 2) is covered: list 6, icons 6.
   const perColumn = rows === 1 ? 2 : 6;
   return perColumn * (cols >= 4 ? 2 : 1);
 }
@@ -278,6 +279,7 @@ export const FORMAT_LABELS: Record<WidgetFormat, string> = {
 export const SIZE_LABELS: Record<WidgetSize, string> = {
   "1x1": "Small",
   "2x1": "Half",
+  "1x2": "Tall",
   "2x2": "Large",
   "4x1": "Full row",
 };
