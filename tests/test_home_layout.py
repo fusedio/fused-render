@@ -76,3 +76,32 @@ def test_corrupt_file_reports_absent(tmp_path, monkeypatch):
     home.mkdir(parents=True)
     (home / "home_layout.json").write_text("{ nope", encoding="utf-8")
     assert client.get("/api/home/layout").json() == {"exists": False, "layout": None}
+
+
+def test_app_widget_roundtrips_app_path(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {
+        "version": 1,
+        "widgets": [
+            {"id": "x", "source": "app", "size": "2x2", "format": "live", "appPath": "/w/my app"},
+        ],
+    }
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
+
+
+def test_app_path_dropped_on_other_sources_and_when_oversized(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {
+        "version": 1,
+        "widgets": [
+            {"id": "a", "source": "apps", "size": "4x1", "format": "cards", "appPath": "/w/x"},
+            {"id": "b", "source": "app", "size": "2x2", "format": "live", "appPath": "p" * 4097},
+            # Like a folder with no folderId: kept here, dropped by the client's normalize.
+            {"id": "c", "source": "app", "size": "2x2", "format": "live"},
+        ],
+    }
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    got = client.get("/api/home/layout").json()["layout"]["widgets"]
+    assert all("appPath" not in x for x in got)
+    assert [x["id"] for x in got] == ["a", "b", "c"]

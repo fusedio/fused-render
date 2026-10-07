@@ -119,3 +119,22 @@ test("removeWidget / setSize / setFormat", () => {
   expect(setFormat(l, "b", "cards")).toBe(l);
   expect(setFormat(l, "zzz", "board")).toBe(l);
 });
+
+test("app widgets need an appPath and keep it; other sources drop it", () => {
+  const out = normalizeLayout({
+    version: 1,
+    widgets: [
+      w("a", "app", "2x2", "live"),
+      { ...w("b", "app", "2x1", "live"), appPath: "/w/x" },
+      { ...w("c", "apps"), appPath: "/w/x" },
+    ],
+  });
+  expect(ids(out)).toEqual(["b", "c"]);
+  expect(out.widgets[0]).toEqual({ id: "b", source: "app", size: "2x1", format: "live", appPath: "/w/x" });
+  expect(out.widgets[1].appPath).toBeUndefined();
+});
+
+test("addWidget stores appPath for app widgets", () => {
+  const out = addWidget(lay(), "app", { id: "p", appPath: "/w/x" });
+  expect(out.widgets[0]).toEqual({ id: "p", source: "app", size: "2x2", format: "live", appPath: "/w/x" });
+});

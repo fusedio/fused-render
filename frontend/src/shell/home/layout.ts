@@ -10,9 +10,10 @@ export type WidgetSource =
   | "tasks"
   | "bots"
   | "folder"
-  | "index";
+  | "index"
+  | "app";
 export type WidgetSize = "1x1" | "2x1" | "2x2" | "4x1"; // cols x rows
-export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count";
+export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count" | "live";
 
 export interface Widget {
   id: string;
@@ -21,6 +22,8 @@ export interface Widget {
   format: WidgetFormat;
   /** source === "folder": a BookmarkFolder id (platform/lib/bookmarks.ts). */
   folderId?: string;
+  /** source === "app": the app's fs path (AppInfo.path). */
+  appPath?: string;
 }
 
 export interface HomeLayout {
@@ -45,6 +48,12 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
     description: "Your most recently used apps.",
     sizes: ["4x1", "2x1", "2x2"],
     formats: ["cards", "icons"],
+  },
+  app: {
+    label: "App",
+    description: "Run one of your apps right on Home.",
+    sizes: ["2x2", "2x1", "4x1"],
+    formats: ["live"],
   },
   playground: {
     label: "AI Playground",
@@ -100,7 +109,7 @@ export function newWidgetId(): string {
 
 function makeWidget(
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; format?: WidgetFormat; size?: WidgetSize } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize } = {},
 ): Widget {
   const spec = SOURCES[source];
   const w: Widget = {
@@ -110,6 +119,7 @@ function makeWidget(
     format: opts.format && spec.formats.includes(opts.format) ? opts.format : spec.formats[0],
   };
   if (opts.folderId) w.folderId = opts.folderId;
+  if (source === "app" && opts.appPath) w.appPath = opts.appPath;
   return w;
 }
 
@@ -146,6 +156,8 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     if (!SOURCE_KEYS.includes(source)) continue;
     const folderId = typeof x.folderId === "string" && x.folderId ? x.folderId : undefined;
     if (source === "folder" && !folderId) continue;
+    const appPath = typeof x.appPath === "string" && x.appPath ? x.appPath : undefined;
+    if (source === "app" && !appPath) continue;
     const spec = SOURCES[source];
     let id = typeof x.id === "string" && x.id ? x.id : "";
     if (!id || seen.has(id)) id = newWidgetId();
@@ -159,6 +171,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
         : spec.formats[0],
     };
     if (source === "folder") w.folderId = folderId;
+    if (source === "app") w.appPath = appPath;
     widgets.push(w);
   }
   return { version: 1, widgets };
@@ -176,7 +189,7 @@ export function moveWidget(layout: HomeLayout, from: number, to: number): HomeLa
 export function addWidget(
   layout: HomeLayout,
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; format?: WidgetFormat; size?: WidgetSize } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize } = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   return { ...layout, widgets: [...layout.widgets, makeWidget(source, opts)] };
@@ -232,6 +245,7 @@ export const FORMAT_LABELS: Record<WidgetFormat, string> = {
   icons: "Icons",
   board: "Board",
   count: "Count",
+  live: "Live",
 };
 
 /** Menu labels for sizes. */

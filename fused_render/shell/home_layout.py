@@ -14,9 +14,10 @@ from fused_render.shell import storage
 router = APIRouter()
 
 MAX_WIDGETS = 48
-SOURCES = {"apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index"}
+MAX_APP_PATH = 4096
+SOURCES = {"apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index", "app"}
 SIZES = {"1x1", "2x1", "2x2", "4x1"}
-FORMATS = {"cards", "list", "icons", "board", "count"}
+FORMATS = {"cards", "list", "icons", "board", "count", "live"}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -51,6 +52,9 @@ def _clean(doc) -> dict | None:
         fid = w.get("folderId")
         if isinstance(fid, str):
             item["folderId"] = fid
+        ap = w.get("appPath")
+        if w["source"] == "app" and isinstance(ap, str) and 0 < len(ap) <= MAX_APP_PATH:
+            item["appPath"] = ap
         out.append(item)
     return {"version": 1, "widgets": out}
 
