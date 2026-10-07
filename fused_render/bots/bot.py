@@ -483,6 +483,9 @@ class Bot:
             self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
             store.write_meta(bid, self.meta)
         self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
+        # A take-over survives a server restart in bot.json; the view's in-memory flag must
+        # agree, or the first hand-back on a shared browser relaunches it under this bot's window.
+        self.browser.popped = bool(self.meta.get("visible")) and self.browser.visible()
         self.browser.idle_check = self._may_sleep
         self.last_looked = time.time()  # when the page last polled with this bot selected (routes._status_bot); a bot just
         # loaded counts as looked at, so a shared Chrome never sleeps under it in the first poll after a restart
@@ -1957,7 +1960,7 @@ class Bot:
         if visible:
             self.pause()
             self.meta["control"] = True
-        self.browser.set_visible(visible)
+        relaunched = self.browser.set_visible(visible)  # False: a shared Chrome stays on the desktop for another bot
         self.meta["visible"] = visible
         handback = closed and bool(self.meta.get("control"))
         if handback:
@@ -1966,10 +1969,18 @@ class Bot:
         self.save()
         shared_note = (" This browser is shared with " + ", ".join(o["name"] for o in self.shared_with())
                        + "; their windows open too, this bot's in front.") if visible and self.shared_with() else ""
-        self.emit("system", "Opened this bot's browser as a real window on your desktop. Hand back (or close the window) to return control to the bot." + shared_note
-                  if visible else ("Desktop window closed; the browser is back here, headless"
-                                   + (" and the bot has control again." if handback else ".") if closed
-                                   else "Browser is headless again; the live view is the only window."))
+        if visible:
+            msg = "Opened this bot's browser as a real window on your desktop. Hand back (or close the window) to return control to the bot." + shared_note
+        elif not relaunched:
+            still = ", ".join(o["name"] for o in self.shared_with() if (_registry().get(o["id"]) or self).meta.get("visible")) or "another bot"
+            msg = (("Desktop window closed" if closed else "Handed back") + f"; {still} still has this shared browser open on your desktop, "
+                   "so it stays a real window for now; this bot's windows are minimised and it keeps working there"
+                   + (" with control again." if handback else "."))
+        elif closed:
+            msg = "Desktop window closed; the browser is back here, headless" + (" and the bot has control again." if handback else ".")
+        else:
+            msg = "Browser is headless again; the live view is the only window."
+        self.emit("system", msg)
         if handback:
             if self.thread and self.thread.is_alive():
                 self.resume(note=False)
@@ -1981,8 +1992,9 @@ class Bot:
             return
         self.window_closed = False
         history.append("The user popped your browser out as a real desktop window and then closed that window "
-                       "instead of handing back, so control returned to you. The browser was relaunched headless "
-                       "on the last page it knew about (possibly about:blank). Nothing was necessarily accomplished "
+                       "instead of handing back, so control returned to you. Your browser is back on the last page "
+                       "it knew about (possibly about:blank), headless, or in a fresh window when another bot's user "
+                       "still has the shared browser open. Nothing was necessarily accomplished "
                        "in that window; do not assume a login or any step succeeded. Act on the observation below.")
 
     def _recover_popup(self):
