@@ -1,12 +1,15 @@
 // The three strips that existed before widgets — Playground, Claude Sessions,
-// Recent files — as widget bodies. Cards format keeps the one-row behaviour of
-// the old strips (measured card count); list format shows rows.
+// Recent files — as widget bodies. Cards format is a horizontally scrolling
+// strip (CardStrip): the measured card count sizes the cards so the next one
+// peeks in at the right edge, and every item fetched is rendered; list format
+// shows rows.
 import { basename } from "@platform/lib/format";
 import { spaLinkProps } from "@platform/lib/router";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { tabHref } from "@apps/ai_models/routes";
 import { PLAYGROUND_GROUPS, PlaygroundPreviewCard } from "../PlaygroundCard";
+import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, useStripCount } from "../strip";
 import { useHomeSessions } from "../data";
@@ -31,11 +34,11 @@ export function PlaygroundWidget({ widget }: { widget: Widget }) {
   }
   return (
     <div ref={ref} className="hw-body">
-      <div className="home-row hw-cards">
-        {PLAYGROUND_GROUPS.slice(0, (count ?? 0) * rows).map((group) => (
+      <CardStrip count={count} rows={rows} total={PLAYGROUND_GROUPS.length}>
+        {PLAYGROUND_GROUPS.map((group) => (
           <PlaygroundPreviewCard key={group.capability} group={group} />
         ))}
-      </div>
+      </CardStrip>
     </div>
   );
 }
@@ -57,11 +60,11 @@ export function SessionsWidget({ widget }: { widget: Widget }) {
       ) : !sessions.length ? (
         <EmptyLine>No Claude Code sessions found on this machine.</EmptyLine>
       ) : cards ? (
-        <div className="home-row hw-cards">
-          {sessions.slice(0, cap).map((f) => (
+        <CardStrip count={count} rows={rows} total={sessions.length}>
+          {sessions.map((f) => (
             <FolderPreviewCard key={f.path} path={f.path} />
           ))}
-        </div>
+        </CardStrip>
       ) : (
         <ItemList
           items={sessions.map((f) => ({
@@ -91,14 +94,14 @@ export function RecentsWidget({ widget }: { widget: Widget }) {
       {!recents.length ? (
         <EmptyLine>Nothing opened yet. Files you view will show up here.</EmptyLine>
       ) : cards ? (
-        <div className="home-row hw-cards">
-          {recents.slice(0, cap).map((r) => {
+        <CardStrip count={count} rows={rows} total={recents.length}>
+          {recents.map((r) => {
             const fsPath = recentFsPath(r.url);
             return (
               <RecentPreviewCard key={fsPath} url={r.url} path={fsPath} name={r.title || basename(fsPath)} />
             );
           })}
-        </div>
+        </CardStrip>
       ) : (
         <ItemList
           items={recents.map((r) => {

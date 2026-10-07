@@ -3,6 +3,7 @@ import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { hrefFor, isBrowserHandledClick, openApp } from "@platform/lib/appEntry";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import type { AppInfo } from "@platform/lib/api";
+import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, useStripCount } from "../strip";
 import { useHomeApps } from "../data";
@@ -50,11 +51,11 @@ export function AppsWidget({ widget }: { widget: Widget }) {
         )
       ) : apps.length ? (
         cards ? (
-          <div className="home-row hw-cards">
-            {apps.slice(0, cap).map((app) => (
+          <CardStrip count={count} rows={rows} total={Math.min(apps.length, MAX_ROW)}>
+            {apps.slice(0, MAX_ROW).map((app) => (
               <AppPreviewCard key={app.path} app={app} />
             ))}
-          </div>
+          </CardStrip>
         ) : (
           <div className="hw-icons">
             {apps.slice(0, cap).map((app) => (

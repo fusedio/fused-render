@@ -638,16 +638,87 @@
   min-width: 0;
 }
 
+/* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are 330px until the
+   items overflow; then they shrink so n cards, n gaps and a peek of the next
+   card fill the row. The 56px peek must match PEEK_W in home/strip.ts. */
+.hw-strip {
+  position: relative;
+  min-width: 0;
+}
+
 .hw-cards {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(var(--hw-rows, 1), auto);
+  grid-auto-columns: 330px;
   gap: 16px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.hw-cards::-webkit-scrollbar {
+  display: none;
+}
+
+.hw-cards.is-overflowing {
+  grid-auto-columns: max(240px, calc((100% - 56px - var(--hw-n, 1) * 16px) / var(--hw-n, 1)));
 }
 
 .hw-cards > * {
-  width: 330px;
-  max-width: 100%;
-  flex: none;
+  scroll-snap-align: start;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+}
+
+/* Fade the peeking card into the widget background. */
+.hw-strip.has-more::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 56px;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, var(--bg-panel));
+}
+
+.hw-strip-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--fg);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+.hw-strip-nav.is-prev { left: 4px; }
+.hw-strip-nav.is-next { right: 4px; }
+
+.hw-strip:hover .hw-strip-nav,
+.hw-strip:focus-within .hw-strip-nav {
+  opacity: 1;
+}
+
+.hw-strip-nav:hover {
+  background: var(--bg-alt);
+}
+
+@media (hover: none) {
+  .hw-strip-nav { opacity: 1; }
 }
 
 /* Lists */

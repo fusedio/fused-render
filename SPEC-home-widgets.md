@@ -165,3 +165,5 @@ Deviations and decisions:
 Dead ends: BSD sed in-place line inserts; the worktree shell guard refuses heredocs and compound commands, so files were written with Write/Edit.
 
 Not verified (needs a real browser): drag reorder, size/format menus, add panel, both themes, narrow width, keyboard Alt+Arrow focus retention.
+
+Cards strip: a cards widget is a horizontally scrolling strip (`CardStrip`), not a wrapped row that shows only what fits. Cards are sized so `count` cards plus a 56px peek (`PEEK_W`) of the next one fill the row, with an edge fade and ‹ › buttons that page by one viewport minus the peek. Every fetched item renders. The row fetches `limit * rows + 1` so there is always a next card to peek; it must stay measured, never a fixed MAX_ROW (that brings back the server's exhaustive workspace walk, see strip.ts). Not verified without a browser: peek width, fade, button hover/touch visibility, snap, edit-mode drag.
