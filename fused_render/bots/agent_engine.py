@@ -815,6 +815,9 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     lines = _call(getattr(bot, "transcript_lines", None), [], since)
     summary = _call(getattr(bot, "summarize_conversation", None), "", since) if len(lines) >= 4 else "\n".join(_call(bot.past_conversation, []))
     _call(getattr(bot, "conversation_rollover", None), None, summary, sp_hash)
+    if why != "new":
+        # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
+        _call(getattr(bot, "curate_memory", None), None, since)
     if why == "over budget":
         bot.emit("note", f"Conversation compacted at {tokens // 1000}k tokens: a summary carries what came before; "
                          "`recall` still reaches every earlier message.")

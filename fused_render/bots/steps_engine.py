@@ -32,7 +32,7 @@ Each turn you see the current page (URL, title, interactive elements with refs l
 
 Reply with strict JSON only, no prose, no code fences:
 {"thought": "<one short sentence for the user, what you see and what you'll do>",
- "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|upload|save|text|texts|remember|recall|note|learn|build|show|offer|tool|py|done|ask|login>",
+ "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|upload|save|text|texts|remember|forget|recall|note|learn|build|show|offer|tool|py|done|ask|login>",
  "file": "<for readfile / upload: file name from FILES or a path; for py: the .py file in the app, omit to load its SKILL.md>", "name": "<for save: file name, e.g. posts.md; for build: short app name; for show: app name or folder; for offer: an app from APPS, or the name of the app to build; for tool: the tool name>",
  "app": "<for tool: the app folder from APP TOOLS; for py: the app folder or name from APPS>", "args": {<for tool / py: the parameters as a JSON object>},
  "to": "<for text / texts: a CONTACTS name or handle>", "seconds": <for texts: wait up to this long for a NEW reply, max 300>,
@@ -106,7 +106,7 @@ _TOOL_CONFUSION = re.compile(
     r"|only [^.]{0,30}?(gmail|slack|calendar|mcp)[^.]{0,20}tools?", re.I)
 
 # Actions whose step leaves the browser as it was: no thumbnail (an empty box under the chip).
-_NO_THUMB = ("readfile", "tool", "py", "build", "show", "save", "remember", "recall", "note", "learn", "text", "texts", "done", "ask")
+_NO_THUMB = ("readfile", "tool", "py", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "text", "texts", "done", "ask")
 
 
 def _one_liner(act, result, obs, label=""):
@@ -502,7 +502,7 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
             f"{res_s}CURRENT PAGE{page_note}\nurl: {obs.get('url')}\ntitle: {obs.get('title')}{popup}{tabs_s}{dls_s}\n\n"
             f"INTERACTIVE ELEMENTS ({len(els)}):\n" + ("\n".join(el_lines) or "(none)") +
             f"\n\nVISIBLE TEXT:\n{text}\n\nRespond with the JSON for your next single action "
-            f"(plain text, no tool calls; actions goto/click/type/press/select/hover/scroll/wait/read/back/tab/readfile/upload/save/tool/py/remember/recall/note/learn/offer/show/build/done/ask are available).")
+            f"(plain text, no tool calls; actions goto/click/type/press/select/hover/scroll/wait/read/back/tab/readfile/upload/save/tool/py/remember/forget/recall/note/learn/offer/show/build/done/ask are available).")
 
 
 # A bare web address: a scheme, or "www.", or host.tld with an optional path.

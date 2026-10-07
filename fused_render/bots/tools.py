@@ -169,6 +169,9 @@ TOOL_SPECS: dict[str, dict] = {
     "remember": {"description": "Save one short durable note to your MEMORY (site quirks, user preferences, where things live). "
                                 "Never secrets. One note per fact; do not repeat what MEMORY already says.",
                  "inputSchema": _s(text=REQ)},
+    "forget": {"description": "Remove MEMORY notes that are wrong or no longer matter: every note containing `text` is dropped. "
+                              "Use it when the user corrects you or a saved fact turns out stale.",
+               "inputSchema": _s(text=REQ)},
     "learn": {"description": "Save a PLAYBOOK for this kind of task: a short title, comma-separated trigger words a future task "
                              "would contain, and 5-15 numbered steps with exact URLs, what to click, what to skip. Use it right "
                              "before finishing when a task took real exploration; not when a matching PLAYBOOK already worked.",
@@ -930,6 +933,9 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             return f"remember \"{note[:120]}\"", bot.remember(note)
         if act == "recall":
             return bot.recall(d.get("seq"), d.get("query") or d.get("text") or "")
+        if act == "forget":
+            what = d.get("text") or d.get("message") or ""
+            return f"forget \"{what[:120]}\"", bot.forget(what)
         if act == "learn":
             try:
                 nm = bot.skill_save(d.get("title") or d.get("name"), d.get("trigger") or d.get("value"),

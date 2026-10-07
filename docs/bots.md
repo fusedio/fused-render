@@ -616,7 +616,16 @@ and at `NUDGE_FRACTION` (0.8) of the rollover mark the next tool result
 carries one `CONTEXT:` line asking the model to `remember` durable facts
 (OpenClaw's memory flush, through a tool result because mid-turn stdin is
 ignored), once per turn (known gap: a Super Bot turn made only of built-in
-calls never reaches `_handle`, so it gets no nudge). `recall {seq | query}` (every bot, both engines;
+calls never reaches `_handle`, so it gets no nudge). Memory upkeep
+(`Bot.curate_memory`, owner 2026-10-07): at every rollover that is not the
+first, and when `remember` finds memory full, one model call rewrites
+`memory.md` from the current notes plus the transcript since the session
+began (merge duplicates, drop stale or one-off notes, add durable facts the
+bot learned but never saved, keep `[date]` stamps, stay under 200 lines /
+24 KB); a rewrite that would keep under 40% of a memory of 10+ lines is
+refused, so a bad answer cannot wipe what the bot learned; a change writes
+a `note` "Memory tidied: N → M notes." `forget {text}` drops every note
+containing the text. `recall {seq | query}` (every bot, both engines;
 `bot.recall`) returns one earlier message in full by `[#seq]`, or the last 12
 earlier messages (and FILES) containing every keyword, 300 chars each.
 
