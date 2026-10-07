@@ -14,7 +14,8 @@ export type PreviewKind =
   | "board"
   | "count-tasks"
   | "count-bots"
-  | "count-index";
+  | "count-index"
+  | "app-live";
 
 /** Which illustration a (source, format) pair draws. Pure, so it is testable. */
 export function previewKind(source: WidgetSource, format: WidgetFormat): PreviewKind {
@@ -30,6 +31,8 @@ export function previewKind(source: WidgetSource, format: WidgetFormat): Preview
       return "list";
     case "board":
       return "board";
+    case "live":
+      return "app-live";
     case "count":
       return source === "bots" ? "count-bots" : source === "index" ? "count-index" : "count-tasks";
   }
@@ -127,6 +130,26 @@ export function FormatPreview({ source, format }: { source: WidgetSource; format
             ))}
           </div>
         ))}
+      </div>
+    );
+  } else if (kind === "app-live") {
+    body = (
+      <div className="fp-win">
+        <div className="fp-win-bar">
+          <span className="fp-dot" />
+          <span className="fp-dot" />
+          <span className="fp-dot" />
+          <Bar w="m" />
+        </div>
+        <div className="fp-win-body">
+          <div className="fp-bars">
+            {[40, 70, 55, 90, 65, 80].map((h, i) => (
+              <span key={i} style={{ height: `${h}%` }} />
+            ))}
+          </div>
+          <Bar w="l" />
+          <Bar w="m" />
+        </div>
       </div>
     );
   } else {

@@ -10,9 +10,18 @@ import { useHomeApps } from "../data";
 import { dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
 
-function AppTile({ app }: { app: AppInfo }) {
+/** An app's icon in the shared tile square (a star when it has none). */
+export function AppGlyph({ app }: { app: AppInfo }) {
   const iconUrl = app.icon ? appIconUrl(app.icon, app.icon_mtime) : null;
   const src = useThemedIconSrc(iconUrl);
+  return (
+    <span className="hw-tile-icon" aria-hidden="true">
+      {src ? <img src={src} alt="" className={isRasterIconUrl(iconUrl) ? "is-raster" : undefined} /> : <span className="hw-tile-glyph">★</span>}
+    </span>
+  );
+}
+
+function AppTile({ app }: { app: AppInfo }) {
   const name = app.title || app.name;
   return (
     <a
@@ -25,9 +34,7 @@ function AppTile({ app }: { app: AppInfo }) {
         openApp(app);
       }}
     >
-      <span className="hw-tile-icon" aria-hidden="true">
-        {src ? <img src={src} alt="" className={isRasterIconUrl(iconUrl) ? "is-raster" : undefined} /> : <span className="hw-tile-glyph">★</span>}
-      </span>
+      <AppGlyph app={app} />
       <span className="hw-tile-name">{name}</span>
     </a>
   );

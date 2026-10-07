@@ -1447,7 +1447,9 @@ a.hw-more:hover {
 }
 
 .hw-thumb {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 66px;
   min-width: 0;
   padding: 6px;
@@ -1459,7 +1461,7 @@ a.hw-more:hover {
 
 .hw-thumb-in {
   display: block;
-  transform-origin: top left;
+  flex: none;
 }
 
 .hw-pick:hover .hw-thumb {
@@ -1580,16 +1582,20 @@ a.hw-more:hover {
 
 .hw-src-sq {
   flex: none;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: rgba(var(--accent-rgb), 0.28);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent);
 }
 
 .hw-src-sq.is-lg {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
 }
 
 .hw-sheet-main {
@@ -1732,4 +1738,156 @@ a.hw-more:hover {
   .hw-sheet-main {
     padding: 14px 16px 8px;
   }
+}
+
+/* App embed widget: the iframe fills the body; the skeleton sits under it until
+   it loads. Rows are minmax(120px, auto), so this min-height sets the height. */
+.hw-app-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+}
+
+.hw-widget.hw-size-2x2:has(.hw-app-body) {
+  min-height: 420px;
+}
+
+.hw-widget.hw-size-2x2 .hw-app-body {
+  min-height: 360px;
+}
+
+.hw-app-frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.hw-app-iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.hw-app-iframe.is-loaded {
+  opacity: 1;
+}
+
+.hw-app-skel {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  border-radius: 10px;
+}
+
+.hw-stage-box > .hw-app-skel {
+  position: static;
+  width: 100%;
+  min-height: 120px;
+}
+
+.hw-app-shield {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+/* Add sheet app picker. */
+.hw-appsearch {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+.hw-apppick {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hw-appopt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hw-appopt:hover {
+  color: var(--fg);
+}
+
+.hw-appopt.is-on {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.hw-appopt .hw-tile-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.hw-appopt-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Format preview: a mini browser frame. */
+.fp-app { width: 360px; }
+
+.fp-win {
+  border: 1px solid rgba(var(--tint), 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.fp-win-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 9px;
+  border-bottom: 1px solid rgba(var(--tint), 0.14);
+  background: rgba(var(--tint), 0.06);
+}
+
+.fp-win-bar .fp-dot { background: rgba(var(--tint), 0.3); }
+.fp-win-bar .fp-ln { margin-left: 6px; }
+
+.fp-win-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.fp-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 56px;
+}
+
+.fp-bars span {
+  flex: 1 1 0;
+  border-radius: 3px 3px 0 0;
+  background: rgba(var(--accent-rgb), 0.35);
 }

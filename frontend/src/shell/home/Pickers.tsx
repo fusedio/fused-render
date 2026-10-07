@@ -4,6 +4,14 @@ import { FormatPreview, previewKind } from "./FormatPreview";
 import { FORMAT_LABELS, SIZE_LABELS, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import { SizeGlyph } from "./SizeGlyph";
 
+const SIZE_ORDER: WidgetSize[] = ["1x1", "2x1", "2x2", "4x1"];
+
+/** Chips always read Small, Half, Large, Full row, whatever order a source lists
+    its sizes in (the first entry is only the default). */
+export function sortSizes(sizes: WidgetSize[]): WidgetSize[] {
+  return SIZE_ORDER.filter((s) => sizes.includes(s));
+}
+
 export function SizeChips({
   sizes,
   value,
@@ -17,7 +25,7 @@ export function SizeChips({
 }) {
   return (
     <div className="hw-chips" role="radiogroup" aria-label={label}>
-      {sizes.map((s) => (
+      {sortSizes(sizes).map((s) => (
         <button
           key={s}
           type="button"

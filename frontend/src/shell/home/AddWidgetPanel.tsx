@@ -2,6 +2,18 @@
 // on the right, a large preview of the chosen look plus the format and size
 // picks. "Add to Home" appends with the chosen format and size.
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  AppWindow,
+  Bookmark,
+  Bot,
+  Clock,
+  Database,
+  FolderGit2,
+  LayoutGrid,
+  ListChecks,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 import { createPortal } from "react-dom";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
@@ -9,6 +21,30 @@ import { FormatPreview } from "./FormatPreview";
 import { FormatPicks, SizeChips, stageZoom } from "./Pickers";
 import { MAX_WIDGETS, SOURCES, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
+import { AppGlyph } from "./widgets/AppsWidget";
+import { appName, useAllApps } from "./widgets/AppEmbedWidget";
+
+const SOURCE_ICONS: Record<WidgetSource, LucideIcon> = {
+  apps: LayoutGrid,
+  app: AppWindow,
+  playground: Sparkles,
+  sessions: FolderGit2,
+  recents: Clock,
+  tasks: ListChecks,
+  bots: Bot,
+  folder: Bookmark,
+  index: Database,
+};
+
+/** The source's mark: a lucide glyph on an accent-tinted rounded square. */
+function SourceIcon({ source, large }: { source: WidgetSource; large?: boolean }) {
+  const Icon = SOURCE_ICONS[source];
+  return (
+    <span className={"hw-src-sq" + (large ? " is-lg" : "")} aria-hidden="true">
+      <Icon size={large ? 22 : 16} />
+    </span>
+  );
+}
 
 function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): BookmarkFolder[] {
   for (const it of items) {
@@ -30,6 +66,13 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   const [format, setFormat] = useState<WidgetFormat>(SOURCES[SOURCE_KEYS[0]].formats[0]);
   const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);
   const [folderId, setFolderId] = useState<string | null>(null);
+  const [appPath, setAppPath] = useState<string | null>(null);
+  const [appQuery, setAppQuery] = useState("");
+  const appsState = useAllApps(source === "app");
+  const allApps = appsState.apps;
+  const chosenApp = allApps?.find((a) => a.path === appPath) ?? allApps?.[0] ?? null;
+  const noApps = source === "app" && allApps !== null && !allApps.length;
+  const shownApps = (allApps ?? []).filter((a) => appName(a).toLowerCase().includes(appQuery.trim().toLowerCase()));
   const folders = allFolders(loadBookmarks());
   const spec = SOURCES[source];
   const full = api.layout.widgets.length >= MAX_WIDGETS;
@@ -89,8 +132,15 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   };
 
   const add = () => {
-    if (full || noFolders) return;
-    api.add(source, source === "folder" ? { folderId: chosenFolder?.id, format, size } : { format, size });
+    if (full || noFolders || noApps || (source === "app" && !chosenApp)) return;
+    api.add(
+      source,
+      source === "folder"
+        ? { folderId: chosenFolder?.id, format, size }
+        : source === "app"
+          ? { appPath: chosenApp?.path, format, size }
+          : { format, size },
+    );
     onClose();
     // The new widget is the last one in the grid; wait a beat for it to mount.
     setTimeout(() => {
@@ -123,7 +173,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
                 className={"hw-src" + (s === source ? " is-on" : "")}
                 onClick={() => pick(s)}
               >
-                <span className="hw-src-sq" />
+                <SourceIcon source={s} />
                 {SOURCES[s].label}
               </button>
             ))}
@@ -153,10 +203,59 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
                   </div>
                 ) : (
                   <div className="hw-nofolders">
-                    <span className="hw-src-sq is-lg" />
+                    <SourceIcon source="folder" large />
                     <b>No bookmark folders yet</b>
                     <span>Bookmark a folder from the file explorer, then come back to pin it here.</span>
                   </div>
+                )}
+              </div>
+            ) : source === "app" ? (
+              <div className="hw-stage-box is-folders">
+                {appsState.error ? (
+                  <div className="hw-nofolders">
+                    <SourceIcon source="app" large />
+                    <b>Couldn't load apps.</b>
+                    <button type="button" className="hw-btn" onClick={appsState.retry}>
+                      Retry
+                    </button>
+                  </div>
+                ) : allApps === null ? (
+                  <span className="hw-app-skel skel-bar" role="status" aria-busy="true" aria-label="Loading apps" />
+                ) : noApps ? (
+                  <div className="hw-nofolders">
+                    <SourceIcon source="app" large />
+                    <b>No apps yet</b>
+                    <span>Create one from New app in the sidebar.</span>
+                  </div>
+                ) : (
+                  <>
+                    {allApps.length > 8 ? (
+                      <input
+                        className="hw-appsearch"
+                        type="search"
+                        placeholder="Search apps"
+                        aria-label="Search apps"
+                        value={appQuery}
+                        onChange={(e) => setAppQuery(e.target.value)}
+                      />
+                    ) : null}
+                    <div className="hw-apppick" role="radiogroup" aria-label="App">
+                      {shownApps.map((a) => (
+                        <button
+                          key={a.path}
+                          type="button"
+                          role="radio"
+                          aria-checked={a.path === chosenApp?.path}
+                          className={"hw-appopt" + (a.path === chosenApp?.path ? " is-on" : "")}
+                          onClick={() => setAppPath(a.path)}
+                        >
+                          <AppGlyph app={a} />
+                          <span className="hw-appopt-name">{appName(a)}</span>
+                        </button>
+                      ))}
+                      {!shownApps.length ? <span className="hw-empty">No apps match.</span> : null}
+                    </div>
+                  </>
                 )}
               </div>
             ) : (
@@ -184,7 +283,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
           <button type="button" className="hw-tb is-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="hw-tb is-primary" disabled={full || noFolders} onClick={add}>
+          <button type="button" className="hw-tb is-primary" disabled={full || noFolders || noApps || (source === "app" && !chosenApp)} onClick={add}>
             Add to Home
           </button>
         </div>

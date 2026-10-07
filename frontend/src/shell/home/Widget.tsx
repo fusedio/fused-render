@@ -10,6 +10,7 @@ import { TasksWidget } from "./widgets/TasksWidget";
 import { BotsWidget } from "./widgets/BotsWidget";
 import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
+import { AppEmbedWidget, OpenAppLink, appName, useWidgetApp } from "./widgets/AppEmbedWidget";
 import { FormatPicks, SizeChips } from "./Pickers";
 
 const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
@@ -21,7 +22,7 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   bots: "/bots",
 };
 
-function Body({ widget }: { widget: WidgetModel }) {
+function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; onRemove: () => void }) {
   switch (widget.source) {
     case "apps":
       return <AppsWidget widget={widget} />;
@@ -39,6 +40,8 @@ function Body({ widget }: { widget: WidgetModel }) {
       return <FolderWidget widget={widget} />;
     case "index":
       return <IndexWidget widget={widget} />;
+    case "app":
+      return <AppEmbedWidget widget={widget} edit={edit} onRemove={onRemove} />;
   }
 }
 
@@ -149,7 +152,13 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
   const { widget, edit } = p;
   const spec = SOURCES[widget.source];
   const folder = useWidgetFolder(widget);
-  const title = widget.source === "folder" ? (folder?.name ?? spec.label) : spec.label;
+  const embedded = useWidgetApp(widget);
+  const title =
+    widget.source === "folder"
+      ? (folder?.name ?? spec.label)
+      : widget.source === "app" && embedded
+        ? appName(embedded)
+        : spec.label;
   const seeAll = SEE_ALL[widget.source];
   return (
     <section
@@ -193,6 +202,8 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         </h2>
         {edit ? (
           <EditPopover widget={widget} title={title} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
+        ) : embedded ? (
+          <OpenAppLink app={embedded} />
         ) : seeAll ? (
           <a className="home-sec-more" href={seeAll} onClick={(e) => softNavigate(e, seeAll)}>
             See all
@@ -202,7 +213,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           </a>
         ) : null}
       </div>
-      <Body widget={widget} />
+      <Body widget={widget} edit={edit} onRemove={p.onRemove} />
     </section>
   );
 }

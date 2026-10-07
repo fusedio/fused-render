@@ -24,7 +24,7 @@ export interface HomeLayoutApi {
       flashes the default one. */
   loaded: boolean;
   move: (from: number, to: number) => void;
-  add: (source: WidgetSource, opts?: { folderId?: string; format?: WidgetFormat; size?: WidgetSize }) => void;
+  add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize }) => void;
   remove: (id: string) => void;
   resize: (id: string, size: WidgetSize) => void;
   reformat: (id: string, format: WidgetFormat) => void;
