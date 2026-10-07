@@ -191,8 +191,13 @@ def test_concurrent_first_calls_to_start_hardware_refresh_start_exactly_one_thre
         # between ticks and never exits; it's a daemon so there is nothing
         # to join. Reset the starter so later tests see a clean slate,
         # matching how every other test here gets `start_hardware_refresh`
-        # no-op'd by the autouse conftest fixture.
+        # no-op'd by the autouse conftest fixture. The leaked thread's one
+        # (no-op) tick already ran `_hardware_first_probe_done.set()` before
+        # it went to sleep, so that has to be cleared here too — left set,
+        # it told `_await_hardware_cache` in the very next test that a
+        # probe had already finished, on its first loop iteration.
         supervisor._hardware_refresh_starter.reset_for_tests()
+        supervisor._hardware_first_probe_done.clear()
 
 
 # -- `_await_hardware_cache`: the bounded spawn-time wait --------------------
