@@ -116,7 +116,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
           <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 gap-6 px-6 pb-5">
-          <nav className="flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
+          <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
             {tabs.map(([t, l]) => (
               <button key={t} type="button" aria-current={tab === t ? "page" : undefined} onClick={() => setTab(t)}
                 className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
