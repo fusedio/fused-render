@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -239,6 +240,35 @@ def test_close_is_idempotent(monkeypatch):
     job.close()
     job.close()
     assert signals == [signal.SIGTERM]
+
+
+def test_child_outlives_the_thread_that_called_spawn():
+    """prctl(2) PDEATHSIG is scoped to the parent THREAD that forked, not the
+    parent PROCESS: core.py starts the window host from a short-lived daemon
+    thread ("fused-render-window-host") that returns right after a successful
+    start(). If Job.spawn() forked on whatever thread called it, the kernel
+    would deliver PDEATHSIG the instant that thread exits — killing a child
+    the supervisor process is still very much alive to own. job.spawn() must
+    therefore fork+exec on its own long-lived thread regardless of which
+    thread calls it."""
+    sleep = shutil.which("sleep")
+    assert sleep is not None
+    job = Job()
+    holder: dict[str, object] = {}
+
+    def spawn_from_short_lived_thread() -> None:
+        holder["process"] = job.spawn(Path(sleep), ["30"])
+
+    thread = threading.Thread(target=spawn_from_short_lived_thread)
+    thread.start()
+    thread.join()  # the spawning thread is gone before we even check
+
+    try:
+        time.sleep(0.5)
+        process = holder["process"]
+        assert not process.wait(0), "child died when its spawning thread exited"
+    finally:
+        job.close()
 
 
 @pytest.mark.parametrize("mechanism", _mechanisms())
