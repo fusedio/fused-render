@@ -86,12 +86,12 @@ def loaded() -> list:
         return list(_bots.values())
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind=""):
-    return _botmod().create(name, model, effort, instructions, preset=preset, kind=kind)
+def create(name="", model="", effort="", instructions="", preset="", kind="", browser=""):
+    return _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser)
 
 
-def clone(src_id, name=""):
-    return _botmod().clone(src_id, name)
+def clone(src_id, name="", share=True):
+    return _botmod().clone(src_id, name, share=share)
 
 
 def delete(bid):
@@ -159,7 +159,7 @@ def seed_super() -> str | None:
     stamp = seed_stamp_path()
     if os.path.exists(stamp) or bm.super_id() is not None:
         return None
-    b = bm.create(kind="super", greet=False)
+    b = bm.create(kind="super", greet=False)  # meta["setup"] waits for Claude (bot._maybe_super_setup)
     b.emit("done", bm.SUPER_GREETING, source="seed")
     try:
         os.makedirs(os.path.dirname(stamp), exist_ok=True)
@@ -198,6 +198,13 @@ def start() -> None:
                 r.start()
         except Exception:  # noqa: BLE001 — no channels is a missing feature, not a broken server
             logger.warning("channels router not started", exc_info=True)
+    try:  # browsers no bot names any more (a delete that crashed half-way) go now, before any Chrome starts
+        from fused_render.bots import browsers
+        n = browsers.sweep(all())
+        if n:
+            logger.info("removed %d orphan browser folder(s)", n)
+    except Exception:  # noqa: BLE001
+        logger.debug("browser sweep failed", exc_info=True)
     with _lock:
         t = _sched["thread"]
         if t is None or not t.is_alive():

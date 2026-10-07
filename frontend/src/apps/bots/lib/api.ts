@@ -43,6 +43,8 @@ export interface BotEvent {
   /** action: the full raw tool result (<= 1500 chars), shown when the chip is opened. Notes may carry one too (unused). */
   detail?: unknown;
   options?: string[];
+  /** Several options may be ticked; the answer is a comma-separated list (or "None"). */
+  multi?: boolean;
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;
@@ -77,6 +79,8 @@ export interface BrowserState {
   visible?: boolean;
   sealed?: boolean;
   encrypt?: boolean;
+  /** Another bot drives this browser too (the bot's `shared_with` is non-empty). */
+  shared?: boolean;
   tabs?: Tab[];
   files?: FileRow[];
   artifacts?: Artifact[];
@@ -138,8 +142,15 @@ export interface Bot {
   hidden?: boolean;
   /** seq (as a string key) → emoji */
   reactions?: Record<string, string>;
+  /** Mirrored from the bot's browser: shared bots share the flag. */
   encrypt?: boolean;
   chrome_profile?: string;
+  /** The browser (one set of logins) this bot runs on; the bot's own id when it has a browser of its own. */
+  browser_id?: string;
+  /** That browser's display name (the Logins menus, the Browsers dialog). */
+  browser_name?: string;
+  /** The other bots on the same browser; empty = private logins. */
+  shared_with?: { id: string; name: string }[];
   /** Super Bot only (docs §10; the keys are dropped from every other bot on load): the owner's phone handle, the
    *  phone switch (Settings > Phone), and the people its `text` action may message. */
   imessage?: string;
@@ -202,6 +213,15 @@ export interface StatusReply { bots: Bot[]; ts: number; usage: UsageSummary | nu
 export interface AppRow { folder: string; dir: string; name: string; desc: string; tools: unknown; skill: unknown; icon: string | null; mtime: number }
 export interface BuildRow { entryId: string; name: string; dir: string; createdAt: number; doneAt?: number }
 export interface ChromeProfile { dir: string; name: string; email: string }
+/** GET /api/bots/browsers: one set of logins and the bots that drive it. `sites`: where it is signed in (best effort, may be []). */
+export interface BrowserRow { id: string; name: string; encrypt: boolean; chrome_profile: string; sites: string[]; running: boolean; bots: { id: string; name: string }[] }
+/** POST /api/bots/browsers/<id>. signin pops the browser out as a real window via one of its bots (`bot` in the reply),
+ *  dock brings it back headless, delete gives every bot on it a fresh logged-out browser of its own. */
+export type BrowserOpBody =
+  | { op: "rename"; name: string }
+  | { op: "encrypt"; on: boolean }
+  | { op: "profile"; profile: string }
+  | { op: "signin" | "dock" | "delete" };
 /** GET /api/bots/presets: a site the bot knows. `skills` are the playbook titles it comes with. */
 export interface Preset { key: string; name: string; color: string; order: number; model: string; instructions: string; apps: string[]; skills: string[] }
 /** GET /api/bot-apps/starters: an app that ships with fused-render (FusedBot starters), with its install state under the apps root. */
@@ -274,11 +294,15 @@ const post = <T>(url: string, body: unknown = {}, label?: string) => request<T>(
 export interface NewBotBody {
   name: string; model?: string; effort?: string; instructions?: string; approval?: string; build_access?: string; encrypt?: boolean; preset?: string;
   kind?: string; super_access?: string;
+  /** Another bot's `browser_id` to share its logins; absent = a fresh browser of its own. */
+  browser_id?: string;
 }
 export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
   build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   super_access?: string; trusted_apps?: string[];
+  /** "" or the bot's own id = a browser of its own; another bot's `browser_id` = share its logins. Refused while a task runs. */
+  browser_id?: string;
 }
 export type RoutineBody =
   | { op: "add"; text: string; kind: Routine["kind"]; minutes?: number; time?: string; weekdays?: number[]; at?: number }
@@ -293,6 +317,9 @@ export const api = {
   status: (p: { cursors: Record<string, number>; shot_for: string; fast: boolean }) =>
     get<StatusReply>(`${B}?cursors=${encodeURIComponent(JSON.stringify(p.cursors))}&shot_for=${encodeURIComponent(p.shot_for)}&fast=${p.fast ? 1 : 0}`, "status"),
   create: (body: NewBotBody) => post<{ ok: true; id: string }>(B, body, "create"),
+  browsers: () => get<{ ok: true; browsers: BrowserRow[] }>(`${B}/browsers`, "browsers"),
+  browserOp: (id: string, body: BrowserOpBody) =>
+    post<{ ok: true; name?: string; bot?: string }>(`${B}/browsers/${encodeURIComponent(id)}`, body, `browser ${body.op}`),
   profiles: () => get<{ ok: true; profiles: ChromeProfile[] }>(`${B}/profiles`, "profiles"),
   presets: () => get<{ ok: true; presets: Preset[] }>(`${B}/presets`, "presets"),
   usage: () => get<UsageSummary>(`${B}/usage`, "usage"),
@@ -307,6 +334,8 @@ export const api = {
   takeover: (id: string) => post<Ok>(`${bid(id)}/takeover`, {}, "takeover"),
   giveback: (id: string) => post<Ok>(`${bid(id)}/giveback`, {}, "giveback"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
+  /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
+  open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),
   window: (id: string, visible: boolean) => post<Ok>(`${bid(id)}/window`, { visible }, "window"),
   goto: (id: string, url: string) => post<{ ok: true; url: string }>(`${bid(id)}/goto`, { url }, "goto"),
   nav: (id: string, op: "back" | "forward" | "reload") => post<{ ok: true; url: string }>(`${bid(id)}/nav`, { op }, "nav"),
@@ -318,7 +347,9 @@ export const api = {
   flag: (id: string, body: { pinned?: boolean; hidden?: boolean; face?: Face }) => post<Ok>(`${bid(id)}/flag`, body, "flag"),
   settings: (id: string, body: SettingsBody) => post<Ok>(`${bid(id)}/settings`, body, "settings"),
   profile: (id: string, profile: string) => post<Ok>(`${bid(id)}/profile`, { profile }, "profile"),
-  clone: (id: string, name?: string) => post<{ ok: true; id: string }>(`${bid(id)}/clone`, name ? { name } : {}, "clone"),
+  /** share (default true): the copy joins the source's browser; false = a copy of its logins. */
+  clone: (id: string, name?: string, share = true) =>
+    post<{ ok: true; id: string }>(`${bid(id)}/clone`, { ...(name ? { name } : {}), share }, "clone"),
   remove: (id: string) => request<Ok>("DELETE", bid(id), undefined, "delete"),
   routines: (id: string, body: RoutineBody) => post<{ ok: true; routine?: Routine }>(`${bid(id)}/routines`, body, "routine"),
   skills: (id: string, body: SkillBody) => post<{ ok: true; skills: Skill[] }>(`${bid(id)}/skills`, body, "skill"),

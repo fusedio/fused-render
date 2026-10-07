@@ -1378,13 +1378,15 @@ def _permission(bot, sess: Turn, args: dict):
                                            "or finish and say what you could not do." + "".join(f"\n{n}" for n in notes))
 
 
-def _ask_wait(bot, sess: Turn, q: str, opts: list, summary: str = ""):
+def _ask_wait(bot, sess: Turn, q: str, opts: list, summary: str = "", multi: bool = False):
     """Raise one question card and wait for the user. (answers, lines, page) — the
     inbox messages that answered it and the harness lines a take-over in the
     live view adds (hand-back note first, the fresh page last) — or None when
     Stop landed.
     Shared by the `ask` tool and Super Bot's AskUserQuestion (_ask_builtin)."""
-    ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"summary": summary} if summary else {}))
+    multi = bool(multi) and len(opts) >= 2  # several options may be ticked; the answer comes back comma-separated
+    ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"multi": True} if multi else {}),
+                  **({"summary": summary} if summary else {}))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
     drove = False
@@ -1419,9 +1421,9 @@ def _ask_wait(bot, sess: Turn, q: str, opts: list, summary: str = ""):
 
 def _ask(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "I need your input to continue."
-    opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:5]
+    opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:7]
     q, q_sum = channels.base.split_summary(q, str(args.get("summary") or ""))
-    got = _ask_wait(bot, sess, q, opts, q_sum)
+    got = _ask_wait(bot, sess, q, opts, q_sum, multi=bool(args.get("multi")))
     if got is None:
         return None
     answer, lines, page = got
@@ -1459,7 +1461,7 @@ def _ask_builtin(bot, sess: Turn, args: dict):
         labels = [str(o["label"]).strip() for o in options]
         multi = bool(q.get("multiSelect"))
         card = text + (" (pick one or more; separate with commas)" if multi and labels else "")
-        got = _ask_wait(bot, sess, card, labels[:5])
+        got = _ask_wait(bot, sess, card, labels[:7], multi=multi)  # multiSelect gets the tick-several card
         if got is None:
             return None
         said = " ".join(a.strip() for a in got[0] if a.strip()).strip()

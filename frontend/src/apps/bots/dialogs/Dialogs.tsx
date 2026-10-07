@@ -1,5 +1,5 @@
 // The modal host: routes the store's ui.dialog request (newBot → preset chooser → create form, settings, routines,
-// skills, usage) to its dialog,
+// skills, usage, browsers) to its dialog,
 // and always mounts the two imperative layers above them (the face picker and the confirm). Each request mounts a
 // fresh dialog, so forms start clean (add forms empty) exactly as OpenBot reset them per open.
 //
@@ -10,6 +10,7 @@ import { useEffect, useRef } from "react";
 import { closeDialog, getState, openDialog, poll, select, useBotsSelector, type DialogReq } from "../state/store";
 import { createBot, saveSettings } from "./actions";
 import { BotSettings } from "./BotSettings";
+import { BrowsersDialog } from "./Browsers";
 import { Confirm } from "./Confirm";
 import { CreateBot } from "./CreateBot";
 import { FacePicker } from "./FacePicker";
@@ -60,6 +61,7 @@ export function Dialogs() {
     else if (req?.kind === "skills") dialog = <SkillsDialog key={key} b={b} onClose={closeDialog} />;
   }
   if (req?.kind === "usage") dialog = <UsageDialog key={key} onClose={closeDialog} />;
+  if (req?.kind === "browsers") dialog = <BrowsersDialog key={key} onClose={closeDialog} />;
   return (
     <>
       {dialog}

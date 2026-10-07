@@ -196,6 +196,26 @@ function writeUrlBot(id: string | null) {
   } catch { /* no history (tests) */ }
 }
 
+const openedOnce = new Set<string>();
+const openRetryAt: Record<string, number> = {};
+const OPEN_RETRY_MS = 15_000;
+/** Tell the server the bot is open (the Bots page shows it). Once per bot per page load, except while Super Bot's first
+ *  task is `pending` (Claude not linked yet): then it is asked again every OPEN_RETRY_MS so linking Claude later still
+ *  starts it. */
+function sendOpen(id: string): void {
+  if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
+  openedOnce.add(id);
+  void act(() => api.open(id), true).then((r) => {
+    if (r?.setup === "pending") { openedOnce.delete(id); openRetryAt[id] = Date.now() + OPEN_RETRY_MS; }
+  });
+}
+
+/** A user gesture opened the bot (a row click): select it and send the open. */
+export function openBot(id: string): void {
+  select(id);
+  sendOpen(id);
+}
+
 export function select(id: string | null): void {
   batch(() => {
     if (id !== S.sel) { for (const cb of [...selectListeners]) cb(id); clearToast(); }  // a reply and a status toast belong to one bot
@@ -269,6 +289,9 @@ export async function pollOnce(): Promise<void> {
       // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
       if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id);
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null);
+      // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
+      // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
+      if (S.sel && !document.hidden) sendOpen(S.sel);
       updateTitle();
     });
   } catch (e) {

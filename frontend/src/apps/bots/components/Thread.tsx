@@ -172,6 +172,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
       const opts = options.map((x, i) => `<button class="opt${chosen != null && optionKey(x) === chosen ? " chosen" : ""}" data-opt="${esc(x)}"${live ? "" : " disabled"}><kbd>${String.fromCharCode(65 + i)}</kbd><span>${esc(x)}</span></button>`).join("");
       return <><HtmlMsg className={cls} title={title} seq={e.seq} html={md(e.text) + proposed + (opts ? `<div class="opts">${opts}</div>` : "")} />{offerCard}</>;
     }
+    if (e.multi && options.length) return <MultiQuestion e={e} botId={botId} cls={cls} title={title} live={live} chosen={chosen} />;
     return (
       <div className={cls} data-seq={e.seq} title={title}>
         {e.text}
@@ -235,6 +236,43 @@ function Texted({ e, rows }: { e: BotEvent; rows: BotEvent[] }) {
           : <div key={d.seq} className="texted" title={d.text}><b>Texted</b> ({label}): {d.text.replace(/\s+/g, " ")}</div>;
       })}
     </>
+  );
+}
+
+/** A question with `multi`: tick any number of rows, then Done sends them as "A, B" (or "None"). Once answered, the rows
+ *  named in the answer stay ticked. */
+function MultiQuestion({ e, botId, cls, title, live, chosen }: { e: BotEvent; botId: string; cls: string; title: string; live: boolean; chosen: string | null }) {
+  const options = e.options || [];
+  const answered = chosen != null ? new Set(chosen.split(/\s*(?:,|\band\b)\s*/).map(optionKey).filter(Boolean)) : null;
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [sent, setSent] = useState(false);
+  const sending = useRef(false);  // a second click before the re-render must not send twice
+  const on = (x: string) => (answered ? answered.has(optionKey(x)) : picked.has(x));
+  const toggle = (x: string) => { if (!live || sent) return; setPicked((p) => { const n = new Set(p); if (n.has(x)) n.delete(x); else n.add(x); return n; }); };
+  const done = () => {
+    if (!live || sent || sending.current) return;
+    sending.current = true;
+    setSent(true);
+    const text = options.filter((x) => picked.has(x)).join(", ") || "None";
+    // act() swallows a failed send into the banner and returns undefined: reopen the card then, like the single-choice rows.
+    void act(() => api.send(botId, text)).then((r) => { sending.current = false; if (!r) setSent(false); });
+  };
+  return (
+    <div className={`${cls} multi${sent ? " settled" : ""}`} data-seq={e.seq} title={title}>
+      {e.text}
+      <div className="opts">
+        {options.map((x, i) => (
+          <button key={i} className={`opt${on(x) ? " chosen" : ""}`} data-mopt={x} disabled={!live || sent} onClick={() => toggle(x)}>
+            <kbd>{String.fromCharCode(65 + i)}</kbd><span>{x}</span>
+          </button>
+        ))}
+      </div>
+      {live && !sent ? (
+        <div className="btns">
+          <button className="primary" onClick={done}>{picked.size ? `Done · ${picked.size}` : "None of these"}</button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -388,6 +426,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       return;
     }
     const opt = t.closest(".msg.question:not(.settled) .opt");
+    if (opt && opt.hasAttribute("data-mopt")) return;  // a multi-select row: MultiQuestion handles its own clicks
     if (opt && sel) { const text = opt.getAttribute("data-opt") || ""; settleNow(opt, () => act(() => api.send(sel, text))); return; }
     const ok = t.closest(".msg.approval:not(.settled) [data-approve]"), no = t.closest(".msg.approval:not(.settled) [data-deny]");
     if ((!ok && !no) || !sel) return;
