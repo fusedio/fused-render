@@ -109,6 +109,11 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
                 b.browser.lock.release()
     except Exception:  # noqa: BLE001
         pass
+    if shot_for == b.id and idle and not running:
+        try:
+            b._maybe_super_setup(opened=True)  # Super Bot's first task starts the moment the user opens it
+        except Exception:  # noqa: BLE001
+            pass
     if b.idle_sleep_due(shot_for == b.id):
         # Quitting Chrome (and sealing for encrypted bots) takes seconds: off the poll
         # thread. The sleep thread takes the browser RLock itself (a lock taken here

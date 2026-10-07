@@ -1156,17 +1156,28 @@ class Bot:
         self.thread = threading.Thread(target=go, daemon=True, name=f"greet-{self.id}")
         self.thread.start()
 
-    def _maybe_super_setup(self):
-        """The seeded Super Bot's setup (SUPER_SETUP), run once Claude is linked and the
-        bot is idle. A Super Bot the user already talked to runs it at the first quiet
-        moment too: the sign-in is worth asking for whenever it is possible."""
+    _setup_probe_at = 0.0  # last Claude-health measure made for the setup (one per minute at most)
+
+    def _maybe_super_setup(self, opened=False):
+        """The seeded Super Bot's setup (SUPER_SETUP): the Google sign-in, then the
+        social-bot offer. Runs the first time the user opens Super Bot (`opened`, the
+        page's status poll with it selected) or, failing that, on the routines tick,
+        as soon as Claude is linked and the bot is idle. The health check reads the
+        cached snapshot; an empty cache is measured once a minute in the background,
+        so a fresh install does not wait on something else to probe Claude first."""
         if not is_super(self.meta) or not (self.meta.get("setup") or "").strip():
             return
         if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
             return
         try:
             from fused_render import claude_health
-            c = claude_health.cached() or {}
+            c = claude_health.cached()
+            if c is None:
+                now = time.time()
+                if now - self._setup_probe_at > 60:
+                    self._setup_probe_at = now
+                    threading.Thread(target=lambda: claude_health.snapshot(), daemon=True, name=f"setup-probe-{self.id}").start()
+                return
             if not c.get("found") or not c.get("signed_in"):
                 return
         except Exception:  # noqa: BLE001
@@ -1175,7 +1186,7 @@ class Bot:
             setup = (self.meta.pop("setup", None) or "").strip()
             self.save()
         if setup:
-            self.emit("system", "Claude is linked. Opening Google's sign-in so every bot on my browser can use it.")
+            self.emit("system", "Opening Google's sign-in in my browser: once you are signed in, every bot sharing it is too.")
             self.start_task(setup, label="Sign in to Google", origin="setup")
 
     def learn_from_last(self):
