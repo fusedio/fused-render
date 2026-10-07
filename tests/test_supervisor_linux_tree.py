@@ -257,18 +257,44 @@ def test_child_outlives_the_thread_that_called_spawn():
     holder: dict[str, object] = {}
 
     def spawn_from_short_lived_thread() -> None:
-        holder["process"] = job.spawn(Path(sleep), ["30"])
+        try:
+            holder["process"] = job.spawn(Path(sleep), ["30"])
+        except BaseException as error:  # noqa: BLE001 - re-raised on the main thread below
+            holder["error"] = error
 
     thread = threading.Thread(target=spawn_from_short_lived_thread)
     thread.start()
     thread.join()  # the spawning thread is gone before we even check
+    if "error" in holder:
+        raise holder["error"]  # surface a spawn failure instead of a confusing KeyError
 
     try:
-        time.sleep(0.5)
         process = holder["process"]
-        assert not process.wait(0), "child died when its spawning thread exited"
+        # wait(ms): still alive a full second after the spawning thread exited.
+        assert not process.wait(1000), "child died when its spawning thread exited"
     finally:
         job.close()
+
+
+def test_spawn_reraises_on_calling_thread_from_non_main_thread():
+    """A spawn failure (e.g. a missing binary) must propagate to the actual
+    caller, on whatever thread that is, not get lost inside the spawner
+    thread's queue/Future plumbing."""
+    job = Job()
+    holder: dict[str, object] = {}
+
+    def spawn_missing_binary() -> None:
+        try:
+            job.spawn(Path("/nonexistent/binary"), [])
+        except BaseException as error:  # noqa: BLE001 - captured for the main thread's assert
+            holder["error"] = error
+
+    thread = threading.Thread(target=spawn_missing_binary)
+    thread.start()
+    thread.join()
+
+    assert "error" in holder, "spawn of a missing binary did not raise"
+    assert isinstance(holder["error"], OSError)  # FileNotFoundError is an OSError
 
 
 def test_spawner_resets_after_fork():
@@ -303,27 +329,6 @@ def test_spawner_resets_after_fork():
         "child's first spawn() after fork hung or failed against the stale parent spawner"
     )
     job.close()
-
-
-def test_spawn_reraises_on_calling_thread_from_non_main_thread():
-    """A spawn failure (e.g. a missing binary) must propagate to the actual
-    caller, on whatever thread that is, not get lost inside the spawner
-    thread's queue/Future plumbing."""
-    job = Job()
-    holder: dict[str, object] = {}
-
-    def spawn_missing_binary() -> None:
-        try:
-            job.spawn(Path("/nonexistent/binary"), [])
-        except BaseException as error:  # noqa: BLE001 - captured for the main thread's assert
-            holder["error"] = error
-
-    thread = threading.Thread(target=spawn_missing_binary)
-    thread.start()
-    thread.join()
-
-    assert "error" in holder, "spawn of a missing binary did not raise"
-    assert isinstance(holder["error"], OSError)  # FileNotFoundError is an OSError
 
 
 @pytest.mark.parametrize("mechanism", _mechanisms())
