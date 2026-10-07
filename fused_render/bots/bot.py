@@ -1099,13 +1099,17 @@ class Bot:
             # A task typed while the greeting was being written went to the inbox
             # (send() saw this thread alive). It is the user's first task: run it
             # now instead of dropping it with the greeting.
-            queued = self._drain_inbox()
             setup = (self.meta.pop("setup", None) or "").strip()  # a preset's first task (presets.py): once
             if setup:
                 self.save()
             with self.lock:
                 # This greeting thread IS self.thread, and start_task refuses while
                 # self.thread is alive: hand the slot over before starting a task.
+                # Drain under the same lock: receive() queues into the inbox only
+                # while it sees this thread alive, so nothing can land between the
+                # drain and the hand-over; a message after it starts its own task,
+                # which then wins over the setup (start_task refuses a second one).
+                queued = self._drain_inbox()
                 if self.thread is threading.current_thread():
                     self.thread = None
             if queued:
