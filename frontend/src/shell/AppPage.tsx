@@ -75,6 +75,7 @@ import {
   appIconUrl,
   getAppEntry,
   getAppIcon,
+  getPrefs,
   statPath,
   type Config,
 } from "@platform/lib/api";
@@ -315,6 +316,14 @@ export default function AppPage({
   // what busts the browser's image and (far more stubborn) favicon caches, so
   // an optimistic set would show the old glyph under a new URL-less src.
   const [iconHref, setIconHref] = useState<string | null>(null);
+  // `apps_open_in_home`: the Open button lands in this window, so its tooltip
+  // must not promise a window of its own. False until prefs load.
+  const [openInHome, setOpenInHome] = useState(false);
+  useEffect(() => {
+    let live = true;
+    getPrefs().then((p) => live && setOpenInHome(p.apps_open_in_home?.enabled === true)).catch(() => {});
+    return () => { live = false; };
+  }, []);
   // The generation token stands in for the effect's usual `live` flag: a pick
   // reloads outside any effect, and a bare boolean captured per-effect cannot
   // cancel THAT read when the folder changes under it. A stale response is one
@@ -717,7 +726,7 @@ export default function AppPage({
                   size="sm"
                   variant="default"
                   className="app-page-open"
-                  title={IS_NATIVE_WINDOW ? "Open the app in its own window" : "Open the app in the Explorer"}
+                  title={IS_NATIVE_WINDOW ? (openInHome ? "Open the app here" : "Open the app in its own window") : "Open the app in the Explorer"}
                   onClick={() => {
                     const inPlace = () => navigateUrl(urlForFsPath(entry), { isDir: false });
                     if (IS_NATIVE_WINDOW) void openAppWindow(dir).then((ok) => ok || inPlace());

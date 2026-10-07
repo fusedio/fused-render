@@ -212,6 +212,14 @@ def native_windows_enabled() -> bool:
     return read_prefs().get("native_windows_enabled") is not False
 
 
+def apps_open_in_home() -> bool:
+    """Whether the desktop app (macOS and Linux) opens an app inside the Home
+    window's explorer, like the browser shell, instead of in a window of its
+    own (default OFF — opt-in). Read at open time by the click route, the
+    launcher and the window hooks; there is no live hook to apply."""
+    return read_prefs().get("apps_open_in_home") is True
+
+
 def app_sharing_enabled() -> bool:
     """Whether the unified Share sheet is offered (default off — opt-in).
 
@@ -656,6 +664,9 @@ def _prefs_response() -> dict:
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
         "native_windows": _native_windows_state(),
+        # Apps open inside the Home window's explorer instead of per-app
+        # native windows (desktop app only; opt-in, default off).
+        "apps_open_in_home": {"enabled": apps_open_in_home()},
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -931,6 +942,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 status_code=409,
             )
         changed = True
+    if "apps_open_in_home" in body:
+        value = body.get("apps_open_in_home")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'apps_open_in_home' must be a boolean"}, status_code=400)
+        prefs["apps_open_in_home"] = value
+        changed = True
     if "task_notify_terminal_sessions" in body:
         value = body.get("task_notify_terminal_sessions")
         if not isinstance(value, bool):
@@ -1088,7 +1105,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
-                      "'native_windows_enabled', "
+                      "'native_windows_enabled', 'apps_open_in_home', "
                       "'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "
                       "'lan_enabled', "

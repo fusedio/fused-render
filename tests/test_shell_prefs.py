@@ -1568,3 +1568,24 @@ def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
         "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
     ).status_code == 400
     assert not (home / "prefs.json").exists()
+
+
+# -- apps_open_in_home ------------------------------------------------------------
+
+
+def test_apps_open_in_home_defaults_off_and_round_trips(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs", headers=FUSED).json()["apps_open_in_home"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"apps_open_in_home": True}, headers=FUSED).json()
+    assert body["apps_open_in_home"] == {"enabled": True}
+    assert json.loads((home / "prefs.json").read_text())["apps_open_in_home"] is True
+    body = client.put("/api/prefs", json={"apps_open_in_home": False}, headers=FUSED).json()
+    assert body["apps_open_in_home"] == {"enabled": False}
+
+
+def test_apps_open_in_home_must_be_a_boolean(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    resp = client.put("/api/prefs", json={"apps_open_in_home": "yes"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert not (home / "prefs.json").exists() or "apps_open_in_home" not in json.loads(
+        (home / "prefs.json").read_text())
