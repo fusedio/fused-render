@@ -605,14 +605,34 @@ def test_find_app(tmp_path):
 def test_verify_app_version(tmp_path):
     import plistlib
 
+    from fused_render import _flavor
+
     app = tmp_path / "FusedRender.app"
     (app / "Contents").mkdir(parents=True)
     with open(app / "Contents" / "Info.plist", "wb") as f:
-        plistlib.dump({"CFBundleShortVersionString": "1.2.3"}, f)
+        plistlib.dump({"CFBundleShortVersionString": "1.2.3",
+                       "CFBundleIdentifier": _flavor.bundle_id()}, f)
     manager = mac.UpdateManager(bundle="/x.app", method="dmg")
     manager._verify_app_version(str(app), "1.2.3")
     with pytest.raises(RuntimeError):
         manager._verify_app_version(str(app), "9.9.9")
+
+
+def test_verify_app_version_rejects_the_other_flavors_bundle_id(tmp_path):
+    """A manifest signed for the wrong app (FusedBot's identity under a
+    FusedRender version, or vice versa) must not be accepted — same key
+    signs both flavors' manifests, so the version check alone cannot catch
+    a swapped file."""
+    import plistlib
+
+    app = tmp_path / "FusedRender.app"
+    (app / "Contents").mkdir(parents=True)
+    with open(app / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleShortVersionString": "1.2.3",
+                       "CFBundleIdentifier": "io.fused.bot"}, f)
+    manager = mac.UpdateManager(bundle="/x.app", method="dmg")
+    with pytest.raises(RuntimeError, match="update image is io.fused.bot"):
+        manager._verify_app_version(str(app), "1.2.3")
 
 
 # ---- API surface ---------------------------------------------------------------
