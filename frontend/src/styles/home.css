@@ -876,6 +876,16 @@ a.hw-row:hover { background: var(--bg-alt); }
   border-radius: 8px;
 }
 
+/* The generic mark for an app with no icon.svg: the brand star (AppStar),
+   inset a little so it does not outweigh the authored icons beside it, on
+   the muted tone like the Apps page's cards. */
+.hw-tile-star {
+  width: 26px;
+  height: 26px;
+  color: var(--fg-muted);
+}
+.hw-tile:hover .hw-tile-star { color: var(--fg); }
+
 .hw-tile-name {
   max-width: 100%;
   font-size: 11px;

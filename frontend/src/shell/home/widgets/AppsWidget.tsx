@@ -2,6 +2,7 @@ import { appIconUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { hrefFor, isBrowserHandledClick, openApp } from "@platform/lib/appEntry";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
+import { AppStar } from "@platform/ui/AppStar";
 import type { AppInfo } from "@platform/lib/api";
 import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
@@ -10,13 +11,13 @@ import { useHomeApps } from "../data";
 import { dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
 
-/** An app's icon in the shared tile square (a star when it has none). */
+/** An app's icon in the shared tile square (the brand's AppStar when it has none — the same mark the Apps page's cards and the sidebar fall back to). */
 export function AppGlyph({ app }: { app: AppInfo }) {
   const iconUrl = app.icon ? appIconUrl(app.icon, app.icon_mtime) : null;
   const src = useThemedIconSrc(iconUrl);
   return (
     <span className="hw-tile-icon" aria-hidden="true">
-      {src ? <img src={src} alt="" className={isRasterIconUrl(iconUrl) ? "is-raster" : undefined} /> : <span className="hw-tile-glyph">★</span>}
+      {src ? <img src={src} alt="" className={isRasterIconUrl(iconUrl) ? "is-raster" : undefined} /> : <AppStar className="hw-tile-star" />}
     </span>
   );
 }
