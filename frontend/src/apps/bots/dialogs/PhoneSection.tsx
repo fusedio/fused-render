@@ -1,14 +1,20 @@
-// Settings > Phone on Super Bot (docs §10): the switch "Text Super Bot from your phone", then a four-step checklist
-// until the link works (Full Disk Access · Messages signed in · your number · a test text), then the connected view
-// (status line, change number, people it may text). The step is DERIVED from the switch, the shell's one Full Disk
-// Access store (platform/lib/fda.ts, never a second probe), the bridge's state (own handles learned from chat.db,
-// its error) and whether a text ever went out; only the switch, the handle and the contacts are written, through
-// the dialog's Save — except the switch and the number, which write at once: the bridge reads both from disk, and
-// step 2 (this Mac's own handles) only happens after the switch is on there, so a Save-then-reopen would be the
-// only way through the checklist. "Send a test text" also saves first, for the same reason.
-import { useEffect, useRef, useState } from "react";
+// Settings > Phone on Super Bot (docs §10), on shadcn/ui: the switch "Text Super Bot from your phone", then a
+// four-step checklist until the link works (Full Disk Access · Messages signed in · your number · a test text),
+// then the connected view (status line, change number, people it may text). The step is DERIVED from the switch,
+// the shell's one Full Disk Access store (platform/lib/fda.ts, never a second probe), the bridge's state (own
+// handles learned from chat.db, its error) and whether a text ever went out; only the switch, the handle and the
+// contacts are written. Switch and number write at once (the bridge reads both from disk, and step 2 only happens
+// after the switch is on there); the contacts go with the dialog's Save. "Send a test text" also saves first.
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { CheckIcon } from "lucide-react";
 import { openFdaSettings } from "@platform/lib/api";
 import { fdaCopy, pokeFda, relaunchHref, useFda } from "@platform/lib/fda";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { Textarea } from "@platform/shadcn/ui/textarea";
 import { api, type ImessageState } from "../lib/api";
 import { imessageStatus } from "../lib/live";
 import { act } from "../state/store";
@@ -29,6 +35,31 @@ export function normHandle(h: string): string {
   let d = h.replace(/[^\d+]/g, "");
   if (d && !d.startsWith("+")) d = "+" + (d.length > 10 ? d : "1" + d);
   return d;
+}
+
+type StepState = "ok" | "need" | "wait";
+
+function Dot({ s, n }: { s: StepState; n: number }) {
+  return (
+    <span className={cn("mt-0.5 grid size-5 place-items-center rounded-full border text-[10px] font-medium",
+      s === "ok" ? "border-primary bg-primary text-primary-foreground" : s === "need" ? "border-foreground text-foreground" : "border-input text-muted-foreground")}>
+      {s === "ok" ? <CheckIcon className="size-3" /> : n}
+    </span>
+  );
+}
+
+function Step({ s, n, title, text, children, action }: { s: StepState; n: number; title: string; text: string; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <li className={cn("grid grid-cols-[20px_1fr_auto] items-start gap-3 py-3", s === "wait" && "opacity-50")}>
+      <Dot s={s} n={n} />
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="text-sm font-medium">{title}</div>
+        <p className="m-0 text-sm text-muted-foreground">{text}</p>
+        {children}
+      </div>
+      <div className="self-center">{action}</div>
+    </li>
+  );
 }
 
 export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, contacts, setContacts }: PhoneSectionProps) {
@@ -54,27 +85,26 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
   }, []);
 
   const own = st?.own_handles || [];
+  const nh = normHandle(handle);
   const fdaOk = fda === null ? null : !!fda?.granted;   // null: not offered (dev server, not macOS) → the bridge's error is the only word
   const fdaPending = !!fda?.pending_relaunch;
   const bridgeNoFda = /full disk access/i.test(st?.error || "");
   const signedIn = own.length > 0;
-  const saved = !!st && st.enabled === enabled && (st.handle || "") === normHandle(handle);
+  const saved = !!st && st.enabled === enabled && (st.handle || "") === nh;
   const sentOnce = !!st?.last_out || !!tested?.ok;
-  const connected = enabled && !!handle.trim() && saved && !!st?.running && sentOnce;
+  const connected = enabled && !!nh && saved && !!st?.running && sentOnce;
 
   const openSettings = () => { setOpened(true); openFdaSettings().catch(() => {}).finally(pokeFda); };
-  // Writes the switch and the number now (see the header), then re-reads the bridge so the next step unlocks.
   // One write at a time, and every write sends what the user wants NOW (`want`), not what the click that queued it
-  // saw: two quick toggles collapse into the last state instead of racing, so the switch can never stay on after the
-  // user turned it off. An empty or half-typed number is left out of the body: the stored one stays (off is meant
-  // to remember it), and the blur path only writes a number that normalises to something.
+  // saw: two quick toggles collapse into the last state instead of racing. An empty or half-typed number is left out
+  // of the body: the stored one stays (off is meant to remember it).
   const want = useRef({ on: enabled, h: handle });
   const chain = useRef<Promise<void>>(Promise.resolve());
   const persist = (on: boolean, h: string): Promise<void> => {
     want.current = { on, h };
     const run = async () => {
-      const { on: o, h: hh } = want.current, nh = normHandle(hh);
-      await act(() => api.settings(botId, { imessage_enabled: o, ...(nh ? { imessage_handle: nh } : {}) }));
+      const { on: o, h: hh } = want.current, w = normHandle(hh);
+      await act(() => api.settings(botId, { imessage_enabled: o, ...(w ? { imessage_handle: w } : {}) }));
       const r = await act(() => api.imessage(), true);
       if (r) setSt(r);
     };
@@ -97,83 +127,82 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
     }
   };
 
-  const step1 = fdaOk === true ? "ok" : fdaOk === null ? (bridgeNoFda ? "need" : "ok") : "need";
-  const step2 = step1 !== "ok" ? "wait" : signedIn ? "ok" : "need";
-  const step3 = step2 !== "ok" ? "wait" : handle.trim() ? "ok" : "need";
-  const step4 = step3 !== "ok" ? "wait" : sentOnce ? "ok" : "need";
-  const Dot = ({ s, n }: { s: string; n: number }) => <span className={`dot ${s}`}>{s === "ok" ? "✓" : n}</span>;
+  const step1: StepState = fdaOk === true ? "ok" : fdaOk === null ? (bridgeNoFda ? "need" : "ok") : "need";
+  const step2: StepState = step1 !== "ok" ? "wait" : signedIn ? "ok" : "need";
+  const step3: StepState = step2 !== "ok" ? "wait" : nh ? "ok" : "need";
+  const step4: StepState = step3 !== "ok" ? "wait" : sentOnce ? "ok" : "need";
+  const typing = other || (!!nh && !own.includes(nh));
+  const identity = own.includes(nh)
+    ? "Texting yourself: Super Bot's replies start with “@Super Bot” so you can tell them from your own notes."
+    : "A separate Apple ID signed into Messages here: replies come as plain texts.";
 
   return (
-    <div className="phone">
-      <label className="switchrow">
-        <span>
-          <b>Text Super Bot from your phone</b>
-          <span className="why">Texts from your number become tasks. Replies come back as texts. Approvals stay on this Mac.</span>
+    <div className="flex flex-col gap-5">
+      <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-white/10 px-4 py-3">
+        <span className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium">Text Super Bot from your phone</span>
+          <span className="text-sm text-muted-foreground">Texts from your number become tasks. Replies come back as texts. Approvals stay on this Mac.</span>
         </span>
-        <input type="checkbox" role="switch" id="bmphone" checked={enabled} onChange={(e) => flip(e.target.checked)} />
+        <Switch id="bmphone" checked={enabled} onCheckedChange={(c) => flip(!!c)} />
       </label>
+
       {!enabled ? (
-        <p className="why">{handle.trim() ? `Off. Your number (${handle.trim()}) is remembered; turn the switch on to use it again.` : "Off. Turn it on to set your number up."}</p>
+        <p className="m-0 text-sm text-muted-foreground">{nh ? `Off. Your number (${nh}) is remembered; turn the switch on to use it again.` : "Off. Turn it on to set your number up."}</p>
       ) : connected ? (
-        <>
-          <p className="stat">{imessageStatus(handle.trim(), st)}</p>
-          <label className="field">Your number
-            <input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)} />
-            <span className="why">{own.includes(normHandle(handle)) ? "Your own number: Super Bot's replies start with “@Super Bot” so you can tell them from your notes." : "A separate Apple ID: replies come as plain texts."}</span>
-          </label>
-          <label className="field">People Super Bot may text for you
-            <textarea id="bmimsgto" rows={2} placeholder={"Ali +1 555 123 4567\nMom mom@icloud.com"} value={contacts} onChange={(e) => setContacts(e.target.value)} />
-            <span className="why">A name and a number or Apple ID per line. Every text goes through the approval card unless Permissions says never ask. Your own number is always allowed.</span>
-          </label>
-          <p className="why">Trouble? <button type="button" className="link" disabled={testing} onClick={() => { void sendTest(); }}>Send a test text</button>
-            {tested ? <span className={tested.ok ? "" : "bad"}> · {tested.text}</span> : null}</p>
-        </>
+        <FieldGroup>
+          <p className="m-0 font-mono text-xs text-muted-foreground">{imessageStatus(nh, st)}</p>
+          <Field>
+            <FieldLabel htmlFor="bmimsg">Your number</FieldLabel>
+            <Input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)}
+              onBlur={() => { if (nh && !saved) void persist(enabled, handle); }} />
+            <FieldDescription>{identity}</FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="bmimsgto">People Super Bot may text for you</FieldLabel>
+            <Textarea id="bmimsgto" rows={2} placeholder={"Ali +1 555 123 4567\nMom mom@icloud.com"} value={contacts} onChange={(e) => setContacts(e.target.value)} />
+            <FieldDescription>A name and a number or Apple ID per line. Every text goes through the approval card unless Permissions says never ask. Your own number is always allowed.</FieldDescription>
+          </Field>
+          <p className="m-0 flex items-center gap-1 text-sm text-muted-foreground">
+            Trouble?
+            <Button type="button" variant="link" size="sm" className="h-auto px-0" disabled={testing} onClick={() => { void sendTest(); }}>Send a test text</Button>
+            {tested ? <span className={tested.ok ? "" : "text-destructive"}>· {tested.text}</span> : null}
+          </p>
+        </FieldGroup>
       ) : (
-        <ol className="steps">
-          <li className={step1}><Dot s={step1} n={1} />
-            <div><b>Full Disk Access</b>
-              <span className="why">{step1 === "ok" ? "Granted. It lets Super Bot read Messages."
-                : fdaPending ? fdaCopy().pending
-                : opened ? fdaCopy().waiting
-                : "Lets Super Bot read Messages. Granted once in System Settings; survives upgrades."}</span>
-            </div>
-            {step1 === "ok" ? null : fdaPending ? <a className="btn" href={relaunchHref()}>{fdaCopy().relaunch}</a>
-              : <button type="button" onClick={openSettings}>{opened ? fdaCopy().reopen : fdaCopy().open}</button>}
-          </li>
-          <li className={step2}><Dot s={step2} n={2} />
-            <div><b>Messages is signed in</b>
-              <span className="why">{step2 === "ok" ? `Found ${own.join(", ")} on this Mac.`
-                : step2 === "wait" ? "Checked after step 1."
-                : st?.error && !bridgeNoFda ? st.error
-                : "Open Messages, sign in with your Apple ID, and send any text so this Mac learns its number. This updates on its own."}</span>
-            </div>
-          </li>
-          <li className={step3}><Dot s={step3} n={3} />
-            <div><b>Your number</b>
-              <span className="why">{step3 === "wait" ? "Which number you will text from." : "Which number will you text from?"}</span>
-              {step3 !== "wait" ? (
-                <div className="chips">
-                  {own.map((h) => (
-                    <button key={h} type="button" className={`chip${normHandle(handle) === h ? " on" : ""}`} onClick={() => choose(h)}>{h} · my own number</button>
-                  ))}
-                  <button type="button" className={`chip${other || (normHandle(handle) && !own.includes(normHandle(handle))) ? " on" : ""}`} onClick={() => setOther(true)}>Another…</button>
-                </div>
-              ) : null}
-              {step3 !== "wait" && (other || (normHandle(handle) && !own.includes(normHandle(handle)))) ? (
-                <input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)}
-                  onBlur={() => { if (normHandle(handle) && !saved) void persist(enabled, handle); }} />
-              ) : null}
-              {step3 === "ok" ? <span className="why">{own.includes(normHandle(handle))
-                ? "Texting yourself: Super Bot's replies start with “@Super Bot” so you can tell them from your own notes."
-                : "A separate Apple ID signed into Messages here: replies come as plain texts."}</span> : null}
-            </div>
-          </li>
-          <li className={step4}><Dot s={step4} n={4} />
-            <div><b>Send a test text</b>
-              <span className="why">{tested ? tested.text : "Super Bot texts you “Connected”. macOS asks once to let this app control Messages."}</span>
-            </div>
-            {step4 === "need" ? <button type="button" className="primary" disabled={testing} onClick={() => { void sendTest(); }}>{testing ? "Sending…" : "Send"}</button> : null}
-          </li>
+        <ol className="m-0 list-none divide-y divide-white/10 p-0">
+          <Step s={step1} n={1} title="Full Disk Access"
+            text={step1 === "ok" ? "Granted. It lets Super Bot read Messages."
+              : fdaPending ? fdaCopy().pending
+              : opened ? fdaCopy().waiting
+              : "Lets Super Bot read Messages. Granted once in System Settings; survives upgrades."}
+            action={step1 === "ok" ? null : fdaPending
+              ? <Button size="sm" variant="outline" render={<a href={relaunchHref()} />}>{fdaCopy().relaunch}</Button>
+              : <Button size="sm" variant="outline" onClick={openSettings}>{opened ? fdaCopy().reopen : fdaCopy().open}</Button>} />
+          <Step s={step2} n={2} title="Messages is signed in"
+            text={step2 === "ok" ? `Found ${own.join(", ")} on this Mac.`
+              : step2 === "wait" ? "Checked after step 1."
+              : st?.error && !bridgeNoFda ? st.error
+              : "Open Messages, sign in with your Apple ID, and send any text so this Mac learns its number. This updates on its own."} />
+          <Step s={step3} n={3} title="Your number" text={step3 === "wait" ? "Which number you will text from." : "Which number will you text from?"}>
+            {step3 !== "wait" ? (
+              <div className="flex flex-wrap gap-1.5">
+                {own.map((h) => (
+                  <Button key={h} type="button" size="sm" variant={nh === h ? "secondary" : "outline"} aria-pressed={nh === h} onClick={() => choose(h)}>
+                    {h} · my own number
+                  </Button>
+                ))}
+                <Button type="button" size="sm" variant={typing ? "secondary" : "outline"} aria-pressed={typing} onClick={() => setOther(true)}>Another…</Button>
+              </div>
+            ) : null}
+            {step3 !== "wait" && typing ? (
+              <Input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)}
+                onBlur={() => { if (nh && !saved) void persist(enabled, handle); }} />
+            ) : null}
+            {step3 === "ok" ? <p className="m-0 text-sm text-muted-foreground">{identity}</p> : null}
+          </Step>
+          <Step s={step4} n={4} title="Send a test text"
+            text={tested ? tested.text : "Super Bot texts you “Connected”. macOS asks once to let this app control Messages."}
+            action={step4 === "need" ? <Button size="sm" disabled={testing} onClick={() => { void sendTest(); }}>{testing ? "Sending…" : "Send"}</Button> : null} />
         </ol>
       )}
     </div>
