@@ -28,6 +28,10 @@ import {
   splitBookmarkUrl,
   isBookmarkMissing,
   takeLastAddedBookmarkId,
+  pinBookmark,
+  unpinBookmark,
+  pinnedBookmarks,
+  unpinnedItems,
 } from "@platform/lib/bookmarks";
 import { isRowDragActive } from "@apps/explorer/listing/row-drag";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -87,6 +91,27 @@ const FOLDER_ICON = (
     <path d="M1.5 4A1.5 1.5 0 0 1 3 2.5h3.1c.4 0 .78.16 1.06.44l.8.8c.1.1.22.16.35.16H13A1.5 1.5 0 0 1 14.5 5.4V12A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V4z" />
   </svg>
 );
+
+// Pin action glyph (lucide `pin`'s outline), filled on a pinned row's Unpin —
+// an svg because the ✎/✕ text glyphs have no pin among them.
+function PinIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 17v5" />
+      <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+    </svg>
+  );
+}
 
 // Hover card content: target fs path + saved params. The saved search is
 // split via splitShellSearch so the literal `&` inside the `_layout=(...)`
@@ -194,17 +219,21 @@ interface BookmarkRowProps {
   onMouseLeave: () => void;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
   registerRef: (el: HTMLDivElement | null) => void;
-  dragProps: DragProps;
+  // Absent on a pinned row: pins neither drag nor take drops.
+  dragProps?: DragProps;
   // The folder a FILE dragged out of the listing may land in — null for a
   // bookmark that doesn't point at the filesystem at all.
   fsDropPath?: string | null;
+  pinned?: boolean;
+  // Top-level rows only — a nested bookmark can't pin, so it gets no button.
+  onTogglePin?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onGlyphClick, onMouseEnter, onMouseLeave, registerRef, dragProps, fsDropPath }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onGlyphClick, onMouseEnter, onMouseLeave, registerRef, dragProps, fsDropPath, pinned, onTogglePin }: BookmarkRowProps) {
   return (
     <div
-      className={"bookmark-row" + (child ? " child-row" : "") + (active ? " active" : "") + (missing ? " missing" : "")}
+      className={"bookmark-row" + (child ? " child-row" : "") + (pinned ? " pinned" : "") + (active ? " active" : "") + (missing ? " missing" : "")}
       data-id={b.id}
       data-parent={child ? parentId : undefined}
       /* A drop target for entries dragged out of the listing. No
@@ -213,7 +242,7 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, o
          destination is not on screen. */
       data-fs-drop-path={fsDropPath ?? undefined}
       data-fs-drop-announce={fsDropPath ? "1" : undefined}
-      draggable="true"
+      draggable={pinned ? "false" : "true"}
       ref={registerRef}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -245,6 +274,11 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, o
           destroy the row being named. Commit or Escape first. */}
       {!isRenaming && (
         <span className="bookmark-actions">
+          {onTogglePin && (
+            <button className="icon-btn pin-btn" title={pinned ? "Unpin" : "Pin"} onClick={onTogglePin}>
+              <PinIcon filled={!!pinned} />
+            </button>
+          )}
           <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
             ✎
           </button>
@@ -348,6 +382,25 @@ export default function BookmarksSection() {
   // measures; the tooltip and icon picker below stay out.
   const sectionRef = useRef<HTMLDivElement>(null);
   useSectionContentCap(sectionRef);
+  // The hook floors the section at its direct `.sidebar-heading`, which now
+  // sits inside the sticky head — floor it at the whole head (heading + pins)
+  // instead, so a short window squeezes the tree, never a pin. The same height
+  // is the scroll padding, so scrollIntoView never parks a row under the head.
+  const headRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const section = sectionRef.current;
+    const head = headRef.current;
+    if (!section || !head) return;
+    const measure = () => {
+      section.style.minHeight = head.offsetHeight + "px";
+      section.style.scrollPaddingTop = head.offsetHeight + "px";
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(head);
+    return () => ro.disconnect();
+  }, []);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
@@ -366,7 +419,7 @@ export default function BookmarksSection() {
   const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
 
-  // A new bookmark opens the top-level list (lib/bookmarks `addBookmark`), and
+  // A new bookmark opens the unpinned list (lib/bookmarks `addBookmark`), and
   // the section may be scrolled past it — so scroll it into view once the row
   // has rendered. Keyed off the bookmark-store version (the same signal that
   // rendered the row), and the id is consumed once by the store, so unrelated
@@ -392,6 +445,9 @@ export default function BookmarksSection() {
   }, [bookmarksVersion, sectionCollapsed]);
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
+  // Pinned head (non-scrolling block) and the tree below it.
+  const pins = pinnedBookmarks(items);
+  const treeItems = unpinnedItems(items);
   // Folders at every depth, keyed by id — drop handlers resolve their
   // immediate-parent children arrays through this map.
   const folderById = new Map<string, BookmarkFolder>();
@@ -481,6 +537,13 @@ export default function BookmarksSection() {
       await setBookmarkIcon(target.id, pick && pick.kind === "emoji" ? pick.emoji : null);
       notifyBookmarksChanged();
     }
+  };
+
+  const onTogglePin = async (e: React.MouseEvent<HTMLButtonElement>, b: Bookmark) => {
+    e.preventDefault();
+    hideTooltip();
+    await (b.pinned ? unpinBookmark(b.id) : pinBookmark(b.id));
+    notifyBookmarksChanged();
   };
 
   const commitRename = async (id: string, value: string, fallbackName: string) => {
@@ -866,32 +929,64 @@ export default function BookmarksSection() {
           onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
           dragProps={dragProps(it.id, false, child)}
           fsDropPath={bookmarkDropPath(it.url)}
+          onTogglePin={child ? undefined : (e) => onTogglePin(e, it)}
         />
       );
     });
 
+  // A pinned row: the same BookmarkRow, minus drag/drop.
+  const renderPinned = (b: Bookmark): React.ReactNode => (
+    <BookmarkRow
+      key={b.id}
+      b={b}
+      pinned
+      active={rowActive(b)}
+      dirty={rowDirty(b)}
+      missing={isBookmarkMissing(b.id)}
+      isRenaming={renamingId === b.id}
+      registerRef={registerRow(b.id)}
+      onNameClick={(e) => onBookmarkNameClick(e, b)}
+      onRename={(e) => onRenameBookmark(e, b.id)}
+      onDelete={(e) => onDeleteBookmark(e, b.id)}
+      onCommitRename={(value) => commitRename(b.id, value, b.name)}
+      onCancelRename={cancelRename}
+      onMouseEnter={(e) => onRowMouseEnter(e, b)}
+      onMouseLeave={hideTooltip}
+      onGlyphClick={(e) => onBookmarkGlyphClick(e, b.id)}
+      fsDropPath={bookmarkDropPath(b.url)}
+      onTogglePin={(e) => onTogglePin(e, b)}
+    />
+  );
+
   return (
     <div className="sidebar-section sidebar-bookmarks" ref={sectionRef}>
       <div className={SECTION_BODY_CLASS}>
-        <div
-          className={"sidebar-heading recents-heading" + (sectionCollapsed ? " collapsed" : "")}
-          title={sectionCollapsed ? "Show bookmarks" : "Hide bookmarks"}
-          onClick={toggleSectionCollapsed}
-        >
-          Bookmarks
-          <span className="sidebar-heading-chevron" aria-hidden="true" />
-          {/* `.sidebar-count-chip` is the shared skin every count in this sidebar
-              wears — the folder rows' nested count and the Tasks entry's unread
-              count are the same element (sidebar.css). */}
-          {sectionCollapsed && (
-            <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
+        {/* Heading + pinned rows stick together at the top of the section's
+            scroll box; only the tree below scrolls. */}
+        <div className="sidebar-bookmarks-head" ref={headRef}>
+          <div
+            className={"sidebar-heading recents-heading" + (sectionCollapsed ? " collapsed" : "")}
+            title={sectionCollapsed ? "Show bookmarks" : "Hide bookmarks"}
+            onClick={toggleSectionCollapsed}
+          >
+            Bookmarks
+            <span className="sidebar-heading-chevron" aria-hidden="true" />
+            {/* `.sidebar-count-chip` is the shared skin every count in this sidebar
+                wears — the folder rows' nested count and the Tasks entry's unread
+                count are the same element (sidebar.css). */}
+            {sectionCollapsed && (
+              <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
+            )}
+          </div>
+          {!sectionCollapsed && pins.length > 0 && (
+            <div className="sidebar-pinned">{pins.map(renderPinned)}</div>
           )}
         </div>
         {!sectionCollapsed &&
           (items.length === 0 ? (
             <div className="sidebar-empty">No bookmarks yet</div>
           ) : (
-            renderItems(items, null)
+            renderItems(treeItems, null)
           ))}
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>

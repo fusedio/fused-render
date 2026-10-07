@@ -59,6 +59,8 @@ export function shortcutGroups(): ShortcutGroup[] {
       only: "other",
     },
     { group: "Navigation", keys: ["A–Z"], label: "Type any letter to jump to search" },
+    // App.tsx → lib/chat-focus: opens the side pane's chat if none is on screen.
+    { group: "Navigation", keys: ["/"], label: "Focus the Claude chat" },
 
     // ---- Selection -------------------------------------------------------
     { group: "Selection", keys: [MOD_LABEL, "A"], label: "Select all" },

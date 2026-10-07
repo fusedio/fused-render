@@ -47,6 +47,11 @@ export interface SidebarRailItem {
   /** Set on the FIRST item of a bottom-pinned cluster (the shell's settings
       list) — pushes it and everything after to the rail's bottom edge. */
   pinBottom?: boolean;
+  /** Part of the rail's SCROLLING middle (the shell's project + pinned
+      bookmark doors): consecutive `scrolls` items share one overflow box, so
+      a long desk on a short window scrolls inside the rail instead of pushing
+      the pinBottom cluster off screen. */
+  scrolls?: boolean;
   /** Override the exact-pathname highlight, mirroring NavItem's `active` —
       for icons that are "home" to a family of routes. */
   active?: boolean;
@@ -55,6 +60,47 @@ export interface SidebarRailItem {
       shell's Tasks dot). Drawn inside the button, which is the positioned
       ancestor it resolves against; the frame never says what it means. */
   badge?: React.ReactNode;
+}
+
+/** The rail's items as runs of equal `scrolls`, in order — a scrolling run
+    becomes one overflow box, the rest render flat. */
+export function railRuns(
+  rail: SidebarRailItem[]
+): { scrolls: boolean; items: SidebarRailItem[] }[] {
+  const runs: { scrolls: boolean; items: SidebarRailItem[] }[] = [];
+  for (const item of rail) {
+    const scrolls = !!item.scrolls;
+    const last = runs[runs.length - 1];
+    if (last && last.scrolls === scrolls) last.items.push(item);
+    else runs.push({ scrolls, items: [item] });
+  }
+  return runs;
+}
+
+function renderRailItem(item: SidebarRailItem) {
+  return (
+    <React.Fragment key={item.key}>
+      {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
+      {item.dividerBefore && <span className="sidebar-rail-sep" aria-hidden="true" />}
+      <a
+        href={item.href}
+        className={
+          "sidebar-rail-btn" +
+          ((item.active ?? location.pathname === item.href) ? " active" : "")
+        }
+        aria-label={item.label}
+        title={item.label}
+        onClick={(e) => {
+          e.preventDefault();
+          if (item.onClick) item.onClick(e);
+          else navigateUrl(item.href);
+        }}
+      >
+        {item.icon}
+        {item.badge}
+      </a>
+    </React.Fragment>
+  );
 }
 
 export interface SidebarFrameProps {
@@ -345,29 +391,15 @@ export function SidebarFrame({
         </button>
         {rail && rail.length > 0 && (
           <div className="sidebar-rail-items">
-            {rail.map((item) => (
-              <React.Fragment key={item.key}>
-                {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
-                {item.dividerBefore && <span className="sidebar-rail-sep" aria-hidden="true" />}
-                <a
-                  href={item.href}
-                  className={
-                    "sidebar-rail-btn" +
-                    ((item.active ?? location.pathname === item.href) ? " active" : "")
-                  }
-                  aria-label={item.label}
-                  title={item.label}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (item.onClick) item.onClick(e);
-                    else navigateUrl(item.href);
-                  }}
-                >
-                  {item.icon}
-                  {item.badge}
-                </a>
-              </React.Fragment>
-            ))}
+            {railRuns(rail).map((run) =>
+              run.scrolls ? (
+                <div className="sidebar-rail-scroll" key={run.items[0].key}>
+                  {run.items.map(renderRailItem)}
+                </div>
+              ) : (
+                run.items.map(renderRailItem)
+              )
+            )}
           </div>
         )}
       </nav>

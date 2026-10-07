@@ -81,6 +81,7 @@ import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod, isWindows } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
+import { handleSlashKey } from "@platform/lib/chat-focus";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
 import EmbedStrip from "@apps/explorer/EmbedStrip";
@@ -628,6 +629,17 @@ export default function App({ config }: { config: Config }) {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Bare "/" focuses the Claude chat — the one on screen, or the side pane a
+  // file/folder view opens for it (lib/chat-focus). Any route, like Mod+K.
+  // CAPTURE phase: the explorer's type-to-search listens on the same document
+  // and registers first (child effects run first), so it must see this one's
+  // `preventDefault` to know the slash was taken (useListingSelection).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => void handleSlashKey(e);
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
   // The FRONT DOOR — "/" lands on Home, or on Bots when the `bots_enabled`

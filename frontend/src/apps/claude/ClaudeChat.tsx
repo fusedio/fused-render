@@ -31,6 +31,7 @@ import {
 } from "react";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
+import { registerChatComposer } from "@platform/lib/chat-focus";
 import {
   chatDraftKey,
   newTaskDraftId,
@@ -483,6 +484,18 @@ function ChatBody(props: ChatBodyProps) {
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
   const boxRef = props.focusRef ?? ownBox;
   const onNavigate = props.onNavigate ?? navigateUrl;
+  // Bare "/" anywhere in the shell lands here (lib/chat-focus) — only while
+  // the box is actually on screen and the focus took.
+  useEffect(
+    () =>
+      registerChatComposer(() => {
+        const el = boxRef.current;
+        if (!el || el.disabled || el.offsetParent === null) return false;
+        el.focus({ preventScroll: true });
+        return document.activeElement === el;
+      }),
+    [boxRef]
+  );
 
   // ── the pane, and everything that reads off it ─────────────────────────────
   const paneFrame = useRef<HTMLIFrameElement | null>(null);

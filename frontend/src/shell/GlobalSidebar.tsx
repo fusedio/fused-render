@@ -20,7 +20,12 @@ import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { availableTours, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
-import { useUrlVersion } from "@platform/lib/hooks";
+import { useBookmarksVersion, useSidebarState, useUrlVersion } from "@platform/lib/hooks";
+import { armBookmark, loadBookmarks, pinnedBookmarks } from "@platform/lib/bookmarks";
+import { AppStar } from "@platform/ui/AppStar";
+import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
+import { appPageUrl, appPathFromPath, type CurrentApp } from "@shell/current-apps-lib";
+import { railExtras } from "@shell/sidebar-rail-lib";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
@@ -33,7 +38,7 @@ import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
-import CurrentAppsSection from "@shell/CurrentAppsSection";
+import CurrentAppsSection, { useDeskAppsOrdered } from "@shell/CurrentAppsSection";
 import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
@@ -417,6 +422,22 @@ function PreferencesPopover({
   );
 }
 
+// A desk app on the collapsed rail: its own icon (CurrentAppRow's rule — the
+// author's svg as is, a raster clipped round) or the generic AppStar.
+function RailAppIcon({ app }: { app: CurrentApp }) {
+  const src = useThemedIconSrc(app.iconUrl);
+  return src ? (
+    <img
+      className={"sidebar-rail-app-icon" + (isRasterIconUrl(app.iconUrl) ? " is-raster" : "")}
+      src={src}
+      alt=""
+      draggable={false}
+    />
+  ) : (
+    <AppStar width={16} height={16} />
+  );
+}
+
 // Where the sidebar row points: the page's DEFAULT tab by name, not the bare
 // prefix. Both work — App.tsx redirects the bare one — but a nav link that is
 // rewritten the moment it lands puts a URL in the address bar that the user
@@ -727,6 +748,39 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the wizard. Null = nothing to show (never started, or finished).
   const setupMeter = useSetupMeter(config);
 
+  // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps and the pinned
+  // bookmarks, in their sections' order, capped (sidebar-rail-lib). The apps
+  // fetch runs only while the rail is on screen — expanded, the section owns it.
+  const { collapsed: sidebarCollapsed } = useSidebarState();
+  useBookmarksVersion();
+  const deskApps = useDeskAppsOrdered(sidebarCollapsed && !bot);
+  const extras = railExtras({ apps: deskApps, pins: pinnedBookmarks(loadBookmarks()), bot });
+  const onAppPath = appPathFromPath(pathname);
+  const here = pathname + location.search;
+  const railApps: SidebarRailItem[] = extras.apps.map((app, i) => ({
+    key: "app:" + app.path,
+    label: app.name,
+    icon: <RailAppIcon app={app} />,
+    href: appPageUrl(app.path),
+    active: onAppPath === app.path,
+    dividerBefore: i === 0,
+    scrolls: true,
+  }));
+  const railPins: SidebarRailItem[] = extras.pins.map((b, i) => ({
+    key: "pin:" + b.id,
+    label: b.name,
+    icon: <span className="sidebar-rail-bm-glyph">{b.icon ?? "★"}</span>,
+    href: b.url,
+    active: b.url === here,
+    dividerBefore: i === 0,
+    scrolls: true,
+    // Arm it, as the section's own click does (Update-bookmark tracking).
+    onClick: () => {
+      armBookmark(b.id, b.url);
+      navigateUrl(b.url);
+    },
+  }));
+
   const rail: SidebarRailItem[] = [
     // The front door's row: Home, or Bots when the bots flag swaps it in.
     botsEnabled
@@ -765,6 +819,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             badge: residentDot,
           },
         ]),
+    ...railApps,
+    ...railPins,
     // Same gate and same place as the expanded row: the rail is the whole
     // sidebar when collapsed, and a meter that vanished on collapse would read
     // as setup being done.

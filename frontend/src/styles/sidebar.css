@@ -232,6 +232,43 @@ a.sidebar-rail-btn {
   min-height: 0;
 }
 
+/* The rail's scrolling middle (SidebarRailItem.scrolls — the shell's project
+   and pinned-bookmark doors): on a short window THIS box scrolls (no bar, the
+   rail is 44px wide) and the nav icons above and the pinBottom cluster below
+   stay put. Shrinks to nothing before anything else does. */
+.sidebar-rail-scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  /* Room for a focus ring on the clipped edges: 2px outline + 1px offset. */
+  padding: 3px 0;
+  margin: -3px 0;
+}
+.sidebar-rail-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* Rail doors into the Projects and Bookmarks sections (GlobalSidebar). */
+.sidebar-rail-app-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.sidebar-rail-app-icon.is-raster {
+  border-radius: 4px;
+  object-fit: cover;
+}
+.sidebar-rail-bm-glyph {
+  font-size: 14px;
+  line-height: 1;
+}
+
 /* Group boundary inside the rail — stands in for the expanded sidebar's
    uppercase headings. */
 .sidebar-rail-sep {
@@ -740,24 +777,45 @@ button.sidebar-prefs-trigger {
    above the heading — the seam is the section's margin instead (above), and
    the heading keeps only its own 6px top padding, symmetric with its bottom.
    The box-shadow paints over the flex gap below the heading for the same
-   reason. */
+   reason. Bookmarks pins its heading AND its pinned rows as one block
+   (.sidebar-bookmarks-head), so the pins stay put while the tree scrolls. */
 .sidebar-current-apps .sidebar-section-body > .sidebar-heading,
-.sidebar-bookmarks .sidebar-section-body > .sidebar-heading {
+.sidebar-bookmarks-head {
   position: sticky;
   top: 0;
   background: var(--bg-alt);
   /* Above the rows' own stacking contexts (.bookmark-glyph/.bookmark-badge
      are position:relative + z-index:1, and later in the DOM). */
   z-index: 2;
-  padding-top: 6px;
   box-shadow: 0 1px 0 var(--bg-alt);
+}
+.sidebar-current-apps .sidebar-section-body > .sidebar-heading,
+.sidebar-bookmarks-head > .sidebar-heading {
+  padding-top: 6px;
+}
+/* flow-root: the pinned block's bottom margin stays INSIDE the opaque sticky
+   box instead of collapsing out of it (rows would show through the gap). */
+.sidebar-bookmarks-head {
+  display: flow-root;
+}
+
+/* Pinned bookmarks: the head of the tree, outside its scroll. Same row metrics
+   and 1px rhythm as the tree (1px under the heading); a hairline with 4px
+   either side closes the block off from it. Not rendered with no pins. */
+.sidebar-pinned {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* A collapsed section is just its heading, so the heading's bottom padding is
    what the section ends in. 3px, a .bookmark-row's, so the seam below reads the
    same as when rows are showing (see .sidebar-current-apps' margin note). */
 .sidebar-current-apps .sidebar-section-body > .sidebar-heading.collapsed,
-.sidebar-bookmarks .sidebar-section-body > .sidebar-heading.collapsed {
+.sidebar-bookmarks-head > .sidebar-heading.collapsed {
   padding-bottom: 3px;
 }
 
@@ -1055,6 +1113,16 @@ a.bookmark-name::after {
 .bookmark-row:hover .bookmark-actions {
   visibility: visible;
   opacity: 1;
+}
+
+/* The pin button carries an svg, not a text glyph — centre it in the cluster's
+   stretched height like ✎/✕ sit on their line. */
+.bookmark-actions .pin-btn {
+  display: inline-flex;
+  align-items: center;
+}
+.bookmark-actions .pin-btn svg {
+  display: block;
 }
 
 /* Bookmark hover card (params preview) */

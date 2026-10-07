@@ -435,7 +435,7 @@ def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     seen = {}
 
-    def fake_start(app_dir, prompt, model="", effort=""):
+    def fake_start(app_dir, prompt, model="", effort="", images=None):
         seen["target"] = app_dir
         seen["prompt"] = prompt
         seen["model"] = model
@@ -465,7 +465,7 @@ def test_the_composers_model_and_effort_reach_the_session(client, workspace,
     started a default session is the whole feature missing."""
     seen = {}
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda e, p, model="", effort="":
+                        lambda e, p, model="", effort="", images=None:
                         seen.update(model=model, effort=effort) or ("r-1", None))
     r = client.post("/api/apps/new",
                     json={"name": "demo", "prompt": "build it",
@@ -503,13 +503,60 @@ def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
     the pickers' "Auto" option sends and what a client predating them omits."""
     seen = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda e, p, model="", effort="":
+                        lambda e, p, model="", effort="", images=None:
                         seen.append((model, effort)) or ("r-1", None))
     for body in ({"model": "", "effort": ""}, {}):
         client.post("/api/apps/new",
                     json={"name": f"demo{len(seen)}", "prompt": "hi", **body},
                     headers=HDRS)
     assert seen == [("", ""), ("", "")]
+
+
+def test_the_composers_attachments_reach_the_task(client, workspace, monkeypatch):
+    """Images pasted into the composer ride the create as uploaded paths and
+    reach the task seam positionally, after model/effort."""
+    seen = []
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda e, p, *rest: seen.append(rest) or ("r-1", None))
+    os.makedirs(schedule.shots_dir(), exist_ok=True)
+    shots = [os.path.join(schedule.shots_dir(), n) for n in ("a.png", "b.pdf")]
+    for shot in shots:
+        open(shot, "wb").close()
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "build it", "model": "opus",
+                          "effort": "high", "images": shots}, headers=HDRS)
+    assert r.status_code == 200
+    assert seen == [("opus", "high", shots)]
+
+
+@pytest.mark.parametrize("shot", ["/etc/passwd", "task-shots/gone.png"])
+def test_a_stale_or_foreign_attachment_is_a_400_before_the_folder_exists(
+        client, workspace, monkeypatch, shot):
+    """`schedule._images` runs ahead of the scaffold: a path outside the
+    task-shots dir, or one pruned since the upload, must not leave behind an
+    app whose only task failed (a retry would then mint `demo-2`)."""
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda *a, **k: pytest.fail("must not spawn"))
+    if not shot.startswith("/"):
+        shot = os.path.join(schedule.shots_dir(), os.path.basename(shot))
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "hi", "images": [shot]},
+                    headers=HDRS)
+    assert r.status_code == 400
+    assert "attachment" in r.json()["error"]
+    assert not (workspace / "local" / "demo").exists()
+
+
+@pytest.mark.parametrize("images", ["a.png", [1], {"a": "b"}, ["a.png", None]])
+def test_attachments_of_the_wrong_shape_are_a_400(client, workspace, monkeypatch,
+                                                  images):
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda *a, **k: pytest.fail("must not spawn"))
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "hi", "images": images},
+                    headers=HDRS)
+    assert r.status_code == 400
+    assert not (workspace / "local" / "demo").exists()
 
 
 def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, monkeypatch):
@@ -857,6 +904,25 @@ def test_the_picked_model_and_effort_reach_the_start(tmp_path, workspace,
     # still the apps API's own policy, unchanged by the new args
     assert seen["permission_mode"] == "auto"
     assert seen["session_id"] == ""
+
+
+def test_attachments_reach_schedule_create(tmp_path, workspace, monkeypatch):
+    """`images` is handed to `schedule.create`, which owns the path check;
+    none attached sends `None`, not an empty list."""
+    calls = []
+
+    def fake_create(*a, **k):
+        calls.append(k)
+        return {"id": "e-1", "run_id": "r-1"}
+
+    monkeypatch.setattr(schedule, "create", fake_create)
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: None)
+    shots = ["/h/.fused-render/task-shots/a.png"]
+    apps_mod._create_app_task(_an_entry(tmp_path), "hi", "opus", "high", shots)
+    apps_mod._create_app_task(_an_entry(tmp_path), "hi")
+    assert calls[0]["images"] == shots
+    assert calls[1]["images"] is None
+    assert calls[0]["permission_mode"] == ""
 
 
 def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
