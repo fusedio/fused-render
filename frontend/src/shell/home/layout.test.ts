@@ -12,7 +12,7 @@ import {
   setSize,
   type HomeLayout,
 } from "./layout";
-import { pageTitle } from "./appPicker";
+import { isWebUrl, normalizeWebUrl, pageTitle } from "./appPicker";
 
 const w = (id: string, source: any = "apps", size: any = "4x1", format: any = "cards") => ({
   id,
@@ -175,4 +175,19 @@ test("pageTitle is the last path segment", () => {
   expect(pageTitle("/a/b/")).toBe("b");
   expect(pageTitle("C:\\x\\y.html")).toBe("y.html");
   expect(pageTitle("/")).toBe("/");
+});
+
+test("web URLs: detection, normalisation, title, and normalize keeps the widget", () => {
+  expect(isWebUrl("https://a.b/x")).toBe(true);
+  expect(isWebUrl("/a/b")).toBe(false);
+  expect(isWebUrl("ftp://x")).toBe(false);
+  expect(normalizeWebUrl(" example.com/foo ")).toBe("https://example.com/foo");
+  expect(normalizeWebUrl("not a url")).toBeNull();
+  expect(normalizeWebUrl("http://x.y")).toBe("http://x.y");
+  expect(pageTitle("https://www.example.com/a/b")).toBe("example.com");
+  const out = normalizeLayout({
+    version: 2,
+    widgets: [{ ...w("u", "app", "2x2", "live"), appPath: "https://example.com" }],
+  });
+  expect(out.widgets[0].appPath).toBe("https://example.com");
 });

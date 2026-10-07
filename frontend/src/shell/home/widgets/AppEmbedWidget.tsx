@@ -8,7 +8,7 @@ import { hrefFor, isBrowserHandledClick, openApp, openTargetFor } from "@platfor
 import { useNearViewport } from "@platform/lib/preview-start";
 import { embedUrlForFsPath, urlForFsPath } from "@platform/lib/router";
 import type { Widget } from "../layout";
-import { pageTitle } from "../appPicker";
+import { isWebUrl, pageTitle } from "../appPicker";
 import { softNavigate } from "../strip";
 import { EmptyLine, ErrorLine } from "./bits";
 
@@ -72,6 +72,13 @@ export function appName(app: AppInfo): string {
 export { pageTitle };
 
 export function OpenPageLink({ path }: { path: string }) {
+  if (isWebUrl(path)) {
+    return (
+      <a className="home-sec-more" href={path} target="_blank" rel="noopener noreferrer">
+        Open ↗
+      </a>
+    );
+  }
   const href = urlForFsPath(path);
   return (
     <a className="home-sec-more" href={href} onClick={(e) => softNavigate(e, href)}>
@@ -110,15 +117,16 @@ export function AppEmbedWidget({
   const [loaded, setLoaded] = useState(false);
   const app = apps?.find((a) => a.path === widget.appPath) ?? null;
   const path = widget.appPath ?? "";
+  const web = isWebUrl(path);
   // The apps list only decides app vs plain path. A path widget frames at once;
   // if the list later says it IS an app, src flips to the entry page and the
   // frame reloads once. The entry page (the folder otherwise) is the same rule
   // hrefFor/Open uses; framing an app folder renders a directory listing.
-  const src = app ? embedUrlForFsPath(openTargetFor(app).path) : path ? embedUrlForFsPath(path) : null;
+  const src = app ? embedUrlForFsPath(openTargetFor(app).path) : web ? path : path ? embedUrlForFsPath(path) : null;
   const [gone, setGone] = useState(false);
   useEffect(() => {
     setGone(false);
-    if (apps === null || app || !path) return;
+    if (apps === null || app || !path || web) return;
     let alive = true;
     statPath(path).catch((e: HttpError) => {
       if (alive && (e.status === undefined || e.status === 404)) setGone(true);
@@ -126,7 +134,7 @@ export function AppEmbedWidget({
     return () => {
       alive = false;
     };
-  }, [apps, app, path]);
+  }, [apps, app, path, web]);
   // A new frame (another app, or remounted after scrolling away) starts unpainted.
   useEffect(() => {
     setLoaded(false);
@@ -155,6 +163,10 @@ export function AppEmbedWidget({
             className={"hw-app-iframe" + (loaded ? " is-loaded" : "")}
             src={src}
             title={app ? appName(app) : pageTitle(path)}
+            // Some sites send X-Frame-Options/CSP and render blank inside a frame; the
+            // browser gives no event for that, so we don't try to detect it.
+            referrerPolicy={web ? "no-referrer" : undefined}
+            sandbox={web ? "allow-scripts allow-same-origin allow-forms allow-popups" : undefined}
             onLoad={() => setLoaded(true)}
             onError={() => setLoaded(true)}
           />

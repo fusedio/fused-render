@@ -23,7 +23,7 @@ export interface Widget {
   format: WidgetFormat;
   /** source === "folder": a BookmarkFolder id (platform/lib/bookmarks.ts). */
   folderId?: string;
-  /** source === "app": an app folder (AppInfo.path) or any fs path the explorer renders. */
+  /** source === "app": an app folder (AppInfo.path), any fs path the explorer renders, or an http(s) URL. */
   appPath?: string;
 }
 
@@ -62,7 +62,7 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
   },
   app: {
     label: "Page",
-    description: "Show one of your apps, or any file the explorer can render, live on Home.",
+    description: "Show one of your apps, any file the explorer can render, or a website, live on Home.",
     sizes: ["2x2", "2x1", "1x2", "4x1"],
     formats: ["live"],
   },

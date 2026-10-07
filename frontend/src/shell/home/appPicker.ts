@@ -33,8 +33,28 @@ export function filterPickerApps(apps: AppInfo[], query: string, home?: string):
   );
 }
 
-/** The last path segment (either separator, trailing slashes ignored); the full path when there is none. */
+export function isWebUrl(s: string): boolean {
+  return /^https?:\/\/\S+$/i.test(s);
+}
+
+/** A typed address as a full http(s) URL: kept as is, a bare host gets https://, anything else is null. */
+export function normalizeWebUrl(input: string): string | null {
+  const t = input.trim();
+  if (isWebUrl(t)) return t;
+  if (/^[\w.-]+\.[a-z]{2,}(\/\S*)?$/i.test(t)) return "https://" + t;
+  return null;
+}
+
+/** The last path segment (either separator, trailing slashes ignored); the full path when there is none.
+    A web URL titles as its hostname (minus a leading www.) instead. */
 export function pageTitle(path: string): string {
+  if (isWebUrl(path)) {
+    try {
+      return new URL(path).hostname.replace(/^www\./, "");
+    } catch {
+      // fall through to the segment logic
+    }
+  }
   const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }

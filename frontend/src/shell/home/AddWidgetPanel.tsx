@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { contractHome, useHome } from "../../apps/explorer/listing/home-path";
 import { listDir, statPath, type FsEntry } from "@platform/lib/api";
-import { appFolderLine, filterPickerApps, pickerApps } from "./appPicker";
+import { appFolderLine, filterPickerApps, normalizeWebUrl, pickerApps } from "./appPicker";
 import {
   AppWindow,
   Bookmark,
@@ -86,7 +86,8 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   const allApps = useMemo(() => (rawApps ? pickerApps(rawApps) : null), [rawApps]);
   const chosenApp = allApps?.find((a) => a.path === appPath) ?? allApps?.[0] ?? null;
   const shownApps = filterPickerApps(allApps ?? [], appQuery, home);
-  const [pageMode, setPageMode] = useState<"apps" | "file">("apps");
+  const [pageMode, setPageMode] = useState<"apps" | "file" | "url">("apps");
+  const [urlInput, setUrlInput] = useState("");
   const [filePath, setFilePath] = useState<string>("");
   const [pathInput, setPathInput] = useState("");
   const [browseDir, setBrowseDir] = useState<string | null>(null);
@@ -96,6 +97,8 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   const [dirError, setDirError] = useState(false);
   const dir = browseDir ?? home ?? null;
   const fileMode = source === "app" && pageMode === "file";
+  const urlMode = source === "app" && pageMode === "url";
+  const url = normalizeWebUrl(urlInput);
   const noApps = source === "app" && pageMode === "apps" && allApps !== null && !allApps.length;
   useEffect(() => {
     if (!fileMode || !dir) return;
@@ -213,13 +216,13 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   };
 
   const add = () => {
-    if (full || noFolders || noApps || (source === "app" && (fileMode ? !fileOk : !chosenApp))) return;
+    if (full || noFolders || noApps || (source === "app" && (urlMode ? !url : fileMode ? !fileOk : !chosenApp))) return;
     api.add(
       source,
       source === "folder"
         ? { folderId: chosenFolder?.id, format, size }
         : source === "app"
-          ? { appPath: fileMode ? filePath : chosenApp?.path, format, size }
+          ? { appPath: urlMode ? url! : fileMode ? filePath : chosenApp?.path, format, size }
           : { format, size },
     );
     onClose();
@@ -293,7 +296,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
             ) : source === "app" ? (
               <div className="hw-stage-box is-folders">
                 <div className="hw-chips" role="radiogroup" aria-label="Pick from">
-                  {(["apps", "file"] as const).map((m) => (
+                  {(["apps", "file", "url"] as const).map((m) => (
                     <button
                       key={m}
                       type="button"
@@ -302,11 +305,29 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
                       className={"hw-sizechip" + (m === pageMode ? " is-on" : "")}
                       onClick={() => setPageMode(m)}
                     >
-                      {m === "apps" ? "Apps" : "Any file"}
+                      {m === "apps" ? "Apps" : m === "file" ? "Any file" : "Website"}
                     </button>
                   ))}
                 </div>
-                {fileMode ? (
+                {urlMode ? (
+                  <>
+                    <input
+                      className="hw-appsearch"
+                      type="url"
+                      placeholder="https://example.com"
+                      aria-label="Website URL"
+                      value={urlInput}
+                      onChange={(e) => setUrlInput(e.target.value)}
+                    />
+                    {urlInput.trim() ? (
+                      <div className={"hw-filepick-status " + (url ? "is-ok" : "is-err")}>
+                        {url
+                          ? `Will show ${new URL(url).hostname}. Sites that block framing stay blank.`
+                          : "Enter a full address, like https://example.com"}
+                      </div>
+                    ) : null}
+                  </>
+                ) : fileMode ? (
                   <>
                     <input
                       className="hw-appsearch"
@@ -459,7 +480,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
           <button type="button" className="hw-tb is-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="hw-tb is-primary" disabled={full || noFolders || noApps || (source === "app" && (fileMode ? !fileOk : !chosenApp))} onClick={add}>
+          <button type="button" className="hw-tb is-primary" disabled={full || noFolders || noApps || (source === "app" && (urlMode ? !url : fileMode ? !fileOk : !chosenApp))} onClick={add}>
             Add to Home
           </button>
         </div>
