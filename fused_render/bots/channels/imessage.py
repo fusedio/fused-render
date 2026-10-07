@@ -149,8 +149,10 @@ class ImessageChannel(Channel):
         sent = {t: ts for t, ts in (cur.get("sent") or {}).items() if now - ts < ECHO_WINDOW_S}
         cur["sent"] = sent
         out = []
-        for rowid, handle, text, service in im.new_messages(self.db, int(cur["rowid"])):
+        for rowid, handle, text, service, is_group in im.new_messages(self.db, int(cur["rowid"])):
             cur["rowid"] = rowid
+            if is_group:
+                continue  # group chat
             if handle != owner:
                 continue  # only Super Bot's handle reaches it; nothing else is read
             if service and service != "iMessage":

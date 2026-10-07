@@ -1000,15 +1000,18 @@ def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
 
     # 2. Unexported (a standalone template, or a server whose export regressed):
     # the fallbacks must still land on the same folder. Deliberately with
-    # FUSED_RENDER_HOME/HOME_DIR pointed elsewhere, because that is exactly the
-    # case that used to diverge: appenv resolved through home_dir() (branch
-    # nesting included) while the server hardcodes ~/.fused-render/canvases.
+    # FUSED_RENDER_HOME/HOME_DIR pointed elsewhere: canvas clones follow the
+    # flavor's own home (FUSED_RENDER_HOME), not the branch-nested one
+    # (FUSED_RENDER_HOME_DIR) that `home_dir()` above would answer (#1443) — so
+    # this is exactly the case that used to diverge, with appenv still resolving
+    # through the hardcoded `~/.fused-render/canvases` after the server started
+    # following the flavor's home instead.
     monkeypatch.delenv("FUSED_RENDER_CANVASES_DIR")
     monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(tmp_path / "branchhome"))
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "otherhome"))
     assert appenv.canvases_root() == canvases_mod.canvases_root()
     assert appenv.canvases_root() == _canvas_push.canvases_root()
-    assert appenv.canvases_root() == os.path.expanduser("~/.fused-render/canvases")
+    assert appenv.canvases_root() == str(tmp_path / "otherhome" / "canvases")
 
 
 def test_the_gate_normalizes_before_comparing(tmp_path, monkeypatch):

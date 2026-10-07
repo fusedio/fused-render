@@ -4,6 +4,7 @@ from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures
 import json
 import os
 import sqlite3
+import subprocess
 
 import pytest
 
@@ -242,9 +243,15 @@ def test_imessage_poll_filters_and_identity(app_home, tmp_path, monkeypatch):
     assert imessage.load_cursor()["rowid"] == 6
     # the Mac sends as +15551234567 (message.account of a sent row) and that is the owner: own identity
     assert ch.identity() == {"mode": "own", "label": "+15551234567"}
-    # an echo of what we sent is swallowed
+    # an echo of what we sent is swallowed. Stubbing only the osascript call
+    # (not send_text itself) keeps its own recording of the chunk into the
+    # cursor's echo window — that recording is what poll() below checks.
     sent = []
-    monkeypatch.setattr(imessage, "send_text", lambda h, t: sent.append((h, t)))
+
+    def _fake_run(cmd, **kwargs):
+        sent.append((cmd[-2], cmd[-1]))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(imessage.subprocess, "run", _fake_run)
     ch.send("+15551234567", "@Scout Which size?")
     assert sent == [("+15551234567", "@Scout Which size?")]
     _add(dbp, 7, 1, "@Scout Which size?")
