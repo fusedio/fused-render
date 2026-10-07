@@ -183,6 +183,14 @@ class Host:
             if token is not None and not isinstance(token, str):
                 return {"ok": False, "reason": "'activation_token' must be a string"}
             return self.backend.run_on_main(lambda: self.open_url(url, token))
+        if cmd == "open_in_home":
+            url = command.get("url")
+            if not isinstance(url, str):
+                return {"ok": False, "reason": "'url' must be a string"}
+            token = command.get("activation_token")
+            if token is not None and not isinstance(token, str):
+                return {"ok": False, "reason": "'activation_token' must be a string"}
+            return self.backend.run_on_main(lambda: self.open_in_home(url, token))
         if cmd == "set_enabled":
             on = command.get("on")
             if not isinstance(on, bool):
@@ -217,6 +225,29 @@ class Host:
         self._windows.append(handle)
         self.backend.present(handle, activation_token)
         return handle
+
+    def open_in_home(self, url: str, activation_token: str | None = None) -> dict:
+        """`apps_open_in_home`: ``url`` loads into the Home window, else the
+        most recently created window, else a fresh one — like macOS's
+        `WindowManager.open_app_in_home`. The window keeps its frame name (the
+        Linux frame store is keyed at creation, not re-keyed on navigation)."""
+        if window_policy.classify(url, self.port) != "app":
+            return {"ok": False, "reason": "unsupported url"}
+        if not self.enabled:
+            return {"ok": False, "reason": "disabled"}
+        target = None
+        for handle in reversed(self._windows):
+            if _is_home(self.backend.current_url(handle)):
+                target = handle
+                break
+        if target is None and self._windows:
+            target = self._windows[-1]
+        if target is None:
+            self.focus_or_open(url, activation_token)
+            return {"ok": True}
+        self.backend.load(target, url)
+        self.backend.present(target, activation_token)
+        return {"ok": True}
 
     def _find(self, url: str):
         key, view = window_policy.window_key_of(url), window_policy.window_view_of(url)
@@ -439,6 +470,9 @@ class GtkBackend:
             win.window.present()
         else:
             win.window.present_with_time(self.tk.Gdk.CURRENT_TIME)
+
+    def load(self, win: _Win, url: str) -> None:
+        win.view.load_uri(url)
 
     def close(self, win: _Win) -> None:
         self.save_frame(win)

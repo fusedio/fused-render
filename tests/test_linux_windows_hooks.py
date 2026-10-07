@@ -80,6 +80,18 @@ def test_open_app_sends_the_apps_window_url_to_the_host(sock, host, tmp_path):
 
 
 @needs_unix
+def test_open_app_in_home_pref_sends_the_explorer_url(sock, host, tmp_path, monkeypatch):
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "apps_open_in_home", lambda: True)
+    seen, _ = host
+    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
+    window_policy.native_hooks["open_app"](str(tmp_path))
+    assert [c["cmd"] for c in seen] == ["open_in_home"]
+    assert seen[0]["url"] == "http://127.0.0.1:8123" + window_policy.app_home_path(str(tmp_path))
+
+
+@needs_unix
 def test_open_app_falls_back_to_a_browser_tab_when_declined(sock, host, tmp_path, monkeypatch):
     _, reply = host
     reply["open"] = {"ok": False, "reason": "disabled"}

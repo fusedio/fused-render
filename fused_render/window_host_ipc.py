@@ -11,6 +11,8 @@ One request per connection: a single JSON line in, a single JSON line out.
     {"cmd": "ping"}                          -> {"ok": true}
     {"cmd": "open", "url": "...",
      "activation_token": "..."}              -> {"ok": true} | {"ok": false, "reason": "..."}
+    {"cmd": "open_in_home", "url": "...",
+     "activation_token": "..."}              -> {"ok": true} | {"ok": false, "reason": "..."}
     {"cmd": "set_enabled", "on": true}       -> {"ok": true}
     {"cmd": "quit"}                          -> {"ok": true}
 
