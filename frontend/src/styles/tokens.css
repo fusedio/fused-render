@@ -286,9 +286,10 @@
        already tuned in this file for the same weight in both themes, so the
        palette gains a role rather than a colour. */
   --status-upcoming: var(--fg-muted);
-  --status-progress: #facc15;
+  /* The in-progress yellow IS the brand accent, so the app has one yellow. */
+  --status-progress: var(--accent);
 
-  /* WAITING IS THE RUNNING YELLOW, AND THE RING IS DASHED (Akshil, 2026-09-12).
+  /* WAITING IS THE RUNNING YELLOW (THE ACCENT), AND THE RING IS DASHED (Akshil, 2026-09-12).
      The state spent a day in `--activity`'s blue and a day in a gold of its own;
      both are retired. `queued` is drawn INSIDE In Progress (schedule-lib.laneOf),
      and two hues in one lane read as two unrelated kinds of work — while a third
@@ -532,7 +533,8 @@
   /* Upcoming tracks --fg-muted in both themes (see the dark block) — the same
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
-  --status-progress: #ca8a04;
+  /* The accent again, so the app has one yellow in both palettes. */
+  --status-progress: var(--accent);
   /* The alias again (see the dark block): waiting is the running yellow on both
      grounds and the dash is the whole difference. Restated because the light
      palette must redefine every token (test_theme.py); it resolves against this
@@ -675,16 +677,11 @@
   --fg-muted: #8e8e93;
   --fg-faint: #5a5a5f;
   --border: #1f1f21;
-  --accent: #eefd7f;
-  --accent-rgb: 238, 253, 127;
-  --on-accent: #000000;
   --sel: #262628;
   --row-bg-hover: #1c1c1e;
   --row-bg-active: #2c2c2e;
   --row-bg-selected: #262628;
   --fg-muted-rgb: 142, 142, 147;
-  --peek-halo: #eefd7f;
-  --peek-halo-rgb: 238, 253, 127;
 }
 
 :root[data-theme-name="midnight"][data-theme="light"] {
@@ -696,14 +693,9 @@
   --fg-muted: #5f5f63;
   --fg-faint: #8a8a8f;
   --border: #e2e2e5;
-  --accent: #5c6b00;
-  --accent-rgb: 92, 107, 0;
-  --on-accent: #ffffff;
   --sel: #e6e6e9;
   --row-bg-hover: #f0f0f2;
   --row-bg-active: #dcdce0;
   --row-bg-selected: #e6e6e9;
   --fg-muted-rgb: 95, 95, 99;
-  --peek-halo: #5c6b00;
-  --peek-halo-rgb: 92, 107, 0;
 }

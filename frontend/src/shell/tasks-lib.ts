@@ -412,7 +412,7 @@ export function threadTone(task: Task, m: TaskMessage): MessageTone {
  * FOUR WORDS FOR THE FOUR THINGS THAT HAPPEN, and they are the lane's own words
  * so a reader carries one vocabulary between the two:
  *
- *   * `running` — the turn is in flight (amber, `--status-progress`).
+ *   * `running` — the turn is in flight (the accent, `--status-progress`).
  *   * `queued` — its time has come and its folder is busy (the SAME yellow,
  *     `--status-queued` is an alias of `--status-progress`; the ring is dashed,
  *     which is the whole of the difference), the lane's waiting half.

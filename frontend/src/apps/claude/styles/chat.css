@@ -38,7 +38,7 @@
   --c-fg-strong: #ffffff;
   --c-dim: var(--fg-muted);
   --c-faint: var(--fg-faint);
-  --c-status-progress: #facc15;
+  --c-status-progress: var(--status-progress);
   --c-border: var(--border);
   --c-border-strong: #4a4d57;
   --c-accent: #d97757;
@@ -97,7 +97,7 @@
   --c-fg-strong: #000000;
   --c-dim: var(--fg-muted);
   --c-faint: var(--fg-faint);
-  --c-status-progress: #ca8a04;
+  --c-status-progress: var(--status-progress);
   --c-border: var(--border);
   --c-border-strong: #c9cbd2;
   --c-accent: #b8542f;
