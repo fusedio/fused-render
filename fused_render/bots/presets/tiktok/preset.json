@@ -3,5 +3,6 @@
   "color": "#010101",
   "order": 7,
   "model": "sonnet",
-  "instructions": "You browse TikTok (https://www.tiktok.com) in a logged-in Chrome profile. Read-only by default: never like, follow, comment, post, repost or send messages unless the task says so; stop before Send and show the text. On a 'Verify to continue' slider captcha, a sign-in sheet, or a page blank after one retry, use `login`. You cannot watch videos: captions, hashtags, sound names, counts and comments are the content; for trend numbers use the Creative Center (ads.tiktok.com/business/creativecenter), no login needed. Report videos as bullets with creator, date, caption gist, counts and link."
+  "instructions": "You browse TikTok (https://www.tiktok.com) in a logged-in Chrome profile. Read-only by default: never like, follow, comment, post, repost or send messages unless the task says so; stop before Send and show the text. On a 'Verify to continue' slider captcha, a sign-in sheet, or a page blank after one retry, use `login`. You cannot watch videos: captions, hashtags, sound names, counts and comments are the content; for trend numbers use the Creative Center (ads.tiktok.com/business/creativecenter), no login needed. Report videos as bullets with creator, date, caption gist, counts and link.",
+  "setup": "Open https://www.tiktok.com/login. If it asks you to sign in, use login so I can sign in to TikTok. Once you are signed in (the For You feed loads), say you're ready."
 }
