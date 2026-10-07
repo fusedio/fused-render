@@ -17,7 +17,10 @@ import { MAX_ROW } from "./strip";
 
 /** Fused apps — hydrate the recent row first. The server only scans the full
     workspace when valid recents do not fill it, preserving discovery and the
-    showcase fallback without charging returning visits for an exhaustive walk. */
+    showcase fallback without charging returning visits for an exhaustive walk.
+    Both row fetches ask for `limit * rows + 1`: one extra item so the cards
+    strip has a next card to peek in at its right edge. Never a fixed MAX_ROW —
+    that reintroduces the exhaustive workspace walk documented in strip.ts. */
 export function useHomeApps(limit: number | null, rows: number) {
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [appsError, setAppsError] = useState<string | null>(null);
@@ -32,7 +35,7 @@ export function useHomeApps(limit: number | null, rows: number) {
   useEffect(() => {
     if (limit === null) return;
     let alive = true;
-    getHomeApps(Math.min(limit * rows, MAX_ROW)).then(
+    getHomeApps(Math.min(limit * rows + 1, MAX_ROW)).then(
       async (r) => {
         if (!alive) return;
         if (r.apps.length > 0) {
@@ -57,7 +60,7 @@ export function useHomeApps(limit: number | null, rows: number) {
             await runCommunity({ action: "refresh" });
             if (!alive) return;
           }
-          const again = await getHomeApps(Math.min(limit * rows, MAX_ROW));
+          const again = await getHomeApps(Math.min(limit * rows + 1, MAX_ROW));
           if (!alive) return;
           setApps(again.apps.slice(0, MAX_ROW));
           return;
@@ -90,7 +93,7 @@ export function useHomeSessions(limit: number | null, rows: number) {
   useEffect(() => {
     if (limit === null) return;
     let alive = true;
-    getHomeClaudeSessionFolders(Math.min(limit * rows, MAX_ROW)).then(
+    getHomeClaudeSessionFolders(Math.min(limit * rows + 1, MAX_ROW)).then(
       (r) => alive && setSessions(r.folders.slice(0, MAX_ROW)),
       () => alive && setSessions([]),
     );
