@@ -238,9 +238,12 @@ def test_handoff_runs_blocks_and_reports_one_result(pair):
     # terminal is final: a late event changes nothing
     t.emit("error", "boom", trace="x", via=hv)
     assert hd["state"] == "done" and len(cards(sb, "done")) == 1
-    # a result older than Super Bot's last turn drops off the board
+    # a result stays on the board until the engine marks it seen (the preamble carrying it was written);
+    # a turn ending meanwhile does not hide it (Bugbot: results landing mid-turn vanished)
     sb.meta["conversation"]["last_turn_ts"] = time.time() + 1
-    assert handoffs.handoffs_section(sb) == ""
+    assert "TAP, 212 EUR" in handoffs.handoffs_section(sb)
+    handoffs.mark_seen(sb)
+    assert hd["seen"] is True and handoffs.handoffs_section(sb) == ""
     assert handoffs.handoffs_section(t) == ""
 
 

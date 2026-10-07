@@ -920,6 +920,12 @@ def run(bot, task: str, label: str | None = None) -> None:
             if isinstance(conv, dict):
                 # The sections are in the session's history now, whatever happens to this turn.
                 _call(getattr(bot, "conversation_update", None), None, sent=sent, turns=int(conv.get("turns") or 0) + 1)
+            if sess.is_super:
+                try:
+                    from fused_render.bots import handoffs
+                    handoffs.mark_seen(bot)  # the board (and new results) are in the session now
+                except Exception:  # noqa: BLE001
+                    pass
             if sess.stopping:
                 sess.interrupt()
             return _drive(bot, sess, proc)

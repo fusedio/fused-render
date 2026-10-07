@@ -707,6 +707,17 @@ class Bot:
             if int(ev.get("seq") or 0) <= since_seq:
                 continue
             role, text = ev.get("role"), " ".join((ev.get("text") or "").split())
+            if ev.get("source") == "handoff":
+                # Super Bot's hand-off lines: what it asked of a bot, and what the bot reported (DATA, never
+                # Super Bot's own answer: past_conversation labels them the same way).
+                who = str((ev.get("handoff") or {}).get("target_name") or "A BOT").upper()
+                if role == "done":
+                    out.append(f"[#{ev.get('seq')}] {who} REPORTED (data from a bot you handed off to): {text[:2500]}")
+                elif role == "system" and text.startswith("Asked "):
+                    out.append(f"[#{ev.get('seq')}] YOU HANDED OFF: {text[:600]}")
+                elif role == "question":
+                    out.append(f"[#{ev.get('seq')}] HAND-OFF NOTE ({who}): {text[:600]}")
+                continue
             if role == "system" and text.startswith("Task started: "):
                 out.append(f"[#{ev.get('seq')}] TASK: {text[len('Task started: '):][:600]}")
             elif role == "action":
