@@ -1,6 +1,6 @@
 // Colour presets: orthogonal to the System/Light/Dark pref. Pins the storage
 // contract and that applying a preset only ever touches `data-theme-name`.
-import { beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 
 import { installDomShim } from "./testDomShim";
 
@@ -9,6 +9,17 @@ installDomShim();
 const store = new Map<string, string>();
 const attrs = new Map<string, string>();
 const g = globalThis as unknown as Record<string, unknown>;
+// bun runs every suite in ONE process on one `globalThis`: put back whatever
+// was there (or nothing) so the stubs below never leak into other files.
+const saved = ["localStorage", "document"].map(
+  (k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)] as const,
+);
+afterAll(() => {
+  for (const [k, d] of saved) {
+    if (d) Object.defineProperty(globalThis, k, d);
+    else delete g[k];
+  }
+});
 g.localStorage = {
   getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
   setItem: (k: string, v: string) => void store.set(k, v),
