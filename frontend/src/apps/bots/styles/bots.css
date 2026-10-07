@@ -630,7 +630,9 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .bots #builds.fresh { color: var(--accent-text); }
 .bots-page .bots .botfoot { display: flex; align-items: center; padding: 8px 14px 12px; flex: none; }
 div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding: 8px 0 12px; }
-.bots-page #bpanel { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
+/* Builds / Apps / the app viewer cover the bots page, not the window (absolute in div.bots-page, which is position:
+   relative): the shell's sidebar stays where it is. Fixed came from the standalone FusedBot app, which had no sidebar. */
+.bots-page #bpanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #bpanel.show { display: flex; }
 .bots-page #bpanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bots-page #bpanel .topbar .ttl { font-size: 13px; font-weight: 400; }
@@ -648,7 +650,7 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page #bdmodal .where code { font-size: 11px; color: var(--text); word-break: break-all; }
 .bots-page #bdmodal textarea { width: 100%; box-sizing: border-box; }
 .bots-page .bots .botfoot { gap: 4px; }
-.bots-page #apanel { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
+.bots-page #apanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #apanel.show { display: flex; }
 .bots-page #apanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bots-page #apanel .topbar .ttl { font-size: 13px; font-weight: 400; }
@@ -656,7 +658,7 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page #apanel .topbar .backtxt, .bots-page #apanel .winacts button { font-size: 11.5px; }
 .bots-page #apanel .winacts { display: flex; gap: 8px; margin-left: auto; }
 /* Embedded app: one built app running full-size inside the bot page, above the Apps gallery. */
-.bots-page #vpanel { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 21; }
+.bots-page #vpanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 21; }
 .bots-page #vpanel.show { display: flex; }
 .bots-page #vpanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bots-page #vpanel .topbar .ttl { font-size: 13px; font-weight: 400; white-space: nowrap; }
