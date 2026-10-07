@@ -2,7 +2,7 @@
      1. OpenBot src/app.css, verbatim EXCEPT that every rule is SCOPED to the page root `.bots-page`: OpenBot's
         sheet is global and unlayered (`button`, `input`, `*`, `body`, `:focus-visible`, scrollbars, `.muted`…) and
         would restyle the whole shell otherwise. The rewrite was mechanical, rule by rule:
-          :root                      -> .bots-page                    (the tokens: the shell's names, the page's values)
+          :root                      -> .bots-page                    (tokens: the shell's names; surfaces/text alias the shell tokens)
           :root[data-theme="light"]  -> [data-theme="light"] .bots-page   (the shell puts data-theme on <html>)
           body / html, body          -> div.bots-page                 (keeps body's type weight, so every selector
                                                                        shifts by exactly one class and the cascade
@@ -19,15 +19,15 @@
 /* ==================================================================== OpenBot app.css (verbatim) ==== */
 /* Browser Bots — all styles. Loaded by index.html through fused.rawUrl. */
 /* Tokens. Dark = brand: near-black canvas, lime accent. Same names in both blocks. */
+/* The page follows the shell's surfaces so it matches every other screen (aliased at :root, where the shell's names resolve). */
+:root { --bots-shell-bg: var(--bg); --bots-shell-bg-alt: var(--bg-alt); --bots-shell-panel: var(--bg-panel); --bots-shell-hover: var(--row-bg-hover); --bots-shell-selected: var(--row-bg-selected); --bots-shell-fg: var(--fg); --bots-shell-muted: var(--fg-muted); --bots-shell-border: var(--border); }
 .bots-page       { color-scheme: dark;
-  --bg: #000000; --panel: #0d0d0f; --panel2: #1c1c1e; --card: #262628; --raised: #2c2c2e; --hover: #3a3a3c; --inset: #1c1c1e;
-  --text: #ffffff; --muted: #8e8e93; --line: #1f1f21;
+  --bg: var(--bots-shell-bg); --panel: var(--bots-shell-bg-alt); --panel2: var(--bots-shell-panel); --card: var(--bots-shell-hover); --raised: var(--bots-shell-hover); --hover: var(--bots-shell-selected); --inset: var(--bots-shell-panel);
+  --text: var(--bots-shell-fg); --muted: var(--bots-shell-muted); --line: var(--bots-shell-border);
   --accent: #eafe68; --accent-ink: #0d0d0f; --accent-text: #eafe68; --bubble-user: #3b4030; --bubble-user-ink: #ffffff;
   --ok: #38d591; --warn: #ffb020; --err: #ff5667; --shadow: 0 12px 40px rgba(0,0,0,.7); }
 [data-theme="light"] .bots-page
             { color-scheme: light;
-  --bg: #fcfcfc; --panel: #f4f5f1; --panel2: #eaece4; --card: #eef0e8; --raised: #e2e5da; --hover: #d7dbcc; --inset: #f0f1ec;
-  --text: #1b1d21; --muted: #5d6270; --line: #dfe2d8;
   --accent: #d9f036; --accent-ink: #1b1d21; --accent-text: #66740c; --bubble-user: #1b1d21; --bubble-user-ink: #fcfcfc;
   --ok: #1f9d5a; --warn: #b7791a; --err: #d13b3b; --shadow: 0 12px 40px rgba(0,0,0,.18); }
 .bots-page, .bots-page * { box-sizing: border-box; }
