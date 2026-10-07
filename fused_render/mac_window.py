@@ -36,7 +36,9 @@ What the browser used to do for a page, the delegates here do instead
   NSOpenPanel; camera/mic and geolocation requests from the app's own
   origin → granted (the system TCC prompt still gates the hardware);
   `requestFullscreen` enabled; `requestPointerLock` granted;
-  `window.close()` closes the window.
+  `window.close()` closes the window; `window.print()` → the print panel
+  for the FRAME that called it (an app inside the shell's iframe prints its
+  own document, with its `@media print` rules, not the shell around it).
 - the right-click menu is WebKit's, curated (`window_policy.context_menu_item`):
   "Open … in New Window" says "in Browser" when that is where the URL goes
   and vanishes for a `blob:`/`data:` URL that goes nowhere; "Download Image"
@@ -270,6 +272,12 @@ _SEL_DID_CLOSE = b"webViewDidClose:"
 _SEL_CONTEXT_MENU = (b"_webView:getContextMenuFromProposedMenu:forElement:"
                      b"userInfo:completionHandler:")
 _SEL_CONTEXT_MENU_DOWNLOAD = b"_webView:contextMenuDidCreateDownload:"
+# `window.print()` (WKUIDelegatePrivate): no public macOS hook exists, so a
+# host without this selector makes it a silent no-op. WebKit prefers the
+# newer `_webView:printFrame:pdfFirstPageSize:completionHandler:` when the
+# delegate answers it and falls back to this one, whose completion WebKit
+# runs itself — no block, so no metadata to register.
+_SEL_PRINT_FRAME = b"_webView:printFrame:"
 
 objc.registerMetaDataForSelector(
     b"NSObject",
@@ -594,6 +602,21 @@ class _WebDelegate(NSObject):
             elif verdict == "retitle":
                 item.setTitle_(title)
 
+    # ---- private WKUIDelegate: window.print() -------------------------------
+
+    @_private(_SEL_PRINT_FRAME, b"v@:@@")
+    def webView_printFrame_(self, webview, frame):
+        # `frame` is the _WKFrameHandle of the document that called
+        # `window.print()`. Our windows show the shell with the app in a
+        # same-origin iframe, so printing the main frame would put the
+        # shell's chrome on paper with the app clipped inside its box.
+        # Save as PDF is the print panel's own PDF menu — the invoice app's
+        # "Download PDF" is exactly this call.
+        win = self._window
+        if win is None or win.ns is None:
+            return
+        _run_print_panel(win, frame)
+
     # ---- window.close() (WKUIDelegate) -------------------------------------
 
     def webViewDidClose_(self, webview):
@@ -910,6 +933,25 @@ class _Window:
             self.ns.close()
 
 
+def _run_print_panel(win, frame) -> None:
+    """Sheet the print panel on `win` for `frame` (a _WKFrameHandle) or, with
+    none, for the main frame — File > Print. The per-frame operation is
+    private WKWebView API (`_printOperationWithPrintInfo:forFrame:`); where
+    it is missing, the main frame prints, which is what happened before."""
+    info = NSPrintInfo.sharedPrintInfo()
+    op = None
+    if frame is not None:
+        try:
+            op = win.webview._printOperationWithPrintInfo_forFrame_(info, frame)
+        except Exception:  # noqa: BLE001 — private API, may be gone
+            logger.exception("per-frame print unavailable; printing the main frame")
+    if op is None:
+        op = win.webview.printOperationWithPrintInfo_(info)
+    op.setShowsPrintPanel_(True)
+    op.runOperationModalForWindow_delegate_didRunSelector_contextInfo_(
+        win.ns, None, None, None)
+
+
 class _MenuTarget(NSObject):
     """Receiver of the main menu's app-specific items. The Edit menu's items
     target nil and reach the web view through the responder chain."""
@@ -982,10 +1024,7 @@ class _MenuTarget(NSObject):
     def printDocument_(self, _s):
         if (w := self._m.key()) is None:
             return
-        op = w.webview.printOperationWithPrintInfo_(NSPrintInfo.sharedPrintInfo())
-        op.setShowsPrintPanel_(True)
-        op.runOperationModalForWindow_delegate_didRunSelector_contextInfo_(
-            w.ns, None, None, None)
+        _run_print_panel(w, None)
 
     def showLogs_(self, _s):
         # The log FOLDER, not `-R` on this pid's file (SPEC §50): after a crash
