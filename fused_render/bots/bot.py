@@ -2364,7 +2364,7 @@ class Bot:
               "origin_via": None if chan.is_web(getattr(self, "task_via", None)) else dict(self.task_via),
               # what the user asked for, and where the chat stood: _handoff_continue carries the request on once the
               # bot is done, unless the user has spoken since (their message carries the result then)
-              "asked_for": " ".join(str(self.meta.get("task") or "").split())[:600], "asked_seq": int(self.seq or 0),
+              "asked_for": self._asked_for(), "asked_seq": int(self.seq or 0),
               "asked_at": float(getattr(self, "task_started", 0) or 0),  # hand-offs of one turn share it (siblings)
               "created_at": time.time(), "state": "received", "notes": [], "updated_at": time.time()}
         with self.lock:
@@ -2469,6 +2469,15 @@ class Bot:
         if state == "done":
             self._handoff_continue(hd)
 
+    def _asked_for(self):
+        """The user's request a hand-off belongs to: this task's text, or — inside a
+        carry-on turn, whose task is the harness's CARRY ON text under a short
+        label — the request that turn is carrying on, so a chain of hops (X bot,
+        then Gmail bot) keeps the whole ask, not "Carrying on: …" cut at 80."""
+        if getattr(self, "task_origin", "") == HANDOFF_CONTINUE_ORIGIN and getattr(self, "carry_on_for", ""):
+            return self.carry_on_for
+        return " ".join(str(self.meta.get("task") or "").split())[:600]
+
     def _handoff_continue(self, hd):
         """A bot finished: carry the user's request on without waiting for
         them to type again (docs §11 rule 5). One turn, started as the chat
@@ -2498,6 +2507,7 @@ class Bot:
                       "is left, say so in one short line. Take no action the request did not ask for, and do not hand the "
                       "same task out again.")
             label = f"Carrying on: {hd['asked_for'][:80]}"
+            self.carry_on_for = hd["asked_for"]  # read by _asked_for for the hops this turn makes
             self.emit("note", f"{name} is done; carrying on with your request.", source="handoff")
             if not self.start_task(prompt, label=label, origin=HANDOFF_CONTINUE_ORIGIN, via=hd.get("origin_via")):
                 logger.info("bot %s: hand-off %s finished but the carry-on turn did not start", self.id, hd.get("id"))

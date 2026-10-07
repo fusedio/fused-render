@@ -339,6 +339,22 @@ def test_handoff_done_carries_the_request_on(pair):
     assert "Five posts about Claude." in handoffs.handoffs_section(sb)
 
 
+def test_handoff_chain_keeps_the_whole_request(pair):
+    sb, t, gate = pair
+    sb.meta["task"] = "summarize my X timeline and email it to me at a very long address so the label is cut short"
+    sb.handoff("scout", "read X")
+    (hd,) = rows(sb).values()
+    t.emit("done", "Five posts.", via=chan.handoff_via(sb.id, hd["id"]))
+    release(t, gate)
+    assert hd["continued"] is True and sb.meta["task"].startswith("Carrying on: ")
+    # a hop made from the carry-on turn remembers the user's request, not the turn's label
+    sb.handoff("scout", "email the summary")
+    hop = [h for h in rows(sb).values() if h["task"] == "email the summary"][0]
+    assert hop["asked_for"] == "summarize my X timeline and email it to me at a very long address so the label is cut short"
+    if sb.thread is not None:
+        gate.set(); sb.thread.join(5)
+
+
 def test_handoff_from_the_phone_carries_on_over_the_phone(pair):
     sb, t, gate = pair
     sb.meta["task"] = "text me my X digest"
