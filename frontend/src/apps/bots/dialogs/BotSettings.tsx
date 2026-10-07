@@ -19,7 +19,7 @@ import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
 import { api, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
-import { EFFORTS, loginGroups, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
+import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { act, getState } from "../state/store";
 import type { BotDialogValue } from "./actions";
@@ -218,7 +218,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
             {tab === "browser" ? (
               <Rows>
                 {!isSuper && groups.length ? (
-                  <Row title="Logins" text="Bots sharing logins drive one browser, each in its own tabs. Switching removes this bot's current logins unless another bot still uses them." htmlFor="bmlogins">
+                  <Row title="Logins" text={(loginHint(groups.find((g) => g.id === browserId)) + " ").trimStart() + "Bots sharing logins drive one browser, each in its own tabs. Switching removes this bot's current logins unless another bot still uses them."} htmlFor="bmlogins">
                     <NativeSelect className="w-full" id="bmlogins" value={browserId} onChange={(e) => setBrowserId(e.target.value)}>
                       <NativeSelectOption value="">This bot only</NativeSelectOption>
                       {groups.map((g) => <NativeSelectOption key={g.id} value={g.id}>Same as {loginLabel(g)}</NativeSelectOption>)}

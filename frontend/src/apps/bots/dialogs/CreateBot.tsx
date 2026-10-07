@@ -14,7 +14,7 @@ import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Face } from "../components/Face";
 import type { Face as FaceT } from "../lib/api";
-import { browserOf, EFFORTS, loginGroups, loginLabel, modelsFor } from "../lib/botform";
+import { browserOf, EFFORTS, loginGroups, loginHint, loginLabel, modelsFor } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { newBotInit, type NewBotPick } from "../lib/presets";
 import { getState } from "../state/store";
@@ -104,7 +104,7 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
                       onChange={(e) => { setShareWith(e.target.value); setShare(true); }} onFocus={() => setShare(true)}>
                       {groups.map((g) => <NativeSelectOption key={g.id} value={g.id}>{loginLabel(g)}</NativeSelectOption>)}
                     </NativeSelect>
-                    <span className="text-[13px] text-muted-foreground">Shares that browser's sign-ins. Log in once, every bot on it stays in.</span>
+                    <span className="text-[13px] text-muted-foreground">{loginHint(groups.find((g) => g.id === shareWith)) || "Shares that browser's sign-ins."} Log in once, every bot on it stays in.</span>
                   </div>
                 </div>
               </RadioGroup>

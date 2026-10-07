@@ -35,11 +35,15 @@ export function loginGroups(bots: Bot[], self?: string): { id: string; name: str
 
 /** A Logins option: "LinkedIn scout" when the browser carries its only bot's name, else
  *  "Super Bot · 2 bots · LinkedIn scout, Outreach" (the bot names only when they say more than the browser's). */
+/** The option text: just the browser's name (the menu stays short; who uses it goes in the hint below). */
 export function loginLabel(g: { name: string; names: string[] }): string {
-  const n = g.names.length;
-  if (n === 1 && g.names[0] === g.name) return g.name;
-  const head = `${g.name} · ${n} bot${n === 1 ? "" : "s"}`;
-  return g.names.every((x) => x === g.name) ? head : `${head} · ${g.names.join(", ")}`;
+  return g.name;
+}
+
+/** The hint under a picked browser: "Also used by Super Bot, Orange Bot." ("" when nobody is on it). */
+export function loginHint(g: { names: string[] } | undefined): string {
+  if (!g || !g.names.length) return "";
+  return `Also used by ${g.names.join(", ")}.`;
 }
 
 /** The settings value of a bot's Logins row: "" for a browser of its own (nobody else on it), else the shared
