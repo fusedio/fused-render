@@ -44,6 +44,7 @@ import {
 } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { useUrlVersion } from "@platform/lib/hooks";
+import { OPEN_CHAT_EVENT, armFocusOnRegister } from "@platform/lib/chat-focus";
 import { getAppEntry } from "@platform/lib/api";
 import { shortSha, snapshotListing } from "@platform/lib/snapshot-param";
 import { useSnapshotForFolder } from "@apps/explorer/listing/useSnapshotForFolder";
@@ -1152,6 +1153,32 @@ export default function Listing({
       return true;
     };
   });
+  // Bare "/" with no chat on screen (lib/chat-focus): switch the folder pane
+  // to Claude and let its composer take the caret once it mounts. Only where
+  // the pane has room (`pane.on`) and the folder can offer claude.
+  const openChatRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    openChatRef.current = () => {
+      if (!paneEnabled || !pane.on || !claudeReady) return false;
+      // Already on Claude but its composer did not take the key (still
+      // booting): arm the focus for when it registers, and keep the key.
+      armFocusOnRegister();
+      // Not `selectSide`: a keystroke is no explicit pick, so the remembered
+      // tab (lib/side-tab-store) is left alone.
+      // An EXPLICIT "claude" mode even where claude is the folder's first
+      // companion: a null mode would follow the remembered tab, and the key
+      // would open Git (Bugbot, #1479).
+      if (!(paneOpen && paneSide === "claude")) setSide({ open: true, mode: "claude" });
+      return true;
+    };
+  });
+  useEffect(() => {
+    const onOpenChat = (e: Event) => {
+      if (!e.defaultPrevented && openChatRef.current()) e.preventDefault();
+    };
+    document.addEventListener(OPEN_CHAT_EVENT, onOpenChat);
+    return () => document.removeEventListener(OPEN_CHAT_EVENT, onOpenChat);
+  }, []);
   useEffect(() => {
     if (!paneEnabled) return;
     window._fusedClaudeAsk = (text: unknown) => {

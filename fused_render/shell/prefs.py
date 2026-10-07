@@ -199,7 +199,8 @@ def bots_enabled() -> bool:
 
     Off: the sidebar reads Home → Tasks → … and `/` lands on `/home`; no Bots
     row anywhere. On: the Home row is HIDDEN, Bots takes its place at the top
-    (Bots → Tasks → …) and `/` (and a bare `/home`) land on `/bots`. The flag
+    (Bots → Tasks → …) and `/` lands on `/bots`; `/home` keeps answering as
+    the pinned Home bookmark's door (shell/bookmarks.py seeds it). The flag
     swaps the front door rather than adding a row, because a machine that runs
     bots is FOR the bots — Home's app strips are the explorer's front door.
 
