@@ -30,6 +30,7 @@ from fused_render import calls as shell_calls
 from fused_render import health
 from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
+from fused_render.shell.home_layout import router as home_layout_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
 
@@ -796,6 +797,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Shell-specific state backends live in fused_render/shell/ (bookmarks,
     # prefs, recents), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
+    app.include_router(home_layout_router)
     app.include_router(prefs_router)
     # Local-network sharing (lan.py): the desktop's pairing + device routes.
     # Loopback only in effect — the LAN wrapper's allowlist never forwards them.
