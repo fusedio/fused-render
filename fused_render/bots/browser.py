@@ -997,9 +997,10 @@ class BrowserProcess:
                 if self.shared():
                     v._own = []
             write_json_atomic(self.session_path, sess)
-            if restore and restore != "about:blank":
+            view = self.views[0] if self.views else None
+            if view is not None and restore and restore != "about:blank":
                 try:
-                    tab, _ = self._page_target(port)
+                    tab, _ = view._page_target(port)
                     ws = WS(tab["webSocketDebuggerUrl"])
                     ws.call("Page.navigate", url=restore)  # do not wait for the load
                     ws.close()
@@ -1070,10 +1071,11 @@ class BrowserProcess:
                     pass
 
     def stop_if_idle(self):
-        """Idle sleep for a shared process: quit only once every view has gone
-        idle (`Browser.idle`). Returns True when Chrome was stopped."""
+        """Idle sleep for a shared process: quit only once every view may sleep
+        NOW (`Browser.may_sleep()`: its bot's live check when it set one, else the
+        flag its own sleep attempt left). Returns True when Chrome was stopped."""
         with self.lock:
-            if any(not v.idle for v in self.views):
+            if any(not v.may_sleep() for v in self.views):
                 return False
             self.stop()
             return True
@@ -1152,6 +1154,7 @@ class Browser:
         self._main_tab = None  # target id of the tab we drive
         self._fresh = True     # no tab of ours in this process yet (set again on every relaunch)
         self.idle = False      # set by the bot's idle sleep; cleared on the next action (stop_if_idle)
+        self.idle_check = None  # bot.py sets a callable: "may this bot's browser sleep right now?" (looked at, task, control)
         self.live_seen = 0.0
         self.thumb_bytes = None  # JPEG of the last screenshot, for step thumbnails
         # Screenshot after every `_run` action. The agent engine turns this off for its
@@ -1215,6 +1218,16 @@ class Browser:
         self.idle = True
         return self.proc.stop_if_idle()
 
+    def may_sleep(self):
+        """Whether this view's bot would let the shared Chrome go right now: its
+        live check (set by bot.py) when there is one, else the sticky flag."""
+        if self.idle_check is not None:
+            try:
+                return bool(self.idle_check())
+            except Exception:  # noqa: BLE001
+                return False
+        return self.idle
+
     def shared(self):
         return self.proc.shared()
 
@@ -1249,16 +1262,15 @@ class Browser:
         except Exception:
             return []
 
-    def _write_own(self, url=None):
+    def _write_own(self, url=None, title=None):
         d = {"tabs": self._own}
-        if url is not None:
-            d["url"] = url
-        else:
-            try:
-                with open(self.tabs_path) as f:
-                    d["url"] = json.load(f).get("url")
-            except Exception:
-                pass
+        try:
+            with open(self.tabs_path) as f:
+                old = json.load(f)
+        except Exception:
+            old = {}
+        d["url"] = url if url is not None else old.get("url")
+        d["title"] = title if title is not None else old.get("title")
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
             write_json_atomic(self.tabs_path, d)
@@ -1350,13 +1362,16 @@ class Browser:
         # Downloads land in this bot's own folder (not ~/Downloads), so the bot
         # and the page can list what arrived.
         os.makedirs(self.downloads, exist_ok=True)
-        try:
-            ws.call("Browser.setDownloadBehavior", behavior="allow", downloadPath=self.downloads, eventsEnabled=False)
-        except Exception:
+        # On a shared process the browser-wide setting is last-writer-wins across bots, so the per-page one
+        # (older API, still honoured) goes first there; a lone bot keeps the browser-wide call.
+        order = (("Page.setDownloadBehavior", {}), ("Browser.setDownloadBehavior", {"eventsEnabled": False})) if self.shared() \
+            else (("Browser.setDownloadBehavior", {"eventsEnabled": False}), ("Page.setDownloadBehavior", {}))
+        for method, extra in order:
             try:
-                ws.call("Page.setDownloadBehavior", behavior="allow", downloadPath=self.downloads)
+                ws.call(method, behavior="allow", downloadPath=self.downloads, **extra)
+                break
             except Exception:
-                pass
+                continue
         return ws, sess
 
     def _foreground(self, ws):
@@ -1634,7 +1649,7 @@ class Browser:
                 sess["title"] = info.get("title")
                 write_json_atomic(self.session_path, sess)
                 if self.shared():
-                    self._write_own(url=info.get("url") or "")
+                    self._write_own(url=info.get("url") or "", title=info.get("title") or "")
                 if shoot:
                     self._shoot(ws)
                 return out, info
@@ -1992,8 +2007,16 @@ class Browser:
 
     def _status(self, probe):
         sess = self.session() or {}
-        return {"running": self.alive(sess) if probe else bool(sess.get("pid")), "url": sess.get("url"),
-                "title": sess.get("title"), "visible": bool(sess.get("visible")), "sealed": self.sealed(), "encrypt": self.encrypt}
+        url, title = sess.get("url"), sess.get("title")
+        if self.shared():  # session.json is last-writer-wins across bots; this bot's page is in its tabs.json
+            try:
+                with open(self.tabs_path) as f:
+                    own = json.load(f)
+                url, title = own.get("url") or None, own.get("title") or None
+            except Exception:
+                url = title = None
+        return {"running": self.alive(sess) if probe else bool(sess.get("pid")), "url": url,
+                "title": title, "visible": bool(sess.get("visible")), "sealed": self.sealed(), "encrypt": self.encrypt}
 
     def status(self):
         return self._status(True)

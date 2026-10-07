@@ -333,7 +333,7 @@ export const api = {
   giveback: (id: string) => post<Ok>(`${bid(id)}/giveback`, {}, "giveback"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
   /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
-  open: (id: string) => post<Ok>(`${bid(id)}/open`, {}, "open"),
+  open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),
   window: (id: string, visible: boolean) => post<Ok>(`${bid(id)}/window`, { visible }, "window"),
   goto: (id: string, url: string) => post<{ ok: true; url: string }>(`${bid(id)}/goto`, { url }, "goto"),
   nav: (id: string, op: "back" | "forward" | "reload") => post<{ ok: true; url: string }>(`${bid(id)}/nav`, { op }, "nav"),

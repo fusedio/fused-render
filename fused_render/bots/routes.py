@@ -96,6 +96,8 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     st = b.meta.get("status")
     idle = st in ("idle", "waiting", "paused", "error")
     running = b.thread is not None and b.thread.is_alive()
+    if shot_for == b.id:
+        b.last_looked = time.time()  # a shared browser's idle sleep (bot._may_sleep) must not quit under the bot on screen
     # Popped-out window closed by the user -> dock it back automatically.
     # Non-blocking: a second poll arriving mid-relaunch just skips.
     try:  # only the bot that popped out watches (another bot on a shared browser would see "no tabs of mine" and dock it)
@@ -263,6 +265,9 @@ def bots_browser_op(bid: str, body: dict = Body(...), x_fused: str | None = Head
         b.window(op == "signin")
         return {"ok": True, "bot": b.id}
     if op == "delete":
+        busy = [b.meta.get("name") or b.id for b in bots if b.thread and b.thread.is_alive()]
+        if busy:  # all or nothing: a refusal half-way would leave some bots moved and some on the old logins
+            raise ValueError(f"stop {', '.join(busy)}'s task first, then delete the browser")
         for b in bots:
             bm.set_browser(b, "", fresh=True)  # each gets a logged-out browser of its own; the last move removes this one
         return {"ok": True}
@@ -426,8 +431,8 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
         return guard
     body = body if isinstance(body, dict) else {}
     if op in _CONTROL:
-        getattr(_bot(bid), _CONTROL[op])()
-        return {"ok": True}
+        out = getattr(_bot(bid), _CONTROL[op])()
+        return {"ok": True, **(out if isinstance(out, dict) else {})}
     fn = _POSTS.get(op)
     if fn is None:
         return _error(f"unknown bot action {op!r}", 404)

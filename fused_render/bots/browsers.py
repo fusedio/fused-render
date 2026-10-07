@@ -155,7 +155,10 @@ _sites_cache: dict = {}  # bid -> (jar mtime, [names])
 
 
 def sites(bid: str) -> list[str]:
-    jar = os.path.join(browser_dir(bid), "profile", "Default", "Cookies")
+    base = os.path.join(browser_dir(bid), "profile", "Default")
+    jar = next((p for p in (os.path.join(base, "Network", "Cookies"), os.path.join(base, "Cookies")) if os.path.isfile(p)), None)
+    if jar is None:  # Chrome 115+ keeps the jar under Network/; older profiles (and imports from them) at Default/Cookies
+        return []
     try:
         mt = os.path.getmtime(jar)
     except OSError:

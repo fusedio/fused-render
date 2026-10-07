@@ -466,6 +466,8 @@ class Bot:
             self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
             store.write_meta(bid, self.meta)
         self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
+        self.browser.idle_check = self._may_sleep
+        self.last_looked = 0.0  # when the page last polled with this bot selected (routes._status_bot)
         self.meta["encrypt"] = bool(self.browser.encrypt)  # mirrored from browser.json for the dialog
         self.seq = self._count_events()
         self.thread = None
@@ -1159,10 +1161,12 @@ class Bot:
     _setup_probe_at = 0.0  # last Claude-health measure made for the setup (one per minute at most)
 
     def opened(self):
-        """`POST /api/bots/<id>/open`: the user clicked this bot open (or deep-linked
-        to it). The one door to Super Bot's first task; a status poll or the page
-        landing on Super Bot by default never counts (owner's rule, 2026-10-07)."""
-        self._maybe_super_setup(opened=True)
+        """`POST /api/bots/<id>/open`: the Bots page shows this bot (landing on it,
+        a click, a deep link). The one door to Super Bot's first task; nothing on
+        another page, no poll by itself and no background tick starts it (owner's
+        rule, 2026-10-07). Returns {setup: "started" | "pending" | "none"}:
+        pending = Claude is not linked yet, the page asks again later."""
+        return {"setup": self._maybe_super_setup(opened=True)}
 
     def _maybe_super_setup(self, opened=False):
         """The seeded Super Bot's setup (SUPER_SETUP): the Google sign-in, then the
@@ -1174,9 +1178,9 @@ class Bot:
         The health check reads the cached snapshot; an empty cache is measured
         once a minute in the background."""
         if not opened or not is_super(self.meta) or not (self.meta.get("setup") or "").strip():
-            return
+            return "none"
         if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
-            return
+            return "pending"
         try:
             from fused_render import claude_health
             c = claude_health.cached()
@@ -1185,17 +1189,19 @@ class Bot:
                 if now - self._setup_probe_at > 60:
                     self._setup_probe_at = now
                     threading.Thread(target=lambda: claude_health.snapshot(), daemon=True, name=f"setup-probe-{self.id}").start()
-                return
+                return "pending"
             if not c.get("found") or not c.get("signed_in"):
-                return
+                return "pending"
         except Exception:  # noqa: BLE001
-            return
+            return "pending"
         with self.lock:
             setup = (self.meta.pop("setup", None) or "").strip()
             self.save()
-        if setup:
-            self.emit("system", "Opening Google's sign-in in my browser: once you are signed in, every bot sharing it is too.")
-            self.start_task(setup, label="Sign in to Google", origin="setup")
+        if not setup:
+            return "none"
+        self.emit("system", "Opening Google's sign-in in my browser: once you are signed in, every bot sharing it is too.")
+        self.start_task(setup, label="Sign in to Google", origin="setup")
+        return "started"
 
     def learn_from_last(self):
         """Condense the last finished task into a playbook, in a background
@@ -1985,6 +1991,12 @@ class Bot:
         elif on:
             self.emit("system", f"Encryption on{who}: the logins are sealed whenever the browser sleeps or closes.")
 
+    def _may_sleep(self):
+        """For a shared browser's idle sleep (Browser.may_sleep): this bot is idle,
+        not being looked at in the last little while, not driven, and has been
+        quiet long enough. Live, not a flag left by an earlier sleep attempt."""
+        return self.idle_sleep_due(time.time() - self.last_looked < 15)
+
     def idle_sleep_due(self, selected):
         """Idle for a while, headless, not being looked at or driven -> put the
         browser to sleep. The next task, take-over or live view relaunches it."""
@@ -2016,11 +2028,13 @@ class Bot:
             self.close_tabs()
 
     def close_tabs(self):
-        """Close this bot's own tabs on a shared browser (leaving it)."""
+        """Close this bot's own tabs on a shared browser (leaving it). Detaches
+        the view whether or not Chrome is up: a stale view would keep the
+        process "shared" and block its idle sleep."""
         try:
             sess = self.browser.session()
             if not sess or not self.browser.alive(sess):
-                return
+                raise StopIteration
             for t in self.browser._own_targets(sess["port"]):
                 try:
                     browser_mod._http(sess["port"], f"/json/close/{t['targetId']}")
@@ -2028,6 +2042,8 @@ class Bot:
                     pass
             self.browser._own = []
             self.browser._write_own()
+        except StopIteration:
+            pass
         except Exception:  # noqa: BLE001
             pass
         self.browser.proc.detach(self.browser)
@@ -3160,8 +3176,9 @@ def set_browser(b, target, fresh=False):
     with b.lock:
         b.meta["browser_id"] = target
         if not browsers.exists(target):
-            browsers.ensure(target, name=b.meta.get("name") or "", encrypt=False)
+            browsers.ensure(target, name=b.meta.get("name") or "", encrypt=bool(b.meta.get("encrypt")))  # keeps the bot's choice
         b.browser = Browser(b.dir, b.cache_dir, proc=browsers.get(target))
+        b.browser.idle_check = b._may_sleep
         b.browser._own = []
         b.browser._write_own(url="")
         b.meta["encrypt"] = bool(b.browser.encrypt)
