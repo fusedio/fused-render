@@ -1,16 +1,16 @@
 // One grid cell: the frame (title, "See all", and in edit mode the toolbar)
 // around a body chosen by source.
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
-import { FORMAT_LABELS, SIZE_LABELS, SOURCES, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
+import { SOURCES, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
 import { AppsWidget } from "./widgets/AppsWidget";
 import { PlaygroundWidget, RecentsWidget, SessionsWidget } from "./widgets/StripWidgets";
 import { TasksWidget } from "./widgets/TasksWidget";
 import { BotsWidget } from "./widgets/BotsWidget";
 import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
-import { SizeGlyph } from "./SizeGlyph";
+import { FormatPicks, SizeChips } from "./Pickers";
 
 const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   apps: "/apps",
@@ -42,15 +42,23 @@ function Body({ widget }: { widget: WidgetModel }) {
   }
 }
 
-function SizeMenu({
+function EditPopover({
   widget,
+  title,
   onResize,
+  onReformat,
+  onRemove,
 }: {
   widget: WidgetModel;
+  title: string;
   onResize: (size: WidgetSize) => void;
+  onReformat: (format: WidgetFormat) => void;
+  onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [alignLeft, setAlignLeft] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => {
@@ -60,6 +68,7 @@ function SizeMenu({
       if (e.key === "Escape") {
         e.stopPropagation();
         setOpen(false);
+        button.current?.focus();
       }
     };
     document.addEventListener("pointerdown", down, true);
@@ -69,42 +78,50 @@ function SizeMenu({
       document.removeEventListener("keydown", key, true);
     };
   }, [open]);
-  const sizes = SOURCES[widget.source].sizes;
+  // Right-aligned under the button; a widget near the left edge would push the
+  // 360px card off-screen, so flip it to grow rightwards there.
+  useLayoutEffect(() => {
+    if (!open || !button.current) return;
+    setAlignLeft(button.current.getBoundingClientRect().right - 360 < 8);
+  }, [open]);
+  const spec = SOURCES[widget.source];
   return (
     <span className="hw-menu-wrap" ref={root}>
       <button
+        ref={button}
         type="button"
-        className="hw-chip"
-        aria-haspopup="menu"
+        className={"hw-editbtn" + (open ? " is-open" : "")}
+        aria-haspopup="dialog"
         aria-expanded={open}
-        title={`Widget size: ${SIZE_LABELS[widget.size]}`}
-        aria-label={`Widget size: ${SIZE_LABELS[widget.size]}`}
         onClick={() => setOpen((o) => !o)}
       >
-        <SizeGlyph size={widget.size} scale={0.7} />
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M6 9l6 6 6-6" />
-        </svg>
+        Edit ▾
       </button>
       {open ? (
-        <div className="hw-menu is-sizes" role="menu">
-          {sizes.map((s) => (
-            <button
-              key={s}
-              type="button"
-              role="menuitemradio"
-              aria-checked={s === widget.size}
-              aria-label={SIZE_LABELS[s]}
-              title={SIZE_LABELS[s]}
-              className={"hw-menu-item" + (s === widget.size ? " is-on" : "")}
-              onClick={() => {
-                onResize(s);
-                setOpen(false);
-              }}
-            >
-              <SizeGlyph size={s} scale={1.1} />
-            </button>
-          ))}
+        <div
+          className={"hw-pop" + (alignLeft ? " is-left" : "")}
+          role="dialog"
+          aria-label={`Edit ${title}`}
+        >
+          <div className="hw-label">Size</div>
+          <SizeChips sizes={spec.sizes} value={widget.size} onChange={onResize} />
+          {spec.formats.length > 1 ? (
+            <>
+              <div className="hw-label">Show as</div>
+              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} onChange={onReformat} />
+            </>
+          ) : null}
+          <div className="hw-pop-divider" />
+          <button
+            type="button"
+            className="hw-pop-remove"
+            onClick={() => {
+              setOpen(false);
+              onRemove();
+            }}
+          >
+            Remove widget
+          </button>
         </div>
       ) : null}
     </span>
@@ -154,14 +171,15 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
       onDragEnd={edit ? p.onDragEnd : undefined}
       onKeyDown={edit ? p.onKeyDown : undefined}
     >
+      {edit ? (
+        <button type="button" className="hw-remove" aria-label={`Remove ${title}`} onClick={p.onRemove}>
+          ×
+        </button>
+      ) : null}
       <div className="hw-head">
         {edit ? (
           <span className="hw-grip" aria-hidden="true" title="Drag to reorder">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-              <circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" />
-              <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
-              <circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" />
-            </svg>
+            ⋮⋮
           </span>
         ) : null}
         <h2 className="hw-title">
@@ -174,30 +192,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           )}
         </h2>
         {edit ? (
-          <div className="hw-tools">
-            <SizeMenu widget={widget} onResize={p.onResize} />
-            {spec.formats.length > 1 ? (
-              <span className="hw-seg" role="radiogroup" aria-label="Format">
-                {spec.formats.map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    role="radio"
-                    aria-checked={f === widget.format}
-                    className={"hw-seg-btn" + (f === widget.format ? " is-on" : "")}
-                    onClick={() => p.onReformat(f)}
-                  >
-                    {FORMAT_LABELS[f]}
-                  </button>
-                ))}
-              </span>
-            ) : null}
-            <button type="button" className="hw-x" aria-label={`Remove ${title}`} title="Remove" onClick={p.onRemove}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
-          </div>
+          <EditPopover widget={widget} title={title} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
         ) : seeAll ? (
           <a className="home-sec-more" href={seeAll} onClick={(e) => softNavigate(e, seeAll)}>
             See all

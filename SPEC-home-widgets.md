@@ -167,3 +167,12 @@ Dead ends: BSD sed in-place line inserts; the worktree shell guard refuses hered
 Not verified (needs a real browser): drag reorder, size/format menus, add panel, both themes, narrow width, keyboard Alt+Arrow focus retention.
 
 Cards strip: a cards widget is a horizontally scrolling strip (`CardStrip`), not a wrapped row that shows only what fits. Cards are sized so `count` cards plus a 56px peek (`PEEK_W`) of the next one fill the row, with an edge fade and ‹ › buttons that page by one viewport minus the peek. Every fetched item renders. The row fetches `limit * rows + 1` so there is always a next card to peek; it must stay measured, never a fixed MAX_ROW (that brings back the server's exhaustive workspace walk, see strip.ts). Not verified without a browser: peek width, fade, button hover/touch visibility, snap, edit-mode drag.
+
+Edit mode v1 (gallery sheet): replaces the inline chip, segmented control and right-hand panel.
+- Edit bar (`.hw-editbar`) holds hint, Reset to default (with the in-page confirm), + Add widget and Done; view mode keeps the Customize pill.
+- Each edit-mode widget has a corner remove button and one "Edit ▾" popover (`.hw-pop`, 360px) with size chips and format thumbnails; it flips to left-aligned when a right-aligned card would leave the viewport.
+- The add sheet is portalled to `document.body` (a `container-type` ancestor would otherwise trap `position: fixed`), narrow layout keys off the dialog's own container width. `--scrim` is a new token in both palettes.
+- `addWidget`/`makeWidget` accept `size`; SIZE_LABELS are now Small/Half/Large/Full row.
+- `FormatPreview` is static and scaled with CSS `zoom` (zoom factors in `Pickers.tsx`). Grid is `row dense`.
+- Scroll-to-new-widget after Add is a timed `scrollIntoView` on the last `.hw-widget`.
+- Not verified without a browser: every visual (popover placement and flip, thumbnail crops and zoom factors, stage fit, narrow sheet, both themes), focus return and Tab trap, Esc layering, dense packing during drag, scroll-into-view.

@@ -28,9 +28,11 @@ export default function Home({ config }: { config: Config }) {
   const layoutApi = useHomeLayout();
   const [edit, setEdit] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   useEffect(() => {
     if (!edit) {
       setPanelOpen(false);
+      setConfirmReset(false);
       return;
     }
     const key = (e: KeyboardEvent) => {
@@ -72,18 +74,57 @@ export default function Home({ config }: { config: Config }) {
                 the search result IS the page then. */}
             <ClaudeHealthStrip />
             <FdaStrip />
-            <div className="hw-toolbar">
-              <button
-                type="button"
-                className={"hw-customize" + (edit ? " is-on" : "")}
-                disabled={!layoutApi.loaded}
-                aria-pressed={edit}
-                onClick={() => setEdit((v) => !v)}
-              >
-                {edit ? "Done" : "Customize"}
-              </button>
-            </div>
-            <div className={"hw-stage" + (edit && panelOpen ? " has-panel" : "")}>
+            {edit ? (
+              <div className="hw-editbar">
+                <span className="hw-editbar-hint">Editing Home · drag ⋮⋮ to rearrange</span>
+                {confirmReset ? (
+                  <span className="hw-confirm">
+                    Replace your layout with the default?
+                    <button
+                      type="button"
+                      className="hw-tb is-danger"
+                      onClick={() => {
+                        layoutApi.reset();
+                        setConfirmReset(false);
+                      }}
+                    >
+                      Reset
+                    </button>
+                    <button type="button" className="hw-tb is-ghost" onClick={() => setConfirmReset(false)}>
+                      Cancel
+                    </button>
+                  </span>
+                ) : (
+                  <button type="button" className="hw-tb is-ghost" onClick={() => setConfirmReset(true)}>
+                    Reset to default
+                  </button>
+                )}
+                <button type="button" className="hw-tb" onClick={() => setPanelOpen(true)}>
+                  + Add widget
+                </button>
+                <button
+                  type="button"
+                  className="hw-tb is-primary"
+                  aria-pressed={edit}
+                  onClick={() => setEdit(false)}
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <div className="hw-toolbar">
+                <button
+                  type="button"
+                  className="hw-customize"
+                  disabled={!layoutApi.loaded}
+                  aria-pressed={false}
+                  onClick={() => setEdit(true)}
+                >
+                  Customize
+                </button>
+              </div>
+            )}
+            <div className="hw-stage">
               {layoutApi.loaded ? (
                 <div className="hw-stage-main">
                   <WidgetGrid api={layoutApi} edit={edit} onAdd={() => setPanelOpen(true)} />

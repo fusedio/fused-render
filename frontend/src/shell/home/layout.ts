@@ -100,13 +100,13 @@ export function newWidgetId(): string {
 
 function makeWidget(
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; format?: WidgetFormat } = {},
+  opts: { id?: string; folderId?: string; format?: WidgetFormat; size?: WidgetSize } = {},
 ): Widget {
   const spec = SOURCES[source];
   const w: Widget = {
     id: opts.id ?? newWidgetId(),
     source,
-    size: spec.sizes[0],
+    size: opts.size && spec.sizes.includes(opts.size) ? opts.size : spec.sizes[0],
     format: opts.format && spec.formats.includes(opts.format) ? opts.format : spec.formats[0],
   };
   if (opts.folderId) w.folderId = opts.folderId;
@@ -176,7 +176,7 @@ export function moveWidget(layout: HomeLayout, from: number, to: number): HomeLa
 export function addWidget(
   layout: HomeLayout,
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; format?: WidgetFormat } = {},
+  opts: { id?: string; folderId?: string; format?: WidgetFormat; size?: WidgetSize } = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   return { ...layout, widgets: [...layout.widgets, makeWidget(source, opts)] };
@@ -236,8 +236,8 @@ export const FORMAT_LABELS: Record<WidgetFormat, string> = {
 
 /** Menu labels for sizes. */
 export const SIZE_LABELS: Record<WidgetSize, string> = {
-  "1x1": "1×1",
-  "2x1": "2×1",
-  "2x2": "2×2",
+  "1x1": "Small",
+  "2x1": "Half",
+  "2x2": "Large",
   "4x1": "Full row",
 };

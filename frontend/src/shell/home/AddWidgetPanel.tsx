@@ -1,9 +1,13 @@
-// Right-hand panel in edit mode: every source with its description and format
-// choices. Choosing one appends a widget with that source's default size.
-import { useEffect, useState } from "react";
+// The "Add a widget" sheet: a centred modal with the sources on the left and,
+// on the right, a large preview of the chosen look plus the format and size
+// picks. "Add to Home" appends with the chosen format and size.
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
-import { FORMAT_LABELS, MAX_WIDGETS, SOURCES, type WidgetSource } from "./layout";
+import { FormatPreview } from "./FormatPreview";
+import { FormatPicks, SizeChips, stageZoom } from "./Pickers";
+import { MAX_WIDGETS, SOURCES, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 
 function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): BookmarkFolder[] {
@@ -16,12 +20,37 @@ function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): Bookmark
   return out;
 }
 
+const SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
+
 export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: () => void }) {
   useBookmarksVersion();
-  const [pickingFolder, setPickingFolder] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
+  const dialog = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const [source, setSource] = useState<WidgetSource>(SOURCE_KEYS[0]);
+  const [format, setFormat] = useState<WidgetFormat>(SOURCES[SOURCE_KEYS[0]].formats[0]);
+  const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);
+  const [folderId, setFolderId] = useState<string | null>(null);
+  const folders = allFolders(loadBookmarks());
+  const spec = SOURCES[source];
+  const full = api.layout.widgets.length >= MAX_WIDGETS;
+  const chosenFolder = folders.find((f) => f.id === folderId) ?? folders[0] ?? null;
+  const noFolders = source === "folder" && !folders.length;
+
+  const pick = (s: WidgetSource) => {
+    setSource(s);
+    setFormat(SOURCES[s].formats[0]);
+    setSize(SOURCES[s].sizes[0]);
+  };
+
+  // Focus the dialog on open; hand focus back to whatever opened it on close.
   useEffect(() => {
-    const key = (e: KeyboardEvent) => {
+    const opener = document.activeElement as HTMLElement | null;
+    dialog.current?.focus();
+    return () => opener?.focus?.();
+  }, []);
+
+  useEffect(() => {
+    const key = (e: globalThis.KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
       onClose();
@@ -29,99 +58,138 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
     document.addEventListener("keydown", key, true);
     return () => document.removeEventListener("keydown", key, true);
   }, [onClose]);
-  const full = api.layout.widgets.length >= MAX_WIDGETS;
-  const folders = allFolders(loadBookmarks());
-  const sources = Object.keys(SOURCES) as WidgetSource[];
-  return (
-    <aside className="hw-panel" aria-label="Add a widget">
-      <div className="hw-panel-head">
-        <h2 className="hw-panel-title">Add a widget</h2>
-        <button type="button" className="hw-x" aria-label="Close panel" onClick={onClose}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
-      </div>
-      {full ? <p className="hw-panel-note">Home is full ({MAX_WIDGETS} widgets). Remove one to add another.</p> : null}
-      <ul className="hw-panel-list">
-        {sources.map((s) => {
-          const spec = SOURCES[s];
-          return (
-            <li key={s} className="hw-panel-item">
-              <div className="hw-panel-name">{spec.label}</div>
-              <div className="hw-panel-desc">{spec.description}</div>
-              {s === "folder" ? (
-                pickingFolder ? (
-                  folders.length ? (
-                    <div className="hw-panel-folders">
-                      {folders.map((f) => (
-                        <button
-                          key={f.id}
-                          type="button"
-                          className="hw-btn"
-                          disabled={full}
-                          onClick={() => {
-                            api.add("folder", { folderId: f.id });
-                            setPickingFolder(false);
-                          }}
-                        >
-                          {f.name}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="hw-panel-note">You have no bookmark folders yet. Create one in the sidebar.</p>
-                  )
-                ) : (
-                  <div className="hw-panel-formats">
-                    <button type="button" className="hw-btn" disabled={full} onClick={() => setPickingFolder(true)}>
-                      Choose folder…
-                    </button>
+
+  const onListKey = (e: KeyboardEvent) => {
+    const d = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+    if (!d) return;
+    e.preventDefault();
+    const next = SOURCE_KEYS[SOURCE_KEYS.indexOf(source) + d];
+    if (!next) return;
+    pick(next);
+    list.current?.querySelector<HTMLElement>(`[data-source="${next}"]`)?.focus();
+  };
+
+  // Keep Tab inside the dialog.
+  const onDialogKey = (e: KeyboardEvent) => {
+    if (e.key !== "Tab" || !dialog.current) return;
+    const items = Array.from(
+      dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled), [tabindex]:not([tabindex='-1'])"),
+    );
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === dialog.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  const add = () => {
+    if (full || noFolders) return;
+    api.add(source, source === "folder" ? { folderId: chosenFolder?.id, format, size } : { format, size });
+    onClose();
+    // The new widget is the last one in the grid; wait a beat for it to mount.
+    setTimeout(() => {
+      const all = document.querySelectorAll(".hw-widget");
+      all[all.length - 1]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, 80);
+  };
+
+  return createPortal(
+    <div className="hw-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div
+        ref={dialog}
+        className="hw-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add a widget"
+        tabIndex={-1}
+        onKeyDown={onDialogKey}
+      >
+        <div className="hw-sheet-body">
+          <div className="hw-sheet-side" role="listbox" aria-label="Widget source" ref={list} onKeyDown={onListKey}>
+            {SOURCE_KEYS.map((s) => (
+              <button
+                key={s}
+                type="button"
+                role="option"
+                aria-selected={s === source}
+                data-source={s}
+                tabIndex={s === source ? 0 : -1}
+                className={"hw-src" + (s === source ? " is-on" : "")}
+                onClick={() => pick(s)}
+              >
+                <span className="hw-src-sq" />
+                {SOURCES[s].label}
+              </button>
+            ))}
+          </div>
+          <div className="hw-sheet-main">
+            <div>
+              <h3 className="hw-sheet-title">{spec.label}</h3>
+              <p className="hw-sheet-desc">{spec.description}</p>
+            </div>
+            {full ? <p className="hw-sheet-note">Home is full ({MAX_WIDGETS} widgets). Remove one to add another.</p> : null}
+            {source === "folder" ? (
+              <div className="hw-stage-box is-folders">
+                {folders.length ? (
+                  <div className="hw-folders" role="radiogroup" aria-label="Bookmark folder">
+                    {folders.map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={f.id === chosenFolder?.id}
+                        className={"hw-folder" + (f.id === chosenFolder?.id ? " is-on" : "")}
+                        onClick={() => setFolderId(f.id)}
+                      >
+                        {f.name}
+                      </button>
+                    ))}
                   </div>
-                )
-              ) : (
-                <div className="hw-panel-formats">
-                  {spec.formats.map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      className="hw-btn"
-                      disabled={full}
-                      onClick={() => api.add(s, { format: f })}
-                    >
-                      {FORMAT_LABELS[f]}
-                    </button>
-                  ))}
+                ) : (
+                  <div className="hw-nofolders">
+                    <span className="hw-src-sq is-lg" />
+                    <b>No bookmark folders yet</b>
+                    <span>Bookmark a folder from the file explorer, then come back to pin it here.</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="hw-stage-box">
+                <span className="hw-stage-in" style={{ zoom: stageZoom(source, format) }}>
+                  <FormatPreview source={source} format={format} />
+                </span>
+              </div>
+            )}
+            <div className="hw-opts">
+              {spec.formats.length > 1 ? (
+                <div className="hw-opt">
+                  <span className="hw-label">Show as</span>
+                  <FormatPicks source={source} formats={spec.formats} value={format} onChange={setFormat} />
                 </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      <div className="hw-panel-foot">
-        {confirmReset ? (
-          <span className="hw-confirm">
-            Replace your layout with the default?
-            <button
-              type="button"
-              className="hw-btn is-danger"
-              onClick={() => {
-                api.reset();
-                setConfirmReset(false);
-              }}
-            >
-              Reset
-            </button>
-            <button type="button" className="hw-btn" onClick={() => setConfirmReset(false)}>
-              Cancel
-            </button>
-          </span>
-        ) : (
-          <button type="button" className="hw-link" onClick={() => setConfirmReset(true)}>
-            Reset to default
+              ) : null}
+              <div className="hw-opt">
+                <span className="hw-label">Size</span>
+                <SizeChips sizes={spec.sizes} value={size} onChange={setSize} />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="hw-sheet-foot">
+          <button type="button" className="hw-tb is-ghost" onClick={onClose}>
+            Cancel
           </button>
-        )}
+          <button type="button" className="hw-tb is-primary" disabled={full || noFolders} onClick={add}>
+            Add to Home
+          </button>
+        </div>
       </div>
-    </aside>
+    </div>,
+    document.body,
   );
 }
