@@ -18,9 +18,9 @@ MAX_APP_PATH = 4096
 # Version 1 predates the search widget; the client prepends one when it loads a
 # version-1 document and stamps 2. The server keeps whichever version it was given.
 VERSIONS = {1, 2}
-SOURCES = {"search", "build", "apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index", "app"}
+SOURCES = {"search", "build", "apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index", "app", "spacer"}
 SIZES = {"1x1", "2x1", "1x2", "2x2", "4x1"}
-FORMATS = {"cards", "list", "icons", "board", "count", "live", "bar"}
+FORMATS = {"cards", "list", "icons", "board", "count", "live", "bar", "blank"}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:

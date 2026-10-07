@@ -19,6 +19,7 @@ import {
   ListChecks,
   Search,
   Sparkles,
+  Square,
   type LucideIcon,
 } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -43,6 +44,7 @@ const SOURCE_ICONS: Record<WidgetSource, LucideIcon> = {
   bots: Bot,
   folder: Bookmark,
   index: Database,
+  spacer: Square,
 };
 
 /** The source's mark: a lucide glyph on an accent-tinted rounded square. */
