@@ -1,7 +1,9 @@
 /* Native chat tokens (apps/claude). The template's palette (T:13-67 dark,
    T:69-101 light) aliased under `.chat-root` with a `--c-` prefix: the old names
    (`--bg`, `--accent`, `--border`, …) collide with tokens.css at different
-   values (shell accent is yellow, the chat's is Claude orange). Values verbatim.
+   values (shell accent is yellow, the chat's is Claude orange). Surfaces, text
+   and border alias the shell tokens so the chat follows the shell theme; the
+   accent stays Claude orange.
    Theme follows the shell's `data-theme` on <html>; no runtime handshake.
 
    `.c-tokens` CARRIES THE SAME BLOCK, for the surfaces that are the chat's but
@@ -27,17 +29,17 @@
 .c-tokens,
 .c-overlay {
   color-scheme: dark;
-  --c-bg: #191a1e;
-  --c-panel: #1e2025;
-  --c-surface: #26282f;
-  --c-surface-2: #2d3038;
-  --c-bubble-user: #2f3239;
-  --c-fg: #ececf1;
+  --c-bg: var(--bg);
+  --c-panel: var(--bg-alt);
+  --c-surface: var(--row-bg-hover);
+  --c-surface-2: var(--row-bg-selected);
+  --c-bubble-user: var(--row-bg-selected);
+  --c-fg: var(--fg);
   --c-fg-strong: #ffffff;
-  --c-dim: #9a9fa9;
-  --c-faint: #8a8f99;
+  --c-dim: var(--fg-muted);
+  --c-faint: var(--fg-faint);
   --c-status-progress: #facc15;
-  --c-border: #34363e;
+  --c-border: var(--border);
   --c-border-strong: #4a4d57;
   --c-accent: #d97757;
   --c-accent-text: #e8907a;
@@ -63,9 +65,9 @@
      copy button and the qhead pill must not have to move with it. Two rules
      paint a 3px inset ring in this colour to fake a notch out of the card, so
      they follow the token rather than a literal. */
-  --c-card-bg: #26282f;
+  --c-card-bg: var(--row-bg-hover);
   --c-card-bg-2: #383c47;
-  --c-card-border: #4e525f;
+  --c-card-border: var(--border);
   --c-code-bg: #2a2c33;
   --c-code-fg: #e8c07d;
   --c-pre-bg: #141519;
@@ -86,17 +88,17 @@
 :root[data-theme="light"] .c-tokens,
 :root[data-theme="light"] .c-overlay {
   color-scheme: light;
-  --c-bg: #ffffff;
-  --c-panel: #fafafa;
-  --c-surface: #f4f4f6;
-  --c-surface-2: #ebebef;
-  --c-bubble-user: #f0f0f3;
-  --c-fg: #1f2023;
+  --c-bg: var(--bg);
+  --c-panel: var(--bg-alt);
+  --c-surface: var(--row-bg-hover);
+  --c-surface-2: var(--row-bg-selected);
+  --c-bubble-user: var(--row-bg-selected);
+  --c-fg: var(--fg);
   --c-fg-strong: #000000;
-  --c-dim: #61656c;
-  --c-faint: #676c74;
+  --c-dim: var(--fg-muted);
+  --c-faint: var(--fg-faint);
   --c-status-progress: #ca8a04;
-  --c-border: #e3e4e8;
+  --c-border: var(--border);
   --c-border-strong: #c9cbd2;
   --c-accent: #b8542f;
   --c-accent-text: #9e4319;
@@ -107,9 +109,9 @@
      goes DOWN rather than up — the same "sitting on the page" separation read
      the other way round — and the border does the rest of the work. T:2037's
      own light value, measured `rgb(244,244,246)` (FIX-22). */
-  --c-card-bg: #f4f4f6;
+  --c-card-bg: var(--row-bg-hover);
   --c-card-bg-2: #e4e6ec;
-  --c-card-border: #c2c5ce;
+  --c-card-border: var(--border);
   --c-code-bg: #f0f1f3;
   --c-code-fg: #8a5a12;
   --c-pre-bg: #f7f8f9;
@@ -139,8 +141,6 @@
 .c-overlay {
   --error: var(--c-error);
   --error-rgb: 242, 109, 109;
-  --fg: var(--c-fg);
-  --fg-muted: var(--c-dim);
 }
 :root[data-theme="light"] .c-tokens,
 :root[data-theme="light"] .c-overlay {

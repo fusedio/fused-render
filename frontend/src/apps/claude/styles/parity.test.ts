@@ -202,8 +202,8 @@ test("FIX-22 — the card wears T's surface and T's shadow, with no extra ring",
   // T draws in neither theme. The token is repointed rather than the rule, so
   // the two `inset 0 0 0 3px var(--c-card-bg)` rings that fake a notch out of
   // the card follow it.
-  expect(CHAT).toContain("--c-card-bg: #26282f");
-  expect(CHAT).toContain("--c-card-bg: #f4f4f6");
+  // The surface now aliases the shell token in both theme blocks.
+  expect(CHAT).toContain("--c-card-bg: var(--row-bg-hover)");
   const perm = one(TRANSCRIPT, ".chat-root .perm");
   expect(perm).toContain("background: var(--c-card-bg)");
   expect(perm).toContain("box-shadow: 0 4px 16px var(--c-shadow)");

@@ -6597,3 +6597,5 @@ A preset (`default`, `high-contrast`, `midnight`) is a second attribute, `data-t
 Midnight preset: true black (OLED), lime accent `#eefd7f` dark / `#5c6b00` light; it overrides `--on-accent` because the accent is light.
 
 Nord and Solarized were dropped before merge to avoid maintaining presets nobody asked for; stale stored ids fall back to default.
+
+Claude chat surfaces, text and border (`--c-bg`, `--c-panel`, `--c-surface`, `--c-surface-2`, `--c-bubble-user`, `--c-fg`, `--c-dim`, `--c-faint`, `--c-border`, `--c-card-bg`, `--c-card-border`) now alias the shell tokens in `apps/claude/styles/chat.css`, so the side panel follows every preset; the accent stays Claude orange.
