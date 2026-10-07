@@ -13,9 +13,7 @@ import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/
 import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import {
-  act, cur, eventsOf, getState, markSeen, openDialog, select, setNewCount, setScrollToEnd, unviewed, useBots, viewedSet,
-} from "../state/store";
+import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, gapOf, evBox, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { SetupLines } from "./SetupLines";
 
@@ -129,7 +127,15 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
   const title = fmtWhen(e.ts);
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
   // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
-  if (isHandoff(e) && e.role === "system") return <div className="msg note" title={title}>{e.text}</div>;
+  if (isHandoff(e) && e.role === "system") {
+    const l = e.link, linkLive = !!l && getState().bots.some((x) => x.id === l.bot);
+    return (
+      <div className="msg note" title={title}>
+        {e.text}
+        {l ? <button className="readmore" data-jump-bot={l.bot} data-jump-seq={l.seq} disabled={!linkLive} title={linkLive ? "Open Super Bot's chat at this message" : "Super Bot is gone"}>Read more</button> : null}
+      </div>
+    );
+  }
   if (e.role === "action") {
     return <Action text={e.text} result={e.result || ""} detail={detailText(e.detail)} thumbSrc={e.thumb ? stepThumbUrl(botId, e.thumb) : ""} title={title} />;
   }
@@ -305,7 +311,12 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // Your own send (scrollToEnd), opening a bot, or anything arriving while you sit at the end keeps you at the bottom;
     // scrolled up, incoming messages leave you where you are and light the pill.
     const { wasAtEnd, anchors } = measure.current;
-    if (bumped || s.scrollToEnd || wasAtEnd) pinToEnd(th, botId || undefined);
+    // jumpTo(): land on one message of this bot (a "Read more" from another bot's chat), once it is in the DOM.
+    // The .ev wrapper has no box (display: contents): scroll the message inside it.
+    const js = s.scrollSeq, jumpEv = js && js.bot === botId ? th.querySelector<HTMLElement>(`.ev[data-seq="${js.seq}"]`) : null;
+    const jumpEl = jumpEv ? evBox(jumpEv) : null;
+    if (jumpEl) { jumpEl.scrollIntoView({ block: "start" }); clearScrollSeq(); }
+    else if (bumped || s.scrollToEnd || wasAtEnd) pinToEnd(th, botId || undefined);
     // Anchors only ever fall off the top, so losing all of them means you were reading history the cap has now dropped:
     // the oldest message left is the closest thing to what you were looking at, so sit at the top of it.
     else if (rebuilt && !restoreAnchor(th, anchors)) th.scrollTop = 0;
@@ -356,6 +367,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   // ---- clicks: react → picker, reply → quote, option → answer, approve / deny ----
   const onClick = (ev: ReactMouseEvent<HTMLDivElement>) => {
     const t = ev.target as Element, sel = getState().sel;
+    const jump = t.closest<HTMLElement>("[data-jump-bot]");
+    if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
     const rc = t.closest("[data-react]");
     if (rc) { onReact(rc, Number(rc.getAttribute("data-react"))); return; }
     const dlg = t.closest("[data-dialog]");

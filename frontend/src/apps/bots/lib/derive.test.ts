@@ -7,7 +7,7 @@ const bot = (p: Partial<Bot>): Bot => ({ id: "b", name: "b", model: "sonnet", ef
 describe("statusLabel", () => {
   test("running shows the step, and the cap when there is one", () => {
     expect(statusLabel(bot({ status: "running", step: 12 }))).toBe("running · step 12");
-    expect(statusLabel(bot({ status: "running", step: 12, step_cap: 60 }))).toBe("running · step 12/60");
+    expect(statusLabel(bot({ status: "running", step: 12, step_cap: 60 }))).toBe("running · step 12");  // step_cap is a safety limit, not a plan: never shown
     expect(statusLabel(bot({ status: "running" }))).toBe("running · step 0");
   });
   test("other states ignore the cap", () => {

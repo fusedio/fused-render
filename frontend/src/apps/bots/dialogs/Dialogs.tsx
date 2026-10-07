@@ -43,11 +43,14 @@ export function Dialogs() {
   }, [needDetail, b?.id]);
 
   let dialog = null;
-  // "+ New bot": the preset chooser first; a pick reopens the slot as the create form filled in from it. Cancel
-  // (Escape, backdrop) in the form steps BACK to the chooser rather than closing everything: the pick was one
-  // click and is cheap to redo, the chooser is where a second thought goes. Cancel in the chooser closes.
+  // "+ New bot": the preset chooser first; a pick reopens the slot as the create form filled in from it. In the form,
+  // Cancel steps BACK to the chooser (the pick was one click; the chooser is where a second thought goes), while
+  // Escape and a press outside leave the whole flow. The chooser's X / outside press close.
   if (req?.kind === "newBot" && !req.pick) dialog = <PresetPicker key={key} onDone={(p) => { if (p) openDialog({ kind: "newBot", pick: p }); else closeDialog(); }} />;
-  else if (req?.kind === "newBot" && req.pick) dialog = <CreateBot key={key} pick={req.pick} onClose={(v) => { if (v) { closeDialog(); void createBot(v); } else openDialog({ kind: "newBot" }); }} />;
+  else if (req?.kind === "newBot" && req.pick) {
+    dialog = <CreateBot key={key} pick={req.pick} onBack={() => openDialog({ kind: "newBot" })}
+      onClose={(v) => { closeDialog(); if (v) void createBot(v); }} />;
+  }
   else if (b && !needDetail) {
     if (req?.kind === "settings") {
       const bid = b.id, tab = typeof req.tab === "string" ? req.tab : undefined;

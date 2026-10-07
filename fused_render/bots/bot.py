@@ -2319,13 +2319,15 @@ class Bot:
             flat = " ".join(text.split())
             m = re.match(r"(.+?[.!?])(?:\s|$)", flat)
             summary = (m.group(1) if m else flat)[:600]
-        self.emit("done", text, summary=summary, source="handoff",
-                  handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
+        card = self.emit("done", text, summary=summary, source="handoff",
+                         handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
         if t is not None and not t.deleted and self._exists(t.id):
             try:
                 # A short pointer, not the result (the bot's own "done" row above has it in full): cut at a word and
-                # marked as cut, so it never ends mid-word like a clipped message.
-                t.emit("system", f"Sent to Super Bot: {_clip(text, 280)}", source="handoff", via=None)
+                # marked as cut, so it never ends mid-word like a clipped message. `link` is the card it became in
+                # Super Bot's chat ("Read more" in components/Thread.tsx opens that chat at it).
+                t.emit("system", f"Sent to Super Bot: {_clip(text, 280)}", source="handoff", via=None,
+                       link={"bot": self.id, "seq": card.get("seq")})
             except Exception:  # noqa: BLE001
                 logger.debug("hand-off line not written on %s", t.id, exc_info=True)
 

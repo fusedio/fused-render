@@ -36,10 +36,15 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
     <div id="pmodal" className="modal show" role="dialog" aria-modal="true" aria-label="New bot"
       onClick={(e) => { if (e.target === e.currentTarget) onDone(null); }}>
       <div className="box">
+        <button className="xclose" aria-label="Close" title="Close (Esc)" onClick={() => onDone(null)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
         <h3>New bot</h3>
-        <p className="muted">
-          A site bot comes with playbooks: ready-made tasks it already knows, like “X timeline digest”. Start blank to write your own rules
-          {hasSuper ? "" : ", or make Super Bot, which works on this Mac itself"}. Name and rules come next.
+        <p className="muted lead">
+          Create your own bot from scratch, or pick a pre-built bot that comes with playbooks
+          <span className="info" tabIndex={0} role="img" aria-label="What a playbook is"
+            title={"A playbook is a ready-made task the bot already knows how to run, like “X timeline digest” or “Gmail unread inbox digest”. Ask for it by name; edit or add your own under Skills once the bot exists."}>i</span>
+          {hasSuper ? "" : " — or make Super Bot for this Mac"}.
         </p>
         <label className="search psearch">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
@@ -75,7 +80,6 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
           })}
         </div>
         <p className="muted" id="pnone" style={{ display: none ? "" : "none" }}>No preset matches. Clear the search and pick a blank bot to write your own rules.</p>
-        <div className="row"><button id="pcancel" onClick={() => onDone(null)}>Cancel</button></div>
       </div>
     </div>
   );

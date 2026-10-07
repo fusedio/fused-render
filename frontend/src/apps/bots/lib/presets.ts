@@ -79,16 +79,17 @@ export const presetNote = (p: Pick<Preset, "skills">): string =>
   `Comes with ${p.skills.length} playbooks: ${p.skills.join(", ")}. Edit them under Skills once the bot exists.`;
 
 /** What the bot dialog opens with for a pick (OpenBot's `$("add").onclick`). */
-export function newBotInit(pick: NewBotPick): { title: string; name: string; model: string; instructions: string; face: Face; presetNote: string; preset: string } {
+export function newBotInit(pick: NewBotPick): { title: string; name: string; model: string; instructions: string; face: Face; presetNote: string; preset: string; skills: string[] } {
   if (pick.kind === "preset") {
     const p = pick.preset;
+    // The form lists `skills` itself (collapsed, "N playbooks"); presetNote stays the one-line fallback.
     return { title: `New ${p.name} bot`, name: `${p.name} bot`, model: p.model || "sonnet", instructions: p.instructions || "",
-      face: { icon: p.key, color: p.color }, presetNote: presetNote(p), preset: p.key };
+      face: { icon: p.key, color: p.color }, presetNote: presetNote(p), preset: p.key, skills: p.skills || [] };
   }
   if (pick.kind === "super") {
     // Instructions stay blank: the backend fills its standing rules in when the user types none.
-    return { title: `New ${SUPER_NAME}`, name: SUPER_NAME, model: "sonnet", instructions: "", face: SUPER_FACE, presetNote: SUPER_NOTE, preset: "" };
+    return { title: `New ${SUPER_NAME}`, name: SUPER_NAME, model: "sonnet", instructions: "", face: SUPER_FACE, presetNote: SUPER_NOTE, preset: "", skills: [] };
   }
   const b = pick.blank;
-  return { title: `New ${b.name}`, name: b.name, model: "sonnet", instructions: "", face: b.face, presetNote: "", preset: "" };
+  return { title: `New ${b.name}`, name: b.name, model: "sonnet", instructions: "", face: b.face, presetNote: "", preset: "", skills: [] };
 }

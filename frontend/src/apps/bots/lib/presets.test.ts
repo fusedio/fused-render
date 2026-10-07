@@ -79,11 +79,12 @@ describe("newBotInit", () => {
       title: "New LinkedIn bot", name: "LinkedIn bot", model: "haiku", instructions: "Browse LinkedIn.",
       face: { icon: "linkedin", color: "#0a66c2" }, preset: "linkedin",
       presetNote: "Comes with 2 playbooks: Find recruiters, Summarize my feed. Edit them under Skills once the bot exists.",
+      skills: ["Find recruiters", "Summarize my feed"],
     });
   });
   test("a blank fills its name and face, sonnet, no note, no preset", () => {
     expect(newBotInit({ kind: "blank", blank: BLANKS[2] })).toEqual({
-      title: "New Blue Bot", name: "Blue Bot", model: "sonnet", instructions: "", face: { shape: "square", color: "#2f7ae5" }, presetNote: "", preset: "",
+      title: "New Blue Bot", name: "Blue Bot", model: "sonnet", instructions: "", face: { shape: "square", color: "#2f7ae5" }, presetNote: "", preset: "", skills: [],
     });
   });
   test("presetNote counts the playbooks", () => {
