@@ -152,8 +152,11 @@ def test_stop_requires_guard_and_known_chat(client, logroot):
 def test_stop_kills_running_command_tree(client, logroot, tmp_path):
     chat = "c-stop"
     env = dict(os.environ, SHELL="/bin/sh", FUSED_CLAUDE_CMD_LOG=str(logroot / chat))
+    # A new session detaches from any controlling tty the test runner has, so
+    # this matches CI (which never has one).
     p = subprocess.Popen([WRAPPER, wrapped("sleep 60", str(tmp_path / "s-cwd"))],
-                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
     try:
         for _ in range(100):
             d = logroot / chat

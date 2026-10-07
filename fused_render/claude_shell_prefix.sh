@@ -102,14 +102,31 @@ tee -a "$base.out" < "$fe" >&2 &
 t2=$!
 
 # A non-interactive sh starts an async job with SIGINT/SIGQUIT ignored (POSIX),
-# and a child cannot undo an inherited SIG_IGN, so KeyboardInterrupt, `kill
-# -INT` and test-runner cancellation would all be dead inside the command.
-# `set -m` around just the launch gives the job its own process group with the
-# default dispositions (no perl needed, stderr untouched).
-set -m
-"$sh_bin" -c "$cmd" <&3 >"$fo" 2>"$fe" &
+# and a child cannot undo an inherited SIG_IGN via `trap` (POSIX: a signal
+# ignored on entry to a non-interactive shell cannot be trapped or reset), so
+# KeyboardInterrupt, `kill -INT` and test-runner cancellation would all be
+# dead inside the command. `set -m` gives the job its own process group and
+# default dispositions, but only by way of job control, which needs a real
+# controlling tty -- dash (and other shells) silently drop it otherwise and
+# leave both problems in place, while also warning on stderr. A plain
+# sigaction() has no such restriction, so python3 resets SIGINT/SIGQUIT and
+# claims a fresh process group before taking over the launch; without
+# python3 the job runs as before (inherited ignore, shared process group).
+if launcher=$(command -v python3 2>/dev/null); then
+  "$launcher" -c '
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+try:
+    os.setpgid(0, 0)
+except OSError:
+    pass
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$sh_bin" -c "$cmd" <&3 >"$fo" 2>"$fe" &
+else
+  "$sh_bin" -c "$cmd" <&3 >"$fo" 2>"$fe" &
+fi
 cpid=$!
-set +m
 # A signal aimed at this wrapper must reach the command (now its own process
 # group, led by $cpid), which is no longer the wrapper itself.
 trap 'kill -TERM -- -"$cpid" 2>/dev/null || kill -TERM "$cpid" 2>/dev/null' TERM INT HUP
