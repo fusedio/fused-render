@@ -161,7 +161,7 @@ describe("builds", () => {
     const css = buildFilterCss(["s1", 'pending:"x']);
     expect(css).toContain('.tasks-node:not(:has(.tasks-row[data-peek-key="s1"])):not(:has(.tasks-row[data-peek-key="pending:x"])) { display: none !important; }');
     expect(buildFilterCss([])).toContain(".tasks-node { display: none !important; }");
-    expect(buildFilterCss([])).toContain('.tasks-list-frame::before { content: "No builds yet. Start one with New build."');
+    expect(buildFilterCss([])).toContain('.tasks-list-frame::before { content: "No tasks yet. Start one with New task, or New app on the Apps page."');
   });
 
   test("buildPrompt is OpenBot's text", () => {
