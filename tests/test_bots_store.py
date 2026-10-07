@@ -272,6 +272,12 @@ def test_migrate_layout_leaves_the_browsers_folders_alone(app_home):
     assert bpaths.migrate_layout() == 0
     assert os.path.isfile(sess) and os.path.isdir(prof)
     assert not os.path.exists(os.path.join(base, "cache", "bots", "browsers"))
+    # a pass with nothing to move marks the install: later folders of any name are never swept
+    assert os.path.isfile(os.path.join(base, ".layout-v2"))
+    os.makedirs(os.path.join(base, "cache", "future-thing"))
+    os.makedirs(os.path.join(base, "cache", "deadbeef"))  # no such bot: not a bot's cache either
+    assert bpaths.migrate_layout() == 0
+    assert os.path.isdir(os.path.join(base, "cache", "future-thing")) and os.path.isdir(os.path.join(base, "cache", "deadbeef"))
 
 
 def test_migrate_layout_never_overwrites(app_home):
