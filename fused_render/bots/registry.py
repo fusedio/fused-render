@@ -124,10 +124,46 @@ def _scheduler(stop: threading.Event) -> None:
         stop.wait(SCHED_EVERY_S)
 
 
+SEED_STAMP = "super-seeded.json"
+
+
+def seed_stamp_path() -> str:
+    return os.path.join(bpaths.root(), SEED_STAMP)
+
+
+def seed_super() -> str | None:
+    """Super Bot exists from the first run (owner's ask, 2026-10-07): the one bot
+    the app is built around should not be a card among blank starters. Runs from
+    `start()`, after `fusedbot_import.import_once` (an imported tree may carry
+    one). Witness, not emptiness: `<home>/bots/super-seeded.json` records the
+    seed, so a Super Bot the user deletes stays deleted (the chooser's card is
+    the way back). The greeting is a fixed line (bot.SUPER_GREETING), never a
+    model call: Claude may not be linked yet on a fresh install.
+    Returns the new id, or None when nothing was seeded."""
+    from fused_render.bots import bot as bm
+    stamp = seed_stamp_path()
+    if os.path.exists(stamp) or bm.super_id() is not None:
+        return None
+    b = bm.create(kind="super", greet=False)
+    b.emit("done", bm.SUPER_GREETING, source="seed")
+    try:
+        os.makedirs(os.path.dirname(stamp), exist_ok=True)
+        with open(stamp, "w") as f:
+            json.dump({"id": b.id, "at": time.time()}, f)
+    except OSError:
+        logger.warning("could not write %s", stamp, exc_info=True)
+    return b.id
+
+
 def start() -> None:
     """Start the channels router, then the scheduler (idempotent). Router first:
     the scheduler's first pass builds every Bot, and a Bot's __init__ may emit
-    (an interrupted hand-off's result card) that must reach the phone."""
+    (an interrupted hand-off's result card) that must reach the phone.
+    Before either: the seeded Super Bot (seed_super), so the first pass sees it."""
+    try:
+        seed_super()
+    except Exception:  # noqa: BLE001 — a missing default bot is not a broken server
+        logger.warning("Super Bot was not seeded", exc_info=True)
     with _lock:
         need_router = _chan["router"] is None
     if need_router:  # outside the lock: a channel may look bots up as it starts

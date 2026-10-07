@@ -126,15 +126,13 @@ def resolve_contact(who, contacts):
     return None
 
 
-def super_door():
-    """(Super Bot's id, its normalized iMessage handle) or (None, ""): the one bot
-    a text reaches, and the one sender it takes texts from (docs §10). Other
-    bots' `imessage` keys are ignored. Read from disk on every call (no Bot objects)."""
+def super_meta():
+    """(Super Bot's id, its bot.json dict) or (None, {}), read from disk on every call (no Bot objects)."""
     bots = bots_dir()
     try:
         ids = sorted(os.listdir(bots))
     except OSError:
-        return None, ""
+        return None, {}
     for bid in ids:
         try:
             with open(os.path.join(bots, bid, "bot.json")) as f:
@@ -142,8 +140,33 @@ def super_door():
         except (OSError, ValueError):
             continue
         if isinstance(m, dict) and m.get("kind") == "super":
-            return bid, norm_handle(m.get("imessage"))
-    return None, ""
+            return bid, m
+    return None, {}
+
+
+def super_switch(m=None):
+    """Whether Super Bot's phone switch (Settings > Phone, `imessage_enabled`) is on.
+    A bot.json written before the switch existed has no key: then a handle means on
+    (the same rule Bot.__init__ stamps in)."""
+    if m is None:
+        _, m = super_meta()
+    if not m:
+        return False
+    if "imessage_enabled" in m:
+        return bool(m.get("imessage_enabled"))
+    return bool(norm_handle(m.get("imessage")))
+
+
+def super_door():
+    """(Super Bot's id, its normalized iMessage handle) or (None, ""): the one bot
+    a text reaches, and the one sender it takes texts from (docs §10). Other
+    bots' `imessage` keys are ignored. With the phone switch off the handle is
+    "" whatever is stored: the number is remembered for the next "on", but no
+    text reaches or leaves Super Bot meanwhile."""
+    bid, m = super_meta()
+    if bid is None or not super_switch(m):
+        return bid, ""
+    return bid, norm_handle(m.get("imessage"))
 
 
 def decode_attributed_body(blob):
