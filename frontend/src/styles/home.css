@@ -1059,6 +1059,37 @@ a.hw-more:hover {
   color: var(--accent);
 }
 
+.hw-menu.is-sizes {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  padding: 6px;
+  min-width: 0;
+}
+
+.hw-menu.is-sizes .hw-menu-item {
+  padding: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+.hw-menu.is-sizes .hw-menu-item:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+
+.hw-menu.is-sizes .hw-menu-item.is-on {
+  color: var(--accent);
+}
+
+.hw-chip:focus-visible,
+.hw-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .hw-seg {
   display: inline-flex;
   border: 1px solid var(--border);

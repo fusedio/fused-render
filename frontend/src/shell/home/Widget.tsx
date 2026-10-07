@@ -10,6 +10,7 @@ import { TasksWidget } from "./widgets/TasksWidget";
 import { BotsWidget } from "./widgets/BotsWidget";
 import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
+import { SizeGlyph } from "./SizeGlyph";
 
 const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   apps: "/apps",
@@ -76,29 +77,32 @@ function SizeMenu({
         className="hw-chip"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Widget size"
+        title={`Widget size: ${SIZE_LABELS[widget.size]}`}
+        aria-label={`Widget size: ${SIZE_LABELS[widget.size]}`}
         onClick={() => setOpen((o) => !o)}
       >
-        {SIZE_LABELS[widget.size]}
+        <SizeGlyph size={widget.size} scale={0.7} />
         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M6 9l6 6 6-6" />
         </svg>
       </button>
       {open ? (
-        <div className="hw-menu" role="menu">
+        <div className="hw-menu is-sizes" role="menu">
           {sizes.map((s) => (
             <button
               key={s}
               type="button"
               role="menuitemradio"
               aria-checked={s === widget.size}
+              aria-label={SIZE_LABELS[s]}
+              title={SIZE_LABELS[s]}
               className={"hw-menu-item" + (s === widget.size ? " is-on" : "")}
               onClick={() => {
                 onResize(s);
                 setOpen(false);
               }}
             >
-              {SIZE_LABELS[s]}
+              <SizeGlyph size={s} scale={1.1} />
             </button>
           ))}
         </div>
