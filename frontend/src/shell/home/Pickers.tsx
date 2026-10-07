@@ -17,11 +17,14 @@ export function SizeChips({
   value,
   onChange,
   label = "Size",
+  allowed,
 }: {
   sizes: WidgetSize[];
   value: WidgetSize;
   onChange: (s: WidgetSize) => void;
   label?: string;
+  /** Sizes that currently fit; the rest render disabled. Omit to allow all. */
+  allowed?: WidgetSize[];
 }) {
   return (
     <div className="hw-chips" role="radiogroup" aria-label={label}>
@@ -32,6 +35,8 @@ export function SizeChips({
           role="radio"
           aria-checked={s === value}
           className={"hw-sizechip" + (s === value ? " is-on" : "")}
+          disabled={allowed ? !allowed.includes(s) : false}
+          title={allowed && !allowed.includes(s) ? "No room here" : undefined}
           onClick={() => onChange(s)}
         >
           <SizeGlyph size={s} scale={0.7} />

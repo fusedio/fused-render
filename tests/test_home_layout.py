@@ -49,7 +49,7 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     w = {"id": "a", "source": "apps", "size": "4x1", "format": "cards"}
     bad = [
-        {"version": 3, "widgets": []},
+        {"version": 4, "widgets": []},
         {"version": 0, "widgets": []},
         {"version": 1, "widgets": "x"},
         {"version": 1, "widgets": [1]},

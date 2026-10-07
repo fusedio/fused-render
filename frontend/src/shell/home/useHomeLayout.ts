@@ -6,9 +6,11 @@ import { getHomeLayout, putHomeLayout } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import {
   addWidget,
+  compactLayout,
   defaultLayout,
-  moveWidget,
+  moveByArrow,
   normalizeLayout,
+  placeWidget,
   removeWidget,
   setFormat,
   setSize,
@@ -23,7 +25,12 @@ export interface HomeLayoutApi {
   /** False until the first GET settles — the grid waits so a saved layout never
       flashes the default one. */
   loaded: boolean;
-  move: (from: number, to: number) => void;
+  /** Move to cell (x, y); a refused (occupied / out of bounds) move is a no-op. */
+  place: (id: string, x: number, y: number) => void;
+  /** Alt+Arrow step. */
+  arrow: (id: string, key: string) => void;
+  /** Pack everything densely in reading order. */
+  tidy: () => void;
   add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize }) => void;
   remove: (id: string) => void;
   resize: (id: string, size: WidgetSize) => void;
@@ -76,7 +83,9 @@ export function useHomeLayout(): HomeLayoutApi {
   return {
     layout,
     loaded,
-    move: useCallback((from, to) => commit(moveWidget(ref.current, from, to)), [commit]),
+    place: useCallback((id, x, y) => commit(placeWidget(ref.current, id, x, y)), [commit]),
+    arrow: useCallback((id, key) => commit(moveByArrow(ref.current, id, key)), [commit]),
+    tidy: useCallback(() => commit(compactLayout(ref.current)), [commit]),
     add: useCallback((source, opts) => commit(addWidget(ref.current, source, opts)), [commit]),
     remove: useCallback((id) => commit(removeWidget(ref.current, id)), [commit]),
     resize: useCallback((id, size) => commit(setSize(ref.current, id, size)), [commit]),

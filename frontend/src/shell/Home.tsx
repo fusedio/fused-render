@@ -62,7 +62,10 @@ export default function Home({ config }: { config: Config }) {
             {searching ? null : <FdaStrip />}
             {searching ? null : edit ? (
               <div className="hw-editbar">
-                <span className="hw-editbar-hint">Drag widgets to rearrange · Alt+arrows moves the focused one</span>
+                <span className="hw-editbar-hint">Drag widgets anywhere · Alt+arrows moves the focused one · empty cells stay empty</span>
+                <button type="button" className="hw-tb is-ghost" onClick={() => layoutApi.tidy()}>
+                  Tidy up
+                </button>
                 {confirmReset ? (
                   <span className="hw-confirm">
                     Replace your layout with the default?

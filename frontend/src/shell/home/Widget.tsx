@@ -1,7 +1,16 @@
 // One grid cell: the frame (title, "See all", and in edit mode the toolbar)
 // around a body chosen by source.
 import { ChevronDown } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
 import { SOURCES, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
@@ -55,12 +64,14 @@ function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; 
 function EditPopover({
   widget,
   title,
+  allowedSizes,
   onResize,
   onReformat,
   onRemove,
 }: {
   widget: WidgetModel;
   title: string;
+  allowedSizes: WidgetSize[];
   onResize: (size: WidgetSize) => void;
   onReformat: (format: WidgetFormat) => void;
   onRemove: () => void;
@@ -116,7 +127,7 @@ function EditPopover({
           aria-label={`Edit ${title}`}
         >
           <div className="hw-label">Size</div>
-          <SizeChips sizes={spec.sizes} value={widget.size} onChange={onResize} />
+          <SizeChips sizes={spec.sizes} value={widget.size} onChange={onResize} allowed={allowedSizes} />
           {spec.formats.length > 1 ? (
             <>
               <div className="hw-label">Show as</div>
@@ -146,14 +157,14 @@ export interface WidgetFrameProps {
   /** Anchor id for the welcome tour on the first widget of a source. */
   anchorId?: string;
   dragging: boolean;
-  dropTarget: boolean;
+  /** Inline grid placement (and the drag transform). Data, not state. */
+  style?: CSSProperties;
+  /** Sizes whose footprint is free right now; the rest are disabled chips. */
+  allowedSizes: WidgetSize[];
   onResize: (size: WidgetSize) => void;
   onReformat: (format: WidgetFormat) => void;
   onRemove: () => void;
-  onDragStart: (e: DragEvent) => void;
-  onDragOver: (e: DragEvent) => void;
-  onDrop: (e: DragEvent) => void;
-  onDragEnd: () => void;
+  onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
   onKeyDown: (e: KeyboardEvent) => void;
 }
 
@@ -185,22 +196,18 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         (bare && widget.source === "build" ? " is-build" : "") +
         (edit ? " is-edit" : "") +
         (widget.source === "app" ? " is-app" : "") +
-        (p.dragging ? " is-dragging" : "") +
-        (p.dropTarget ? " is-drop" : "")
+        (p.dragging ? " is-dragging" : "")
       }
+      style={p.style}
       data-wid={widget.id}
-      draggable={edit}
       tabIndex={edit ? 0 : undefined}
       aria-label={edit ? `${title} widget. Alt plus arrow keys to move.` : undefined}
-      onDragStart={edit ? p.onDragStart : undefined}
-      onDragOver={edit ? p.onDragOver : undefined}
-      onDrop={edit ? p.onDrop : undefined}
-      onDragEnd={edit ? p.onDragEnd : undefined}
+      onPointerDown={edit ? p.onPointerDown : undefined}
       onKeyDown={edit ? p.onKeyDown : undefined}
     >
       {bare ? null : <div className="hw-head">
         {edit ? (
-          <span className="hw-grip" aria-hidden="true" title="Drag to reorder">
+          <span className="hw-grip" aria-hidden="true" title="Drag to move">
             <svg viewBox="0 0 10 14" fill="currentColor" aria-hidden="true"><circle cx="3" cy="2.5" r="1.4"/><circle cx="7" cy="2.5" r="1.4"/><circle cx="3" cy="7" r="1.4"/><circle cx="7" cy="7" r="1.4"/><circle cx="3" cy="11.5" r="1.4"/><circle cx="7" cy="11.5" r="1.4"/></svg>
           </span>
         ) : null}
@@ -215,7 +222,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         </h2>
         {edit ? (
           <>
-            <EditPopover widget={widget} title={title} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
+            <EditPopover widget={widget} title={title} allowedSizes={p.allowedSizes} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
             <button type="button" className="hw-remove" aria-label={`Remove ${title}`} onClick={p.onRemove}>
               ×
             </button>
