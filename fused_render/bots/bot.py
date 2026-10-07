@@ -1973,9 +1973,10 @@ class Bot:
             msg = "Opened this bot's browser as a real window on your desktop. Hand back (or close the window) to return control to the bot." + shared_note
         elif not relaunched:
             still = ", ".join(o["name"] for o in self.shared_with() if (_registry().get(o["id"]) or self).meta.get("visible")) or "another bot"
+            where = ("this bot opens a fresh window in the background when it next acts" if closed
+                     else "this bot's windows are minimised and it keeps working there")
             msg = (("Desktop window closed" if closed else "Handed back") + f"; {still} still has this shared browser open on your desktop, "
-                   "so it stays a real window for now; this bot's windows are minimised and it keeps working there"
-                   + (" with control again." if handback else "."))
+                   f"so it stays a real window for now; {where}" + (", with control again." if handback else "."))
         elif closed:
             msg = "Desktop window closed; the browser is back here, headless" + (" and the bot has control again." if handback else ".")
         else:
