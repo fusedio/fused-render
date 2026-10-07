@@ -66,7 +66,7 @@
          together. Absent/unknown = default, i.e. no attribute. */
       try {
         var preset = localStorage.getItem("fused-render:theme-preset");
-        if (preset === "nord" || preset === "solarized" || preset === "high-contrast" || preset === "midnight") {
+        if (preset === "high-contrast" || preset === "midnight") {
           document.documentElement.setAttribute("data-theme-name", preset);
         }
       } catch (e) {
@@ -111,10 +111,6 @@
     /* Preset backgrounds: the --bg of each preset in styles/tokens.css, so a
        preset user sees no default-coloured flash. Later and more specific than
        the two rules above. */
-    html[data-theme-name="nord"] { background: #2e3440; }
-    html[data-theme-name="nord"][data-theme="light"] { background: #eceff4; }
-    html[data-theme-name="solarized"] { background: #002b36; }
-    html[data-theme-name="solarized"][data-theme="light"] { background: #fdf6e3; }
     html[data-theme-name="high-contrast"] { background: #000000; }
     html[data-theme-name="high-contrast"][data-theme="light"] { background: #ffffff; }
     html[data-theme-name="midnight"] { background: #000000; }

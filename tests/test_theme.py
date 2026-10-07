@@ -388,7 +388,7 @@ def test_runtime_never_learns_about_presets():
 
 def test_every_non_default_preset_has_a_dark_and_a_light_block():
     ids = _preset_ids()
-    assert ids[0] == "default" and len(ids) >= 4
+    assert ids[0] == "default" and len(ids) == 3
     css = read_repo_file("frontend/src/styles/tokens.css")
     for pid in ids[1:]:
         dark = re.search(

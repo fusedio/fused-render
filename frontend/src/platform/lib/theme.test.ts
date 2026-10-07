@@ -40,11 +40,9 @@ beforeEach(() => {
   attrs.clear();
 });
 
-test("preset list leads with default and has the five ids", () => {
+test("preset list leads with default and has the three ids", () => {
   expect(theme.THEME_PRESETS.map((p) => p.id)).toEqual([
     "default",
-    "nord",
-    "solarized",
     "high-contrast",
     "midnight",
   ]);
@@ -56,21 +54,23 @@ test("load falls back to default for absent or unknown values", () => {
   store.set(theme.PRESET_KEY, "bogus");
   expect(theme.loadThemePreset()).toBe("default");
   store.set(theme.PRESET_KEY, "nord");
-  expect(theme.loadThemePreset()).toBe("nord");
+  expect(theme.loadThemePreset()).toBe("default");
+  store.set(theme.PRESET_KEY, "midnight");
+  expect(theme.loadThemePreset()).toBe("midnight");
 });
 
 test("setThemePreset persists, applies data-theme-name, leaves data-theme alone", () => {
   attrs.set("data-theme", "light");
-  theme.setThemePreset("solarized");
-  expect(store.get(theme.PRESET_KEY)).toBe("solarized");
-  expect(attrs.get("data-theme-name")).toBe("solarized");
+  theme.setThemePreset("midnight");
+  expect(store.get(theme.PRESET_KEY)).toBe("midnight");
+  expect(attrs.get("data-theme-name")).toBe("midnight");
   expect(attrs.get("data-theme")).toBe("light");
   expect(store.has(theme.THEME_KEY)).toBe(false);
 });
 
 test("applyPreset(default) clears the attribute", () => {
-  theme.applyPreset("nord");
-  expect(attrs.get("data-theme-name")).toBe("nord");
+  theme.applyPreset("high-contrast");
+  expect(attrs.get("data-theme-name")).toBe("high-contrast");
   theme.applyPreset("default");
   expect(attrs.has("data-theme-name")).toBe(false);
 });
@@ -85,6 +85,6 @@ test("a throwing localStorage degrades to default and does not throw on write", 
     },
   };
   expect(theme.loadThemePreset()).toBe("default");
-  expect(() => theme.setThemePreset("nord")).not.toThrow();
-  expect(attrs.get("data-theme-name")).toBe("nord");
+  expect(() => theme.setThemePreset("high-contrast")).not.toThrow();
+  expect(attrs.get("data-theme-name")).toBe("high-contrast");
 });
