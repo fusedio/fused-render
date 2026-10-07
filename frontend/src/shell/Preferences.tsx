@@ -47,6 +47,7 @@ import {
   fetchDiagnosticsPlan,
   fetchServerHealth,
   getConfig,
+  getJson,
   getPrefs,
   putCallsEnabled,
   putCallsParamsMode,
@@ -474,6 +475,47 @@ function BotsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Phone: a mirror of Super Bot's Settings > Phone (docs/bots.md §10) for the
+// user who looks under Preferences for "connect my phone". One row, state and
+// a door — the setup itself (Full Disk Access, Messages, the number, the test
+// text) lives on the bot, since the number is also Super Bot's identity on the
+// phone and the people it may text sit beside it. `/bots?phone=1` opens that
+// tab once the Bots page knows Super Bot (apps/bots/App.tsx).
+interface PhoneState { super_id?: string | null; enabled?: boolean; handle?: string; running?: boolean; error?: string }
+function PhoneSection() {
+  const [st, setSt] = useState<PhoneState | null>(null);
+  useEffect(() => {
+    let alive = true;
+    getJson<PhoneState>("/api/bots/imessage")
+      .then((s) => alive && setSt(s))
+      .catch(() => alive && setSt({}));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const on = !!st?.enabled && !!st?.handle;
+  const line = !st ? "…"
+    : !st.super_id ? "Super Bot is not set up yet."
+    : on ? `Texting Super Bot from ${st.handle}${st.running ? "" : st.error ? ` · ${st.error}` : " · starting…"}`
+    : st.handle ? `Off · ${st.handle} is remembered.`
+    : "Off.";
+  return (
+    <section className="prefs-section">
+      <h2>Phone</h2>
+      <p className="deploy-muted">
+        Text Super Bot from your phone: texts from your number become tasks, replies come back as texts, and approvals
+        stay on this Mac. Set up under Super Bot&apos;s settings.
+      </p>
+      <p className="deploy-muted">{line}</p>
+      <div className="prefs-actions">
+        <button type="button" className="btn btn-secondary" disabled={!st?.super_id} onClick={() => navigateUrl("/bots?phone=1")}>
+          {on ? "Phone settings" : "Connect your phone"}
+        </button>
+      </div>
     </section>
   );
 }
@@ -1859,6 +1901,7 @@ export default function Preferences() {
                 {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <MonitorSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <BotsSection prefs={prefs} onChange={setPrefs} />}
+                {(bot || prefs.bots.enabled) && <PhoneSection />}
                 <DiagnosticsSection />
               </>
             )}

@@ -26,7 +26,7 @@ export function FacePicker() {
   const pickColor = (color: string) => { updatePick({ color }); setPicks((n) => n + 1); };
   const blobColor = draft ? palette(draft.color) : FACE_COLORS[1];
   return (
-    <div id="fmodal" className={`modal${req ? " show" : ""}`} style={{ zIndex: 50 }} role="dialog" aria-modal="true" aria-label="Edit avatar"
+    <div id="fmodal" className={`modal${req ? " show" : ""}`} style={{ zIndex: 60 }} role="dialog" aria-modal="true" aria-label="Edit avatar"
       onClick={(e) => { if (e.target === e.currentTarget) settlePick(); }}>
       <div className="box">
         <span className="pface" id="pfacew">{draft ? <Face b={{ face: draft }} svgId="pface" /> : null}</span>

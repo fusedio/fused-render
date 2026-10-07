@@ -121,15 +121,21 @@ class ImessageChannel(Channel):
     def _tick(self) -> list[Inbound]:
         _, owner = self.door()
         self.state["handles"] = 1 if owner else 0
+        # Switch off (or no Super Bot): never open chat.db, so a Mac that was not asked to read Messages never
+        # logs a Full Disk Access error for it. Switch on with no handle yet: open it anyway and learn this Mac's own
+        # handles, which Settings > Phone offers as "use my own number" before the handle exists.
+        if not owner and not im.super_switch():
+            return []
+        if self.db is None:
+            self.db = im.open_db()
+        self._refresh_own_handles()
+        self.state["own_handles"] = sorted(self._own)
         if not owner:
             return []
         cur = im.load_cursor()
-        if self.db is None:
-            self.db = im.open_db()
         if cur.get("rowid") is None:  # first run: start from now, never replay history
             cur["rowid"] = self.db.execute("select coalesce(max(ROWID), 0) from message").fetchone()[0]
             im.save_cursor(cur)
-        self._refresh_own_handles()
         now = time.time()
         sent = {t: ts for t, ts in (cur.get("sent") or {}).items() if now - ts < ECHO_WINDOW_S}
         cur["sent"] = sent

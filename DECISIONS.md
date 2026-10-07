@@ -6537,3 +6537,51 @@ Reported on the status-bar notifications popover: a client-message title wrapped
 ## D1325 — The DMG bundles numpy's `macosx_11_0_arm64` (OpenBLAS) wheel, and the step-4f minos floor drops from 14.0 to 13.0 (2026-10-05, numpy-macos13-wheel)
 
 The only bundled Mach-O files above minos 13 (outside the exempt fused-apple-ai) were numpy's extension modules at 14.0: pip picks the wheel tag from the build host's OS (macOS 14+/26), so it took numpy's `macosx_14_0_arm64` (Accelerate) wheel, and `MACOSX_DEPLOYMENT_TARGET` does not steer that. `scripts/build_dmg.sh` now, right after the main install into the build venv, reads the numpy version that install resolved, runs `pip download --only-binary=:all: --no-deps --platform macosx_13_0_arm64` for that exact version, and force-reinstalls it with `--no-deps`; no compatible wheel is a hard FATAL. Tradeoff: Accelerate becomes OpenBLAS, which is not a visible cost for numpy's use here (mainly via pandas). `MINOS_FLOOR` is 13.0. `LSMinimumSystemVersion` stays 11.0 at the user's direction.
+
+## D1326 — Terminals are shared with Claude through on-demand VT text and MCP tools (2026-10-06, worktree-claude-terminal-share)
+
+**Claude can list, read and (with a permission card) type into the user's terminals.** `GET /api/terminal/{sid}/text` renders the scrollback ring through pyte on demand (about 0.3 s per read, nothing per byte), the list gains shell/foreground/last-command/focused metadata, and the permission MCP server gains `terminal_list`, `terminal_read` (pre-allowed) and `terminal_send` (not pre-allowed).
+
+- **Shell integration** (OSC 133/7/633 via a zsh ZDOTDIR shim and a bash `--init-file` shim) is applied in the pty registry, not in `resolve_profile`, so existing profile argv tests hold. Bash drops `-l` and replays login semantics through FUSED_SHELL_LOGIN.
+- **Gating.** Tools appear only when agent.py stamps `FUSED_RENDER_TERMINAL_ORIGIN` into mcp.json (POSIX only); Windows never sees them.
+- **Partial.** The Part 2a probe of CLAUDE_CODE_SHELL_PREFIX was denied by the auto-mode classifier, so the Claude-run tab (Part 2) and the chat-side terminal hint / Ask Claude action (Part 1d frontend) are not built.
+
+## D1327 — The Claude tab is a read-only log view fed by a CLAUDE_CODE_SHELL_PREFIX wrapper (2026-10-06, worktree-claude-terminal-share)
+
+Supersedes the "Partial" bullet of D1326: the Part 2 probe was run by hand on claude 2.1.291 and the prefix is usable. It is invoked as `<prefix> <ONE complete shell command string>` and wraps EVERYTHING the CLI spawns (Bash tool, background commands, hooks, statusline, MCP stdio servers).
+
+- **Wrapper** (`fused_render/claude_shell_prefix.sh`, POSIX sh, mode 100755, agent.py re-chmods if a package step dropped the bit): anything that is not shaped like a Bash-tool command (contains `/shell-snapshots/snapshot-` and ends in a `pwd -P >| ...-cwd` tail) is `exec "$SHELL" -c "$1"` untouched, so MCP stdio and hook JSON are byte-transparent. A Bash-tool command runs through the same shell with stdout/stderr teed through two fifos back onto the caller original fds, exit status preserved, per-command files `<id>.{cmd,meta,out,exit}` under `$FUSED_CLAUDE_CMD_LOG`. Any setup failure falls back to the transparent exec.
+- **Log key** is the chat (session) id, not the run id (every turn is a new run dir): `<tmp>/fused_render_claude-<uid>/claude-cmds/<session id>/`. agent.py `_spawn_env(chat_id)` sets the prefix and log dir only on POSIX, only for a safe id, and never over a prefix the user exported.
+- **Server**: `claude_cmd_log.py` renders the log to an xterm stream (`$ <command>` header, output as CRLF, `[exit N]` only when non-zero); `/api/terminal` lists `kind: "claude"` entries with ids `claude:<chat>`, the stream/text routes serve them, input is dropped, DELETE is refused, `POST /api/terminal/{sid}/stop` TERMs the process TREE of each running wrapper (then KILL after 3 s). Stop walks the tree instead of killing the recorded pgid because the wrapper pgid can be the claude CLI own group; the pgid is still recorded in `.meta`.
+- **Drawer**: an open drawer polls the list every 2 s; a Claude tab appears (never activated), shows a running dot and a Stop button, has no close button, and disappears with its log (2 h after the last activity).
+
+## D1328 — Ask Claude on a terminal selection, Fix with AI on a failed command (2026-10-06, worktree-claude-terminal-share)
+
+- **Selection pill + chord.** TerminalView floats an "Ask Claude" pill under the row a selection ends on (Cmd+L on macOS, Ctrl+Shift+L elsewhere; plain Ctrl+L stays the shell clear-screen). The prompt carries the selected text (tail kept past 6000 chars) and points at `terminal_read` for more. Works on the read-only Claude tab too.
+- **Fix pill.** Shell-integration OSC 633;E and 133;C/D are observed in the browser (handlers return false, xterm unaffected). A nonzero exit other than 130 shows "Fix with AI" until the next command; Ctrl+C never nags. Not offered on the Claude tab (no shell integration there). A reattach replays scrollback, so the pill reflects the last replayed command.
+- **Logic lives in `platform/lib/terminalAi.ts`** (reducer, pill geometry, chord) because TerminalView stays untested. xterm typings call `getSelectionPosition()` 1-based; the implementation returns 0-based buffer rows, which is what the geometry uses.
+- **Review fix.** `claude_cmd_log` ps spawns now use the posix_spawn-safe shape (absolute path, close_fds=False, no cwd=); fork() with libproj resident SIGSEGVs the server.
+
+## D1329 — Terminal asks render as a chip + selection block in the chat (2026-10-06, worktree-claude-terminal-share)
+
+The Ask Claude / Fix with AI / tab prompts keep their raw text on the wire (the model needs the id line and fences), but the user bubble in `Turn.tsx` now parses it with `parseTerminalAsk` (next to the builders in `terminalFocus.ts`) and draws a terminal chip (label, cwd basename), the selection as a scrolling `pre`, then the words. Same `.bubble` element with an `is-terminal-ask` class; plain turns are unchanged. Presentation only: stored transcripts and the server never see a different string.
+
+
+## D1330 — Restored transcripts strip a leading terminal-hint (2026-10-06, worktree-claude-terminal-share)
+
+D1326 said the `<terminal-hint>` block was stripped on restore, but `_history` only removed app-state (`_MACHINERY_STRIP` is applied by `_strip_machinery` for session names and the Tasks list, not by `_history`). Reopened chats showed the raw hint in the user bubble and `parseTerminalAsk` never matched. `_history` now also calls `_strip_terminal_hint`, which removes one block at the very start of the text (after app-state removal), so a tag typed mid-message survives. This also makes the D1329 terminal chip render on reopened chats.
+
+
+
+## D1331 — Restore strips the hint behind any leading block; Fix with AI needs a command that ran (2026-10-06, worktree-claude-terminal-share)
+
+`_strip_terminal_hint` now walks the leading machinery blocks the way `_with_terminal_hint` inserts, so a hint behind a pane-shot or annotations block no longer shows on restore (a tag typed mid-message still survives). `reduceShellOsc` tracks `running` between `133;C` and `133;D` and ignores a D outside that pair, matching the server parser: the shims emit `133;D` on the first prompt, and a nonzero `$?` from the rc files showed a Fix pill for a command nobody ran.
+
+## D1332 — Review fixes for the Claude command log and shell shims (2026-10-06, worktree-claude-terminal-share)
+
+The wrapper now writes `.meta` first and creates `.cmd` by tmp+mv, so a listed command always has its meta; pid 0 with no `.exit` counts as running, so a poll in that window no longer prints "[ended]". The logged command launches under `set -m` (only around the launch), which gives it its own process group with default SIGINT/SIGQUIT (an async job in a non-interactive sh otherwise inherits SIG_IGN that children cannot undo); the trap forwards TERM to that group, `stop()` still walks descendants, and `.meta` keeps the wrapper's pgid since nothing signals by it. Command strings run under bash/zsh only: the snapshot name picks the shell on the Bash-tool path, and `$SHELL` is ignored unless it is bash/zsh/sh (fish broke MCP servers and hooks). `_shim_root` trusts an existing dir only if it is a real directory owned by us with no group/other write and byte-identical shim files; ours-but-stale is rebuilt, foreign falls back to a private `mkdtemp` root. `Stream.poll` seeks to its offset and reads only the new bytes.
+
+
+## D1333 — `_spawn_env` reuses a per-chat command-log dir instead of re-creating it (2026-10-06, claude-terminal-share)
+
+`CMD_LOGS/<chat_id>` is per chat, not per run, so it outlives a host (idle reap, resume, respawn). `_private_dir`'s leaf `mkdir` is exclusive, so the second host got `FileExistsError`, the `except OSError` dropped `CLAUDE_CODE_SHELL_PREFIX`, and the Claude tab silently stopped recording. An existing dir is now adopted only after `_require_private` plus a no mode-`0o077` check (`_require_private` refuses group/other write only, and the log is readable); a create race falls back to the same check; anything else still returns the env without the prefix.

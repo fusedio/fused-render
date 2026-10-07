@@ -138,8 +138,10 @@ export interface Bot {
   reactions?: Record<string, string>;
   encrypt?: boolean;
   chrome_profile?: string;
-  /** The owner's phone handle; only Super Bot's is read (it is the one bot reachable over iMessage, docs §10). */
+  /** Super Bot only (docs §10; the keys are dropped from every other bot on load): the owner's phone handle, the
+   *  phone switch (Settings > Phone), and the people its `text` action may message. */
   imessage?: string;
+  imessage_enabled?: boolean;
   imessage_to?: string;
   /** Super Bot only: the tasks it handed to ordinary bots, oldest first (docs §11). */
   handoffs?: Handoff[];
@@ -183,6 +185,13 @@ export interface ImessageState {
   running: boolean; error: string; last_in: number | null; last_out: number | null; handles: number; holder: string; ts?: number;
   /** Who the bot speaks as: "own" = the user's own Messages account (texts carry "@name"), "dedicated" = a bot Apple ID. */
   identity?: ChannelIdentity;
+  /** This Mac's own Messages accounts (the `account` of rows it sent), learned once chat.db was read; what
+   *  Settings > Phone offers as "use my own number". */
+  own_handles?: string[];
+  /** GET /api/bots/imessage only: Super Bot's id, its phone switch and its stored handle (kept while off). */
+  super_id?: string | null;
+  enabled?: boolean;
+  handle?: string;
   [k: string]: unknown;
 }
 
@@ -266,8 +275,8 @@ export interface NewBotBody {
 }
 export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
-  build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; super_access?: string;
-  trusted_apps?: string[];
+  build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
+  super_access?: string; trusted_apps?: string[];
 }
 export type RoutineBody =
   | { op: "add"; text: string; kind: Routine["kind"]; minutes?: number; time?: string; weekdays?: number[]; at?: number }
@@ -286,6 +295,8 @@ export const api = {
   presets: () => get<{ ok: true; presets: Preset[] }>(`${B}/presets`, "presets"),
   usage: () => get<UsageSummary>(`${B}/usage`, "usage"),
   imessage: () => get<ImessageState>(`${B}/imessage`, "imessage"),
+  /** Settings > Phone "Send a test text": one text from this Mac to Super Bot's handle (the Automation consent lands here). */
+  imessageTest: () => post<{ ok: true; handle: string }>(`${B}/imessage/test`, {}, "test text"),
   /** Also answers approvals ("approve"/"deny"), questions and offers. */
   send: (id: string, text: string, reply_to?: number | null) => post<Ok>(`${bid(id)}/send`, { text, reply_to: reply_to ?? null }, "send"),
   pause: (id: string) => post<Ok>(`${bid(id)}/pause`, {}, "pause"),

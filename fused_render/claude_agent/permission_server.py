@@ -77,6 +77,7 @@ import os
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -642,6 +643,186 @@ def _handle_app_state(args: dict) -> dict:
                               or "the window could not read the app")})
 
 
+# ------------------------------------------------------------- the terminals
+#
+# Three tools over fused-render's own /api/terminal routes: the user's
+# status-bar terminals, which Claude otherwise cannot see. Unlike app_state
+# these never touch the run dir — the server is plain HTTP on this machine, so
+# the tool just calls it (same urllib posture as the queue events above).
+#
+# The roster follows ONE signal, exactly as app_state's follows STATE_DIR:
+# `FUSED_RENDER_TERMINAL_ORIGIN`, which agent.py stamps into this server's env
+# (never inherited ambiently — see `_write_mcp_config`) and only on POSIX. No
+# origin, or Windows (every terminal route 501s there): the tools are not
+# offered, because a tool that can never answer is worse than none.
+
+TERMINAL_LIST_TOOL = "terminal_list"
+TERMINAL_READ_TOOL = "terminal_read"
+TERMINAL_SEND_TOOL = "terminal_send"
+TERMINAL_TOOLS = (TERMINAL_LIST_TOOL, TERMINAL_READ_TOOL, TERMINAL_SEND_TOOL)
+_IS_WINDOWS = os.name == "nt"
+_TERMINAL_TIMEOUT = 15.0
+
+
+def _terminal_origin() -> str:
+    """The server origin the terminal tools talk to, or "" when they are off."""
+    if _IS_WINDOWS:
+        return ""
+    return (os.environ.get("FUSED_RENDER_TERMINAL_ORIGIN") or "").rstrip("/")
+
+
+def _error_result(message: str) -> dict:
+    """A tool failure the model can read: one JSON text block, `isError` set."""
+    result = _text({"error": message})
+    result["isError"] = True
+    return result
+
+
+def _terminal_http(method: str, path: str, body=None):
+    """`(status, parsed_json)` for one call to the server. Raises OSError for
+    anything that is not an HTTP answer (refused, timeout, bad URL)."""
+    import urllib.error
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        _terminal_origin() + path, data=data, method=method,
+        headers={"Content-Type": "application/json", "X-Fused": "1"})
+    try:
+        with urllib.request.urlopen(req, timeout=_TERMINAL_TIMEOUT) as resp:
+            status, raw = resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read()
+    except (urllib.error.URLError, ValueError) as exc:
+        raise OSError(str(exc))
+    try:
+        return status, json.loads(raw.decode("utf-8", errors="replace") or "null")
+    except ValueError:
+        return status, None
+
+
+def _http_error_text(status: int, payload) -> str:
+    detail = payload.get("error") if isinstance(payload, dict) else None
+    return "%s (HTTP %d)" % (detail or "the fused-render server refused the request",
+                             status)
+
+
+def _terminal_sessions():
+    status, payload = _terminal_http("GET", "/api/terminal")
+    if status != 200 or not isinstance(payload, dict):
+        raise OSError(_http_error_text(status, payload))
+    sessions = payload.get("sessions")
+    return sessions if isinstance(sessions, list) else []
+
+
+def _handle_terminal_list(args: dict) -> dict:
+    try:
+        sessions = _terminal_sessions()
+    except OSError as exc:
+        return _error_result("could not list terminals: %s" % exc)
+    return _text({"terminals": [s for s in sessions if isinstance(s, dict)]})
+
+
+def _handle_terminal_read(args: dict) -> dict:
+    sid = args.get("id")
+    try:
+        if not isinstance(sid, str) or not sid:
+            live = [s for s in _terminal_sessions()
+                    if isinstance(s, dict) and s.get("alive")]
+            focused = [s for s in live if s.get("focused")]
+            pick = focused or (live if len(live) == 1 else [])
+            if not pick:
+                if not live:
+                    return _error_result("no terminal is open")
+                return _error_result(
+                    "no terminal is focused and several are open — call "
+                    "terminal_list and pass an id")
+            sid = pick[0]["id"]
+        lines = args.get("lines")
+        path = "/api/terminal/%s/text" % urllib.parse.quote(str(sid), safe="")
+        if isinstance(lines, int) and not isinstance(lines, bool) and lines > 0:
+            path += "?lines=%d" % lines
+        status, payload = _terminal_http("GET", path)
+    except OSError as exc:
+        return _error_result("could not read the terminal: %s" % exc)
+    if status != 200 or not isinstance(payload, dict):
+        return _error_result(_http_error_text(status, payload))
+    return _text(payload)
+
+
+def _handle_terminal_send(args: dict) -> dict:
+    sid, text = args.get("id"), args.get("text")
+    if not isinstance(sid, str) or not sid:
+        return _error_result("terminal_send needs the id of a terminal (see terminal_list)")
+    if not isinstance(text, str) or not text:
+        return _error_result("terminal_send needs a non-empty text to type")
+    try:
+        status, payload = _terminal_http(
+            "POST", "/api/terminal/%s/input" % urllib.parse.quote(sid, safe=""),
+            {"data": text})
+    except OSError as exc:
+        return _error_result("could not send to the terminal: %s" % exc)
+    if status == 409:
+        return _error_result("the terminal is busy — a program other than the shell "
+                             "is running in it, so nothing was typed")
+    if status != 200:
+        return _error_result(_http_error_text(status, payload))
+    return _text({"ok": True})
+
+
+TERMINAL_SCHEMAS = [
+    {
+        "name": TERMINAL_LIST_TOOL,
+        "description": (
+            "List the terminals the user has open in fused-render's terminal "
+            "drawer: id, shell, cwd, the program in the foreground (null when "
+            "the shell is idle at its prompt), the last command and its exit "
+            "status, and which one is focused (`focused: true` — the one the "
+            "user is most likely talking about). Read-only."),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": TERMINAL_READ_TOOL,
+        "description": (
+            "Read what a terminal shows right now, as a person would see it "
+            "(progress bars and redraws already resolved), plus its cwd, "
+            "foreground program and last command/exit status. With no id, reads "
+            "the focused terminal. Use it when the user refers to \"my "
+            "terminal\", an error or output they can see there. Read-only."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string",
+                       "description": "A terminal id from terminal_list. "
+                                      "Omit for the focused terminal."},
+                "lines": {"type": "integer",
+                          "description": "How many trailing lines (default 200, max 2000)."},
+            },
+        },
+    },
+    {
+        "name": TERMINAL_SEND_TOOL,
+        "description": (
+            "Type text into one of the user's terminals, exactly as given — "
+            "include a trailing newline to run a command. Refused while a "
+            "program other than the shell holds the terminal. The user is asked "
+            "to approve each use."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "A terminal id from terminal_list."},
+                "text": {"type": "string", "description": "The text to type."},
+            },
+            "required": ["id", "text"],
+        },
+    },
+]
+
+_TERMINAL_HANDLERS = {
+    TERMINAL_LIST_TOOL: _handle_terminal_list,
+    TERMINAL_READ_TOOL: _handle_terminal_read,
+    TERMINAL_SEND_TOOL: _handle_terminal_send,
+}
+
+
 TOOL_SCHEMA = {
     "name": TOOL_NAME,
     "description": (
@@ -707,14 +888,20 @@ def _dispatch(method: str, params: dict) -> dict:
         tools = [TOOL_SCHEMA]
         if STATE_DIR:
             tools.append(APP_STATE_SCHEMA)
+        if _terminal_origin():
+            tools.extend(TERMINAL_SCHEMAS)
         return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
         known = (TOOL_NAME, APP_STATE_TOOL) if STATE_DIR else (TOOL_NAME,)
+        if _terminal_origin():
+            known = known + TERMINAL_TOOLS
         if name not in known:
             raise LookupError("unknown tool: %s" % name)
         args = params.get("arguments")
         args = args if isinstance(args, dict) else {}
+        if name in _TERMINAL_HANDLERS:
+            return _TERMINAL_HANDLERS[name](args)
         return _handle_approve(args) if name == TOOL_NAME \
             else _handle_app_state(args)
     if method == "ping":

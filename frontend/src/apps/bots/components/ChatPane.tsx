@@ -36,6 +36,14 @@ export function ChatPane() {
           <span className={`dot${b ? " " + b.status : ""}`} id="cdot" />
         </span>
         <div className="title"><b id="cname">{b ? b.name : "Select a bot"}</b><small id="csub">{sub}</small></div>
+        {/* Super Bot's phone (docs §10): green once the switch is on and a number is set; opens Settings > Phone. */}
+        {b?.kind === "super" ? (
+          <button id="cphone" className={`ptog phone${b.imessage_enabled && b.imessage ? " on" : ""}`}
+            title={b.imessage_enabled && b.imessage ? `Texting from ${b.imessage} · phone settings` : "Connect your phone"}
+            onClick={() => openDialog({ kind: "settings", id: b.id, tab: "phone" })}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M11 18h2" /></svg>
+          </button>
+        ) : null}
         <ThreadSearch open={search.open} q={search.q} count={searchN} disabled={!b}
           onOpen={() => setSearch((s) => ({ ...s, open: true }))}
           onClose={() => setSearch({ open: false, q: "" })}

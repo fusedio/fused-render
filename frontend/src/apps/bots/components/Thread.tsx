@@ -183,8 +183,11 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
       ? `<span class="via" title="Handed off by Super Bot">from ${esc(chanLabel(k))}</span>`
       : `<span class="via" title="${esc(`Received over ${chanLabel(k)} from ${e.via!.addr || "?"}`)}">via ${esc(chanLabel(k))}</span>`
     : "";
+  // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
+  const seedBtn = e.role === "done" && e.source === "seed"
+    ? '<div class="opts"><button class="opt seed" data-dialog="phone">Connect your phone</button></div>' : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
-    + (e.role === "user" ? esc(e.text) : md(e.text)) + viaChip
+    + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip
     + (actable ? `<span class="rx" data-react="${e.seq}" title="Change reaction">${esc(reaction)}</span>` : "");
   const cls = `msg ${e.role}${e.role === "user" ? "" : " md"}${actable && reaction ? " has-rx" : ""}`;
   const bubble = <HtmlMsg className={cls} title={title} seq={actable ? e.seq : undefined} html={html} />;
@@ -351,6 +354,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const t = ev.target as Element, sel = getState().sel;
     const rc = t.closest("[data-react]");
     if (rc) { onReact(rc, Number(rc.getAttribute("data-react"))); return; }
+    const dlg = t.closest("[data-dialog]");
+    if (dlg && sel) { openDialog({ kind: "settings", id: sel, tab: dlg.getAttribute("data-dialog") || "general" }); return; }
     const rp = t.closest("[data-reply]");
     if (rp) {
       const seq = Number(rp.getAttribute("data-reply"));

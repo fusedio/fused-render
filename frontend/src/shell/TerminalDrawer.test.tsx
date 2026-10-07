@@ -44,6 +44,7 @@ const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny, Ter
   TerminalDrawerModule;
 const TerminalTabStrip = (await import("@shell/TerminalTabStrip")).default;
 const TerminalView = (await import("@platform/ui/TerminalView")).default;
+const { resetTerminalFocusForTests } = await import("@platform/lib/terminalFocus");
 const { parseState, reconcileTabs, removeTab, programLabel, stateFor } = await import("@shell/terminalTabs");
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
@@ -116,6 +117,7 @@ async function fireKeyDown(over: Record<string, unknown>): Promise<{ defaultPrev
 beforeEach(() => {
   (globalThis as { localStorage?: Storage }).localStorage = fakeLocalStorage();
   keydowns.length = 0;
+  resetTerminalFocusForTests();
   const doc = globalThis.document as unknown as Record<string, unknown>;
   realAdd = doc.addEventListener;
   realRemove = doc.removeEventListener;
@@ -680,6 +682,18 @@ test("tab strip: clicking a label selects, × closes that tab, + asks for a new 
 });
 
 
+test("tab strip: Ask Claude shows only when wired and reports that tab's id", () => {
+  const { root: bare } = strip();
+  expect(bare.findAll((n) => n.type === "button" && n.props.className === "term-tab-ask")).toHaveLength(0);
+  const asked: string[] = [];
+  const { root } = strip({ onAskClaude: (id) => asked.push(id) });
+  const ask = root.findAll((n) => n.type === "button" && n.props.className === "term-tab-ask");
+  expect(ask).toHaveLength(2);
+  expect(ask[0].props["aria-label"]).toBe("Ask Claude about zsh");
+  act(() => ask[1].props.onClick());
+  expect(asked).toEqual(["b"]);
+});
+
 // ---- mounted drawer: focus, cache preservation, routing ---------------------
 // react-test-renderer gives `TerminalView` no DOM node (its mount effect bails
 // on a null ref), so the drawer can be mounted for real with `fetch` faked and
@@ -704,7 +718,7 @@ function fakeServer(opts: {
       if (opts.listFails) throw new Error("network down");
       return json(200, { sessions: (opts.live ?? []).map((s) => ({ alive: true, shell: "zsh", ...s })) });
     }
-    if (method === "DELETE") return json(200, { ok: true });
+    if (method === "DELETE" || method === "PUT") return json(200, { ok: true });
     if (String(url).endsWith("/input")) {
       return opts.inputStatus ? json(opts.inputStatus, { error: "busy" }) : json(200, { ok: true });
     }
@@ -727,6 +741,25 @@ async function mountOpen(cwd: string | null = null) {
 }
 const view = (r: ReactTestRenderer) => r.root.findByType(TerminalView).props as { id: string; autoFocus?: boolean };
 const stripProps = (r: ReactTestRenderer) => r.root.findByType(TerminalTabStrip).props;
+
+const focusPuts = (srv: { calls: Call[] }) =>
+  srv.calls.filter((c) => c.method === "PUT" && c.url === "/api/terminal/focus").map((c) => JSON.parse(c.body!).id);
+
+test("claude focus: the drawer reports its active tab on open and when the tab changes", async () => {
+  resetTerminalFocusForTests();
+  seed(["a"]);
+  const srv = fakeServer({ live: [{ id: "a" }, { id: "b" }], creates: ["b"] });
+  try {
+    const r = await mountOpen();
+    expect(focusPuts(srv)).toEqual(["a"]);
+    await act(async () => { await stripProps(r).onNew(); });
+    await tick();
+    expect(focusPuts(srv)).toEqual(["a", "b"]);
+    act(() => stripProps(r).onSelect("a"));
+    await tick();
+    expect(focusPuts(srv)).toEqual(["a", "b", "a"]);
+  } finally { srv.restore(); }
+});
 
 test("focus: the first terminal created when the drawer opens is focused", async () => {
   const srv = fakeServer({ creates: ["n1"] });
@@ -814,4 +847,93 @@ test("busy fallback: a command-only request creates its terminal in the fallback
     adopt: (_id, tab) => created.push((tab as { cwd?: string }).cwd),
   });
   expect(created).toEqual(["/drawer", "/drawer"]);
+});
+
+// ---- the read-only Claude tab (D1327) ---------------------------------------
+
+const { syncClaudeTabs, cachedTabs, isClaudeId } = await import("@shell/terminalTabs");
+
+test("claude tab: reconcile appends an uncached claude row, never activates it", () => {
+  const cached = parseState(JSON.stringify({ height: 260, sessionIds: ["a"], activeId: "a", meta: {} }));
+  const r = reconcileTabs(cached, [
+    { id: "a", alive: true, shell: "zsh" },
+    { id: "claude:c1", alive: true, kind: "claude", running: true },
+  ]);
+  expect(r.tabs.map((t) => t.id)).toEqual(["a", "claude:c1"]);
+  expect(r.tabs[1]).toMatchObject({ label: "Claude", kind: "claude", running: true });
+  expect(r.activeId).toBe("a");
+});
+
+test("claude tab: a cached claude id is recognised by prefix and survives only while listed", () => {
+  const cached = parseState(JSON.stringify({ height: 260, sessionIds: ["claude:c1", "a"], activeId: "claude:c1", meta: {} }));
+  expect(isClaudeId("claude:c1")).toBe(true);
+  expect(cachedTabs(cached)[0]).toMatchObject({ kind: "claude", label: "Claude" });
+  const gone = reconcileTabs(cached, [{ id: "a", alive: true }]);
+  expect(gone.tabs.map((t) => t.id)).toEqual(["a"]);
+  expect(gone.activeId).toBe("a");
+});
+
+test("syncClaudeTabs: adds, refreshes running, drops; shell tabs untouched; no change -> null", () => {
+  const shell = { id: "a", label: "zsh" };
+  const live = [{ id: "claude:c1", alive: true, kind: "claude", running: true }];
+  const added = syncClaudeTabs([shell], "a", live)!;
+  expect(added.tabs.map((t) => t.id)).toEqual(["a", "claude:c1"]);
+  expect(added.activeId).toBe("a");
+  expect(syncClaudeTabs(added.tabs, "a", live)).toBeNull();
+  const idle = syncClaudeTabs(added.tabs, "a", [{ ...live[0], running: false }])!;
+  expect(idle.tabs[1].running).toBe(false);
+  const dropped = syncClaudeTabs(idle.tabs, "claude:c1", [])!;
+  expect(dropped.tabs).toEqual([shell]);
+  expect(dropped.activeId).toBe("a");
+});
+
+test("tab strip: claude tab is marked, has no close/ask, and Stop only while running", () => {
+  const stops: string[] = [];
+  const mk = (running: boolean) =>
+    strip({
+      tabs: [{ id: "a", label: "zsh" }, { id: "claude:c1", label: "Claude", kind: "claude", running }],
+      activeId: "claude:c1",
+      onAskClaude: () => {},
+      onStop: (id) => stops.push(id),
+    }).root;
+  const root = mk(true);
+  const tabs = root.findAll((n) => n.props.role === "tab");
+  expect(tabs[1].props.className).toBe("term-tab is-claude is-active");
+  const inClaude = (c: string) => tabs[1].findAll((n) => n.type === "button" && n.props.className === c);
+  expect(inClaude("term-tab-close")).toHaveLength(0);
+  expect(inClaude("term-tab-ask")).toHaveLength(0);
+  act(() => inClaude("term-tab-stop")[0].props.onClick());
+  expect(stops).toEqual(["claude:c1"]);
+  const idle = mk(false).findAll((n) => n.props.role === "tab")[1];
+  expect(idle.findAll((n) => n.type === "button" && n.props.className === "term-tab-stop")).toHaveLength(0);
+});
+
+test("claude tab: an open drawer picks a new chat's tab up from the list and Stop POSTs the stop route", async () => {
+  seed(["a"]);
+  const srv = fakeServer({ live: [{ id: "a" }] });
+  try {
+    const r = await mountOpen();
+    expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a"]);
+    // The chat starts a command: the next poll adds the tab (not active).
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ sessions: [
+            { id: "a", alive: true, shell: "zsh" },
+            { id: "claude:c1", alive: true, kind: "claude", running: true },
+          ] }),
+        } as Response;
+      }
+      return real(url, init);
+    }) as unknown as typeof fetch;
+    await act(async () => { await new Promise((res) => setTimeout(res, 2200)); });
+    expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a", "claude:c1"]);
+    expect(stripProps(r).activeId).toBe("a");
+    act(() => stripProps(r).onStop("claude:c1"));
+    await tick();
+    const stop = srv.calls.find((c) => c.method === "POST" && c.url === "/api/terminal/claude%3Ac1/stop");
+    expect(stop).toBeDefined();
+  } finally { srv.restore(); }
 });

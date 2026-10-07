@@ -26,7 +26,7 @@ import { Check, ExternalLink, FolderLock, Lock, RotateCw, Search, ShieldCheck } 
 
 import { openFdaSettings, type Config } from "@platform/lib/api";
 import { fdaCopy, relaunchHref, pokeFda, seedFda, useFda } from "@platform/lib/fda";
-import { bundleName } from "@platform/lib/flavor";
+import { bundleName, isBot } from "@platform/lib/flavor";
 import { Button } from "@platform/shadcn/ui/button";
 
 import { reportStage } from "./progress";
@@ -83,7 +83,7 @@ export function FdaStep({
       <StepHeader
         eyebrow={eyebrow}
         title={`Let ${bundleName()} read your files`}
-        lead={`macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them, survives upgrades, and is what lets ${bundleName()} read your files.`}
+        lead={`macOS asks separately for Desktop, Documents, Downloads, external drives and network volumes — and if a prompt fires while the app is in the background, it is silently denied. Full Disk Access, granted once in System Settings, covers all of them, survives upgrades, and is what lets ${bundleName()} read your files.${isBot() ? " It is also what lets Super Bot read your texts once you connect your phone." : ""}`}
       />
 
       <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2 lg:grid-cols-4">

@@ -108,6 +108,7 @@ function makeController(
   params = createMemoryParamsStore(),
   over: {
     appStateBlock?: () => Promise<string>;
+    terminalHint?: () => Promise<string>;
     historyCache?: {
       get(file: string, sessionId: string): HistoryResponse | undefined;
       set(file: string, sessionId: string, res: HistoryResponse): void;
@@ -1785,6 +1786,51 @@ describe("follow-ups (T:16024, D687)", () => {
 });
 
 // ---- ownership -------------------------------------------------------------
+
+// ── the status-bar terminal hint rides as a param, never in the wire text ────
+describe("terminal hint (which terminal the user means)", () => {
+  const HINT = JSON.stringify({ id: "t3", title: "zsh", cwd: "/p" });
+
+  test("start and send carry terminal_hint; the message text and bubble do not", async () => {
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this");
+            return poll({ segments: [text("ok")] });
+          }
+          return poll({ done: true, segments: [text("ok")] });
+        },
+      },
+      createMemoryParamsStore(),
+      { terminalHint: () => Promise.resolve(HINT) },
+    );
+    controller = made.controller;
+    await controller.sendMessage("why did it fail");
+    expect(made.agent.of("start")[0]!.fields.terminal_hint).toBe(HINT);
+    expect(made.agent.of("send")[0]!.fields.terminal_hint).toBe(HINT);
+    expect(String(made.agent.of("start")[0]!.fields.message)).toBe("why did it fail");
+    expect(users(controller).map((t) => t.text)).toEqual(["why did it fail", "and this"]);
+  });
+
+  test("an empty or failing hint sends no terminal_hint param at all", async () => {
+    for (const hint of [() => Promise.resolve(""), () => Promise.reject(new Error("down"))]) {
+      const made = makeController(
+        {
+          start: () => ({ run_id: "r1" }),
+          poll: () => poll({ done: true, segments: [text("ok")] }),
+        },
+        createMemoryParamsStore(),
+        { terminalHint: hint },
+      );
+      await made.controller.sendMessage("hi");
+      expect("terminal_hint" in made.agent.of("start")[0]!.fields).toBe(false);
+    }
+  });
+});
 
 // ── feedback #30: the app-state PUSH channel ────────────────────────────────
 describe("app state rides out with every message (T:16483)", () => {

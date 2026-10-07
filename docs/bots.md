@@ -452,9 +452,31 @@ sets `bot.deleted` before its shutdown: `start_task` refuses, `save` and
 `emit` write nothing, so nothing racing the teardown can bring the bot back. Super Bot hands browsing work to
 the other bots (§11). The harness side
 is in §6 ("The Super Bot on the harness"). Page: the chooser's Super Bot card
-(shown while no Super Bot exists), the dialog hides local models and Builds
-for it, shows its iMessage handle field (and only for it) and "Mac access",
+(shown while no Super Bot exists), Settings hides local models and Builds
+for it, shows its Phone section (and only for it) and "On this Mac",
 the list shows a Super Bot badge, the menu drops Routines and Clone.
+
+**Seeded by default** (`registry.seed_super`, 2026-10-07). `registry.start()`
+first makes Super Bot when none exists and `<home>/bots/super-seeded.json`
+is absent, then writes that witness, so a Super Bot the user deletes stays
+deleted (the chooser card is the way back; the same stamp-not-emptiness
+rule as the FusedBot import, which runs before it and may already carry
+one). `create(kind="super", greet=False)` skips the model-written hello;
+the seed emits `SUPER_GREETING` as a `done` with `source: "seed"`, which
+the page renders with a "Connect your phone" button (Settings > Phone).
+Both flavors seed: the tree is shared. The store selects Super Bot when
+nothing is selected, so a first open lands in its chat. Tests: the bots
+fixture no-ops `registry.start`, so `seed_super()` is called directly.
+
+**Dialogs** (2026-10-07). "+ New bot" is `dialogs/CreateBot.tsx`: name,
+what it should do, model; effort behind the cog; every other setting takes
+its first-run default. Settings is `dialogs/BotSettings.tsx`: a rail of
+sections — General (avatar, name, instructions, model, thinking),
+Permissions (On this Mac for Super Bot; before it buys/deletes/posts;
+builds for ordinary bots; apps it may use without asking), Browser (Chrome
+profile, encryption), Memory, and Phone on Super Bot (`PhoneSection.tsx`,
+§10). `openDialog({kind: "settings", id, tab})` opens a section;
+`/bots?phone=1` (Preferences' Phone row) opens Super Bot's Phone tab.
 
 **Presets** (`bots/presets.py`, data in `fused_render/bots/presets/<key>/`,
 shipped inside the package). One folder per site: `preset.json` (`name`,
@@ -1120,6 +1142,26 @@ bubble (summary, numbered options, cut), `→ iMessage` when it is the same,
 `Not sent to iMessage: <error>` when every retry failed. Unread counting
 ignores delivery rows (`isNoiseEv`).
 
+**The phone switch** (`meta.imessage_enabled` on Super Bot, 2026-10-07).
+Settings > Phone is a switch, "Text Super Bot from your phone", then a
+four-step checklist (Full Disk Access from the shell's one `fda.ts` store,
+Messages signed in, your number, a test text), then the connected view.
+Off keeps the handle: `imessage.super_door()` answers `""` while the switch
+is off, which rides `ImessageChannel._tick`'s existing no-handle gate, so
+nothing is read from or sent to Messages. On with no handle yet, `_tick`
+opens chat.db anyway and publishes `own_handles` (this Mac's Messages
+accounts, `message.account` of sent rows) so the page can offer "use my own
+number"; picking one of those is the `own` identity (`@name` prefix), typing
+another a `dedicated` one. `GET /api/bots/imessage` adds `super_id`,
+`enabled`, `handle`; `POST /api/bots/imessage/test` sends "Connected…" to
+the handle, which proves the send path and triggers macOS's Automation
+consent for Messages at a moment the user expects it. A bot.json written
+before the switch existed reads as on when it has a handle (`Bot.__init__`
+stamps the key). **Ordinary bots have no phone keys**: `imessage` and
+`imessage_to` are dropped on load, Settings refuses them for `kind != super`,
+`contacts()` is empty, so `text`/`texts` leave their roster; a bot reaches
+the phone only through Super Bot's hand-off result (§11).
+
 **Engines.** Both prompts get a `CHANNEL:` paragraph from `channels.prompt_for`
 when `task_via` is a phone channel (one short `done`, options on every `ask`,
 no `offer`, `login` means a walk to the Mac) and `task from iMessage (user is
@@ -1161,7 +1203,7 @@ Super Bot can give an ordinary bot a task. Design page:
 4. Super Bot can stop a hand-off it started (`handoff_stop`); no pause,
    resume or steer. Each hand-off is independent; one result per hand-off.
 
-**Tools** (`tools.py`, Super Bot's roster only; `roster()` drops both for
+**Tools** (`tools.py`, Super Bot's roster only; `roster()` drops every `SUPER_TOOLS` entry for
 every other bot and `execute()` refuses them). `handoff {bot, task}`: `bot` a
 name from BOTS, `task` plain words and self-contained; returns at once
 ("started; …" or "queued; …") and the model finishes its turn with one
@@ -1294,3 +1336,85 @@ note starts with `web_touched` set (that text came off the web): every write
 and command asks, even under `super_access: full`. Ordinary bots not under a hand-off keep their argv, roster and
 prompts unchanged, apart from the iMessage line of `APP_GUIDE`, which now
 says only Super Bot is reachable by text.
+
+## 12. Bot management (`bot.py` manage_create / manage_settings, `tools.py` MANAGE_TOOLS, 2026-10-07)
+
+Super Bot can create a browser bot and change another bot's settings, and
+only behind an approval card, every time. Owner's ask: "superbot must have
+the required tools and access to create new bots, change all settings (name,
+image, prompt, model) for all the other bots; all these tools are gated by
+user approval always". Built on the §11 hand-off mold (roster, refusal in
+`execute`, `_handoff_target` resolve, BOTS section), no new routes.
+
+**Tools** (`tools.MANAGE_TOOLS`, in `SUPER_TOOLS` with the hand-off pair:
+Super Bot's roster only, `execute()` refuses them on any other bot).
+`bot_create {name, instructions?, model?, effort?, preset?, face?}` makes
+an ORDINARY bot (`kind` is never a parameter; a second Super Bot is
+impossible here). `bot_settings {bot, name?, instructions?, model?,
+effort?, face?}` changes one of the BOTS; `bot` is its current name,
+resolved exactly like a hand-off target (exact, then unique prefix; Super
+Bot's own name is refused with "your own settings are the user's"). `face`
+is `{shape, color, icon}`: shape one of `bot.FACE_SHAPES` (the picker's
+eight), colour one of the picker's `bot.FACE_COLORS` when there is no icon
+(face.ts `faceOf` draws an off-palette colour only beside an icon; alone it
+falls back to a hash colour, so the card would promise what the page does
+not draw), any `#rrggbb` with one, icon a preset key or empty; `claude`
+stays locked. `bot_settings {bot}` with no change field is the READ door
+(`bot.manage_record`): the bot's settings and its whole instructions text,
+no card (`risk()` is "" with nothing to change), because BOTS shows a
+120-char excerpt and "add a line to X's prompt" needs the whole text.
+Those five fields (`bot.MANAGE_FIELDS`) are the whole surface: `approval`,
+`build_access`, `engine`, `encrypt`, contacts, routines, skills and memory
+are refused with "stay the user's own" (a model must not loosen a bot's
+gates or widen its reach). Model and effort checks are the Settings
+dialog's, lifted into `bot.check_settings`; the face rules into
+`bot.check_face` (`routes._settings` / `_flag` call the same two).
+
+**Always ask.** `tools.ALWAYS_ASK = frozenset(MANAGE_TOOLS)`.
+`agent_engine._act` raises the card when `risk()` is non-empty and (the
+name is in `ALWAYS_ASK` or `effective_approval != "auto"`), so a Super Bot
+on "Never ask" still asks, and a phone-started task asks as it always did
+(§5; the texted yes is never a verdict, §10). `super_access: full` is
+Claude Code's own permission mode and does not reach these calls: they are
+MCP tools, gated by the harness, not by the CLI. The steps engine never runs
+Super Bot (`_engine_for`), so its gate is untouched.
+
+**The card is the diff.** `tools.describe` (`_manage_preview`) prints every
+field that will be written: for a create, name, model, effort, preset, face
+and the instructions text (`MANAGE_TEXT_CAP` = 600 chars, since the user
+approves the prompt they read); for a change, `old → new` per field, from
+`bot.manage_changes`, the same function the run uses, so what is approved is
+what is written. A call that would fail (unknown bot, model, shape, a
+duplicate name, a field outside `MANAGE_FIELDS`, nothing to change) gets no
+card: `risk()` returns "" and `execute()` returns the `error:` sentence to
+the model. `call_key` covers both tools (a repeated `bot_create` would mint a
+second bot; the one-run ledger refuses it until the user speaks again).
+
+**Writes.** `manage_create` validates (`manage_create_check`: name required
+and unused, case-insensitive, Super Bot's name refused) before `bot.create`
+runs, so a refused call leaves no bot behind; a preset applies first (its
+mark, playbooks, starter apps, default instructions), then an explicit
+`face` wins. The new bot gets `system "Created by Super Bot."` (`source:
+"manage"`). `manage_settings` writes under the target's lock after
+`_exists`, drops a never-used `artifacts_dir` on a rename (as the dialog
+does), and emits `system "Super Bot changed settings: …"` on the target, so
+its own thread records who changed it. Both return one sentence for the
+model and the chip (`ui_detail` is None, like a hand-off). The page needs no
+change: a new `bot.json` shows up on the next status poll, a changed one on
+the next read.
+
+**Prompt.** `SUPER_PROMPT` gets a BOT MANAGEMENT paragraph (when to use
+them, that the card is raised every time so one complete call beats several,
+that the read call comes first when editing instructions, that a bot's
+folder and `bot.json` are never written with Write / Edit / Bash (the two
+tools are the only door; Super Bot does hold those tools, and under
+`super_access: full` the CLI could approve such a write on its own), and
+that approvals / builds / encryption / contacts / routines stay the
+user's); the `YOU:` line says "Only the user changes your settings; the
+BOTS' … you change with `bot_settings`" on Super Bot. `bots_section` lines
+now carry `<model>/<effort>; face <words>` so the model quotes the current
+value before changing it. The OTHER bots learn the second door too
+(`bot.settings_rule`, both engines' `YOU:` line, and `@SETTINGS_DOORS@` in
+`APP_GUIDE`): once a Super Bot exists, "change your name to X" is answered
+with both ways (Settings dialog, or ask Super Bot), never with "only you
+can, in Settings" alone; without one the old sentence stands.

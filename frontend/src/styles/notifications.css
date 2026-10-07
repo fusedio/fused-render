@@ -247,6 +247,7 @@
 }
 
 .term-tab-label,
+.term-tab-ask,
 .term-tab-close,
 .term-tab-new {
   background: none;
@@ -267,6 +268,7 @@
   white-space: nowrap;
 }
 
+.term-tab-ask,
 .term-tab-close {
   margin: 0;
   padding: 0 6px;
@@ -275,13 +277,57 @@
   opacity: 0;
 }
 
+.term-tab:hover .term-tab-ask,
+.term-tab.is-active .term-tab-ask,
+.term-tab-ask:focus-visible,
 .term-tab:hover .term-tab-close,
 .term-tab.is-active .term-tab-close,
 .term-tab-close:focus-visible {
   opacity: 0.7;
 }
 
+.term-tab-ask:hover,
 .term-tab-close:hover {
+  opacity: 1;
+}
+
+/* The read-only "what Claude is running" tab (D1327): marked by a left accent,
+   a pulsing dot while a command runs, and a Stop button. */
+.term-tab.is-claude {
+  border-left: 2px solid var(--accent, currentColor);
+}
+
+.term-tab-live {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent, currentColor);
+  vertical-align: middle;
+  animation: term-tab-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes term-tab-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.term-tab-stop {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  margin: 0;
+  padding: 0 8px;
+  height: 100%;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.term-tab-stop:hover {
   opacity: 1;
 }
 
@@ -313,11 +359,71 @@
    account for — the surface's own box is naturally the padded parent's
    content area, so FitAddon's parentElement read already reflects it. */
 .term-view {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 8px;
+}
+
+/* "Ask Claude" selection pill and "Fix with AI" failure pill, floated over the
+   terminal. Positioned against .term-view; above xterm's canvas layers. */
+.term-ai-pill,
+.term-ai-fix {
+  position: absolute;
+  right: 12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.term-ai-pill {
+  padding: 0 8px;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.term-ai-pill kbd {
+  font: inherit;
+  color: var(--fg-muted);
+}
+
+.term-ai-fix {
+  bottom: 8px;
+  overflow: hidden;
+}
+
+.term-ai-fix button {
+  height: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.term-ai-fix button:first-child {
+  padding: 0 4px 0 8px;
+}
+
+.term-ai-fix button:last-child {
+  padding: 0 8px 0 4px;
+  color: var(--fg-muted);
+}
+
+.term-ai-pill:hover,
+.term-ai-fix button:hover {
+  color: var(--accent);
 }
 
 .term-view-surface {

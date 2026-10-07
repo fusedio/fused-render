@@ -18,7 +18,7 @@ import { Dialogs } from "./dialogs/Dialogs";
 import { useLayout } from "./hooks/useLayout";
 import { installNotify } from "./lib/notify";
 import { detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
-import { hideBanner, openDialog, openMenu, openPanel, poll, startStore, useBotsSelector } from "./state/store";
+import { getState, hideBanner, openDialog, openMenu, openPanel, poll, startStore, subscribe, useBotsSelector } from "./state/store";
 
 function Banner() {
   const banner = useBotsSelector((s) => s.banner);
@@ -37,12 +37,29 @@ export function Bots() {
   // `/bots?new=1` opens the "+ New bot" chooser (FusedBot's setup wizard handed
   // over this way). Read once, then dropped from the URL so a refresh does not
   // reopen it.
+  // `/bots?phone=1` (Preferences' Phone row) opens Super Bot's Settings on the Phone tab once the list knows it.
   useEffect(() => {
     const u = new URL(location.href);
-    if (u.searchParams.get("new") !== "1") return;
-    u.searchParams.delete("new");
+    const wantNew = u.searchParams.get("new") === "1", wantPhone = u.searchParams.get("phone") === "1";
+    if (!wantNew && !wantPhone) return;
+    u.searchParams.delete("new"); u.searchParams.delete("phone");
     history.replaceState(history.state, "", u.pathname + (u.search || "") + u.hash);
-    openDialog({ kind: "newBot" });
+    if (wantNew) { openDialog({ kind: "newBot" }); return; }
+    const superId = (): string | undefined => getState().bots.find((b) => b.kind === "super")?.id;
+    const now = superId();
+    if (now) { openDialog({ kind: "settings", id: now, tab: "phone" }); return; }
+    // Not listed yet: open on the first poll that carries it. Unsubscribe BEFORE opening — openDialog commits to the
+    // store, which notifies this very listener, and a listener that opens again from inside that notification recurses
+    // until the stack is gone.
+    let done = false;
+    const stop = subscribe(() => {
+      if (done) return;
+      const id = superId();
+      if (!id) return;
+      done = true; stop();
+      openDialog({ kind: "settings", id, tab: "phone" });
+    });
+    return () => { done = true; stop(); };
   }, []);
   useEffect(() => installNotify(), []);
   useFaceAnimator();
