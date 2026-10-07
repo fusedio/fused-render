@@ -152,16 +152,16 @@ describe("builds", () => {
   });
 
   test("chip numbers", () => {
-    expect(chipFor([])).toEqual({ n: "", live: false, warn: false, title: "Builds · Claude tasks that create fused apps" });
-    expect(chipFor([row({ status: "in_progress" }), row({ status: "queued" })])).toEqual({ n: "2", live: true, warn: false, title: "2 builds running" });
-    expect(chipFor([row({ status: "in_progress" }), row({ status: "needs_attention" })])).toEqual({ n: "2", live: false, warn: true, title: "1 build needs your attention" });
+    expect(chipFor([])).toEqual({ n: "", live: false, warn: false, title: "Tasks · Claude tasks that create fused apps" });
+    expect(chipFor([row({ status: "in_progress" }), row({ status: "queued" })])).toEqual({ n: "2", live: true, warn: false, title: "2 tasks running" });
+    expect(chipFor([row({ status: "in_progress" }), row({ status: "needs_attention" })])).toEqual({ n: "2", live: false, warn: true, title: "1 task needs your attention" });
   });
 
   test("filter stylesheet keeps only build rows", () => {
     const css = buildFilterCss(["s1", 'pending:"x']);
     expect(css).toContain('.tasks-node:not(:has(.tasks-row[data-peek-key="s1"])):not(:has(.tasks-row[data-peek-key="pending:x"])) { display: none !important; }');
     expect(buildFilterCss([])).toContain(".tasks-node { display: none !important; }");
-    expect(buildFilterCss([])).toContain('.tasks-list-frame::before { content: "No builds yet. Start one with New build."');
+    expect(buildFilterCss([])).toContain('.tasks-list-frame::before { content: "No tasks yet. Start one with New task, or New app on the Apps page."');
   });
 
   test("buildPrompt is OpenBot's text", () => {

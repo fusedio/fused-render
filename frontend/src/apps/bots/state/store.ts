@@ -77,7 +77,7 @@ let S: BotsState = {
   seen: typeof localStorage === "undefined" ? {} : loadSeen(), base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
   showHidden: false, renderDirty: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
-  buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Builds · Claude tasks that create fused apps", hidden: false },
+  buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
   ui: { dialog: null, panel: null, menu: null },
 };
 

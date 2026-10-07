@@ -159,7 +159,7 @@ export function AppsPanel() {
               title={`Upload a .fused export or a zipped app folder (or drop it anywhere on this panel); it is unpacked into a new folder${under}`}><UploadIcon />{busy ? "Uploading…" : "Upload app"}</button>
             <input type="file" id="auploadfile" ref={fileRef} accept=".zip,.fused,application/zip" hidden
               onChange={(e) => { const f = e.currentTarget.files?.[0]; e.currentTarget.value = ""; void uploadApp(f); }} />
-            <button id="anew" className="primary" onClick={() => { closeApps(); void newBuild(); }}><PlusIcon />New build</button>
+            <button id="anew" className="primary" title="Describe an app; Claude builds it as a task" onClick={() => { closeApps(); void newBuild(); }}><PlusIcon />New app</button>
           </span>
         </div>
         <div className="ascroll">
@@ -168,7 +168,7 @@ export function AppsPanel() {
             {!open || grid.kind === "blank" ? null
               : grid.kind === "looking" ? <div className="empty">Looking for apps…</div>
               : grid.kind === "error" ? <div className="empty">Could not read the apps folder.<br />{grid.msg}</div>
-              : !grid.rows.length ? <div className="empty">No apps yet.<br />Start one with New build; it shows up here when Claude has written its page.</div>
+              : !grid.rows.length ? <div className="empty">No apps yet.<br />Start one with New app; it shows up here when Claude has written its page.</div>
               : grid.rows.map((a) => <Card key={a.dir} a={a} starter={starterOf(starters, a.dir)} reloadApps={loadApps} />)}
           </div>
         </div>
