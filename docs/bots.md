@@ -615,7 +615,8 @@ AGAIN result no longer re-sends the cached value (it is above in context);
 and at `NUDGE_FRACTION` (0.8) of the rollover mark the next tool result
 carries one `CONTEXT:` line asking the model to `remember` durable facts
 (OpenClaw's memory flush, through a tool result because mid-turn stdin is
-ignored), once per turn. `recall {seq | query}` (every bot, both engines;
+ignored), once per turn (known gap: a Super Bot turn made only of built-in
+calls never reaches `_handle`, so it gets no nudge). `recall {seq | query}` (every bot, both engines;
 `bot.recall`) returns one earlier message in full by `[#seq]`, or the last 12
 earlier messages (and FILES) containing every keyword, 300 chars each.
 
