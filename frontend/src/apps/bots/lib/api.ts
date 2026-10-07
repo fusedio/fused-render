@@ -344,7 +344,7 @@ export const shotUrl = (b: Pick<Bot, "shot" | "shot_ts">): string =>
 /** A step thumbnail ("<seq>.jpg") → its route. */
 export const stepThumbUrl = (botId: string, thumb: string): string =>
   `${bid(botId)}/steps/${encodeURIComponent(thumb.replace(/^.*\//, ""))}`;
-/** A file on disk (Inbox artifacts, attached files, downloads) → /api/fs/raw. */
+/** A file on disk → its raw bytes (/api/fs/raw): the ↓ download links and the Composer reading a save result back. */
 export const rawFileUrl = (path: string): string => "/api/fs/raw?path=" + encodeURIComponent(path);
 /** An app folder's icon (404 when it has none). */
 export const appIconUrl = (dir: string): string => "/api/bot-apps/icon?dir=" + encodeURIComponent(dir);
