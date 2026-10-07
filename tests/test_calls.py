@@ -283,8 +283,22 @@ def test_retention_runs_while_the_writer_is_idle(store, monkeypatch):
     try:
         time.sleep(0.2)  # let the start-up sweep run against the empty store
         expired = in_store(store, "2020-01-01-1.calls.jsonl")
-        with open(expired, "w") as fh:
-            fh.write(json.dumps(rec()) + "\n")
+        # in_store() just created the partition directory empty, and this test's
+        # own writer wakes every SWEEP_POLL_S and sweeps on every wake (that is
+        # the point under test) -- its reap step deletes a partition directory
+        # with no files in it, so it can win the race and remove the directory
+        # in the gap between in_store()'s mkdir and this write. Recreate it and
+        # retry rather than let that race flake the test.
+        write_deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                with open(expired, "w") as fh:
+                    fh.write(json.dumps(rec()) + "\n")
+                break
+            except FileNotFoundError:
+                if time.monotonic() > write_deadline:
+                    raise
+                os.makedirs(os.path.dirname(expired), exist_ok=True)
         os.utime(expired, (time.time() - 40 * 86_400,) * 2)
 
         deadline = time.monotonic() + 6.0
