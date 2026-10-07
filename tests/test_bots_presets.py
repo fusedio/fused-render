@@ -198,7 +198,7 @@ def test_presets_route_lists_titles_only(client, ws):
     cat = {p["key"]: p for p in out["presets"]}
     assert set(ALL_KEYS) <= set(cat)
     li = cat["linkedin"]
-    assert set(li) == {"key", "name", "color", "order", "model", "instructions", "apps", "skills"}
+    assert set(li) == {"key", "name", "color", "order", "model", "instructions", "setup", "apps", "skills"}
     assert li["skills"] and all(isinstance(t, str) for t in li["skills"])
     assert cat["gdocs"]["apps"] == ["google-docs-tabs"]
 
