@@ -295,10 +295,11 @@ export function setSize(layout: HomeLayout, id: string, size: WidgetSize): HomeL
 export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
   const w = layout.widgets.find((x) => x.id === id);
   if (!w) return [];
+  const occ = occupancy(layout.widgets, id);
   return SOURCES[w.source].sizes.filter((s) => {
     if (s === w.size) return true;
     const { cols, rows } = dims(s);
-    return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id);
+    return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id, GRID_COLS, occ);
   });
 }
 
@@ -390,9 +391,15 @@ export function occupancy(widgets: Widget[], except?: string): Map<string, strin
 }
 
 /** Whole footprint in bounds and every cell free (ignoring `except`'s own). */
-export function canPlace(widgets: Widget[], rect: Rect, except?: string, cols = GRID_COLS): boolean {
+export function canPlace(
+  widgets: Widget[],
+  rect: Rect,
+  except?: string,
+  cols = GRID_COLS,
+  /** Prebuilt `occupancy(widgets, except)`, to reuse across several candidates. */
+  occ: Map<string, string> = occupancy(widgets, except),
+): boolean {
   if (rect.x < 0 || rect.x + rect.cols > cols || rect.y < 0 || rect.y + rect.rows > MAX_ROWS) return false;
-  const occ = occupancy(widgets, except);
   for (let j = 0; j < rect.rows; j++) {
     for (let i = 0; i < rect.cols; i++) if (occ.has(`${rect.x + i},${rect.y + j}`)) return false;
   }

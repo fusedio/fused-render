@@ -4,6 +4,7 @@ import { ChevronDown } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -13,7 +14,7 @@ import {
 } from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
-import { SOURCES, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
+import { SOURCES, allowedSizes, type HomeLayout, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
 import { AppsWidget } from "./widgets/AppsWidget";
 import { PlaygroundWidget, RecentsWidget, SessionsWidget } from "./widgets/StripWidgets";
 import { TasksWidget } from "./widgets/TasksWidget";
@@ -64,14 +65,14 @@ function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; 
 function EditPopover({
   widget,
   title,
-  allowedSizes,
+  layout,
   onResize,
   onReformat,
   onRemove,
 }: {
   widget: WidgetModel;
   title: string;
-  allowedSizes: WidgetSize[];
+  layout: HomeLayout;
   onResize: (size: WidgetSize) => void;
   onReformat: (format: WidgetFormat) => void;
   onRemove: () => void;
@@ -107,6 +108,11 @@ function EditPopover({
     setAlignLeft(button.current.getBoundingClientRect().right - 360 < 8);
   }, [open, widget.size]);
   const spec = SOURCES[widget.source];
+  // Sizes whose footprint is free right now; computed only while the popover is open.
+  const allowed = useMemo(
+    () => (open ? allowedSizes(layout, widget.id) : []),
+    [open, layout, widget.id],
+  );
   return (
     <span className="hw-menu-wrap" ref={root}>
       <button
@@ -127,7 +133,7 @@ function EditPopover({
           aria-label={`Edit ${title}`}
         >
           <div className="hw-label">Size</div>
-          <SizeChips sizes={spec.sizes} value={widget.size} onChange={onResize} allowed={allowedSizes} />
+          <SizeChips sizes={spec.sizes} value={widget.size} onChange={onResize} allowed={allowed} />
           {spec.formats.length > 1 ? (
             <>
               <div className="hw-label">Show as</div>
@@ -159,8 +165,8 @@ export interface WidgetFrameProps {
   dragging: boolean;
   /** Inline grid placement (and the drag transform). Data, not state. */
   style?: CSSProperties;
-  /** Sizes whose footprint is free right now; the rest are disabled chips. */
-  allowedSizes: WidgetSize[];
+  /** The whole layout; the edit popover derives which sizes still fit. */
+  layout: HomeLayout;
   onResize: (size: WidgetSize) => void;
   onReformat: (format: WidgetFormat) => void;
   onRemove: () => void;
@@ -222,7 +228,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         </h2>
         {edit ? (
           <>
-            <EditPopover widget={widget} title={title} allowedSizes={p.allowedSizes} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
+            <EditPopover widget={widget} title={title} layout={p.layout} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
             <button type="button" className="hw-remove" aria-label={`Remove ${title}`} onClick={p.onRemove}>
               ×
             </button>

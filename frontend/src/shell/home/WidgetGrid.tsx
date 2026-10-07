@@ -16,7 +16,6 @@ import {
 import { WidgetFrame } from "./Widget";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import {
-  allowedSizes,
   canPlace,
   dims,
   moveByArrow,
@@ -70,7 +69,6 @@ export function WidgetGrid({
   const { layout } = api;
   const [cols, setCols] = useState<4 | 2>(4);
   const [dragId, setDragId] = useState<string | null>(null);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [target, setTarget] = useState<Target | null>(null);
   const drag = useRef<DragState | null>(null);
   const targetRef = useRef<Target | null>(null);
@@ -112,7 +110,8 @@ export function WidgetGrid({
   const endDragRef = useRef<() => void>(() => {});
   const onWindowUp = useRef(() => endDragRef.current()).current; // stable, so it can be removed
   const endDrag = () => {
-    setOffset({ x: 0, y: 0 });
+    const d = drag.current;
+    if (d) d.el.style.transform = "";
     drag.current = null;
     targetRef.current = null;
     window.removeEventListener("pointerup", onWindowUp);
@@ -175,7 +174,7 @@ export function WidgetGrid({
       }
       setDragId(d.id);
     }
-    setOffset({ x: e.clientX - d.start.x, y: e.clientY - d.start.y });
+    d.el.style.transform = `translate(${e.clientX - d.start.x}px, ${e.clientY - d.start.y}px)`;
     const w = widgetOf(d.id);
     if (!w) return;
     const cell = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-x]");
@@ -253,8 +252,7 @@ export function WidgetGrid({
         if (ANCHOR_SOURCES.has(w.source) && !seen.has(w.source)) anchorId = `home-sec-${w.source}`;
         seen.add(w.source);
         const rect = pos.get(w.id);
-        let style: CSSProperties | undefined = searching || !rect ? undefined : placement(rect);
-        if (style && dragId === w.id) style = { ...style, transform: `translate(${offset.x}px, ${offset.y}px)` };
+        const style: CSSProperties | undefined = searching || !rect ? undefined : placement(rect);
         return (
           <WidgetFrame
             key={w.id}
@@ -263,7 +261,7 @@ export function WidgetGrid({
             anchorId={anchorId}
             dragging={dragId === w.id}
             style={style}
-            allowedSizes={allowedSizes(layout, w.id)}
+            layout={layout}
             onResize={(s) => api.resize(w.id, s)}
             onReformat={(f) => api.reformat(w.id, f)}
             onRemove={() => api.remove(w.id)}
