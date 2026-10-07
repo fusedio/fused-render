@@ -3,16 +3,8 @@
 import { useEffect, useState } from "react";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
-import { MAX_WIDGETS, SOURCES, type WidgetFormat, type WidgetSource } from "./layout";
+import { FORMAT_LABELS, MAX_WIDGETS, SOURCES, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
-
-const FORMAT_LABELS: Record<WidgetFormat, string> = {
-  cards: "Cards",
-  list: "List",
-  icons: "Icons",
-  board: "Board",
-  count: "Count",
-};
 
 function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): BookmarkFolder[] {
   for (const it of items) {

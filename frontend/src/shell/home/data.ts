@@ -79,7 +79,7 @@ export function useHomeApps(limit: number | null, rows: number) {
     return () => {
       alive = false;
     };
-  }, [limit, appsNonce, retry]);
+  }, [limit, rows, appsNonce, retry]);
   return { apps, appsError, retry: () => (setApps(null), setAppsError(null), setRetry((n) => n + 1)) };
 }
 
@@ -97,7 +97,7 @@ export function useHomeSessions(limit: number | null, rows: number) {
     return () => {
       alive = false;
     };
-  }, [limit]);
+  }, [limit, rows]);
   return sessions;
 }
 

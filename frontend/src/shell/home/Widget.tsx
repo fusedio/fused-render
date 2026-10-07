@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
-import { SIZE_LABELS, SOURCES, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
+import { FORMAT_LABELS, SIZE_LABELS, SOURCES, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
 import { AppsWidget } from "./widgets/AppsWidget";
 import { PlaygroundWidget, RecentsWidget, SessionsWidget } from "./widgets/StripWidgets";
 import { TasksWidget } from "./widgets/TasksWidget";
@@ -18,14 +18,6 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   recents: "/explorer?tab=recents",
   tasks: "/tasks",
   bots: "/bots",
-};
-
-const FORMAT_LABELS: Record<WidgetFormat, string> = {
-  cards: "Cards",
-  list: "List",
-  icons: "Icons",
-  board: "Board",
-  count: "Count",
 };
 
 function Body({ widget }: { widget: WidgetModel }) {

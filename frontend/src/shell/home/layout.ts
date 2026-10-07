@@ -225,6 +225,15 @@ export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
   return perColumn * (cols >= 4 ? 2 : 1);
 }
 
+/** Menu labels for formats. */
+export const FORMAT_LABELS: Record<WidgetFormat, string> = {
+  cards: "Cards",
+  list: "List",
+  icons: "Icons",
+  board: "Board",
+  count: "Count",
+};
+
 /** Menu labels for sizes. */
 export const SIZE_LABELS: Record<WidgetSize, string> = {
   "1x1": "1×1",
