@@ -1803,9 +1803,10 @@ class Bot:
             via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
         elif not chan.is_web(via):
             origin = via.get("kind") or origin
-        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin == "manual"):
+        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin in ("manual", "setup")):
             # Super Bot has shell and file access: only the user's chat or their text may start it (docs §5).
             # Judged on the via, so an origin label alone never lifts the gate (or the posture, super_mode).
+            # "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
         with self.lock:
