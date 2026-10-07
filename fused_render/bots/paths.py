@@ -123,7 +123,10 @@ def migrate_layout() -> int:
             new = os.path.join(old, "bots")
             for name in sorted(os.listdir(old)):
                 src = os.path.join(old, name)
-                if name == "bots" or name.startswith(".") or not os.path.isdir(src):
+                # `browsers` is a folder of the NEW layout (browsers.py: data/browsers/<id>/profile, cache/browsers/<id>/
+                # session.json); moving it under cache/bots/ loses every shared browser's session.json, and the next
+                # launch then collides with the Chrome still holding the profile ("Chrome did not come up").
+                if name in ("bots", "browsers") or name.startswith(".") or not os.path.isdir(src):
                     continue
                 if sub == "data" and not os.path.exists(os.path.join(src, "bot.json")):
                     continue  # not a bot folder; leave it
