@@ -880,8 +880,8 @@ class QueueManager:
                         # trip). `spawner_pid`/`spawn_started` are set
                         # separately, by `_pump`, the moment it marks this
                         # owner `starting`.
-                        "claims": [], "consumed": False, "spawner_pid": 0,
-                        "spawn_started": 0.0}
+                        "claims": [], "consumed": False, "spent": [],
+                        "spawner_pid": 0, "spawn_started": 0.0}
         return rec["owner"]
 
     @staticmethod
