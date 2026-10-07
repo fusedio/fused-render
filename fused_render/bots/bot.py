@@ -1103,6 +1103,11 @@ class Bot:
             setup = (self.meta.pop("setup", None) or "").strip()  # a preset's first task (presets.py): once
             if setup:
                 self.save()
+            with self.lock:
+                # This greeting thread IS self.thread, and start_task refuses while
+                # self.thread is alive: hand the slot over before starting a task.
+                if self.thread is threading.current_thread():
+                    self.thread = None
             if queued:
                 self.start_task("\n".join(queued), label=queued[0])
             elif setup:
