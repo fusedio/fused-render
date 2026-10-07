@@ -41,6 +41,8 @@ test("every source declares sizes and formats; spec defaults hold", () => {
   expect(SOURCES.tasks.sizes[0]).toBe("2x2");
   expect(SOURCES.folder.sizes[0]).toBe("2x1");
   expect(SOURCES.build.sizes[0]).toBe("4x1");
+  expect(SOURCES.search.sizes[0]).toBe("4x1");
+  expect(SOURCES.search.sizes).toContain("1x1");
 });
 
 test("normalizeLayout falls back to default on garbage", () => {
@@ -177,6 +179,12 @@ test("build widgets: addable, repeatable, and kept by normalizeLayout", () => {
   expect(addWidget(out, "build", { id: "b2" }).widgets).toHaveLength(3);
   expect(normalizeLayout({ version: 2, widgets: [w("b", "build", "2x1", "bar")] }).widgets).toEqual([
     { id: "b", source: "build", size: "2x1", format: "bar" },
+  ]);
+});
+
+test("a 1x1 search widget is kept by normalizeLayout", () => {
+  expect(normalizeLayout({ version: 2, widgets: [w("s", "search", "1x1", "bar")] }).widgets).toEqual([
+    { id: "s", source: "search", size: "1x1", format: "bar" },
   ]);
 });
 
