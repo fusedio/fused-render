@@ -879,45 +879,18 @@ if [[ "$RELOAD" -eq 1 ]]; then
     fi
   fi
 
-  # Readiness probe, ALWAYS — not only when a browser tab is wanted. Waits for
-  # the port to accept a connection, then prints the one line that means "up":
-  #
-  #     ==> ready: http://127.0.0.1:<port>/
-  #
-  # This is the line to wait for from a script or an agent session. Before it
-  # existed every session grepped its own mix of "Uvicorn running", "serving
-  # at" and "startup complete" out of the log — and "serving at" is printed by
-  # cli.py BEFORE uvicorn binds, so a curl right after it was refused. The tab
-  # is opened only on success (a port-guard SystemExit must not pop a dead tab)
-  # and only without --no-browser; the probe itself does not depend on either.
-  if [[ -n "$PORT" ]]; then
-    (
-      ready=0
-      # 120 s: a cold first import on a loaded machine has taken over a minute.
-      for _ in $(seq 1 240); do
-        if "$PY" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1', $PORT))==0 else 1)" 2>/dev/null; then
-          ready=1
-          break
-        fi
-        sleep 0.5
-      done
-      if [[ "$ready" -eq 1 ]]; then
-        URL="http://127.0.0.1:$PORT/"
-        echo "==> ready: $URL"
-        if [[ "$NO_BROWSER" -eq 0 ]]; then
-          # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
-          # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
-          # builtin, not a binary on PATH). Pass the URL through argv, not
-          # interpolated into the -c source: a path with an apostrophe
-          # (e.g. a home dir containing ') would otherwise break the string literal.
-          "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true
-        fi
-      else
-        echo "==> NOT ready: nothing is listening on 127.0.0.1:$PORT after 120 s —" >&2
-        echo "    look above for a traceback or 'port $PORT is already in use'." >&2
-      fi
-    ) &
-    OPENER_PID=$!
+  # A listener already on the port before this run starts its server is NOT
+  # this run's server, whatever the probe below would see: the installed
+  # desktop app on the baseline port, or a leftover server from a dev.sh this
+  # worktree never recorded. cli.py's port guard will refuse the bind a moment
+  # later; say so now, in the one line scripts wait for, so nobody reads a
+  # `==> ready:` and talks to the wrong process.
+  PORT_TAKEN=0
+  if [[ -n "$PORT" ]] && port_is_open "$PORT"; then
+    PORT_TAKEN=1
+    echo "==> NOT ready: 127.0.0.1:$PORT is already taken by another process (the" >&2
+    echo "    installed app, or a server dev.sh did not record). This run's server" >&2
+    echo "    will refuse to bind; stop that one, or pass --port N / FUSED_RENDER_BRANCH." >&2
   fi
 
   # The server is started through a tiny wrapper that waits for the shell bundle
@@ -976,6 +949,69 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # trap anyway. `wait` is interruptible, so the handler fires immediately.
   "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render" &
   SERVER_PID=$!
+
+  # Readiness probe, ALWAYS — not only when a browser tab is wanted. Waits for
+  # the port to accept a connection, then prints the one line that means "up":
+  #
+  #     ==> ready: http://127.0.0.1:<port>/
+  #
+  # This is the line to wait for from a script or an agent session. Before it
+  # existed every session grepped its own mix of "Uvicorn running", "serving
+  # at" and "startup complete" out of the log — and "serving at" is printed by
+  # cli.py BEFORE uvicorn binds, so a curl right after it was refused. The tab
+  # is opened only on success (a port-guard SystemExit must not pop a dead tab)
+  # and only without --no-browser; the probe itself does not depend on either.
+  #
+  # Started AFTER the launch so it can check WHO is listening: where lsof
+  # exists, the listener's pid must sit in this run's tree under $SERVER_PID
+  # (tree_pids, defined with the cleanup helpers above). A foreign listener —
+  # one that appeared between the pre-check above and the bind — is reported
+  # as NOT ready, never as ready. Without lsof (git-bash) the pre-check is the
+  # only ownership test, which is the state this probe was in before.
+  if [[ -n "$PORT" && "$PORT_TAKEN" -eq 0 ]]; then
+    (
+      ready=0
+      foreign=""
+      # 120 s: a cold first import on a loaded machine has taken over a minute.
+      for _ in $(seq 1 240); do
+        if "$PY" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1', $PORT))==0 else 1)" 2>/dev/null; then
+          if command -v lsof >/dev/null 2>&1; then
+            ours=" $(tree_pids "$SERVER_PID" | tr '\n' ' ') "
+            for lp in $(lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true); do
+              case "$ours" in
+                *" $lp "*) ;;
+                *) foreign="$lp" ;;
+              esac
+            done
+            [[ -n "$foreign" ]] && break
+          fi
+          ready=1
+          break
+        fi
+        sleep 0.5
+      done
+      if [[ -n "$foreign" ]]; then
+        echo "==> NOT ready: 127.0.0.1:$PORT is held by pid $foreign, which is not this run's" >&2
+        echo "    server — this run's server will refuse to bind. Stop that process, or" >&2
+        echo "    pass --port N / FUSED_RENDER_BRANCH." >&2
+      elif [[ "$ready" -eq 1 ]]; then
+        URL="http://127.0.0.1:$PORT/"
+        echo "==> ready: $URL"
+        if [[ "$NO_BROWSER" -eq 0 ]]; then
+          # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
+          # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
+          # builtin, not a binary on PATH). Pass the URL through argv, not
+          # interpolated into the -c source: a path with an apostrophe
+          # (e.g. a home dir containing ') would otherwise break the string literal.
+          "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true
+        fi
+      else
+        echo "==> NOT ready: nothing is listening on 127.0.0.1:$PORT after 120 s —" >&2
+        echo "    look above for a traceback or 'port $PORT is already in use'." >&2
+      fi
+    ) &
+    OPENER_PID=$!
+  fi
   # `wait` returns the child's status and a signalled child returns non-zero, so
   # `set -e` would abort here on an ordinary Ctrl-C; the status is captured
   # instead and re-raised below, which keeps a genuinely failing server failing.
