@@ -31,9 +31,7 @@ Two mechanisms, both stdlib-only, selected by `FUSED_RENDER_LINUX_TREE_KILL`
       runs on one dedicated, lazily-started daemon thread that lives for the
       process's whole life (see `_Spawner` below); callers on any other
       thread block on the result and have the child's spawn exceptions
-      re-raised in their own thread. A call already running on that spawner
-      thread (or a re-entrant spawn from within one) runs inline instead of
-      queuing to itself, which would deadlock a single-worker queue.
+      re-raised in their own thread.
 
   "namespace" (opt-in) — wrap the server in an unprivileged user+pid namespace
       via `unshare --user --map-root-user --pid --fork --kill-child`. The server
@@ -199,11 +197,7 @@ class _Spawner:
     def run(self, fn):
         """Execute `fn` (taking no arguments) on the spawner thread and
         return its result; any exception `fn` raises is re-raised here, on
-        the calling thread. Already running on the spawner thread (a spawn
-        nested inside another spawn's call) runs inline — queuing to a
-        single-worker queue from inside that same worker would deadlock."""
-        if threading.current_thread() is self._thread:
-            return fn()
+        the calling thread."""
         self._ensure_started()
         future: Future = Future()
         self._jobs.put((future, fn))

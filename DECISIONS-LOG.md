@@ -135,9 +135,7 @@ lazily-started daemon thread (`fused-render-tree-spawner`) that lives for
 the process's whole life. `Job.spawn` now dispatches the actual fork+exec
 (`_spawn_now`) onto that thread via a `queue.Queue` + `concurrent.futures.
 Future` and blocks for the result; any spawn exception is re-raised on the
-calling thread. A call that is already running on the spawner thread (spawn
-nested inside spawn) executes inline instead of enqueuing to itself, which
-would deadlock a single-worker queue. `expected_ppid` (the `getppid()` race
+calling thread. `expected_ppid` (the `getppid()` race
 guard `_parent_changed` checks) is still captured as `os.getpid()` inside
 `_spawn_now` right before the fork — unaffected by which thread calls
 `spawn`, since `getpid()` is process-wide, not per-thread.
@@ -153,13 +151,13 @@ negligible against a `fork+exec`. The module docstring's description of the
 **Audit of other `Job.spawn`/`Job()` callers** (`grep -rn
 '\.spawn(\|Job('` across the repo, excluding tests and the Windows backend):
 only two real call sites spawn through this Linux `Job`:
-- `fused_render/supervisor/core.py:812` (`_start_server`, called from
+- `fused_render/supervisor/core.py`'s `_start_server` (called from
   `_start_ready_server`, called from `run()`'s own top-level frame — the
   main thread, which lives for the process's whole life anyway, so it was
   never exposed to this bug, but now goes through the same spawner thread
   as everyone else with no behavior change beyond the fix).
-- `fused_render/supervisor/_linux/windows.py:142` (`WindowHost.start`,
-  called from `core.py`'s `fused-render-window-host` daemon thread) — this
+- `fused_render/supervisor/_linux/windows.py`'s `WindowHost.start` (called
+  from `core.py`'s `fused-render-window-host` daemon thread) — this
   is the call site that was actually broken, and is now fixed by the
   centralized change with no edit to `core.py` or `windows.py` needed.
 `fused_render/jobs.py`'s `Job` class and `tests/test_jobs_api.py`'s/
