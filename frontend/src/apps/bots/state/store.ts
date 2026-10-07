@@ -270,6 +270,9 @@ export async function pollOnce(): Promise<void> {
       // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
       if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id);
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null);
+      // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
+      // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
+      if (S.sel && !document.hidden && !openedOnce.has(S.sel)) { const id = S.sel; openedOnce.add(id); void act(() => api.open(id), true); }
       updateTitle();
     });
   } catch (e) {
@@ -311,7 +314,6 @@ export function startStore(): () => void {
   const urlBot = initialSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
   else if (!urlBot && S.sel) writeUrlBot(S.sel);
-  if (urlBot && !openedOnce.has(urlBot)) { openedOnce.add(urlBot); void act(() => api.open(urlBot), true); }  // a deep link is an open
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);
