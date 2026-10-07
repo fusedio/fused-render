@@ -19,7 +19,7 @@ export function Row({ title, text, htmlFor, stack, children }: { title: ReactNod
   return (
     <div className="flex items-center justify-between gap-8 py-4 first:pt-0 last:pb-0">
       {head}
-      <div className="flex w-72 max-w-[50%] shrink-0 justify-end">{children}</div>
+      <div className="flex w-80 max-w-[50%] shrink-0 justify-end">{children}</div>
     </div>
   );
 }

@@ -110,7 +110,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
 
   return (
     <Dialog open modal={false} onOpenChange={(open) => { if (!open) void tryClose(); }}>
-      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "flex h-[min(760px,90vh)] flex-col sm:max-w-[760px]")}>
+      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "flex h-[min(760px,90vh)] flex-col sm:max-w-[880px]")}>
         <DialogHeader className="gap-1 px-6 pt-5 pb-4">
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
           <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
