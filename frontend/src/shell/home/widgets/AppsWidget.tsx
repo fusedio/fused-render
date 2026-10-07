@@ -1,5 +1,5 @@
 import { appIconUrl } from "@platform/lib/api";
-import { useThemedIconSrc } from "@platform/lib/app-icon-src";
+import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { hrefFor, isBrowserHandledClick, openApp } from "@platform/lib/appEntry";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import type { AppInfo } from "@platform/lib/api";
@@ -25,7 +25,7 @@ function AppTile({ app }: { app: AppInfo }) {
       }}
     >
       <span className="hw-tile-icon" aria-hidden="true">
-        {src ? <img src={src} alt="" /> : <span className="hw-tile-glyph">★</span>}
+        {src ? <img src={src} alt="" className={isRasterIconUrl(iconUrl) ? "is-raster" : undefined} /> : <span className="hw-tile-glyph">★</span>}
       </span>
       <span className="hw-tile-name">{name}</span>
     </a>
