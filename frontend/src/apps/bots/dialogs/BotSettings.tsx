@@ -134,12 +134,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
 
             {tab === "permissions" ? (<>
               {isSuper ? (
-                <label className="field">On this Mac <small>· files, shell and code</small>
+                <label className="field">On this Mac
                   <select id="bmsuper" value={superAccess} onChange={(e) => setSuperAccess(e.target.value)}>
                     <option value="ask">Ask before writes, edits and shell commands</option>
                     <option value="full">Unattended · Claude judges, asks about the rest</option>
                   </select>
-                  <span className="why">Reading never asks. Once a task has read the web, every write and command asks either way.</span>
+                  <span className="why">Files, shell and code. Reading never asks. Once a task has read the web, every write and command asks either way.</span>
                 </label>
               ) : null}
               <label className="field">{isSuper ? "Before it sends, buys, deletes or posts" : "Before it buys, deletes or posts"}

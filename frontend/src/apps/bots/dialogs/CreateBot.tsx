@@ -64,10 +64,11 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
             </select>
           </label>
           {more ? (
-            <label className="field">Thinking <small>· how much it thinks per step</small>
+            <label className="field">Thinking
               <select id="bmeffort" value={effort} onChange={(e) => setEffort(e.target.value)}>
                 {EFFORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
+              <span className="why">How much it thinks per step. Applies from the next task.</span>
             </label>
           ) : null}
           <p className="muted preset" id="bmpreset">

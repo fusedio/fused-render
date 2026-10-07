@@ -598,14 +598,16 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page #bmodal .why { display: block; font-size: 11px; font-weight: 300; color: var(--muted); line-height: 1.4; margin: 0; }
 .bots-page #bmodal p.why { margin: 2px 0 10px; }
 /* Settings: a rail of sections on the left, one section's controls on the right (no fold, no box in a box). */
-.bots-page #bmodal.wide .box { width: 640px; }
+/* A fixed height: switching sections must not resize the dialog (the section scrolls inside .body instead). */
+.bots-page #bmodal.wide .box { width: 640px; height: min(620px, 90vh); }
 .bots-page #bmodal .rail { display: grid; grid-template-columns: 124px 1fr; gap: 16px; min-height: 0; flex: 1; }
-.bots-page #bmodal .rail nav { display: flex; flex-direction: column; gap: 2px; align-self: start; }
+/* The rail's labels line up with the title: the tab's own padding is pulled back out of the box's gutter. */
+.bots-page #bmodal .rail nav { display: flex; flex-direction: column; gap: 2px; align-self: start; margin-left: -10px; }
 .bots-page #bmodal .railtab { text-align: left; background: none; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; color: var(--muted); }
 .bots-page #bmodal .railtab:hover { color: var(--text); background: var(--raised); }
 .bots-page #bmodal .railtab.on { color: var(--text); background: var(--inset); font-weight: 400; }
 .bots-page #bmodal .railtab.live::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok, #2f9e5b); margin-left: 8px; vertical-align: middle; }
-.bots-page #bmodal .rail .body { min-height: 300px; }
+.bots-page #bmodal .rail .body { min-height: 0; }
 /* Phone (Super Bot): the switch, the four-step checklist, the connected view. */
 .bots-page #bmodal .switchrow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; background: var(--inset); border-radius: 12px; margin-bottom: 12px; cursor: pointer; }
 .bots-page #bmodal .switchrow > span { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--text); }

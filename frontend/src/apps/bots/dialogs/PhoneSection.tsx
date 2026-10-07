@@ -121,9 +121,9 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
             <input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)} />
             <span className="why">{own.includes(normHandle(handle)) ? "Your own number: Super Bot's replies start with “@Super Bot” so you can tell them from your notes." : "A separate Apple ID: replies come as plain texts."}</span>
           </label>
-          <label className="field">People Super Bot may text for you <small>· name + number, one per line</small>
+          <label className="field">People Super Bot may text for you
             <textarea id="bmimsgto" rows={2} placeholder={"Ali +1 555 123 4567\nMom mom@icloud.com"} value={contacts} onChange={(e) => setContacts(e.target.value)} />
-            <span className="why">Every text goes through the approval card unless Permissions says never ask. Your own number is always allowed.</span>
+            <span className="why">A name and a number or Apple ID per line. Every text goes through the approval card unless Permissions says never ask. Your own number is always allowed.</span>
           </label>
           <p className="why">Trouble? <button type="button" className="link" disabled={testing} onClick={() => { void sendTest(); }}>Send a test text</button>
             {tested ? <span className={tested.ok ? "" : "bad"}> · {tested.text}</span> : null}</p>
