@@ -253,7 +253,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   const [, tick] = useState(0);
   useEffect(() => { if (!running) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [running]);
   const quiet = running && lastStepTs ? fmtAgo(lastStepTs) : "";
-  const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for your answer" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
+  const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for you · answer, sign in or approve above" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
   const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…" : reply ? "Reply…" : b.status === "waiting" ? "The bot asked you a question — answer here"
     : running ? "Add an instruction mid-task…" : `Message ${b.name}`;
   const ctl = (fn: (id: string) => Promise<unknown>) => () => { if (b) void act(() => fn(b.id)); };
