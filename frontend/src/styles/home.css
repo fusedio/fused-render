@@ -1472,6 +1472,8 @@ a.hw-more:hover {
   cursor: default;
 }
 
+/* The grip is inert in the 2-column reflow (no can-drag), so it only shows a
+   grab cursor where dragging is enabled. */
 .hw-grip {
   flex: none;
   display: inline-flex;
@@ -1480,7 +1482,15 @@ a.hw-more:hover {
   color: var(--fg-faint);
   font-size: 13px;
   line-height: 1;
+  cursor: default;
+}
+
+.hw-grid.can-drag .hw-grip {
   cursor: grab;
+}
+
+.hw-grid.is-dragging .hw-grip {
+  cursor: grabbing;
 }
 
 .hw-grip svg {
