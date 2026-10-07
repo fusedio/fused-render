@@ -40,6 +40,7 @@ test("every source declares sizes and formats; spec defaults hold", () => {
   }
   expect(SOURCES.tasks.sizes[0]).toBe("2x2");
   expect(SOURCES.folder.sizes[0]).toBe("2x1");
+  expect(SOURCES.build.sizes[0]).toBe("4x1");
 });
 
 test("normalizeLayout falls back to default on garbage", () => {
@@ -168,6 +169,15 @@ test("only one search widget: duplicates dropped, add is a no-op", () => {
   expect(ids(out)).toEqual(["s1"]);
   expect(addWidget(out, "search")).toBe(out);
   expect(addWidget(lay(w("a")), "search", { id: "s" }).widgets[1]).toEqual({ id: "s", source: "search", size: "4x1", format: "bar" });
+});
+
+test("build widgets: addable, repeatable, and kept by normalizeLayout", () => {
+  const out = addWidget(lay(w("a")), "build", { id: "b" });
+  expect(out.widgets[1]).toEqual({ id: "b", source: "build", size: "4x1", format: "bar" });
+  expect(addWidget(out, "build", { id: "b2" }).widgets).toHaveLength(3);
+  expect(normalizeLayout({ version: 2, widgets: [w("b", "build", "2x1", "bar")] }).widgets).toEqual([
+    { id: "b", source: "build", size: "2x1", format: "bar" },
+  ]);
 });
 
 test("pageTitle is the last path segment", () => {

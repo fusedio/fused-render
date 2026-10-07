@@ -2000,7 +2000,8 @@ a.hw-more:hover {
 /* ---- Search widget ----------------------------------------------------------- */
 /* View mode: the widget is the bar itself — no card, no header, minimal padding,
    like the hero it replaced. Edit mode keeps the normal card and chrome. */
-.hw-widget.is-search {
+.hw-widget.is-search,
+.hw-widget.is-build {
   min-height: 0;
   align-self: stretch;
   width: 100%;
@@ -2047,6 +2048,24 @@ a.hw-more:hover {
   background: var(--bg);
 }
 
+.hw-widget.is-build { text-align: left; padding: 0; }
+.hw-widget.is-build .home-composer-wrap { margin-bottom: 0; }
+
+.hw-build-ph {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px 14px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+}
+
 /* Add-sheet preview of the search bar: a rounded input, magnifier, placeholder bar. */
 .fp-search {
   display: flex;
@@ -2062,6 +2081,30 @@ a.hw-more:hover {
 
 .fp-search svg { flex: none; }
 .fp-search .fp-ln { flex: 1 1 auto; width: auto; max-width: 70%; }
+
+.fp-prompt {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 360px;
+  padding: 14px 16px 30px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+}
+.fp-prompt .fp-ln { width: auto; }
+.fp-prompt .fp-ln.is-l { max-width: 80%; }
+.fp-prompt .fp-ln.is-m { max-width: 45%; }
+.fp-prompt-send {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 
 .hw-widget.is-app { padding: 0; }
 .hw-widget.is-app .hw-head {

@@ -4,6 +4,7 @@
 
 export type WidgetSource =
   | "search"
+  | "build"
   | "apps"
   | "playground"
   | "sessions"
@@ -51,6 +52,12 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
   search: {
     label: "File search",
     description: "Search every file on this machine.",
+    sizes: ["4x1", "2x1"],
+    formats: ["bar"],
+  },
+  build: {
+    label: "Build an app",
+    description: "Describe an app and Claude scaffolds it — the prompt box from the Apps page.",
     sizes: ["4x1", "2x1"],
     formats: ["bar"],
   },

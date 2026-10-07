@@ -11,6 +11,7 @@ import { TasksWidget } from "./widgets/TasksWidget";
 import { BotsWidget } from "./widgets/BotsWidget";
 import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
 import { SearchWidget } from "./widgets/SearchWidget";
+import { BuildWidget } from "./widgets/BuildWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
 import { AppEmbedWidget, OpenAppLink, OpenPageLink, appName, pageTitle, useWidgetApp } from "./widgets/AppEmbedWidget";
 import { FormatPicks, SizeChips } from "./Pickers";
@@ -28,6 +29,8 @@ function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; 
   switch (widget.source) {
     case "search":
       return <SearchWidget edit={edit} />;
+    case "build":
+      return <BuildWidget edit={edit} />;
     case "apps":
       return <AppsWidget widget={widget} />;
     case "playground":
@@ -169,15 +172,16 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
             : spec.label
         : spec.label;
   const seeAll = SEE_ALL[widget.source];
-  // The search widget IS the bar: no header in view mode.
-  const bare = widget.source === "search" && !edit;
+  // The search and build widgets ARE their box: no header in view mode.
+  const bare = (widget.source === "search" || widget.source === "build") && !edit;
   return (
     <section
       id={p.anchorId}
       className={
         "hw-widget" +
         ` hw-size-${widget.size}` +
-        (bare ? " is-search" : "") +
+        (bare && widget.source === "search" ? " is-search" : "") +
+        (bare && widget.source === "build" ? " is-build" : "") +
         (edit ? " is-edit" : "") +
         (widget.source === "app" ? " is-app" : "") +
         (p.dragging ? " is-dragging" : "") +

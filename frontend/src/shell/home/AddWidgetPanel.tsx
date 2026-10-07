@@ -14,6 +14,7 @@ import {
   FileText,
   Folder,
   FolderGit2,
+  Hammer,
   LayoutGrid,
   ListChecks,
   Search,
@@ -32,6 +33,7 @@ import { appName, useAllApps } from "./widgets/AppEmbedWidget";
 
 const SOURCE_ICONS: Record<WidgetSource, LucideIcon> = {
   search: Search,
+  build: Hammer,
   apps: LayoutGrid,
   app: AppWindow,
   playground: Sparkles,

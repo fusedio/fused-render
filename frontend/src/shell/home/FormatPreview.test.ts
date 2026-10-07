@@ -20,6 +20,9 @@ describe("previewKind", () => {
   test("the search bar draws a search input", () => {
     expect(previewKind("search", "bar")).toBe("search-bar");
   });
+  test("the build widget draws a prompt composer", () => {
+    expect(previewKind("build", "bar")).toBe("build-prompt");
+  });
   test("every allowed (source, format) pair has a kind", () => {
     for (const s of Object.keys(SOURCES) as WidgetSource[]) {
       for (const f of SOURCES[s].formats) expect(previewKind(s, f)).toBeTruthy();
