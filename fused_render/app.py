@@ -1665,10 +1665,11 @@ def main() -> None:
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
     # user clicks the Dock icon (or double-clicks the app in Finder) while the
     # app is already running. rumps's delegate doesn't implement it, so without
-    # this patch a Dock click does nothing. Bring the front window forward, or
-    # open a Home window if every window was closed (a browser tab only when
-    # the window manager failed to build); if the server is still booting,
-    # queue the home URL on the same pending list the bootstrap flushes.
+    # this patch a Dock click does nothing. Always open a fresh Home window —
+    # the Dock is a "new window" door, not a focus button (a browser tab only
+    # when the window manager failed to build); if the server is still
+    # booting, queue the home URL on the same pending list the bootstrap
+    # flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):
         logger.info("dock reopen event (server ready=%s)", state["ready"])

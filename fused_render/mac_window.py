@@ -1107,14 +1107,12 @@ class WindowManager:
         return self.open(self.url_for_path(fs_path))
 
     def reopen(self) -> None:
-        """A macOS Dock-icon click on the running app: the front window if
-        there is one (whatever it shows — the user put it there), else a
-        fresh Home window."""
-        front = self.front()
-        if front is not None:
-            front.show()
-        else:
-            self.open(self.home_url)
+        """A macOS Dock-icon click on the running app: always a fresh Home
+        window, whatever is already open — the Dock is the "give me another
+        one" door, exactly like File → New Window. (It used to bring the
+        front window forward instead, which made a second window unreachable
+        from the Dock.)"""
+        self.open(self.home_url)
 
     def show_tasks(self) -> None:
         """Window → Tasks (⌘⇧T): a window already on the Tasks page comes to
@@ -1138,7 +1136,8 @@ class WindowManager:
         # /preferences has no key either — none of those is Home. With Bots
         # as the front door (`prefs.bots_enabled`, always on under the bot
         # flavor) `/` lands on `/bots`, so that window IS Home — without this
-        # `show_home` found no home window and opened a fresh one every time.
+        # `open_app_in_home` found no home window and opened a fresh one
+        # every time.
         path = urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/")
         if path in ("", "/home"):
             return True
@@ -1149,19 +1148,11 @@ class WindowManager:
         return False
 
     def show_home(self) -> None:
-        """A window already showing the shell home comes to the front — the
-        key/front one if several — otherwise a fresh Home window opens, even
-        if app windows are open."""
-        homes = [w for w in self._windows if w.ns is not None and self._is_home(w)]
-        if homes:
-            win = homes[-1]
-            for w in reversed(homes):  # prefer the key/front one
-                if w is self.key() or w is self.front():
-                    win = w
-                    break
-            win.show()
-        else:
-            self.open(self.home_url)
+        """The launcher's last row / <modifier>+0: always a fresh Home window,
+        even if one is already open — same semantics as the Dock icon
+        (`reopen`). Apps keep focus-or-open (`focus_or_open_app`); Home is
+        the one row that always means "another one"."""
+        self.open(self.home_url)
 
     def snapshot_urls(self) -> list[str]:
         """What every open window shows now, in ``_windows`` order (MRU, newest
