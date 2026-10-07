@@ -45,15 +45,21 @@ export function Bots() {
     u.searchParams.delete("new"); u.searchParams.delete("phone");
     history.replaceState(history.state, "", u.pathname + (u.search || "") + u.hash);
     if (wantNew) { openDialog({ kind: "newBot" }); return; }
-    const tryOpen = (): boolean => {
-      const sb = getState().bots.find((b) => b.kind === "super");
-      if (!sb) return false;
-      openDialog({ kind: "settings", id: sb.id, tab: "phone" });
-      return true;
-    };
-    if (tryOpen()) return;
-    const stop = subscribe(() => { if (tryOpen()) stop(); });
-    return stop;
+    const superId = (): string | undefined => getState().bots.find((b) => b.kind === "super")?.id;
+    const now = superId();
+    if (now) { openDialog({ kind: "settings", id: now, tab: "phone" }); return; }
+    // Not listed yet: open on the first poll that carries it. Unsubscribe BEFORE opening — openDialog commits to the
+    // store, which notifies this very listener, and a listener that opens again from inside that notification recurses
+    // until the stack is gone.
+    let done = false;
+    const stop = subscribe(() => {
+      if (done) return;
+      const id = superId();
+      if (!id) return;
+      done = true; stop();
+      openDialog({ kind: "settings", id, tab: "phone" });
+    });
+    return () => { done = true; stop(); };
   }, []);
   useEffect(() => installNotify(), []);
   useFaceAnimator();

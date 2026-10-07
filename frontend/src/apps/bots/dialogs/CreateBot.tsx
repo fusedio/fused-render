@@ -62,7 +62,7 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
         </DialogHeader>
         <FieldGroup className="px-6 pb-5">
           <button type="button" disabled={isSuper} onClick={() => { void editAvatar(); }}
-            className="group flex w-fit flex-col items-center gap-1.5 self-start rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
+            className="group flex w-fit cursor-pointer appearance-none flex-col items-center gap-1.5 self-start rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
             title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
             <span className="size-12 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
             {isSuper ? null : <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit avatar</span>}

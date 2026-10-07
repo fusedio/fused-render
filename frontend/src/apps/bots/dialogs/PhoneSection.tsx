@@ -11,13 +11,13 @@ import { openFdaSettings } from "@platform/lib/api";
 import { fdaCopy, pokeFda, relaunchHref, useFda } from "@platform/lib/fda";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { api, type ImessageState } from "../lib/api";
 import { imessageStatus } from "../lib/live";
 import { act } from "../state/store";
+import { Row, Rows } from "./SettingsRow";
 
 export interface PhoneSectionProps {
   botId: string;
@@ -137,39 +137,32 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
     : "A separate Apple ID signed into Messages here: replies come as plain texts.";
 
   return (
-    <div className="flex flex-col gap-5">
-      <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-white/10 px-4 py-3">
-        <span className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium">Text Super Bot from your phone</span>
-          <span className="text-sm text-muted-foreground">Texts from your number become tasks. Replies come back as texts. Approvals stay on this Mac.</span>
-        </span>
-        <Switch id="bmphone" checked={enabled} onCheckedChange={(c) => flip(!!c)} />
-      </label>
+    <div className="flex flex-col">
+      <Rows className="pb-4">
+        <Row title="Text Super Bot from your phone" text="Texts from your number become tasks. Replies come back as texts. Approvals stay on this Mac." htmlFor="bmphone">
+          <Switch id="bmphone" checked={enabled} onCheckedChange={(c) => flip(!!c)} />
+        </Row>
+      </Rows>
 
       {!enabled ? (
-        <p className="m-0 text-sm text-muted-foreground">{nh ? `Off. Your number (${nh}) is remembered; turn the switch on to use it again.` : "Off. Turn it on to set your number up."}</p>
+        <p className="m-0 border-t border-white/10 pt-4 text-[13px] text-muted-foreground">{nh ? `Off. Your number (${nh}) is remembered; turn the switch on to use it again.` : "Off. Turn it on to set your number up."}</p>
       ) : connected ? (
-        <FieldGroup>
-          <p className="m-0 font-mono text-xs text-muted-foreground">{imessageStatus(nh, st)}</p>
-          <Field>
-            <FieldLabel htmlFor="bmimsg">Your number</FieldLabel>
+        <Rows className="border-t border-white/10 pt-4">
+          <Row title="Status" text={imessageStatus(nh, st)}>
+            <Button type="button" variant="outline" size="sm" disabled={testing} onClick={() => { void sendTest(); }}>{testing ? "Sending…" : "Send a test text"}</Button>
+          </Row>
+          {tested ? <p className={cn("m-0 pb-3 text-[13px]", tested.ok ? "text-muted-foreground" : "text-destructive")}>{tested.text}</p> : null}
+          <Row title="Your number" text={identity} htmlFor="bmimsg">
             <Input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)}
               onBlur={() => { if (nh && !saved) void persist(enabled, handle); }} />
-            <FieldDescription>{identity}</FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="bmimsgto">People Super Bot may text for you</FieldLabel>
+          </Row>
+          <Row title="People Super Bot may text for you" htmlFor="bmimsgto" stack
+            text="A name and a number or Apple ID per line. Every text goes through the approval card unless Permissions says never ask. Your own number is always allowed.">
             <Textarea id="bmimsgto" rows={2} placeholder={"Ali +1 555 123 4567\nMom mom@icloud.com"} value={contacts} onChange={(e) => setContacts(e.target.value)} />
-            <FieldDescription>A name and a number or Apple ID per line. Every text goes through the approval card unless Permissions says never ask. Your own number is always allowed.</FieldDescription>
-          </Field>
-          <p className="m-0 flex items-center gap-1 text-sm text-muted-foreground">
-            Trouble?
-            <Button type="button" variant="link" size="sm" className="h-auto px-0" disabled={testing} onClick={() => { void sendTest(); }}>Send a test text</Button>
-            {tested ? <span className={tested.ok ? "" : "text-destructive"}>· {tested.text}</span> : null}
-          </p>
-        </FieldGroup>
+          </Row>
+        </Rows>
       ) : (
-        <ol className="m-0 list-none divide-y divide-white/10 p-0">
+        <ol className="m-0 list-none divide-y divide-white/10 border-t border-white/10 p-0 [&>li:first-child]:pt-4">
           <Step s={step1} n={1} title="Full Disk Access"
             text={step1 === "ok" ? "Granted. It lets Super Bot read Messages."
               : fdaPending ? fdaCopy().pending
