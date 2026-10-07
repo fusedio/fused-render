@@ -107,6 +107,9 @@ def _s(**props):
 
 STR = "string"
 REQ = ({"type": "string"}, True)
+FACE_DESC = ("avatar: shape circle|oval|square|pill|triangle|hexagon|cloud|drop; color one of the picker's "
+             "#eafe68 #ffffff #7a5230 #d33b3b #f0762a #f2a232 #2f8f58 #2a9a86 #2f7ae5 #8a4fe0 #d33f8e #767676 "
+             "(any #rrggbb only together with an icon); icon a preset key (github, gmail, …) or empty")
 REF = {"type": "string", "description": "an element ref from the element list, e.g. sb12"}
 REF_REQ = (REF, True)
 
@@ -227,17 +230,17 @@ TOOL_SPECS: dict[str, dict] = {
                                   "and default rules; `face` {shape, color, icon} is its avatar. The user approves the card before "
                                   "anything is created, every time.",
                    "inputSchema": _s(name=REQ, instructions=STR, model=STR, effort=STR, preset=STR,
-                                     face={"type": "object", "description": "avatar: shape circle|oval|square|pill|triangle|hexagon|"
-                                                                            "cloud|drop, color #rrggbb, icon a preset key or empty"})},
-    "bot_settings": {"description": "Change one of the BOTS' settings: its name, instructions (standing rules; pass the whole new "
-                                    "text), model, effort or face (avatar). Give only the fields that change. Nothing else is "
-                                    "yours to change (approvals, builds, encryption, contacts, routines are the user's, in that "
-                                    "bot's Settings). The user approves the card, which shows every change, before it is "
-                                    "written, every time.",
+                                     face={"type": "object", "description": FACE_DESC})},
+    "bot_settings": {"description": "Read or change one of the BOTS' settings. With only `bot` it returns the bot's current "
+                                    "settings and its WHOLE instructions text (no approval needed): do that first when editing "
+                                    "instructions, BOTS shows an excerpt. With change fields it changes its name, instructions "
+                                    "(pass the whole new text), model, effort or face (avatar); give only the fields that change. "
+                                    "Nothing else is yours to change (approvals, builds, encryption, contacts, routines are the "
+                                    "user's, in that bot's Settings). The user approves the card, which shows every change, before "
+                                    "it is written, every time.",
                      "inputSchema": _s(bot=({"type": "string", "description": "the bot's current name from BOTS"}, True),
                                        name=STR, instructions=STR, model=STR, effort=STR,
-                                       face={"type": "object", "description": "avatar: shape circle|oval|square|pill|triangle|hexagon|"
-                                                                              "cloud|drop, color #rrggbb, icon a preset key or empty"})},
+                                       face={"type": "object", "description": FACE_DESC})},
 }
 
 HANDOFF_TOOLS = ("handoff", "handoff_stop")
@@ -738,6 +741,8 @@ def _manage_preview(bot, act: str, d: dict) -> str:
     who = t.meta.get("name") if t is not None else (d.get("bot") or "?")
     if err:
         return f"change bot \"{who}\" ({err})"
+    if not any(k in botmod.MANAGE_FIELDS for k in d):
+        return f"read bot \"{who}\""
     if not changes:
         return f"change bot \"{who}\" (nothing to change)"
     parts = []

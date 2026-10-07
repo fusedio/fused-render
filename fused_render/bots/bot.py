@@ -2481,6 +2481,9 @@ def check_face(meta, face, strict=False):
             raise ValueError(f"unknown shape {shape!r}; one of {', '.join(FACE_SHAPES)}")
         if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
             raise ValueError(f"color must be a #rrggbb hex, e.g. {FACE_COLORS[0]}")
+        if color and not icon and color.lower() not in FACE_COLORS:
+            # face.ts faceOf: a colour outside the palette is drawn only beside an icon; alone it falls back to a hash colour.
+            raise ValueError(f"without an icon the colour must be one of the picker's: {', '.join(FACE_COLORS)}")
         if icon and presets_mod.get(icon) is None:
             raise ValueError(f"unknown icon {icon!r}; an icon is a preset key "
                              f"({', '.join(x['key'] for x in presets_mod.presets())}) or empty")
@@ -2596,12 +2599,25 @@ def manage_changes(bot, target_name, args):
     return t, changes, ""
 
 
+def manage_record(t) -> str:
+    """A bot's current settings as `bot_settings {bot}` (no change fields) returns them:
+    the read door, so the model can edit the WHOLE instructions text, not the 120-char
+    BOTS excerpt (docs §12)."""
+    m = t.meta
+    return (f"SETTINGS of {m.get('name')!r}: model {m.get('model') or DEFAULT_MODEL} · effort {m.get('effort') or DEFAULT_EFFORT} · "
+            f"preset {m.get('preset') or 'none'} · face {face_words(m.get('face'))}\n"
+            f"instructions:\n{(m.get('instructions') or '').strip() or '(none)'}")
+
+
 def manage_settings(bot, target_name, args):
     """Super Bot's `bot_settings` (docs §12): write the changes `manage_changes` found,
-    under the target's lock; the target gets a `system` line naming what changed."""
+    under the target's lock; the target gets a `system` line naming what changed. With
+    no change field at all it is a read (manage_record), no card."""
     t, changes, err = manage_changes(bot, target_name, args)
     if err:
         return "bot_settings", err
+    if not any(k in MANAGE_FIELDS for k in (args or {})):
+        return f"read bot \"{t.meta.get('name')}\"", manage_record(t)
     label = f"change bot \"{t.meta.get('name')}\""
     if not changes:
         return label, f"nothing to change: {t.meta.get('name')!r} already has those settings"

@@ -1195,7 +1195,14 @@ effort?, face?}` changes one of the BOTS; `bot` is its current name,
 resolved exactly like a hand-off target (exact, then unique prefix; Super
 Bot's own name is refused with "your own settings are the user's"). `face`
 is `{shape, color, icon}`: shape one of `bot.FACE_SHAPES` (the picker's
-eight), colour `#rrggbb`, icon a preset key or empty; `claude` stays locked.
+eight), colour one of the picker's `bot.FACE_COLORS` when there is no icon
+(face.ts `faceOf` draws an off-palette colour only beside an icon; alone it
+falls back to a hash colour, so the card would promise what the page does
+not draw), any `#rrggbb` with one, icon a preset key or empty; `claude`
+stays locked. `bot_settings {bot}` with no change field is the READ door
+(`bot.manage_record`): the bot's settings and its whole instructions text,
+no card (`risk()` is "" with nothing to change), because BOTS shows a
+120-char excerpt and "add a line to X's prompt" needs the whole text.
 Those five fields (`bot.MANAGE_FIELDS`) are the whole surface: `approval`,
 `build_access`, `engine`, `encrypt`, contacts, routines, skills and memory
 are refused with "stay the user's own" (a model must not loosen a bot's
@@ -1238,7 +1245,11 @@ the next read.
 
 **Prompt.** `SUPER_PROMPT` gets a BOT MANAGEMENT paragraph (when to use
 them, that the card is raised every time so one complete call beats several,
-and that approvals / builds / encryption / contacts / routines stay the
+that the read call comes first when editing instructions, that a bot's
+folder and `bot.json` are never written with Write / Edit / Bash (the two
+tools are the only door; Super Bot does hold those tools, and under
+`super_access: full` the CLI could approve such a write on its own), and
+that approvals / builds / encryption / contacts / routines stay the
 user's); the `YOU:` line says "Only the user changes your settings; the
 BOTS' … you change with `bot_settings`" on Super Bot. `bots_section` lines
 now carry `<model>/<effort>; face <words>` so the model quotes the current
