@@ -24,8 +24,10 @@ export function CardStrip({
   count,
   rows,
   total,
+  variant = "cards",
   children,
 }: {
+  variant?: "cards" | "icons";
   count: number | null;
   rows: number;
   total: number;
@@ -54,14 +56,15 @@ export function CardStrip({
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     el.scrollBy({ left: dir * (el.clientWidth - PEEK_W), behavior: reduce ? "auto" : "smooth" });
   };
-  const overflowing = count !== null && total > count * rows;
+  const icons = variant === "icons";
+  const overflowing = icons ? total > 0 : count !== null && total > count * rows;
   const { canPrev, canNext } = edges;
   return (
     <div className={"hw-strip" + (canNext ? " has-more" : "")}>
       <div
         ref={scroller}
-        className={"home-row hw-cards" + (overflowing ? " is-overflowing" : "")}
-        style={{ "--hw-n": count ?? 1, "--hw-rows": rows } as CSSProperties}
+        className={(icons ? "hw-icons is-strip" : "home-row hw-cards") + (overflowing ? " is-overflowing" : "")}
+        style={(icons ? { "--hw-rows": rows } : { "--hw-n": count ?? 1, "--hw-rows": rows }) as CSSProperties}
         onScroll={update}
       >
         {children}

@@ -813,6 +813,21 @@ a.hw-row:hover { background: var(--bg-alt); }
   align-content: center;
 }
 
+.hw-icons.is-strip {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 76px;
+  grid-template-rows: repeat(var(--hw-rows, 1), auto);
+  align-content: center;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  padding-right: 56px; /* room for the peek fade */
+}
+.hw-icons.is-strip::-webkit-scrollbar { display: none; }
+.hw-icons.is-strip > * { scroll-snap-align: start; }
+
 .hw-tile {
   display: flex;
   flex-direction: column;

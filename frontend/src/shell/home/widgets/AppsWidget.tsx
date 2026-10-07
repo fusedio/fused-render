@@ -47,7 +47,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
   const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, widget.format);
   // Cards ask for what the measured row can draw (the server's recents-first
   // fast path depends on it); icon tiles ask for their fixed capacity.
-  const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap, MAX_ROW), cards ? rows : 1);
+  const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), cards ? rows : 1);
   return (
     <div ref={ref} className="hw-body">
       {apps === null ? (
@@ -64,11 +64,11 @@ export function AppsWidget({ widget }: { widget: Widget }) {
             ))}
           </CardStrip>
         ) : (
-          <div className="hw-icons">
-            {apps.slice(0, apps.length > cap ? cap - 1 : cap).map((app) => (
+          <CardStrip variant="icons" count={count} rows={rows} total={apps.length}>
+            {apps.slice(0, MAX_ROW).map((app) => (
               <AppTile key={app.path} app={app} />
             ))}
-            {apps.length > cap && (
+            {apps.length >= MAX_ROW && (
               <a className="hw-tile is-more" href="/apps" onClick={(e) => softNavigate(e, "/apps")} aria-label="All apps">
                 <span className="hw-tile-icon" aria-hidden="true">
                   <span className="hw-tile-glyph">›</span>
@@ -76,7 +76,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
                 <span className="hw-tile-name">All apps</span>
               </a>
             )}
-          </div>
+          </CardStrip>
         )
       ) : appsError ? (
         <ErrorLine message={appsError} onRetry={retry} />
