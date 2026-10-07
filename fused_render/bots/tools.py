@@ -240,9 +240,10 @@ TOOL_SPECS: dict[str, dict] = {
                                   "and must be new; `instructions` are its standing rules (what it does for the user, which site, "
                                   "what never to do); `model` haiku|sonnet|opus|fable|local-4b|local-9b; `effort` low|medium|high|"
                                   "xhigh; `preset` a preset key (github, gmail, linkedin, …) gives it that site's playbooks, mark "
-                                  "and default rules; `face` {shape, color, icon} is its avatar. The user approves the card before "
-                                  "anything is created, every time.",
-                   "inputSchema": _s(name=REQ, instructions=STR, model=STR, effort=STR, preset=STR,
+                                  "and default rules; `face` {shape, color, icon} is its avatar; `logins_from` (a bot's name from BOTS) "
+                                  "puts it on that bot's browser so they share logins (log in once, both stay in), otherwise it "
+                                  "starts logged out. The user approves the card before anything is created, every time.",
+                   "inputSchema": _s(name=REQ, instructions=STR, model=STR, effort=STR, preset=STR, logins_from=STR,
                                      face={"type": "object", "description": FACE_DESC})},
     "bot_settings": {"description": "Read or change one of the BOTS' settings. With only `bot` it returns the bot's current "
                                     "settings and its WHOLE instructions text (no approval needed): do that first when editing "
@@ -746,6 +747,8 @@ def _manage_preview(bot, act: str, d: dict) -> str:
             bits.append(f"preset {f['preset']}")
         if f["face"]:
             bits.append(f"face {botmod.face_words(f['face'])}")
+        if f.get("logins_from"):
+            bits.append(f"same logins as {f['logins_from']}")
         out = f"create bot \"{f['name']}\" ({', '.join(bits)})"
         if f["instructions"]:
             out += f" with instructions: \"{cut(f['instructions'])}\""

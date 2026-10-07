@@ -26,7 +26,7 @@ export const MI: Record<MenuIcon, ReactNode> = {
   delete: mi(<><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 13h10l1-13" /><path d="M9 7V4h6v3" /></>),
 };
 
-export type MenuAction = "live" | "settings" | "routines" | "skills" | "export" | "clone" | "window" | "pin" | "hide" | "read" | "delete";
+export type MenuAction = "live" | "settings" | "routines" | "skills" | "export" | "clone" | "cloneCopy" | "window" | "pin" | "hide" | "read" | "delete";
 export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?: boolean } | "hr";
 
 /** openMenu's rows, in order. full: the header ☰ menu (routines, skills, export, window); live: lead with "Open live view". */
@@ -38,7 +38,8 @@ export function menuItems(b: Bot, opts: { full?: boolean; live?: boolean } = {})
   if (full && !ea) out.push({ a: "routines", label: "Routines…", icon: MI.routines });
   if (full) out.push({ a: "skills", label: "Skills…", icon: MI.skills });
   if (full) out.push({ a: "export", label: "Export transcript…", icon: MI.export });
-  if (!ea) out.push({ a: "clone", label: "Clone", icon: MI.clone });
+  // Clone shares the source's logins (one browser); the second row is the old behaviour, a copy of them.
+  if (!ea) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
   if (full) out.push({ a: "window", label: b.browser?.visible ? "Bring browser back here" : "Open in a Chrome window…", icon: MI.window });
   out.push("hr",
     { a: "pin", label: b.pinned ? "Unpin" : "Pin to top", icon: b.pinned ? MI.unpin : MI.pin },

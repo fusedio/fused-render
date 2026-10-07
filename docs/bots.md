@@ -119,11 +119,14 @@ like OpenBot's `.fused/`** so moving an OpenBot install is one copy
 
 ```
 ~/.fused-render/bots/
-  data/bots/<id>/        bot.json, events.jsonl, memory.md, skills/, profile/, downloads/, files/, inbox/
+  data/bots/<id>/        bot.json, events.jsonl, memory.md, skills/, downloads/, files/, inbox/
+  data/browsers/<bid>/   browser.json, profile/ or profile.enc — a set of logins; bot.json's `browser_id`
+                         names it, several bots may name the same one (shared logins, §6)
   data/usage.jsonl       usage ledger
   data/builds.json       Builds panel list
   data/imessage*.json    iMessage cursor / state / lock
-  cache/bots/<id>/       shot.png, session.json, steps/ (deletable)
+  cache/bots/<id>/       shot.png, tabs.json (own tab ids on a shared browser), steps/ (deletable)
+  cache/browsers/<bid>/  session.json (the live Chrome handle)
   cache/slow.jsonl       slow-call log
   dock.json              ours (no OpenBot counterpart)
 ```
@@ -157,9 +160,10 @@ reply:  {seq, role, text}   (quoted message the user replied to)
 Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 (`id, name, model, effort, status, instructions, created, task, step, url,
 title, note, updated, approval, build_access, trusted_apps, face, routines, pinned, hidden,
-reactions, encrypt, chrome_profile, imessage, imessage_to, builds,
+reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, visible, dl_pct`) plus
-`seq`, `browser: {running, url, title, visible, sealed, encrypt, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
+`seq`, `browser: {running, url, title, visible, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
+`shared_with: [{id, name}]` (the other bots on this bot's browser),
 `memory` (detail only), `skills` (detail only), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
 (since the page's cursor).
@@ -191,6 +195,7 @@ POST   /api/bots                      {name, model, effort, instructions, approv
                                        (preset: a key from /api/bots/presets, "" = blank; unknown key -> 400, no bot made)
 GET    /api/bots/presets              -> {ok, presets: [{key, name, color, order, model, instructions, setup, apps, skills: [title]}]}
 GET    /api/bots/profiles             -> {ok, profiles: [{dir, name, email}]}
+GET    /api/bots/browsers             -> {ok, browsers: [{id, name, encrypt, chrome_profile, running, bots: [{id, name}]}]}
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
 POST   /api/bots/<id>/send            {text, reply_to?}                     -> {ok}      (also answers approvals/questions/offers)
@@ -205,8 +210,10 @@ POST   /api/bots/<id>/flag            {pinned?, hidden?, face?: {shape, color, i
 POST   /api/bots/<id>/settings        {name?, model?, effort?, instructions?, memory?, approval?, build_access?,
                                        encrypt?, imessage_handle?, imessage_to?, trusted_apps?}  -> {ok}   ("rename" in OpenBot;
                                        POST because the server has no do_PATCH)
-POST   /api/bots/<id>/profile         {profile}                             -> {ok}   (import a Chrome profile; background)
-POST   /api/bots/<id>/clone           {name?}                               -> {ok, id}
+POST   /api/bots/<id>/profile         {profile}                             -> {ok}   (import a Chrome profile into the bot's
+                                                                                         browser, every bot sharing it included; background)
+POST   /api/bots/<id>/clone           {name?, share?}                       -> {ok, id}   (share defaults true: the new bot joins
+                                                                                         the source's browser; false copies the profile)
 DELETE /api/bots/<id>                                                       -> {ok}
 POST   /api/bots/<id>/routines        {op: add, text, kind, minutes?, time?, weekdays?, at?} -> {ok, routine}
                                       {op: delete|enable|disable|run, rid}  -> {ok}
@@ -382,6 +389,29 @@ computed `backgroundColor` over CDP before concluding a token is unmapped — th
 tokens (`--accent`, `--on-accent`) were right all along the first time this bit.
 
 ## 5. Behaviour the backend keeps (from agents.py)
+
+**Shared logins (browsers).** A bot's Chrome profile is a *browser*,
+`data/browsers/<bid>/`, named by `browser_id` in bot.json; a new bot gets one
+of its own (same id as the bot) unless it is created with `browser_id` set to
+another bot's, in which case the two share it: one Chrome process, one set of
+cookies. Chrome refuses two processes on one profile folder, so sharing is one
+`BrowserProcess` (browser.py) with one `Browser` view per bot: each view opens
+its tabs in windows of their own (`Target.createTarget(newWindow)`, headless
+composites every window's foreground tab, so bots never throttle each other),
+tracks the target ids it opened plus their popups (`openerId`) in
+`cache/bots/<id>/tabs.json`, and drives only those; a bot alone on its browser
+drives every tab, as before. Encrypt-at-rest and an imported Chrome profile
+belong to the browser (browser.json) and are mirrored into each bot's
+`encrypt` / `chrome_profile` for the dialog. Idle sleep quits a shared Chrome
+only once every bot on it has been idle (`Browser.sleep` →
+`BrowserProcess.stop_if_idle`). Pop-out (`window`) is per process: every
+bot's windows appear, the asking bot's in front. Delete keeps a browser other
+bots still use; the last bot takes it down. Settings' `browser_id` moves a bot
+(`bot.set_browser`): off a shared browser its tabs close, off a private one
+Chrome stops and the folder goes; refused mid-task. Clone shares by default.
+Bots from before browsers existed are adopted on first load
+(`browsers.adopt`: `bots/<id>/profile` moves to `browsers/<id>/`, nothing is
+copied). `browsers.sweep` at `registry.start` removes folders no bot names.
 
 Everything in `agents.py` that is not the model loop: create/clone/delete,
 greet, rename/settings, flag, react, routines (`_next_run`, spacing from
