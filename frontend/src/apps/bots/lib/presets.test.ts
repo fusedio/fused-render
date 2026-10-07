@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Preset } from "./api";
-import { BLANKS, blankQ, filterCards, firstPick, highlightRuns, matchQ, matchedSkill, newBotInit, pickCards, presetNote, presetQ, queryWords } from "./presets";
+import { BLANKS, blankQ, filterCards, firstPick, highlightRuns, matchQ, newBotInit, searchRows, pickCards, presetNote, presetQ, queryWords } from "./presets";
 
 const P = (key: string, name: string, skills: string[]): Preset =>
   ({ key, name, color: "#0a66c2", order: 0, model: "haiku", instructions: `Browse ${name}.`, apps: [], skills });
@@ -132,14 +132,22 @@ describe("highlightRuns", () => {
   });
 });
 
-describe("matchedSkill", () => {
-  const p = PRESETS[0];
-  test("names the playbook that matched when the name did not", () => {
-    expect(matchedSkill(p, queryWords("recruiters"))).toBe("Find recruiters");
-    expect(matchedSkill(p, queryWords("feed"))).toBe("Summarize my feed");
+describe("searchRows", () => {
+  test("empty query: no rows (the grid shows)", () => {
+    expect(searchRows(cards, "  ")).toEqual([]);
   });
-  test("empty when the query is empty or the name itself matched", () => {
-    expect(matchedSkill(p, [])).toBe("");
-    expect(matchedSkill(p, queryWords("linkedin"))).toBe("");
+  test("cards matched on their own name first, then playbook rows, each naming its site", () => {
+    const rows = searchRows(cards, "feed");
+    expect(rows.map((r) => [r.kind, r.title, r.sub])).toEqual([["skill", "Summarize my feed", "LinkedIn"]]);
+    const li = searchRows(cards, "linkedin");
+    expect(li.map((r) => [r.kind, r.title])).toEqual([["card", "LinkedIn"]]);
+    expect(li[0].pick).toEqual({ kind: "preset", preset: PRESETS[0] });
+  });
+  test("every word must be in one text: a name word plus a playbook word matches nothing", () => {
+    expect(searchRows(cards, "linkedin feed")).toEqual([]);
+  });
+  test("blank bots and Super Bot are card rows", () => {
+    expect(searchRows(pickCards(PRESETS, true), "super").map((r) => r.key)).toEqual(["super"]);
+    expect(searchRows(cards, "blue").map((r) => [r.kind, r.title, r.sub])).toEqual([["card", "Blue Bot", "From scratch"]]);
   });
 });

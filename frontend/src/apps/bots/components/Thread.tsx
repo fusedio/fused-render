@@ -14,7 +14,7 @@ import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
-import { END_GAP, gapOf, evBox, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { END_GAP, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { SetupLines } from "./SetupLines";
 
 const EMPTY: BotEvent[] = [];
@@ -372,8 +372,9 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (searchQ) {
       let n = 0;
       for (const el of th.children) { const hit = searchHit(el.textContent, searchQ); el.classList.toggle("hit", hit); if (hit) n++; }
-      onSearchCount(searchCountText(n));
-    } else onSearchCount("");
+      // The matched words themselves light up; the count is of those, or of rows where the browser cannot paint them.
+      onSearchCount(searchCountText(highlightSearch(th, searchQ) || n));
+    } else { highlightSearch(th, ""); onSearchCount(""); }
 
     // "Viewed" = a message has scrolled into the thread at least once. The .ev wrapper has no box: watch the message inside.
     const io = viewer.current;
