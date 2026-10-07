@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { ago, historyToTurns, paneSlashes, sessionTitle } from "./history";
 import type { HistoryResponse } from "./types";
+import { parseTerminalAsk } from "../../../platform/lib/terminalFocus";
 import {
   composeOutgoing,
   formatAnnotations,
@@ -17,6 +18,18 @@ describe("historyToTurns", () => {
     const raw = composeOutgoing("fix it", [paneShotBlock([{ kind: "pane", view: "/p.png" }], "app")]);
     const turns = historyToTurns({ turns: [{ role: "user", text: raw, uuid: "u-1" }], transcript: stat });
     expect(turns[0]).toEqual({ role: "user", key: "u-1", text: "fix it", raw, uuid: "u-1" });
+  });
+
+  test("a terminal ask sent with a screenshot restores as words parseTerminalAsk reads", () => {
+    // The server strips the hint from behind the pane-shot; the wire that
+    // arrives here is pane-shot -> terminal-ask words.
+    const raw = composeOutgoing("[terminal abc: zsh \u2014 /tmp]\nhi", [
+      paneShotBlock([{ kind: "pane", view: "/p.png" }], "app"),
+    ]);
+    const turns = historyToTurns({ turns: [{ role: "user", text: raw, uuid: "u-2" }], transcript: stat });
+    const text = (turns[0] as { text: string }).text;
+    expect(text).toBe("[terminal abc: zsh \u2014 /tmp]\nhi");
+    expect(parseTerminalAsk(text)).toMatchObject({ id: "abc", label: "zsh", cwd: "/tmp", body: "hi" });
   });
 
   test("a payload with no uuid still renders, it just cannot be anchored to", () => {

@@ -77,6 +77,7 @@ import {
   type Recorder,
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
+import { terminalHint } from "@platform/lib/terminalFocus";
 import { composeOutgoing, formatAnnotations, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
@@ -1123,6 +1124,9 @@ function ChatBody(props: ChatBodyProps) {
         // restart the run loop.
         appStateBlock: () =>
           appFrame() ? watcher.blockForSend() : Promise.resolve(""),
+        // Which status-bar terminal the user means: metadata only, "" when the
+        // drawer holds no live terminal (platform/lib/terminalFocus.ts).
+        terminalHint,
         // PR4's two run-clock hooks. Both go through refs: the controller is
         // built before the strip's store and the landing's counter exist, and
         // rebuilding it for either would restart the run loop (T:16229,

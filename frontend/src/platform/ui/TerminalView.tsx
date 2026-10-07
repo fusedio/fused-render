@@ -17,7 +17,7 @@
 // — `TerminalSession`'s callbacks are fixed at construction, and the one
 // thing that needs to receive its output is the xterm instance this
 // component owns, so construction has to happen here.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -33,7 +33,19 @@ import {
 } from "@platform/ui/terminalTheme";
 import { rememberTerminalSize } from "@platform/ui/terminalSizeHint";
 import { fitWhenVisible, isLaidOut } from "@platform/ui/terminalFit";
-import { isMod } from "@platform/lib/platform";
+import { isMac, isMod } from "@platform/lib/platform";
+import {
+  initialOscState,
+  isAskSelectionChord,
+  reduceShellOsc,
+  selectionPillTop,
+  type ShellFailure,
+} from "@platform/lib/terminalAi";
+
+const PILL_HEIGHT = 22;
+// `.term-view` pads the surface by 8px (notifications.css); the pill is
+// positioned against `.term-view`, so surface-relative tops shift by it.
+const SURFACE_INSET = 8;
 
 // The drawer's toggle chord (TerminalDrawer.tsx): Cmd/Ctrl+Shift+` or the
 // VS Code alias Ctrl+`. Returning `false` here tells xterm to drop the DOM
@@ -61,9 +73,21 @@ export interface TerminalViewProps {
    * the drawer asks for it on a terminal the reader just created or picked,
    * never on a plain reopen. */
   autoFocus?: boolean;
+  /** "Ask Claude" on the current selection (pill or Cmd+L / Ctrl+Shift+L). */
+  onAskSelection?: (text: string) => void;
+  /** "Fix with AI" on a failed command, from the shell-integration OSC marks.
+   * When absent, no OSC handlers are registered and no fix pill shows. */
+  onFixFailure?: (failure: ShellFailure) => void;
 }
 
-export default function TerminalView({ id, onExit, onStatus, autoFocus }: TerminalViewProps) {
+export default function TerminalView({
+  id,
+  onExit,
+  onStatus,
+  autoFocus,
+  onAskSelection,
+  onFixFailure,
+}: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   // `useResolvedTheme()` (platform/lib/theme.ts) is the same live signal
@@ -77,6 +101,13 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
   // it reads the latest through this ref instead.
   const resolvedThemeRef = useRef(resolvedTheme);
   resolvedThemeRef.current = resolvedTheme;
+  // Same pattern for the AI callbacks: the effect below depends on `[id]` only.
+  const onAskSelectionRef = useRef(onAskSelection);
+  onAskSelectionRef.current = onAskSelection;
+  const onFixFailureRef = useRef(onFixFailure);
+  onFixFailureRef.current = onFixFailure;
+  const [selPill, setSelPill] = useState<{ text: string; top: number } | null>(null);
+  const [failure, setFailure] = useState<ShellFailure | null>(null);
 
   // Re-runs whenever `id` changes (a restarted shell gets a new session id
   // from the caller, which this effect treats as a fresh mount).
@@ -127,7 +158,53 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
       term.loadAddon(fit);
       term.open(el);
       if (autoFocus) term.focus();
-      term.attachCustomKeyEventHandler((e) => !isDrawerToggleChord(e));
+      term.attachCustomKeyEventHandler((e) => {
+        if (isAskSelectionChord(e, isMac) && term.hasSelection() && onAskSelectionRef.current) {
+          onAskSelectionRef.current(term.getSelection());
+          term.clearSelection();
+          e.preventDefault();
+          return false;
+        }
+        return !isDrawerToggleChord(e);
+      });
+
+      // Selection pill: tracks the row the selection ends on.
+      const updateSelPill = () => {
+        if (!onAskSelectionRef.current || !term.hasSelection()) return setSelPill(null);
+        const pos = term.getSelectionPosition();
+        const top = pos
+          ? selectionPillTop({
+              endRow: pos.end.y,
+              viewportY: term.buffer.active.viewportY,
+              rows: term.rows,
+              surfaceHeight: el.clientHeight,
+              pillHeight: PILL_HEIGHT,
+            })
+          : null;
+        setSelPill(top === null ? null : { text: term.getSelection(), top });
+      };
+      for (const sub of [term.onSelectionChange(updateSelPill), term.onScroll(updateSelPill), term.onResize(updateSelPill)]) {
+        teardown.push(() => sub.dispose());
+      }
+      teardown.push(() => setSelPill(null));
+
+      // Shell-integration marks (fused_render/shell_integration.py) drive the
+      // "Fix with AI" pill. Handlers return false so xterm's own handling is
+      // unaffected. A reattach replays scrollback, so the pill reflects the
+      // last command in the replay: intended.
+      if (onFixFailureRef.current) {
+        let osc = initialOscState();
+        for (const ident of [133, 633] as const) {
+          const h = term.parser.registerOscHandler(ident, (d) => {
+            const prev = osc.failure;
+            osc = reduceShellOsc(osc, ident, d);
+            if (osc.failure !== prev) setFailure(osc.failure);
+            return false;
+          });
+          teardown.push(() => h.dispose());
+        }
+        teardown.push(() => setFailure(null));
+      }
 
       // Repaint watchdog: guards against a pane that stays black after
       // scrollback replay, on both a brand-new session and a reattach.
@@ -321,6 +398,38 @@ export default function TerminalView({ id, onExit, onStatus, autoFocus }: Termin
   return (
     <div className="term-view">
       <div className="term-view-surface" ref={containerRef} />
+      {selPill && (
+        <button
+          type="button"
+          className="term-ai-pill"
+          style={{ top: selPill.top + SURFACE_INSET }}
+          aria-label="Ask Claude about the selection"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            onAskSelectionRef.current?.(selPill.text);
+            termRef.current?.clearSelection();
+          }}
+        >
+          ✦ Ask Claude <kbd>{isMac ? "⌘L" : "Ctrl+Shift+L"}</kbd>
+        </button>
+      )}
+      {failure && onFixFailure && (
+        <div className="term-ai-fix">
+          <button
+            type="button"
+            title={`\`${failure.command}\` exited ${failure.exitCode}`}
+            onClick={() => {
+              onFixFailureRef.current?.(failure);
+              setFailure(null);
+            }}
+          >
+            ✦ Fix with AI
+          </button>
+          <button type="button" aria-label="Dismiss" onClick={() => setFailure(null)}>
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }

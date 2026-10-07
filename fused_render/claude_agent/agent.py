@@ -148,6 +148,12 @@ RUNS = _runs_root()
 # 0700 enforcement, one pruner and one `Read(...)` rule rather than two of each.
 SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 
+# Per-chat logs of the Bash-tool commands a chat runs (D1327): a sibling of
+# `runs` for the same privacy reason, and keyed by CHAT (session) id rather than
+# run id because every turn of a chat is a new run dir but one conversation.
+# `fused_render/claude_cmd_log.py` repeats this path; a test pins them equal.
+CMD_LOGS = os.path.join(os.path.dirname(RUNS), "claude-cmds")
+
 # How long a crop is kept, and how many are kept at all. Both are cleanup, not
 # a quota: the page names the file it writes and the ONLY reader is the agent
 # reading a path out of one turn's message, so a crop stops mattering when its
@@ -1429,6 +1435,16 @@ def _image_to_png(path: str) -> dict:
         return {"error": "could not convert: %s" % e}
 
 
+def _terminal_tools_supported() -> bool:
+    """Whether this run gets the terminal MCP tools (terminal_list / read /
+    send): POSIX only, because every /api/terminal route 501s on Windows, and
+    only with a server origin to reach. One predicate for the three places that
+    must agree — the origin stamped into mcp.json, the roster the server then
+    offers, and the pre-allowance in --allowed-tools — so a tool is never
+    allowed that cannot be called, or callable that cannot answer."""
+    return os.name != "nt" and bool(_origin())
+
+
 def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
@@ -1453,26 +1469,33 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     args = [server, _perm_dir(run_dir)]
     if pane:
         args.append(_state_dir(run_dir))
+    server_env = {
+        "FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT),
+        # UTF-8 stdio for the server, whatever the machine's locale is.
+        # The CLI's MCP client is Node: it writes raw UTF-8 JSON with
+        # non-ASCII unescaped, while Python decodes a pipe at the LOCALE
+        # encoding — the ANSI code page on Windows, where a curly quote
+        # in a `Write` payload used to kill the server before it parked
+        # the request (no card, dead permission bridge, a turn that
+        # simply stopped; see permission_server._utf8_stdio). It has to
+        # be named HERE to reach the child at all: the MCP client passes
+        # an allowlist of env vars plus exactly this dict, so an ambient
+        # PYTHONUTF8 would not survive the spawn.
+        "PYTHONUTF8": "1",
+    }
+    if _terminal_tools_supported():
+        # The switch for the terminal tools (permission_server.TERMINAL_*): the
+        # origin they call. Named here for the same reason as PYTHONUTF8 — it
+        # must be in THIS dict to reach the server — and absent otherwise,
+        # which is what keeps the tools out of the roster.
+        server_env["FUSED_RENDER_TERMINAL_ORIGIN"] = _origin()
     with _private_open(path) as fh:
         json.dump({"mcpServers": {PERMISSION_SERVER: {
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
             "args": args,
-            "env": {
-                "FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT),
-                # UTF-8 stdio for the server, whatever the machine's locale is.
-                # The CLI's MCP client is Node: it writes raw UTF-8 JSON with
-                # non-ASCII unescaped, while Python decodes a pipe at the LOCALE
-                # encoding — the ANSI code page on Windows, where a curly quote
-                # in a `Write` payload used to kill the server before it parked
-                # the request (no card, dead permission bridge, a turn that
-                # simply stopped; see permission_server._utf8_stdio). It has to
-                # be named HERE to reach the child at all: the MCP client passes
-                # an allowlist of env vars plus exactly this dict, so an ambient
-                # PYTHONUTF8 would not survive the spawn.
-                "PYTHONUTF8": "1",
-            },
+            "env": server_env,
             # Hard per-call ceiling for this server, and a permission card is a
             # tool call that lasts as long as the user takes to look at it. Set
             # above the server's own wait so an unanswered card returns OUR
@@ -2077,7 +2100,8 @@ _MACHINERY_DROP = (
 # that boundary has to fail loudly rather than drift quietly. (`pane-shot` has no
 # constant on this side at all — only template.html, which writes the block,
 # names it.)
-_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
+_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations",
+                    "terminal-hint")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 _LEADING_MACHINERY = re.compile(
@@ -2257,6 +2281,101 @@ def _strip_machinery(text: str) -> str:
         if out == before:
             break
     return "" if _LEADING_MACHINERY_OPEN.match(out) else out
+
+
+# ------------------------------------------------------------ terminal hint
+# Which status-bar terminal the user means. The page sends a small JSON object
+# of METADATA ONLY (never screen contents) with each message when the drawer
+# holds a live terminal; it is written onto the turn as one leading
+# `<terminal-hint>` line, after the app-state block (which `_pane_file` needs
+# FIRST) and before the user's words. Like the app-state block it is machinery:
+# "terminal-hint" is in `_MACHINERY_STRIP`, so restored transcripts and the
+# Tasks list never show it as something the user typed.
+TERMINAL_HINT_TAG = "terminal-hint"
+# The hint sits behind whatever leading machinery blocks the send carried
+# (app state, pane-shot, annotations), so the strip walks those blocks the way
+# `_with_terminal_hint` does and cuts the hint out wherever it is in that run.
+# It stops at the first real words, so a tag the human typed mid-message survives.
+
+
+def _strip_terminal_hint(text: str) -> str:
+    out = text.lstrip()
+    pos = 0
+    while True:
+        m = _LEADING_MACHINERY.match(out, pos)
+        if not m:
+            return out.strip()
+        if m.group(1) == TERMINAL_HINT_TAG:
+            return (out[:m.start()] + out[m.end():]).strip()
+        pos = m.end()
+
+
+_HINT_FIELD_MAX = 120
+
+
+def _hint_text(value, limit: int = _HINT_FIELD_MAX) -> str:
+    """One hint field as safe single-line text: control characters and angle
+    brackets (which could close the tag early) removed, whitespace collapsed,
+    truncated."""
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return ""
+    text = re.sub(r"[\x00-\x1f\x7f<>]+", " ", str(value))
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "\u2026"
+
+
+def _terminal_hint_block(raw) -> str:
+    """The `<terminal-hint>` block for a page-supplied hint (a JSON string or an
+    already-parsed dict), or "" when it is absent, malformed or has no id."""
+    hint = raw
+    if isinstance(raw, str):
+        if not raw.strip():
+            return ""
+        try:
+            hint = json.loads(raw)
+        except ValueError:
+            return ""
+    if not isinstance(hint, dict):
+        return ""
+    tid = _hint_text(hint.get("id"), 64)
+    if not tid:
+        return ""
+    parts = ["The user's focused terminal is %s" % tid]
+    title = _hint_text(hint.get("title"))
+    if title:
+        parts[0] += " (%s)" % title
+    cwd = _hint_text(hint.get("cwd"), 200)
+    if cwd:
+        parts.append("cwd %s" % cwd)
+    last = _hint_text(hint.get("lastCommand"))
+    if last:
+        text = "last command `%s`" % last
+        code = hint.get("lastExit")
+        if isinstance(code, int) and not isinstance(code, bool):
+            text += " (exit %d)" % code
+        parts.append(text)
+    age = hint.get("ageSec")
+    if isinstance(age, (int, float)) and not isinstance(age, bool) and age >= 0:
+        parts.append("last activity %ds ago" % int(age))
+    line = "; ".join(parts) + (
+        ". Metadata only: call terminal_read to see its contents.")
+    return "<%s>%s</%s>" % (TERMINAL_HINT_TAG, line, TERMINAL_HINT_TAG)
+
+
+def _with_terminal_hint(message: str, raw) -> str:
+    """`message` with the hint block inserted after any leading machinery
+    blocks (app state first, so `_pane_file` still finds it) and before the
+    user's words. Unchanged when there is no usable hint."""
+    block = _terminal_hint_block(raw)
+    if not block:
+        return message
+    pos = 0
+    while True:
+        match = _LEADING_MACHINERY.match(message, pos)
+        if not match:
+            break
+        pos = match.end()
+    return message[:pos] + block + "\n\n" + message[pos:]
 
 
 def _app_state_requests(run_dir: str) -> list:
@@ -2440,8 +2559,16 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            #     life of the SESSION, not the turn — --allowed-tools is fixed
            #     at spawn, so a later attachment from a NEW directory forces a
            #     respawn rather than silently arriving ungranted (_send).
+           #   terminal_list / terminal_read — the same kind of thing again: a
+           #     read of the user's own terminals by the agent they are talking
+           #     to. `terminal_send` is deliberately NOT here: it types into the
+           #     user's shell, so it keeps its permission card.
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
-                     else []) + [_read_rule(SHOTS)]
+                     else [])
+                    + ([f"mcp__{PERMISSION_SERVER}__{t}"
+                        for t in ("terminal_list", "terminal_read")]
+                       if _terminal_tools_supported() else [])
+                    + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
                     + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
     cmd += _plugin_argv(file)
@@ -2491,7 +2618,26 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
-def _spawn_env() -> dict:
+def _prefix_supported() -> bool:
+    return os.name != "nt"
+
+
+def _shell_prefix_path() -> str:
+    """Absolute path of the packaged CLAUDE_CODE_SHELL_PREFIX wrapper, made
+    executable if a packaging step dropped the bit. "" when unavailable."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "claude_shell_prefix.sh")
+    if not os.path.isfile(path):
+        return ""
+    if not os.access(path, os.X_OK):
+        try:
+            os.chmod(path, os.stat(path).st_mode | 0o755)
+        except OSError:
+            return ""
+    return path
+
+
+def _spawn_env(chat_id: str = "") -> dict:
     """`os.environ`, adjusted the same way for every `claude` spawn — the
     session host's own CLI Popen and (nothing else now, but kept as its own
     function so the two never drift again the way _start's inline copy could
@@ -2528,6 +2674,33 @@ def _spawn_env() -> dict:
     env = os.environ.copy()
     env.pop("FUSED_ENV", None)
     env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    # Mirror this chat's Bash-tool commands into a log the drawer's "Claude" tab
+    # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
+    # statusline) through the prefix; the wrapper is transparent for all but
+    # Bash-tool commands. A prefix the user exported themselves is left alone.
+    if (chat_id and not _bad_id(chat_id) and _prefix_supported()
+            and not env.get("CLAUDE_CODE_SHELL_PREFIX")):
+        prefix = _shell_prefix_path()
+        if prefix:
+            log_dir = os.path.join(CMD_LOGS, chat_id)
+            # The leaf can't stay exclusive here: the log dir is per chat, not
+            # per run, so it outlives a host (idle reap, resume, respawn).
+            # Reuse an existing one only if it is ours and private.
+            try:
+                if os.path.isdir(log_dir):
+                    _require_private(log_dir)
+                    # It refuses group/other WRITE only; the log is readable.
+                    if os.name != "nt" and os.lstat(log_dir).st_mode & 0o077:
+                        return env
+                else:
+                    try:
+                        _private_dir(log_dir)
+                    except FileExistsError:  # raced another host
+                        _require_private(log_dir)
+            except OSError:
+                return env
+            env["CLAUDE_CODE_SHELL_PREFIX"] = prefix
+            env["FUSED_CLAUDE_CMD_LOG"] = log_dir
     return env
 
 
@@ -2691,7 +2864,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            message_via_stdin: bool = False,
            has_pane: bool | None = None,
            extra_read_dirs: list | None = None,
-           draft_key: str = "") -> dict:
+           draft_key: str = "", terminal_hint: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -2799,7 +2972,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, message)
+    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -3476,7 +3649,8 @@ def _live_host(file: str, session_id: str = "",
 
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
-         effort: str = "", permission_mode: str = "") -> dict:
+         effort: str = "", permission_mode: str = "",
+         terminal_hint: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -3597,7 +3771,7 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, message)
+    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
     return {"sent": True}
 
 
@@ -6592,7 +6766,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
             # block comes back on every restore. The user never typed it and
             # never saw it — showing them a screenful of JSON they don't
             # recognise is the whole reason it is stripped here.
-            text = _strip_app_state(text)
+            text = _strip_terminal_hint(_strip_app_state(text))
             # Claude Code's own synthetic `user` records are not turns: nobody
             # typed them and the reader has no use for their XML. Two of them
             # were named literally here; the rest — `<task-notification>` the
@@ -6995,7 +7169,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
-         native: str = "", draft_key: str = "", queue: str = "") -> dict:
+         native: str = "", draft_key: str = "", queue: str = "",
+         terminal_hint: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -7012,7 +7187,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0",
                       extra_read_dirs=_attach_dirs(read_dirs),
-                      draft_key=draft_key)
+                      draft_key=draft_key, terminal_hint=terminal_hint)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -7112,5 +7287,5 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode)
+                    permission_mode, terminal_hint)
     return {"error": f"unknown action: {action}"}

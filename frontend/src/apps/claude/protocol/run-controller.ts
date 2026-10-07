@@ -1883,6 +1883,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
   };
 
   /**
+   * The `terminal_hint` param for one send: `{terminal_hint: "<json>"}` when the
+   * drawer has a live terminal, else `{}`. Never throws, like `appStateBlock`.
+   */
+  const terminalHintParam = async (): Promise<{ terminal_hint?: string }> => {
+    if (!deps.terminalHint) return {};
+    try {
+      const hint = await deps.terminalHint();
+      return hint ? { terminal_hint: hint } : {};
+    } catch {
+      return {};
+    }
+  };
+
+  /**
    * A SEND THAT NEVER HAPPENED owes the composer back what it was carrying.
    *
    * `ClaudeChat.beginSend` empties the tray and parks the pictures under the
@@ -1968,6 +1982,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // is not consulted: the watcher answers "" for a pane it has learned
     // nothing from, which is the same non-answer a missing pane gives.
     const live = await appStateBlock();
+    const hintParam = await terminalHintParam();
     // THROUGH `composeBlocks`, never appended: the tray's `<pane-shot>` is
     // already in `blocks`, and `[...blocks, live]` put the state AFTER the
     // pictures — §D's reading order is state → pane-shot → annotations → text.
@@ -2012,6 +2027,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               "send",
               {
                 run_id: live.run_id,
+                ...hintParam,
                 message: outgoing,
                 read_dirs: JSON.stringify(opts.readDirs || []),
                 model: curModel(),
@@ -2048,6 +2064,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             "start",
             {
               file: FILE || "",
+              ...hintParam,
               message: outgoing,
               session_id: sessionId,
               model: curModel(),
@@ -2180,6 +2197,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // three tool calls into a turn is describing a pane that has moved since
     // the opening one.
     const live = await appStateBlock();
+    const hintParam = await terminalHintParam();
     // THE READER MAY HAVE LEFT DURING THAT AWAIT. `newChat` (Back) cleared the
     // transcript and the queue while the app-state block was being built, and a
     // bubble posted now would land in the LANDING — a conversation this text
@@ -2296,6 +2314,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         "send",
         {
           run_id: runId,
+          ...hintParam,
           message: outgoing,
           read_dirs: JSON.stringify(opts.readDirs || []),
           model: curModel(),
@@ -2318,6 +2337,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           "start",
           {
             file: FILE || "",
+            ...hintParam,
             message: outgoing,
             session_id: sessionId,
             model: curModel(),

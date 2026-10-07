@@ -50,6 +50,11 @@ dependencies = [
     # Declared rather than borrowed: without it every header silently falls
     # back to building its own venv, a permanent slowdown with no failing test.
     "packaging>=22",
+    # VT100 emulator behind GET /api/terminal/{sid}/text (pty_session.
+    # render_screen_text): turns a terminal's raw byte ring into the text a
+    # human sees (\r progress bars, cursor moves). Pure python, ~200 KB, one
+    # tiny dep (wcwidth); imported lazily, only when a terminal is read.
+    "pyte>=0.8.2",
     # The venv builder behind project apps (SPEC PY-16/PY-18). `fused`'s
     # installer prefers `uv venv` + `uv pip install` and falls back to
     # `<python> -m venv`, which is several times slower and absent from the

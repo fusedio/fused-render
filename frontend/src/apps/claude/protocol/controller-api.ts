@@ -708,6 +708,14 @@ export interface ControllerDeps {
    */
   appStateBlock?: () => Promise<string>;
   /**
+   * ADDED: the status-bar terminal hint for THIS send — a JSON string of
+   * metadata only (focused id, title, cwd, last command/exit, age) or `""`
+   * when the drawer holds no live terminal. Sent as the `terminal_hint` param
+   * of `start`/`send`; agent.py turns it into one leading `<terminal-hint>`
+   * line. Never terminal contents (Claude reads those with `terminal_read`).
+   */
+  terminalHint?: () => Promise<string>;
+  /**
    * ADDED (PR2): a send whose BUBBLE WAS DROPPED — the run never launched, or a
    * follow-up never reached a live one — so the agent saw none of it and the
    * composer takes its attachments back (T:16091-16093, 16693-16720).

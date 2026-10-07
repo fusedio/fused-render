@@ -90,3 +90,26 @@ test("a reader who types a marker's word gets a plain bubble (Bugbot, PR #1064)"
     expect(bubbleText(r)).toBe(typed);
   }
 });
+
+test("a terminal ask draws a chip, a selection block and the words, never the raw id line", () => {
+  const { askClaudeSelectionPrompt } = require("@platform/lib/terminalFocus");
+  const text = askClaudeSelectionPrompt({ id: "cc0c70", label: "zsh", cwd: "/Users/x/showcase" }, "boom: not found");
+  const r = mount(<Turn turn={user(text)} />);
+  const out = JSON.stringify(r.toJSON());
+  let chip = 0;
+  let sel = "";
+  walk(r.toJSON() as Json, (n) => {
+    if (typeof n === "string") return;
+    const c = String((n.props as { className?: string } | undefined)?.className ?? "");
+    if (c.split(/\s+/).includes("term-ask-chip")) chip += 1;
+    if (n.type === "pre" && c.includes("term-ask-sel")) sel = (n.children ?? []).join("");
+  });
+  expect(chip).toBe(1);
+  expect(sel).toBe("boom: not found");
+  expect(out).toContain("showcase");
+  expect(bubbleText(r)).toContain("Explain this.");
+  expect(bubbleText(r)).not.toContain("[terminal ");
+  expect(bubbleText(r)).not.toContain("```");
+  const plain = mount(<Turn turn={user("hello [terminal x]")} />);
+  expect(bubbleText(plain)).toBe("hello [terminal x]");
+});

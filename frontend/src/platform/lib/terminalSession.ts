@@ -103,6 +103,12 @@ export function killTerminalSession(id: string): Promise<{ ok: boolean }> {
   return mutateJson<{ ok: boolean }>("DELETE", `/api/terminal/${encodeURIComponent(id)}`);
 }
 
+/** POST /api/terminal/claude:<chat>/stop — stop the commands that chat's
+ * Claude is running right now (the Claude tab's Stop button). */
+export function stopClaudeCommands(id: string): Promise<{ ok: boolean; stopped: number }> {
+  return postJson<{ ok: boolean; stopped: number }>(`/api/terminal/${encodeURIComponent(id)}/stop`, {});
+}
+
 /** POST /api/terminal/{id}/input — write a string straight into the pty
  * without an attached `stream` socket. Used by the "open in terminal / run a
  * command" flow (EntryActionsMenu, `fused.terminal.run`), which sends this

@@ -70,6 +70,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
+import type { ShellFailure } from "@platform/lib/terminalAi";
 import TerminalTabStrip from "@shell/TerminalTabStrip";
 import {
   DEFAULT_LABEL,
@@ -77,11 +78,13 @@ import {
   MIN_HEIGHT,
   STORAGE_KEY,
   cachedTabs,
+  isClaudeId,
   parseState,
   programLabel,
   reconcileTabs,
   removeTab,
   stateFor,
+  syncClaudeTabs,
   type DrawerState,
   type LiveSession,
   type TerminalTab,
@@ -91,11 +94,19 @@ import {
   createTerminalSession,
   killTerminalSession,
   sendTerminalInput,
+  stopClaudeCommands,
 } from "@platform/lib/terminalSession";
 import { getJson } from "@platform/lib/api";
 import { isMod } from "@platform/lib/platform";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
+import {
+  askClaudeSelectionPrompt,
+  askClaudeTerminalPrompt,
+  fixTerminalFailurePrompt,
+  reportFocusedTerminal,
+} from "@platform/lib/terminalFocus";
+import { explainWithAi } from "@platform/lib/explain-with-ai";
 import {
   closeTerminalDock,
   peekPendingTerminalRequest,
@@ -285,6 +296,10 @@ export async function sendPendingRequestIfAny(
     throw new TerminalBusyError();
   }
 }
+
+/** How often an open drawer asks the server whether a chat has started (or
+ * stopped) running commands, which is when its Claude tab appears or changes. */
+export const CLAUDE_TAB_POLL_MS = 2000;
 
 export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // Registers for exactly as long as this component is mounted, so every
@@ -568,6 +583,76 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, pendingVersion]);
 
+  // Which tab is in front, for Claude's `terminal_read()` with no id: reported
+  // on open and on every tab change. Nothing is reported while the tab list is
+  // still being verified (activeId is null then, and would clear a real focus
+  // for a moment); an emptied list reports null.
+  const activeLabel = tabs?.find((t) => t.id === activeId)?.label;
+  useEffect(() => {
+    if (!open || tabs === null) return;
+    if (activeId !== null) reportFocusedTerminal(activeId, activeLabel);
+    else if (tabs.length === 0) reportFocusedTerminal(null);
+  }, [open, tabs === null, activeId, activeLabel]);
+
+  /** Claude tabs follow the server's list: one appears when a chat runs its
+   * first command, its running dot tracks the current command, and it goes when
+   * the log does. Shell tabs are never touched here. */
+  useEffect(() => {
+    if (!open || tabs === null) return;
+    let stopped = false;
+    const timer = setInterval(() => {
+      getJson<{ sessions: LiveSession[] }>("/api/terminal")
+        .then(({ sessions }) => {
+          const st = stateRef.current;
+          if (stopped || st.tabs === null) return;
+          const next = syncClaudeTabs(st.tabs, st.activeId, sessions);
+          if (next === null) return;
+          if (next.empty) {
+            forget();
+            setTerminalCount(0);
+            clearExitedSession(heightRef.current);
+            return;
+          }
+          commit(next.tabs, next.activeId);
+        })
+        .catch(() => {});
+    }, CLAUDE_TAB_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [open, tabs === null]);
+
+  function stopClaude(id: string): void {
+    stopClaudeCommands(id).catch(() => {});
+  }
+
+  /** "Ask Claude" on a tab: open a chat seeded with a reference to that
+   * terminal (metadata only; Claude reads it with `terminal_read`). The tab's
+   * cwd picks the folder the chat opens in; a folderless tab uses the default. */
+  function askClaude(id: string): void {
+    const tab = stateRef.current.tabs?.find((t) => t.id === id);
+    if (!tab) return;
+    reportFocusedTerminal(id, tab.label);
+    void explainWithAi(askClaudeTerminalPrompt(tab), tab.cwd);
+  }
+
+  /** "Ask Claude" on a selection inside the active terminal. */
+  function askSelection(id: string, text: string): void {
+    const tab = stateRef.current.tabs?.find((t) => t.id === id);
+    if (!tab) return;
+    reportFocusedTerminal(id, tab.label);
+    void explainWithAi(askClaudeSelectionPrompt(tab, text), tab.cwd);
+  }
+
+  /** "Fix with AI" on the last failed command of a (non-Claude) terminal. */
+  function fixFailure(id: string, failure: ShellFailure): void {
+    const tab = stateRef.current.tabs?.find((t) => t.id === id);
+    if (!tab) return;
+    reportFocusedTerminal(id, tab.label);
+    void explainWithAi(fixTerminalFailurePrompt(tab, failure), tab.cwd);
+  }
+
   /** A terminal is gone (its shell exited, or its tab was closed): drop the
    * tab, activate the neighbour, and if that was the last one clear the cache
    * and close the drawer so the next open mints a fresh shell. */
@@ -698,9 +783,18 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         onPointerUp={onHandlePointerUp}
       />
       {tabs !== null && tabs.length > 0 && (
-        <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} />
+        <TerminalTabStrip tabs={tabs} activeId={activeId} onSelect={selectTab} onClose={closeTab} onNew={newTab} onAskClaude={askClaude} onStop={stopClaude} />
       )}
-      {activeId !== null && <TerminalView key={activeId} id={activeId} autoFocus={focusId === activeId} onExit={() => dropTab(activeId)} />}
+      {activeId !== null && (
+        <TerminalView
+          key={activeId}
+          id={activeId}
+          autoFocus={focusId === activeId}
+          onExit={() => dropTab(activeId)}
+          onAskSelection={(t) => askSelection(activeId, t)}
+          onFixFailure={isClaudeId(activeId) ? undefined : (f) => fixFailure(activeId, f)}
+        />
+      )}
       {createError !== null && (
         <div className="term-drawer-exit">
           {`Couldn't start a terminal: ${createError} — `}
