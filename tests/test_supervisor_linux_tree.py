@@ -305,6 +305,27 @@ def test_spawner_resets_after_fork():
     job.close()
 
 
+def test_spawn_reraises_on_calling_thread_from_non_main_thread():
+    """A spawn failure (e.g. a missing binary) must propagate to the actual
+    caller, on whatever thread that is, not get lost inside the spawner
+    thread's queue/Future plumbing."""
+    job = Job()
+    holder: dict[str, object] = {}
+
+    def spawn_missing_binary() -> None:
+        try:
+            job.spawn(Path("/nonexistent/binary"), [])
+        except BaseException as error:  # noqa: BLE001 - captured for the main thread's assert
+            holder["error"] = error
+
+    thread = threading.Thread(target=spawn_missing_binary)
+    thread.start()
+    thread.join()
+
+    assert "error" in holder, "spawn of a missing binary did not raise"
+    assert isinstance(holder["error"], OSError)  # FileNotFoundError is an OSError
+
+
 @pytest.mark.parametrize("mechanism", _mechanisms())
 def test_close_kills_the_whole_process_group(tmp_path, monkeypatch, mechanism):
     """Deliberate teardown: job.close() reaps the server and its grandchild
