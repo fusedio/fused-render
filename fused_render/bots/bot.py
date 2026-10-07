@@ -467,7 +467,8 @@ class Bot:
             store.write_meta(bid, self.meta)
         self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
         self.browser.idle_check = self._may_sleep
-        self.last_looked = 0.0  # when the page last polled with this bot selected (routes._status_bot)
+        self.last_looked = time.time()  # when the page last polled with this bot selected (routes._status_bot); a bot just
+        # loaded counts as looked at, so a shared Chrome never sleeps under it in the first poll after a restart
         self.meta["encrypt"] = bool(self.browser.encrypt)  # mirrored from browser.json for the dialog
         self.seq = self._count_events()
         self.thread = None

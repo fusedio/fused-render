@@ -237,13 +237,16 @@ function MultiQuestion({ e, botId, cls, title, live, chosen }: { e: BotEvent; bo
   const answered = chosen != null ? new Set(chosen.split(/\s*(?:,|\band\b)\s*/).map(optionKey).filter(Boolean)) : null;
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [sent, setSent] = useState(false);
+  const sending = useRef(false);  // a second click before the re-render must not send twice
   const on = (x: string) => (answered ? answered.has(optionKey(x)) : picked.has(x));
   const toggle = (x: string) => { if (!live || sent) return; setPicked((p) => { const n = new Set(p); if (n.has(x)) n.delete(x); else n.add(x); return n; }); };
   const done = () => {
-    if (!live || sent) return;
+    if (!live || sent || sending.current) return;
+    sending.current = true;
     setSent(true);
     const text = options.filter((x) => picked.has(x)).join(", ") || "None";
-    void act(() => api.send(botId, text));
+    // act() swallows a failed send into the banner and returns undefined: reopen the card then, like the single-choice rows.
+    void act(() => api.send(botId, text)).then((r) => { sending.current = false; if (!r) setSent(false); });
   };
   return (
     <div className={`${cls} multi${sent ? " settled" : ""}`} data-seq={e.seq} title={title}>
