@@ -3959,3 +3959,156 @@ def test_the_flag_off_says_nothing_to_the_queue_on_delete(
     assert _post(client, "/api/tasks/delete",
                  {"key": "sess-a"}).status_code == 200
     assert _kinds(manager, "remove") == []
+
+
+# ---------------------------------------------- the switch and the per-task opt-out
+#
+# Akshil, 2026-10-04: "add option for turn on and off queue in the Task API".
+# Two doors: `GET`/`POST /api/tasks/queue` is the one preference the flag IS,
+# and `create({queue: false})` is the flag-off behaviour for one task — the
+# promise `/api/tasks/queue/force` makes to a waiting message, made at birth.
+
+
+def test_the_queue_switch_is_read_and_written_through_the_task_api(client, home):
+    assert client.get("/api/tasks/queue").json() == {"enabled": False}
+    r = client.post("/api/tasks/queue", json={"enabled": True},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200 and r.json() == {"enabled": True}
+    # The REAL pref moved — the same file Preferences reads.
+    path = home / ".fused-render" / "prefs.json"
+    assert json.loads(path.read_text())["project_queue_enabled"] is True
+    assert project_queue.enabled() is True
+    assert client.get("/api/tasks/queue").json() == {"enabled": True}
+    r = client.post("/api/tasks/queue", json={"enabled": False},
+                    headers={"X-Fused": "1"})
+    assert r.json() == {"enabled": False}
+    assert project_queue.enabled() is False
+
+
+def test_the_queue_switch_write_is_guarded_and_typed(client):
+    assert client.post("/api/tasks/queue", json={"enabled": True}).status_code == 403
+    r = client.post("/api/tasks/queue", json={"enabled": "yes"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 400
+    assert project_queue.enabled() is False
+
+
+def test_create_with_queue_false_marks_the_task_forced_before_dispatch(
+        client, flag, tmp_path, monkeypatch):
+    """The mark lands BEFORE the dispatch, under the pending key and the entry
+    id — and the dispatch is the FORCE DOOR'S (`dispatch_entry`), never
+    `run_now`: with the queue on, `run_now` on a busy folder is the Skip verb
+    and files the entry at the head of the line (Bugbot, PR #1429)."""
+    flag(True)
+    seen = {}
+
+    forgotten = []
+    real_forget = queue_manager.get().forget_entry
+
+    def forget_entry(entry_id):
+        forgotten.append(entry_id)
+        real_forget(entry_id)
+    monkeypatch.setattr(queue_manager.get(), "forget_entry", forget_entry)
+
+    def dispatch_entry(entry_id):
+        seen["forced_at_dispatch"] = queue_manager.get().is_forced(
+            tasks_store.pending_key(entry_id), entry_id)
+        # Out of every line BEFORE the dispatch, as the force door does.
+        seen["forgotten_before_dispatch"] = entry_id in forgotten
+        return {"run_id": "r1", "session_id": "sess-forced"}
+
+    def run_now(entry_id):
+        raise AssertionError("a forced create must not go through run_now")
+    monkeypatch.setattr(schedule, "dispatch_entry", dispatch_entry)
+    monkeypatch.setattr(schedule, "run_now", run_now)
+    marked = []
+    monkeypatch.setattr(tasks_watch, "mark_running", marked.append)
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": False},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert seen["forced_at_dispatch"] is True
+    assert seen["forgotten_before_dispatch"] is True
+    assert queue_manager.get().is_forced(body["key"]) is True
+    assert queue_manager.get().is_forced(body["entry_id"]) is True
+    # The row reads running from the dispatch, as the manager's own does.
+    assert marked == ["sess-forced"]
+    # …and the names the run minted are forced at once, as the force door
+    # marks them (Bugbot, PR #1429): a door holding only the session id must
+    # not read the task as unforced before `learn_forced` catches up.
+    assert queue_manager.get().is_forced("sess-forced") is True
+    assert queue_manager.get().is_forced("r1") is True
+
+
+def test_a_forced_create_the_conversation_cannot_take_yet_stays_pending_and_forced(
+        client, flag, tmp_path, monkeypatch):
+    """`SpawnBusy` is not an error for the caller: the entry stays pending, the
+    mark stays, and the tick's flag-off road sends it — the force door's own
+    promise. Nothing goes into a line."""
+    flag(True)
+
+    def dispatch_entry(entry_id):
+        raise schedule.SpawnBusy(f"{entry_id}: a send is in flight")
+    monkeypatch.setattr(schedule, "dispatch_entry", dispatch_entry)
+    monkeypatch.setattr(schedule, "run_now",
+                        lambda entry_id: (_ for _ in ()).throw(AssertionError("run_now")))
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": False},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert queue_manager.get().is_forced(body["key"]) is True
+    entry = next(e for e in schedule._read() if str(e.get("id")) == body["entry_id"])
+    assert entry.get("state") == schedule.PENDING
+
+
+def test_create_without_queue_false_is_not_forced(client, flag, tmp_path, monkeypatch):
+    """…and the ordinary road is still `run_now` (Skip on a busy folder)."""
+    flag(True)
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    monkeypatch.setattr(schedule, "dispatch_entry",
+                        lambda entry_id: (_ for _ in ()).throw(AssertionError("dispatch_entry")))
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    for body in ({"prompt": "go", "target": str(folder)},
+                 {"prompt": "go", "target": str(folder), "queue": True}):
+        r = client.post("/api/tasks/create", json=body, headers={"X-Fused": "1"})
+        assert r.status_code == 200, r.text
+        assert queue_manager.get().is_forced(r.json()["key"]) is False
+
+
+def test_create_refuses_a_queue_that_is_not_a_boolean(client, tmp_path):
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": "no"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 400
+    assert "queue" in r.json()["error"]
+
+
+def test_create_with_queue_false_and_the_flag_off_never_touches_the_manager(
+        client, tmp_path, monkeypatch):
+    """With the project queue off there is no line to leave: the opt-out is
+    the ordinary road, and the manager is not built for it (Bugbot, PR #1429 —
+    an early `get()` made a later flip-on skip its first build)."""
+    assert project_queue.enabled() is False
+    monkeypatch.setattr(queue_manager, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("manager built")))
+    ran = []
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: ran.append(entry_id) or {"ok": True})
+    monkeypatch.setattr(schedule, "dispatch_entry",
+                        lambda entry_id: (_ for _ in ()).throw(AssertionError("dispatch_entry")))
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(folder), "queue": False},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert ran == [r.json()["entry_id"]]
+

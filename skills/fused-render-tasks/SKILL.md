@@ -20,7 +20,9 @@ Task = ONE Claude Code session. Same rows the Tasks page shows, same `/api/tasks
 ```js
 fused.tasks.list(opts?)            // -> Task[]   opts {scope?: "app"|"all", status?: Status[], archived?: boolean}
 fused.tasks.get(key, {scope?})     // -> Task | null; scope "app" (default) → null for a key outside this app
-fused.tasks.create({prompt, target?, title?, model?, effort?, permissionMode?, due?})  // -> TaskHandle
+fused.tasks.create({prompt, target?, title?, model?, effort?, permissionMode?, due?, queue?})  // -> TaskHandle
+fused.tasks.queue()        // -> boolean: is the project queue on (one task per folder, the rest wait)
+fused.tasks.setQueue(on)   // -> boolean as stored; same switch as Preferences
 fused.tasks.send(key, text, opts?) // -> {queued: boolean}
 fused.tasks.cancel(key)            // interrupt, then kill
 fused.tasks.archive(key) / .unarchive(key) / .delete(key)
@@ -112,6 +114,7 @@ if (fused.env === "local") {
 - **Pending key before session.** `pending:<entry>` rows exist before Claude starts. Don't treat that key as an error or persist it.
 - **Archived excluded by default.** `list()`/`watch` hide archived rows; pass `archived: true` to include them.
 - **`send` may queue.** Project-queue flag on + folder busy → `{queued: true}`: accepted, runs later. Not a failure.
+- **`create({queue: false})`** = this task never stands in the line: it starts beside whatever owns the folder and its later `send`s pass the gate too. It never interrupts the other run. Omitted = queued like any other. `fused.tasks.setQueue(false)` turns the whole switch off (every task, every folder).
 - **`cancel` ≠ archive.** Cancel stops the process; the row stays. Archive files it away.
 - **No erase.** Deleting the transcript is Tasks-page only. Also absent: queue doors (admit/skip/force/decide) and the running/idle marks.
 - **One long-poll per document.** Many `watch` calls share it; always call the returned unsubscribe.
