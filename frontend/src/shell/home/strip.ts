@@ -10,6 +10,8 @@ import { navigateUrl } from "@platform/lib/router";
 // Card width + gap must match the .home-row CSS.
 export const CARD_W = 330;
 export const CARD_GAP = 16;
+// The slice of the next card left visible, so a strip reads as scrollable (must match .hw-cards in home.css).
+export const PEEK_W = 56;
 // The ceiling on what a section may fetch/keep — enough for a very wide
 // window, and the same cap the two endpoints apply to `limit` themselves
 // (HOME_APPS_LIMIT / HOME_SESSION_LIMIT). NOT the number either one asks for:
