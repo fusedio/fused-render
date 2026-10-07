@@ -198,15 +198,16 @@ function writeUrlBot(id: string | null) {
 
 const openedOnce = new Set<string>();
 const openRetryAt: Record<string, number> = {};
-const OPEN_RETRY_MS = 15_000;
+const OPEN_RETRY_MS = 3_000;
 /** Tell the server the bot is open (the Bots page shows it). Once per bot per page load, except while Super Bot's first
- *  task is `pending` (Claude not linked yet): then it is asked again every OPEN_RETRY_MS so linking Claude later still
- *  starts it. */
+ *  task is `pending` (Claude not linked or not measured yet) or the call failed: then it is asked again every
+ *  OPEN_RETRY_MS so linking Claude later, or a measure landing, still starts it. The server rate-limits the measure
+ *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
 function sendOpen(id: string): void {
   if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
   openedOnce.add(id);
   void act(() => api.open(id), true).then((r) => {
-    if (r?.setup === "pending") { openedOnce.delete(id); openRetryAt[id] = Date.now() + OPEN_RETRY_MS; }
+    if (r === undefined || r.setup === "pending") { openedOnce.delete(id); openRetryAt[id] = Date.now() + OPEN_RETRY_MS; }
   });
 }
 
