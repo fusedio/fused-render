@@ -9,6 +9,8 @@
 //   about    not yet opened         —                            opened once
 //   claude   not installed/unknown  runs, but outdated/signed    installed, new
 //                                   out/unknown                  enough, signed in
+//   chrome   no Chrome found        —                            a Chrome (or Chromium,
+//                                                                Edge, Brave) on disk
 //   fda      not granted            granted, relaunch pending    granted
 //   models   none fetched, none     none here, one or more       one or more
 //            downloading            downloading                  models here
@@ -17,14 +19,15 @@
 //                                                                app was opened
 //
 // plus `n/a` for a stage this machine does not have (Disk Access off macOS,
-// Models when no engine can serve anything) — it leaves the denominator, so
-// a Linux user is not stuck at 80% over a pane they cannot open.
+// Models when no engine can serve anything, Chrome where no bot will run —
+// Render with bots off) — it leaves the denominator, so a Linux user is not
+// stuck at 80% over a pane they cannot open.
 //
 // The status is written to the server (shell/onboarding.py `stages`) with a
 // free-form `meta` note for reference, and read back from `config.onboarding`
 // like the flags. Server-side, not localStorage: every port is a new origin
 // (the server module's docstring). The server OVERRULES the stored status for
-// the stages it can see cheaply (FDA, first app, Claude from its health cache),
+// the stages it can see cheaply (FDA, Chrome, first app, Claude from its health cache),
 // so a grant made from the Home strip moves the meter too.
 //
 // THE PERCENTAGE: over the stages that count (not `n/a`), complete is 1,
@@ -54,11 +57,11 @@ export type StageStatus = OnboardingStageStatus;
 export type Stages = Record<string, OnboardingStage>;
 
 /** The stage ids, in wizard order — the server's closed set (STEPS). */
-export const STAGE_IDS = ["about", "claude", "fda", "models", "app"] as const;
+export const STAGE_IDS = ["about", "claude", "chrome", "fda", "models", "app"] as const;
 export type StageId = (typeof STAGE_IDS)[number];
 
 /** The stages THIS flavor has (platform/lib/flavor). Fused Bot's server
- *  trims its STEPS to about/claude/fda — no model picks, no first app — so
+ *  trims its STEPS to about/claude/chrome/fda — no model picks, no first app — so
  *  the meter must not count the two it will never see as pending, and the
  *  wizard must not offer them. A function, not a filtered constant: the
  *  flavor is seeded after this module is evaluated. */

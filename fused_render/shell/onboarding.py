@@ -33,13 +33,14 @@ the table) and POSTs it here whenever it changes; `meta` is whatever the step
 wants to remember about how it got there (the version it found, the account,
 the model ids it started) — free-form, for reference, never read back by a
 rule. `n/a` is a step this machine does not have (Disk Access off macOS, Models
-with nothing to offer) — it leaves the denominator.
+with nothing to offer, Chrome where no bot will run) — it leaves the
+denominator.
 
 The stored status is what the wizard last SAW. For the stages the server can
 check cheaply it is overruled on every read by what is true now (`_observe`):
-Full Disk Access from fda.py's TTL-cached probe, "first app" from the
-workspace's local/ folder, Claude Code from claude_health's disk cache (never a
-spawn). So a grant made from the Home strip, or an app built without the
+Full Disk Access from fda.py's TTL-cached probe, Chrome from the bots' own
+candidate paths, "first app" from the workspace's local/ folder, Claude Code
+from claude_health's disk cache (never a spawn). So a grant made from the Home strip, or an app built without the
 wizard, moves the meter without the wizard being reopened.
 
 `seed_for_existing_users` is the upgrade edge: "first time they open the app"
@@ -78,10 +79,12 @@ _KEY = "onboarding"
 #: The wizard's step ids (frontend shell/onboarding/OnboardingWizard STEPS).
 #: A closed set: prefs.json is shared state, and an unknown id is refused
 #: rather than stored. Fused Bot has no local-models step and no first-app
-#: step (it does not build apps), so there the set is three — `_observe`
+#: step (it does not build apps), so there the set is four — `_observe`
 #: keys off the same tuple, so neither stage ever enters the meter's count.
-STEPS = (("about", "claude", "fda") if _flavor.is_bot()
-         else ("about", "claude", "fda", "models", "app"))
+#: `chrome` (a Google Chrome for bots to drive) is in both: Render runs the
+#: same bots behind the `bots_enabled` preference.
+STEPS = (("about", "claude", "chrome", "fda") if _flavor.is_bot()
+         else ("about", "claude", "chrome", "fda", "models", "app"))
 
 #: Stage statuses. `n/a` = the machine has no such step; it is not counted.
 STATUSES = ("pending", "partial", "complete", "n/a")
@@ -184,6 +187,28 @@ def _observe(stages: dict) -> None:
             put("fda", "n/a")
     except Exception:  # noqa: BLE001
         log.debug("onboarding: fda observe failed", exc_info=True)
+
+    # Chrome: the bots' own candidate walk (bots/browser.CHROME_CANDIDATES —
+    # the list `find_chrome` runs when a bot starts, so this and the bot never
+    # disagree), a handful of os.path.exists, conclusive. Found = complete,
+    # with the path for the step's "Found at …" row. Not found = pending only
+    # where a bot could be asked to run: the Fused Bot flavor, or Render with
+    # `bots_enabled` on. Elsewhere it is `n/a`, so a Render user who never
+    # turned bots on is not pulled back under 100% by a browser they do not
+    # need (the step still shows in the wizard; the meter just does not
+    # count it). Flipping bots on later moves it to pending on the next read.
+    try:
+        from fused_render.bots.browser import CHROME_CANDIDATES
+
+        found = next((p for p in CHROME_CANDIDATES if p and os.path.exists(p)), None)
+        if found:
+            put("chrome", "complete", found=True, path=found)
+        elif _flavor.is_bot() or prefs.bots_enabled():
+            put("chrome", "pending", found=False, path=None)
+        else:
+            put("chrome", "n/a", found=False, path=None)
+    except Exception:  # noqa: BLE001
+        log.debug("onboarding: chrome observe failed", exc_info=True)
 
     # First app: any folder under <fused_dir>/local IS an app the user has.
     # Only where the wizard has the step: /api/config is read on every page
