@@ -86,6 +86,12 @@ SUPER_NAME = "Super Bot"
 # locked brand): the face picker does not offer it, `_flag` refuses it for any
 # other bot and refuses any face change for Super Bot.
 RESERVED_ICON = "claude"
+# The face picker's vocabulary (frontend lib/face.ts FACE_SHAPES / FACE_COLORS), checked
+# server-side only where a model picks a face (Super Bot's `bot_settings`); the page's own
+# `_flag` write keeps accepting what the picker sends.
+FACE_SHAPES = ("circle", "oval", "square", "pill", "triangle", "hexagon", "cloud", "drop")
+FACE_COLORS = ("#eafe68", "#ffffff", "#7a5230", "#d33b3b", "#f0762a", "#f2a232", "#2f8f58", "#2a9a86", "#2f7ae5",
+               "#8a4fe0", "#d33f8e", "#767676")
 SUPER_FACE = {"shape": "", "color": "#262624", "icon": RESERVED_ICON}  # the dark disc; the rays are orange in the glyph
 SUPER_INSTRUCTIONS = ("You are my assistant on this Mac. Use Claude Code's tools for files, PDFs, images, shell and code, "
                    "and the browser tools for the web. Keep what you make for me in your Inbox folder unless I name "
@@ -2440,9 +2446,191 @@ def bots_section(bot) -> str:
         if not name or is_super(m):
             continue
         instr = " ".join((m.get("instructions") or "").split())[:120]
-        lines.append(f"- {name} ({m.get('preset') or 'custom'}; {m.get('status') or 'idle'}): {instr}".rstrip(": "))
-    return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task):\n"
+        lines.append(f"- {name} ({m.get('preset') or 'custom'}; {m.get('status') or 'idle'}; "
+                     f"{m.get('model') or DEFAULT_MODEL}/{m.get('effort') or DEFAULT_EFFORT}; face {face_words(m.get('face'))}): "
+                     f"{instr}".rstrip(": "))
+    return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task, `bot_settings` changes one, `bot_create` adds one):\n"
             + ("\n".join(lines) if lines else "none yet"))
+
+
+def check_settings(meta, model="", effort=""):
+    """The Settings dialog's and `bot_settings`' shared checks (ValueError with the
+    sentence the user / model reads)."""
+    if model and model not in MODELS:
+        raise ValueError(f"unknown model {model!r}; choose one of {', '.join(MODELS)}")
+    if model and model in LOCAL_MODELS and is_super(meta):
+        raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
+    if effort and effort not in EFFORTS:
+        raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
+
+
+def check_face(meta, face, strict=False):
+    """`_flag`'s face rules (Super Bot's mark is locked), plus, when `strict`, the
+    picker's vocabulary: a model picking a face must pick one the page can draw.
+    Returns the cleaned {shape, color, icon}."""
+    if not isinstance(face, dict):
+        raise ValueError("face must be an object {shape, color, icon}")
+    if is_super(meta):
+        raise ValueError("Super Bot's avatar is fixed")
+    shape, color, icon = str(face.get("shape", "") or ""), str(face.get("color", "") or ""), str(face.get("icon", "") or "")
+    if icon == RESERVED_ICON:
+        raise ValueError("that mark is Super Bot's")
+    if strict:
+        from fused_render.bots import presets as presets_mod
+        if shape and shape not in FACE_SHAPES:
+            raise ValueError(f"unknown shape {shape!r}; one of {', '.join(FACE_SHAPES)}")
+        if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            raise ValueError(f"color must be a #rrggbb hex, e.g. {FACE_COLORS[0]}")
+        if icon and presets_mod.get(icon) is None:
+            raise ValueError(f"unknown icon {icon!r}; an icon is a preset key "
+                             f"({', '.join(x['key'] for x in presets_mod.presets())}) or empty")
+    return {"shape": shape, "color": color, "icon": icon}
+
+
+def face_words(face) -> str:
+    """A face as the user and the model read it on a card: `github mark`, `drop #2f7ae5`, `default`."""
+    f = face or {}
+    bits = [f.get("icon") and f"{f['icon']} mark", f.get("shape"), f.get("color")]
+    return " ".join(b for b in bits if b) or "default"
+
+
+# Settings `bot_settings` may change, and nothing else (approval, builds, engine,
+# encryption, contacts and routines stay the user's own: docs §12).
+MANAGE_FIELDS = ("name", "instructions", "model", "effort", "face")
+
+
+def manage_create_check(bot, args):
+    """Validate a `bot_create` call before anything is written: (clean fields, "") or
+    (None, "error: …"). Shared by the approval preview and the run, so a refused call
+    never shows a card and never leaves a bot behind."""
+    if not is_super(getattr(bot, "meta", None)):
+        return None, "error: only Super Bot creates bots"
+    args = args or {}
+    name = " ".join(str(args.get("name") or "").split())
+    if not name:
+        return None, "error: give the bot a name"
+    if name.lower() == SUPER_NAME.lower():
+        return None, f"error: {name!r} is Super Bot's name"
+    for bid in _list_ids():
+        try:
+            if " ".join((_read_meta(bid).get("name") or "").split()).lower() == name.lower():
+                return None, f"error: a bot named {name!r} already exists; pick another name"
+        except Exception:  # noqa: BLE001
+            continue
+    model, effort, preset = str(args.get("model") or ""), str(args.get("effort") or ""), str(args.get("preset") or "")
+    try:
+        check_settings({}, model, effort)
+        face = check_face({}, args["face"], strict=True) if args.get("face") is not None else None
+        if preset:
+            from fused_render.bots import presets as presets_mod
+            if presets_mod.get(preset) is None:
+                raise ValueError(f"unknown preset {preset!r}; one of {', '.join(x['key'] for x in presets_mod.presets())}")
+    except ValueError as e:
+        return None, f"error: {e}"
+    extra = sorted(k for k in args if k not in MANAGE_FIELDS and k != "preset")
+    if extra:
+        return None, f"error: `bot_create` takes {', '.join(MANAGE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
+    return {"name": name, "instructions": str(args.get("instructions") or "").strip(), "model": model or DEFAULT_MODEL,
+            "effort": effort or DEFAULT_EFFORT, "preset": preset, "face": face}, ""
+
+
+def manage_create(bot, args):
+    """Super Bot's `bot_create` (docs §12): a new ORDINARY bot. Returns (label, result);
+    the result is the sentence the model reads. Never runs unapproved (tools.ALWAYS_ASK)."""
+    f, err = manage_create_check(bot, args)
+    if err:
+        return "bot_create", err
+    b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot")
+    if f["face"]:
+        with b.lock:
+            b.meta["face"] = f["face"]
+            b.save()
+    b.emit("system", f"Created by {bot.meta.get('name') or SUPER_NAME}.", source="manage")
+    return (f"create bot \"{f['name']}\"",
+            f"created bot {f['name']!r} (id {b.id}, model {b.meta.get('model')}, effort {b.meta.get('effort')}"
+            + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}). "
+            "It is in the bots list now; `handoff` gives it a task.")
+
+
+def manage_changes(bot, target_name, args):
+    """Resolve a `bot_settings` call into (target Bot, [(field, old, new)…], "") or
+    (None, [], "error: …"): shared by the approval preview (tools.describe / risk) and
+    the run (manage_settings), so the card shows exactly what will be written. A face
+    change's `new` is (words, dict)."""
+    if not is_super(getattr(bot, "meta", None)):
+        return None, [], "error: only Super Bot changes other bots' settings"
+    want = " ".join((target_name or "").split()).lower()
+    if want and (want == (bot.meta.get("name") or "").strip().lower() or want == SUPER_NAME.lower()):
+        return None, [], "error: your own settings are the user's to change (your Settings dialog); `bot_settings` is for the BOTS"
+    t, err = bot._handoff_target(target_name)
+    if t is None:
+        return None, [], err
+    args = args or {}
+    extra = sorted(k for k in args if k not in MANAGE_FIELDS and k != "bot")
+    if extra:
+        return None, [], (f"error: `bot_settings` changes only {', '.join(MANAGE_FIELDS)}; {', '.join(extra)} stay the user's own "
+                          "(the bot's Settings dialog)")
+    changes = []
+    try:
+        new_name = " ".join(str(args.get("name") or "").split())
+        if new_name and new_name != (t.meta.get("name") or ""):
+            if new_name.lower() == SUPER_NAME.lower():
+                raise ValueError(f"{new_name!r} is Super Bot's name")
+            changes.append(("name", t.meta.get("name") or "", new_name))
+        if args.get("instructions") is not None:
+            old_i, ni = (t.meta.get("instructions") or "").strip(), str(args["instructions"]).strip()
+            if ni != old_i:
+                changes.append(("instructions", old_i, ni))
+        model, effort = str(args.get("model") or ""), str(args.get("effort") or "")
+        check_settings(t.meta, model, effort)
+        if model and model != (t.meta.get("model") or DEFAULT_MODEL):
+            changes.append(("model", t.meta.get("model") or DEFAULT_MODEL, model))
+        if effort and effort != (t.meta.get("effort") or DEFAULT_EFFORT):
+            changes.append(("effort", t.meta.get("effort") or DEFAULT_EFFORT, effort))
+        if args.get("face") is not None:
+            nf = check_face(t.meta, args["face"], strict=True)
+            if nf != {k: str((t.meta.get("face") or {}).get(k, "") or "") for k in ("shape", "color", "icon")}:
+                changes.append(("face", face_words(t.meta.get("face")), (face_words(nf), nf)))
+    except ValueError as e:
+        return None, [], f"error: {e}"
+    return t, changes, ""
+
+
+def manage_settings(bot, target_name, args):
+    """Super Bot's `bot_settings` (docs §12): write the changes `manage_changes` found,
+    under the target's lock; the target gets a `system` line naming what changed."""
+    t, changes, err = manage_changes(bot, target_name, args)
+    if err:
+        return "bot_settings", err
+    label = f"change bot \"{t.meta.get('name')}\""
+    if not changes:
+        return label, f"nothing to change: {t.meta.get('name')!r} already has those settings"
+    said = []
+    with t.lock:
+        if t.deleted or not Bot._exists(t.id):
+            return label, f"error: {t.meta.get('name')!r} was deleted"
+        for field, old, new in changes:
+            if field == "face":
+                words, raw = new
+                t.meta["face"] = dict(raw)
+                said.append(f"face {old} → {words}")
+            elif field == "name":
+                if t.meta.get("artifacts_dir") and not os.path.isdir(t.meta["artifacts_dir"]):
+                    t.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder (routes._settings)
+                t.meta["name"] = new
+                said.append(f"name {old!r} → {new!r}")
+            elif field == "instructions":
+                t.meta["instructions"] = new
+                said.append("instructions rewritten" if old else "instructions set")
+            else:
+                t.meta[field] = new
+                said.append(f"{field} {old} → {new}")
+        t.save()
+    try:
+        t.emit("system", f"{bot.meta.get('name') or SUPER_NAME} changed settings: " + "; ".join(said) + ".", source="manage")
+    except Exception:  # noqa: BLE001
+        pass
+    return label, f"updated {t.meta.get('name')!r}: " + "; ".join(said) + ". Model and effort apply from its next task."
 
 
 # ------------------------------------------------------------ create / delete ---

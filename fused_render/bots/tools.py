@@ -39,6 +39,8 @@ What this module expects of `bot` (class Bot in bot.py):
   bot.show_app(name, obs)             -> (label, result)
   bot.handoff(bot_name, task)         -> (label, result)   Super Bot only (docs §11)
   bot.handoff_stop(bot_name)          -> (label, result)
+  botmod.manage_create(bot, args)     -> (label, result)   Super Bot only, always approved (docs §12)
+  botmod.manage_settings(bot, name, args) -> (label, result)
   bot.stop_flag, bot.pause_flag, bot.wake   threading.Event
   bot.all_files()                     [{name, size, kind, …}]  (attached + downloaded)
 Everything else (ask/login/offer waits, approvals, pause/stop) is the
@@ -218,9 +220,34 @@ TOOL_SPECS: dict[str, dict] = {
                                   task=({"type": "string", "description": "the task in plain words, self-contained"}, True))},
     "handoff_stop": {"description": "Cancel a task you handed to one of the BOTS (only when the user asks you to cancel it).",
                      "inputSchema": _s(bot=({"type": "string", "description": "the bot's name from BOTS"}, True))},
+    "bot_create": {"description": "Create a new browser bot (one more line in BOTS) when the user asks for one. `name` is required "
+                                  "and must be new; `instructions` are its standing rules (what it does for the user, which site, "
+                                  "what never to do); `model` haiku|sonnet|opus|fable|local-4b|local-9b; `effort` low|medium|high|"
+                                  "xhigh; `preset` a preset key (github, gmail, linkedin, …) gives it that site's playbooks, mark "
+                                  "and default rules; `face` {shape, color, icon} is its avatar. The user approves the card before "
+                                  "anything is created, every time.",
+                   "inputSchema": _s(name=REQ, instructions=STR, model=STR, effort=STR, preset=STR,
+                                     face={"type": "object", "description": "avatar: shape circle|oval|square|pill|triangle|hexagon|"
+                                                                            "cloud|drop, color #rrggbb, icon a preset key or empty"})},
+    "bot_settings": {"description": "Change one of the BOTS' settings: its name, instructions (standing rules; pass the whole new "
+                                    "text), model, effort or face (avatar). Give only the fields that change. Nothing else is "
+                                    "yours to change (approvals, builds, encryption, contacts, routines are the user's, in that "
+                                    "bot's Settings). The user approves the card, which shows every change, before it is "
+                                    "written, every time.",
+                     "inputSchema": _s(bot=({"type": "string", "description": "the bot's current name from BOTS"}, True),
+                                       name=STR, instructions=STR, model=STR, effort=STR,
+                                       face={"type": "object", "description": "avatar: shape circle|oval|square|pill|triangle|hexagon|"
+                                                                              "cloud|drop, color #rrggbb, icon a preset key or empty"})},
 }
 
 HANDOFF_TOOLS = ("handoff", "handoff_stop")
+# Super Bot's bot-management verbs (docs §12). ALWAYS_ASK: the approval card is
+# raised whatever the bot's Approvals setting says ("Never ask" included) and
+# whatever posture Claude Code runs in; the engines check it beside
+# effective_approval. Creating or reshaping an agent is the user's call every time.
+MANAGE_TOOLS = ("bot_create", "bot_settings")
+SUPER_TOOLS = HANDOFF_TOOLS + MANAGE_TOOLS
+ALWAYS_ASK = frozenset(MANAGE_TOOLS)
 
 ALL_TOOLS = tuple(TOOL_SPECS)
 
@@ -270,7 +297,7 @@ def roster(bot) -> list[dict]:
     when there is something to upload. MCP's `tools/list` shape."""
     names = list(ALL_TOOLS)
     if not is_super(bot):
-        for n in HANDOFF_TOOLS:
+        for n in SUPER_TOOLS:
             names.remove(n)
     if not apptools.available():
         names.remove("tool")
@@ -582,7 +609,7 @@ def ui_detail(name: str, result: str, summary: str, change: str = "") -> str | N
     raw = (result or "").strip()
     if name == "show":
         return None
-    if name in HANDOFF_TOOLS and not raw.startswith("error"):
+    if name in SUPER_TOOLS and not raw.startswith("error"):
         return None  # the chip says it all; the rest is written to the model
     if name == "build":
         raw = _NOW_DONE.sub("", raw).strip()
@@ -678,7 +705,52 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return f"hand \"{d.get('bot') or d.get('name') or '?'}\" the task: {task[:160]}{'…' if len(task) > 160 else ''}"
     if act == "handoff_stop":
         return f"stop what you handed \"{d.get('bot') or d.get('name') or '?'}\""
+    if act in MANAGE_TOOLS:
+        return _manage_preview(bot, act, d)
     return f"{act} {what}".strip()
+
+
+MANAGE_TEXT_CAP = 600   # instructions on the card: the user approves the prompt they can read, so cap late
+
+
+def _manage_preview(bot, act: str, d: dict) -> str:
+    """The approval card for `bot_create` / `bot_settings`: every field that will
+    be written, old → new for a change, instructions nearly whole. On an error
+    the preview carries the error (no card is raised: risk() returns "" then)."""
+    from fused_render.bots import bot as botmod
+    cut = lambda t: (t[:MANAGE_TEXT_CAP] + "…") if len(t) > MANAGE_TEXT_CAP else t  # noqa: E731
+    if act == "bot_create":
+        f, err = botmod.manage_create_check(bot, d)
+        if err:
+            return f"create bot \"{' '.join(str(d.get('name') or '').split())[:60]}\" ({err})"
+        bits = [f"model {f['model']}", f"effort {f['effort']}"]
+        if f["preset"]:
+            bits.append(f"preset {f['preset']}")
+        if f["face"]:
+            bits.append(f"face {botmod.face_words(f['face'])}")
+        out = f"create bot \"{f['name']}\" ({', '.join(bits)})"
+        if f["instructions"]:
+            out += f" with instructions: \"{cut(f['instructions'])}\""
+        elif f["preset"]:
+            out += f" with the {f['preset']} preset's instructions"
+        return out
+    t, changes, err = botmod.manage_changes(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
+    who = t.meta.get("name") if t is not None else (d.get("bot") or "?")
+    if err:
+        return f"change bot \"{who}\" ({err})"
+    if not changes:
+        return f"change bot \"{who}\" (nothing to change)"
+    parts = []
+    for field, old, new in changes:
+        if field == "face":
+            parts.append(f"face {old} → {new[0]}")
+        elif field == "instructions":
+            parts.append(f"instructions → \"{cut(new)}\"" if new else "instructions cleared")
+        elif field == "name":
+            parts.append(f"name \"{old}\" → \"{new}\"")
+        else:
+            parts.append(f"{field} {old} → {new}")
+    return f"change bot \"{who}\": " + "; ".join(parts)
 
 
 def risk(bot, act: str, d: dict, obs: dict) -> str:
@@ -686,6 +758,16 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
     d = d or {}
     if act == "upload":
         return f"It sends the local file \"{d.get('file') or d.get('text') or ''}\" to this site."
+    if act in MANAGE_TOOLS:
+        # A call that will fail validation gets no card: execute() returns the error to the model.
+        from fused_render.bots import bot as botmod
+        if act == "bot_create":
+            _, err = botmod.manage_create_check(bot, d)
+            return "" if err else "It creates a new bot on this Mac with the settings above; you can edit or delete it later from the bots list."
+        t, changes, err = botmod.manage_changes(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
+        if err or not changes:
+            return ""
+        return f"It rewrites {t.meta.get('name')}'s settings as shown; the bot behaves differently from its next task on."
     if act == "text":
         return "" if not bot.contact(d) else "An iMessage cannot be unsent."  # unknown contact fails in execute instead
     if act == "build":
@@ -739,6 +821,8 @@ def call_key(bot, act: str, d: dict):
     if act == "handoff":
         ref = [" ".join(str(d.get("bot") or d.get("name") or "").split()).lower(),
                " ".join(str(d.get("task") or d.get("text") or "").split())]
+    elif act in MANAGE_TOOLS:
+        ref = [{k: d[k] for k in sorted(d)}]
     elif act == "py":
         app_dir, file, args = bot.py_ref(d)
         if not app_dir or not file:
@@ -862,6 +946,13 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             if not is_super(bot):
                 return "handoff_stop", "error: only Super Bot hands tasks to other bots"
             return bot.handoff_stop(d.get("bot") or d.get("name") or "")
+        if act in MANAGE_TOOLS:
+            from fused_render.bots import bot as botmod
+            if not is_super(bot):
+                return act, "error: only Super Bot creates bots or changes their settings"
+            if act == "bot_create":
+                return botmod.manage_create(bot, d)
+            return botmod.manage_settings(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
         if act == "readfile":
             from fused_render.bots import filereader
             name = d.get("file") or d.get("name") or d.get("text") or ""

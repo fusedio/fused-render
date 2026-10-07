@@ -420,13 +420,7 @@ def _flag(bid, body):
             b.meta["hidden"] = bool(body["hidden"])
         face = body.get("face")
         if isinstance(face, dict):
-            bm = _botmod()
-            if bm.is_super(b.meta):
-                raise ValueError("Super Bot's avatar is fixed")
-            if str(face.get("icon", "")) == bm.RESERVED_ICON:
-                raise ValueError("that mark is Super Bot's")
-            b.meta["face"] = {"shape": str(face.get("shape", "")), "color": str(face.get("color", "")),
-                              "icon": str(face.get("icon", ""))}
+            b.meta["face"] = _botmod().check_face(b.meta, face)  # the picker's own write: shape/colour taken as sent
         b.save()
     return {"ok": True}
 
@@ -438,12 +432,7 @@ def _settings(bid, body):
     b = _bot(bid)
     name = (body.get("name") or "").strip()
     model, effort = body.get("model") or "", body.get("effort") or ""
-    if model and model not in bm.MODELS:
-        raise ValueError(f"unknown model {model!r}; choose one of {', '.join(bm.MODELS)}")
-    if model and model in bm.LOCAL_MODELS and bm.is_super(b.meta):
-        raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
-    if effort and effort not in bm.EFFORTS:
-        raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(bm.EFFORTS)}")
+    bm.check_settings(b.meta, model, effort)  # shared with Super Bot's `bot_settings` (docs §12)
     if name and name != b.meta.get("name") and b.meta.get("artifacts_dir") and not os.path.isdir(b.meta["artifacts_dir"]):
         b.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder
     b.meta["name"] = name or b.meta.get("name")
