@@ -182,7 +182,7 @@ def _bridge(req):
         try:
             subprocess.run(["open", "-W", "-n", "-g", "-a", BRIDGE, "--env", "NB_SCRIPT=" + paths["script.js"],
                             "--env", "NB_REQ=" + paths["req.json"], "--env", "NB_OUT=" + paths["out.json"]],
-                           capture_output=True, text=True, timeout=TIMEOUT_S)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S)
         except subprocess.TimeoutExpired:
             raise PermissionError(f"Notes did not answer within {TIMEOUT_S} s. If macOS is asking whether NotesBridge "
                                   "may control Notes, click OK and retry.")
@@ -395,7 +395,7 @@ def _direct(req):
     refuses this host Apple Events (-1743), so the caller tries NotesBridge."""
     try:
         r = subprocess.run(["osascript", "-l", "JavaScript", "-e", DIRECT, json.dumps(req)],
-                           capture_output=True, text=True, timeout=TIMEOUT_S)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S)
     except FileNotFoundError:
         return {"error": "osascript not found: this only works on macOS"}
     except subprocess.TimeoutExpired:

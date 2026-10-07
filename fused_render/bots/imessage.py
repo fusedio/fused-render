@@ -310,7 +310,7 @@ def send_text(handle, text):
         save_cursor(cur)
     for chunk in chunks(text):
         r = subprocess.run(["osascript", "-"] + [handle, chunk], input=_SEND_SCRIPT, capture_output=True,
-                           text=True, timeout=SEND_TIMEOUT_S, close_fds=False)
+                           text=True, encoding="utf-8", errors="replace", timeout=SEND_TIMEOUT_S, close_fds=False)
         if r.returncode != 0:
             err = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["osascript failed"]
             raise RuntimeError(err[0])

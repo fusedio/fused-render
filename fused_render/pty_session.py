@@ -109,7 +109,7 @@ def _process_name(pid: int) -> Optional[str]:
     ps = "/bin/ps" if os.path.exists("/bin/ps") else "/usr/bin/ps"
     try:
         res = subprocess.run([ps, "-o", "comm=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=2,
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
                              close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return None
