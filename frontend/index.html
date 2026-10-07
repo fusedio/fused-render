@@ -61,6 +61,17 @@
         }
       }
       document.documentElement.setAttribute("data-theme", theme);
+      /* Colour preset (orthogonal to the light/dark base above). Duplicates
+         lib/theme.ts's PRESET_KEY; tests/test_theme.py pins the spellings
+         together. Absent/unknown = default, i.e. no attribute. */
+      try {
+        var preset = localStorage.getItem("fused-render:theme-preset");
+        if (preset === "nord" || preset === "solarized" || preset === "high-contrast") {
+          document.documentElement.setAttribute("data-theme-name", preset);
+        }
+      } catch (e) {
+        /* private mode / blocked storage — the default preset */
+      }
       /* Native macOS window: report the PREFERENCE so the titlebar matches
          pre-paint (lib/theme.ts re-reports on every change). Top frame only;
          no handler in a browser. */
@@ -97,6 +108,15 @@
        background) resolve against. */
     html { color-scheme: dark; background: #131417; }
     html[data-theme="light"] { color-scheme: light; background: #ffffff; }
+    /* Preset backgrounds: the --bg of each preset in styles/tokens.css, so a
+       preset user sees no default-coloured flash. Later and more specific than
+       the two rules above. */
+    html[data-theme-name="nord"] { background: #2e3440; }
+    html[data-theme-name="nord"][data-theme="light"] { background: #eceff4; }
+    html[data-theme-name="solarized"] { background: #002b36; }
+    html[data-theme-name="solarized"][data-theme="light"] { background: #fdf6e3; }
+    html[data-theme-name="high-contrast"] { background: #000000; }
+    html[data-theme-name="high-contrast"][data-theme="light"] { background: #ffffff; }
     body { margin: 0; background: inherit; }
     /* Hidden for now (Akshil, 2026-08-28): the pulsing "fused" wordmark is
        parked; the boot stays a plain themed ground until the shell paints. */
