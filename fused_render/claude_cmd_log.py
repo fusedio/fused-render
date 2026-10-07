@@ -245,8 +245,11 @@ def _ps_exe() -> str:
 
 def _descendants(pid: int) -> list[int]:
     try:
+        # Generous timeout: this runs on the Stop button's path, not a hot loop, and a
+        # busy host can leave a freshly forked `ps` sitting in the run queue for seconds
+        # before it gets scheduled at all, well before it does any actual work.
         res = subprocess.run([_ps_exe(), "-A", "-o", "pid=,ppid="], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=5, close_fds=False)
+                             text=True, encoding="utf-8", errors="replace", timeout=20, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return []
     kids: dict[int, list[int]] = {}
@@ -263,10 +266,13 @@ def _descendants(pid: int) -> list[int]:
 
 
 def _is_wrapper(pid: int) -> bool:
-    """Guard against a recycled pid: the live process must be our wrapper."""
+    """Guard against a recycled pid: the live process must be our wrapper.
+
+    Same generous timeout as `_descendants`, and for the same reason: under
+    contention the wait is for `ps` to get scheduled at all, not for it to run."""
     try:
         res = subprocess.run([_ps_exe(), "-o", "command=", "-p", str(pid)],
-                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, close_fds=False)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return "claude_shell_prefix" in res.stdout
