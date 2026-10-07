@@ -40,12 +40,13 @@ beforeEach(() => {
   attrs.clear();
 });
 
-test("preset list leads with default and has the four ids", () => {
+test("preset list leads with default and has the five ids", () => {
   expect(theme.THEME_PRESETS.map((p) => p.id)).toEqual([
     "default",
     "nord",
     "solarized",
     "high-contrast",
+    "midnight",
   ]);
   expect(theme.PRESET_KEY).toBe("fused-render:theme-preset");
 });

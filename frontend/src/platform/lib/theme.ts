@@ -230,13 +230,14 @@ export const PRESET_KEY = "fused-render:theme-preset";
 
 const PRESET_EVENT = "fused:themepresetchange";
 
-export type ThemePreset = "default" | "nord" | "solarized" | "high-contrast";
+export type ThemePreset = "default" | "nord" | "solarized" | "high-contrast" | "midnight";
 
 export const THEME_PRESETS: readonly { id: ThemePreset; label: string }[] = [
   { id: "default", label: "Default" },
   { id: "nord", label: "Nord" },
   { id: "solarized", label: "Solarized" },
   { id: "high-contrast", label: "High contrast" },
+  { id: "midnight", label: "Midnight" },
 ];
 
 function isPreset(value: unknown): value is ThemePreset {

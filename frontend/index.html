@@ -66,7 +66,7 @@
          together. Absent/unknown = default, i.e. no attribute. */
       try {
         var preset = localStorage.getItem("fused-render:theme-preset");
-        if (preset === "nord" || preset === "solarized" || preset === "high-contrast") {
+        if (preset === "nord" || preset === "solarized" || preset === "high-contrast" || preset === "midnight") {
           document.documentElement.setAttribute("data-theme-name", preset);
         }
       } catch (e) {
@@ -117,6 +117,8 @@
     html[data-theme-name="solarized"][data-theme="light"] { background: #fdf6e3; }
     html[data-theme-name="high-contrast"] { background: #000000; }
     html[data-theme-name="high-contrast"][data-theme="light"] { background: #ffffff; }
+    html[data-theme-name="midnight"] { background: #000000; }
+    html[data-theme-name="midnight"][data-theme="light"] { background: #ffffff; }
     body { margin: 0; background: inherit; }
     /* Hidden for now (Akshil, 2026-08-28): the pulsing "fused" wordmark is
        parked; the boot stays a plain themed ground until the shell paints. */
