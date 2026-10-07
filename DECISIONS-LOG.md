@@ -111,3 +111,59 @@ one commit), then the second client surface (`fused_ai.py` +
 `DECISIONS.md`, `skills/fused-render-ai/SKILL.md`) last, once the behaviour
 they describe was already implemented and tested. This kept every commit
 buildable and every test file green in isolation at each step.
+
+## Linux native windows never appeared: PDEATHSIG is scoped to a thread, not a process
+
+`core.py` starts the WebKitGTK window host (`_start_window_host`) from a
+short-lived daemon thread named `fused-render-window-host`. That thread
+calls `WindowHost.start()` -> `Job.spawn()` -> `subprocess.Popen(...,
+preexec_fn=_pdeathsig_preexec)`, pings the host successfully, returns, and
+the thread function returns, ending the thread. `PR_SET_PDEATHSIG` (prctl(2))
+delivers its signal when the THREAD that called `prctl` exits — not when the
+process does — so the kernel SIGKILLs the freshly-spawned window host the
+moment that thread ends, typically well under a second later. No crash log,
+no core dump (killed, not aborted), just a dead process and a stale IPC
+socket; the next `open()` gets ECONNRESET from the kernel and the supervisor
+silently falls back to opening a browser tab. Reproduced directly: spawning
+`sleep 30` via `Job().spawn(...)` from a `threading.Thread` that then joins
+leaves the child dead ~0.5s later.
+
+Fixed centrally in `Job.spawn` (`fused_render/supervisor/_linux/tree.py`)
+rather than in `core.py`, so every current and future caller is safe
+regardless of what thread it runs on: added `_Spawner`, one dedicated,
+lazily-started daemon thread (`fused-render-tree-spawner`) that lives for
+the process's whole life. `Job.spawn` now dispatches the actual fork+exec
+(`_spawn_now`) onto that thread via a `queue.Queue` + `concurrent.futures.
+Future` and blocks for the result; any spawn exception is re-raised on the
+calling thread. A call that is already running on the spawner thread (spawn
+nested inside spawn) executes inline instead of enqueuing to itself, which
+would deadlock a single-worker queue. `expected_ppid` (the `getppid()` race
+guard `_parent_changed` checks) is still captured as `os.getpid()` inside
+`_spawn_now` right before the fork — unaffected by which thread calls
+`spawn`, since `getpid()` is process-wide, not per-thread.
+
+Chose "always dispatch through `_spawner`, no main-thread fast path" over
+the alternative of letting the main thread spawn directly: simpler (one
+code path, no "is this the main thread" branching to get subtly wrong
+later), and the dispatch overhead (one queue put/get plus a `Future`) is
+negligible against a `fork+exec`. The module docstring's description of the
+"pgroup" mechanism now states the thread-scoping problem and how
+`_Spawner` handles it.
+
+**Audit of other `Job.spawn`/`Job()` callers** (`grep -rn
+'\.spawn(\|Job('` across the repo, excluding tests and the Windows backend):
+only two real call sites spawn through this Linux `Job`:
+- `fused_render/supervisor/core.py:812` (`_start_server`, called from
+  `_start_ready_server`, called from `run()`'s own top-level frame — the
+  main thread, which lives for the process's whole life anyway, so it was
+  never exposed to this bug, but now goes through the same spawner thread
+  as everyone else with no behavior change beyond the fix).
+- `fused_render/supervisor/_linux/windows.py:142` (`WindowHost.start`,
+  called from `core.py`'s `fused-render-window-host` daemon thread) — this
+  is the call site that was actually broken, and is now fixed by the
+  centralized change with no edit to `core.py` or `windows.py` needed.
+`fused_render/jobs.py`'s `Job` class and `tests/test_jobs_api.py`'s/
+`tests/test_ai_runtime.py`'s `Job`/`startJob` hits are an unrelated
+job-tracking type (`fused.trackJob()`), not this process-tree `Job`.
+`tests/test_supervisor_job.py` is the Windows Job Object counterpart
+(`pytest.importorskip("win32job")`), out of scope for a Linux-only fix.
