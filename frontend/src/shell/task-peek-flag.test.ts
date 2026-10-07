@@ -385,16 +385,12 @@ describe("the peek header", () => {
     // 28px of page either side of the app, then the conversation on a lighter
     // surface again (design.md, Polish batch 5).
     expect(PEEK_CSS).toContain("background: var(--peek-chat-bg);");
-    // AND THE VALUE IS THE CHAT'S OWN, both themes. It is a literal here
-    // because `apps/claude/styles/chat.css` arrives with a `lazy()` import and
-    // is not loaded at all for a reader on the legacy iframe chat, so
-    // `var(--c-panel)` would resolve to nothing exactly half the time. The two
-    // files are pinned to each other here instead.
+    // AND THE VALUE IS THE CHAT'S OWN, both themes: chat.css aliases --c-panel
+    // to the shell's --bg-alt. task-peek.css names --bg-alt directly because
+    // chat.css is lazy and may not be loaded.
     const chat = read("../apps/claude/styles/chat.css");
-    const panel = (from: number) => /--c-panel: (#[0-9a-f]{6});/.exec(chat.slice(from))?.[1];
-    const light = chat.indexOf(':root[data-theme="light"] .chat-root,');
-    expect(PEEK_CSS).toContain(`--peek-chat-bg: ${panel(0)};`);
-    expect(PEEK_CSS).toContain(`--peek-chat-bg: ${panel(light)};`);
+    expect(chat).toContain("--c-panel: var(--bg-alt);");
+    expect(PEEK_CSS).toContain("--peek-chat-bg: var(--bg-alt);");
   });
 
   it("carries a VERTICAL kebab holding exactly the three stated acts", () => {

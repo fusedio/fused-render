@@ -17,7 +17,8 @@ export function runMenuAction(a: MenuAction, b: Bot): void {
   if (a === "hide") { void act(() => api.flag(id, { hidden: !b.hidden })); return; }
   if (a === "read") { markSeen(id, b.seq); return; }
   if (a === "live") { openLive(id); return; }  // selects the bot, then OpenBot openFull()
-  if (a === "clone") { void cloneBot(id); return; }
+  if (a === "clone") { void cloneBot(id); return; }  // shares this bot's logins
+  if (a === "cloneCopy") { void cloneBot(id, false); return; }
   // Escape hatch for what the mirror cannot do (file pickers, passkeys): the same profile as a real Chrome window. Relaunches Chrome, so it takes a few seconds.
   if (a === "window") { void act(() => api.window(id, !b.browser?.visible)); return; }
   select(id);

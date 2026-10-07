@@ -393,9 +393,11 @@ export function useListingSelection({
       // Start typing → focus the search box so the character lands there. Only
       // when nothing else is focused (not the search box already, not a chrome
       // control) and only plain printable keys (no modifiers), so Space on a
-      // focused button and app shortcuts keep working.
+      // focused button and app shortcuts keep working. A "/" the Claude chat
+      // already took (lib/chat-focus, bound in App, capture phase) stays
+      // taken; one it declined (no chat to open) still starts a search.
       if (
-        navActive && !inSearch &&
+        navActive && !inSearch && !e.defaultPrevented &&
         e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
       ) {
         searchInputRef.current?.focus(); // keystroke falls through into the input

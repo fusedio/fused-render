@@ -110,7 +110,13 @@ def _apply(sb, t, hid, ev):
         state = hd.get("state")
         name = hd.get("target_name") or "The bot"
         if role == "system" and text.startswith("Task started: "):
-            hd["state"] = "working"
+            # _handoff_start already moved a fresh row to "working" (and stamped
+            # started_at) synchronously, before the target's task thread could even
+            # take its lock to emit this. By the time it lands here the row is
+            # usually past "received" already (blocked, or further); only promote
+            # it here, never regress a state this event is always late to.
+            if state == "received":
+                hd["state"] = "working"
             hd.setdefault("started_at", time.time())
         elif role in ("question", "approval"):
             kind = "approval" if role == "approval" else ("login" if "browser window" in text else "question")

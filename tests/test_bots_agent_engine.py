@@ -386,7 +386,7 @@ def test_text_then_done(server, fake_cli, monkeypatch):
     assert argv[argv.index("--model") + 1] == "haiku"
     assert argv[argv.index("--effort") + 1] == "low"
     assert argv[argv.index("--allowedTools") + 1] == "mcp__bot__*"
-    with open(argv[argv.index("--system-prompt-file") + 1]) as f:
+    with open(argv[argv.index("--system-prompt-file") + 1], encoding="utf-8") as f:
         assert f.read() == agent_engine.SYSTEM_PROMPT
     cfg = json.load(open(argv[argv.index("--mcp-config") + 1]))
     srv = cfg["mcpServers"]["bot"]
@@ -1258,12 +1258,13 @@ def test_super_webfetch_counts_as_touching_the_web(server, fake_cli, monkeypatch
 def test_super_builtin_calls_become_action_rows(server, fake_cli, monkeypatch):
     bot = super_bot()
     home = os.path.expanduser("~")
+    file_path = os.path.join(home, "Documents", "notes.md")
     run_task(bot, [{"text": "Reading the file."},
-                   {"builtin": "Read", "args": {"file_path": f"{home}/Documents/notes.md"}, "output": "line one\nline two"},
+                   {"builtin": "Read", "args": {"file_path": file_path}, "output": "line one\nline two"},
                    {"builtin": "Bash", "args": {"command": "ls -la"}, "output": "total 0", "error": True},
                    {"result": "two lines"}], monkeypatch)
     acts = [e for e in bot.events if e["role"] == "action"]
-    assert [a["text"] for a in acts] == ["read ~/Documents/notes.md", "run `ls -la`"]
+    assert [a["text"] for a in acts] == ["read ~" + os.sep + os.path.join("Documents", "notes.md"), "run `ls -la`"]
     # One line on the chip, the whole output behind it (the same two audiences as every other action).
     assert acts[0]["result"] == "line one" and acts[0]["detail"] == "line one\nline two"
     assert acts[1]["result"].startswith("error:")
@@ -1298,7 +1299,7 @@ def test_builtin_label():
     L = agent_engine.builtin_label
     home = os.path.expanduser("~")
     assert L("Bash", {"command": "  git   status "}) == "run `git status`"
-    assert L("Write", {"file_path": f"{home}/a/b.txt"}) == "write ~/a/b.txt"
+    assert L("Write", {"file_path": os.path.join(home, "a", "b.txt")}) == "write ~" + os.sep + os.path.join("a", "b.txt")
     assert L("Edit", {"file_path": "/tmp/x"}) == "edit /tmp/x"
     assert L("Glob", {"pattern": "**/*.py", "path": "/tmp"}) == "find **/*.py in /tmp"
     assert L("WebFetch", {"url": "https://x.test/a"}) == "fetch https://x.test/a"
@@ -1380,3 +1381,53 @@ def test_context_window_rule():
     assert agent_engine.context_window("claude-sonnet-5") == agent_engine.WINDOW_1M
     assert agent_engine.context_window("sonnet[1m]") == agent_engine.WINDOW_1M
     assert agent_engine.rollover_at("haiku") == agent_engine.WINDOW_DEFAULT // 2
+
+
+# ---- Super Bot: Claude Code's own AskUserQuestion becomes a question card, not an approval ----
+
+def _ask_q(*questions):
+    return _perm("AskUserQuestion", questions=list(questions))
+
+
+def _q(text, *labels, multi=False):
+    return {"question": text, "header": "Pick", "options": [{"label": l, "description": ""} for l in labels], "multiSelect": multi}
+
+
+def test_super_ask_user_question_is_a_question_card(server, fake_cli, monkeypatch):
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which size?", "Small", "Large")), {"result": "ok"}], monkeypatch)
+    card = bot.wait_event("question")
+    assert card["text"] == "Which size?" and card["options"] == ["Small", "Large"]
+    assert "approval" not in bot.roles() and bot.meta["status"] == "waiting"
+    bot.say("large")  # a click or a typed label, any case
+    finish(t)
+    ans = _answer(fake_cli)
+    assert ans["behavior"] == "allow"
+    assert ans["updatedInput"]["answers"] == {"Which size?": "Large"}
+    assert [o["label"] for o in ans["updatedInput"]["questions"][0]["options"]] == ["Small", "Large"]  # nothing typed: untouched
+
+
+def test_super_ask_user_question_typed_answer_joins_the_options(server, fake_cli, monkeypatch):
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which size?", "Small", "Large")), {"result": "ok"}], monkeypatch)
+    bot.wait_event("question")
+    bot.say("medium, please")
+    finish(t)
+    ans = _answer(fake_cli)["updatedInput"]
+    assert ans["answers"] == {"Which size?": "medium, please"}
+    opts = ans["questions"][0]["options"]
+    assert [o["label"] for o in opts] == ["Small", "Large", "medium, please"]
+    assert opts[-1]["description"] == agent_engine.TYPED_OPTION_NOTE
+
+
+def test_super_ask_user_question_multi_select_keeps_commas_in_labels(server, fake_cli, monkeypatch):
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which days?", "Mon, Tue", "Wed", "Thu", multi=True)), {"result": "ok"}], monkeypatch)
+    card = bot.wait_event("question")
+    assert card["text"].startswith("Which days?") and "commas" in card["text"]
+    bot.say("wed, Mon, Tue, and Fri if free")
+    finish(t)
+    ans = _answer(fake_cli)["updatedInput"]
+    # Labels in option order (the join the CLI checks), the typed remainder last and whole.
+    assert ans["answers"] == {"Which days?": "Mon, Tue, Wed, and Fri if free"}
+    assert [o["label"] for o in ans["questions"][0]["options"]] == ["Mon, Tue", "Wed", "Thu", "and Fri if free"]

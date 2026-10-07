@@ -15,7 +15,12 @@ class _Runner:
 
     def __call__(self, argv, **kw):
         self.calls.append((list(argv), kw))
-        out = self.ps_out if os.path.basename(argv[0]) == "ps" else ""
+        # Match by basename with any extension stripped: a real `ps` resolved
+        # by shutil.which on Windows comes back as "ps.exe", not "ps" (the
+        # platform argument forces the darwin/`ps` codepath here regardless of
+        # the actual host OS, but the real binary lookup still runs for real).
+        name = os.path.splitext(os.path.basename(argv[0]))[0]
+        out = self.ps_out if name == "ps" else ""
         return subprocess.CompletedProcess(argv, 0, out, "")
 
 
@@ -80,8 +85,13 @@ def test_subprocess_rules_and_force_unmount(tmp_path):
 
 
 def test_linux_uses_fusermount_lazy(tmp_path, monkeypatch):
-    monkeypatch.setattr(lmc.shutil, "which",
-                        lambda n: f"/usr/bin/{n}" if n.startswith("fusermount") else None)
+    # Patched at _which (not shutil.which): _which runs whatever shutil.which
+    # finds through os.path.abspath, and on this job's actual host OS that
+    # normalizes a hardcoded POSIX-looking fake path by grafting on the host's
+    # own drive and separators — this isolates the test to _unmount_argvs'
+    # argv construction for platform="linux" rather than real path resolution.
+    monkeypatch.setattr(lmc, "_which",
+                        lambda n, fallbacks=(): f"/usr/bin/{n}" if n.startswith("fusermount") else None)
     runner, kills = _Runner(), []
     _go(tmp_path, runner, kills, platform="linux")
     assert any(c[0] == "/usr/bin/fusermount3" and "-uz" in c for c, _ in runner.calls)

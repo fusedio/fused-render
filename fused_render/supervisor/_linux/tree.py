@@ -22,6 +22,17 @@ Two mechanisms, both stdlib-only, selected by `FUSED_RENDER_LINUX_TREE_KILL`
       `killpg(SIGKILL)` on the group for deliberate teardown. A grandchild that
       calls setsid *itself* escapes the group — the known baseline gap.
 
+      PDEATHSIG is scoped to the parent THREAD that forked, not the parent
+      PROCESS (prctl(2)): a child forked from a thread is killed the instant
+      *that thread* exits, even though the process it belongs to lives on.
+      core.py starts the window host from a short-lived daemon thread that
+      returns right after a successful start(), so `Job.spawn` cannot simply
+      fork+exec on whatever thread calls it. Instead every spawn's fork+exec
+      runs on one dedicated, lazily-started daemon thread that lives for the
+      process's whole life (see `_Spawner` below); callers on any other
+      thread block on the result and have the child's spawn exceptions
+      re-raised in their own thread.
+
   "namespace" (opt-in) — wrap the server in an unprivileged user+pid namespace
       via `unshare --user --map-root-user --pid --fork --kill-child`. The server
       becomes pid 1 of a private pid namespace; the kernel reaps the entire
@@ -41,11 +52,14 @@ from __future__ import annotations
 
 import ctypes
 import os
+import queue
 import signal
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 
 # The child env-block contract (strip interpreter-identity vars, merge
@@ -122,6 +136,80 @@ def _launch_argv(mechanism: str, application: Path, arguments: list[str]) -> lis
     return [str(application), *arguments]
 
 
+class _Spawner:
+    """Runs every fork+exec on one dedicated, lazily-started daemon thread
+    that lives for the process's whole life, so the PDEATHSIG guarantee
+    (armed against a parent THREAD, not a parent process — see the module
+    docstring) survives a caller that spawns from a short-lived thread and
+    then exits it.
+
+    A daemon thread, not a `concurrent.futures.ThreadPoolExecutor`: pool
+    workers are non-daemon and get joined at interpreter shutdown before
+    atexit handlers run, which would end the PDEATHSIG scope (and kill the
+    children it protects) earlier than the process's real exit. A daemon
+    thread carries no such join and lives until the process does.
+
+    `os.register_at_fork(after_in_child=...)` resets this spawner's state in
+    a child produced by a bare `os.fork()` (no exec): there, `_thread` still
+    references the parent's thread object, which doesn't exist in the
+    child, so without the reset the first `spawn()` call would enqueue to a
+    worker that will never run and hang forever."""
+
+    def __init__(self) -> None:
+        self._jobs: "queue.Queue[tuple[Future, object]]" = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
+        if hasattr(os, "register_at_fork"):
+            os.register_at_fork(after_in_child=self._reset_after_fork)
+
+    def _reset_after_fork(self) -> None:
+        """Runs in the child, immediately after `os.fork()`. Drop the
+        inherited thread reference and give the child its own queue and
+        lock, so its first `spawn()` starts a fresh spawner thread instead
+        of enqueuing to the parent's, which doesn't exist here."""
+        self._jobs = queue.Queue()
+        self._thread = None
+        self._start_lock = threading.Lock()
+
+    def _ensure_started(self) -> None:
+        if self._thread is not None:
+            return
+        with self._start_lock:
+            if self._thread is None:
+                thread = threading.Thread(
+                    target=self._run, name="fused-render-tree-spawner", daemon=True
+                )
+                thread.start()
+                self._thread = thread
+
+    def _run(self) -> None:
+        while True:
+            future, fn = self._jobs.get()
+            if not future.set_running_or_notify_cancel():
+                continue  # the caller cancelled before we got to it
+            try:
+                result = fn()
+            except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+
+    def run(self, fn):
+        """Execute `fn` (taking no arguments) on the spawner thread and
+        return its result; any exception `fn` raises is re-raised here, on
+        the calling thread."""
+        self._ensure_started()
+        future: Future = Future()
+        self._jobs.put((future, fn))
+        return future.result()
+
+
+# One spawner for the whole process — every Job shares it, since the
+# guarantee it provides (fork+exec always happens on the same long-lived
+# thread) is a process-wide property, not a per-Job one.
+_spawner = _Spawner()
+
+
 class SupervisedProcess:
     """Waitable handle over the spawned child, matching the Windows
     SupervisedProcess surface core.py depends on (`.wait(ms)`, `.id`)."""
@@ -158,6 +246,21 @@ class Job:
         environment: dict[str, str] | None = None,
         output: Path | None = None,
     ) -> SupervisedProcess:
+        """Fork+exec the child. The actual work runs on `_spawner`'s single
+        long-lived thread (see its docstring) regardless of which thread
+        calls `spawn` — this call blocks until that's done and re-raises
+        whatever the spawn raised."""
+        return _spawner.run(
+            lambda: self._spawn_now(application, arguments, environment, output)
+        )
+
+    def _spawn_now(
+        self,
+        application: Path,
+        arguments: list[str],
+        environment: dict[str, str] | None,
+        output: Path | None,
+    ) -> SupervisedProcess:
         mechanism = _mechanism()
         argv = _launch_argv(mechanism, application, arguments)
         env = environment_block(environment)
@@ -185,7 +288,8 @@ class Job:
                 start_new_session=True,
                 # PDEATHSIG requires the classic fork+exec path (preexec_fn
                 # forces it off posix_spawn). The preexec body stays fork-safe
-                # even in this threaded parent (tray thread, open workers):
+                # even though this runs on _spawner's thread alongside the
+                # rest of a threaded process (tray thread, open workers):
                 # libc is pre-resolved at import (_LIBC — no post-fork dlopen,
                 # which takes locks another thread could hold mid-fork) and it
                 # otherwise makes only async-signal-safe calls.

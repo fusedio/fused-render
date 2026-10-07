@@ -4,7 +4,7 @@
 // frame with its own sections, so the platform stays ignorant of bookmarks,
 // recents, and app lists. Width/collapsed state is shared across all owners
 // (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
-import React, { useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { FusedMark } from "@platform/ui/FusedMark";
 import { navigateUrl } from "@platform/lib/router";
@@ -47,6 +47,11 @@ export interface SidebarRailItem {
   /** Set on the FIRST item of a bottom-pinned cluster (the shell's settings
       list) — pushes it and everything after to the rail's bottom edge. */
   pinBottom?: boolean;
+  /** Part of the rail's SCROLLING middle (the shell's project + pinned
+      bookmark doors): consecutive `scrolls` items share one overflow box, so
+      a long desk on a short window scrolls inside the rail instead of pushing
+      the pinBottom cluster off screen. */
+  scrolls?: boolean;
   /** Override the exact-pathname highlight, mirroring NavItem's `active` —
       for icons that are "home" to a family of routes. */
   active?: boolean;
@@ -55,6 +60,60 @@ export interface SidebarRailItem {
       shell's Tasks dot). Drawn inside the button, which is the positioned
       ancestor it resolves against; the frame never says what it means. */
   badge?: React.ReactNode;
+}
+
+/** The rail's items as runs of equal `scrolls`, in order — a scrolling run
+    becomes one overflow box, the rest render flat. */
+export function railRuns(
+  rail: SidebarRailItem[]
+): { scrolls: boolean; items: SidebarRailItem[] }[] {
+  const runs: { scrolls: boolean; items: SidebarRailItem[] }[] = [];
+  for (const item of rail) {
+    const scrolls = !!item.scrolls;
+    const last = runs[runs.length - 1];
+    if (last && last.scrolls === scrolls) last.items.push(item);
+    else runs.push({ scrolls, items: [item] });
+  }
+  return runs;
+}
+
+/** The rail's own tooltip (`.sidebar-rail-tip`): the label beside the icon,
+    fixed-positioned so the scrolling middle's overflow box cannot clip it, and
+    quick — the native `title` takes a second to appear, and a column of
+    unlabelled icons is exactly where that second is felt. */
+interface RailTip {
+  show: (label: string, el: HTMLElement) => void;
+  hide: () => void;
+}
+
+function renderRailItem(item: SidebarRailItem, tip: RailTip) {
+  return (
+    <React.Fragment key={item.key}>
+      {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
+      {item.dividerBefore && <span className="sidebar-rail-sep" aria-hidden="true" />}
+      <a
+        href={item.href}
+        className={
+          "sidebar-rail-btn" +
+          ((item.active ?? location.pathname === item.href) ? " active" : "")
+        }
+        aria-label={item.label}
+        onMouseEnter={(e) => tip.show(item.label, e.currentTarget)}
+        onMouseLeave={tip.hide}
+        onFocus={(e) => tip.show(item.label, e.currentTarget)}
+        onBlur={tip.hide}
+        onClick={(e) => {
+          e.preventDefault();
+          tip.hide();
+          if (item.onClick) item.onClick(e);
+          else navigateUrl(item.href);
+        }}
+      >
+        {item.icon}
+        {item.badge}
+      </a>
+    </React.Fragment>
+  );
 }
 
 export interface SidebarFrameProps {
@@ -184,6 +243,18 @@ export function SidebarFrame({
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
+  // The collapsed rail's tooltip: which label, at which y (the icon's centre).
+  const [railTip, setRailTip] = useState<{ label: string; y: number } | null>(null);
+  // Mouseleave/blur never fire for an item that unmounts under the pointer or
+  // a rail that expands by shortcut: drop the tip on every collapse toggle.
+  useEffect(() => setRailTip(null), [sidebarCollapsed]);
+  const tip: RailTip = {
+    show: (label, el) => {
+      const r = el.getBoundingClientRect();
+      setRailTip({ label, y: r.top + r.height / 2 });
+    },
+    hide: () => setRailTip(null),
+  };
   // `fromCollapsed` fixes which RULE the whole gesture is read by — the seam of an
   // open panel (`resizeWidth`) or the edge of a shut one (`reopenWidth`) — decided
   // once at pointerdown rather than re-decided from the live collapsed flag on
@@ -345,33 +416,31 @@ export function SidebarFrame({
         </button>
         {rail && rail.length > 0 && (
           <div className="sidebar-rail-items">
-            {rail.map((item) => (
-              <React.Fragment key={item.key}>
-                {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
-                {item.dividerBefore && <span className="sidebar-rail-sep" aria-hidden="true" />}
-                <a
-                  href={item.href}
-                  className={
-                    "sidebar-rail-btn" +
-                    ((item.active ?? location.pathname === item.href) ? " active" : "")
-                  }
-                  aria-label={item.label}
-                  title={item.label}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (item.onClick) item.onClick(e);
-                    else navigateUrl(item.href);
-                  }}
-                >
-                  {item.icon}
-                  {item.badge}
-                </a>
-              </React.Fragment>
-            ))}
+            {railRuns(rail).map((run) =>
+              run.scrolls ? (
+                <div className="sidebar-rail-scroll" key={run.items[0].key} onScroll={tip.hide}>
+                  {run.items.map((item) => renderRailItem(item, tip))}
+                </div>
+              ) : (
+                run.items.map((item) => renderRailItem(item, tip))
+              )
+            )}
           </div>
         )}
       </nav>
       {handle}
+      {/* AFTER the handle, never before it: a conditional sibling ahead of it
+          would shift the handle's slot and React would remount the node that
+          holds pointer capture across a collapse (Bugbot, #1479). */}
+      {railTip && (
+        <div
+          className="sidebar-rail-tip"
+          role="tooltip"
+          style={{ top: railTip.y, left: SIDEBAR_RAIL_WIDTH + 8 }}
+        >
+          {railTip.label}
+        </div>
+      )}
       </>
     );
   }

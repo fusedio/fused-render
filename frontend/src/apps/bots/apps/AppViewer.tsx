@@ -1,6 +1,7 @@
 // #vpanel (OpenBot index.html + apps.js viewApp/closeView): one app full-size inside this page, above the gallery.
 // The iframe is unsandboxed and focusable so the app's own buttons, params and runPython work; apps.ts drives its src
 // (viewApp loads it after applyAppParams, closeView blanks it so the app stops running).
+import { ArrowLeftIcon } from "lucide-react";
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { closeMenu } from "../state/store";
 import { closeView, setViewFrame, useViewedApp } from "./apps";
@@ -21,7 +22,7 @@ export function AppViewer() {
     <>
       <div id="vpanel" className={a ? "show" : ""}>
         <div className="topbar">
-          <button id="vback" className="backtxt" title="Back to apps (Esc)" onClick={closeView}>Back</button>
+          <button id="vback" className="backtxt" aria-label="Back" title="Back to apps (Esc)" onClick={closeView}><ArrowLeftIcon /></button>
           <b className="ttl" id="vttl">{a ? a.name || a.folder || "App" : "App"}</b><small className="muted" id="vsub">{a ? a.desc || a.dir : ""}</small>
           <span className="winacts">
             <button id="vmenu" className="kebab" title="Reload, copy state, open elsewhere, or start a task that edits this app" aria-label="App actions" onClick={onMenu}>

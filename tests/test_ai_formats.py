@@ -1057,7 +1057,7 @@ def test_the_two_model_type_sets_are_disjoint_and_their_union_is_the_gate():
     assert not (formats.DUAL_EMBED_MODEL_TYPES & formats.TEXT_EMBED_MODEL_TYPES)
     assert formats.EMBED_MODEL_TYPES == (
         formats.DUAL_EMBED_MODEL_TYPES | formats.TEXT_EMBED_MODEL_TYPES)
-    assert formats.DUAL_EMBED_MODEL_TYPES == {"siglip", "clip"}
+    assert formats.DUAL_EMBED_MODEL_TYPES == {"siglip", "clip", "embedding_gemma2"}
     assert formats.TEXT_EMBED_MODEL_TYPES == {
         "bert", "xlm-roberta", "nomic_bert", "modernbert"}
 
@@ -1079,7 +1079,8 @@ def test_the_mlx_subset_is_what_mlx_embeddings_actually_ships():
     """
     assert formats.MLX_EMBED_MODEL_TYPES <= formats.EMBED_MODEL_TYPES
     assert formats.MLX_EMBED_MODEL_TYPES == {
-        "siglip", "bert", "xlm-roberta", "modernbert"}
+        "siglip", "bert", "xlm-roberta", "modernbert", "embedding_gemma2"}
+    assert formats.MLX_VLM_EMBED_MODEL_TYPES == {"embedding_gemma2"}
 
 
 def test_embed_model_type_is_case_and_whitespace_tolerant():

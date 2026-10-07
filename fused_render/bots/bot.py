@@ -28,6 +28,7 @@ import uuid
 
 from fused_render.bots import apptools, imessage, store
 from fused_render.bots import browser as browser_mod
+from fused_render.bots import browsers
 from fused_render.bots import paths as bpaths
 from fused_render.bots.browser import Browser
 from fused_render.bots.channels import base as chan
@@ -55,6 +56,17 @@ BUILD_POLL_S = 15          # how often a build watcher asks the server for the t
 BUILD_MAX_S = 3 * 3600     # stop watching after this long
 # Hand-offs (docs §11): Super Bot gives an ordinary bot a task and gets ONE result back.
 HANDOFF_MAX_S = BUILD_MAX_S  # a target may wait on the user at the Mac (login, approval) for a long time
+
+
+def _clip(text: str, n: int) -> str:
+    """`text` flattened to one line and cut to about `n` chars at a word, with an ellipsis when anything was dropped."""
+    flat = " ".join(re.sub(r"\*\*|`", "", str(text or "")).split())  # bold / code marks read as noise in a plain line
+    if len(flat) <= n:
+        return flat
+    cut = flat[:n]
+    if " " in cut[n // 2:]:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "…"
 HANDOFF_KEEP = 40          # meta["handoffs"] rows kept on Super Bot
 _LEGACY_HANDOFF_STATES = {"queued": "received", "running": "working", "waiting": "blocked",
                           "error": "failed", "stopped": "cancelled"}  # read once at load, never written
@@ -100,8 +112,32 @@ SUPER_INSTRUCTIONS = ("You are my assistant on this Mac. Use Claude Code's tools
 # The seeded Super Bot's first line (registry.seed_super): fixed text, no model call. On a fresh install Claude may not
 # be linked yet, and `greet()`'s fallback after a failed call would make an error the user's first impression. The page
 # appends a "Connect your phone" button to this line (source "seed", components/Thread.tsx).
-SUPER_GREETING = ("Hi, I'm Super Bot. I use Claude Code's tools on this Mac (files, PDFs, images, shell, code) plus a "
-                  "browser. Ask me for anything here, or connect your phone to text me.")
+SUPER_GREETING = ("Hi, I'm Super Bot. I run on this Mac through the Claude Code you're signed in to, with its tools (files, "
+                  "PDFs, images, shell, code) plus a browser. First I'll ask you to sign in to Google in my browser, then "
+                  "offer the social bots that can share it. Ask me for anything here, or connect your phone to text me.")
+# Super Bot's first task (owner's ask, 2026-10-07): sign the shared browser in to Google, then offer the
+# social presets, each made on Super Bot's browser (`bot_create` with logins_from) so one sign-in serves
+# them all. Seeded Super Bot: held in meta["setup"] until Claude is linked (tick_routines); a Super Bot made
+# from the chooser runs it right after its greeting like a preset's setup. SOCIAL_PRESETS is the offer list.
+SOCIAL_PRESETS = ("linkedin", "youtube", "x", "reddit", "instagram", "facebook", "tiktok")
+SUPER_SETUP = ("Open https://accounts.google.com/. If it asks you to sign in, use login so I can sign in to Google in your "
+               "browser; wait until I'm signed in (the account page loads). If I'm already signed in, say so. "
+               "Then offer me the social bots: ask (one `ask` with `multi: true` and these as `options`) which ones I want to start with: "
+               "@SOCIAL@. I may name several, or none. For each one I pick, call `bot_create` once with `preset` set to its "
+               "key, `name` set to its site name, and `logins_from` set to \"Super Bot\" so it shares your browser and my "
+               "Google sign-in; your browser is already signed in to Google, so bots on it are too. "
+               "Finish with one line saying which bots exist now and that each will ask for its own site's sign-in once.")
+
+
+def super_setup_text() -> str:
+    """SUPER_SETUP with the social presets that exist on this install filled in."""
+    try:
+        from fused_render.bots import presets as presets_mod
+        have = {p["key"]: p for p in presets_mod.presets()}
+        names = [f"{have[k]['name']} ({k})" for k in SOCIAL_PRESETS if k in have]
+    except Exception:  # noqa: BLE001
+        names = []
+    return SUPER_SETUP.replace("@SOCIAL@", ", ".join(names) if names else "none are installed, so skip this step")
 
 
 def _builds_root() -> str:
@@ -117,8 +153,8 @@ def _artifacts_root() -> str:
 # app topic (see APP_GUIDE_TRIGGER), like a skill: the bot can explain every setting
 # and feature without paying for the text on ordinary browsing steps. `@APPS_ROOT@`
 # is substituted when the prompt is built (app_guide()), so FUSED_RENDER_DIR applies.
-APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own Chrome and its own settings):
-- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
+APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own settings and its own Chrome unless it was made to share another bot's logins):
+- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
@@ -129,7 +165,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
-- Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot sharing your logins, memory, instructions and skills; "Delete" removes a bot with its browser profile. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
+- Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot on your logins (sharing them, not a copy) with your memory, instructions and skills; "Delete" removes a bot, and its logins unless another bot shares them. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
 - Limits: a task ends after 60 steps; your browser closes after 10 minutes idle (and reopens on the next task, logins kept); model calls time out after 3 minutes."""
 APP_GUIDE_TRIGGER = re.compile(
     r"\b(setting|settings|routine|schedule|scheduled|daily|every (day|morning|hour|\d+ ?min)|cron|remind|skill|playbook|memory|remember|forget|model|haiku|sonnet|opus|fable|effort|faster|slower|smarter|approval|approve|permission|encrypt|keychain|profile|login|cookie|export|transcript|clone|copy of you|delete you|rename|avatar|take ?over|live view|pop out|window|dock|download|upload|attach|file|save|usage|calls|steps|limit|timeout|sleep|pause|resume|stop|botsend|build|builds|app|apps|tool|tools|mcp|dashboard|tracker|how do (i|you)|can you|what can you|help|who are you|your (name|settings|config))\b", re.I)
@@ -340,10 +376,16 @@ def _app_at(url_or_path):
     if s.endswith("/index.html"):
         s = s[: -len("/index.html")]
     builds_root = _builds_root()
-    root = builds_root.rstrip("/") + "/"
-    if not s.startswith(root):
+    # `s` is either a /render?path= URL (always forward slashes) or a plain
+    # filesystem path (native separators — a backslash on Windows, from a
+    # caller like _resolve_app that hands this a folder it found under
+    # builds_root). Comparing against builds_root with forward slashes either
+    # way so a native Windows path still matches its own root.
+    s_slash = s.replace(os.sep, "/") if os.sep != "/" else s
+    root = builds_root.replace(os.sep, "/").rstrip("/") + "/"
+    if not s_slash.startswith(root):
         return None
-    d = os.path.join(builds_root, s[len(root):].split("/")[0])
+    d = os.path.join(builds_root, *s_slash[len(root):].split("/"))
     return {"name": _app_title(d), "dir": d, "params": params} if os.path.isfile(os.path.join(d, "index.html")) else None
 
 
@@ -433,10 +475,21 @@ class Bot:
         self.dir = bpaths.bot_dir(bid)
         self.cache_dir = bpaths.bot_cache_dir(bid)
         self.events_path = os.path.join(self.dir, "events.jsonl")
-        self.browser = Browser(self.dir, self.cache_dir)
         self.lock = threading.RLock()
         self.meta = _read_meta(bid)
-        self.browser.encrypt = bool(self.meta.get("encrypt"))
+        # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
+        # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
+        if not self.meta.get("browser_id") or not browsers.exists(self.meta["browser_id"]):
+            self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
+            store.write_meta(bid, self.meta)
+        self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
+        # A take-over survives a server restart in bot.json; the view's in-memory flag must
+        # agree, or the first hand-back on a shared browser relaunches it under this bot's window.
+        self.browser.popped = bool(self.meta.get("visible")) and self.browser.visible()
+        self.browser.idle_check = self._may_sleep
+        self.last_looked = time.time()  # when the page last polled with this bot selected (routes._status_bot); a bot just
+        # loaded counts as looked at, so a shared Chrome never sleeps under it in the first poll after a restart
+        self.meta["encrypt"] = bool(self.browser.encrypt)  # mirrored from browser.json for the dialog
         self.seq = self._count_events()
         self.thread = None
         self.stop_flag = threading.Event()
@@ -1099,13 +1152,101 @@ class Bot:
             # A task typed while the greeting was being written went to the inbox
             # (send() saw this thread alive). It is the user's first task: run it
             # now instead of dropping it with the greeting.
-            queued = self._drain_inbox()
+            setup = (self.meta.pop("setup", None) or "").strip()  # a preset's first task (presets.py): once
+            if setup:
+                self.save()
+            with self.lock:
+                # This greeting thread IS self.thread, and start_task refuses while
+                # self.thread is alive: hand the slot over before starting a task.
+                # Drain under the same lock: receive() queues into the inbox only
+                # while it sees this thread alive, so nothing can land between the
+                # drain and the hand-over; a message after it starts its own task,
+                # which then wins over the setup (start_task refuses a second one).
+                queued = self._drain_inbox()
+                if self.thread is threading.current_thread():
+                    self.thread = None
             if queued:
                 self.start_task("\n".join(queued), label=queued[0])
+            elif setup:
+                # A site preset's setup task: open the sign-in page and pop the
+                # login window, so the user is asked to log in now rather than
+                # when the first real task hits the wall. A task the user typed
+                # meanwhile wins; the setup is dropped (its first task will ask).
+                self.emit("system", "Opening the sign-in page now so you can log in before the first task.")
+                self.start_task(setup, label=f"Sign in to {self.meta.get('name') or 'the site'}", origin="setup")
             else:
                 self.set_status("idle", note="")
         self.thread = threading.Thread(target=go, daemon=True, name=f"greet-{self.id}")
         self.thread.start()
+
+    _setup_probe_at = 0.0  # last Claude-health measure made for the setup (one per minute at most)
+    _opened_at = 0.0       # the last `opened()`: a probe finishing within SETUP_OPEN_WINDOW_S of it completes the open
+    SETUP_OPEN_WINDOW_S = 20.0    # the measure itself is 1-2.5 s; the page re-asks every 3 s while it still shows the bot
+
+    def opened(self):
+        """`POST /api/bots/<id>/open`: the Bots page shows this bot (landing on it,
+        a click, a deep link). The one door to Super Bot's first task; nothing on
+        another page, no poll by itself and no background tick starts it (owner's
+        rule, 2026-10-07). Returns {setup: "started" | "pending" | "none"}:
+        pending = Claude is not linked yet (or not measured yet), the page asks
+        again later. A cold health cache is measured in the background and that
+        measure finishes THIS open (`_maybe_super_setup`): the user's own click,
+        completed a couple of seconds late, not a tick starting it."""
+        self._opened_at = time.time()
+        return {"setup": self._maybe_super_setup(opened=True)}
+
+    def _maybe_super_setup(self, opened=False):
+        """The seeded Super Bot's setup (SUPER_SETUP): the Google sign-in, then the
+        social-bot offer. Runs the first time the user OPENS Super Bot (`opened`:
+        the page's explicit `open` call from a click or a deep link), once Claude
+        is linked and the bot is idle; never from a poll or the routines tick, so
+        onboarding, a background pass or the page landing on Super Bot by default
+        cannot pop the sign-in window.
+        The health check reads the cached snapshot (claude_health.cached, valid
+        for a minute). A cold cache is measured once a minute in the background,
+        and the measure then re-runs this check itself when the open is recent
+        (SETUP_OPEN_WINDOW_S): on a fresh install the onboarding's snapshot has
+        aged out by the time the user reaches Bots, so without that the sign-in
+        waited for the page's next ask (the symptom: nothing until a reload)."""
+        if not opened or not is_super(self.meta) or not (self.meta.get("setup") or "").strip():
+            return "none"
+        if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
+            return "pending"
+        try:
+            from fused_render import claude_health
+            c = claude_health.cached()
+            if c is None:
+                now = time.time()
+                if now - self._setup_probe_at > 60:
+                    self._setup_probe_at = now
+                    threading.Thread(target=self._setup_probe, daemon=True, name=f"setup-probe-{self.id}").start()
+                return "pending"
+            if not c.get("found") or not c.get("signed_in"):
+                return "pending"
+        except Exception:  # noqa: BLE001
+            return "pending"
+        with self.lock:
+            setup = (self.meta.pop("setup", None) or "").strip()
+            self.save()
+        if not setup:
+            return "none"
+        self.emit("system", "Opening Google's sign-in in my browser: once you are signed in, every bot sharing it is too.")
+        self.start_task(setup, label="Sign in to Google", origin="setup")
+        return "started"
+
+    def _setup_probe(self):
+        """The background measure behind a cold health cache, then the open it
+        was made for, completed: the user opened Super Bot moments ago and only
+        the measure was missing. An old open (the page may be gone) is left to
+        the page's next ask. Errors stay in this thread (a measure that fails
+        is just a cache still cold; the next open probes again)."""
+        try:
+            from fused_render import claude_health
+            claude_health.snapshot()
+            if time.time() - self._opened_at <= self.SETUP_OPEN_WINDOW_S:
+                self._maybe_super_setup(opened=True)
+        except Exception:  # noqa: BLE001
+            logger.warning("bot %s: setup probe failed", self.id, exc_info=True)
 
     def learn_from_last(self):
         """Condense the last finished task into a playbook, in a background
@@ -1391,10 +1532,23 @@ class Bot:
             self.meta["updated"] = time.time()
             self.save()
 
+    @property
+    def browser_id(self):
+        return self.meta.get("browser_id") or self.id
+
+    def shared_with(self):
+        """The other bots on this bot's browser: [{id, name}]."""
+        try:  # loaded(): no disk scan; the status poll builds every bot before asking for summaries
+            others = [b for b in _registry().loaded() if b is not self and not b.deleted and b.browser_id == self.browser_id]
+        except Exception:  # noqa: BLE001
+            others = []
+        return [{"id": b.id, "name": b.meta.get("name") or ""} for b in others]
+
     def summary(self, light=False, detail=False):
         """docs §2. light: skip the per-bot liveness probe (full-screen polls 2-3x/s);
         detail: the selected bot also reports its tabs, files and Inbox."""
         bs = self.browser.status_cached() if light else self.browser.status()
+        bs["shared"] = self.browser.shared()
         if detail and bs.get("running"):
             bs["tabs"] = self.browser.tabs()
         if detail:
@@ -1406,7 +1560,9 @@ class Bot:
             meta = dict(self.meta)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "browser": bs,
+        return {**meta, "id": self.id, "seq": self.seq, "browser": bs, "browser_id": self.browser_id,
+                "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
+                "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
@@ -1705,9 +1861,10 @@ class Bot:
             via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
         elif not chan.is_web(via):
             origin = via.get("kind") or origin
-        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin == "manual"):
+        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin in ("manual", "setup")):
             # Super Bot has shell and file access: only the user's chat or their text may start it (docs §5).
             # Judged on the via, so an origin label alone never lifts the gate (or the posture, super_mode).
+            # "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
         with self.lock:
@@ -1827,17 +1984,28 @@ class Bot:
         if visible:
             self.pause()
             self.meta["control"] = True
-        self.browser.set_visible(visible)
+        relaunched = self.browser.set_visible(visible)  # False: a shared Chrome stays on the desktop for another bot
         self.meta["visible"] = visible
         handback = closed and bool(self.meta.get("control"))
         if handback:
             self.window_closed = True
             self.meta["control"] = False
         self.save()
-        self.emit("system", "Opened this bot's browser as a real window on your desktop. Hand back (or close the window) to return control to the bot."
-                  if visible else ("Desktop window closed; the browser is back here, headless"
-                                   + (" and the bot has control again." if handback else ".") if closed
-                                   else "Browser is headless again; the live view is the only window."))
+        shared_note = (" This browser is shared with " + ", ".join(o["name"] for o in self.shared_with())
+                       + "; their windows open too, this bot's in front.") if visible and self.shared_with() else ""
+        if visible:
+            msg = "Opened this bot's browser as a real window on your desktop. Hand back (or close the window) to return control to the bot." + shared_note
+        elif not relaunched:
+            still = ", ".join(o["name"] for o in self.shared_with() if (_registry().get(o["id"]) or self).meta.get("visible")) or "another bot"
+            where = ("this bot opens a fresh window in the background when it next acts" if closed
+                     else "this bot's windows are minimised and it keeps working there")
+            msg = (("Desktop window closed" if closed else "Handed back") + f"; {still} still has this shared browser open on your desktop, "
+                   f"so it stays a real window for now; {where}" + (", with control again." if handback else "."))
+        elif closed:
+            msg = "Desktop window closed; the browser is back here, headless" + (" and the bot has control again." if handback else ".")
+        else:
+            msg = "Browser is headless again; the live view is the only window."
+        self.emit("system", msg)
         if handback:
             if self.thread and self.thread.is_alive():
                 self.resume(note=False)
@@ -1849,8 +2017,9 @@ class Bot:
             return
         self.window_closed = False
         history.append("The user popped your browser out as a real desktop window and then closed that window "
-                       "instead of handing back, so control returned to you. The browser was relaunched headless "
-                       "on the last page it knew about (possibly about:blank). Nothing was necessarily accomplished "
+                       "instead of handing back, so control returned to you. Your browser is back on the last page "
+                       "it knew about (possibly about:blank), headless, or in a fresh window when another bot's user "
+                       "still has the shared browser open. Nothing was necessarily accomplished "
                        "in that window; do not assume a login or any step succeeded. Act on the observation below.")
 
     def _recover_popup(self):
@@ -1862,18 +2031,26 @@ class Bot:
         """Turn profile encryption at rest on or off. Takes effect at once when
         Chrome is closed; otherwise at the next stop (idle sleep, dock, delete)."""
         on = bool(on)
-        self.meta["encrypt"] = on
-        self.browser.encrypt = on
-        self.save()
+        browsers.set_encrypt(self.browser_id, on)
+        for b in [self] + [_registry().get(o["id"]) for o in self.shared_with()]:
+            b.meta["encrypt"] = on
+            b.save()
+        who = " (shared with " + ", ".join(o["name"] for o in self.shared_with()) + ")" if self.shared_with() else ""
         if not self.browser.alive():
             if on:
                 if self.browser.seal():
-                    self.emit("system", "Profile encrypted at rest. It is decrypted only while this bot's browser runs.")
+                    self.emit("system", f"Logins encrypted at rest{who}. They are decrypted only while the browser runs.")
             else:
                 if self.browser.unseal():
-                    self.emit("system", "Profile encryption turned off; the profile is stored in plain files again.")
+                    self.emit("system", f"Encryption turned off{who}; the logins are stored in plain files again.")
         elif on:
-            self.emit("system", "Profile encryption on: the profile is sealed whenever the browser sleeps or closes.")
+            self.emit("system", f"Encryption on{who}: the logins are sealed whenever the browser sleeps or closes.")
+
+    def _may_sleep(self):
+        """For a shared browser's idle sleep (Browser.may_sleep): this bot is idle,
+        not being looked at in the last little while, not driven, and has been
+        quiet long enough. Live, not a flag left by an earlier sleep attempt."""
+        return self.idle_sleep_due(time.time() - self.last_looked < 15)
 
     def idle_sleep_due(self, selected):
         """Idle for a while, headless, not being looked at or driven -> put the
@@ -1888,17 +2065,43 @@ class Bot:
 
     def idle_sleep(self):
         try:
-            self.browser.stop()  # seals too when browser.encrypt is on
-            self.emit("system", f"Browser closed after {IDLE_SLEEP_S // 60} minutes idle"
-                      + ("; profile encrypted at rest." if self.meta.get("encrypt") else "."))
+            if self.browser.sleep():  # seals too when browser.encrypt is on; a shared browser waits for every bot
+                self.emit("system", f"Browser closed after {IDLE_SLEEP_S // 60} minutes idle"
+                          + ("; logins encrypted at rest." if self.meta.get("encrypt") else "."))
         except Exception as e:  # noqa: BLE001
             self.emit("error", f"Could not put the browser to sleep: {e}")
 
-    def shutdown(self):
+    def shutdown(self, browser=True):
+        """Stop the task and (by default) the browser. `delete()` passes
+        browser=False on a shared browser: the other bots keep their Chrome."""
         self.stop()
         if self.thread:
             self.thread.join(5)
-        self.browser.stop()
+        if browser:
+            self.browser.stop()
+        else:
+            self.close_tabs()
+
+    def close_tabs(self):
+        """Close this bot's own tabs on a shared browser (leaving it). Detaches
+        the view whether or not Chrome is up: a stale view would keep the
+        process "shared" and block its idle sleep."""
+        try:
+            sess = self.browser.session()
+            if not sess or not self.browser.alive(sess):
+                raise StopIteration
+            for t in self.browser._own_targets(sess["port"]):
+                try:
+                    browser_mod._http(sess["port"], f"/json/close/{t['targetId']}")
+                except Exception:  # noqa: BLE001
+                    pass
+            self.browser._own = []
+            self.browser._write_own()
+        except StopIteration:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+        self.browser.proc.detach(self.browser)
 
     # -- waits the engines share --------------------------------------------
     def _wait_if_paused(self):
@@ -2289,11 +2492,15 @@ class Bot:
             flat = " ".join(text.split())
             m = re.match(r"(.+?[.!?])(?:\s|$)", flat)
             summary = (m.group(1) if m else flat)[:600]
-        self.emit("done", text, summary=summary, source="handoff",
-                  handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
+        card = self.emit("done", text, summary=summary, source="handoff",
+                         handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
         if t is not None and not t.deleted and self._exists(t.id):
             try:
-                t.emit("system", f"Sent to Super Bot: {text[:280]}", source="handoff", via=None)
+                # A short pointer, not the result (the bot's own "done" row above has it in full): cut at a word and
+                # marked as cut, so it never ends mid-word like a clipped message. `link` is the card it became in
+                # Super Bot's chat ("Read more" in components/Thread.tsx opens that chat at it).
+                t.emit("system", f"Sent to Super Bot: {_clip(text, 280)}", source="handoff", via=None,
+                       link={"bot": self.id, "seq": card.get("seq")})
             except Exception:  # noqa: BLE001
                 logger.debug("hand-off line not written on %s", t.id, exc_info=True)
 
@@ -2707,6 +2914,7 @@ def face_words(face) -> str:
 # Settings `bot_settings` may change, and nothing else (approval, builds, engine,
 # encryption, contacts and routines stay the user's own: docs §12).
 MANAGE_FIELDS = ("name", "instructions", "model", "effort", "face")
+CREATE_FIELDS = MANAGE_FIELDS + ("logins_from",)  # bot_create only: share another bot's logins
 
 
 def _name_taken(name, except_id=None) -> bool:
@@ -2748,11 +2956,22 @@ def manage_create_check(bot, args):
                 raise ValueError(f"unknown preset {preset!r}; one of {', '.join(x['key'] for x in presets_mod.presets())}")
     except ValueError as e:
         return None, f"error: {e}"
-    extra = sorted(k for k in args if k not in MANAGE_FIELDS and k != "preset")
+    extra = sorted(k for k in args if k not in CREATE_FIELDS and k != "preset")
     if extra:
-        return None, f"error: `bot_create` takes {', '.join(MANAGE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
+        return None, f"error: `bot_create` takes {', '.join(CREATE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
+    logins_from, browser = str(args.get("logins_from") or "").strip(), ""
+    if logins_from:
+        bots = _registry().all()
+        src = next((b for b in bots if (b.meta.get("name") or "").lower() == logins_from.lower()), None)
+        if src is not None:
+            logins_from, browser = src.meta.get("name") or logins_from, src.browser_id
+        else:  # a browser's own name (Settings > Browsers)
+            row = next((r for r in browsers.listing(bots) if r["name"].lower() == logins_from.lower()), None)
+            if row is None:
+                return None, f"error: no bot or browser named {logins_from!r} to share logins with"
+            logins_from, browser = row["name"], row["id"]
     return {"name": name, "instructions": str(args.get("instructions") or "").strip(), "model": model or DEFAULT_MODEL,
-            "effort": effort or DEFAULT_EFFORT, "preset": preset, "face": face}, ""
+            "effort": effort or DEFAULT_EFFORT, "preset": preset, "face": face, "logins_from": logins_from, "browser": browser}, ""
 
 
 def manage_create(bot, args):
@@ -2761,7 +2980,7 @@ def manage_create(bot, args):
     f, err = manage_create_check(bot, args)
     if err:
         return "bot_create", err
-    b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot")
+    b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot", browser=f.get("browser") or "")
     if f["face"]:
         with b.lock:
             b.meta["face"] = f["face"]
@@ -2769,7 +2988,8 @@ def manage_create(bot, args):
     b.emit("system", f"Created by {bot.meta.get('name') or SUPER_NAME}.", source="manage")
     return (f"create bot \"{f['name']}\"",
             f"created bot {f['name']!r} (id {b.id}, model {b.meta.get('model')}, effort {b.meta.get('effort')}"
-            + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}). "
+            + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}"
+            + (f", sharing {f['logins_from']}'s logins" if f.get("logins_from") else "") + "). "
             "It is in the bots list now; `handoff` gives it a task.")
 
 
@@ -2880,14 +3100,19 @@ def _write_new_meta(bid, meta):
     store.write_meta(bid, meta)
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True):
+def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser=""):
     """A new bot: bot.json, a `created` line, the greeting (background). Returns the Bot.
     With `preset` (a key under bots/presets/) its playbooks, brand face, standing
-    rules and starter apps are applied before the greeting, so it introduces them.
+    rules and starter apps are applied before the greeting, so it introduces them;
+    a preset `setup` task (sign in to the site) runs right after the greeting.
     `kind="super"` makes Super Bot (KINDS): one per install, a Claude model, its own
     face and standing rules unless the user typed some; a preset does not apply.
-    `greet=False` skips the model-written hello (the seeded Super Bot writes a fixed line)."""
+    `greet=False` skips the model-written hello (the seeded Super Bot writes a fixed line).
+    `browser` is an existing browser id to share (another bot's logins); default a browser of its own."""
     preset = (preset or "").strip()
+    browser = os.path.basename(browser or "")
+    if browser and not browsers.exists(browser):
+        raise ValueError("that bot's browser no longer exists")
     kind = kind if kind in KINDS else "bot"
     if kind == "super":
         if super_id() is not None:
@@ -2903,17 +3128,20 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
     n = len(_list_ids())
     meta = {"id": bid, "name": name or f"Bot {n}", "model": model if model in MODELS else DEFAULT_MODEL,
             "effort": effort if effort in EFFORTS else DEFAULT_EFFORT, "status": "idle", "instructions": (instructions or "").strip(),
-            "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
+            "created": time.time(), "task": "", "step": 0, "url": None, "title": None, "browser_id": browser or bid}
     if kind == "super":
+        meta["browser_id"] = bid  # Super Bot's logins are its own
         meta.update({"kind": "super", "super_access": "ask", "handoffs": [], "name": name or SUPER_NAME, "face": dict(SUPER_FACE),
-                     "instructions": meta["instructions"] or SUPER_INSTRUCTIONS,
+                     "instructions": meta["instructions"] or SUPER_INSTRUCTIONS, "setup": super_setup_text(),
                      "imessage_enabled": False,  # the phone switch (Settings > Phone) starts off
                      "pinned": True})  # the one bot per Mac starts pinned (sidebar); the user can unpin it
     _write_new_meta(bid, meta)
     b = _registry().get(bid)
     if preset:
         presets_mod.apply_preset(b, preset)  # before the greeting, so it introduces the playbooks it has
-    b.emit("system", f"{meta['name']} created." + (f" Comes with {len(b.skills())} {b.meta['preset']} playbooks." if preset else ""))
+    shared = ", ".join(o["name"] for o in b.shared_with()) if browser else ""
+    b.emit("system", f"{meta['name']} created." + (f" Comes with {len(b.skills())} {b.meta['preset']} playbooks." if preset else "")
+           + (f" Shares logins with {shared}." if shared else ""))
     if greet:
         b.greet()
     return b
@@ -2931,10 +3159,11 @@ def _copy_lenient(a, b_):
         pass
 
 
-def clone(src_id, name=""):
-    """New bot with a copy of another bot's Chrome profile (cookies, local
-    storage, saved logins), memory, instructions and skills. Caches and
-    Chrome's lock files are skipped."""
+def clone(src_id, name="", share=True):
+    """New bot with another bot's memory, instructions and skills, on the same
+    browser (sharing its logins; the default) or, with share=False, on a copy
+    of its Chrome profile (cookies, local storage, saved logins). Caches and
+    Chrome's lock files are skipped in the copy."""
     reg = _registry()
     src = reg.get(src_id)
     if is_super(src.meta):
@@ -2942,21 +3171,23 @@ def clone(src_id, name=""):
     bid = uuid.uuid4().hex[:8]
     os.makedirs(bpaths.bot_dir(bid), exist_ok=True)
     resealed = False
-    if src.browser.sealed() and not src.browser.alive():
-        src.browser.unseal()  # copy from plaintext; sealed again below
-        resealed = True
-    if os.path.isdir(src.browser.profile):
-        try:
-            shutil.copytree(src.browser.profile, os.path.join(bpaths.bot_dir(bid), "profile"), copy_function=_copy_lenient,
-                            ignore=lambda d, names: [n for n in names if n in _CLONE_SKIP], dirs_exist_ok=True)
-        except shutil.Error:
-            pass  # per-file errors already swallowed; anything left is a listing race
-    if resealed:
-        try:
-            src.browser.seal()
-        except Exception:  # noqa: BLE001
-            pass
-    meta = {"id": bid, "name": name or f"{src.meta.get('name', 'Bot')} copy", "model": src.meta.get("model", DEFAULT_MODEL),
+    if not share:
+        if src.browser.sealed() and not src.browser.alive():
+            src.browser.unseal()  # copy from plaintext; sealed again below
+            resealed = True
+        if os.path.isdir(src.browser.profile):
+            try:
+                shutil.copytree(src.browser.profile, os.path.join(browsers.browser_dir(bid), "profile"), copy_function=_copy_lenient,
+                                ignore=lambda d, names: [n for n in names if n in _CLONE_SKIP], dirs_exist_ok=True)
+            except shutil.Error:
+                pass  # per-file errors already swallowed; anything left is a listing race
+        if resealed:
+            try:
+                src.browser.seal()
+            except Exception:  # noqa: BLE001
+                pass
+        browsers.ensure(bid, name=name or f"{src.meta.get('name', 'Bot')} copy", encrypt=bool(src.meta.get("encrypt")))
+    meta = {"id": bid, "browser_id": src.browser_id if share else bid, "name": name or f"{src.meta.get('name', 'Bot')} copy", "model": src.meta.get("model", DEFAULT_MODEL),
             "effort": src.meta.get("effort", DEFAULT_EFFORT), "instructions": src.meta.get("instructions", ""),
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
@@ -2969,11 +3200,57 @@ def clone(src_id, name=""):
         b.set_memory(src.memory())
     for sk in src.skills():
         b.skill_save(sk["title"], sk["trigger"], sk["body"], name=sk["name"])
-    if src.meta.get("encrypt"):
+    if not share and src.meta.get("encrypt"):
         b.set_encrypt(True)  # seals the fresh copy right away
-    b.emit("system", f"{meta['name']} created with {src.meta.get('name', 'the source bot')}'s logins and cookies.")
+    b.emit("system", f"{meta['name']} created " + ("sharing" if share else "with a copy of")
+           + f" {src.meta.get('name', 'the source bot')}'s logins and cookies.")
     b.greet()
     return b
+
+
+def set_browser(b, target, fresh=False):
+    """Move bot `b` onto browser `target` ("" or its own id = a browser of its
+    own). Its old browser is removed when no other bot still uses it (the
+    dialog says so). `fresh` forces a brand-new browser whatever it is on now
+    (deleting a browser moves every bot off it). Refused mid-task: the engine
+    holds a view of the old one."""
+    target = os.path.basename(target or "") or b.id
+    own = target == b.id or fresh
+    if fresh or (own and target == b.browser_id and browsers.used_on_disk(target, except_id=b.id) is not False):
+        target = uuid.uuid4().hex[:8]  # others joined ITS browser: "this bot only" means a new one, they keep the old
+    if target == b.browser_id:
+        return False
+    if b.thread and b.thread.is_alive():
+        raise ValueError("stop the bot's task first, then change its logins")
+    if not own and not browsers.exists(target):
+        raise ValueError("that bot's browser no longer exists")
+    old = b.browser_id
+    old_view = b.browser
+    # Chrome first, under the process lock only (idle sleep takes proc.lock then b.lock via emit; never the reverse).
+    if old_view.shared():
+        b.close_tabs()  # others keep their Chrome
+    else:
+        old_view.stop(seal=False)
+        old_view.proc.detach(old_view)
+    with b.lock:
+        b.meta["browser_id"] = target
+        if not browsers.exists(target):
+            browsers.ensure(target, name=b.meta.get("name") or "", encrypt=bool(b.meta.get("encrypt")))  # keeps the bot's choice
+        b.browser = Browser(b.dir, b.cache_dir, proc=browsers.get(target))
+        b.browser.idle_check = b._may_sleep
+        b.browser._own = []
+        b.browser._write_own(url="")
+        b.meta["encrypt"] = bool(b.browser.encrypt)
+        b.meta["chrome_profile"] = browsers.read_meta(target).get("chrome_profile") or ""
+        b.save()
+    if browsers.used_on_disk(old, except_id=b.id) is False:
+        browsers.remove(old)
+        gone = "; its old logins were removed (no other bot used them)"
+    else:
+        gone = ""
+    names = ", ".join(o["name"] for o in b.shared_with())
+    b.emit("system", (f"Now sharing logins with {names}" if names else "Now on a browser of its own, logged out of everything") + gone + ".")
+    return True
 
 
 def delete(bid):
@@ -2981,11 +3258,17 @@ def delete(bid):
     reg = _registry()
     b = reg.get(bid)
     b.deleted = True  # first: a watcher or starter racing the shutdown below must not start or save it
-    b.shutdown()
+    # Shared = another bot.json on disk names the browser (loaded or not, this app or the other one on the same
+    # home); an unreadable bot.json counts as shared, since removing logins on a partial list is the worse mistake.
+    shared = browsers.used_on_disk(b.browser_id, except_id=bid) is not False
+    b.shutdown(browser=not shared)  # a shared browser stays up for the other bots
     # Folders go BEFORE forget(): between forget and rmtree, registry.get would find bot.json on disk and build a
     # fresh Bot with deleted=False that could save the folder back. With the folder gone, get() has nothing to load.
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
     shutil.rmtree(bpaths.bot_cache_dir(bid), ignore_errors=True)
+    if not shared:
+        b.browser.proc.detach(b.browser)
+        browsers.remove(b.browser_id)  # its logins go with it
     # A deleted Super Bot's queued hand-offs would otherwise sit at the head of each target's in-memory queue
     # forever (sweep cannot see a forgotten Super Bot), and _handoff_start refuses a queue whose head is not its own.
     for other in reg.loaded():
@@ -3051,11 +3334,18 @@ def import_profile(b, dir_name):
                                     ignore=lambda d, names: [n for n in names if n in PROFILE_SKIP], dirs_exist_ok=True)
                 except shutil.Error:
                     pass  # per-file errors already swallowed
-                b.meta["chrome_profile"] = label
-                b.save()
+                browsers.set_field(b.browser_id, "chrome_profile", label)
+                for v in b.browser.proc.views:
+                    v._own = []
+                    v._write_own(url="")
+                for o in [b] + [_registry().get(x["id"]) for x in b.shared_with()]:
+                    o.meta["chrome_profile"] = label
+                    o.save()
                 if b.meta.get("encrypt"):
                     b.browser.seal()
-                b.emit("system", f"Now browsing as “{label}”: your logins, cookies and extensions from that Chrome profile.")
+                others = ", ".join(x["name"] for x in b.shared_with())
+                b.emit("system", f"Now browsing as “{label}”: your logins, cookies and extensions from that Chrome profile."
+                       + (f" {others} share them too." if others else ""))
             except Exception as e:  # noqa: BLE001
                 b.emit("system", f"Copying the Chrome profile failed: {e}")
     threading.Thread(target=go, daemon=True, name=f"import-{b.id}").start()

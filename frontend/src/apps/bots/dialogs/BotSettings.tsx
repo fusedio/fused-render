@@ -19,9 +19,9 @@ import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
 import { api, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
-import { EFFORTS, modelsFor, normApp } from "../lib/botform";
+import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
-import { act } from "../state/store";
+import { act, getState } from "../state/store";
 import type { BotDialogValue } from "./actions";
 import { askConfirm, pickFace } from "./ask";
 import { PhoneSection } from "./PhoneSection";
@@ -50,7 +50,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     name: bot.name, model: bot.model || "sonnet", effort: bot.effort || "low", instructions: bot.instructions || "", memory: bot.memory || "",
     approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", encrypt: !!bot.encrypt,
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
-    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [],
+    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], browserId: isSuper ? "" : loginValue(bot),
   }));
   const [name, setName] = useState(init.name);
   const [model, setModel] = useState(init.model);
@@ -68,13 +68,19 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [trustedApps, setTrustedApps] = useState<string[]>(init.trustedApps);
   const [appRows, setAppRows] = useState<AppRow[]>([]);
+  const [browserId, setBrowserId] = useState(init.browserId);
+  // The Logins menu: one option per other browser (bots sharing one collapse into one; Super Bot's browser included),
+  // listed as the dialog opened. Super Bot's own row is hidden.
+  const [groups] = useState(() => (isSuper ? [] : loginGroups(getState().bots, bot.id)));
+  const sharedNames = (bot.shared_with || []).map((o) => o.name).join(", ");
+  const appliesToAll = sharedNames ? ` Applies to every bot sharing these logins (${sharedNames}).` : "";
   const [face, setFace] = useState<FaceT | null | undefined>(bot.face);
   const busy = useRef(false);  // a sibling modal (confirm, face picker) is up: outside presses are theirs
 
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, trustedApps });  // the face shown is the face kept
+    kind: isSuper ? "super" : "bot", superAccess, trustedApps, browserId });  // the face shown is the face kept
   const [initial] = useState(() => JSON.stringify(read()));
   const okDisabled = JSON.stringify(read()) === initial;
   const n = name.trim();
@@ -211,13 +217,21 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
 
             {tab === "browser" ? (
               <Rows>
-                <Row title="Start from a Chrome profile" text="Copies that profile's logins, cookies and extensions into the bot's browser, replacing what it has. Your own Chrome is not touched." htmlFor="bmprofile">
+                {!isSuper && groups.length ? (
+                  <Row title="Logins" text={(loginHint(groups.find((g) => g.id === browserId)) + " ").trimStart() + "Bots sharing logins drive one browser, each in its own tabs. Switching removes this bot's current logins unless another bot still uses them."} htmlFor="bmlogins">
+                    <NativeSelect className="w-full" id="bmlogins" value={browserId} onChange={(e) => setBrowserId(e.target.value)}>
+                      <NativeSelectOption value="">This bot only</NativeSelectOption>
+                      {groups.map((g) => <NativeSelectOption key={g.id} value={g.id}>Same as {loginLabel(g)}</NativeSelectOption>)}
+                    </NativeSelect>
+                  </Row>
+                ) : null}
+                <Row title="Start from a Chrome profile" text={"Copies that profile's logins, cookies and extensions into the bot's browser, replacing what it has. Your own Chrome is not touched." + appliesToAll} htmlFor="bmprofile">
                   <NativeSelect className="w-full" id="bmprofile" value={profile} onChange={(e) => setProfile(e.target.value)}>
                     <NativeSelectOption value="">Keep this bot's own{bot.chrome_profile ? ` (from ${bot.chrome_profile})` : ""}</NativeSelectOption>
                     {profiles.map((p) => <NativeSelectOption key={p.dir} value={p.dir}>{p.name}{p.email ? ` · ${p.email}` : ""}</NativeSelectOption>)}
                   </NativeSelect>
                 </Row>
-                <Row title="Encrypt the browser profile at rest" text="While the browser is closed the profile is one AES-256 file; the key lives in your macOS Keychain. Lose the Keychain item and saved logins are gone." htmlFor="bmencrypt">
+                <Row title="Encrypt the browser profile at rest" text={"While the browser is closed the profile is one AES-256 file; the key lives in your macOS Keychain. Lose the Keychain item and saved logins are gone." + appliesToAll} htmlFor="bmencrypt">
                   <Switch id="bmencrypt" checked={encrypt} onCheckedChange={(c) => setEncrypt(!!c)} />
                 </Row>
               </Rows>

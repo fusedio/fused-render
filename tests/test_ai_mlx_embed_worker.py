@@ -499,6 +499,7 @@ def test_the_curated_mlx_prose_row_is_one_this_runner_can_actually_open():
         "mlx-community/nomicai-modernbert-embed-base-bf16": "modernbert",
         "google/siglip2-base-patch16-384": "siglip",
         "mlx-community/siglip2-so400m-patch16-384": "siglip",
+        "mlx-community/embeddinggemma-2-bf16": "embedding_gemma2",
     }
     assert curated == set(families), (
         "the MLX list changed — add the new row's model_type here, since a row "
@@ -564,9 +565,168 @@ def test_the_families_MLX_does_read_still_load(worker, monkeypatch, tmp_path):
     import json
 
     monkeypatch.setattr(worker, "_mlx_load", lambda _arg: ("MODEL", "TOKENIZER"))
+    monkeypatch.setattr(worker, "_mlx_vlm_load",
+                        lambda _arg: ("MODEL", FakeUnifiedProcessor()))
     for model_type in sorted(worker.formats.MLX_EMBED_MODEL_TYPES):
         (tmp_path / "config.json").write_text(json.dumps(
             {"model_type": model_type, "max_position_embeddings": 512,
              "text_config": {"max_position_embeddings": 64}}))
         worker.load("org/" + model_type, str(tmp_path))
-        assert worker._loaded["family"] in (worker._DUAL, worker._TEXT)
+        assert worker._loaded["family"] in (worker._DUAL, worker._TEXT,
+                                            worker._UNIFIED)
+
+
+class FakeUnifiedTokenizer:
+    pad_token_id = 0
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, texts, **kwargs):
+        self.calls.append({"texts": list(texts), **kwargs})
+        return {"input_ids": [[7] * len(text.split()) for text in texts]}
+
+
+class FakeUnifiedProcessor:
+    image_token = "<|image|>"
+
+    def __init__(self):
+        self.tokenizer = FakeUnifiedTokenizer()
+        self.calls = []
+
+    def __call__(self, text=None, images=None, **kwargs):
+        self.calls.append({"text": list(text), "images": images, **kwargs})
+        return {"input_ids": [[0]] * len(text),
+                "pixel_values": [image[0].size[0] for image in images]}
+
+
+class FakeUnifiedModel:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, input_ids=None, attention_mask=None, pixel_values=None, **_kw):
+        self.calls.append({"input_ids": input_ids.data,
+                           "attention_mask": attention_mask.data if attention_mask else None,
+                           "pixel_values": pixel_values.data if pixel_values else None})
+        if pixel_values is not None:
+            rows = [[float(width), 1.0] for width in pixel_values.data]
+        else:
+            rows = [[float(sum(mask)), 1.0] for mask in attention_mask.data]
+        return types.SimpleNamespace(text_embeds=FakeMxArray(rows))
+
+
+@pytest.fixture()
+def unified(worker):
+    worker._loaded.clear()
+    processor = FakeUnifiedProcessor()
+    worker._loaded.update({
+        "model": FakeUnifiedModel(),
+        "processor": processor,
+        "tokenizer": processor.tokenizer,
+        "family": worker._UNIFIED,
+        "scheme": "gemma-embedding",
+        "model_id": "mlx-community/embeddinggemma-2-bf16",
+        "length": 8192,
+    })
+    return worker
+
+
+def test_embeddinggemma2_loads_through_mlx_vlm_from_the_snapshot_path(
+        worker, monkeypatch, tmp_path):
+    import json
+
+    seen = {}
+
+    def fake_vlm_load(path):
+        seen["path"] = path
+        return "MODEL", FakeUnifiedProcessor()
+
+    monkeypatch.setattr(worker, "_mlx_vlm_load", fake_vlm_load)
+    monkeypatch.setattr(worker, "_mlx_load", lambda _arg: pytest.fail("mlx-embeddings used"))
+    (tmp_path / "config.json").write_text(json.dumps({
+        "model_type": "embedding_gemma2",
+        "architectures": ["EmbeddingGemma2Model"],
+        "text_config": {"model_type": "embedding_gemma2_text",
+                        "max_position_embeddings": 262144},
+        "vision_config": {"model_type": "gemma4_vision"},
+        "audio_config": {"model_type": "gemma4_audio"},
+    }))
+    worker.load("mlx-community/embeddinggemma-2-bf16", str(tmp_path))
+
+    assert seen["path"] == str(tmp_path)
+    assert worker._loaded["family"] == worker._UNIFIED
+    assert worker._loaded["scheme"] == "gemma-embedding"
+    assert worker._loaded["length"] == 8192
+    assert worker._loaded["tokenizer"] is worker._loaded["processor"].tokenizer
+
+
+def test_embeddinggemma2_is_an_image_capable_family_with_a_prompt_scheme():
+    from fused_render.ai.runners import formats
+
+    config = {"model_type": "embedding_gemma2", "architectures": ["EmbeddingGemma2Model"]}
+    assert formats.embed_model_type(config) == "embedding_gemma2"
+    assert "embedding_gemma2" in formats.DUAL_EMBED_MODEL_TYPES
+    assert "embedding_gemma2" in formats.MLX_EMBED_MODEL_TYPES
+    assert "embedding_gemma2" not in formats.ONNX_EMBED_MODEL_TYPES
+    assert formats.MLX_VLM_EMBED_MODEL_TYPES <= formats.MLX_EMBED_MODEL_TYPES
+    assert formats.text_embed_scheme("mlx-community/embeddinggemma-2-bf16") == "gemma-embedding"
+
+
+def test_unified_texts_get_the_retrieval_prefix_and_keep_their_order(unified):
+    result = unified.generate({"texts": ["one two three", "one"], "kind": "query"})
+    call = unified._loaded["tokenizer"].calls[-1]
+    assert call["texts"] == ["task: search result | query: one two three",
+                             "task: search result | query: one"]
+    assert call["max_length"] == 8192
+    assert call["truncation"] is True
+    lengths = [len(t.split()) for t in call["texts"]]
+    expected = [n / (n * n + 1) ** 0.5 for n in lengths]
+    assert [round(v[0], 6) for v in result["vectors"]] == [round(e, 6) for e in expected]
+    assert len(unified._loaded["model"].calls) == 1
+
+
+def test_unified_documents_take_the_untitled_document_prefix(unified):
+    unified.generate({"texts": ["notes.txt body"], "kind": "document"})
+    assert unified._loaded["tokenizer"].calls[-1]["texts"] == [
+        "title: none | text: notes.txt body"]
+
+
+def test_unified_text_batches_split_by_the_padded_token_budget(unified, monkeypatch):
+    monkeypatch.setattr(unified, "_TOKEN_BUDGET", 40)
+    texts = [" ".join(["w"] * n) for n in (12, 3, 9, 15, 4)]
+    result = unified.generate({"texts": texts, "kind": "document"})
+    calls = unified._loaded["model"].calls
+    assert len(calls) > 1
+    for call in calls:
+        assert len(call["input_ids"]) * len(call["input_ids"][0]) <= 40
+        for ids, mask in zip(call["input_ids"], call["attention_mask"]):
+            real = sum(mask)
+            assert mask == [1] * real + [0] * (len(mask) - real)
+            assert ids[real:] == [0] * (len(ids) - real)
+    prefix = len("title: none | text:".split())
+    for text, vector in zip(texts, result["vectors"]):
+        n = len(text.split()) + prefix
+        assert round(vector[0], 6) == round(n / (n * n + 1) ** 0.5, 6)
+
+
+def test_unified_paths_are_embedded_one_image_token_per_row(unified, tmp_path):
+    paths = []
+    for index in range(10):
+        path = tmp_path / f"image{index}.png"
+        Image.new("RGB", (10 + index, 8), (index, 0, 0)).save(path)
+        paths.append(str(path))
+    result = unified.generate({"paths": paths})
+    calls = unified._loaded["processor"].calls
+    assert [len(call["text"]) for call in calls] == [8, 2]
+    for call in calls:
+        assert set(call["text"]) == {"<|image|>"}
+        assert all(len(row) == 1 for row in call["images"])
+    widths = [round(v[0] / v[1]) for v in result["vectors"]]
+    assert widths == [10 + index for index in range(10)]
+
+
+def test_unified_paths_are_not_refused_as_a_text_encoder_would_be(unified, tmp_path):
+    path = tmp_path / "photo.png"
+    Image.new("RGB", (16, 16), (1, 2, 3)).save(path)
+    result = unified.generate({"paths": [str(path)]})
+    assert len(result["vectors"]) == 1

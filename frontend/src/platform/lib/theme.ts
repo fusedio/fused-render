@@ -215,3 +215,88 @@ function reportNativeTheme(pref: ThemePref): void {
     // best-effort chrome tint
   }
 }
+
+// ---------------------------------------------------------------- colour presets
+//
+// A preset is ORTHOGONAL to the Appearance pref above: each preset carries a
+// dark and a light variant, so `data-theme` keeps meaning the light/dark BASE
+// for every existing consumer (Tailwind's dark variant, runtime.js, templates).
+// The preset is a second attribute, `data-theme-name`, on the top-level shell
+// <html>; tokens.css keys its per-preset palettes off it. Views never see it.
+
+// Must stay in sync with the pre-paint bootstrap in `frontend/index.html`
+// (tests/test_theme.py pins the two spellings together).
+export const PRESET_KEY = "fused-render:theme-preset";
+
+const PRESET_EVENT = "fused:themepresetchange";
+
+export type ThemePreset = "default" | "high-contrast" | "midnight";
+
+export const THEME_PRESETS: readonly { id: ThemePreset; label: string }[] = [
+  { id: "default", label: "Default" },
+  { id: "high-contrast", label: "High contrast" },
+  { id: "midnight", label: "Midnight" },
+];
+
+function isPreset(value: unknown): value is ThemePreset {
+  return THEME_PRESETS.some((p) => p.id === value);
+}
+
+export function loadThemePreset(): ThemePreset {
+  try {
+    const raw = localStorage.getItem(PRESET_KEY);
+    return isPreset(raw) ? raw : "default";
+  } catch {
+    return "default"; // private-mode / quota — behave as the default
+  }
+}
+
+function saveThemePreset(id: ThemePreset): void {
+  try {
+    localStorage.setItem(PRESET_KEY, id);
+  } catch {
+    // best-effort, like the appearance pref: this session still honors it.
+  }
+}
+
+// `default` is the absence of the attribute, so a document with no preset
+// renders exactly as it always did.
+export function applyPreset(id: ThemePreset): void {
+  const el = document.documentElement;
+  if (id === "default") el.removeAttribute("data-theme-name");
+  else el.setAttribute("data-theme-name", id);
+}
+
+export function setThemePreset(id: ThemePreset): void {
+  saveThemePreset(id);
+  applyPreset(id);
+  window.dispatchEvent(new Event(PRESET_EVENT));
+}
+
+function subscribeThemePreset(onChange: () => void): () => void {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === null || event.key === PRESET_KEY) onChange();
+  };
+  window.addEventListener(PRESET_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(PRESET_EVENT, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+// The live preset plus a setter, for the settings menu.
+export function useThemePreset(): [ThemePreset, (id: ThemePreset) => void] {
+  const [preset, setPreset] = useState<ThemePreset>(loadThemePreset);
+  useEffect(() => subscribeThemePreset(() => setPreset(loadThemePreset())), []);
+  return [preset, setThemePreset];
+}
+
+// Keep `data-theme-name` in step with the stored preset (another tab's change
+// arrives via `storage`). The first application is index.html's bootstrap.
+export function useThemePresetSync(): void {
+  useEffect(() => {
+    applyPreset(loadThemePreset());
+    return subscribeThemePreset(() => applyPreset(loadThemePreset()));
+  }, []);
+}

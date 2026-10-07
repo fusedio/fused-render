@@ -167,7 +167,7 @@ export function closeBuilds(): void { if (panelShown()) closePanel(); }
 export function buildFilterCss(keys: Iterable<string>): string {
   const sel = [...keys].map((k) => `.tasks-row[data-peek-key="${k.replace(/"/g, "")}"]`);
   const hideRows = sel.length ? `.tasks-node${sel.map((s) => `:not(:has(${s}))`).join("")}` : ".tasks-node";
-  const empty = `.tasks-list-frame${sel.length ? `:not(:has(${sel.join(", ")}))` : ""}::before { content: "No builds yet. Start one with New build."; display: block; padding: 40px 16px; text-align: center; opacity: .6; }`;
+  const empty = `.tasks-list-frame${sel.length ? `:not(:has(${sel.join(", ")}))` : ""}::before { content: "No tasks yet. Start one with New task, or New app on the Apps page."; display: block; padding: 40px 16px; text-align: center; opacity: .6; }`;
   // With the Board/Cards switch gone the search, filters and New task button would sit at the left edge; push them to the right, and keep the search box from being squeezed.
   const toolbar = `.schedule-toolbar { justify-content: flex-end !important; } .schedule-toolbar .schedule-tv-filters { margin-left: auto !important; } .schedule-toolbar .schedule-tv-search { flex: 0 1 260px !important; min-width: 140px !important; }`;
   // Embed mode drops the page's side gutter and lets the list run off the left edge; give the page a real frame: even padding all
@@ -205,7 +205,7 @@ export function chipFor(rows: TaskRow[]): { n: string; live: boolean; warn: bool
     n: live + wait ? String(live + wait) : "",
     warn: wait > 0,
     live: live > 0 && !wait,
-    title: wait ? `${wait} build${wait > 1 ? "s" : ""} need${wait > 1 ? "" : "s"} your attention` : live ? `${live} build${live > 1 ? "s" : ""} running` : "Builds · Claude tasks that create fused apps",
+    title: wait ? `${wait} task${wait > 1 ? "s" : ""} need${wait > 1 ? "" : "s"} your attention` : live ? `${live} task${live > 1 ? "s" : ""} running` : "Tasks · Claude tasks that create fused apps",
   };
 }
 

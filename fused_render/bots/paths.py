@@ -100,6 +100,9 @@ def imessage_dir() -> str:
 
 # ----------------------------------------------------- 0.11.x layout move ---
 _LEDGERS = ("usage.jsonl", "builds.json", "imessage.json", "imessage-state.json")
+# Written under bots/ once a pass found nothing left to move: the sweep never runs again on that install, so a
+# folder a later feature adds under data/ or cache/ (browsers/, #1483) can never be mistaken for a 0.11.x bot folder.
+_LAYOUT_DONE = ".layout-v2"
 
 
 def migrate_layout() -> int:
@@ -114,7 +117,7 @@ def migrate_layout() -> int:
     moved = 0
     try:
         base = os.path.join(_storage.home_dir(), "bots")
-        if not os.path.isdir(base):
+        if not os.path.isdir(base) or os.path.exists(os.path.join(base, _LAYOUT_DONE)):
             return 0
         for sub in ("data", "cache"):
             old = os.path.join(base, sub)
@@ -123,10 +126,19 @@ def migrate_layout() -> int:
             new = os.path.join(old, "bots")
             for name in sorted(os.listdir(old)):
                 src = os.path.join(old, name)
+                # `browsers` is a folder of the NEW layout (browsers.py: data/browsers/<id>/profile, cache/browsers/<id>/
+                # session.json); moving it under cache/bots/ loses every shared browser's session.json, and the next
+                # launch then collides with the Chrome still holding the profile ("Chrome did not come up").
                 if name == "bots" or name.startswith(".") or not os.path.isdir(src):
                     continue
+                # Only a bot's own folder is a 0.11.x leftover: under data/ it carries bot.json; under cache/ it is
+                # named for a bot that exists (data/ moved first). `browsers` (#1483) and any folder a later feature
+                # adds stay where they are.
                 if sub == "data" and not os.path.exists(os.path.join(src, "bot.json")):
                     continue  # not a bot folder; leave it
+                if sub == "cache" and not (os.path.isdir(os.path.join(base, "data", "bots", name))
+                                           or os.path.isfile(os.path.join(base, "data", name, "bot.json"))):
+                    continue  # not a bot's cache; leave it
                 os.makedirs(new, exist_ok=True)
                 dst = os.path.join(new, name)
                 if os.path.exists(dst):
@@ -149,6 +161,11 @@ def migrate_layout() -> int:
             os.remove(stale_lock)  # the lock holder recreates it at the new path
         if moved:
             log.info("bots layout: moved %d entries to the OpenBot layout under %s", moved, base)
+        else:
+            # Nothing left of the old layout: mark it so this never runs again (a pass that moved something runs
+            # once more at the next boot, in case an occupied destination left a source behind).
+            with open(os.path.join(base, _LAYOUT_DONE), "w") as f:
+                f.write("1\n")
     except Exception:  # noqa: BLE001
         log.exception("bots layout: migration failed (continuing with what moved)")
     return moved

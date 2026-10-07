@@ -13,10 +13,8 @@ import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/
 import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import {
-  act, cur, eventsOf, getState, markSeen, openDialog, select, setNewCount, setScrollToEnd, unviewed, useBots, viewedSet,
-} from "../state/store";
-import { END_GAP, gapOf, evBox, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
+import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { SetupLines } from "./SetupLines";
 
 const EMPTY: BotEvent[] = [];
@@ -60,6 +58,9 @@ interface RowProps {
   hstate?: string;
   /** Hand-off card: the bot it went to still exists ("Open <Bot>'s chat" is live). */
   targetLive?: boolean;
+  /** "Sent to Super Bot" line: the bot its `link` points at still exists ("Read more" is live). A prop, not a store read:
+   *  Row is memoized and would keep a stale answer. */
+  linkLive?: boolean;
 }
 
 /** An action event's raw tool result as display text ("" when there is none). The wire sends a string; anything else is shown as JSON. */
@@ -125,11 +126,19 @@ function HandoffCard({ e, state: rawState, targetLive }: { e: BotEvent; state: s
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
   // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
-  if (isHandoff(e) && e.role === "system") return <div className="msg note" title={title}>{e.text}</div>;
+  if (isHandoff(e) && e.role === "system") {
+    const l = e.link;
+    return (
+      <div className="msg note" title={title}>
+        {e.text}
+        {l ? <button className="readmore" data-jump-bot={l.bot} data-jump-seq={l.seq} disabled={!linkLive} title={linkLive ? "Open Super Bot's chat at this message" : "Super Bot is gone"}>Read more</button> : null}
+      </div>
+    );
+  }
   if (e.role === "action") {
     return <Action text={e.text} result={e.result || ""} detail={detailText(e.detail)} thumbSrc={e.thumb ? stepThumbUrl(botId, e.thumb) : ""} title={title} />;
   }
@@ -163,6 +172,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
       const opts = options.map((x, i) => `<button class="opt${chosen != null && optionKey(x) === chosen ? " chosen" : ""}" data-opt="${esc(x)}"${live ? "" : " disabled"}><kbd>${String.fromCharCode(65 + i)}</kbd><span>${esc(x)}</span></button>`).join("");
       return <><HtmlMsg className={cls} title={title} seq={e.seq} html={md(e.text) + proposed + (opts ? `<div class="opts">${opts}</div>` : "")} />{offerCard}</>;
     }
+    if (e.multi && options.length) return <MultiQuestion e={e} botId={botId} cls={cls} title={title} live={live} chosen={chosen} />;
     return (
       <div className={cls} data-seq={e.seq} title={title}>
         {e.text}
@@ -226,6 +236,43 @@ function Texted({ e, rows }: { e: BotEvent; rows: BotEvent[] }) {
           : <div key={d.seq} className="texted" title={d.text}><b>Texted</b> ({label}): {d.text.replace(/\s+/g, " ")}</div>;
       })}
     </>
+  );
+}
+
+/** A question with `multi`: tick any number of rows, then Done sends them as "A, B" (or "None"). Once answered, the rows
+ *  named in the answer stay ticked. */
+function MultiQuestion({ e, botId, cls, title, live, chosen }: { e: BotEvent; botId: string; cls: string; title: string; live: boolean; chosen: string | null }) {
+  const options = e.options || [];
+  const answered = chosen != null ? new Set(chosen.split(/\s*(?:,|\band\b)\s*/).map(optionKey).filter(Boolean)) : null;
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [sent, setSent] = useState(false);
+  const sending = useRef(false);  // a second click before the re-render must not send twice
+  const on = (x: string) => (answered ? answered.has(optionKey(x)) : picked.has(x));
+  const toggle = (x: string) => { if (!live || sent) return; setPicked((p) => { const n = new Set(p); if (n.has(x)) n.delete(x); else n.add(x); return n; }); };
+  const done = () => {
+    if (!live || sent || sending.current) return;
+    sending.current = true;
+    setSent(true);
+    const text = options.filter((x) => picked.has(x)).join(", ") || "None";
+    // act() swallows a failed send into the banner and returns undefined: reopen the card then, like the single-choice rows.
+    void act(() => api.send(botId, text)).then((r) => { sending.current = false; if (!r) setSent(false); });
+  };
+  return (
+    <div className={`${cls} multi${sent ? " settled" : ""}`} data-seq={e.seq} title={title}>
+      {e.text}
+      <div className="opts">
+        {options.map((x, i) => (
+          <button key={i} className={`opt${on(x) ? " chosen" : ""}`} data-mopt={x} disabled={!live || sent} onClick={() => toggle(x)}>
+            <kbd>{String.fromCharCode(65 + i)}</kbd><span>{x}</span>
+          </button>
+        ))}
+      </div>
+      {live && !sent ? (
+        <div className="btns">
+          <button className="primary" onClick={done}>{picked.size ? `Done · ${picked.size}` : "None of these"}</button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -293,6 +340,9 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   const rxs = b?.reactions || {};
   const onBeside = useCallback((a: AppRef) => showAppBeside(a), []);
 
+  // The search tint lives in the document's highlight registry, not the DOM: drop it when the thread goes.
+  useEffect(() => clearSearchHighlight, []);
+
   // ---- after every commit: scroll rules, search, viewed tracking, the pill, seen ----
   useLayoutEffect(() => {
     const th = threadRef.current; if (!th) return;
@@ -305,7 +355,16 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // Your own send (scrollToEnd), opening a bot, or anything arriving while you sit at the end keeps you at the bottom;
     // scrolled up, incoming messages leave you where you are and light the pill.
     const { wasAtEnd, anchors } = measure.current;
-    if (bumped || s.scrollToEnd || wasAtEnd) pinToEnd(th, botId || undefined);
+    // jumpTo(): land on one message of this bot (a "Read more" from another bot's chat), once it is in the DOM.
+    // The .ev wrapper has no box (display: contents): scroll the message inside it.
+    // The page keeps the last EVENT_CAP events only: a card older than the oldest one held is gone from here, so say so
+    // (the hand-off line is then the only copy) instead of leaving scrollSeq armed and the thread pinned to the end.
+    const js = s.scrollSeq, jumping = !!js && js.bot === botId;
+    const jumpEv = jumping ? th.querySelector<HTMLElement>(`.ev[data-seq="${js.seq}"]`) : null;
+    const jumpEl = jumpEv ? evBox(jumpEv) : null;
+    if (jumpEl) { jumpEl.scrollIntoView({ block: "start" }); clearScrollSeq(); }
+    else if (jumping && evs.length && js.seq < evs[0].seq) { clearScrollSeq(); showBanner("That message is older than this chat keeps on the page."); pinToEnd(th, botId || undefined); }
+    else if (bumped || s.scrollToEnd || wasAtEnd) pinToEnd(th, botId || undefined);
     // Anchors only ever fall off the top, so losing all of them means you were reading history the cap has now dropped:
     // the oldest message left is the closest thing to what you were looking at, so sit at the top of it.
     else if (rebuilt && !restoreAnchor(th, anchors)) th.scrollTop = 0;
@@ -316,8 +375,9 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (searchQ) {
       let n = 0;
       for (const el of th.children) { const hit = searchHit(el.textContent, searchQ); el.classList.toggle("hit", hit); if (hit) n++; }
-      onSearchCount(searchCountText(n));
-    } else onSearchCount("");
+      // The matched words themselves light up; the count is of those, or of rows where the browser cannot paint them.
+      onSearchCount(searchCountText(highlightSearch(th, searchQ) || n));
+    } else { highlightSearch(th, ""); onSearchCount(""); }
 
     // "Viewed" = a message has scrolled into the thread at least once. The .ev wrapper has no box: watch the message inside.
     const io = viewer.current;
@@ -356,6 +416,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   // ---- clicks: react → picker, reply → quote, option → answer, approve / deny ----
   const onClick = (ev: ReactMouseEvent<HTMLDivElement>) => {
     const t = ev.target as Element, sel = getState().sel;
+    const jump = t.closest<HTMLElement>("[data-jump-bot]");
+    if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
     const rc = t.closest("[data-react]");
     if (rc) { onReact(rc, Number(rc.getAttribute("data-react"))); return; }
     const dlg = t.closest("[data-dialog]");
@@ -368,6 +430,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       return;
     }
     const opt = t.closest(".msg.question:not(.settled) .opt");
+    if (opt && opt.hasAttribute("data-mopt")) return;  // a multi-select row: MultiQuestion handles its own clicks
     if (opt && sel) { const text = opt.getAttribute("data-opt") || ""; settleNow(opt, () => act(() => api.send(sel, text))); return; }
     const ok = t.closest(".msg.approval:not(.settled) [data-approve]"), no = t.closest(".msg.approval:not(.settled) [data-deny]");
     if ((!ok && !no) || !sel) return;
@@ -404,7 +467,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
         <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
-          hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined} />
+          hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
+          linkLive={e.link ? botIds.has(e.link.bot) : undefined} />
       );
     });
   }

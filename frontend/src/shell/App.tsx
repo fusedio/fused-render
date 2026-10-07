@@ -47,7 +47,7 @@ import {
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
 import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
-import { useThemeSync } from "@platform/lib/theme";
+import { useThemePresetSync, useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { isBot } from "@platform/lib/flavor";
@@ -81,6 +81,7 @@ import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod, isWindows } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
+import { handleSlashKey } from "@platform/lib/chat-focus";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
 import EmbedStrip from "@apps/explorer/EmbedStrip";
@@ -581,6 +582,7 @@ export default function App({ config }: { config: Config }) {
   // cause a flash, and it only ever writes an attribute — no re-render reaches
   // a live iframe.
   useThemeSync();
+  useThemePresetSync();
 
   // The app's ONE instant tooltip (platform/lib/hints.ts). Installed here
   // because it is a document-level listener set rather than anything React
@@ -630,6 +632,17 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  // Bare "/" focuses the Claude chat — the one on screen, or the side pane a
+  // file/folder view opens for it (lib/chat-focus). Any route, like Mod+K.
+  // CAPTURE phase: the explorer's type-to-search listens on the same document
+  // and registers first (child effects run first), so it must see this one's
+  // `preventDefault` to know the slash was taken (useListingSelection).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => void handleSlashKey(e);
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () => document.removeEventListener("keydown", onKey, { capture: true });
+  }, []);
+
   // The FRONT DOOR — "/" lands on Home, or on Bots when the `bots_enabled`
   // preference swaps it in (shell/prefs.py; the flag rides /api/config so this
   // render-time decision never waits on a prefs fetch, and the Preferences
@@ -637,11 +650,12 @@ export default function App({ config }: { config: Config }) {
   // Render-time write is safe — it changes pathname, so the re-render (via
   // fused:urlchange) derives the real route. (Legacy /view/_home,
   // /view/_account, and the whole /view//embed namespaces are rewritten at
-  // boot by router.ts.) With the flag on, a bare /home goes to Bots too: the
-  // sidebar hides Home, so the only way to land there is the old default URL.
+  // boot by router.ts.) With the flag on, /home still answers by URL: it is
+  // the pinned Home bookmark's door (shell/bookmarks.py seeds that pin), and
+  // a bare /home used to bounce to Bots before that pin existed.
   seedBotsEnabled(config.bots_enabled);
   const frontDoor = botsFrontDoor() ? "/bots" : "/home";
-  if (location.pathname === "/" || (frontDoor === "/bots" && location.pathname === "/home")) {
+  if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }
   // A fresh install's first load lands on the setup wizard instead (its own

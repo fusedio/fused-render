@@ -1,11 +1,18 @@
-"""Per-bot private headless Chrome driven over the DevTools protocol (stdlib only).
+"""Headless Chrome driven over the DevTools protocol (stdlib only).
 
-Each `Browser` owns one Chrome process with its own profile directory and
-debugging port, so bots never share cookies, tabs or history with each other
-or with the user's real Chrome. Port of OpenBot's `browser.py`
-(docs/bots.md §1, §6), plus an accessibility-tree snapshot.
+Two classes. A `BrowserProcess` owns one Chrome process: its profile
+directory, debugging port, the lock every action takes, encryption at rest,
+start/stop and the visible/headless relaunch. A `Browser` is one bot's view
+of a process: the tabs that bot opened, its screenshots, its downloads and
+every page action. Several bots may share one process (one set of logins,
+docs/bots.md §1, §5); each then drives its own tabs, opened in their own
+windows so headless Chrome composites every bot's foreground tab. A bot on a
+process of its own drives every tab in it, exactly as before the split.
+Bots never share cookies with the user's real Chrome. Port of OpenBot's
+`browser.py`, plus an accessibility-tree snapshot.
 
-    b = Browser(data_dir=bots.paths.bot_dir(id), cache_dir=bots.paths.bot_cache_dir(id))
+    proc = BrowserProcess(data_dir=browsers/<bid>, cache_dir=cache/browsers/<bid>)
+    b = Browser(bots.paths.bot_dir(id), bots.paths.bot_cache_dir(id), proc=proc)
     b.goto("https://example.com")
     b.observe()      -> {url, title, elements[], text, tabs, downloads}
     b.click(ref="sb3"); b.type("hi", ref="sb5", submit=True)
@@ -102,7 +109,19 @@ def write_json_atomic(path, obj):
     try:
         with open(tmp, "w") as f:
             json.dump(obj, f)
-        os.replace(tmp, path)
+        # On Windows, replacing a destination another thread is renaming onto
+        # at the same instant can raise a transient PermissionError (a sharing
+        # violation) even though the two never touch each other's own temp
+        # file — POSIX rename() has no such restriction. Retried briefly
+        # rather than failing a write that only lost a benign race.
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.005)
     finally:
         if os.path.exists(tmp):
             try:
@@ -555,7 +574,7 @@ _MISSING = "__sb_missing__"
 
 
 # --------------------------------------------------- accessibility snapshot ---
-# AX roles an observation lists (docs §6): the interactive ones plus the
+# AX roles an observation lists (docs §5): the interactive ones plus the
 # landmarks a model needs to read a page (headings, dialogs, tab lists,
 # menus) and images that carry a name. Chrome reports ARIA names in lower
 # case and its own internal roles in CamelCase; aliases fold the latter.
@@ -818,28 +837,46 @@ def _openssl_cmd(*args):
     return ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "100000", "-salt", "-pass", "env:BB_PROFILE_KEY", *args]
 
 
-# ---------------------------------------------------------------- browser ---
-class Browser:
+# ---------------------------------------------------------------- process ---
+class BrowserProcess:
+    """One Chrome process: profile folder, debugging port, lock, encryption at
+    rest. `views` are the `Browser`s (bots) driving it; with more than one the
+    process is shared and each view keeps to its own tabs."""
+
     def __init__(self, data_dir, cache_dir):
         self.data_dir = data_dir
         self.cache_dir = cache_dir
         self.profile = os.path.join(data_dir, "profile")
         self.session_path = os.path.join(cache_dir, "session.json")
-        self.shot_path = os.path.join(cache_dir, "shot.png")
-        self.downloads = os.path.join(data_dir, "downloads")
         self.sealed_path = os.path.join(data_dir, "profile.enc")
-        self.encrypt = False  # set from bot.json by bot.py; seal the profile whenever Chrome stops
-        self._tab_order = []      # tab ids in open order (Chrome reports newest-first)
+        self.encrypt = False  # from browser.json (browsers.py); seal the profile whenever Chrome stops
         self.lock = threading.RLock()
-        self._main_tab = None  # target id of the tab we drive
         self._proc = None
-        self.live_seen = 0.0
-        self.thumb_bytes = None  # JPEG of the last screenshot, for step thumbnails
-        # Screenshot after every `_run` action. The agent engine turns this off for its
-        # task: it observes after every browser step anyway, and each `_shoot` costs a
-        # PNG capture plus two sips conversions. observe/screenshot always capture.
-        self.shoot_actions = True
-        self._ax_warned = False  # the AX snapshot failure is logged once per browser
+        self.views = []  # Browser views attached; len > 1 = shared
+
+    def shared(self):
+        return len(self.views) > 1
+
+    def attach(self, view):
+        """Add a view. When the first view gets company, every tab open now is
+        the first view's (it drove them all while alone): claimed into its own
+        set, so turning shared never orphans a page it is working on."""
+        if view in self.views:
+            return
+        if len(self.views) == 1:
+            first = self.views[0]
+            sess = self.session()
+            try:
+                if sess and self.alive(sess):
+                    ids = [t["id"] for t in _http(sess["port"], "/json/list") if t.get("type") == "page"]
+                    first._own = [i for i in first._own if i in ids] + [i for i in ids if i not in first._own]
+                    first._write_own(url=sess.get("url") or "")
+            except Exception:  # noqa: BLE001
+                log.debug("claiming tabs for the first view failed", exc_info=True)
+        self.views.append(view)
+
+    def detach(self, view):
+        self.views = [v for v in self.views if v is not view]
 
     # -- profile at rest -----------------------------------------------------
     def sealed(self):
@@ -906,6 +943,7 @@ class Browser:
             return True
 
     # -- process -----------------------------------------------------------
+    # -- process -----------------------------------------------------------
     def session(self):
         try:
             with open(self.session_path) as f:
@@ -943,8 +981,11 @@ class Browser:
             # a per-session Emulation override: overrides die with the DevTools
             # session that set them, so every screenshot connection closing made
             # the viewport snap back to 1x and the live view flip size.
-            mode = [] if visible else ["--headless=new", f"--user-agent={_clean_user_agent(chrome)}",
-                                       f"--force-device-scale-factor={LIVE_SCALE}"]
+            # Visible: a shared Chrome stays on the desktop while a bot whose user
+            # handed back works on in a minimised / background window (set_visible),
+            # so occluded windows must keep compositing or its screenshots stall.
+            mode = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] if visible else [
+                "--headless=new", f"--user-agent={_clean_user_agent(chrome)}", f"--force-device-scale-factor={LIVE_SCALE}"]
             args = [
                 chrome, *mode,
                 f"--remote-debugging-port={port}",
@@ -965,11 +1006,30 @@ class Browser:
                 time.sleep(0.1)
             else:
                 raise RuntimeError("Chrome did not come up")
-            self._main_tab = None
-            write_json_atomic(self.session_path, sess)
-            if restore and restore != "about:blank":
+            # The window Chrome opened on launch: the first view to act adopts it
+            # (_page_target). The page appears a beat after DevTools answers.
+            sess["launch_tab"] = ""
+            for _ in range(20):
                 try:
-                    tab, _ = self._page_target(port)
+                    launch = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
+                except Exception:  # noqa: BLE001
+                    launch = []
+                if launch:
+                    sess["launch_tab"] = launch[0]["id"]
+                    break
+                time.sleep(0.1)
+            for v in self.views:
+                v._main_tab = None
+                v._fresh = True  # no window yet in this process: _page_target may open one even when visible
+                if self.shared():
+                    v._own = []
+                if not visible:
+                    v.popped = False  # headless: no bot has the desktop any more
+            write_json_atomic(self.session_path, sess)
+            view = self.views[0] if self.views else None
+            if view is not None and restore and restore != "about:blank":
+                try:
+                    tab, _ = view._page_target(port)
                     ws = WS(tab["webSocketDebuggerUrl"])
                     ws.call("Page.navigate", url=restore)  # do not wait for the load
                     ws.close()
@@ -1039,22 +1099,61 @@ class Browser:
                 except FileNotFoundError:
                     pass
 
-    def set_visible(self, visible):
-        """Relaunch the same profile visible/headless and return to the last URL."""
+    def stop_if_idle(self):
+        """Idle sleep for a shared process: quit only once every view may sleep
+        NOW (`Browser.may_sleep()`: its bot's live check when it set one, else the
+        flag its own sleep attempt left). Returns True when Chrome was stopped."""
+        with self.lock:
+            if any(not v.may_sleep() for v in self.views):
+                return False
+            self.stop()
+            return True
+
+    def set_visible(self, visible, restore_for=None):
+        """Relaunch the same profile visible/headless and return to the last URL.
+        `restore_for` is the view whose page is brought back (the one that asked);
+        other views on a shared process reopen on their own last page when they
+        next act (`Browser._page_target`).
+
+        Visibility is a property of the process (one Chrome is headless or it is
+        not), but a take-over is per bot: on a shared process the headless
+        relaunch waits until the LAST popped-out view hands back. Relaunching on
+        the first hand-back killed the Chrome under every other bot's desktop
+        window (the user closed bot A's window, bot B's vanished mid-login).
+        Returns True when Chrome was relaunched, False when it was left as is."""
+        view = restore_for or (self.views[0] if self.views else None)
         with self.lock:
             sess = self.session()
+            if view is not None:
+                view.popped = bool(visible)
+            if not visible and self.shared() and any(v.popped for v in self.views if v is not view):
+                # Another bot still drives this Chrome from the desktop: keep it
+                # visible. The handing-back bot carries on in a real window (its
+                # own tabs if any are left, else a new window on its next step).
+                if view is not None and sess and self.alive(sess):
+                    try:
+                        own = view._own_targets(sess["port"])
+                        if not own:
+                            view._fresh = True  # window gone: let _page_target open one instead of raising
+                            view._main_tab = None
+                        else:
+                            view._minimize(sess["port"], own)  # out of the user's way; still renders (start() flags)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return False
             url = ""
-            if sess and self.alive(sess) and not self.window_closed():
+            if view is not None and sess and self.alive(sess) and not view.window_closed():
                 try:
-                    tab, _ = self._page_target(sess["port"])
+                    tab, _ = view._page_target(sess["port"])
                     url = tab.get("url") or ""
                 except Exception:
                     pass
             if not url:
-                url = (sess or {}).get("url") or ""
+                url = (view.last_url() if view is not None and self.shared() else "") or (sess or {}).get("url") or ""
             # New Chrome process: drop sessions bound to the old one.
-            self._main_tab = None
             self.start(visible)
+            for v in self.views:
+                v._main_tab = None
 
             # One connection: kick off the navigation and raise the window, but
             # do not wait for the page to finish loading. The user is about to
@@ -1065,7 +1164,9 @@ class Browser:
                     ws.call("Page.navigate", url=_with_scheme(url))
                 if visible:
                     ws.call("Page.bringToFront")
-            self._run(restore)
+            if view is not None:
+                view._run(restore)
+            return True
 
     def visible(self):
         return bool((self.session() or {}).get("visible"))
@@ -1086,19 +1187,280 @@ class Browser:
             return True
 
     # -- connection --------------------------------------------------------
+
+# ---------------------------------------------------------------- browser ---
+class Browser:
+    """One bot's view of a `BrowserProcess`: its tabs, screenshots, downloads
+    and page actions. `Browser(data_dir, cache_dir)` without `proc` makes a
+    private process at the old per-bot paths (profile/ under data_dir), which
+    is what tests and a lone bot get."""
+
+    def __init__(self, data_dir, cache_dir, proc=None):
+        self.data_dir = data_dir
+        self.cache_dir = cache_dir
+        self.proc = proc or BrowserProcess(data_dir, cache_dir)
+        self.proc.attach(self)
+        self.shot_path = os.path.join(cache_dir, "shot.png")
+        self.downloads = os.path.join(data_dir, "downloads")
+        self.tabs_path = os.path.join(cache_dir, "tabs.json")  # own tab ids + last url, for a shared process
+        self._tab_order = []      # tab ids in open order (Chrome reports newest-first)
+        self._own = self._read_own()  # target ids this view opened (shared process only)
+        self._main_tab = None  # target id of the tab we drive
+        self._fresh = True     # no tab of ours in this process yet (set again on every relaunch)
+        self.popped = False    # this bot's user has the desktop window (BrowserProcess.set_visible); per view, unlike visible()
+        self.idle = False      # set by the bot's idle sleep; cleared on the next action (stop_if_idle)
+        self.idle_check = None  # bot.py sets a callable: "may this bot's browser sleep right now?" (looked at, task, control)
+        self.live_seen = 0.0
+        self.thumb_bytes = None  # JPEG of the last screenshot, for step thumbnails
+        # Screenshot after every `_run` action. The agent engine turns this off for its
+        # task: it observes after every browser step anyway, and each `_shoot` costs a
+        # PNG capture plus two sips conversions. observe/screenshot always capture.
+        self.shoot_actions = True
+        self._ax_warned = False  # the AX snapshot failure is logged once per browser
+
+    # -- process delegation (the API bot.py and routes.py drive) -----------
+    @property
+    def lock(self):
+        return self.proc.lock
+
+    @property
+    def profile(self):
+        return self.proc.profile
+
+    @property
+    def encrypt(self):
+        return self.proc.encrypt
+
+    @encrypt.setter
+    def encrypt(self, on):
+        self.proc.encrypt = bool(on)
+
+    @property
+    def session_path(self):
+        return self.proc.session_path
+
+    @property
+    def sealed_path(self):
+        return self.proc.sealed_path
+
+    def sealed(self):
+        return self.proc.sealed()
+
+    def seal(self):
+        return self.proc.seal()
+
+    def unseal(self):
+        return self.proc.unseal()
+
+    def session(self):
+        return self.proc.session()
+
+    def alive(self, sess=None):
+        return self.proc.alive(sess)
+
+    def start(self, visible=False):
+        self.idle = False
+        return self.proc.start(visible)
+
+    def stop(self, seal=None):
+        """Quit the process. On a shared process this closes every bot's tabs;
+        idle sleep uses `sleep()` instead."""
+        self.proc.stop(seal)
+
+    def sleep(self):
+        """Idle sleep: mark this view idle and quit Chrome once every bot on
+        the process is. Returns True when Chrome actually stopped."""
+        self.idle = True
+        return self.proc.stop_if_idle()
+
+    def may_sleep(self):
+        """Whether this view's bot would let the shared Chrome go right now: its
+        live check (set by bot.py) when there is one, else the sticky flag."""
+        if self.idle_check is not None:
+            try:
+                return bool(self.idle_check())
+            except Exception:  # noqa: BLE001
+                return False
+        return self.idle
+
+    def shared(self):
+        return self.proc.shared()
+
+    def set_visible(self, visible):
+        """Returns True when Chrome was relaunched, False when a shared process
+        stayed visible for another bot's take-over."""
+        return self.proc.set_visible(visible, restore_for=self)
+
+    def visible(self):
+        return self.proc.visible()
+
+    def window_closed(self):
+        """True when the process was popped out as a window and the user closed
+        it (every page target gone), or, on a shared process, closed this bot's
+        own windows."""
+        if self.proc.window_closed():
+            return True
+        if not self.shared() or not self.visible():
+            return False
+        if self._fresh:
+            return False  # relaunched and not yet acted: no window of ours to have closed
+        sess = self.session()
+        try:
+            return not self._own_targets(sess["port"])
+        except Exception:
+            return False
+
+    # -- own tabs (shared process) -----------------------------------------
+    def _read_own(self):
+        try:
+            with open(self.tabs_path) as f:
+                d = json.load(f)
+            return list(d.get("tabs") or [])
+        except Exception:
+            return []
+
+    def _write_own(self, url=None, title=None):
+        d = {"tabs": self._own}
+        try:
+            with open(self.tabs_path) as f:
+                old = json.load(f)
+        except Exception:
+            old = {}
+        d["url"] = url if url is not None else old.get("url")
+        d["title"] = title if title is not None else old.get("title")
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            write_json_atomic(self.tabs_path, d)
+        except Exception:
+            pass
+
+    def last_url(self):
+        try:
+            with open(self.tabs_path) as f:
+                return json.load(f).get("url") or ""
+        except Exception:
+            return ""
+
+    def _browser_ws(self, port, timeout=10):
+        info = _http(port, "/json/version")
+        return WS(info["webSocketDebuggerUrl"], timeout=timeout)
+
+    def _own_targets(self, port):
+        """This view's page targets on a shared process: the tabs it opened plus
+        any popup whose opener chain leads to one of them. Prunes closed ids."""
+        ws = self._browser_ws(port)
+        try:
+            infos = [t for t in ws.call("Target.getTargets")["targetInfos"] if t.get("type") == "page"]
+        finally:
+            ws.close()
+        by_id = {t["targetId"]: t for t in infos}
+        own = set(i for i in self._own if i in by_id)
+        changed = True
+        while changed:
+            changed = False
+            for t in infos:
+                if t["targetId"] not in own and t.get("openerId") in own:
+                    own.add(t["targetId"])
+                    changed = True
+        if own != set(self._own):
+            self._own = [i for i in self._own if i in own] + [i for i in own if i not in self._own]
+            self._write_own()
+        return [by_id[i] for i in self._own]
+
+    def _new_window(self, port, url="about:blank"):
+        """A tab in a window of its own (headless composites each window's
+        foreground tab, so bots sharing a process never throttle each other)."""
+        ws = self._browser_ws(port)
+        try:
+            # On a visible Chrome (another bot's user is in their window) ask for the
+            # new window in the background so it does not steal their focus; headless
+            # keeps the default, where a window's only tab is the foreground anyway.
+            extra = {"background": True} if self.visible() else {}
+            tid = ws.call("Target.createTarget", url=url or "about:blank", newWindow=True, **extra)["targetId"]
+        finally:
+            ws.close()
+        self._own.append(tid)
+        self._write_own()
+        for _ in range(20):
+            t = next((x for x in _http(port, "/json/list") if x.get("id") == tid), None)
+            if t:
+                return t
+            time.sleep(0.1)
+        raise RuntimeError("the new tab did not appear")
+
+    def _adopt_launch_tab(self, port, url):
+        """Chrome opens one window on about:blank at launch. The first view to act
+        on a shared process claims it instead of opening a window beside it:
+        otherwise a popped-out browser showed the bot's page in one window and
+        a blank tab in a second window behind it. Only that launch tab is taken
+        (a blank tab another bot's user opened by hand is theirs)."""
+        with self.proc.lock:  # two views cold-starting together must not both claim it
+            tid = (self.session() or {}).get("launch_tab")
+            if not tid or any(tid in v._own for v in self.proc.views if v is not self):
+                return None
+            t = next((x for x in _http(port, "/json/list") if x.get("id") == tid and x.get("type") == "page"), None)
+            if t is None or (t.get("url") or "about:blank") != "about:blank":
+                return None
+            self._own.append(tid)
+            self._write_own()
+        if url and url != "about:blank":
+            ws = WS(t["webSocketDebuggerUrl"])
+            try:
+                ws.call("Page.navigate", url=url)  # do not wait for the load
+            finally:
+                ws.close()
+        return t
+
+    def _minimize(self, port, targets):
+        """Minimise the windows holding `targets` (this bot handed back while
+        another bot's user still has the shared Chrome on the desktop)."""
+        ws = self._browser_ws(port)
+        try:
+            seen = set()
+            for t in targets:
+                try:
+                    w = ws.call("Browser.getWindowForTarget", targetId=t["targetId"])
+                except Exception:  # noqa: BLE001
+                    continue
+                if w["windowId"] in seen:
+                    continue
+                seen.add(w["windowId"])
+                try:
+                    ws.call("Browser.setWindowBounds", windowId=w["windowId"], bounds={"windowState": "minimized"})
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            ws.close()
+
     def _page_target(self, port):
         """The one tab we drive. Stays the same tab across calls (popups from
-        target=_blank links would otherwise become tabs[0] and hijack us)."""
-        tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
+        target=_blank links would otherwise become tabs[0] and hijack us).
+        On a shared process only this view's own tabs count; with none left a
+        fresh one opens in its own window, back on the bot's last page."""
+        if self.shared():
+            tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
+            own = {t["targetId"] for t in self._own_targets(port)}
+            tabs = [t for t in tabs if t.get("id") in own]
+        else:
+            tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
         if not tabs:
-            if (self.session() or {}).get("visible"):
+            # Only the bot whose user has the desktop window must not reopen one (the status poll docks
+            # it); a bot that already handed back on a still-visible shared Chrome gets a new window.
+            if (self.session() or {}).get("visible") and (self.popped or not self.shared()) and not (self.shared() and self._fresh):
                 raise RuntimeError("the desktop window was closed")
-            tabs = [_http(port, "/json/new?about:blank", method="PUT")]
+            if self.shared():
+                last = self.last_url()
+                url = _with_scheme(last) if last and last != "about:blank" else "about:blank"
+                tabs = [self._adopt_launch_tab(port, url) or self._new_window(port, url)]
+            else:
+                tabs = [_http(port, "/json/new?about:blank", method="PUT")]
+        self._fresh = False
         main = next((t for t in tabs if t.get("id") == self._main_tab), None) or tabs[-1]
         self._main_tab = main.get("id")
         return main, tabs
 
     def _connect(self, timeout=30):
+        self.idle = False
         sess = self.start(self.visible())
         tab, _ = self._page_target(sess["port"])
         ws = WS(tab["webSocketDebuggerUrl"], timeout=timeout)
@@ -1108,13 +1470,16 @@ class Browser:
         # Downloads land in this bot's own folder (not ~/Downloads), so the bot
         # and the page can list what arrived.
         os.makedirs(self.downloads, exist_ok=True)
-        try:
-            ws.call("Browser.setDownloadBehavior", behavior="allow", downloadPath=self.downloads, eventsEnabled=False)
-        except Exception:
+        # On a shared process the browser-wide setting is last-writer-wins across bots, so the per-page one
+        # (older API, still honoured) goes first there; a lone bot keeps the browser-wide call.
+        order = (("Page.setDownloadBehavior", {}), ("Browser.setDownloadBehavior", {"eventsEnabled": False})) if self.shared() \
+            else (("Browser.setDownloadBehavior", {"eventsEnabled": False}), ("Page.setDownloadBehavior", {}))
+        for method, extra in order:
             try:
-                ws.call("Page.setDownloadBehavior", behavior="allow", downloadPath=self.downloads)
+                ws.call(method, behavior="allow", downloadPath=self.downloads, **extra)
+                break
             except Exception:
-                pass
+                continue
         return ws, sess
 
     def _foreground(self, ws):
@@ -1190,7 +1555,10 @@ class Browser:
         sess = self.start(self.visible())
         if url and url != "about:blank":
             url = _with_scheme(url)
-        t = _http(sess["port"], "/json/new?" + (url or "about:blank"), method="PUT")
+        if self.shared():
+            t = self._new_window(sess["port"], url or "about:blank")
+        else:
+            t = _http(sess["port"], "/json/new?" + (url or "about:blank"), method="PUT")
         time.sleep(0.3)
         info = self._switch_to(t["id"])
         if url and url != "about:blank" and (info.get("url") or "about:blank") == "about:blank":
@@ -1388,6 +1756,8 @@ class Browser:
                 sess["url"] = info.get("url")
                 sess["title"] = info.get("title")
                 write_json_atomic(self.session_path, sess)
+                if self.shared():
+                    self._write_own(url=info.get("url") or "", title=info.get("title") or "")
                 if shoot:
                     self._shoot(ws)
                 return out, info
@@ -1690,7 +2060,7 @@ class Browser:
         return out
 
     def _snapshot(self, ws):
-        """The observation's elements (docs §6): the DOM scan, then the AX
+        """The observation's elements (docs §5): the DOM scan, then the AX
         pass, merged. The DOM scan alone when the AX pass fails."""
         scan = self._eval(ws, SNAPSHOT_JS) or {}
         dom = scan.get("elements") or []
@@ -1745,8 +2115,16 @@ class Browser:
 
     def _status(self, probe):
         sess = self.session() or {}
-        return {"running": self.alive(sess) if probe else bool(sess.get("pid")), "url": sess.get("url"),
-                "title": sess.get("title"), "visible": bool(sess.get("visible")), "sealed": self.sealed(), "encrypt": self.encrypt}
+        url, title = sess.get("url"), sess.get("title")
+        if self.shared():  # session.json is last-writer-wins across bots; this bot's page is in its tabs.json
+            try:
+                with open(self.tabs_path) as f:
+                    own = json.load(f)
+                url, title = own.get("url") or None, own.get("title") or None
+            except Exception:
+                url = title = None
+        return {"running": self.alive(sess) if probe else bool(sess.get("pid")), "url": url,
+                "title": title, "visible": bool(sess.get("visible")), "sealed": self.sealed(), "encrypt": self.encrypt}
 
     def status(self):
         return self._status(True)

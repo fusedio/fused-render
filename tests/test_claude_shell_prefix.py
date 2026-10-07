@@ -37,8 +37,11 @@ def run(arg, logdir, stdin=b"", extra_env=None, timeout=30):
     env = dict(os.environ, SHELL="/bin/sh", FUSED_CLAUDE_CMD_LOG=str(logdir))
     env.pop("CLAUDE_CODE_SHELL", None)
     env.update(extra_env or {})
+    # A new session detaches from any controlling tty the test runner has, so
+    # this matches CI (which never has one) instead of only the case where
+    # job control can silently paper over a tty-dependent bug.
     return subprocess.run([WRAPPER, arg], input=stdin, capture_output=True,
-                          env=env, timeout=timeout)
+                          env=env, timeout=timeout, start_new_session=True)
 
 
 def entries(logdir):
@@ -152,7 +155,8 @@ def test_sigterm_to_wrapper_reaches_command(tmp_path):
     log = tmp_path / "log"
     env = dict(os.environ, SHELL="/bin/sh", FUSED_CLAUDE_CMD_LOG=str(log))
     p = subprocess.Popen([WRAPPER, bash_tool_string("sleep 30", str(tmp_path / "k-cwd"))],
-                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
     for _ in range(100):
         if os.path.isdir(log) and any(n.endswith(".meta") for n in os.listdir(log)):
             break

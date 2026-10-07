@@ -70,6 +70,7 @@ export function Bots() {
         <BotList
           onAddBot={() => openDialog({ kind: "newBot" })}
           onOpenUsage={() => openDialog({ kind: "usage" })}
+          onOpenBrowsers={() => openDialog({ kind: "browsers" })}
           onOpenBuilds={() => openPanel("builds")}
           onOpenApps={() => openPanel("apps")}
           onContextMenu={(id, x, y) => openMenu({ id, x, y })}

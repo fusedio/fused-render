@@ -33,7 +33,19 @@ def write_json_atomic(path: str, obj) -> None:
     try:
         with open(tmp, "w") as f:
             json.dump(obj, f)
-        os.replace(tmp, path)
+        # On Windows, replacing a destination another thread is renaming onto
+        # at the same instant can raise a transient PermissionError (a sharing
+        # violation) even though the two never touch each other's own temp
+        # file — POSIX rename() has no such restriction. Retried briefly
+        # rather than failing a write that only lost a benign race.
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.005)
     finally:
         if os.path.exists(tmp):
             try:

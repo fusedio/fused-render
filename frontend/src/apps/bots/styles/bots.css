@@ -150,7 +150,7 @@ div.bots-page:not(.rcol) #rcol { display: none; }
 /* usage meter: the always-visible answer to "are the bots doing something?" */
 .bots-page .bots header #usage { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; width: auto; height: 26px; padding: 0 10px; border-radius: 13px; font-size: 11.5px; font-weight: 500; background: var(--inset); color: var(--muted); white-space: nowrap; }
 .bots-page .bots header #usage:hover { color: var(--text); }
-div.bots-page:is(.lcol, .lfit) .bots header #usage { display: none; }
+div.bots-page:is(.lcol, .lfit) .bots header #usage, div.bots-page:is(.lcol, .lfit) .bots header #browsers { display: none; }
 .bots-page .ustats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 6px; }
 .bots-page .ustats div { background: var(--inset); border-radius: 12px; padding: 8px 10px; }
 .bots-page .ustats b { display: block; font-size: 20px; font-weight: 500; }
@@ -304,6 +304,9 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .msg.note { align-self: flex-start; max-width: min(42rem, 78%); background: transparent; border-radius: 0; padding: 2px 12px;
   font-size: 12px; line-height: 1.4; color: var(--muted); }
 .bots-page .msg.note::before { content: "·"; margin-right: 6px; opacity: .7; }
+.bots-page .msg.note .readmore { margin-left: 6px; padding: 1px 8px; font-size: 11px; border-radius: 999px; background: var(--inset); color: var(--text); }
+.bots-page .msg.note .readmore:hover:not(:disabled) { background: var(--hover); }
+.bots-page .msg.note .readmore:disabled { opacity: .5; cursor: default; }
 .bots-page .msg.done { align-self: flex-start; background: var(--card); }
 .bots-page .msg.question { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--warn); }
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }
@@ -318,6 +321,8 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .msg.question.settled .opt { pointer-events: none; color: var(--muted); }
 .bots-page .msg.question.settled .opt.chosen { color: var(--text); }
 .bots-page .msg.question .opt.chosen::after { content: "✓"; color: var(--ok); font-weight: 400; }
+.bots-page .msg.question.multi .opt:not(.chosen)::after { content: ""; width: 14px; height: 14px; border: 1px solid var(--line); border-radius: 4px; flex: none; }
+.bots-page .msg.question.multi .btns { display: flex; justify-content: flex-end; margin-top: 10px; }
 /* An app offer: the proposed app (a new one; an existing app gets the regular card under the bubble) above the Use it / Build it rows. */
 .bots-page .msg.question .proposed { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 10px; background: var(--inset); border: 1px solid var(--line); border-radius: 12px; }
 .bots-page .msg.question .proposed .ico { flex: none; width: 30px; height: 30px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; font-size: 14px; color: var(--muted); }
@@ -334,6 +339,8 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .searchbar button { background: transparent; padding: 2px 8px; font-size: 15px; }
 .bots-page .thread .ev { display: contents; }
 .bots-page .thread.filtering > :not(.hit) { display: none; }
+/* The matched text inside a hit row (components/threadDom.ts highlightSearch, CSS Custom Highlight API). */
+.bots-page ::highlight(bots-search) { background: color-mix(in srgb, var(--accent) 38%, transparent); color: inherit; }
 /* Session divider: centered "Today 6:16 PM" before a message that follows a 15-minute silence. */
 .bots-page .thread .day { align-self: center; color: var(--muted); font-size: 11px; padding: 12px 0 4px; }
 .bots-page .thread .ev:first-child .day { padding-top: 4px; }
@@ -433,6 +440,9 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .composer .ctl button { font-size: 11px; padding: 4px 10px; }
 .bots-page .composer .ctl button:disabled { display: none; }
 .bots-page .composer .ctl:not(:has(button:not(:disabled))) { display: none; }
+/* Beside Pause / Stop: the bot's state and how long since its last step (components/Composer.tsx). */
+.bots-page .composer .ctl .stat { min-width: 0; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 3px 4px; margin-right: auto; }
+.bots-page .composer .ctl .stat .dot { width: 8px; height: 8px; }
 .bots-page .composer .row { display: flex; flex-direction: column; gap: 6px; background: var(--panel2); border-radius: 28px; padding: 7px; box-shadow: 0 0 0 1px var(--raised); transition: box-shadow .15s; }
 .bots-page .composer .line { display: flex; gap: 6px; align-items: flex-end; }
 /* Reply: the message being answered sits above the input until sent or cancelled. */
@@ -529,7 +539,7 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .info .dlfill { height: 100%; background: var(--accent); border-radius: inherit; transition: width .25s ease; }
 
 /* ---- fullscreen ---- */
-.bots-page #full { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
+.bots-page #full { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 25; }  /* above the (absolute, z 20-21) Builds / Apps / viewer panels */
 .bots-page #full.show { display: flex; }
 .bots-page #full header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel); }
 .bots-page #full header button, .bots-page #full .winacts button { font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; }
@@ -569,7 +579,18 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 /* ---- dialogs ---- */
 .bots-page .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(2px); display: none; align-items: center; justify-content: center; z-index: 40; }
 .bots-page .modal.show { display: flex; }
-.bots-page .modal .box { background: var(--card); border-radius: 20px; padding: 22px 24px; width: 380px; box-shadow: var(--shadow); }
+/* One skin for every dialog: the OpenBot-style .modal .box here matches the shadcn ones (dialogs/BotSettings.tsx
+   DIALOG_CLASS / FOOTER_CLASS: neutral-950, 12px radius, white/10 ring, a tinted footer with a top rule). Always dark,
+   like those; the surface tokens are re-pointed inside so inputs, cards and lines stay coherent in the light theme. */
+.bots-page .modal .box { --card: #0a0a0a; --inset: rgba(255,255,255,.06); --hover: rgba(255,255,255,.09); --raised: rgba(255,255,255,.12); --text: #fafafa; --muted: #a1a1aa; --line: rgba(255,255,255,.1);
+  background: #0a0a0a; color: #fafafa; border-radius: 12px; padding: 20px 24px; width: 380px; box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 24px 60px rgba(0,0,0,.5); }
+.bots-page .modal .box > .row:last-child { margin: 18px -24px -20px; padding: 14px 24px; border-top: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.03); border-radius: 0 0 12px 12px; }
+/* The face picker's box is a flex column with its own 16px gap: no extra top margin on the footer. A scrolling box
+   (routines) cannot bleed a negative bottom margin: its bottom padding goes and the footer sits flush instead. */
+.bots-page #fmodal .box > .row:last-child { margin-top: 0; align-self: stretch; }
+.bots-page #rmodal .box { padding-bottom: 0; }
+.bots-page #rmodal .box > .row:last-child { margin-bottom: 0; position: sticky; bottom: 0; background: #121212; }  /* opaque: it pins over the list when it scrolls */
+.bots-page .modal .box input:not([type=checkbox]), .bots-page .modal .box select, .bots-page .modal .box textarea { color: #fafafa; }
 /* The seeded greeting's door to Settings > Phone (components/Thread.tsx). */
 .bots-page .msg .opt.seed { justify-content: center; }
 /* Chat header: Super Bot's phone glyph, green once connected. */
@@ -598,7 +619,7 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .modal .field small { color: var(--muted); font-weight: 300; }
 .bots-page .modal .field small.stat { font-size: 11px; margin-top: 4px; line-height: 1.4; }  /* bridge status under the iMessage field */
 .bots-page .modal .field input:not([type=checkbox]) { font: inherit; font-size: 12px; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; }
-.bots-page .modal h3 { margin: 0 0 12px; font-size: 16px; font-weight: 400; }
+.bots-page .modal h3 { margin: 0 0 14px; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
 .bots-page .modal p { margin: 0 0 14px; color: var(--muted); }
 .bots-page .modal .row { display: flex; gap: 8px; justify-content: flex-end; }
 .bots-page .modal .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; font-size: 11px; font-weight: 300; color: var(--muted); }
@@ -620,13 +641,19 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .bots #builds.fresh { color: var(--accent-text); }
 .bots-page .bots .botfoot { display: flex; align-items: center; padding: 8px 14px 12px; flex: none; }
 div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding: 8px 0 12px; }
-.bots-page #bpanel { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
+/* Builds / Apps / the app viewer cover the bots page, not the window (absolute in div.bots-page, which is position:
+   relative): the shell's sidebar stays where it is. Fixed came from the standalone FusedBot app, which had no sidebar. */
+.bots-page #bpanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #bpanel.show { display: flex; }
 .bots-page #bpanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bots-page #bpanel .topbar .ttl { font-size: 13px; font-weight: 400; }
 .bots-page #bpanel .topbar small { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .bots-page #bpanel .topbar .backtxt, .bots-page #bpanel .winacts button { font-size: 11.5px; }
 .bots-page #bpanel .winacts { display: flex; gap: 8px; margin-left: auto; }
+/* Builds / Apps top bars: Back is the arrow alone; every other action carries a leading icon with its name. */
+.bots-page :is(#bpanel, #apanel, #vpanel) .topbar button { display: inline-flex; align-items: center; gap: 5px; }
+.bots-page :is(#bpanel, #apanel, #vpanel) .topbar button svg { width: 13px; height: 13px; flex: none; }
+.bots-page :is(#bpanel, #apanel, #vpanel) .topbar .backtxt { padding: 4px 6px; }
 .bots-page #bpanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page #bdmodal .box { width: 460px; }
 .bots-page #bdmodal .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -634,7 +661,7 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page #bdmodal .where code { font-size: 11px; color: var(--text); word-break: break-all; }
 .bots-page #bdmodal textarea { width: 100%; box-sizing: border-box; }
 .bots-page .bots .botfoot { gap: 4px; }
-.bots-page #apanel { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
+.bots-page #apanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #apanel.show { display: flex; }
 .bots-page #apanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bots-page #apanel .topbar .ttl { font-size: 13px; font-weight: 400; }
@@ -642,7 +669,7 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page #apanel .topbar .backtxt, .bots-page #apanel .winacts button { font-size: 11.5px; }
 .bots-page #apanel .winacts { display: flex; gap: 8px; margin-left: auto; }
 /* Embedded app: one built app running full-size inside the bot page, above the Apps gallery. */
-.bots-page #vpanel { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 21; }
+.bots-page #vpanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 21; }
 .bots-page #vpanel.show { display: flex; }
 .bots-page #vpanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bots-page #vpanel .topbar .ttl { font-size: 13px; font-weight: 400; white-space: nowrap; }
@@ -696,14 +723,36 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page #apanel.drag { outline: 2px dashed var(--muted); outline-offset: -6px; }
 .bots-page #apanel.busy .agrid { opacity: .5; pointer-events: none; }
 /* New-bot chooser: one card per preset (brand avatar, name, playbook count) plus Blank; the bot dialog follows with the pick filled in. */
-.bots-page #pmodal .box { width: 480px; }
+.bots-page #pmodal .box { width: 480px; position: relative; }
+.bots-page #pmodal .xclose { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: transparent; color: var(--muted); }
+.bots-page #pmodal .xclose:hover { background: var(--hover); color: var(--text); }
+.bots-page #pmodal .xclose svg { width: 14px; height: 14px; }
+.bots-page #pmodal p.lead { padding-right: 32px; white-space: nowrap; }
+.bots-page #pmodal .info { position: relative; overflow: visible; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin: 0 0 0 5px; border-radius: 999px; border: 1px solid currentColor; font-size: 9px; font-weight: 600; line-height: 1; vertical-align: 1px; cursor: help; opacity: .8; }
+.bots-page #pmodal .info:hover, .bots-page #pmodal .info:focus-visible { opacity: 1; color: var(--text); outline: none; }
+/* Instant tip (a native title waits ~1 s): the text sits in data-note (not data-tip: the shell's schedule CSS draws
+   its own ::before for that attribute), hung from the mark's right edge so it stays inside the box. */
+.bots-page #pmodal .info::after { content: attr(data-note); position: absolute; right: -4px; top: calc(100% + 6px); width: 300px; padding: 7px 9px; border-radius: 8px; background: var(--card); color: var(--text); box-shadow: var(--shadow), 0 0 0 1px var(--raised); font-size: 11.5px; font-weight: 400; line-height: 1.4; white-space: normal; text-align: left; pointer-events: none; opacity: 0; transition: opacity .08s; z-index: 2; }
+.bots-page #pmodal .info:hover::after, .bots-page #pmodal .info:focus-visible::after { opacity: 1; }
 .bots-page #pmodal .psearch { display: block; position: relative; margin-top: 12px; }
 .bots-page #pmodal .psearch input { width: 100%; box-sizing: border-box; background: var(--inset); border: none; border-radius: 12px; padding: 9px 12px 9px 34px; font: inherit; font-size: 13px; color: var(--text); }
 .bots-page #pmodal .psearch input::placeholder { color: var(--muted); }
 .bots-page #pmodal .psearch svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
 .bots-page #pmodal .pgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 10px -8px 0; padding: 2px 8px 6px; max-height: 56vh; overflow: auto; }
 .bots-page #pnone { margin-top: 10px; }
-.bots-page #pmodal .pcard { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 6px 10px; border-radius: 14px; background: var(--inset); border: 2px solid transparent; color: var(--text); cursor: pointer; transition: .15s; }
+/* Search: the grid gives way to a list of rows (bots matched by name, then playbooks), matched words lit. */
+.bots-page #pmodal .plist { display: flex; flex-direction: column; gap: 1px; margin: 10px -8px 0; padding: 2px 4px 6px; max-height: 56vh; overflow: auto; }
+.bots-page #pmodal .prow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; background: transparent; color: var(--text); text-align: left; cursor: pointer; position: relative; }
+.bots-page #pmodal .prow:hover, .bots-page #pmodal .prow:focus-visible { background: var(--hover); outline: none; }
+.bots-page #pmodal .prow .av { width: 26px; height: 26px; flex: none; }
+.bots-page #pmodal .prow .txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.bots-page #pmodal .prow b { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bots-page #pmodal .prow small { font-size: 11px; color: var(--muted); }
+.bots-page #pmodal .prow mark { background: none; color: var(--accent); font-weight: 600; }
+/* Section captions ("Bots", "Playbooks") ride on the first row of each group. */
+.bots-page #pmodal .prow .sect { position: absolute; left: 8px; top: -12px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.bots-page #pmodal .prow:has(.sect) { margin-top: 20px; }
+.bots-page #pmodal .pcard { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; padding: 14px 6px 10px; border-radius: 14px; background: var(--inset); border: 2px solid transparent; color: var(--text); cursor: pointer; transition: .15s; }
 .bots-page #pmodal .pcard:hover { border-color: var(--accent); transform: translateY(-2px); }
 .bots-page #pmodal .pcard .av { width: 48px; height: 48px; margin-bottom: 4px; }
 .bots-page #pmodal .pcard b { font-size: 13px; font-weight: 500; }
@@ -753,7 +802,9 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page [data-slot="select-trigger"]:hover { background: var(--inset); }
 .bots-page [data-slot="checkbox"] { accent-color: var(--accent); border-color: var(--muted); }
 .bots-page [data-slot="checkbox"][data-checked] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.bots-page [data-slot="dialog-overlay"] { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
+/* The dialog portals to <body>, outside .bots-page: scope by the page being mounted, or this never matches and the
+   create / settings dialogs sit on a bare black/10 scrim while the picker (#pmodal) dims and blurs. */
+:root:has(.bots-page) [data-slot="dialog-overlay"] { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); animation: none; }
 .bots-page [data-slot="dialog-content"] { background: var(--card); color: var(--text); border-radius: 20px; padding: 22px 24px; box-shadow: var(--shadow); --tw-ring-shadow: 0 0 #0000; font-size: 13px; }
 .bots-page [data-slot="dialog-title"] { margin: 0 0 12px; font-size: 16px; font-weight: 400; line-height: 1.45; }
 .bots-page [data-slot="dialog-description"] { margin: 0 0 14px; color: var(--muted); font-size: 13px; }

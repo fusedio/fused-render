@@ -2,14 +2,30 @@
 // names (haiku via /api/ai), scaffolds (POST /api/apps/new), and lands in the
 // new app's claude chat. Shared by Home ("/") and the /apps hub, which is why
 // it lives in the builder app rather than the shell.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   aiComplete,
   createApp,
   getHomeApps,
-  type DefaultModel,
-  type SessionEffort,
+  rawUrl,
+  uploadTaskShot,
 } from "@platform/lib/api";
+import {
+  getClaudeDefaults,
+  readClaudeDefaults,
+  setClaudeDefaults,
+  subscribeClaudeDefaults,
+  type ClaudeDefaults,
+} from "@platform/lib/claude-defaults";
+import {
+  EFFORTS,
+  MODELS,
+  MODEL_LABELS,
+} from "@apps/claude/ui/composer-defaults";
+import {
+  resolveComposerDefaults,
+  type ComposerPicks,
+} from "./composer-defaults-resolve";
 import { navigate, navigateUrl, replaceSearch } from "@platform/lib/router";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -111,13 +127,14 @@ async function genericAppName(): Promise<string> {
 async function createAppUnderFreeName(
   name: string,
   prompt: string,
-  model: DefaultModel,
-  effort: SessionEffort,
+  model: ComposerPicks["model"],
+  effort: ComposerPicks["effort"],
+  images: string[],
 ) {
   for (let i = 1; ; i++) {
     const attempt = i === 1 ? name : `${name}-${i}`;
     try {
-      return await createApp(attempt, prompt, model, effort);
+      return await createApp(attempt, prompt, model, effort, images);
     } catch (e) {
       if ((e as { status?: number }).status !== 409 || i >= 20) throw e;
     }
@@ -133,38 +150,52 @@ async function createAppUnderFreeName(
 // the strip so it stays visible however far the chips are scrolled.
 const SAMPLE_ROW = 4;
 
-// The composer's two session pickers — what the scaffolding turn runs
-// with, and what the chat it lands in opens showing. Both lists are the claude
-// template's own vocabulary (template.html MODELS / EFFORTS, and the server
-// validates against the same sets), because these values are handed straight to
-// the CLI as --model / --effort.
+// The composer's two session pickers — what the scaffolding turn runs with,
+// and what the chat it lands in opens showing. The claude composer's own lists
+// (MODELS / EFFORTS), handed straight to the CLI as --model / --effort.
 //
-// "" is the FIRST option of each and the default: it means no flag at all, so
-// the session keeps whatever the template would have detected for this project
-// from its own transcripts and settings. A composer that shipped `sonnet` /
-// `medium` preselected would silently override that detection for every app
-// built from here, which is a stronger claim than the picker is making.
+// No "Auto": the composer always names a concrete pair, and the pair it shows
+// is the ONE global default (platform/lib/claude-defaults) — so a pick here
+// also moves it, like the New task card's dropdowns and the settings page.
 //
-// The labels are BARE — "Auto", "opus", "high" — and not "Auto model" / "high
-// effort": each pill's glyph names its axis, so repeating it in the text is the
-// same word twice in one control. It is also what keeps two pills quiet enough
-// to sit unbordered in the footer of the box rather than reading as buttons.
-const MODEL_CHOICES: { value: DefaultModel; label: string }[] = [
-  { value: "", label: "Auto" },
-  { value: "fable", label: "fable" },
-  { value: "opus", label: "opus" },
-  { value: "sonnet", label: "sonnet" },
-  { value: "haiku", label: "haiku" },
-];
+// The labels are BARE — "Opus", "high" — not "high effort": each pill's glyph
+// names its axis, so repeating it in the text is the same word twice.
+const MODEL_CHOICES: { value: ComposerPicks["model"]; label: string }[] =
+  MODELS.map((m) => ({ value: m, label: MODEL_LABELS[m] ?? m }));
 
-const EFFORT_CHOICES: { value: SessionEffort; label: string }[] = [
-  { value: "", label: "Auto" },
-  { value: "low", label: "low" },
-  { value: "medium", label: "medium" },
-  { value: "high", label: "high" },
-  { value: "xhigh", label: "xhigh" },
-  { value: "max", label: "max" },
-];
+const EFFORT_CHOICES: { value: ComposerPicks["effort"]; label: string }[] =
+  EFFORTS.map((e) => ({ value: e, label: e }));
+
+// A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
+// upload answers; `thumb` is a blob: URL for a picture the browser can draw.
+interface ComposerAttachment {
+  key: number;
+  path: string;
+  kind: "image" | "file";
+  name: string;
+  thumb: string | null;
+}
+
+// NewJobModal's drawable test (its `attachmentKindOf`), restated: an app may
+// not import the shell.
+const DRAWABLE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp",
+                               ".avif", ".bmp", ".svg", ".ico"]);
+const DRAWABLE_MIMES = new Set(["image/png", "image/jpeg", "image/gif",
+                                "image/webp", "image/avif", "image/bmp",
+                                "image/svg+xml"]);
+function drawablePath(path: string): boolean {
+  const dot = path.lastIndexOf(".");
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return dot > slash && DRAWABLE_EXTS.has(path.slice(dot).toLowerCase());
+}
+
+const ICON_X = (
+  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </svg>
+);
 
 // A glyph each, because the two pickers sit side by side with no border to tell
 // them apart: the icon is what says which control you are looking at before the
@@ -260,9 +291,37 @@ export function HeroComposer({
   // AI" button (?annot=). null means no model is annotated; the composer
   // reads as a plain prompt box exactly like today.
   const [annotation, setAnnotation] = useState<AppAnnotation | null>(null);
-  // Empty = "let the chat decide", the default; see MODEL_CHOICES.
-  const [model, setModel] = useState<DefaultModel>("");
-  const [effort, setEffort] = useState<SessionEffort>("");
+  // The global pair, or the fallback while it is unknown; see MODEL_CHOICES.
+  const [model, setModel] = useState(
+    () => resolveComposerDefaults(getClaudeDefaults()).model,
+  );
+  const [effort, setEffort] = useState(
+    () => resolveComposerDefaults(getClaudeDefaults()).effort,
+  );
+  // A field the user picked HERE stops following the global pair's updates.
+  const picked = useRef({ model: false, effort: false });
+  useEffect(() => {
+    const follow = (d: ClaudeDefaults) => {
+      const r = resolveComposerDefaults(d);
+      if (!picked.current.model) setModel(r.model);
+      if (!picked.current.effort) setEffort(r.effort);
+    };
+    const off = subscribeClaudeDefaults(follow);
+    void readClaudeDefaults().then((d) => {
+      if (alive.current) follow(d);
+    });
+    return off;
+  }, []);
+  const pickModel = (next: ComposerPicks["model"]) => {
+    picked.current.model = true;
+    setModel(next);
+    void setClaudeDefaults({ model: next });
+  };
+  const pickEffort = (next: ComposerPicks["effort"]) => {
+    picked.current.effort = true;
+    setEffort(next);
+    void setClaudeDefaults({ effort: next });
+  };
   const [phase, setPhase] = useState<
     "idle" | "naming" | "askName" | "creating"
   >("idle");
@@ -276,9 +335,27 @@ export function HeroComposer({
   // Which window of SAMPLE_ROW starter chips is showing; shuffle advances it.
   const [sampleOffset, setSampleOffset] = useState(0);
   const alive = useRef(true);
+  // Pasted / dropped attachments. Mirrored in a ref so the unmount cleanup can
+  // revoke every blob: thumb, and submit reads the settled paths.
+  const [images, setImages] = useState<ComposerAttachment[]>([]);
+  const imagesRef = useRef<ComposerAttachment[]>([]);
+  const applyImages = useCallback(
+    (fn: (prev: ComposerAttachment[]) => ComposerAttachment[]) => {
+      imagesRef.current = fn(imagesRef.current);
+      if (alive.current) setImages(imagesRef.current);
+    },
+    [],
+  );
+  const imageKey = useRef(0);
+  // In-flight uploads, so a create awaits them (NewJobModal's pendingRef).
+  const pendingRef = useRef<Set<Promise<void>>>(new Set());
+  // Count of failed uploads — a create that waited out a failure must not
+  // ship the app without the picture (the page turns, the error is unseen).
+  const uploadFailures = useRef(0);
   useEffect(
     () => () => {
       alive.current = false;
+      for (const i of imagesRef.current) if (i.thumb) URL.revokeObjectURL(i.thumb);
     },
     [],
   );
@@ -318,6 +395,53 @@ export function HeroComposer({
 
   const busy = phase !== "idle";
   const canSubmit = prompt.trim().length > 0 && !busy;
+
+  // Upload each file as a task shot; the chip shows at once and is dropped
+  // again if its upload fails (NewJobModal's attachFiles, minus the viewer).
+  const attachFiles = useCallback(
+    (files: FileList | File[]) => {
+      for (const file of [...files]) {
+        const key = imageKey.current++;
+        const drawable =
+          DRAWABLE_MIMES.has(file.type) || (!!file.name && drawablePath(file.name));
+        const thumb = drawable ? URL.createObjectURL(file) : null;
+        applyImages((prev) => [
+          ...prev,
+          { key, path: "", kind: drawable ? "image" : "file", name: file.name || "attachment", thumb },
+        ]);
+        const pending: Promise<void> = uploadTaskShot(file)
+          .then((up) =>
+            applyImages((prev) =>
+              prev.map((i) => {
+                if (i.key !== key) return i;
+                const kind =
+                  up.kind === "image" && drawablePath(up.path)
+                    ? "image"
+                    : i.thumb ? "image" : "file";
+                return { ...i, path: up.path, kind };
+              }),
+            ),
+          )
+          .catch((e) => {
+            uploadFailures.current++;
+            if (thumb) URL.revokeObjectURL(thumb);
+            applyImages((prev) => prev.filter((i) => i.key !== key));
+            if (alive.current)
+              setError((e as Error).message || "attachment upload failed");
+          })
+          .finally(() => pendingRef.current.delete(pending));
+        pendingRef.current.add(pending);
+      }
+    },
+    [applyImages],
+  );
+  const removeImage = (key: number) =>
+    applyImages((prev) =>
+      prev.filter((i) => {
+        if (i.key === key && i.thumb) URL.revokeObjectURL(i.thumb);
+        return i.key !== key;
+      }),
+    );
 
   // The starters on offer right now: the whole mixed pool, or — once a model is
   // attached as a chip — only the briefs for what that model DOES, so the row
@@ -360,11 +484,22 @@ export function HeroComposer({
     setSessionError(null);
     setPhase("creating");
     try {
+      // A paste the instant before Enter still rides along: wait out the
+      // uploads, then read the paths (failed ones removed themselves).
+      const failuresBefore = uploadFailures.current;
+      await Promise.all([...pendingRef.current]);
+      if (uploadFailures.current !== failuresBefore) {
+        // The chip is gone and `error` names why; the create stops here so
+        // the reader can re-attach or send without it on purpose.
+        if (alive.current) setPhase(back);
+        return;
+      }
       const res = await createAppUnderFreeName(
         name,
         fullPrompt(),
         model,
         effort,
+        imagesRef.current.map((i) => i.path).filter(Boolean),
       );
       // The folder exists from here on, so the Recent grid is stale — refresh it
       // now, since the task-error branch below stays on this page.
@@ -447,6 +582,15 @@ export function HeroComposer({
           "home-composer" +
           (phase === "naming" || phase === "creating" ? " is-busy" : "")
         }
+        onDragOver={(e) => {
+          if (!busy && [...e.dataTransfer.items].some((i) => i.kind === "file"))
+            e.preventDefault();
+        }}
+        onDrop={(e) => {
+          if (busy || !e.dataTransfer.files?.length) return;
+          e.preventDefault();
+          attachFiles(e.dataTransfer.files);
+        }}
       >
         {annotation && (
           <div className="home-composer-annots">
@@ -467,6 +611,41 @@ export function HeroComposer({
             </span>
           </div>
         )}
+        {images.length > 0 && (
+          <div className="home-composer-attach">
+            <div className="new-task-images">
+              {images.map((img) => (
+                <div
+                  key={img.key}
+                  className={"nt-img" + (img.path ? "" : " nt-img-up")}
+                  title={img.name}
+                >
+                  <span
+                    className={"nt-img-open" + (img.kind === "file" ? " nt-img-doc" : "")}
+                  >
+                    {img.kind === "image" && (img.thumb || img.path) ? (
+                      <img src={img.thumb ?? rawUrl(img.path)} alt="" />
+                    ) : (
+                      <>
+                        <span className="nt-img-glyph" aria-hidden="true">📄</span>
+                        <span className="nt-img-name">{img.name}</span>
+                      </>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    className="nt-img-x"
+                    aria-label={`Remove ${img.name}`}
+                    disabled={busy}
+                    onClick={() => removeImage(img.key)}
+                  >
+                    {ICON_X}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <TextArea
           ref={inputRef}
           className="home-composer-input"
@@ -476,6 +655,17 @@ export function HeroComposer({
           rows={1}
           disabled={busy}
           onChange={(e) => setPrompt(e.target.value)}
+          // Files on the clipboard attach; a text paste is left alone.
+          onPaste={(e) => {
+            const files = [...e.clipboardData.items]
+              .filter((i) => i.kind === "file")
+              .map((i) => i.getAsFile())
+              .filter((f): f is File => !!f);
+            if (files.length) {
+              e.preventDefault();
+              attachFiles(files);
+            }
+          }}
           onKeyDown={(e) => {
             // Enter submits (the composer is a one-shot prompt, not a
             // document); Shift+Enter keeps the newline for longer briefs.
@@ -549,7 +739,7 @@ export function HeroComposer({
                 value={model}
                 choices={MODEL_CHOICES}
                 disabled={busy}
-                onPick={setModel}
+                onPick={pickModel}
               />
               <ComposerPick
                 glyph="effort"
@@ -557,7 +747,7 @@ export function HeroComposer({
                 value={effort}
                 choices={EFFORT_CHOICES}
                 disabled={busy}
-                onPick={setEffort}
+                onPick={pickEffort}
               />
               <span className="home-composer-hint">
                 {phase === "naming" && "Naming your app…"}

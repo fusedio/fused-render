@@ -23,10 +23,16 @@ imessage-state.json (this process' view, for a future worker / --status).
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import time
+
+try:
+    import fcntl  # POSIX-only; this channel is macOS-only, but CAPS (a module
+    # constant, not a lock) must stay importable for cross-platform channel
+    # listings, so the import is optional rather than crashing module load.
+except ImportError:
+    fcntl = None
 
 from fused_render.bots import imessage as im
 from fused_render.bots.channels.base import Caps, Channel, Inbound
@@ -54,6 +60,9 @@ class ImessageChannel(Channel):
 
     # ------------------------------------------------------------- lock/lifecycle
     def acquire(self) -> bool:
+        if fcntl is None:
+            self.state["holder"] = "unsupported on this OS (macOS only)"
+            return False
         lp = im.lock_path()
         os.makedirs(os.path.dirname(lp), exist_ok=True)
         fh = open(lp, "a+")
@@ -140,8 +149,10 @@ class ImessageChannel(Channel):
         sent = {t: ts for t, ts in (cur.get("sent") or {}).items() if now - ts < ECHO_WINDOW_S}
         cur["sent"] = sent
         out = []
-        for rowid, handle, text, service in im.new_messages(self.db, int(cur["rowid"])):
+        for rowid, handle, text, service, is_group in im.new_messages(self.db, int(cur["rowid"])):
             cur["rowid"] = rowid
+            if is_group:
+                continue  # group chat
             if handle != owner:
                 continue  # only Super Bot's handle reaches it; nothing else is read
             if service and service != "iMessage":

@@ -7,6 +7,7 @@
 // Upload: a zipped fused app (Finder "Compress", a .fused export),
 // by button or dropped anywhere on the panel, is unpacked into a new folder (POST /api/bot-apps/import). Esc steps back one
 // level: app → gallery → bots (never while the build dialog is open).
+import { ArrowLeftIcon, PlusIcon, RefreshCwIcon, UploadIcon } from "lucide-react";
 import { useEffect, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import { askConfirm } from "../dialogs/ask";
 import { api, appIconUrl, type AppRow } from "../lib/api";
@@ -150,15 +151,15 @@ export function AppsPanel() {
       <div id="apanel" ref={panelRef} className={[open ? "show" : "", drag ? "drag" : "", busy ? "busy" : ""].filter(Boolean).join(" ")}
         onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
         <div className="topbar">
-          <button id="aback" className="backtxt" title="Back to bots (Esc)" onClick={closeApps}>Back</button>
+          <button id="aback" className="backtxt" aria-label="Back" title="Back to bots (Esc)" onClick={closeApps}><ArrowLeftIcon /></button>
           <b className="ttl">Apps</b><small className="muted">Fused apps the builds have made{under}</small>
           <span className="winacts">
-            <button id="areload" title="Rescan the apps folder" onClick={() => void loadApps()}>Refresh</button>
+            <button id="areload" title="Rescan the apps folder" onClick={() => void loadApps()}><RefreshCwIcon />Refresh</button>
             <button id="aupload" disabled={busy} onClick={() => fileRef.current?.click()}
-              title={`Upload a .fused export or a zipped app folder (or drop it anywhere on this panel); it is unpacked into a new folder${under}`}>{busy ? "Uploading…" : "Upload app"}</button>
+              title={`Upload a .fused export or a zipped app folder (or drop it anywhere on this panel); it is unpacked into a new folder${under}`}><UploadIcon />{busy ? "Uploading…" : "Upload app"}</button>
             <input type="file" id="auploadfile" ref={fileRef} accept=".zip,.fused,application/zip" hidden
               onChange={(e) => { const f = e.currentTarget.files?.[0]; e.currentTarget.value = ""; void uploadApp(f); }} />
-            <button id="anew" className="primary" onClick={() => { closeApps(); void newBuild(); }}>New build</button>
+            <button id="anew" className="primary" title="Describe an app; Claude builds it as a task" onClick={() => { closeApps(); void newBuild(); }}><PlusIcon />New app</button>
           </span>
         </div>
         <div className="ascroll">
@@ -167,7 +168,7 @@ export function AppsPanel() {
             {!open || grid.kind === "blank" ? null
               : grid.kind === "looking" ? <div className="empty">Looking for apps…</div>
               : grid.kind === "error" ? <div className="empty">Could not read the apps folder.<br />{grid.msg}</div>
-              : !grid.rows.length ? <div className="empty">No apps yet.<br />Start one with New build; it shows up here when Claude has written its page.</div>
+              : !grid.rows.length ? <div className="empty">No apps yet.<br />Start one with New app; it shows up here when Claude has written its page.</div>
               : grid.rows.map((a) => <Card key={a.dir} a={a} starter={starterOf(starters, a.dir)} reloadApps={loadApps} />)}
           </div>
         </div>

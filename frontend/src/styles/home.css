@@ -120,6 +120,98 @@
   padding: 12px 16px 0;
 }
 
+/* Pasted / dropped attachments: the New task card's chips (new-task.css).
+   Its chip skins are scoped to `.deploy-body`, which this composer is not
+   inside, so the few that matter are restated here. */
+.home-composer-attach {
+  padding: 12px 16px 0;
+}
+
+.home-composer-attach .new-task-images:not(:empty) {
+  padding: 0;
+}
+
+.home-composer-attach .nt-img-open {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.home-composer-attach .nt-img-open img {
+  display: block;
+  height: 36px;
+  max-width: 64px;
+  object-fit: cover;
+}
+
+.home-composer-attach .nt-img-up .nt-img-open img {
+  opacity: 0.55;
+}
+
+.home-composer-attach .nt-img-doc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 4px 0 8px;
+  border: 0;
+  border-radius: 0;
+  line-height: 1;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.home-composer-attach button.nt-img-x {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--scrim-fg);
+  background: var(--scrim-bg);
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.home-composer-attach button.nt-img-x svg {
+  display: block;
+  flex: none;
+}
+
+.home-composer-attach button.nt-img-x:hover:not(:disabled) {
+  background: var(--scrim-bg-hover);
+}
+
+.home-composer-attach button.nt-img-x:disabled {
+  cursor: default;
+}
+
+.home-composer-attach .nt-img:has(.nt-img-doc) button.nt-img-x {
+  position: static;
+  width: 18px;
+  height: 18px;
+  color: var(--fg-muted);
+  background: transparent;
+}
+
+.home-composer-attach .nt-img:has(.nt-img-doc) button.nt-img-x svg {
+  width: 9px;
+  height: 9px;
+}
+
+.home-composer-attach .nt-img:has(.nt-img-doc) button.nt-img-x:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--ctl-quiet-bg-hover);
+}
+
 .home-composer-annot {
   display: inline-flex;
   align-items: center;
