@@ -2,11 +2,14 @@
 `apply_preset`, docs/bots.md §5).
 
 `bots/presets/<key>/preset.json` (name, color, order, model, instructions,
-optional `apps`) plus any number of playbook `.md` files in the Skills format
+optional `apps`, optional `setup`) plus any number of playbook `.md` files in the Skills format
 (`# title`, a `trigger:` line, numbered steps). The key doubles as the brand
 icon the page draws on the avatar. `apps` names starter apps
 (`bots/starters/<key>`, see starters.py) installed when a bot is made from the
-preset, so its APP TOOLS are there on the first task.
+preset, so its APP TOOLS are there on the first task. `setup` is a task the new
+bot runs by itself right after its greeting (bot.create): the site presets use it
+to open the sign-in page and pop the login window, so the user is asked to log in
+the moment the bot exists instead of on its first real task.
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ PRESETS_DIR = os.path.join(HERE, "presets")
 
 def presets():
     """Every preset, sorted by (order, name): [{key, name, color, order, model,
-    instructions, skills: [{name, title, trigger, body}], apps: [starter key]}]."""
+    instructions, setup, skills: [{name, title, trigger, body}], apps: [starter key]}]."""
     from fused_render.bots.bot import DEFAULT_MODEL, MODELS, Bot
     out = []
     try:
@@ -53,7 +56,8 @@ def presets():
             order = 99
         out.append({"key": key, "name": str(p.get("name") or key), "color": str(p.get("color") or "#767676"),
                     "order": order, "model": p.get("model") if p.get("model") in MODELS else DEFAULT_MODEL,
-                    "instructions": str(p.get("instructions") or ""), "skills": skills,
+                    "instructions": str(p.get("instructions") or ""), "setup": str(p.get("setup") or "").strip(),
+                    "skills": skills,
                     "apps": [str(a) for a in apps if a]})
     out.sort(key=lambda p: (p["order"], p["name"]))
     return out
@@ -75,6 +79,8 @@ def apply_preset(b, key, apps_root=None):
     for sk in p["skills"]:
         b.skill_save(sk["title"], sk["trigger"], sk["body"], name=sk["name"])
     b.meta["preset"] = key
+    if p["setup"]:
+        b.meta["setup"] = p["setup"]  # read once by the greeting (bot.greet), then cleared
     b.meta["face"] = {"icon": key, "color": p["color"], "shape": ""}
     if not (b.meta.get("instructions") or "").strip():
         b.meta["instructions"] = p["instructions"].strip()
