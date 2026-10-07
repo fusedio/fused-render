@@ -539,7 +539,7 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .info .dlfill { height: 100%; background: var(--accent); border-radius: inherit; transition: width .25s ease; }
 
 /* ---- fullscreen ---- */
-.bots-page #full { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
+.bots-page #full { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 25; }  /* above the (absolute, z 20-21) Builds / Apps / viewer panels */
 .bots-page #full.show { display: flex; }
 .bots-page #full header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel); }
 .bots-page #full header button, .bots-page #full .winacts button { font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; }
@@ -585,6 +585,11 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .modal .box { --card: #0a0a0a; --inset: rgba(255,255,255,.06); --hover: rgba(255,255,255,.09); --raised: rgba(255,255,255,.12); --text: #fafafa; --muted: #a1a1aa; --line: rgba(255,255,255,.1);
   background: #0a0a0a; color: #fafafa; border-radius: 12px; padding: 20px 24px; width: 380px; box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 24px 60px rgba(0,0,0,.5); }
 .bots-page .modal .box > .row:last-child { margin: 18px -24px -20px; padding: 14px 24px; border-top: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.03); border-radius: 0 0 12px 12px; }
+/* The face picker's box is a flex column with its own 16px gap: no extra top margin on the footer. A scrolling box
+   (routines) cannot bleed a negative bottom margin: its bottom padding goes and the footer sits flush instead. */
+.bots-page #fmodal .box > .row:last-child { margin-top: 0; align-self: stretch; }
+.bots-page #rmodal .box { padding-bottom: 0; }
+.bots-page #rmodal .box > .row:last-child { margin-bottom: 0; position: sticky; bottom: 0; }
 .bots-page .modal .box input:not([type=checkbox]), .bots-page .modal .box select, .bots-page .modal .box textarea { color: #fafafa; }
 /* The seeded greeting's door to Settings > Phone (components/Thread.tsx). */
 .bots-page .msg .opt.seed { justify-content: center; }
