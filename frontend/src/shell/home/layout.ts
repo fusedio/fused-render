@@ -235,6 +235,8 @@ export function normalizeLayout(raw: unknown): HomeLayout {
       let y = ry as number;
       if (!Number.isInteger(x) || !Number.isInteger(y) || !canPlace(widgets, { x, y, cols, rows })) {
         ({ x, y } = firstFreeSlot(widgets, w.size));
+        // Same bound addWidget enforces: a repaired slot past MAX_ROWS drops the widget.
+        if (y + rows > MAX_ROWS) continue;
       }
       widgets.push({ ...w, x, y });
     }
@@ -485,7 +487,7 @@ export function moveByArrow(layout: HomeLayout, id: string, key: string): HomeLa
   const d = delta[key];
   if (!d) return layout;
   const { cols, rows } = dims(w.size);
-  const maxY = rowsUsed(layout.widgets.filter((o) => o.id !== id));
+  const maxY = rowsUsed(layout.widgets);
   let x = w.x + d[0];
   let y = w.y + d[1];
   while (x >= 0 && x <= GRID_COLS - cols && y >= 0 && y <= maxY) {

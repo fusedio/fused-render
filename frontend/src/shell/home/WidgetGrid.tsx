@@ -19,7 +19,6 @@ import {
   allowedSizes,
   canPlace,
   dims,
-  firstFreeRect,
   moveByArrow,
   reflowToColumns,
   rectOf,
@@ -108,22 +107,34 @@ export function WidgetGrid({
 
   const canDrag = edit && !searching && cols === 4;
 
+  // A release anywhere clears an armed press, so a pointerup outside the grid
+  // before DRAG_SLOP cannot leave a stuck drag behind.
+  const endDragRef = useRef<() => void>(() => {});
+  const onWindowUp = useRef(() => endDragRef.current()).current; // stable, so it can be removed
   const endDrag = () => {
+    setOffset({ x: 0, y: 0 });
     drag.current = null;
     targetRef.current = null;
+    window.removeEventListener("pointerup", onWindowUp);
     setDragId(null);
     setTarget(null);
-    setOffset({ x: 0, y: 0 });
   };
 
-  // Escape cancels a drag in progress.
+  endDragRef.current = endDrag;
+
+  // Escape cancels a drag in progress. Capture phase on document: Home's own
+  // Escape handler (leave edit mode) is a bubble listener on document, so
+  // stopping propagation here keeps it from also firing during a drag.
   useEffect(() => {
     if (!dragId) return;
     const key = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") endDrag();
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      endDrag();
     };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
+    document.addEventListener("keydown", key, true);
+    return () => document.removeEventListener("keydown", key, true);
   }, [dragId]);
 
   // Leaving edit mode (or entering search / narrow) mid-drag drops it.
@@ -144,11 +155,16 @@ export function WidgetGrid({
       dy: Math.min(d.rows - 1, Math.max(0, Math.floor((e.clientY - rect.top) / (rect.height / d.rows)))),
     };
     drag.current = { id: w.id, grab, start: { x: e.clientX, y: e.clientY }, pointerId: e.pointerId, el, started: false };
+    window.addEventListener("pointerup", onWindowUp);
   };
 
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     if (!d) return;
+    if (e.buttons === 0) {
+      endDrag();
+      return;
+    }
     if (!d.started) {
       if (Math.hypot(e.clientX - d.start.x, e.clientY - d.start.y) < DRAG_SLOP) return;
       d.started = true;
@@ -211,7 +227,7 @@ export function WidgetGrid({
     }
   }
 
-  const addSlot = edit && !searching ? firstFreeRect([...pos.values()], 1, 1, cols) : null;
+  const showAdd = edit && !searching;
 
   return (
     <div
@@ -220,6 +236,7 @@ export function WidgetGrid({
         (edit ? " is-edit" : "") +
         (searching ? " is-searching" : "") +
         (dragId ? " is-dragging" : "") +
+        (canDrag ? " can-drag" : "") +
         (cols === 2 ? " is-narrow" : "")
       }
       style={{ "--hw-cols": cols } as CSSProperties}
@@ -269,11 +286,11 @@ export function WidgetGrid({
           aria-hidden="true"
         />
       ) : null}
-      {addSlot ? (
+      {showAdd ? (
         <button
           type="button"
           className="hw-add-tile"
-          style={placement({ ...addSlot, cols: 1, rows: 1 })}
+          style={placement({ x: 0, y: used, cols: 1, rows: 1 })}
           onClick={onAdd}
         >
           <span className="hw-add-plus" aria-hidden="true">+</span>

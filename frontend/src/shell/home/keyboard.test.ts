@@ -21,3 +21,8 @@ test("Alt+Left at x=0 is a no-op; a non-arrow key returns the same object", () =
   expect(moveByArrow(layout, "a", "ArrowLeft")).toBe(layout);
   expect(moveByArrow(layout, "a", "Enter")).toBe(layout);
 });
+
+test("Alt+Down from a widget alone in the last row opens a new row below it", () => {
+  const alone: HomeLayout = { version: 3, widgets: [w("full", "4x1", 0, 0), w("a", "1x1", 0, 1)] };
+  expect(pos(moveByArrow(alone, "a", "ArrowDown"), "a")).toEqual([0, 2]);
+});

@@ -188,3 +188,23 @@ def test_v3_rejects_overlap(tmp_path, monkeypatch):
     assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 400
     ok = _v3(("a", "2x2", 0, 0), ("b", "1x1", 2, 1))
     assert client.put("/api/home/layout", json=ok, headers=FUSED).status_code == 200
+
+
+def test_get_returns_an_overlapping_v3_layout_for_the_client_to_repair(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    lay = _v3(("a", "2x2", 0, 0), ("b", "1x1", 1, 1))
+    (home / "home_layout.json").write_text(json.dumps(lay), encoding="utf-8")
+    got = client.get("/api/home/layout").json()
+    assert got["exists"] is True
+    assert [w["id"] for w in got["layout"]["widgets"]] == ["a", "b"]
+
+
+def test_get_drops_non_integer_v3_coords(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    lay = _v3(("a", "1x1", 0, 0))
+    lay["widgets"][0]["x"] = 1.5
+    (home / "home_layout.json").write_text(json.dumps(lay), encoding="utf-8")
+    w = client.get("/api/home/layout").json()["layout"]["widgets"][0]
+    assert "x" not in w and "y" not in w

@@ -661,9 +661,14 @@
   /* WidgetGrid sets --hw-cols (4, or 2 at phone width) and places every item
      explicitly with inline grid-column/grid-row. */
   grid-template-columns: repeat(var(--hw-cols, 4), minmax(0, 1fr));
-  /* An empty row keeps its height (with auto it would collapse). */
-  grid-auto-rows: minmax(120px, auto);
+  grid-auto-rows: auto;
   gap: 16px;
+}
+
+/* The edit canvas shows empty rows; they keep a height. View mode stays auto
+   so the bare search/build rows are not padded to 120px. */
+.hw-grid.is-edit {
+  grid-auto-rows: minmax(120px, auto);
 }
 
 .hw-widget {
@@ -1456,6 +1461,11 @@ a.hw-more:hover {
 .hw-grid.is-dragging .hw-widget,
 .hw-grid.is-dragging .hw-add-tile {
   pointer-events: none;
+}
+
+/* Drag sources only: touch must reach pointer events instead of scrolling. */
+.hw-grid.can-drag .hw-widget.is-edit {
+  touch-action: none;
 }
 
 .hw-grid.is-narrow .hw-widget.is-edit {

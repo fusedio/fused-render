@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   DEFAULT_LAYOUT,
+  MAX_ROWS,
   SOURCES,
   addWidget,
   allowedSizes,
@@ -443,4 +444,13 @@ test("web URLs: detection, normalisation, title, and normalize keeps the widget"
     widgets: [{ ...w("u", "app", "2x2", "live"), appPath: "https://example.com" }],
   });
   expect(out.widgets[0].appPath).toBe("https://example.com");
+});
+
+test("normalizeLayout v3 repair never places a widget beyond MAX_ROWS", () => {
+  // MAX_WIDGETS (48) caps how full the grid can get, so the MAX_ROWS drop in
+  // the repair path is a defensive bound; assert the invariant holds anyway.
+  const full = Array.from({ length: 47 }, (_, i) => w(`r${i}`, "apps", "4x1", "cards", 0, i));
+  const out = normalizeLayout({ version: 3, widgets: [...full, w("dup", "apps", "1x1", "cards", 0, 0)] });
+  expect(out.widgets.length).toBe(48);
+  for (const o of out.widgets) expect(o.y + dims(o.size).rows).toBeLessThanOrEqual(MAX_ROWS);
 });

@@ -40,15 +40,20 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "home_layout.json")
 
 
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def _clean(doc) -> dict | None:
-    """Validated copy of `doc` with unknown keys dropped, or None if invalid."""
+    """Structurally cleaned copy of `doc` (unknown keys, sources, sizes, formats,
+    version), or None if invalid. Version-3 x/y pass through when both are
+    integers and are dropped otherwise; placement is _placement_ok's job."""
     if not isinstance(doc, dict) or doc.get("version") not in VERSIONS:
         return None
     widgets = doc.get("widgets")
     if not isinstance(widgets, list) or len(widgets) > MAX_WIDGETS:
         return None
     out = []
-    taken: set[tuple[int, int]] = set()
     for w in widgets:
         if not isinstance(w, dict):
             return None
@@ -59,18 +64,8 @@ def _clean(doc) -> dict | None:
         if w.get("size") not in SIZES or w.get("format") not in FORMATS:
             return None
         item = {k: w[k] for k in ("id", "source", "size", "format")}
-        if doc["version"] == 3:
-            x, y = w.get("x"), w.get("y")
-            if not all(isinstance(v, int) and not isinstance(v, bool) for v in (x, y)):
-                return None
-            c, r = _DIMS[w["size"]]
-            if x < 0 or x + c > GRID_COLS or y < 0 or y + r > MAX_ROWS:
-                return None
-            cells = {(x + i, y + j) for i in range(c) for j in range(r)}
-            if cells & taken:
-                return None
-            taken |= cells
-            item["x"], item["y"] = x, y
+        if doc["version"] == 3 and _is_int(w.get("x")) and _is_int(w.get("y")):
+            item["x"], item["y"] = w["x"], w["y"]
         fid = w.get("folderId")
         if isinstance(fid, str):
             item["folderId"] = fid
@@ -79,6 +74,26 @@ def _clean(doc) -> dict | None:
             item["appPath"] = ap
         out.append(item)
     return {"version": doc["version"], "widgets": out}
+
+
+def _placement_ok(clean: dict) -> bool:
+    """Version-3 widgets all carry in-bounds, non-overlapping cells. PUT only:
+    GET hands a stored document to the client, which repairs it on load."""
+    if clean["version"] != 3:
+        return True
+    taken: set[tuple[int, int]] = set()
+    for w in clean["widgets"]:
+        if "x" not in w:
+            return False
+        x, y = w["x"], w["y"]
+        c, r = _DIMS[w["size"]]
+        if x < 0 or x + c > GRID_COLS or y < 0 or y + r > MAX_ROWS:
+            return False
+        cells = {(x + i, y + j) for i in range(c) for j in range(r)}
+        if cells & taken:
+            return False
+        taken |= cells
+    return True
 
 
 @router.get("/api/home/layout")
@@ -97,7 +112,7 @@ def put_home_layout(
     if guard is not None:
         return guard
     clean = _clean(layout)
-    if clean is None:
+    if clean is None or not _placement_ok(clean):
         return JSONResponse({"error": "invalid layout"}, status_code=400)
     storage.write_json(_path(), clean)
     return {"ok": True, "count": len(clean["widgets"])}
