@@ -1908,3 +1908,52 @@ a.hw-more:hover {
   border-radius: 3px 3px 0 0;
   background: rgba(var(--accent-rgb), 0.35);
 }
+
+/* ---- Search widget ----------------------------------------------------------- */
+/* View mode: the widget is the bar itself — no card, no header, minimal padding,
+   like the hero it replaced. Edit mode keeps the normal card and chrome. */
+.hw-widget.is-search {
+  align-self: center;
+  padding: 0 4%;
+  background: none;
+  border-color: transparent;
+  border-radius: 0;
+  overflow: visible;
+  text-align: center;
+}
+
+/* A live query takes over: only the search widget renders, across every column. */
+.hw-grid.is-searching .hw-widget {
+  grid-column: 1 / -1;
+  grid-row: auto;
+  align-self: start;
+}
+
+.hw-search-ph {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px 14px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+/* Add-sheet preview of the search bar: a rounded input, magnifier, placeholder bar. */
+.fp-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 360px;
+  padding: 10px 14px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+.fp-search svg { flex: none; }
+.fp-search .fp-ln { flex: 1 1 auto; width: auto; max-width: 70%; }

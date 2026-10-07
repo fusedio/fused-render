@@ -152,7 +152,7 @@ describe("home tour", () => {
 
   it("walks the search box, the strips as one region, a card, then bookmarks", () => {
     expect(steps.map((s) => s.element)).toEqual([
-      ".home-hero",
+      "#home-sec-search",
       ".home-strips",
       // Real cards only — the loading skeletons wear .app-pcard too.
       "#home-sec-apps .app-pcard:not(.home-skel-card)",

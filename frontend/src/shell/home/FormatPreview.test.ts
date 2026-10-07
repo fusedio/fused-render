@@ -17,6 +17,9 @@ describe("previewKind", () => {
   test("an app's live format draws the browser frame", () => {
     expect(previewKind("app", "live")).toBe("app-live");
   });
+  test("the search bar draws a search input", () => {
+    expect(previewKind("search", "bar")).toBe("search-bar");
+  });
   test("every allowed (source, format) pair has a kind", () => {
     for (const s of Object.keys(SOURCES) as WidgetSource[]) {
       for (const f of SOURCES[s].formats) expect(previewKind(s, f)).toBeTruthy();

@@ -20,7 +20,8 @@ export const homeTour: Tour = {
   startPath: "/home",
   steps: () => [
     {
-      element: ".home-hero",
+      // The search widget; if the user removed it the step is dropped.
+      element: "#home-sec-search",
       popover: {
         title: "Search your machine",
         description: "Search any file on your computer by name.",

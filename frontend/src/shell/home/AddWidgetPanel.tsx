@@ -13,6 +13,7 @@ import {
   FolderGit2,
   LayoutGrid,
   ListChecks,
+  Search,
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
@@ -21,12 +22,13 @@ import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
 import { FormatPreview } from "./FormatPreview";
 import { FormatPicks, SizeChips, stageZoom } from "./Pickers";
-import { MAX_WIDGETS, SOURCES, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { MAX_WIDGETS, SOURCES, hasSearch, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import { AppGlyph } from "./widgets/AppsWidget";
 import { appName, useAllApps } from "./widgets/AppEmbedWidget";
 
 const SOURCE_ICONS: Record<WidgetSource, LucideIcon> = {
+  search: Search,
   apps: LayoutGrid,
   app: AppWindow,
   playground: Sparkles,
@@ -58,12 +60,14 @@ function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): Bookmark
   return out;
 }
 
-const SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
+const ALL_SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
 
 export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: () => void }) {
   useBookmarksVersion();
   const dialog = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  // One search box per Home: its source is not offered once it is there.
+  const SOURCE_KEYS = ALL_SOURCE_KEYS.filter((s) => s !== "search" || !hasSearch(api.layout));
   const [source, setSource] = useState<WidgetSource>(SOURCE_KEYS[0]);
   const [format, setFormat] = useState<WidgetFormat>(SOURCES[SOURCE_KEYS[0]].formats[0]);
   const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);

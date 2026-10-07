@@ -9,6 +9,7 @@ import { PlaygroundWidget, RecentsWidget, SessionsWidget } from "./widgets/Strip
 import { TasksWidget } from "./widgets/TasksWidget";
 import { BotsWidget } from "./widgets/BotsWidget";
 import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
+import { SearchWidget } from "./widgets/SearchWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
 import { AppEmbedWidget, OpenAppLink, appName, useWidgetApp } from "./widgets/AppEmbedWidget";
 import { FormatPicks, SizeChips } from "./Pickers";
@@ -24,6 +25,8 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
 
 function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; onRemove: () => void }) {
   switch (widget.source) {
+    case "search":
+      return <SearchWidget edit={edit} />;
     case "apps":
       return <AppsWidget widget={widget} />;
     case "playground":
@@ -160,12 +163,15 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         ? appName(embedded)
         : spec.label;
   const seeAll = SEE_ALL[widget.source];
+  // The search widget IS the bar: no header in view mode.
+  const bare = widget.source === "search" && !edit;
   return (
     <section
       id={p.anchorId}
       className={
         "hw-widget" +
         ` hw-size-${widget.size}` +
+        (bare ? " is-search" : "") +
         (edit ? " is-edit" : "") +
         (p.dragging ? " is-dragging" : "") +
         (p.dropTarget ? " is-drop" : "")
@@ -185,7 +191,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           ×
         </button>
       ) : null}
-      <div className="hw-head">
+      {bare ? null : <div className="hw-head">
         {edit ? (
           <span className="hw-grip" aria-hidden="true" title="Drag to reorder">
             ⋮⋮
@@ -212,7 +218,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
             </svg>
           </a>
         ) : null}
-      </div>
+      </div>}
       <Body widget={widget} edit={edit} onRemove={p.onRemove} />
     </section>
   );
