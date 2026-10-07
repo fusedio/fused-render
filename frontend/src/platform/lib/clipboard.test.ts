@@ -61,14 +61,25 @@ test("without ClipboardItem, falls back to writeText with the resolved text", as
   expect(writes).toEqual(["claude"]);
 });
 
-test("a rejected text promise reports false and does not throw", async () => {
+test("a rejected text promise rejects with the text's error, not a clipboard refusal", async () => {
   glob.ClipboardItem = FakeClipboardItem;
   nav.clipboard = {
     write: (items: FakeClipboardItem[]) =>
-      // Real browsers reject the write when the item's promise rejects.
-      Promise.resolve(items[0].parts["text/plain"]).then(() => undefined),
+      // Real browsers reject the write when the item's promise rejects — with
+      // their OWN generic error, not the one the promise carried.
+      Promise.resolve(items[0].parts["text/plain"]).then(
+        () => undefined,
+        () => {
+          throw new Error("NotAllowedError");
+        },
+      ),
   };
-  expect(await copyPendingText(Promise.reject(new Error("fetch failed")))).toBe(false);
+  await expect(copyPendingText(Promise.reject(new Error("fetch failed")))).rejects.toThrow("fetch failed");
+});
+
+test("without ClipboardItem, a rejected text promise still rejects with its error", async () => {
+  nav.clipboard = { writeText: () => Promise.resolve() };
+  await expect(copyPendingText(Promise.reject(new Error("no such session")))).rejects.toThrow("no such session");
 });
 
 test("a denied write reports false", async () => {

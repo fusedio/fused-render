@@ -19,7 +19,10 @@ export async function runOrCopyInTerminal(
   /** The command, or a promise of one for a caller that has to ask the server
    *  for it. Pass the PROMISE in that case, not the awaited string: on the
    *  clipboard path the write has to start inside the click, before any
-   *  await, or WebKit refuses it (see copyPendingText in clipboard.ts). */
+   *  await, or WebKit refuses it (see copyPendingText in clipboard.ts). A
+   *  promise that rejects makes THIS reject with the same error, on both
+   *  paths: a command that never arrived is the caller's to report, not a
+   *  "Could not copy" toast. */
   command: string | Promise<string>,
   opts: {
     /** Where the drawer `cd`s to before typing/running `command`. */
