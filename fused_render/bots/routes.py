@@ -308,8 +308,16 @@ def bots_imessage_test():
         raise ValueError("there is no Super Bot to text from")
     if not handle:
         raise ValueError("set your number first")
+    # Through the channel when the router runs, so the bridge's `last_out` moves: Settings > Phone takes that as
+    # the durable "a text went out once" and shows the connected view on every later open. A lean `open` (no
+    # router) sends directly; the test then proves only the send path.
+    r = registry.router()
+    ch = r.channels.get("imessage") if r is not None else None
     try:
-        imessage.send_text(handle, "Connected. Text me a task any time.")
+        if ch is not None:
+            ch.send(handle, "Connected. Text me a task any time.")
+        else:
+            imessage.send_text(handle, "Connected. Text me a task any time.")
     except Exception as e:  # noqa: BLE001
         msg = str(e).strip() or e.__class__.__name__
         low = msg.lower()

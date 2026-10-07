@@ -3,8 +3,9 @@
 // (status line, change number, people it may text). The step is DERIVED from the switch, the shell's one Full Disk
 // Access store (platform/lib/fda.ts, never a second probe), the bridge's state (own handles learned from chat.db,
 // its error) and whether a text ever went out; only the switch, the handle and the contacts are written, through
-// the dialog's Save. "Send a test text" saves the pending switch and handle first (the backend texts what is on
-// disk), so the handshake never needs a Save before it.
+// the dialog's Save — except the switch and the number, which write at once: the bridge reads both from disk, and
+// step 2 (this Mac's own handles) only happens after the switch is on there, so a Save-then-reopen would be the
+// only way through the checklist. "Send a test text" also saves first, for the same reason.
 import { useEffect, useState } from "react";
 import { openFdaSettings } from "@platform/lib/api";
 import { fdaCopy, pokeFda, relaunchHref, useFda } from "@platform/lib/fda";
@@ -20,6 +21,15 @@ export interface PhoneSectionProps {
 }
 
 const POLL_MS = 3000;
+
+/** The backend's norm_handle, so a typed "+1 (555) 123-4567" compares equal to the stored "+15551234567". */
+export function normHandle(h: string): string {
+  h = (h || "").trim();
+  if (h.includes("@")) return h.toLowerCase();
+  let d = h.replace(/[^\d+]/g, "");
+  if (d && !d.startsWith("+")) d = "+" + (d.length > 10 ? d : "1" + d);
+  return d;
+}
 
 export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, contacts, setContacts }: PhoneSectionProps) {
   const fda = useFda();
@@ -48,15 +58,23 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
   const fdaPending = !!fda?.pending_relaunch;
   const bridgeNoFda = /full disk access/i.test(st?.error || "");
   const signedIn = own.length > 0;
-  const saved = !!st && st.enabled === enabled && (st.handle || "") === handle.trim();
+  const saved = !!st && st.enabled === enabled && (st.handle || "") === normHandle(handle);
   const sentOnce = !!st?.last_out || !!tested?.ok;
   const connected = enabled && !!handle.trim() && saved && !!st?.running && sentOnce;
 
   const openSettings = () => { setOpened(true); openFdaSettings().catch(() => {}).finally(pokeFda); };
+  // Writes the switch and the number now (see the header), then re-reads the bridge so the next step unlocks.
+  const persist = async (on: boolean, h: string) => {
+    await act(() => api.settings(botId, { imessage_handle: normHandle(h), imessage_enabled: on }));
+    const r = await act(() => api.imessage(), true);
+    if (r) setSt(r);
+  };
+  const flip = (on: boolean) => { setEnabled(on); void persist(on, handle); };
+  const choose = (h: string) => { setHandle(h); setOther(false); void persist(enabled, h); };
   const sendTest = async () => {
     setTesting(true); setTested(null);
     try {
-      if (!saved) await act(() => api.settings(botId, { imessage_handle: handle.trim(), imessage_enabled: enabled }));
+      if (!saved) await persist(enabled, handle);
       const r = await act(() => api.imessageTest(), true);
       if (r?.ok) setTested({ ok: true, text: `Sent to ${r.handle}. Check your phone.` });
       else setTested({ ok: false, text: "The text did not go out." });
@@ -80,7 +98,7 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
           <b>Text Super Bot from your phone</b>
           <span className="why">Texts from your number become tasks. Replies come back as texts. Approvals stay on this Mac.</span>
         </span>
-        <input type="checkbox" role="switch" id="bmphone" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        <input type="checkbox" role="switch" id="bmphone" checked={enabled} onChange={(e) => flip(e.target.checked)} />
       </label>
       {!enabled ? (
         <p className="why">{handle.trim() ? `Off. Your number (${handle.trim()}) is remembered; turn the switch on to use it again.` : "Off. Turn it on to set your number up."}</p>
@@ -89,7 +107,7 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
           <p className="stat">{imessageStatus(handle.trim(), st)}</p>
           <label className="field">Your number
             <input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)} />
-            <span className="why">{own.includes(handle.trim()) ? "Your own number: Super Bot's replies start with “@Super Bot” so you can tell them from your notes." : "A separate Apple ID: replies come as plain texts."}</span>
+            <span className="why">{own.includes(normHandle(handle)) ? "Your own number: Super Bot's replies start with “@Super Bot” so you can tell them from your notes." : "A separate Apple ID: replies come as plain texts."}</span>
           </label>
           <label className="field">People Super Bot may text for you <small>· name + number, one per line</small>
             <textarea id="bmimsgto" rows={2} placeholder={"Ali +1 555 123 4567\nMom mom@icloud.com"} value={contacts} onChange={(e) => setContacts(e.target.value)} />
@@ -124,15 +142,16 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
               {step3 !== "wait" ? (
                 <div className="chips">
                   {own.map((h) => (
-                    <button key={h} type="button" className={`chip${handle.trim() === h ? " on" : ""}`} onClick={() => { setHandle(h); setOther(false); }}>{h} · my own number</button>
+                    <button key={h} type="button" className={`chip${normHandle(handle) === h ? " on" : ""}`} onClick={() => choose(h)}>{h} · my own number</button>
                   ))}
-                  <button type="button" className={`chip${other || (handle.trim() && !own.includes(handle.trim())) ? " on" : ""}`} onClick={() => setOther(true)}>Another…</button>
+                  <button type="button" className={`chip${other || (normHandle(handle) && !own.includes(normHandle(handle))) ? " on" : ""}`} onClick={() => setOther(true)}>Another…</button>
                 </div>
               ) : null}
-              {step3 !== "wait" && (other || (handle.trim() && !own.includes(handle.trim()))) ? (
-                <input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)} />
+              {step3 !== "wait" && (other || (normHandle(handle) && !own.includes(normHandle(handle)))) ? (
+                <input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)}
+                  onBlur={() => { if (normHandle(handle) && !saved) void persist(enabled, handle); }} />
               ) : null}
-              {step3 === "ok" ? <span className="why">{own.includes(handle.trim())
+              {step3 === "ok" ? <span className="why">{own.includes(normHandle(handle))
                 ? "Texting yourself: Super Bot's replies start with “@Super Bot” so you can tell them from your own notes."
                 : "A separate Apple ID signed into Messages here: replies come as plain texts."}</span> : null}
             </div>
