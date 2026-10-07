@@ -41,6 +41,7 @@ class _Win:
 
 def _manager(windows):
     pytest.importorskip("AppKit")
+    pytest.importorskip("WebKit")
     from fused_render import mac_window
 
     m = types.SimpleNamespace(port=1234, _windows=windows, opened=[])
@@ -72,7 +73,7 @@ def test_mac_falls_back_to_mru_then_new_window(tmp_path):
     assert m.run(str(_app(tmp_path))) is only and len(only.loaded) == 1
     m = _manager([])
     m.run(str(_app(tmp_path)))
-    assert len(m.opened) == 1 and "/explorer" in m.opened[0] or m.opened
+    assert len(m.opened) == 1
 
 
 def test_route_skips_the_window_hook_when_the_pref_is_on(tmp_path, monkeypatch):
