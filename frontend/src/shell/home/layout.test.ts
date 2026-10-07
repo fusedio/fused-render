@@ -19,11 +19,12 @@ const w = (id: string, source: any = "apps", size: any = "4x1", format: any = "c
   size,
   format,
 });
-const lay = (...widgets: any[]): HomeLayout => ({ version: 1, widgets });
+const lay = (...widgets: any[]): HomeLayout => ({ version: 2, widgets });
 const ids = (l: HomeLayout) => l.widgets.map((x) => x.id);
 
-test("default layout reproduces today's four strips in order", () => {
+test("default layout is the search bar then today's four strips in order", () => {
   expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.format])).toEqual([
+    ["search", "4x1", "bar"],
     ["apps", "4x1", "cards"],
     ["playground", "4x1", "cards"],
     ["sessions", "4x1", "cards"],
@@ -42,17 +43,17 @@ test("every source declares sizes and formats; spec defaults hold", () => {
 
 test("normalizeLayout falls back to default on garbage", () => {
   expect(normalizeLayout(null)).toEqual(DEFAULT_LAYOUT);
-  expect(normalizeLayout({ version: 2, widgets: [] })).toEqual(DEFAULT_LAYOUT);
-  expect(normalizeLayout({ version: 1, widgets: "x" })).toEqual(DEFAULT_LAYOUT);
+  expect(normalizeLayout({ version: 3, widgets: [] })).toEqual(DEFAULT_LAYOUT);
+  expect(normalizeLayout({ version: 2, widgets: "x" })).toEqual(DEFAULT_LAYOUT);
 });
 
 test("normalizeLayout keeps an intentionally empty layout", () => {
-  expect(normalizeLayout({ version: 1, widgets: [] }).widgets).toEqual([]);
+  expect(normalizeLayout({ version: 2, widgets: [] }).widgets).toEqual([]);
 });
 
 test("normalizeLayout drops unknown sources and folder widgets with no folderId", () => {
   const out = normalizeLayout({
-    version: 1,
+    version: 2,
     widgets: [
       w("a"),
       w("b", "nope"),
@@ -66,7 +67,7 @@ test("normalizeLayout drops unknown sources and folder widgets with no folderId"
 
 test("normalizeLayout clamps disallowed size/format to the source default", () => {
   const out = normalizeLayout({
-    version: 1,
+    version: 2,
     widgets: [w("a", "index", "4x1", "cards"), w("b", "tasks", "1x1", "icons")],
   });
   expect(out.widgets[0]).toMatchObject({ size: "1x1", format: "count" });
@@ -74,7 +75,7 @@ test("normalizeLayout clamps disallowed size/format to the source default", () =
 });
 
 test("normalizeLayout gives duplicate/missing ids fresh unique ids", () => {
-  const out = normalizeLayout({ version: 1, widgets: [w("a"), w("a"), { ...w("x"), id: undefined }] });
+  const out = normalizeLayout({ version: 2, widgets: [w("a"), w("a"), { ...w("x"), id: undefined }] });
   expect(new Set(ids(out)).size).toBe(3);
 });
 
@@ -122,7 +123,7 @@ test("removeWidget / setSize / setFormat", () => {
 
 test("app widgets need an appPath and keep it; other sources drop it", () => {
   const out = normalizeLayout({
-    version: 1,
+    version: 2,
     widgets: [
       w("a", "app", "2x2", "live"),
       { ...w("b", "app", "2x1", "live"), appPath: "/w/x" },
@@ -137,4 +138,28 @@ test("app widgets need an appPath and keep it; other sources drop it", () => {
 test("addWidget stores appPath for app widgets", () => {
   const out = addWidget(lay(), "app", { id: "p", appPath: "/w/x" });
   expect(out.widgets[0]).toEqual({ id: "p", source: "app", size: "2x2", format: "live", appPath: "/w/x" });
+});
+
+test("a version-1 layout gets search prepended and is stamped current", () => {
+  const out = normalizeLayout({ version: 1, widgets: [w("a")] });
+  expect(out.version).toBe(2);
+  expect(out.widgets.map((x) => x.source)).toEqual(["search", "apps"]);
+  expect(out.widgets[0]).toMatchObject({ size: "4x1", format: "bar" });
+  expect(normalizeLayout({ version: 1, widgets: [] }).widgets.map((x) => x.source)).toEqual(["search"]);
+});
+
+test("a version-1 layout that somehow has search keeps just that one", () => {
+  const out = normalizeLayout({ version: 1, widgets: [w("a"), w("s", "search", "2x1", "bar")] });
+  expect(out.widgets.map((x) => x.id)).toEqual(["a", "s"]);
+});
+
+test("a current layout without search stays without it", () => {
+  expect(normalizeLayout({ version: 2, widgets: [w("a")] }).widgets.map((x) => x.source)).toEqual(["apps"]);
+});
+
+test("only one search widget: duplicates dropped, add is a no-op", () => {
+  const out = normalizeLayout({ version: 2, widgets: [w("s1", "search", "4x1", "bar"), w("s2", "search", "2x1", "bar")] });
+  expect(ids(out)).toEqual(["s1"]);
+  expect(addWidget(out, "search")).toBe(out);
+  expect(addWidget(lay(w("a")), "search", { id: "s" }).widgets[1]).toEqual({ id: "s", source: "search", size: "4x1", format: "bar" });
 });

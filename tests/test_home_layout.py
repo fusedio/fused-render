@@ -16,8 +16,9 @@ def _client(tmp_path, monkeypatch):
 
 def _layout():
     return {
-        "version": 1,
+        "version": 2,
         "widgets": [
+            {"id": "s", "source": "search", "size": "4x1", "format": "bar"},
             {"id": "a", "source": "apps", "size": "4x1", "format": "cards"},
             {"id": "b", "source": "folder", "size": "2x1", "format": "list", "folderId": "f1"},
         ],
@@ -48,7 +49,8 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     w = {"id": "a", "source": "apps", "size": "4x1", "format": "cards"}
     bad = [
-        {"version": 2, "widgets": []},
+        {"version": 3, "widgets": []},
+        {"version": 0, "widgets": []},
         {"version": 1, "widgets": "x"},
         {"version": 1, "widgets": [1]},
         {"version": 1, "widgets": [{**w, "source": "nope"}]},
@@ -105,3 +107,16 @@ def test_app_path_dropped_on_other_sources_and_when_oversized(tmp_path, monkeypa
     got = client.get("/api/home/layout").json()["layout"]["widgets"]
     assert all("appPath" not in x for x in got)
     assert [x["id"] for x in got] == ["a", "b", "c"]
+
+
+def test_old_version_document_is_kept_as_is(tmp_path, monkeypatch):
+    # The server does not migrate: the client prepends the search widget to a
+    # version-1 document and stamps 2 on its next write.
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    old = {"version": 1, "widgets": [{"id": "a", "source": "apps", "size": "4x1", "format": "cards"}]}
+    (home / "home_layout.json").write_text(json.dumps(old), encoding="utf-8")
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": old}
+    new = {"version": 2, "widgets": [{"id": "s", "source": "search", "size": "2x1", "format": "bar"}, *old["widgets"]]}
+    assert client.put("/api/home/layout", json=new, headers=FUSED).status_code == 200
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": new}

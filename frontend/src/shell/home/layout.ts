@@ -3,6 +3,7 @@
 // validates the same vocabulary); array order is grid order.
 
 export type WidgetSource =
+  | "search"
   | "apps"
   | "playground"
   | "sessions"
@@ -13,7 +14,7 @@ export type WidgetSource =
   | "index"
   | "app";
 export type WidgetSize = "1x1" | "2x1" | "2x2" | "4x1"; // cols x rows
-export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count" | "live";
+export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count" | "live" | "bar";
 
 export interface Widget {
   id: string;
@@ -27,9 +28,13 @@ export interface Widget {
 }
 
 export interface HomeLayout {
-  version: 1;
+  version: typeof LAYOUT_VERSION;
   widgets: Widget[];
 }
+
+/** Current document version. 1 predates the search widget: a version-1 layout
+    gets a search widget prepended on load (normalizeLayout) and is stamped 2. */
+export const LAYOUT_VERSION = 2;
 
 /** Same ceiling the server enforces on PUT. */
 export const MAX_WIDGETS = 48;
@@ -43,6 +48,12 @@ export interface SourceSpec {
 }
 
 export const SOURCES: Record<WidgetSource, SourceSpec> = {
+  search: {
+    label: "File search",
+    description: "Search every file on this machine.",
+    sizes: ["4x1", "2x1"],
+    formats: ["bar"],
+  },
   apps: {
     label: "Fused Apps",
     description: "Your most recently used apps.",
@@ -124,8 +135,9 @@ function makeWidget(
 }
 
 export const DEFAULT_LAYOUT: HomeLayout = {
-  version: 1,
+  version: LAYOUT_VERSION,
   widgets: [
+    makeWidget("search", { id: "default-search" }),
     makeWidget("apps", { id: "default-apps" }),
     makeWidget("playground", { id: "default-playground" }),
     makeWidget("sessions", { id: "default-sessions" }),
@@ -136,15 +148,17 @@ export const DEFAULT_LAYOUT: HomeLayout = {
 /** Fresh copy of the default — callers mutate nothing, but state should never
     alias the module constant. */
 export function defaultLayout(): HomeLayout {
-  return { version: 1, widgets: DEFAULT_LAYOUT.widgets.map((w) => ({ ...w })) };
+  return { version: LAYOUT_VERSION, widgets: DEFAULT_LAYOUT.widgets.map((w) => ({ ...w })) };
 }
 
 /** Whatever came off the wire -> a layout the grid can render. Anything that
-    is not a version-1 document with a widgets array yields the default;
-    an empty array is kept (the user removed everything on purpose). */
+    is not a version-1/2 document with a widgets array yields the default;
+    an empty array is kept (the user removed everything on purpose). A version-1
+    document predates the search widget, so one is prepended and the result is
+    stamped current; later removals then stick. At most one search widget. */
 export function normalizeLayout(raw: unknown): HomeLayout {
   const r = raw as { version?: unknown; widgets?: unknown } | null;
-  if (!r || typeof r !== "object" || r.version !== 1 || !Array.isArray(r.widgets)) {
+  if (!r || typeof r !== "object" || (r.version !== 1 && r.version !== LAYOUT_VERSION) || !Array.isArray(r.widgets)) {
     return defaultLayout();
   }
   const seen = new Set<string>();
@@ -158,6 +172,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     if (source === "folder" && !folderId) continue;
     const appPath = typeof x.appPath === "string" && x.appPath ? x.appPath : undefined;
     if (source === "app" && !appPath) continue;
+    if (source === "search" && widgets.some((x) => x.source === "search")) continue;
     const spec = SOURCES[source];
     let id = typeof x.id === "string" && x.id ? x.id : "";
     if (!id || seen.has(id)) id = newWidgetId();
@@ -174,7 +189,16 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     if (source === "app") w.appPath = appPath;
     widgets.push(w);
   }
-  return { version: 1, widgets };
+  if (r.version === 1 && !widgets.some((x) => x.source === "search")) {
+    widgets.unshift(makeWidget("search"));
+    if (widgets.length > MAX_WIDGETS) widgets.length = MAX_WIDGETS;
+  }
+  return { version: LAYOUT_VERSION, widgets };
+}
+
+/** True when the layout already has a search widget (only one is allowed). */
+export function hasSearch(layout: HomeLayout): boolean {
+  return layout.widgets.some((w) => w.source === "search");
 }
 
 export function moveWidget(layout: HomeLayout, from: number, to: number): HomeLayout {
@@ -192,6 +216,7 @@ export function addWidget(
   opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize } = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
+  if (source === "search" && hasSearch(layout)) return layout;
   return { ...layout, widgets: [...layout.widgets, makeWidget(source, opts)] };
 }
 
@@ -246,6 +271,7 @@ export const FORMAT_LABELS: Record<WidgetFormat, string> = {
   board: "Board",
   count: "Count",
   live: "Live",
+  bar: "Search bar",
 };
 
 /** Menu labels for sizes. */

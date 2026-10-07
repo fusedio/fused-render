@@ -15,9 +15,12 @@ router = APIRouter()
 
 MAX_WIDGETS = 48
 MAX_APP_PATH = 4096
-SOURCES = {"apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index", "app"}
+# Version 1 predates the search widget; the client prepends one when it loads a
+# version-1 document and stamps 2. The server keeps whichever version it was given.
+VERSIONS = {1, 2}
+SOURCES = {"search", "apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index", "app"}
 SIZES = {"1x1", "2x1", "2x2", "4x1"}
-FORMATS = {"cards", "list", "icons", "board", "count", "live"}
+FORMATS = {"cards", "list", "icons", "board", "count", "live", "bar"}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -33,7 +36,7 @@ def _path() -> str:
 
 def _clean(doc) -> dict | None:
     """Validated copy of `doc` with unknown keys dropped, or None if invalid."""
-    if not isinstance(doc, dict) or doc.get("version") != 1:
+    if not isinstance(doc, dict) or doc.get("version") not in VERSIONS:
         return None
     widgets = doc.get("widgets")
     if not isinstance(widgets, list) or len(widgets) > MAX_WIDGETS:
@@ -56,7 +59,7 @@ def _clean(doc) -> dict | None:
         if w["source"] == "app" and isinstance(ap, str) and 0 < len(ap) <= MAX_APP_PATH:
             item["appPath"] = ap
         out.append(item)
-    return {"version": 1, "widgets": out}
+    return {"version": doc["version"], "widgets": out}
 
 
 @router.get("/api/home/layout")
