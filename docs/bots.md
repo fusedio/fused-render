@@ -1253,4 +1253,8 @@ that approvals / builds / encryption / contacts / routines stay the
 user's); the `YOU:` line says "Only the user changes your settings; the
 BOTS' … you change with `bot_settings`" on Super Bot. `bots_section` lines
 now carry `<model>/<effort>; face <words>` so the model quotes the current
-value before changing it.
+value before changing it. The OTHER bots learn the second door too
+(`bot.settings_rule`, both engines' `YOU:` line, and `@SETTINGS_DOORS@` in
+`APP_GUIDE`): once a Super Bot exists, "change your name to X" is answered
+with both ways (Settings dialog, or ask Super Bot), never with "only you
+can, in Settings" alone; without one the old sentence stands.

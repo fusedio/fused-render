@@ -308,17 +308,16 @@ def first_message(bot, task: str, past=None, page: dict | None = None) -> str:
     if tr:
         appr += f" (trusted apps, never ask: {', '.join(tr)})"
     origin = channels.origin_label(bot)
+    botmod = _botmod()
     ea_s = ""
     if tools.is_super(bot):
         ea_s = (" · Mac access: " + ("unattended (Claude Code's own judgement approves safe calls; the rest ask)"
                                      if super_mode(bot) == "auto" else "ask before writes, edits and shell commands"))
     cfg_s = (f"YOU: {m.get('name')!r} · model {m.get('model') or DEFAULT_MODEL} · effort {m.get('effort') or DEFAULT_EFFORT} · "
              f"approvals: {appr}{ea_s} · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. "
-             + ("Only the user changes your settings; the BOTS' name, instructions, model, effort and face you change with "
-                "`bot_settings`, each time behind an approval card." if tools.is_super(bot) else "Only the user changes settings.")
+             + (botmod.settings_rule(bot) if botmod is not None else "Only the user changes settings.")
              + "\n\n" + channels.prompt_for(bot))
     guide_s = ""
-    botmod = _botmod()
     if botmod is not None and botmod.APP_GUIDE_TRIGGER.search(task or ""):
         n_skills = len(_call(getattr(bot, "skills", lambda: []), []))
         mem_lines = len([ln for ln in str(_call(getattr(bot, "memory", lambda: ""), "")).splitlines() if ln.strip()])

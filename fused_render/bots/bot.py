@@ -112,7 +112,7 @@ def _artifacts_root() -> str:
 # and feature without paying for the text on ordinary browsing steps. `@APPS_ROOT@`
 # is substituted when the prompt is built (app_guide()), so FUSED_RENDER_DIR applies.
 APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own Chrome and its own settings):
-- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Instructions (your STANDING INSTRUCTIONS); Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
+- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
@@ -130,8 +130,25 @@ APP_GUIDE_TRIGGER = re.compile(
 
 
 def app_guide() -> str:
-    """APP_GUIDE with the apps root filled in (resolved now, not at import)."""
-    return APP_GUIDE.replace("@APPS_ROOT@", _builds_root())
+    """APP_GUIDE with the apps root and the settings doors filled in (resolved now, not at import)."""
+    doors = ("Two ways to change a bot's name, avatar, model, effort or instructions: the user edits them in Settings, or asks "
+             f"{SUPER_NAME} (its `bot_settings` tool rewrites them behind an approval card the user clicks); a bot never changes "
+             "its own, so when asked, offer both doors. " if super_id() else "")
+    return APP_GUIDE.replace("@APPS_ROOT@", _builds_root()).replace("@SETTINGS_DOORS@", doors)
+
+
+def settings_rule(bot) -> str:
+    """The `YOU:` line's closing sentence (both engines): who may change this bot's
+    settings. Super Bot changes the BOTS' (docs §12); an ordinary bot's are the user's,
+    directly or through Super Bot when one exists, and the bot says so when asked."""
+    if is_super(getattr(bot, "meta", None)):
+        return ("Only the user changes your settings; the BOTS' name, instructions, model, effort and face you change with "
+                "`bot_settings`, each time behind an approval card.")
+    if super_id():
+        return (f"Only the user changes your settings: in your Settings dialog, or by asking {SUPER_NAME}, which can rename you and "
+                "change your avatar, model, effort and instructions once the user approves its card. When asked to change one, say "
+                "both ways; never pretend to have changed it.")
+    return "Only the user changes settings."
 
 
 _YES = re.compile(r"^\s*(y|yes|yep|yeah|ok|okay|sure|approve|approved|go(?!\s+(to|back|on|and)\b)|go ahead|do it|proceed|confirm|allow)\b", re.I)  # "go to X instead" is not a yes

@@ -450,7 +450,7 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
     appr = "ask before irreversible actions" if (m.get("approval") or "ask") != "auto" else "never ask"
     origin = channels.origin_label(bot)
     cfg_s = (f"YOU: {m.get('name')!r} · model {m.get('model') or botmod.DEFAULT_MODEL} · effort {m.get('effort') or botmod.DEFAULT_EFFORT} · approvals: {appr}"
-             f" · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. Only the user changes settings.\n\n"
+             f" · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. {botmod.settings_rule(bot)}\n\n"
              + channels.prompt_for(bot))
     # The app guide is mounted like a skill: only when the task or a recent user line asks about the app itself.
     recent_user = " ".join(h for h in history[-14:] if h.startswith(("USER INSTRUCTION:", "USER ANSWER:")))
