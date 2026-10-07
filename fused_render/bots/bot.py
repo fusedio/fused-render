@@ -1158,12 +1158,19 @@ class Bot:
 
     _setup_probe_at = 0.0  # last Claude-health measure made for the setup (one per minute at most)
 
+    def opened(self):
+        """`POST /api/bots/<id>/open`: the user clicked this bot open (or deep-linked
+        to it). The one door to Super Bot's first task; a status poll or the page
+        landing on Super Bot by default never counts (owner's rule, 2026-10-07)."""
+        self._maybe_super_setup(opened=True)
+
     def _maybe_super_setup(self, opened=False):
         """The seeded Super Bot's setup (SUPER_SETUP): the Google sign-in, then the
         social-bot offer. Runs the first time the user OPENS Super Bot (`opened`:
-        the Bots page's status poll with it selected), once Claude is linked and
-        the bot is idle; never from the routines tick, so onboarding or a
-        background pass cannot pop the sign-in window while the user is elsewhere.
+        the page's explicit `open` call from a click or a deep link), once Claude
+        is linked and the bot is idle; never from a poll or the routines tick, so
+        onboarding, a background pass or the page landing on Super Bot by default
+        cannot pop the sign-in window.
         The health check reads the cached snapshot; an empty cache is measured
         once a minute in the background."""
         if not opened or not is_super(self.meta) or not (self.meta.get("setup") or "").strip():

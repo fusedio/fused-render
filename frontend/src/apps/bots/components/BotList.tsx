@@ -7,7 +7,7 @@ import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNot
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { waitingUnread } from "../lib/unread";
-import { openDialog, select, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
+import { openBot, openDialog, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
 import { Face } from "./Face";
 
 export interface BotListProps {
@@ -34,7 +34,7 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
   const ho = b.kind === "super" ? activeHandoff(b) : null;
   return (
     <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title="Right-click for options"
-      onClick={() => select(b.id)}
+      onClick={() => openBot(b.id)}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu(b.id, e.clientX, e.clientY); }}>
       {/* The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. */}
       <span className={`av${sel ? " settings" : ""}`} title={sel ? "Settings" : undefined}

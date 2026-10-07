@@ -194,6 +194,16 @@ function writeUrlBot(id: string | null) {
   } catch { /* no history (tests) */ }
 }
 
+const openedOnce = new Set<string>();
+/** A user gesture opened the bot (a row click, a deep link): tell the server once per bot per page load. The page
+ *  landing on Super Bot by default is NOT an open (its first task must wait for the user to come to it). */
+export function openBot(id: string): void {
+  select(id);
+  if (openedOnce.has(id)) return;
+  openedOnce.add(id);
+  void act(() => api.open(id), true);
+}
+
 export function select(id: string | null): void {
   batch(() => {
     if (id !== S.sel) { for (const cb of [...selectListeners]) cb(id); clearToast(); }  // a reply and a status toast belong to one bot
@@ -301,6 +311,7 @@ export function startStore(): () => void {
   const urlBot = initialSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
   else if (!urlBot && S.sel) writeUrlBot(S.sel);
+  if (urlBot && !openedOnce.has(urlBot)) { openedOnce.add(urlBot); void act(() => api.open(urlBot), true); }  // a deep link is an open
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);

@@ -109,11 +109,6 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
                 b.browser.lock.release()
     except Exception:  # noqa: BLE001
         pass
-    if shot_for == b.id and idle and not running:
-        try:
-            b._maybe_super_setup(opened=True)  # Super Bot's first task starts the moment the user opens it
-        except Exception:  # noqa: BLE001
-            pass
     if b.idle_sleep_due(shot_for == b.id):
         # Quitting Chrome (and sealing for encrypted bots) takes seconds: off the poll
         # thread. The sleep thread takes the browser RLock itself (a lock taken here
@@ -416,13 +411,14 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
 
 
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
-            "giveback": "giveback", "wake": "wake_browser"}
+            "giveback": "giveback", "wake": "wake_browser", "open": "opened"}
 
 
 @router.post("/api/bots/{bid}/{op}")
 @_handled
 def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
-    """pause | resume | stop | takeover | giveback | wake, and the rest of the
+    """pause | resume | stop | takeover | giveback | wake | open (the user clicked the bot open: Super Bot's
+    first task, docs §5), and the rest of the
     one-segment POSTs (window, goto, nav, tab, attach, react, flag, settings,
     profile, clone, routines, skills, reveal, tool)."""
     guard = _require_fused(x_fused)
