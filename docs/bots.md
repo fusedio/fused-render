@@ -189,7 +189,7 @@ live view is open), exactly as OpenBot polled `status`.
 GET    /api/bots?cursors=<json {id: seq}>&shot_for=<id>&fast=0|1       -> status reply (section 2)
 POST   /api/bots                      {name, model, effort, instructions, approval, build_access, encrypt, preset?} -> {ok, id}
                                        (preset: a key from /api/bots/presets, "" = blank; unknown key -> 400, no bot made)
-GET    /api/bots/presets              -> {ok, presets: [{key, name, color, order, model, instructions, apps, skills: [title]}]}
+GET    /api/bots/presets              -> {ok, presets: [{key, name, color, order, model, instructions, setup, apps, skills: [title]}]}
 GET    /api/bots/profiles             -> {ok, profiles: [{dir, name, email}]}
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
@@ -480,8 +480,8 @@ profile, encryption), Memory, and Phone on Super Bot (`PhoneSection.tsx`,
 
 **Presets** (`bots/presets.py`, data in `fused_render/bots/presets/<key>/`,
 shipped inside the package). One folder per site: `preset.json` (`name`,
-`color`, `order`, `model`, `instructions`, optional `apps`) plus four to six
-playbook `.md` files in the Skills format. `POST /api/bots` with `preset`
+`color`, `order`, `model`, `instructions`, optional `apps`, optional `setup`)
+plus four to six playbook `.md` files in the Skills format. `POST /api/bots` with `preset`
 runs `apply_preset` before the greeting: the playbooks are copied into the
 bot's own skills (editable per bot), `meta.preset = key`, `meta.face =
 {icon: key, color, shape: ""}` (the page draws the brand mark), and the
@@ -492,7 +492,15 @@ with `login`), and each playbook names exact URLs, how many items to open so
 a run fits the step budget, and stops before any send/post/apply for
 approval. `apps` lists starter keys installed when missing (below), so the
 Google Docs, Google Sheets and Apple Notes presets run on tools, not browsing;
-a system line says what was installed. Add a folder to add a preset.
+a system line says what was installed. `setup` is a task the bot runs by itself
+right after the greeting (`greet` pops it from `meta.setup`, where
+`apply_preset` left it, so it runs once): the seven social presets (x,
+instagram, linkedin, tiktok, facebook, reddit, youtube) open the site's own
+sign-in URL and use `login`, so the user is asked to log in the moment the bot
+exists rather than when the first real task hits the wall; a signed-in profile
+is redirected to the feed and the bot just reports ready. A task typed during
+the greeting wins and the setup is dropped (its first task asks instead). Add a
+folder to add a preset.
 
 **Starter apps** (`bots/starters.py`, port of OpenBot `installapp.py`; data in
 `fused_render/bots/starters/<key>/`, shipped inside the package with their

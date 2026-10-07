@@ -1099,9 +1099,28 @@ class Bot:
             # A task typed while the greeting was being written went to the inbox
             # (send() saw this thread alive). It is the user's first task: run it
             # now instead of dropping it with the greeting.
-            queued = self._drain_inbox()
+            setup = (self.meta.pop("setup", None) or "").strip()  # a preset's first task (presets.py): once
+            if setup:
+                self.save()
+            with self.lock:
+                # This greeting thread IS self.thread, and start_task refuses while
+                # self.thread is alive: hand the slot over before starting a task.
+                # Drain under the same lock: receive() queues into the inbox only
+                # while it sees this thread alive, so nothing can land between the
+                # drain and the hand-over; a message after it starts its own task,
+                # which then wins over the setup (start_task refuses a second one).
+                queued = self._drain_inbox()
+                if self.thread is threading.current_thread():
+                    self.thread = None
             if queued:
                 self.start_task("\n".join(queued), label=queued[0])
+            elif setup:
+                # A site preset's setup task: open the sign-in page and pop the
+                # login window, so the user is asked to log in now rather than
+                # when the first real task hits the wall. A task the user typed
+                # meanwhile wins; the setup is dropped (its first task will ask).
+                self.emit("system", "Opening the sign-in page now so you can log in before the first task.")
+                self.start_task(setup, label=f"Sign in to {self.meta.get('name') or 'the site'}", origin="setup")
             else:
                 self.set_status("idle", note="")
         self.thread = threading.Thread(target=go, daemon=True, name=f"greet-{self.id}")
@@ -2883,7 +2902,8 @@ def _write_new_meta(bid, meta):
 def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True):
     """A new bot: bot.json, a `created` line, the greeting (background). Returns the Bot.
     With `preset` (a key under bots/presets/) its playbooks, brand face, standing
-    rules and starter apps are applied before the greeting, so it introduces them.
+    rules and starter apps are applied before the greeting, so it introduces them;
+    a preset `setup` task (sign in to the site) runs right after the greeting.
     `kind="super"` makes Super Bot (KINDS): one per install, a Claude model, its own
     face and standing rules unless the user typed some; a preset does not apply.
     `greet=False` skips the model-written hello (the seeded Super Bot writes a fixed line)."""
