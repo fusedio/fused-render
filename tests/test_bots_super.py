@@ -339,6 +339,23 @@ def test_handoff_done_carries_the_request_on(pair):
     assert "Five posts about Claude." in handoffs.handoffs_section(sb)
 
 
+def test_handoff_from_the_phone_carries_on_over_the_phone(pair):
+    sb, t, gate = pair
+    sb.meta["task"] = "text me my X digest"
+    sb.task_via = {"kind": "imessage", "addr": "+15550100"}  # the asking task came in by text
+    sb.handoff("scout", "read X")
+    (hd,) = rows(sb).values()
+    assert hd["origin_via"] == {"kind": "imessage", "addr": "+15550100"}
+    t.emit("done", "Three posts.", via=chan.handoff_via(sb.id, hd["id"]))
+    release(t, gate)
+    assert hd["continued"] is True
+    # the carry-on runs on the phone's channel (replies go back there) under its own ledger origin
+    assert sb.task_via == {"kind": "imessage", "addr": "+15550100"} and sb.task_origin == botmod.HANDOFF_CONTINUE_ORIGIN
+    if sb.thread is not None:
+        gate.set(); sb.thread.join(5)
+    assert len(_carry_on_turns(sb)) == 1
+
+
 def test_handoff_does_not_carry_on_when_the_user_spoke_or_it_failed(pair):
     sb, t, gate = pair
     sb.meta["task"] = "find flights"
