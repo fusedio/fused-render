@@ -31,6 +31,12 @@
 # Under the reloader the server runs with --no-browser (so a save doesn't spawn
 # a new tab); dev.sh opens the browser once, after the port comes up.
 #
+# Output lines worth waiting for (scripts, agent sessions):
+#   * `==> dev port: N …`   — first lines; the port this run will bind.
+#   * `==> ready: http://127.0.0.1:N/` — the server accepts connections. Grep
+#     for THIS, not for cli.py's "serving at" (printed before uvicorn binds).
+#   * `==> NOT ready: …`    — nothing listened within 120 s; the cause is above.
+#
 # Knobs:
 #   * --no-browser (passed through): dev.sh won't open a tab either.
 #   * --cleanup: reap this worktree's running dev.sh tree and exit, starting
@@ -392,6 +398,24 @@ PORT="$(dev_effective_port "$@")"
 if [[ -z "$PORT" ]]; then
   echo "==> NOTE: no interpreter on PATH yet, so the dev port is still unknown;" >&2
   echo "    skipping the post-reap port wait (re-derived after the venv is ready)." >&2
+else
+  # Say the port up front, in the first lines of output, so a script (or an agent
+  # tailing the log) knows where the server will appear before the build even
+  # starts. The "serving at" line cli.py prints comes a minute later on a fresh
+  # checkout — and it prints BEFORE uvicorn binds, which is why `curl` right after
+  # it got connection refused in session after session. The `==> ready:` line
+  # further down is the one that means "accepting connections".
+  case "$(printf '%s' "${FUSED_RENDER_BRANCH:-}" | tr '[:upper:]' '[:lower:]')" in
+    ""|main|master|head)
+      echo "==> dev port: $PORT — NO branch isolation (branch '${FUSED_RENDER_BRANCH:-?}'):"
+      echo "    this is the installed desktop app's port and state dir (~/.fused-render)."
+      echo "    If the app is running, the bind fails below ('port … is already in use');"
+      echo "    pass --port N or FUSED_RENDER_BRANCH=<name> to run isolated."
+      ;;
+    *)
+      echo "==> dev port: $PORT (branch '$FUSED_RENDER_BRANCH'; state under ~/.fused-render/branches/)"
+      ;;
+  esac
 fi
 
 # Reap a previous dev.sh for THIS worktree. Restarting is nearly always what the
@@ -438,6 +462,11 @@ STALE_DEAD=0
 STALE_KEPT=""
 for _pf in "$DEV_PIDFILE" "$REPO_ROOT"/.dev-pids/*; do
   [[ -f "$_pf" ]] || continue
+  # Not a record: the server wrapper this script writes into the same dir
+  # (serve.sh, further down). Read as a pidfile its first line is `#!/usr/bin/env
+  # bash`, which the branch below files as a dead record and deletes — and
+  # `--cleanup` then reports "only dead records to tidy up" on a clean tree.
+  case "$_pf" in *.sh) continue ;; esac
   rec_pid="" rec_start="" rec_root=""
   { read -r rec_pid || true; read -r rec_start || true; read -r rec_root || true; } < "$_pf"
   if dev_pidfile_is_ours "$rec_pid" "$rec_start" "$rec_root"; then
@@ -558,6 +587,16 @@ export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fu
 # (including "0", to see the production banner from a dev checkout).
 export FUSED_RENDER_DEV="${FUSED_RENDER_DEV:-1}"
 
+# Unbuffered server stdout. dev.sh is nearly always run as
+# `nohup scripts/dev.sh > dev.log &` and then tailed; with stdout a file, the
+# server's print()s — "fused-render serving at …", "start dir:", the log path —
+# sit in an 8 KB block buffer and only land in the log when the process exits
+# (watchfiles' SIGINT on the next restart flushed them, which is how a session
+# saw the PREVIOUS server's banner appear right after a change). Uvicorn's own
+# lines go through logging to stderr and were never affected, which made the
+# ordering in the log look impossible. Respect an already-set value.
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+
 # Python: active venv first, then the repo-local .venv. With neither, bootstrap
 # a repo-local .venv (with the `dev` + `fused` + `bundled` extras) so a fresh
 # worktree is self-contained. Without this the fallback was bare `python3` on
@@ -606,6 +645,22 @@ install_python_deps() {
     (cd "$REPO_ROOT" && "$1/bin/python" -m pip install -e ".[dev,fused,bundled]")
   fi
 }
+
+# A SYMLINKED .venv is removed before anything reads it. Agents working in a git
+# worktree link the main checkout's venv in to get pytest going, then run
+# dev.sh — and the dependency resync below would `pip install -e <this
+# worktree>` INTO the main checkout's venv, repointing its editable install at
+# this branch. Every server the main checkout runs from then on imports this
+# worktree's code. `-L` is tested before `-x`, which follows the link. Removing
+# the link touches nothing on the other side; the bootstrap below then builds a
+# real venv for this worktree (about a minute with uv).
+if [[ -L "$REPO_ROOT/.venv" ]]; then
+  echo "==> $REPO_ROOT/.venv is a symlink (-> $(readlink "$REPO_ROOT/.venv")) — removing it:"
+  echo "    a linked venv belongs to another checkout, and the dependency sync would"
+  echo "    install THIS worktree into it as the editable fused_render. A real .venv"
+  echo "    is bootstrapped below instead."
+  rm "$REPO_ROOT/.venv"
+fi
 
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PY="$VIRTUAL_ENV/bin/python"
@@ -720,6 +775,23 @@ export FUSED_RENDER_APP_PYTHON="${FUSED_RENDER_APP_PYTHON:-$PY}"
 # module — reinstall to reconcile. `-nt` also fires when the marker is absent
 # entirely (never installed, or a non-npm install left no marker), so a
 # markerless node_modules self-heals on the next run.
+#
+# Same symlink rule as .venv above, for the two frontend paths a worktree gets
+# linked from the main checkout (the pytest shortcut: a linked shell-dist/ makes
+# the `client` fixture pass without a build). Under dev.sh they are hazards, not
+# shortcuts: `rm -f "$DIST_INDEX"` below and vite's emptyOutDir both follow the
+# link and wipe the OTHER checkout's bundle — every route of a server running
+# there 500s until this worktree's watch rebuilds it, and keeps doing so on
+# every edit here — and an `npm install` follows a linked node_modules the same
+# way. Three sessions in a row had to remember to `rm` the link by hand before
+# starting; now the script does.
+for _link in "$FRONTEND/node_modules" "$REPO_ROOT/fused_render/static/shell-dist"; do
+  if [[ -L "$_link" ]]; then
+    echo "==> $_link is a symlink (-> $(readlink "$_link")) — removing it: the vite"
+    echo "    watch (and npm install) would write through it into the other checkout."
+    rm "$_link"
+  fi
+done
 if [[ ! -d "$FRONTEND/node_modules" ]]; then
   echo "==> npm install (first run)"
   (cd "$FRONTEND" && npm install --no-audit --no-fund)
@@ -807,35 +879,81 @@ if [[ "$RELOAD" -eq 1 ]]; then
     fi
   fi
 
-  # One-shot opener: wait for the port to accept a connection, then open the tab.
-  if [[ "$NO_BROWSER" -eq 0 && -n "$PORT" ]]; then
+  # Readiness probe, ALWAYS — not only when a browser tab is wanted. Waits for
+  # the port to accept a connection, then prints the one line that means "up":
+  #
+  #     ==> ready: http://127.0.0.1:<port>/
+  #
+  # This is the line to wait for from a script or an agent session. Before it
+  # existed every session grepped its own mix of "Uvicorn running", "serving
+  # at" and "startup complete" out of the log — and "serving at" is printed by
+  # cli.py BEFORE uvicorn binds, so a curl right after it was refused. The tab
+  # is opened only on success (a port-guard SystemExit must not pop a dead tab)
+  # and only without --no-browser; the probe itself does not depend on either.
+  if [[ -n "$PORT" ]]; then
     (
       ready=0
-      for _ in $(seq 1 120); do
+      # 120 s: a cold first import on a loaded machine has taken over a minute.
+      for _ in $(seq 1 240); do
         if "$PY" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1', $PORT))==0 else 1)" 2>/dev/null; then
           ready=1
           break
         fi
         sleep 0.5
       done
-      # Only open if the server actually came up — otherwise (e.g. the port
-      # guard SystemExited on a stale server) we'd pop a dead tab after timeout.
       if [[ "$ready" -eq 1 ]]; then
         URL="http://127.0.0.1:$PORT/"
-        # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
-        # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
-        # builtin, not a binary on PATH). Pass the URL through argv, not
-        # interpolated into the -c source: a path with an apostrophe
-        # (e.g. a home dir containing ') would otherwise break the string literal.
-        "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true
+        echo "==> ready: $URL"
+        if [[ "$NO_BROWSER" -eq 0 ]]; then
+          # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
+          # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
+          # builtin, not a binary on PATH). Pass the URL through argv, not
+          # interpolated into the -c source: a path with an apostrophe
+          # (e.g. a home dir containing ') would otherwise break the string literal.
+          "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true
+        fi
+      else
+        echo "==> NOT ready: nothing is listening on 127.0.0.1:$PORT after 120 s —" >&2
+        echo "    look above for a traceback or 'port $PORT is already in use'." >&2
       fi
     ) &
     OPENER_PID=$!
   fi
 
+  # The server is started through a tiny wrapper that waits for the shell bundle
+  # before exec-ing the real thing. `vite build --watch` empties shell-dist/ on
+  # EVERY rebuild, not just the first (emptyOutDir, ~4-6 s per rebuild), and
+  # watchfiles restarts the server on every .py save. A save that touches both
+  # halves — one commit, one agent — lands the restart inside that window,
+  # create_app raises "React shell not built", and watchfiles does NOT relaunch
+  # a process that exited on its own: the server stayed dead until the next .py
+  # edit, in two sessions a week. The wrapper closes the gap; the bound (60 s)
+  # keeps a genuinely broken build from hanging the restart silently — after it,
+  # the real error surfaces as before. Rewritten on every run (the path and the
+  # interpreter are baked in); .dev-pids/ is gitignored.
+  SERVE_WRAPPER="$REPO_ROOT/.dev-pids/serve.sh"
+  {
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      '# Written by scripts/dev.sh on every run; do not edit. Holds the server start' \
+      '# while the vite watch has shell-dist/ emptied for a rebuild, then becomes' \
+      '# the server (exec), so watchfiles signals the real process.' \
+      "DIST_INDEX=$(printf '%q' "$DIST_INDEX")" \
+      'waited=0' \
+      'while [[ ! -f "$DIST_INDEX" && "$waited" -lt 300 ]]; do' \
+      '  if [[ "$waited" -eq 0 ]]; then' \
+      '    echo "==> shell bundle missing (vite rebuilding) — holding the server start until it is back"' \
+      '  fi' \
+      '  sleep 0.2' \
+      '  waited=$((waited + 1))' \
+      'done' \
+      "exec $(printf '%q' "$PY") -m fused_render.cli \"\$@\""
+  } > "$SERVE_WRAPPER"
+
   # watchfiles wants the target as a single shell-command string, then the watch
-  # paths. printf %q quotes $PY and each passthrough arg so paths/args with
-  # spaces survive. --filter python watches only *.py under the whole
+  # paths. It shlex-splits that string and Popens the list (no shell), so
+  # printf %q quotes the wrapper path and each passthrough arg so paths/args
+  # with spaces survive. --filter python watches only *.py under the whole
   # fused_render/ tree, so vite's shell-dist output (.html/.js/.css) never
   # triggers a restart. Editing a template UDF (fused_render/templates/**/*.py)
   # triggers a harmless extra server restart; we don't exclude templates/
@@ -846,7 +964,9 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # default `serve` only when argv[0] isn't already a subcommand, so a leading
   # `serve` (e.g. `dev.sh serve --port N`) must stay argv[0]. Prepending
   # --no-browser would shift it and trigger a duplicate-`serve` parse error.
-  CMD="$(printf '%q' "$PY") -m fused_render.cli"
+  # `bash` by name, not $BASH: under git-bash the Windows python that runs
+  # watchfiles cannot resolve an msys /usr/bin path, but finds bash on PATH.
+  CMD="bash $(printf '%q' "$SERVE_WRAPPER")"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
   CMD+=" --no-browser"
   # BACKGROUNDED, then waited on — not run in the foreground, which is how this
