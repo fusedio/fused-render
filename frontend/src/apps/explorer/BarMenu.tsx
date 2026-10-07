@@ -52,11 +52,16 @@ function useMenuAnchor(align: "left" | "right" = "left") {
   const rootRef = useRef<HTMLDivElement | null>(null);
   // The popup is portaled out of `rootRef`'s subtree, so "inside" is either.
   const popupRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!pos) return;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
+      // A press on the scrim is the scrim's to answer, on the CLICK (below):
+      // closing here would unmount it mid-press and let the release land on
+      // whatever chrome sat under it (Bugbot on #1450).
+      if (backdropRef.current?.contains(t)) return;
       if (!rootRef.current?.contains(t) && !popupRef.current?.contains(t)) setPos(null);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -97,7 +102,39 @@ function useMenuAnchor(align: "left" | "right" = "left") {
     );
   };
 
-  return { pos, rootRef, popupRef, toggle, close: () => setPos(null) };
+  const close = () => setPos(null);
+  // THE SCRIM UNDER THE POPUP. The outside-pointerdown listener above never
+  // hears a press that lands in an iframe — the preview's own content pane is
+  // one, and so is every panel pane — and the window-blur fallback only fires
+  // when focus actually MOVES: the trigger refuses focus on mouse-down (see
+  // OverflowMenu), so a reader whose focus was already inside the frame could
+  // click the preview all day and the menu stayed up (Akshil, 2026-10-06). A
+  // transparent fixed layer under the popup catches that press in THIS
+  // document instead, wherever it lands. It closes on the CLICK, not the
+  // press, so it stays up for the whole of it: closing on pointerdown would
+  // unmount the scrim before mouseup and hand the release to the tab, row or
+  // control that sat beneath (Bugbot on #1450). A wheel over it closes too (a
+  // menu pinned over a page that scrolled under it is a bug, same as
+  // ContextMenu; the scroll itself goes through — React's wheel listener is
+  // passive).
+  const backdrop = pos
+    ? createPortal(
+        <div
+          ref={backdropRef}
+          className="bar-menu-backdrop"
+          data-testid="bar-menu-backdrop"
+          onClick={close}
+          onWheel={close}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            close();
+          }}
+        />,
+        document.body
+      )
+    : null;
+
+  return { pos, rootRef, popupRef, toggle, close, backdrop };
 }
 
 function CaretIcon({ open }: { open: boolean }) {
@@ -172,7 +209,7 @@ interface ModeMenuProps {
 }
 
 export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
-  const { pos, rootRef, popupRef, toggle, close } = useMenuAnchor();
+  const { pos, rootRef, popupRef, toggle, close, backdrop } = useMenuAnchor();
   const activeEntry = entries.find((e) => e.mode === active) ?? null;
   // One ROW is not a choice — the same rule the icon strips used — unless
   // nothing is active (a caller whose surface can show no mode at all, e.g. the
@@ -226,6 +263,7 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
         </span>
         <CaretIcon open={pos !== null} />
       </button>
+      {backdrop}
       {pos &&
         createPortal(
         <div
@@ -320,7 +358,7 @@ export function OverflowMenu({
   // row inside a closed menu is a dot nobody sees.
   badge?: ReactNode;
 }) {
-  const { pos, rootRef, popupRef, toggle, close } = useMenuAnchor("right");
+  const { pos, rootRef, popupRef, toggle, close, backdrop } = useMenuAnchor("right");
   if (items.length === 0) return null;
   return (
     <div className="bar-overflow" ref={rootRef}>
@@ -342,6 +380,7 @@ export function OverflowMenu({
         <EllipsisIcon />
         {badge && <span className="bar-overflow-badge">{badge}</span>}
       </button>
+      {backdrop}
       {pos &&
         createPortal(
         <div

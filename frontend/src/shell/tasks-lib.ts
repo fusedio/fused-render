@@ -1623,6 +1623,7 @@ export function taskHref(
     key?: string;
     status?: string;
     entry_origin?: string;
+    entry?: string;
   },
 ): string | null {
   const href = taskHrefView(task);
@@ -1638,9 +1639,21 @@ function taskHrefView(
     key?: string;
     status?: string;
     entry_origin?: string;
+    entry?: string;
   },
 ): string | null {
-  if (task.session_id) return explorerUrl(task.target || task.project, task.session_id);
+  /**
+   * THE APP, NOT ITS FOLDER (Akshil, 2026-10-06). A task on an app folder used
+   * to land on the folder's LISTING with the chat beside it; the thing the
+   * reader wants to see next to that conversation is the app itself. `entry`
+   * is the server's answer to "what page does this folder open as" (the
+   * fused-app marker rule, else a plain index.html) and is "" / absent for a
+   * folder that is not an app and for a file target — both keep the old door.
+   * Same /view codec either way: the chat pane on an entry page is the shape
+   * every task made from inside an app already has.
+   */
+  const where = task.entry || task.target || task.project;
+  if (task.session_id) return explorerUrl(where, task.session_id);
   /**
    * A QUEUED TASK IS NOT A DEAD END ANY MORE (2026-09-12).
    *
@@ -1675,7 +1688,6 @@ function taskHrefView(
    */
   if ((task.entry_origin || "") !== CHAT_ENTRY_ORIGIN) return null;
   const queued = pendingEntryId(task.key || "");
-  const where = task.target || task.project;
   if (queued && where) return chatUrl(where, "", queued);
   return null;
 }

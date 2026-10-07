@@ -3091,6 +3091,13 @@ export interface Task {
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
   project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
   target: string; // what the task actually points at (may be that file)
+  // The app page a FOLDER target opens as, "" when the folder is not an app:
+  // its entry page by the `<meta name="fused-app">` rule (app_listing.app_entry),
+  // else a plain `index.html` when one is there. A task's door lands on this
+  // rather than the folder listing (Akshil, 2026-10-06: "any folder we open from
+  // the tasks page should open app by default"). Optional: pulse rows and older
+  // fixtures do not carry it, and a missing value reads as "not an app".
+  entry?: string;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic

@@ -2642,6 +2642,46 @@ def _workdir(target: str) -> str:
     return target if os.path.isdir(target) else os.path.dirname(target)
 
 
+# `_task_entry`'s memo: folder -> (dir mtime, answer). `_row` runs for every
+# task on every listing poll, and a listdir per app folder per poll adds up on a
+# long list; a folder whose mtime has not moved has not gained or lost a page.
+_ENTRY_MEMO: dict[str, tuple[float, str]] = {}
+
+
+def _task_entry(target: str) -> str:
+    """The app page a FOLDER target opens as, "" for anything else.
+
+    Akshil, 2026-10-06: "any folder we open from the tasks page should open
+    app by default". The shell's door (`tasks-lib.taskHref`) lands on this
+    instead of the folder listing when it is set. Two rules, in order: the
+    marker rule every other app surface uses (`app_listing.app_entry` — the
+    first `.html` declaring `<meta name="fused-app">`), then a plain
+    `index.html` when the folder has one, which is the literal ask and what a
+    folder holding an unmarked page is to the reader opening it. A file target
+    answers "" — the task already points at a page — and so does every folder
+    that cannot be read.
+    """
+    target = str(target or "")
+    if not target or not os.path.isdir(target):
+        return ""
+    try:
+        stamp = os.stat(target).st_mtime
+    except OSError:
+        return ""
+    memo = _ENTRY_MEMO.get(target)
+    if memo is not None and memo[0] == stamp:
+        return memo[1]
+    try:
+        entry = app_listing.app_entry(target) or ""
+        if not entry:
+            plain = os.path.join(target, "index.html")
+            entry = plain if os.path.isfile(plain) else ""
+    except OSError:
+        entry = ""
+    _ENTRY_MEMO[target] = (stamp, entry)
+    return entry
+
+
 def _place(task: dict) -> None:
     """Fill in a task's project, target and creation order.
 
@@ -3311,6 +3351,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # hands the shell: the frontend's path helpers are forward-slash-only.
         "project": canonical_fs_path(task["project"]),
         "target": canonical_fs_path(task["target"]),
+        # The page a folder target opens as — "" unless it is an app
+        # (`_task_entry`). The shell's door prefers it over the folder.
+        "entry": canonical_fs_path(_task_entry(task["target"])),
         "session_id": task["session_id"],
         "title": title,
         "title_source": source,

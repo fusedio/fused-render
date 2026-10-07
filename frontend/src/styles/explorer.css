@@ -732,6 +732,17 @@
    position:fixed off the trigger's rect (inline top/left): .panel-pane and
    the tab bar clip their overflow, so an absolutely positioned popup would
    work in the title bar and be invisible in the pane bars. */
+/* The scrim a bar dropdown opens over (useMenuAnchor): one layer under the
+   popup, transparent, covering the viewport — so a press that would otherwise
+   land inside a content iframe (where this document never hears it) still
+   closes the menu. */
+.bar-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+  background: transparent;
+}
+
 .bar-menu-popup {
   position: fixed;
   z-index: 200;

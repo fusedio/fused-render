@@ -610,19 +610,55 @@ export function ComposerCard({
    * the form or inside a surface the form opened does not count.
    */
   const active = variant === "chat" && within;
+  /** A pointer is down somewhere in the document / a fold was decided during
+   *  that press and waits for its click — see the effect below. */
+  const pressRef = useRef(false);
+  const foldPendingRef = useRef(false);
   useEffect(() => {
     if (!active) return;
     const form = formRef.current;
     if (!form) return;
     const doc = form.ownerDocument;
+    // DECIDED ON THE PRESS, APPLIED ON THE CLICK (Akshil, 2026-10-06: "force
+    // start takes 2 clicks"). Folding the moment the mouse went down shrank the
+    // card UNDER the pointer: the waiting card sits right above this form, so
+    // the button being pressed slid down before the mouse came up and the click
+    // landed on nothing — every control near the composer needed two presses
+    // while the card was open. The press still decides (the pointer, not focus,
+    // is the read of "the reader left"); the fold waits for the click, whose
+    // target was fixed when the mouse came up, so the pressed control gets its
+    // click first. `onFormBlur` defers the same way while a press is in flight
+    // (`pressRef`): a focusable control takes focus on mouse-down in Chromium,
+    // and that blur used to be a second road to the same early fold. A press
+    // with no click after it (a drag, a cancelled pointer) settles on the
+    // pointer-up instead, one task later than the click would have come.
     const onDocPointerDown = (ev: PointerEvent) => {
       const t = ev.target as Element | null;
-      if (!t) return;
-      if (form.contains(t) || t.closest?.(POPUP_SURFACE)) return;
+      pressRef.current = true;
+      foldPendingRef.current = !!t && !form.contains(t) && !t.closest?.(POPUP_SURFACE);
+    };
+    const settle = () => {
+      pressRef.current = false;
+      if (!foldPendingRef.current) return;
+      foldPendingRef.current = false;
       setWithin(false);
     };
+    let timer = 0;
+    const onDocPointerUp = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(settle, 0);
+    };
     doc.addEventListener("pointerdown", onDocPointerDown, true);
-    return () => doc.removeEventListener("pointerdown", onDocPointerDown, true);
+    doc.addEventListener("click", settle, true);
+    doc.addEventListener("pointerup", onDocPointerUp, true);
+    doc.addEventListener("pointercancel", onDocPointerUp, true);
+    return () => {
+      window.clearTimeout(timer);
+      doc.removeEventListener("pointerdown", onDocPointerDown, true);
+      doc.removeEventListener("click", settle, true);
+      doc.removeEventListener("pointerup", onDocPointerUp, true);
+      doc.removeEventListener("pointercancel", onDocPointerUp, true);
+    };
   }, [active]);
   const onFormBlur = useCallback((ev: React.FocusEvent<HTMLFormElement>) => {
     // Focus moving BETWEEN the form's own controls is a blur too; only one
@@ -640,6 +676,11 @@ export function ComposerCard({
     // which is inside the form again, so nothing here has to un-fold later.
     if (next && next.closest(POPUP_SURFACE)) return;
     if (!next && ev.currentTarget.ownerDocument.querySelector(POPUP_SURFACE)) return;
+    // Mid-press, the fold waits for the click (see the pointer effect above).
+    if (pressRef.current) {
+      foldPendingRef.current = true;
+      return;
+    }
     setWithin(false);
   }, []);
 
