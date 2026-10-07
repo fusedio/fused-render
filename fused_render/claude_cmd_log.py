@@ -246,7 +246,7 @@ def _ps_exe() -> str:
 def _descendants(pid: int) -> list[int]:
     try:
         res = subprocess.run([_ps_exe(), "-A", "-o", "pid=,ppid="], capture_output=True,
-                             text=True, timeout=5, close_fds=False)
+                             text=True, encoding="utf-8", errors="replace", timeout=5, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return []
     kids: dict[int, list[int]] = {}
@@ -266,7 +266,7 @@ def _is_wrapper(pid: int) -> bool:
     """Guard against a recycled pid: the live process must be our wrapper."""
     try:
         res = subprocess.run([_ps_exe(), "-o", "command=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=5, close_fds=False)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return "claude_shell_prefix" in res.stdout
