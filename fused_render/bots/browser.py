@@ -162,7 +162,7 @@ def _sips(src, dst, *args):
 def _sips_width(path):
     """Pixel width of an image (sips -g), or 0 when unknown."""
     try:
-        out = subprocess.run(["sips", "-g", "pixelWidth", path], capture_output=True, text=True, timeout=10, close_fds=False).stdout
+        out = subprocess.run(["sips", "-g", "pixelWidth", path], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, close_fds=False).stdout
         m = re.search(r"pixelWidth:\s*(\d+)", out)
         return int(m.group(1)) if m else 0
     except Exception:
@@ -172,7 +172,7 @@ def _sips_width(path):
 def _clean_user_agent(chrome):
     ver = "0.0.0.0"
     try:
-        out = subprocess.run([chrome, "--version"], capture_output=True, text=True, timeout=5, close_fds=False).stdout
+        out = subprocess.run([chrome, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, close_fds=False).stdout
         m = re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
         if m:
             ver = m.group(1) + ".0.0.0"
@@ -797,7 +797,7 @@ SEAL_SKIP = ["Cache", "Code Cache", "GPUCache", "ShaderCache", "GrShaderCache", 
 
 
 def _sec(*args):
-    return subprocess.run(["security", *args], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30, close_fds=False)
+    return subprocess.run(["security", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=30, close_fds=False)
 
 
 def profile_key():

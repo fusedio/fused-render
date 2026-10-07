@@ -103,7 +103,8 @@ def test_settings_flag_react(client, ws):
     d = one(status(client, shot_for=bid), bid)
     assert (d["name"], d["model"], d["effort"], d["instructions"]) == ("Ranger", "opus", "high", "be brief")
     assert d["memory"].strip() == "- likes tables" and d["approval"] == "auto" and d["engine"] == "steps"
-    assert d["imessage_to"] == "Ali +15551234567"
+    # The phone is Super Bot's alone since #1463 (docs §10): an ordinary bot's imessage_to is ignored and never stored.
+    assert "imessage_to" not in d
     st, out = j(client.post(f"/api/bots/{bid}/flag", {"pinned": True, "hidden": False, "face": {"shape": "blob", "color": "#f00"}}))
     assert st == 200
     s = one(status(client), bid)

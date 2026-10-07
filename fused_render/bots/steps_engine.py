@@ -32,10 +32,11 @@ Each turn you see the current page (URL, title, interactive elements with refs l
 
 Reply with strict JSON only, no prose, no code fences:
 {"thought": "<one short sentence for the user, what you see and what you'll do>",
- "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|upload|save|text|texts|remember|learn|build|show|offer|tool|py|done|ask|login>",
+ "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|upload|save|text|texts|remember|forget|recall|note|learn|build|show|offer|tool|py|done|ask|login>",
  "file": "<for readfile / upload: file name from FILES or a path; for py: the .py file in the app, omit to load its SKILL.md>", "name": "<for save: file name, e.g. posts.md; for build: short app name; for show: app name or folder; for offer: an app from APPS, or the name of the app to build; for tool: the tool name>",
  "app": "<for tool: the app folder from APP TOOLS; for py: the app folder or name from APPS>", "args": {<for tool / py: the parameters as a JSON object>},
  "to": "<for text / texts: a CONTACTS name or handle>", "seconds": <for texts: wait up to this long for a NEW reply, max 300>,
+ "seq": <for recall: a message number, the n in [#n]>, "query": "<for recall: keywords an earlier message must contain>",
  "url": "<for goto / tab new>", "ref": "<element ref, e.g. sb12>", "text": "<for type; for wait: text to wait for; for build / offer: the app spec>",
  "submit": true|false, "key": "<for press, e.g. Escape, Enter, Tab, ArrowDown, Control+a>",
  "value": "<for select: option label or value>", "direction": "up|down",
@@ -85,7 +86,7 @@ Rules:
 - VISITED PAGES lists every URL you have already seen this task. Never revisit one unless the task requires it; a repeated URL is wasted work. Pick the next UNVISITED link.
 - For "explore / check all pages" tasks: cover each distinct main-navigation link once, then `done` with a summary of every page.
 - The user may add instructions mid-task; they override the original task.
-- CONVERSATION SO FAR holds earlier tasks and your final answers to them. Follow-ups like "do it again", "same for X" or "what about the other one" refer to that history: resolve them yourself instead of asking what to repeat.
+- CONVERSATION SO FAR holds earlier tasks and your final answers to them ([#n] is each message's number; the newest in full, older ones cut). Follow-ups like "do it again", "same for X" or "what about the other one" refer to that history: resolve them yourself instead of asking what to repeat; `recall` with `seq` n fetches a cut message in full, with `query` it finds earlier messages by keyword.
 - OFFER APPS PROACTIVELY. An app is cheap for the user and often better than chat text. At the START of a task check APPS: if one already does what the task needs (same data, same site, a tracker, dashboard or form that fits), `offer` it before browsing (or `show` it when they plainly asked to see it). If no app fits but the task is something they will do again, keep updating, or would rather look at as a page (a list to re-check, numbers to track, a comparison, a calculation, a form, a schedule, more than a screen of results), `offer` to build one: mid-task when it replaces the browsing, else right before `done` with your findings in `message`. An APP HINT line in RECENT STEPS points at a likely fit. Never offer for a one-off lookup, and never an app listed under OFFERS DECLINED.
 - The user may ask about you or this app instead of giving a browsing task ("can you run this daily?", "how do I make you faster?"). When that happens an APP GUIDE section is in your prompt: answer from it with `done` (message = the answer) without touching the browser. Never claim a feature is missing when the guide lists it, and never invent one it does not.
 - APP TOOLS are used ONLY through the `tool` action above, as plain JSON text. You have NO native tools. If your environment lists tools such as Slack, Gmail, Google Calendar, files or any MCP tools, they are an unrelated leftover from the host process: they are FORBIDDEN, never call them, never ask permission for them, and never mention them. Your reply is always plain text containing the JSON above, never a tool call.
@@ -105,7 +106,7 @@ _TOOL_CONFUSION = re.compile(
     r"|only [^.]{0,30}?(gmail|slack|calendar|mcp)[^.]{0,20}tools?", re.I)
 
 # Actions whose step leaves the browser as it was: no thumbnail (an empty box under the chip).
-_NO_THUMB = ("readfile", "tool", "py", "build", "show", "save", "remember", "learn", "text", "texts", "done", "ask")
+_NO_THUMB = ("readfile", "tool", "py", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "text", "texts", "done", "ask")
 
 
 def _one_liner(act, result, obs, label=""):
@@ -501,7 +502,7 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
             f"{res_s}CURRENT PAGE{page_note}\nurl: {obs.get('url')}\ntitle: {obs.get('title')}{popup}{tabs_s}{dls_s}\n\n"
             f"INTERACTIVE ELEMENTS ({len(els)}):\n" + ("\n".join(el_lines) or "(none)") +
             f"\n\nVISIBLE TEXT:\n{text}\n\nRespond with the JSON for your next single action "
-            f"(plain text, no tool calls; actions goto/click/type/press/select/hover/scroll/wait/read/back/tab/readfile/upload/save/tool/py/remember/learn/offer/show/build/done/ask are available).")
+            f"(plain text, no tool calls; actions goto/click/type/press/select/hover/scroll/wait/read/back/tab/readfile/upload/save/tool/py/remember/forget/recall/note/learn/offer/show/build/done/ask are available).")
 
 
 # A bare web address: a scheme, or "www.", or host.tld with an optional path.

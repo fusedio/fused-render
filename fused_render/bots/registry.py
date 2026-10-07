@@ -3,7 +3,8 @@
 One process, one registry: `get(bid)` builds a `Bot` the first time it is
 asked for and keeps it (its task thread, seq counter and inbox live on it).
 `start()` (from the server's `@on_startup _startup_bots`) runs the scheduler — every 20 s each bot's
-`tick_routines()`, which also drains its file inbox (botsend / iMessage) — and
+`tick_routines()`, which also drains its file inbox (botsend / iMessage), plus
+`handoffs.sweep` (docs §11) on every pass — and
 the iMessage bridge thread. `shutdown()` (from `@on_shutdown_always
 _shutdown_bots`) stops every bot's task and Chrome. Both hooks live in
 fused_render/server/app.py beside the router include.
@@ -96,6 +97,16 @@ def delete(bid):
 
 
 # ------------------------------------------------------------- threads ---
+def _sweep_handoffs() -> None:
+    """One handoffs.sweep pass (queued starts, timeouts, gone targets). Never raises."""
+    try:
+        from fused_render.bots import handoffs
+        import fused_render.bots.registry as me
+        handoffs.sweep(me)
+    except Exception:  # noqa: BLE001
+        logger.debug("hand-off sweep failed", exc_info=True)
+
+
 def _scheduler(stop: threading.Event) -> None:
     # One scheduler per machine: Fused Render and Fused Bot share the bots
     # tree, so each pass first makes sure this process holds the routines
@@ -103,6 +114,8 @@ def _scheduler(stop: threading.Event) -> None:
     # the lock falls to it on its next pass and routines carry on.
     standing_down = False
     while not stop.is_set():
+        # Hand-offs first, lock or not: a hand-off's queue lives in THIS process's Bot (docs §11).
+        _sweep_handoffs()
         if _ROUTINES_LOCK["fh"] is None and not _take_routines_lock():
             if not standing_down:
                 standing_down = True
@@ -241,7 +254,15 @@ def router():
 
 
 def on_event(bot, ev: dict) -> None:
-    """bot.emit() -> the router, when there is one. Never raises into a task thread."""
+    """bot.emit() -> the hand-off state machine (always: tests and a lean `open`
+    have no router), then the router, when there is one. Never raises into a
+    task thread."""
+    if ((ev or {}).get("via") or {}).get("kind") == "handoff":  # channels.base.HANDOFF_KIND; cheap for every other event
+        try:
+            from fused_render.bots import handoffs
+            handoffs.on_event(bot, ev)
+        except Exception:  # noqa: BLE001
+            logger.debug("hand-off on_event failed", exc_info=True)
     r = _chan["router"]
     if r is None:
         return

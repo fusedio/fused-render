@@ -165,9 +165,18 @@ TOOL_SPECS: dict[str, dict] = {
                             "Use it when the task asks to save/export or the result is longer than a chat message. "
                             "ARTIFACTS lists what this task saved already: never save the same thing twice.",
              "inputSchema": _s(name=REQ, text=REQ)},
+    "recall": {"description": "Fetch your own earlier conversation verbatim: `seq` (the number after # in a summary or index "
+                              "line) returns that message in full; `query` (keywords) lists the earlier messages and FILES that "
+                              "match. Use it when a follow-up refers to something you said, found or were asked before this "
+                              "session's context, instead of redoing the work.",
+               "inputSchema": _s(seq={"type": "integer", "description": "a message number, e.g. 42 for [#42]"},
+                                 query={"type": "string", "description": "keywords; all must appear"})},
     "remember": {"description": "Save one short durable note to your MEMORY (site quirks, user preferences, where things live). "
                                 "Never secrets. One note per fact; do not repeat what MEMORY already says.",
                  "inputSchema": _s(text=REQ)},
+    "forget": {"description": "Remove MEMORY notes that are wrong or no longer matter: every note containing `text` is dropped. "
+                              "Use it when the user corrects you or a saved fact turns out stale.",
+               "inputSchema": _s(text=REQ)},
     "learn": {"description": "Save a PLAYBOOK for this kind of task: a short title, comma-separated trigger words a future task "
                              "would contain, and 5-15 numbered steps with exact URLs, what to click, what to skip. Use it right "
                              "before finishing when a task took real exploration; not when a matching PLAYBOOK already worked.",
@@ -223,6 +232,10 @@ TOOL_SPECS: dict[str, dict] = {
                                   task=({"type": "string", "description": "the task in plain words, self-contained"}, True))},
     "handoff_stop": {"description": "Cancel a task you handed to one of the BOTS (only when the user asks you to cancel it).",
                      "inputSchema": _s(bot=({"type": "string", "description": "the bot's name from BOTS"}, True))},
+    # Every bot (docs §11): on a hand-off the line also lands on Super Bot's board (handoffs.on_event).
+    "note": {"description": "One short progress line for the user (and, on a hand-off, for Super Bot's board). Not a "
+                            "result; no more than one every few steps.",
+             "inputSchema": _s(text=REQ)},
     "bot_create": {"description": "Create a new browser bot (one more line in BOTS) when the user asks for one. `name` is required "
                                   "and must be new; `instructions` are its standing rules (what it does for the user, which site, "
                                   "what never to do); `model` haiku|sonnet|opus|fable|local-4b|local-9b; `effort` low|medium|high|"
@@ -708,6 +721,8 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return f"hand \"{d.get('bot') or d.get('name') or '?'}\" the task: {task[:160]}{'…' if len(task) > 160 else ''}"
     if act == "handoff_stop":
         return f"stop what you handed \"{d.get('bot') or d.get('name') or '?'}\""
+    if act == "note":
+        return f"note \"{' '.join(str(d.get('text') or '').split())[:120]}\""
     if act in MANAGE_TOOLS:
         return _manage_preview(bot, act, d)
     return f"{act} {what}".strip()
@@ -951,6 +966,12 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             if not is_super(bot):
                 return "handoff_stop", "error: only Super Bot hands tasks to other bots"
             return bot.handoff_stop(d.get("bot") or d.get("name") or "")
+        if act == "note":
+            text = " ".join(str(d.get("text") or d.get("message") or "").split())[:300]
+            if not text:
+                return "note", "error: note needs `text`"
+            bot.emit("note", text, progress=True)  # `progress`: the board keeps these, not the harness's own notes
+            return "note", "ok"
         if act in MANAGE_TOOLS:
             from fused_render.bots import bot as botmod
             if not is_super(bot):
@@ -1006,6 +1027,11 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
         if act == "remember":
             note = d.get("text") or d.get("message") or ""
             return f"remember \"{note[:120]}\"", bot.remember(note)
+        if act == "recall":
+            return bot.recall(d.get("seq"), d.get("query") or d.get("text") or "")
+        if act == "forget":
+            what = d.get("text") or d.get("message") or ""
+            return f"forget \"{what[:120]}\"", bot.forget(what)
         if act == "learn":
             try:
                 nm = bot.skill_save(d.get("title") or d.get("name"), d.get("trigger") or d.get("value"),

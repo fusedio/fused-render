@@ -401,14 +401,15 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .handoff-card .hd { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
 .bots-page .handoff-card .hd .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .handoff-card .pill { flex: none; font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--inset); color: var(--muted); white-space: nowrap; letter-spacing: .02em; }
-.bots-page .handoff-card .pill.running { color: var(--ok); }
-.bots-page .handoff-card .pill.waiting { color: var(--warn); }
-.bots-page .handoff-card .pill.error { color: var(--err); }
+.bots-page .handoff-card .pill.working { color: var(--ok); }
+.bots-page .handoff-card .pill.blocked { color: var(--warn); }
+.bots-page .handoff-card .pill.failed { color: var(--err); }
+.bots-page .handoff-card .pill.cancelled { color: var(--muted); }
 .bots-page .handoff-card .msg { max-width: none; background: none; border-radius: 0; box-shadow: none; padding: 0 12px 10px; animation: none; }
 .bots-page .handoff-card .ft { display: flex; justify-content: flex-end; padding: 7px 12px; border-top: 1px solid var(--line); }
 .bots-page .handoff-card .ft button { font-size: 11.5px; padding: 4px 9px; }
-.bots-page .handoff-card.waiting { box-shadow: inset 3px 0 0 var(--warn); }
-.bots-page .handoff-card.error { box-shadow: inset 3px 0 0 var(--err); }
+.bots-page .handoff-card.blocked { box-shadow: inset 3px 0 0 var(--warn); }
+.bots-page .handoff-card.failed { box-shadow: inset 3px 0 0 var(--err); }
 /* Side app in the preview column: body.hasapp shows the Browser | App strip, body.sideapp swaps the browser view for the app frame. */
 .bots-page .sabar { display: none; align-items: center; gap: 4px; padding: 0 10px 8px 14px; border-bottom: 1px solid var(--line); }
 div.bots-page.hasapp .sabar { display: flex; }

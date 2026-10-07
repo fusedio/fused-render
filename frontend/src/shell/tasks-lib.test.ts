@@ -3372,7 +3372,9 @@ describe("expanding a task", () => {
     expect(VIEWS).toContain("setLoaded((cur) => ({ ...cur, [task.key]: thread }));");
     // ...and the row is handed the toggle for the whole task, not just its key,
     // because the fetch needs the task the count lives on.
-    expect(VIEWS).toContain("onToggle={() => toggle(task)}");
+    // #1384 handed rows a stable handle (useStable) instead of a per-row closure.
+    expect(VIEWS).toContain("const toggleRow = useStable(toggle);");
+    expect(VIEWS).toContain("onToggle={toggleRow}");
   });
 
   it("says what is still coming instead of offering a press", () => {
@@ -3415,13 +3417,15 @@ describe("expanding a task", () => {
     // The recovery sits beside the failure it is about, in the same line.
     expect(tail).toContain('<p className="tasks-thread-error" role="alert">');
     expect(tail).toContain('className="tasks-retry"');
-    expect(tail).toContain("onClick={onRetry}");
+    expect(tail).toContain("onClick={() => onRetry(task)}");
     // It cannot be pressed twice into the same in-flight request.
     expect(tail).toContain("disabled={loading}");
     // THE SAME CALL the disclosure makes — not a second path to the same
     // endpoint, because two ways in are two ways to disagree about the guards.
-    expect(VIEWS).toContain("onRetry={() => void showMore(task)}");
-    expect(VIEWS).toContain("onRetry: () => void;");
+    // #1384: the row takes the task and the List passes one stable handle.
+    expect(VIEWS).toContain("const retryRow = useStable((task: Task) => void showMore(task));");
+    expect(VIEWS).toContain("onRetry={retryRow}");
+    expect(VIEWS).toContain("onRetry: (task: Task) => void;");
     // And it is a REAL, always-visible control: the page's other row actions are
     // hover-revealed conveniences on a working row, where this is the only thing
     // a person can do with a broken one.
@@ -3527,7 +3531,7 @@ describe("the one-message row's missing chevron", () => {
     // The toggle is the CHEVRON's press now (2026-08-18) — the row's own press
     // opens the conversation — so the guard is the arm that renders the button at
     // all, and there is no toggle left anywhere in `activate`.
-    expect(ROW).toMatch(/\{chatVariant \? null : expandable \? \([\s\S]*?onToggle\(\);/);
+    expect(ROW).toMatch(/\{chatVariant \? null : expandable \? \([\s\S]*?onToggle\(task\);/);
     expect(ACTIVATE).not.toContain("onToggle");
     // A row with no disclosure does not claim one, and only the button that HAS
     // one carries the state.
@@ -3891,7 +3895,7 @@ describe("an upcoming row's click", () => {
     expect(button).toContain("aria-expanded={open}");
     expect(button).toContain("aria-label={open ?");
     expect(button.indexOf("e.stopPropagation();")).toBeLessThan(
-      button.indexOf("onToggle();"),
+      button.indexOf("onToggle(task);"),
     );
     // ONE aria-expanded on the row, and it is the button's.
     expect((ROW.match(/aria-expanded=/g) ?? []).length).toBe(1);
@@ -4957,7 +4961,9 @@ describe("an expanded thread leads with the draft it is carrying", () => {
     // The callback is threaded from the page exactly as `onOpenDraft` is: one
     // handler, passed down, and a list that omits it keeps the old press.
     expect(VIEWS).toContain("onOpenBoundDraft?: (task: Task) => void;");
-    expect(VIEWS).toContain("onOpenBoundDraft={onOpenBoundDraft}");
+    // #1384: threaded through a stable handle (useStableOpt), same callback.
+    expect(VIEWS).toContain("const openBoundDraft = useStableOpt(onOpenBoundDraft);");
+    expect(VIEWS).toContain("onOpenBoundDraft={openBoundDraft}");
     const page = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
     expect(page).toContain("onOpenBoundDraft={openBoundDraft}");
     // …and the handler is the composer's own hop door, so there is one lookup
@@ -6178,8 +6184,10 @@ describe("opening a thread, from either view", () => {
     // message it has never named) — what it lacked was the way back, and the
     // comment claiming the next poll restored the dot was wrong for the same
     // reason the whole-task one was: the local entry outranks the poll.
-    const at = VIEWS.indexOf("const clear = (taskKey: string, m: TaskMessage)");
-    const fn = VIEWS.slice(at, VIEWS.indexOf("\n  };", at));
+    // #1384 wrapped `clear` in useCallback, so it closes on `}, []);`.
+    const at = VIEWS.indexOf("const clear = useCallback((taskKey: string, m: TaskMessage)");
+    expect(at).toBeGreaterThan(-1);
+    const fn = VIEWS.slice(at, VIEWS.indexOf("\n  }, []);", at));
     expect(fn).toContain("markTaskMessageRead(taskKey, m.message_id).catch");
     expect(fn).toContain("unmarkRead(cur, taskKey, m.message_id)");
   });
@@ -7632,12 +7640,13 @@ describe("what the List remembers between visits", () => {
     // through that one function, so every one of them marks.
     const chatFn = VIEWS.slice(VIEWS.indexOf("const openChat = (intent: OpenThreadIntent) => {"));
     const body = chatFn.slice(0, chatFn.indexOf("\n  };"));
-    expect(body).toContain("onSelect();");
-    expect(body.indexOf("onSelect();")).toBeLessThan(body.indexOf("performOpen("));
-    expect(ACTIVATE).not.toContain("onSelect()");
+    // #1384: onSelect is a stable handle now, so the row names its key.
+    expect(body).toContain("onSelect(task.key);");
+    expect(body.indexOf("onSelect(task.key);")).toBeLessThan(body.indexOf("performOpen("));
+    expect(ACTIVATE).not.toContain("onSelect(");
     // A message row leaves too, and it belongs to this task's row.
     const open = VIEWS.slice(VIEWS.indexOf("const openMessage = (m: TaskMessage) => {"));
-    expect(open.slice(0, open.indexOf("\n  };"))).toContain("onSelect();");
+    expect(open.slice(0, open.indexOf("\n  };"))).toContain("onSelect(task.key);");
     // Stored beside the scroll and the open rows, in the same sessionStorage
     // row, so all three are restored by the one read on mount.
     expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory());");
@@ -7760,7 +7769,8 @@ describe("what the List remembers between visits", () => {
     // — and forgets the rows it was holding, so a remount does not paint them
     // over a server that has gone away.
     expect(SCHEDULED).toMatch(
-      /subscribeListing\(\(ev\) => \{\s*\n\s*setTasks\(ev\.rows\);\s*\n\s*setTasksFailed\(ev\.failed\);/,
+      // #1384 wrapped the writes in startTransition; same two writes, same order.
+      /subscribeListing\(\(ev\) => \{[\s\S]*?startTransition\(\(\) => \{\s*\n\s*setTasks\(ev\.rows\);\s*\n\s*setTasksFailed\(ev\.failed\);/,
     );
     const store = readFileSync(join(SHELL, "tasksPulse.ts"), "utf8");
     const fail = store.slice(store.indexOf("listingFailed = true;"));

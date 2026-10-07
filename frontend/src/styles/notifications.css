@@ -384,7 +384,7 @@
   font: inherit;
   font-size: 11px;
   line-height: 1;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 8px var(--shadow-sm);
 }
 
 .term-ai-pill {

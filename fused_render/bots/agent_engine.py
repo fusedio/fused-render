@@ -1,10 +1,13 @@
-"""The agent engine (docs/bots.md §6): one `claude -p` process per task,
-the bot's tools served over MCP.
+"""The agent engine (docs/bots.md §6): one `claude -p` process per TURN, resuming
+the bot's one CONVERSATION (a Claude Code session) turn after turn, the bot's
+tools served over MCP.
 
     bot.start_task ── thread ──> run(bot, task, label)
                                    register_task(bot) -> token        (before mcp.json: tools/list fires at connect)
                                    write <cache>/<id>/mcp.json + system_prompt.txt
-                                   spawn claude (stream-json in/out), write the FIRST user message
+                                   spawn claude (stream-json in/out; --resume <session> when the
+                                   conversation has one and is under budget, else a fresh session
+                                   seeded with a summary), write the turn's PREAMBLE + message
                                    read stdout: assistant text -> `thought`, result -> `done`
     claude ── stdio ──> botmcp.py ── HTTP ──> routes: roster_for(bot, token) / handle_tool(bot, token, name, args)
                                                        (pause, inbox, approval gate, ask/login/offer waits,
@@ -36,12 +39,26 @@ window, window_closed, _closed_window_note, _recover_popup,
 collect_task_artifacts, _routine_outcome, _offer, _offer_hints, build,
 run_tool, run_py, show_app, _step_thumb, _skill_dirs, memory_for_prompt,
 skills_for_prompt, past_conversation, contacts, contact, py_ref, all_files,
-task_artifacts, declined_offers, task_origin, task_started, task_dir; Super Bot
-also handoff, handoff_stop (tools.execute) and bot.py bots_section.
+task_artifacts, declined_offers, task_origin, task_started, task_dir, and for the
+conversation (optional: a bot without them runs every turn as a fresh session)
+conversation, conversation_update, conversation_rollover, summarize_conversation,
+recall; Super Bot also handoff, handoff_stop (tools.execute), bot.py bots_section
+and handoffs.handoffs_section.
+
+Context (docs §6 "Bot threads"): the CLI session IS the working memory, so a
+turn starts by resuming it. fused owns the budget: `_drive` reads the context
+size off every assistant event (input + cache tokens), and when it passes
+ROLLOVER_FRACTION of the model's window the NEXT turn starts a fresh session
+seeded with a summary fused writes from its own transcript (bot.summarize_
+conversation); `recall` fetches anything older verbatim. The system prompt
+cannot change on a resumed session (spiked 2026-10-07), so everything that
+changes between turns rides in the preamble, and only the sections whose text
+changed are resent (hashes in conversation["sent"]).
 """
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -70,7 +87,19 @@ STOP_TERM_AFTER_S = 5.0        # Stop: interrupt first, SIGTERM after this, SIGK
 RETRY_SLEEP_S = 2.0            # after a failed model call, before the retry turn (OpenBot slept 2 s)
 THOUGHT_WAIT_S = 1.0          # a tool call waits this long for its own tool_use to be read (thought before action)
 MCP_SERVER = "bot"             # the model sees mcp__bot__<tool>
-HANDOFF_PAST_MARK = "(data from a bot you handed off to)"  # bot.past_conversation's label for a hand-off result
+ROLLOVER_FRACTION = 0.5        # roll the conversation over when its context passes this share of the model's window (owner, 2026-10-07)
+NUDGE_FRACTION = 0.8           # … and nudge the model to `remember` durable facts at this share of the rollover mark
+WINDOW_DEFAULT = 200_000
+WINDOW_1M = 1_000_000
+_MILLION = re.compile(r"\[1m\]|fable|opus-?5|sonnet-?5", re.I)  # the frontend's rule (context-window.ts): these are 1M-token models
+
+
+def context_window(model: str) -> int:
+    return WINDOW_1M if _MILLION.search(str(model or "")) else WINDOW_DEFAULT
+
+
+def rollover_at(model: str) -> int:
+    return int(context_window(model) * ROLLOVER_FRACTION)
 
 # OpenBot `_YES` / `_NO`: what counts as an approval answer.
 YES = re.compile(r"^\s*(y|yes|yep|yeah|ok|okay|sure|approve|approved|go(?!\s+(to|back|on|and)\b)|go ahead|do it|proceed|confirm|allow)\b", re.I)
@@ -88,21 +117,21 @@ def _botmod():
         return None
 
 
-SYSTEM_PROMPT = """You are a web-browsing agent controlling a real Chrome browser for a user. You act through your tools (goto, click, type, observe, ask, …): one action per call, one step at a time. The first message of each task tells you who you are, the user's standing instructions, your memory and playbooks, the conversation so far, the apps on this Mac and then the TASK.
+SYSTEM_PROMPT = """You are a web-browsing agent controlling a real Chrome browser for a user. You act through your tools (goto, click, type, observe, ask, …): one action per call, one step at a time. You and the user have ONE ongoing conversation: the first message of a session tells you who you are, the user's standing instructions, your memory and playbooks, a summary of the conversation before this session, the apps on this Mac and then the MESSAGE; later turns resend only what changed and the new MESSAGE. Earlier turns are in your context as they happened.
 
 How you see the page:
 - Every browser action returns `ok, now at <url>` (or `error: …`), a CHANGE line saying what the action changed (url, title, a popup opening or closing, controls that appeared or are gone, "the page scrolled", or "nothing visible changed") and a COMPACT view of the page: up to 40 interactive elements with refs like sb12, the ones on screen first, and 1200 characters of visible text (left out as "unchanged since your last view" when it is identical to what you already have).
 - `observe` returns the full page (160 elements, 6000 characters of text, tabs, downloads, popups) and is one call away whenever the compact view is not enough. `screenshot` shows you the page as an image (canvas apps, image-heavy pages, layout questions); one is attached by itself when an action repeats or a page shows almost no controls. `read` returns the whole text of one element or of the page.
 - `readfile` opens a file from FILES by name: text as text, images and scanned PDF pages attached as images, PDFs one page at a time. Read a file before summarising, uploading or acting on it.
 - Refs are renumbered every time the page is read, and the page is read after every browser action. So one browser action per message: a second ref-based call queued in the same message is not run.
-- When the browser is already on a page, the task message ends with a CURRENT PAGE section just before the TASK: those refs are valid, act on them. Without it you have not seen the page: `observe` it, or `goto` where the task needs you.
+- When the browser is already on a page, the turn's message ends with a CURRENT PAGE section just before the MESSAGE: those refs are valid, act on them. Refs from earlier turns are dead. Without a CURRENT PAGE you have not seen the page: `observe` it, or `goto` where the task needs you.
 
 Rules:
 - Use `type` with submit=true to search (it presses Enter). Prefer the site's own search or Google.
 - Only use refs from the latest element list you were given. If the target is not visible, `scroll` first or `observe` for the full list.
 - Navigation items with no href (e.g. "Products", "Resources") are dropdown menus: `hover` them, then click one of the links that appear.
 - Logins: NEVER ask for passwords or codes. If a page needs a sign-in, 2FA or captcha, call `login` with a short message (e.g. "This site needs you to sign in"). It opens a real Chrome window on the user's desktop: they sign in there with their own keyboard (password manager and passkeys work normally), then reply "done" or click Hand back, and you continue where they left off. Never use `ask` for this.
-- Your tools are the truth about what you can do, even if an earlier message of yours in CONVERSATION SO FAR said otherwise (e.g. with CONTACTS present you CAN read iMessage replies with `texts`; "did she answer?" means: run `texts` and report).
+- Your tools are the truth about what you can do, even if an earlier message of yours said otherwise (e.g. with CONTACTS present you CAN read iMessage replies with `texts`; "did she answer?" means: run `texts` and report).
 - Use `ask` when you truly need the user for something else (a decision, a choice between options). Never invent logins. When the answer is a choice, pass the choices as `options` (short labels, 2-5 of them); the user can still type something else.
 - Payments, purchases and MFA codes: never complete these yourself. Stop and use `login` (or `ask` the user to take over) for that step.
 - Irreversible actions (sending a message/email/post/comment, buying, paying, booking, deleting, unsubscribing, changing account settings): set risky=true on that call. The user may have asked to be consulted first; a gate pauses and asks them. A result that starts with DENIED means the user said no: do not retry it. Do not mark searches, navigation, filters or reading as risky.
@@ -115,7 +144,8 @@ Rules:
 - A NOTE saying a page was ALREADY VISITED means you have seen it this task: never revisit a page unless the task requires it; pick the next unvisited link.
 - For "explore / check all pages" tasks: cover each distinct main-navigation link once, then finish with a summary of every page.
 - The user may add instructions mid-task: they arrive as USER INSTRUCTION (mid-task, overrides the task) at the end of a tool result, and they override the original task.
-- CONVERSATION SO FAR holds earlier tasks and your final answers to them. Follow-ups like "do it again", "same for X" or "what about the other one" refer to that history: resolve them yourself instead of asking what to repeat.
+- Follow-ups like "do it again", "same for X" or "what about the second one" refer to earlier turns: resolve them from your context, or from CONVERSATION SUMMARY (your own handover note from before this session; [#n] are message numbers) and `recall` (a message in full by #n, or earlier messages by keyword), instead of asking what to repeat or redoing the work.
+- A CONTEXT line in a tool result saying the conversation is nearly full means: save anything durable with `remember` now; the next turn may start from a summary.
 - `py` and `tool` return their value as RESULT: use it and report it. The same call with the same args is refused until the user speaks again (NOT RUN AGAIN).
 - OFFER APPS PROACTIVELY. An app is cheap for the user and often better than chat text. At the START of a task check APPS: if one already does what the task needs (same data, same site, a tracker, dashboard or form that fits), `offer` it before browsing (or `show` it when they plainly asked to see it). If no app fits but the task is something they will do again, keep updating, or would rather look at as a page (a list to re-check, numbers to track, a comparison, a calculation, a form, a schedule, more than a screen of results), `offer` to build one: mid-task when it replaces the browsing, else right before finishing with your findings in `message`. An APP HINT line in the task message points at a likely fit. Never offer for a one-off lookup, and never an app listed under OFFERS DECLINED.
 - `build` runs on its own for minutes and hands you a link at once: report the link and finish (the user hears again when it is ready). After `show`, the card is the answer: finish in one line.
@@ -137,6 +167,12 @@ YOU ARE THE SUPER BOT. Besides the browser tools above you have Claude Code's ow
 - BOT MANAGEMENT. `bot_create` makes a new browser bot and `bot_settings` changes one of the BOTS' name, instructions, model, effort or face; use them when the user asks for a new bot or a change to one ("make me a bot that…", "rename X", "give X a stricter prompt", "switch X to opus"). Each call raises an approval card showing exactly what will be written, and waits: that card is raised every time, whatever the Approvals setting says, so write the whole thing in one call (full instructions text, every field) rather than several. Before editing a bot's instructions call `bot_settings` with only its name: that returns its current settings and whole instructions text (BOTS shows an excerpt), with no card. Never write a bot's folder or its bot.json yourself with Write, Edit or Bash: these two tools are the only door. Your own settings, a bot's approvals, builds, encryption, contacts and routines stay the user's: tell them where (that bot's Settings)."""
 
 
+class ResumeLost(Exception):
+    """A resumed session did not come back (the CLI died before `system/init`,
+    or its first answer was an error naming the session): the turn is re-run
+    on a fresh session seeded with a summary."""
+
+
 class StaleToken(Exception):
     """A tool call or roster request carrying a token that is not the bot's
     current task's (a leftover process from an ended task). The route answers
@@ -144,10 +180,11 @@ class StaleToken(Exception):
 
 
 # ------------------------------------------------------------- sessions ---
-class TaskSession:
-    """Everything one task's harness keeps: the token, the process, the
+class Turn:
+    """Everything one turn's harness keeps: the token, the process, the
     one-run ledger, the repeat/stuck state and the last observation the model
-    was shown (its refs are the ones the model uses)."""
+    was shown (its refs are the ones the model uses). The conversation itself
+    lives in the CLI session (resumed across turns) and bot.meta["conversation"]."""
 
     def __init__(self, bot):
         self.bot_id = bot.id
@@ -186,6 +223,13 @@ class TaskSession:
         self.max_steps = SUPER_MAX_STEPS if self.is_super else MAX_STEPS
         self.web_touched = False
         self.pending_builtin: dict = {}      # tool_use_id -> (tool name, transcript label)
+        # Conversation accounting (docs §6 "Bot threads"): the CLI session this turn runs in, whether it
+        # was resumed, the context size the newest model call carried, and the one `remember` nudge.
+        self.session_id = None
+        self.resumed = False
+        self.ctx_tokens = 0
+        self.nudged = False
+        self.saw_init = False
 
     # stdin -----------------------------------------------------------------
     def write(self, obj: dict) -> bool:
@@ -248,7 +292,7 @@ _LOCK = threading.Lock()
 def register_task(bot) -> str:
     """Mint this task's token (any earlier task's token goes stale) and keep
     its session. Called BEFORE mcp.json is written: tools/list fires at connect."""
-    sess = TaskSession(bot)
+    sess = Turn(bot)
     with _LOCK:
         _SESSIONS[bot.id] = sess
     return sess.token
@@ -265,7 +309,7 @@ def _end_session(sess) -> None:
             del _SESSIONS[sess.bot_id]
 
 
-def _check(bot, token) -> TaskSession:
+def _check(bot, token) -> Turn:
     with _LOCK:
         sess = _SESSIONS.get(bot.id)
     if sess is None or not token or not hmac.compare_digest(sess.token.encode(), str(token).encode()):
@@ -288,21 +332,76 @@ def _app_link(d: str) -> str:
     return f"{origin}/render?path={quote(d)}" if origin else d
 
 
-def _call(fn, default, *a):
+def _call(fn, default, *a, **kw):
     try:
-        out = fn(*a)
+        out = fn(*a, **kw)
         return default if out is None else out
     except Exception:  # noqa: BLE001 — one missing section must not sink the task
         return default
 
 
-def first_message(bot, task: str, past=None, page: dict | None = None) -> str:
-    """What OpenBot's `_prompt` carried once per task, minus the step history
-    (that arrives in tool results). `page`: the observation of the page the
-    browser already sits on, so a follow-up task ("now open the second one")
-    does not spend its first call on `observe`; its refs are the session's
-    current ones (run() took it through _observe)."""
+def _sha(text: str) -> str:
+    return hashlib.sha1(str(text or "").encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _sections(bot, task: str) -> dict:
+    """The prompt sections whose text can change between turns, name -> text
+    ("" = nothing to show). A resumed session is sent only the ones whose hash
+    differs from what it has seen (conversation["sent"]); a fresh one gets all."""
     m = bot.meta
+    botmod = _botmod()
+    secs: dict = {}
+    instr = (m.get("instructions") or "").strip()
+    secs["INSTRUCTIONS"] = f"YOUR STANDING INSTRUCTIONS (set by the user, always apply):\n{instr}" if instr else ""
+    mem = _call(bot.memory_for_prompt, "")
+    secs["MEMORY"] = (f"MEMORY (notes you saved in earlier turns; use them, add with `remember`):\n{mem}" if mem
+                      else "MEMORY: empty. Save durable, non-secret facts with `remember` when you learn them.")
+    files = _call(bot.all_files, [])
+    secs["FILES"] = ("FILES (attached by the user or downloaded; `readfile` reads one, `upload` puts one into a page, both by name):\n"
+                     + "\n".join(f"- {d['name']} ({d.get('size')} bytes, {d.get('kind')})" for d in files)) if files else ""
+    cts = _call(bot.contacts, [])
+    secs["CONTACTS"] = ("CONTACTS (`text` sends them an iMessage, `texts` reads the thread and their replies; nobody else):\n"
+                        + "\n".join(f"- {lbl} ({h})" for lbl, h in cts)) if cts else ""
+    secs["APPS"] = _call(lambda: apptools.apps_section(apptools.apps(), link=_app_link), "").strip()
+    secs["BOTS"] = (_call(botmod.bots_section, "", bot).strip()
+                    if tools.is_super(bot) and botmod is not None and hasattr(botmod, "bots_section") else "")
+    declined = _call(bot.declined_offers, [])
+    secs["OFFERS DECLINED"] = ("OFFERS DECLINED (the user turned these app offers down recently; do not offer them again): "
+                               + ", ".join(sorted(declined))) if declined else ""
+    secs["APP TOOLS"] = _call(lambda: apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta)), "").strip()
+    return secs
+
+
+def _handoffs_section(bot) -> str:
+    """Super Bot's hand-off board and the results that arrived since its last
+    turn (handoffs.py, the other half of this refactor); "" without it."""
+    if not tools.is_super(bot):
+        return ""
+    try:
+        from fused_render.bots import handoffs
+    except Exception:  # noqa: BLE001
+        return ""
+    return _call(getattr(handoffs, "handoffs_section", None) or (lambda b: ""), "", bot)
+
+
+def first_message(bot, task: str, past=None, page: dict | None = None, conv: dict | None = None) -> tuple:
+    """The turn's message to the model: (text, sent) where `sent` is the
+    {section: hash} the conversation has now seen (persist it on the bot).
+
+    A FRESH session (no `conv["session_id"]`) gets what OpenBot's `_prompt`
+    carried once per task: YOU, the changeable sections (_sections), the
+    CONVERSATION SUMMARY the rollover wrote (or the digest when there is none),
+    then the per-turn parts and TASK. A RESUMED session already holds all of
+    that in its history, so it gets a one-line header, the sections whose text
+    changed, the names of the unchanged ones, the per-turn parts and TASK.
+    `page`: the observation of the page the browser already sits on, so a
+    follow-up ("now open the second one") does not spend its first call on
+    `observe`; its refs are the turn's current ones (run() took it through
+    _observe)."""
+    m = bot.meta
+    conv = conv if isinstance(conv, dict) else {}
+    fresh = not conv.get("session_id")
+    seen = dict(conv.get("sent") or {}) if not fresh else {}
     appr = "ask before irreversible actions" if tools.effective_approval(bot) != "auto" else "never ask"
     tr = apptools.clean_trusted_apps(m.get("trusted_apps"))
     if tr:
@@ -313,10 +412,16 @@ def first_message(bot, task: str, past=None, page: dict | None = None) -> str:
     if tools.is_super(bot):
         ea_s = (" · Mac access: " + ("unattended (Claude Code's own judgement approves safe calls; the rest ask)"
                                      if super_mode(bot) == "auto" else "ask before writes, edits and shell commands"))
-    cfg_s = (f"YOU: {m.get('name')!r} · model {m.get('model') or DEFAULT_MODEL} · effort {m.get('effort') or DEFAULT_EFFORT} · "
-             f"approvals: {appr}{ea_s} · encryption {'on' if m.get('encrypt') else 'off'} · task from {origin}. "
-             + (botmod.settings_rule(bot) if botmod is not None else "Only the user changes settings.")
-             + "\n\n" + channels.prompt_for(bot))
+    botmod = _botmod()
+    turn_no = int(conv.get("turns") or 0) + 1
+    rule = botmod.settings_rule(bot) if botmod is not None and hasattr(botmod, "settings_rule") else "Only the user changes settings."
+    if fresh:
+        head = (f"YOU: {m.get('name')!r} · model {m.get('model') or DEFAULT_MODEL} · effort {m.get('effort') or DEFAULT_EFFORT} · "
+                f"approvals: {appr}{ea_s} · encryption {'on' if m.get('encrypt') else 'off'} · this message from {origin}. "
+                + rule + "\n\n" + channels.prompt_for(bot))
+    else:
+        head = (f"TURN {turn_no} · message from {origin} · approvals: {appr}{ea_s}. Refs from earlier turns are dead; "
+                "CURRENT PAGE below (when present) has the live ones.\n\n" + channels.prompt_for(bot))
     guide_s = ""
     if botmod is not None and botmod.APP_GUIDE_TRIGGER.search(task or ""):
         n_skills = len(_call(getattr(bot, "skills", lambda: []), []))
@@ -324,60 +429,73 @@ def first_message(bot, task: str, past=None, page: dict | None = None) -> str:
         cap = getattr(bot, "MEMORY_LINES", 200)
         guide_s = (botmod.app_guide() + f"\nCounts now: {sum(1 for r in m.get('routines') or [] if r.get('enabled'))} active routine(s), "
                    f"{n_skills} skill(s), memory {mem_lines}/{cap} notes.\n\n")
-    instr = (m.get("instructions") or "").strip()
-    instr_s = f"YOUR STANDING INSTRUCTIONS (set by the user, always apply):\n{instr}\n\n" if instr else ""
-    mem = _call(bot.memory_for_prompt, "")
-    mem_s = (f"MEMORY (notes you saved in earlier tasks; use them, add with `remember`):\n{mem}\n\n" if mem
-             else "MEMORY: empty. Save durable, non-secret facts with `remember` when you learn them.\n\n")
-    skills_s = _call(bot.skills_for_prompt, "", task)
-    if past is None:
-        past = _call(bot.past_conversation, [])
-    convo = "\n".join(past or []) or "(this is the first task)"
-
-    ctx = ""
-    files = _call(bot.all_files, [])
-    if files:
-        ctx += "\n\nFILES (attached by the user or downloaded; `readfile` reads one, `upload` puts one into a page, both by name):\n" + "\n".join(
-            f"- {d['name']} ({d.get('size')} bytes, {d.get('kind')})" for d in files)
+    # Changeable sections: all of them on a fresh session, only the changed ones on a resumed one.
+    secs = _sections(bot, task)
+    sent: dict = {}
+    blocks: list = []
+    unchanged: list = []
+    for name, text in secs.items():
+        h = _sha(text) if text else ""
+        sent[name] = h
+        if not text:
+            if seen.get(name):
+                blocks.append(f"{name}: none now (the earlier list no longer applies).")
+            continue
+        if seen.get(name) == h:
+            unchanged.append(name)
+            continue
+        blocks.append(text if fresh or not seen.get(name) else text + "\n(updated since earlier in this conversation)")
+    if unchanged:
+        blocks.append("Unchanged since earlier in this conversation (still apply): " + ", ".join(unchanged) + ".")
+    convo_s = ""
+    if fresh:
+        summary = (conv.get("summary") or "").strip()
+        if summary:
+            convo_s = ("CONVERSATION SUMMARY (your own handover note from before this session; [#n] are message numbers, "
+                       f"`recall` fetches any of them verbatim):\n{summary}")
+        else:
+            if past is None:
+                past = _call(bot.past_conversation, [])
+            convo_s = ("CONVERSATION SO FAR (earlier turns with this user, oldest first; `recall #n` fetches one in full):\n"
+                       + ("\n".join(past) if past else "(this is the start of the conversation)"))
+    # Per-turn parts: never hashed, they belong to this message.
+    per_turn: list = []
+    skills_s = _call(bot.skills_for_prompt, "", task).strip()
+    if skills_s:
+        per_turn.append(skills_s)
     arts = _call(bot.task_artifacts, [])
     if arts:
-        ctx += "\n\nARTIFACTS (already saved by this task into the user's Inbox; do not save them again):\n" + "\n".join(
-            f"- {r['name']} ({r.get('size')} bytes)" for r in arts)
-    cts = _call(bot.contacts, [])
-    if cts:
-        ctx += ("\n\nCONTACTS (`text` sends them an iMessage, `texts` reads the thread and their replies; nobody else):\n"
-                + "\n".join(f"- {lbl} ({h})" for lbl, h in cts))
-    ctx += _call(lambda: apptools.apps_section(apptools.apps(), link=_app_link), "")
-    if tools.is_super(bot) and botmod is not None and hasattr(botmod, "bots_section"):
-        ctx += _call(botmod.bots_section, "", bot)  # docs §11: who Super Bot can hand a task to
-    declined = _call(bot.declined_offers, [])
-    if declined:
-        ctx += ("\n\nOFFERS DECLINED (the user turned these app offers down recently; do not offer them again): "
-                + ", ".join(sorted(declined)))
-    ctx += _call(lambda: apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta)), "")
-    ctx += _call(lambda: apptools.skill_section(bot._skill_dirs(task)), "")
+        per_turn.append("ARTIFACTS (already saved by this turn into the user's Inbox; do not save them again):\n" + "\n".join(
+            f"- {r['name']} ({r.get('size')} bytes)" for r in arts))
+    per_turn.append(_handoffs_section(bot).strip())
+    per_turn.append(_call(lambda: apptools.skill_section(bot._skill_dirs(task)), "").strip())
     hints = [h for h in _call(bot._offer_hints, [], task) if h]
-    hints_s = ("\n\n" + "\n".join(hints)) if hints else ""
+    if hints:
+        per_turn.append("\n".join(hints))
     page_s = ""
     if page:
         view = tools.format_observation(page, compact=True)
         view = view[len("CURRENT PAGE\n"):] if view.startswith("CURRENT PAGE\n") else view  # one header, not two
-        page_s = "\n\nCURRENT PAGE (where your browser is right now; these refs are valid):\n" + view
-    return (f"{cfg_s}{guide_s}{instr_s}{mem_s}{skills_s}"
-            f"CONVERSATION SO FAR (earlier tasks with this user, oldest first):\n{convo}"
-            f"{ctx}{hints_s}{page_s}\n\nTASK: {task}")
+        page_s = "CURRENT PAGE (where your browser is right now; these refs are valid):\n" + view
+    parts = [head.rstrip(), guide_s.rstrip()] + blocks + [convo_s] + per_turn + [page_s, f"TASK: {task}"]
+    text = "\n\n".join(p for p in parts if p and p.strip())
+    return text, sent
 
 
 # ------------------------------------------------------------- spawning ---
 def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
-         super_mode: str | None = None, add_dir: str | None = None) -> list:
+         super_mode: str | None = None, add_dir: str | None = None,
+         resume: str | None = None, window: int | None = None) -> list:
     """docs §6, verified on claude 2.1.287. No --include-partial-messages
     (thoughts are per text block, and the flag floods stdout). `super_mode` (the
     CLI permission mode, bot.py SUPER_ACCESS values) switches Super Bot on: the
     built-in tools stay (no `--tools=`), `add_dir` is readable without a
     card, and permission prompts go to our `permission` MCP tool. Setting
     sources stay off in both: nothing from the user's own Claude Code setup
-    (CLAUDE.md, skills, hooks) reaches a bot."""
+    (CLAUDE.md, skills, hooks) reaches a bot. `resume` continues the bot's
+    conversation (its CLI session); sessions persist on disk for that. `window`
+    (the model's context window) is passed as --autocompact so the CLI's own
+    compaction never fires before fused's rollover (ROLLOVER_FRACTION)."""
     out = [bin_path, "-p",
            "--input-format", "stream-json",
            "--output-format", "stream-json",
@@ -386,6 +504,10 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
            "--model", model,
            "--effort", effort,
            "--system-prompt-file", sp_file]
+    if resume:
+        out += ["--resume", str(resume)]
+    if window:
+        out += ["--autocompact", str(int(window))]
     if super_mode:
         out += ["--permission-mode", super_mode,
                 "--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}"]
@@ -397,7 +519,6 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
             "--mcp-config", mcp_file,
             "--strict-mcp-config",
             "--allowedTools", f"mcp__{MCP_SERVER}__*",
-            "--no-session-persistence",
             "--disable-slash-commands"]
     return out
 
@@ -462,7 +583,7 @@ def _spawn(cmd: list, cwd: str):
         start_new_session=True)
 
 
-def _drain_stderr(sess: TaskSession, proc) -> None:
+def _drain_stderr(sess: Turn, proc) -> None:
     try:
         for raw in iter(proc.stderr.readline, b""):
             sess.stderr.append(raw.decode("utf-8", "replace").rstrip())
@@ -532,7 +653,7 @@ def stop(bot) -> None:
 
 
 # ----------------------------------------------------------------- run ---
-def _usage(bot, sess: TaskSession, ev: dict, ok: bool) -> None:
+def _usage(bot, sess: Turn, ev: dict, ok: bool) -> None:
     try:
         from fused_render.bots import store
     except Exception:  # noqa: BLE001
@@ -561,7 +682,28 @@ def _app_in_text(text: str):
     return _call(fn, None, text) if fn else None
 
 
-def _drive(bot, sess: TaskSession, proc) -> tuple:
+# The CLI's own words for a session it cannot pick up again (a deleted or moved transcript). An API or model
+# failure that merely mentions "session" keeps the live session and goes through the ordinary retry.
+_RESUME_ERR = re.compile(r"(no|unknown|missing|invalid|expired|could not|cannot|unable to|failed to)[^.\n]{0,40}"
+                         r"\b(session|conversation)\b"
+                         r"|\b(session|conversation)\b[^.\n]{0,40}(not found|does not exist|expired|missing|invalid|unknown|"
+                         r"could not be|cannot be)"
+                         r"|(could not|cannot|unable to|failed to) resume", re.I)
+
+
+def _ctx_reading(sess: Turn, usage) -> None:
+    """The context one model call carried: fresh + cache-write + cache-read
+    input tokens (claude_agent/agent.py reads the same row). The newest wins:
+    it is the conversation's size now, not a running total."""
+    if not isinstance(usage, dict):
+        return
+    parts = [usage.get(k) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
+    nums = [int(p) for p in parts if isinstance(p, (int, float)) and not isinstance(p, bool)]
+    if nums and sum(nums) > 0:
+        sess.ctx_tokens = sum(nums)
+
+
+def _drive(bot, sess: Turn, proc) -> tuple:
     """Read events until the task's last `result`. Returns (outcome, final
     text): outcome is "done", "cap" or "stopped". Raises on process death or a
     third failed model call."""
@@ -578,6 +720,8 @@ def _drive(bot, sess: TaskSession, proc) -> tuple:
             except subprocess.TimeoutExpired:
                 rc = None
             tail = " | ".join(list(sess.stderr)[-5:])
+            if sess.resumed and not sess.saw_init:
+                raise ResumeLost(f"exit code {rc}" + (f": {tail[-300:]}" if tail else ""))
             raise RuntimeError(f"Claude Code exited (code {rc}) before finishing" + (f": {tail[-600:]}" if tail else ""))
         try:
             ev = json.loads(raw)
@@ -586,9 +730,14 @@ def _drive(bot, sess: TaskSession, proc) -> tuple:
         if not isinstance(ev, dict):
             continue
         t = ev.get("type")
+        if t == "system" and ev.get("subtype") == "init":
+            sess.saw_init = True
+            if ev.get("session_id"):
+                sess.session_id = str(ev["session_id"])
         if t == "assistant":
             msg = ev.get("message") or {}
             mid = msg.get("id") or ""
+            _ctx_reading(sess, msg.get("usage"))
             uses = mcp_uses = 0
             for i, blk in enumerate(msg.get("content") or []):
                 if not isinstance(blk, dict):
@@ -620,10 +769,14 @@ def _drive(bot, sess: TaskSession, proc) -> tuple:
             _usage(bot, sess, ev, ok)
             if bot.stop_flag.is_set() or sess.stopping:
                 return "stopped", ""
+            if ev.get("session_id"):
+                sess.session_id = str(ev["session_id"])
             if not ok:
                 if sess.cap_interrupted:
                     return "cap", pending or ""
                 err = str(ev.get("result") or "").strip() or ", ".join(map(str, ev.get("errors") or [])) or ev.get("subtype") or "error"
+                if sess.resumed and strikes == 0 and sess.tool_uses == 0 and _RESUME_ERR.search(err):
+                    raise ResumeLost(err[:300])
                 bot.emit("error", f"Model call failed: {err[:500]}")
                 pending = None
                 strikes += 1
@@ -651,18 +804,52 @@ def _drive(bot, sess: TaskSession, proc) -> tuple:
         # system/init, user echoes / tool_results, control_response, stream_event: nothing to show
 
 
+def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
+    """(conv, resume_id): the bot's conversation record and the CLI session
+    this turn resumes, or None after a rollover (over budget, the system
+    prompt changed, or no session yet: the first turn under this design, or
+    the turn after a lost resume). A rollover seeds the fresh session with
+    bot.summarize_conversation over the transcript since the session began;
+    a thin slice (a new bot) takes the digest without a model call."""
+    conv = _call(getattr(bot, "conversation", None), None)
+    if not isinstance(conv, dict):
+        return None, None  # a bot without a conversation record (tests' fake): every turn a fresh session
+    limit = rollover_at(model)
+    sid = conv.get("session_id")
+    tokens = int(conv.get("tokens") or 0)
+    if sid and tokens < limit and conv.get("prompt_hash") == sp_hash:
+        return conv, sid
+    why = "over budget" if sid and tokens >= limit else ("system prompt changed" if sid else "new")
+    since = int(conv.get("since_seq") or 0)
+    lines = _call(getattr(bot, "transcript_lines", None), [], since)
+    previous = (conv.get("summary") or "").strip()
+    summary = _call(getattr(bot, "summarize_conversation", None), "", since, previous) if len(lines) >= 4 else ""
+    if not summary:  # a thin slice, or a summary call that failed: the previous note plus the digest
+        summary = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
+    _call(getattr(bot, "conversation_rollover", None), None, summary, sp_hash)
+    if why != "new":
+        # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
+        _call(getattr(bot, "curate_memory", None), None, since)
+    if why == "over budget":
+        bot.emit("note", f"Conversation compacted at {tokens // 1000}k tokens: a summary carries what came before; "
+                         "`recall` still reaches every earlier message.")
+    return _call(getattr(bot, "conversation", None), None), None
+
+
 def run(bot, task: str, label: str | None = None) -> None:
-    """The task thread body (bot.start_task). Every exception lands as an
-    `error` event + status `error`, as in OpenBot."""
+    """The turn thread body (bot.start_task). Every exception lands as an
+    `error` event + status `error`, as in OpenBot. The turn resumes the bot's
+    conversation (docs §6 "Bot threads"); a resume that does not come back
+    (ResumeLost) is retried once on a fresh session."""
     sess = None
     proc = None
     final_msg = ""
     collected = False
-    past = _call(bot.past_conversation, [])  # everything before this task
-    # Per-task bot state the shared helpers read (steps_engine.run resets the same).
+    conv = None
+    # Per-turn bot state the shared helpers read (steps_engine.run resets the same).
     bot.task_dir, bot.task_started = None, time.time()
     bot._tool_apps = set()
-    bot._skills_loaded = []  # app dirs whose SKILL.md `py app` loaded this task
+    bot._skills_loaded = []  # app dirs whose SKILL.md `py app` loaded this turn
     bot._offers = 0
     try:
         # The engine re-observes after every browser step and observe() always
@@ -682,50 +869,87 @@ def run(bot, task: str, label: str | None = None) -> None:
             _call(bot._routine_outcome, None, task, "stopped", "")
             bot.set_status("idle")
             return
-        token = register_task(bot)
-        sess = session(bot)
-        sess.task = label or task
-        if sess.is_super and any(HANDOFF_PAST_MARK in ln or ln.startswith("HAND-OFF NOTE (") for ln in past or []):
-            # A bot's hand-off result is web-derived text now in this task's context: treat it as having read the web.
-            sess.web_touched = True
         model = bot.meta.get("model") or DEFAULT_MODEL
         effort = bot.meta.get("effort") or DEFAULT_EFFORT
-        sess.model = model
-        page = None
-        st = _call(lambda: bot.browser.status_cached(), {})
-        if isinstance(st, dict) and st.get("running") and _real_page(st.get("url")):
-            page = _observe(bot, sess)
-            if not _real_page(page.get("url")):
-                page = None
-            else:
-                u = _norm_url(page.get("url"))
-                sess.prev_url = u
-                sess.visited[u] = 1  # as if a goto had landed there: coming back later is a revisit
-        prompt = first_message(bot, task, past, page=page)
         cache = paths.bot_cache_dir(bot.id)
         os.makedirs(cache, exist_ok=True)
         mode = super_mode(bot)
         cwd = _super_cwd(bot, cache) if mode else cache
+        sp_text = system_prompt_for(bot, cwd)
         sp_file = os.path.join(cache, "system_prompt.txt")
         with open(sp_file, "w", encoding="utf-8") as f:
-            f.write(system_prompt_for(bot, cwd))
-        mcp_file = write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token)
-        proc = _spawn(argv(bin_path, model, effort, sp_file, mcp_file, super_mode=mode,
-                           add_dir=os.path.expanduser("~") if mode else None), cwd)
-        sess.proc = proc
-        threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
-        if bot.stop_flag.is_set():  # Stop landed while we were spawning
-            sess.stopping = True
-        if effort == "low":
-            # The relay's trick (ai_relay._AiSession.configure): haiku ignores
-            # --effort and thinks by default; a zero budget is the universal off
-            # switch. Sent before the first message so it covers the first turn.
-            sess.control({"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0})
-        if not sess.write_user(prompt):
-            raise RuntimeError("could not hand the task to Claude Code")
-        if sess.stopping:
-            sess.interrupt()
-        outcome, final = _drive(bot, sess, proc)
+            f.write(sp_text)
+        conv, resume_id = _conversation_plan(bot, model, _sha(sp_text))
+        page = None
+        st = _call(lambda: bot.browser.status_cached(), {})
+        if isinstance(st, dict) and st.get("running") and _real_page(st.get("url")):
+            page = _observe(bot, _ProbeTurn())
+            if not _real_page(page.get("url")):
+                page = None
+
+        def spawn(resume):
+            nonlocal sess, proc
+            token = register_task(bot)
+            sess = session(bot)
+            sess.task = label or task
+            sess.model = model
+            sess.resumed = bool(resume)
+            sess.session_id = resume
+            if sess.is_super and isinstance(conv, dict) and conv.get("web_touched"):
+                # A hand-off result (web-derived text) is in this session's context: every write and command asks.
+                sess.web_touched = True
+            if page is not None:
+                sess.last_obs = page
+                sess.obs_gen += 1
+                u = _norm_url(page.get("url"))
+                sess.prev_url = u
+                sess.visited[u] = 1  # as if a goto had landed there: coming back later is a revisit
+            prompt, sent = first_message(bot, task, None, page=page, conv=conv)
+            mcp_file = write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token)
+            proc = _spawn(argv(bin_path, model, effort, sp_file, mcp_file, super_mode=mode,
+                               add_dir=os.path.expanduser("~") if mode else None,
+                               resume=resume, window=context_window(model)), cwd)
+            sess.proc = proc
+            threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
+            if bot.stop_flag.is_set():  # Stop landed while we were spawning
+                sess.stopping = True
+            if effort == "low":
+                # The relay's trick (ai_relay._AiSession.configure): haiku ignores
+                # --effort and thinks by default; a zero budget is the universal off
+                # switch. Sent before the first message so it covers the first turn.
+                sess.control({"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0})
+            if not sess.write_user(prompt):
+                raise RuntimeError("could not hand the task to Claude Code")
+            if isinstance(conv, dict):
+                # The sections are in the session's history now, whatever happens to this turn.
+                _call(getattr(bot, "conversation_update", None), None, sent=sent, turns=int(conv.get("turns") or 0) + 1)
+            if sess.stopping:
+                sess.interrupt()
+            out = _drive(bot, sess, proc)
+            if sess.is_super:
+                # Only now: a ResumeLost above re-spawns with a fresh preamble, which must still carry the board.
+                try:
+                    from fused_render.bots import handoffs
+                    handoffs.mark_seen(bot)
+                except Exception:  # noqa: BLE001
+                    pass
+            return out
+
+        try:
+            outcome, final = spawn(resume_id)
+        except ResumeLost as e:
+            # The session on disk did not come back: roll over to a fresh one (summary + recall) and run the turn again.
+            bot.emit("note", f"Could not resume the conversation ({e}); continuing from a summary.")
+            _terminate(proc)
+            if sess is not None:
+                _end_session(sess)
+            since = int(conv.get("since_seq") or 0) if isinstance(conv, dict) else 0
+            previous = (conv.get("summary") or "").strip() if isinstance(conv, dict) else ""
+            summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
+                       or ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))))
+            _call(getattr(bot, "conversation_rollover", None), None, summary, _sha(sp_text))
+            conv = _call(getattr(bot, "conversation", None), None)
+            outcome, final = spawn(None)
         if outcome == "stopped":
             bot.emit("system", "Stopped")
             _call(bot._routine_outcome, None, task, "stopped", "")
@@ -770,12 +994,31 @@ def run(bot, task: str, label: str | None = None) -> None:
                 bot.set_status(bot.meta.get("status") or "idle", waiting_on=None)
             except Exception:  # noqa: BLE001
                 pass
+        if isinstance(conv, dict) and sess is not None:
+            # What the next turn resumes, and how full it is (the newest model call's context).
+            upd = {"last_turn_ts": time.time()}
+            if sess.session_id:
+                upd["session_id"] = sess.session_id
+            if sess.ctx_tokens:
+                upd["tokens"] = sess.ctx_tokens
+            upd["window"] = context_window(sess.model)
+            if sess.is_super and sess.web_touched:
+                # Page text the turn read is in the session now: every later resumed turn asks before writes and
+                # commands too (a rollover keeps the flag: the summary and the board carry that text forward).
+                upd["web_touched"] = True
+            _call(getattr(bot, "conversation_update", None), None, **upd)
         if sess is not None:
             _end_session(sess)
         _terminate(proc)
         fresh = getattr(bot, "_fresh_downloads", None)
         if not collected and (getattr(bot, "task_dir", None) is not None or (fresh and _call(fresh, False))):
-            _call(bot.collect_task_artifacts, None, final_msg)  # stopped / errored / capped tasks keep what they got
+            _call(bot.collect_task_artifacts, None, final_msg)  # stopped / errored / capped turns keep what they got
+
+
+class _ProbeTurn:
+    """What `_observe` needs before the turn's Turn exists (the CURRENT PAGE probe)."""
+    last_obs = None
+    obs_gen = 0
 
 
 # ---------------------------------------------------------- tool handler ---
@@ -828,7 +1071,7 @@ def _real_page(url) -> bool:
     return bool(u) and not u.startswith(("about:", "chrome://", "chrome-search://", "data:"))
 
 
-def _observe(bot, sess: TaskSession) -> dict:
+def _observe(bot, sess: Turn) -> dict:
     try:
         obs = bot.browser.observe() or {}
     except Exception as e:  # noqa: BLE001
@@ -880,7 +1123,7 @@ def handle_tool(bot, token, name: str, args) -> dict:
             return _result(f"error: {type(e).__name__}: {e}", error=True)
 
 
-def _instruction(sess: TaskSession, notes: list, msg: str) -> None:
+def _instruction(sess: Turn, notes: list, msg: str) -> None:
     """A mid-task user message: it rides on this tool result."""
     notes.append(f"USER INSTRUCTION (mid-task, overrides the task): {msg}")
     sess.ran_calls.clear()  # a new instruction may legitimately ask for the same call again
@@ -896,7 +1139,7 @@ def _seq(ev):
 _REF_TOOLS = frozenset({"click", "type", "press", "select", "hover", "upload", "read", "scroll"})
 
 
-def _batched_stale(sess: TaskSession, name: str, args: dict) -> bool:
+def _batched_stale(sess: Turn, name: str, args: dict) -> bool:
     """This call is a later call of a multi-bot-tool message whose page has
     moved since the batch's first call: its refs point at renumbered elements.
 
@@ -918,7 +1161,7 @@ def _batched_stale(sess: TaskSession, name: str, args: dict) -> bool:
     return name in _REF_TOOLS and bool(args.get("ref")) and sess.obs_gen != sess.batch_gen
 
 
-def _handle(bot, sess: TaskSession, name: str, args: dict) -> dict:
+def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
     if bot.stop_flag.is_set():
         return _stopped()
     was_paused = _wait_pause(bot)
@@ -949,6 +1192,12 @@ def _handle(bot, sess: TaskSession, name: str, args: dict) -> dict:
                        "final answer now: what you found, and what is left undone.", notes, error=True)
     bot.set_status("running", step=n, step_cap=sess.max_steps)
     sess.await_tool_use(n)
+    if not sess.nudged and sess.ctx_tokens >= NUDGE_FRACTION * rollover_at(sess.model):
+        # OpenClaw's memory flush, through a tool result (mid-turn stdin is ignored, docs §6): once per turn.
+        sess.nudged = True
+        notes.append("CONTEXT: this conversation is nearly full; the next turn may start from a summary. Save anything "
+                     "durable (preferences, where things live, what you found that the user will ask about again) with "
+                     "`remember` now, then carry on.")
     stale = _batched_stale(sess, name, args)
     if name not in tools.TOOL_SPECS:
         return _result(f"error: unknown tool {name!r}", notes, error=True)
@@ -1027,7 +1276,7 @@ def builtin_label(name: str, inp: dict) -> str:
     return f"{name} {_short(first, 80)}".strip()
 
 
-def _builtin_use(bot, sess: TaskSession, blk: dict) -> None:
+def _builtin_use(bot, sess: Turn, blk: dict) -> None:
     """A built-in tool_use on the stream: remember it for its result, count
     the step, and interrupt past Super Bot's cap (the result's `action` row still lands)."""
     name = str(blk.get("name") or "")
@@ -1052,7 +1301,7 @@ def _result_text(content) -> str:
     return ""
 
 
-def _builtin_results(bot, sess: TaskSession, ev: dict) -> None:
+def _builtin_results(bot, sess: Turn, ev: dict) -> None:
     """The echoed tool_result of a built-in call -> one `action` row, result
     trimmed as other actions are (1500 chars for reads, 400 otherwise)."""
     content = (ev.get("message") or {}).get("content")
@@ -1086,7 +1335,7 @@ def _permission_answer(allow: bool, args: dict, message: str = "") -> dict:
     return {"content": [{"type": "text", "text": json.dumps(body)}], "isError": False}
 
 
-def _permission(bot, sess: TaskSession, args: dict):
+def _permission(bot, sess: Turn, args: dict):
     """Claude Code wants to run a built-in tool the mode did not pre-approve.
     Unattended (`super_access` full) says yes unless the task has touched the web;
     otherwise the same approval card as a risky click, remembered per task
@@ -1127,7 +1376,7 @@ def _permission(bot, sess: TaskSession, args: dict):
                                            "or finish and say what you could not do." + "".join(f"\n{n}" for n in notes))
 
 
-def _ask(bot, sess: TaskSession, args: dict):
+def _ask(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "I need your input to continue."
     opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:5]
     q, q_sum = channels.base.split_summary(q, str(args.get("summary") or ""))
@@ -1168,7 +1417,7 @@ def _ask(bot, sess: TaskSession, args: dict):
     return _result("\n".join(lines))
 
 
-def _login(bot, sess: TaskSession, args: dict):
+def _login(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "This page needs you to sign in."
     bot.window(True)
     ev = bot.emit("question", channels.login_text(bot, q))
@@ -1197,7 +1446,7 @@ def _login(bot, sess: TaskSession, args: dict):
     return _result("\n".join(lines))
 
 
-def _offer(bot, sess: TaskSession, args: dict):
+def _offer(bot, sess: Turn, args: dict):
     obs = sess.last_obs or _observe(bot, sess)
     spec = args.get("spec") or args.get("text") or ""
     d = {"name": args.get("name") or "", "text": spec, "spec": spec, "message": args.get("message") or ""}
@@ -1219,7 +1468,7 @@ def _loaded_skill(bot, args: dict) -> list:
     return [sec] if sec else []
 
 
-def _gate(bot, sess: TaskSession, preview: str, why: str, notes: list, raw: list | None = None):
+def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None = None):
     """The approval card for one risky call. (verdict, said): True approved,
     False denied (with the user's words), None Stop. An answer that is neither
     yes nor no is a mid-task instruction ("use the blue one", "wait, check the
@@ -1255,7 +1504,7 @@ def _gate(bot, sess: TaskSession, preview: str, why: str, notes: list, raw: list
     return verdict, said
 
 
-def _act(bot, sess: TaskSession, name: str, args: dict, notes: list | None = None) -> dict:
+def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> dict:
     """One non-control tool call. Order matters for the transcript: run it,
     re-observe and build the change report, THEN emit the `action` event, so
     the chip's one-liner (`result`) says what the step changed and its thumb
@@ -1267,9 +1516,9 @@ def _act(bot, sess: TaskSession, name: str, args: dict, notes: list | None = Non
     if ckey is not None and ckey in sess.ran_calls:
         label = tools.describe(bot, name, args, obs)
         bot.emit("note", f"Already ran {label}; using the result above.")
-        return _result(f"NOT RUN AGAIN: you already ran \"{label}\" with those exact args since the user last spoke. "
-                       "Its value is below: use it (report it in your final answer). Run it again only if the user asks "
-                       f"again or the args differ.\n\n{sess.ran_calls[ckey]}")
+        return _result(f"NOT RUN AGAIN: you already ran \"{label}\" with those exact args since the user last spoke; "
+                       "its RESULT is above in this conversation. Use it (report it in your final answer). Run it again "
+                       "only if the user asks again or the args differ.")
     pre = []
     why = tools.risk(bot, name, args, obs)
     # ALWAYS_ASK (bot_create / bot_settings) raises the card under "Never ask" too (docs §12).

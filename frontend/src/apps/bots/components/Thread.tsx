@@ -99,11 +99,15 @@ function Action({ text, result, detail, thumbSrc, title }: { text: string; resul
 
 /** Super Bot's hand-off line (docs §11): who it asked, where that stands, and (on the result) exactly the text the bot
  *  sent back. The header already names the bot and the step, so the body drops the matching lead-in of the text. */
-function HandoffCard({ e, state, targetLive }: { e: BotEvent; state: string; targetLive: boolean }) {
+/** Hand-off events written before 2026-10-07 carry the old state names; bot.json rows were renamed on load, events were not. */
+const LEGACY_HANDOFF_STATE: Record<string, string> = { queued: "received", running: "working", waiting: "blocked", error: "failed", stopped: "cancelled" };
+
+function HandoffCard({ e, state: rawState, targetLive }: { e: BotEvent; state: string; targetLive: boolean }) {
+  const state = LEGACY_HANDOFF_STATE[rawState] || rawState;
   const h = e.handoff!, who = h.target_name || "the bot";
   const head = e.role === "system" ? `Asked ${who}`
     : e.role === "question" ? `${who} needs you at the laptop`
-    : state === "error" ? `${who} failed` : state === "stopped" ? `${who} stopped` : `${who} finished`;
+    : state === "failed" ? `${who} failed` : state === "cancelled" ? `${who} stopped` : `${who} finished`;
   const lead = e.role === "system" ? /^Asked .+? to:\s*/ : e.role === "question" ? /^.+? needs you at the laptop:\s*/ : null;
   const text = lead ? e.text.replace(lead, "") : e.text;
   return (

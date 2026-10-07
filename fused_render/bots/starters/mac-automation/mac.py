@@ -61,7 +61,7 @@ def _hint(stderr):
 def _run(cmd, stdin=None, timeout=TIMEOUT_S):
     """subprocess.run with text I/O; returns (rc, stdout, stderr); rc 124 on timeout, like gtimeout."""
     try:
-        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired as e:
         out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
         err = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")

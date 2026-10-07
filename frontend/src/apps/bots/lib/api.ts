@@ -18,11 +18,15 @@ export interface ReplyRef { seq: number; role: Role; text: string }
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */
 export interface Via { kind: "imessage" | "routine" | "botsend" | "handoff" | "web" | (string & {}); addr: string }
 
-export type HandoffState = "queued" | "running" | "waiting" | "done" | "error" | "stopped";
+export type HandoffState = "received" | "working" | "blocked" | "done" | "failed" | "cancelled";
 /** Super Bot's meta["handoffs"] (docs §11): one task it handed to an ordinary bot, last 40. */
 export interface Handoff {
   id: string; target: string; target_name: string; task: string; origin_via?: Via | null; created_at: number;
-  state: HandoffState; done_at?: number; result?: string;
+  state: HandoffState; started_at?: number; done_at?: number; result?: string; updated_at?: number;
+  /** While `blocked`: what the bot waits on the user for at the Mac (the card's text, <= 300 chars). */
+  blocked?: { kind: string; text: string };
+  /** The bot's last few `note` progress lines (<= 5, <= 160 chars each). */
+  notes?: string[];
 }
 /** The `handoff` stamp on Super Bot's hand-off lines ("Asked …", "… needs you at the laptop", the result). */
 export interface HandoffRef { id: string; target: string; target_name: string; task?: string; state: HandoffState; task_dir?: string }

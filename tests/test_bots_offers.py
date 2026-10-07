@@ -309,8 +309,8 @@ def test_past_conversation_labels_offers(bot):
     bot.emit("question", "Want an app for this?", options=["Build it", "Not now"], offer={"kind": "build", "name": "Price watch"})
     bot.emit("user", "Build it")
     lines = bot.past_conversation()
-    assert lines[0].startswith("YOU OFFERED TO BUILD THE APP 'Price watch': Want an app")
-    assert lines[1] == "USER: Build it"
+    assert lines[0].startswith("[#1] YOU OFFERED TO BUILD THE APP 'Price watch': Want an app")  # [#seq]: recall fetches it
+    assert lines[1] == "[#2] USER: Build it"
 
 
 # ---- iMessage reply hints (channels/router.py render, docs §10) ------------------
