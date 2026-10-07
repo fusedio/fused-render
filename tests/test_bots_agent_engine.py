@@ -386,7 +386,7 @@ def test_text_then_done(server, fake_cli, monkeypatch):
     assert argv[argv.index("--model") + 1] == "haiku"
     assert argv[argv.index("--effort") + 1] == "low"
     assert argv[argv.index("--allowedTools") + 1] == "mcp__bot__*"
-    with open(argv[argv.index("--system-prompt-file") + 1]) as f:
+    with open(argv[argv.index("--system-prompt-file") + 1], encoding="utf-8") as f:
         assert f.read() == agent_engine.SYSTEM_PROMPT
     cfg = json.load(open(argv[argv.index("--mcp-config") + 1]))
     srv = cfg["mcpServers"]["bot"]
@@ -1258,12 +1258,13 @@ def test_super_webfetch_counts_as_touching_the_web(server, fake_cli, monkeypatch
 def test_super_builtin_calls_become_action_rows(server, fake_cli, monkeypatch):
     bot = super_bot()
     home = os.path.expanduser("~")
+    file_path = os.path.join(home, "Documents", "notes.md")
     run_task(bot, [{"text": "Reading the file."},
-                   {"builtin": "Read", "args": {"file_path": f"{home}/Documents/notes.md"}, "output": "line one\nline two"},
+                   {"builtin": "Read", "args": {"file_path": file_path}, "output": "line one\nline two"},
                    {"builtin": "Bash", "args": {"command": "ls -la"}, "output": "total 0", "error": True},
                    {"result": "two lines"}], monkeypatch)
     acts = [e for e in bot.events if e["role"] == "action"]
-    assert [a["text"] for a in acts] == ["read ~/Documents/notes.md", "run `ls -la`"]
+    assert [a["text"] for a in acts] == ["read ~" + os.sep + os.path.join("Documents", "notes.md"), "run `ls -la`"]
     # One line on the chip, the whole output behind it (the same two audiences as every other action).
     assert acts[0]["result"] == "line one" and acts[0]["detail"] == "line one\nline two"
     assert acts[1]["result"].startswith("error:")
@@ -1298,7 +1299,7 @@ def test_builtin_label():
     L = agent_engine.builtin_label
     home = os.path.expanduser("~")
     assert L("Bash", {"command": "  git   status "}) == "run `git status`"
-    assert L("Write", {"file_path": f"{home}/a/b.txt"}) == "write ~/a/b.txt"
+    assert L("Write", {"file_path": os.path.join(home, "a", "b.txt")}) == "write ~" + os.sep + os.path.join("a", "b.txt")
     assert L("Edit", {"file_path": "/tmp/x"}) == "edit /tmp/x"
     assert L("Glob", {"pattern": "**/*.py", "path": "/tmp"}) == "find **/*.py in /tmp"
     assert L("WebFetch", {"url": "https://x.test/a"}) == "fetch https://x.test/a"

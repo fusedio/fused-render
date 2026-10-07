@@ -121,7 +121,7 @@ def test_update_replaces_shipped_files_but_keeps_state(tmp_path):
     assert _docs(root)["update"] is True
     r = starters.install("google-docs-tabs", root, update=True)
     assert r["installed"] is True and r["existed"] is True
-    with open(os.path.join(d, "docs.py")) as f:
+    with open(os.path.join(d, "docs.py"), encoding="utf-8") as f:
         assert "edited by a build" not in f.read()
     assert os.path.isfile(os.path.join(d, ".fused", "data", "docs.json"))
     assert os.path.isfile(os.path.join(d, "notes.txt"))

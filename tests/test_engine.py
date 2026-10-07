@@ -20,7 +20,7 @@ import types
 import pytest
 
 import conftest
-from fused_render import engine, envinstall
+from fused_render import engine, envinstall, executor
 
 
 def _toml_available() -> bool:
@@ -840,6 +840,18 @@ def test_a_headerless_script_runs_on_the_app_interpreter(monkeypatch, tmp_path):
 def test_a_headerless_script_sees_the_app_s_own_packages(monkeypatch, tmp_path):
     """The point of the switch: `[bundled]` works with no header and no install."""
     monkeypatch.setattr(engine, "_backend", None)
+    # DEFAULT_TIMEOUT (60s) is the per-call budget `get_backend()` hands the
+    # child process, and it is read fresh on every call (the `from
+    # fused_render.executor import DEFAULT_TIMEOUT` inside `get_backend()` is a
+    # local import, not a value frozen at module load) so patching it here only
+    # widens this one test's child, not production's. This is the one test in
+    # the file that actually imports pandas AND pyarrow in a cold child
+    # interpreter rather than just asserting on a declared requirement list;
+    # under xdist's full-suite parallelism a first real touch of that native
+    # dependency tree can outrun the production budget without anything being
+    # wrong with the script itself (sub-second end to end once warm, e.g. on
+    # Linux) — so the test gets a generous allowance instead of a tight one.
+    monkeypatch.setattr(executor, "DEFAULT_TIMEOUT", 180.0)
     target = tmp_path / "reads.py"
     target.write_text(
         "def main():\n"
