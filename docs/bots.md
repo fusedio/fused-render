@@ -1254,6 +1254,18 @@ Super Bot can give an ordinary bot a task. Design page:
 3. Depth one: only Super Bot hands off; a hand-off to Super Bot is refused.
 4. Super Bot can stop a hand-off it started (`handoff_stop`); no pause,
    resume or steer. Each hand-off is independent; one result per hand-off.
+5. A finished hand-off carries the request on. When a bot's result lands
+   (`done`) and Super Bot is idle, `_handoff_continue` starts one turn of
+   Super Bot's own (origin `handoff_result`, label "Carrying on: <what the
+   user asked>", on the asking task's channel) whose TASK says: the result
+   is on the HAND-OFFS board, do what is left of the user's request (hand
+   it to the next bot, write the reply), then stop; nothing beyond it. The
+   row keeps `asked_for` (Super Bot's task text at the hand-off), `asked_seq`
+   and `asked_at` (the asking turn's start). Not carried on: a failed or
+   cancelled hand-off (card only), a row already `continued`, when the user
+   has typed since the hand-off (their message carries the result), or
+   while sibling hand-offs of the same turn (`asked_at`) are open — the last
+   one to land carries on, once.
 
 **Tools** (`tools.py`, Super Bot's roster only; `roster()` drops every `SUPER_TOOLS` entry for
 every other bot and `execute()` refuses them). `handoff {bot, task}`: `bot` a
