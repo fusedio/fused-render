@@ -1380,3 +1380,53 @@ def test_context_window_rule():
     assert agent_engine.context_window("claude-sonnet-5") == agent_engine.WINDOW_1M
     assert agent_engine.context_window("sonnet[1m]") == agent_engine.WINDOW_1M
     assert agent_engine.rollover_at("haiku") == agent_engine.WINDOW_DEFAULT // 2
+
+
+# ---- Super Bot: Claude Code's own AskUserQuestion becomes a question card, not an approval ----
+
+def _ask_q(*questions):
+    return _perm("AskUserQuestion", questions=list(questions))
+
+
+def _q(text, *labels, multi=False):
+    return {"question": text, "header": "Pick", "options": [{"label": l, "description": ""} for l in labels], "multiSelect": multi}
+
+
+def test_super_ask_user_question_is_a_question_card(server, fake_cli, monkeypatch):
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which size?", "Small", "Large")), {"result": "ok"}], monkeypatch)
+    card = bot.wait_event("question")
+    assert card["text"] == "Which size?" and card["options"] == ["Small", "Large"]
+    assert "approval" not in bot.roles() and bot.meta["status"] == "waiting"
+    bot.say("large")  # a click or a typed label, any case
+    finish(t)
+    ans = _answer(fake_cli)
+    assert ans["behavior"] == "allow"
+    assert ans["updatedInput"]["answers"] == {"Which size?": "Large"}
+    assert [o["label"] for o in ans["updatedInput"]["questions"][0]["options"]] == ["Small", "Large"]  # nothing typed: untouched
+
+
+def test_super_ask_user_question_typed_answer_joins_the_options(server, fake_cli, monkeypatch):
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which size?", "Small", "Large")), {"result": "ok"}], monkeypatch)
+    bot.wait_event("question")
+    bot.say("medium, please")
+    finish(t)
+    ans = _answer(fake_cli)["updatedInput"]
+    assert ans["answers"] == {"Which size?": "medium, please"}
+    opts = ans["questions"][0]["options"]
+    assert [o["label"] for o in opts] == ["Small", "Large", "medium, please"]
+    assert opts[-1]["description"] == agent_engine.TYPED_OPTION_NOTE
+
+
+def test_super_ask_user_question_multi_select_keeps_commas_in_labels(server, fake_cli, monkeypatch):
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which days?", "Mon, Tue", "Wed", "Thu", multi=True)), {"result": "ok"}], monkeypatch)
+    card = bot.wait_event("question")
+    assert card["text"].startswith("Which days?") and "commas" in card["text"]
+    bot.say("wed, Mon, Tue, and Fri if free")
+    finish(t)
+    ans = _answer(fake_cli)["updatedInput"]
+    # Labels in option order (the join the CLI checks), the typed remainder last and whole.
+    assert ans["answers"] == {"Which days?": "Mon, Tue, Wed, and Fri if free"}
+    assert [o["label"] for o in ans["questions"][0]["options"]] == ["Mon, Tue", "Wed", "Thu", "and Fri if free"]

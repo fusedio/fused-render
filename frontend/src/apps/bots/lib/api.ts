@@ -52,6 +52,8 @@ export interface BotEvent {
    *  renders as a hand-off card; on the target bot it is the bare "Sent to Super Bot: …" line. */
   source?: "build" | "handoff" | (string & {});
   handoff?: HandoffRef;
+  /** A "Sent to Super Bot" line: the card it became in Super Bot's chat ("Read more" opens that chat there). */
+  link?: { bot: string; seq: number };
   /** done / question: the bot's own phone-sized version (D11); the router texts this instead of the cut message. */
   summary?: string;
   /** role "delivery" (D12): the event this row records a send of, the channel, the address, and the error when the send failed.

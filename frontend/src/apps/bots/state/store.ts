@@ -54,6 +54,8 @@ export interface BotsState {
   fast: boolean;
   /** Bumped by select() (and on leaving the live view after renderDirty): OpenBot's render(true), "scroll the thread to the end on a new bot". */
   scrollThread: number;
+  /** jumpTo(): the message the thread scrolls to once it renders that bot (null once done). */
+  scrollSeq: { bot: string; seq: number } | null;
   /** Set by send(): the next render shows the message you just sent. The thread clears it (setScrollToEnd(false)). */
   scrollToEnd: boolean;
   banner: { show: boolean; text: string };
@@ -73,7 +75,7 @@ let S: BotsState = {
   bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : initialSel(),
   usage: null, imessage: null,
   seen: typeof localStorage === "undefined" ? {} : loadSeen(), base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
-  showHidden: false, renderDirty: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false,
+  showHidden: false, renderDirty: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
   buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Builds · Claude tasks that create fused apps", hidden: false },
   ui: { dialog: null, panel: null, menu: null },
@@ -202,6 +204,13 @@ export function select(id: string | null): void {
     const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
   });
 }
+
+/** Open `id`'s chat at message `seq` ("Read more" on a hand-off line). The thread clears scrollSeq once it has scrolled. */
+export function jumpTo(id: string, seq: number): void {
+  if (!S.bots.some((b) => b.id === id)) return;
+  batch(() => { select(id); commit({ scrollSeq: { bot: id, seq } }); });
+}
+export const clearScrollSeq = (): void => { if (S.scrollSeq) commit({ scrollSeq: null }); };
 
 // Another writer (an embedded app's params, back/forward) moved `?bot=`: follow it without the select() resets.
 function onUrlChange() {
