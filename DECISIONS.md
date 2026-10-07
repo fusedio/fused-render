@@ -6603,3 +6603,4 @@ Claude chat surfaces, text and border (`--c-bg`, `--c-panel`, `--c-surface`, `--
 In-progress/running status colour (`--status-progress`) is now the accent (was `#facc15` / `#ca8a04`) so the app has one yellow.
 
 Midnight now uses a golden accent (#facc15 dark, #a16207 light) instead of the brand lime; the running status follows via `--accent`, so it is still one yellow per theme.
+- D1335 follow-up (review fixes): annotation layer (ann/layer.ts) stays literal because it injects into the app's own document (token leak); presets now override task/playground/am-surface tokens; High contrast derives accent roles (--accent-soft/--icon-html/--app-icon-yellow) from --accent; --c-card-border is an fg-muted mix; bootstrap preset ids pinned by tests/test_theme.py; lan.html now carries the preset bootstrap.
