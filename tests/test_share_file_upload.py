@@ -45,8 +45,17 @@ def _record_cancel_signal(monkeypatch):
     Windows has neither `os.killpg` nor `os.getpgid` at all — not just
     unsupported, the attributes are absent from the frozen `os` module — and
     falls to `os.kill(pid, CTRL_BREAK_EVENT)`, then `taskkill /T /F` when that
-    raises (a synthetic pid like the ones these tests seed always makes
-    CTRL_BREAK_EVENT raise, so the fallback is what actually fires here).
+    raises.
+
+    `os.kill` is patched too, not just `subprocess.run`: these pids are
+    synthetic (seeded straight into a marker file, no real process behind
+    them), so there is no process group of this test's own for
+    `GenerateConsoleCtrlEvent` to land on — but it targets a process GROUP id,
+    not a bare pid, and a pid that happens to collide with one (the runner
+    shell's own, say) would send a real Ctrl+Break into whatever shares this
+    job's console instead of raising. Not patching `os.kill` bets this test's
+    safety on that collision never happening; patching it removes the real
+    syscall from the test entirely.
 
     A test that patches `os.killpg` alone therefore raises `AttributeError`
     on Windows instead of recording anything (`monkeypatch.setattr` refuses
@@ -55,6 +64,10 @@ def _record_cancel_signal(monkeypatch):
     """
     killed = []
     if os.name == "nt":
+        def _kill(pid, sig):
+            raise OSError("synthetic pid: no such process group")
+        monkeypatch.setattr(os, "kill", _kill)
+
         def _run(cmd, **kwargs):
             assert cmd[:2] == ["taskkill", "/PID"], cmd
             assert "/T" in cmd, "must walk the tree, not just the named pid"

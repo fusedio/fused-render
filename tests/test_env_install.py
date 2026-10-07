@@ -2788,11 +2788,29 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
     recycled one inside the SERVER's group would make an unguarded `killpg` take
     the server down with it. It killed a pytest session while this was being
     written, which is why the case is parametrized rather than assumed.
+
+    `start_new_session` is POSIX-only (the stdlib says so explicitly) — on
+    Windows it is silently ignored, so this would otherwise spawn the child
+    into the SAME console/process group as the pytest job itself, whichever
+    way `detached` fell. `cancel`'s Windows road is
+    `os.kill(pid, CTRL_BREAK_EVENT)` (`_kill`, unconditionally — there is no
+    leader check to fall back on there, unlike the POSIX branch), and
+    `GenerateConsoleCtrlEvent` targets a process GROUP id, not a bare pid: fed
+    a pid that never led a group of its own, it can land on whatever group the
+    runner's shell and every worker inherited, breaking the whole job instead
+    of just this one child. `CREATE_NEW_PROCESS_GROUP` is what actually gives
+    the child its own group on Windows — the Windows equivalent of
+    `start_new_session`, needed unconditionally there because `_kill` has no
+    "same-group" road to exercise on that platform at all (`_spawn` always
+    creates a new group); `detached` keeps choosing between the two real
+    POSIX roads.
     """
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     # A child that will not finish on its own, standing in for a slow download.
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(600)"],
         start_new_session=detached,
+        creationflags=creationflags,
     )
     key = "ca9ce11ed0000001"  # 16 hex: keys are validated now
     d = envinstall.progress_dir(key)
