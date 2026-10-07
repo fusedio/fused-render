@@ -981,8 +981,11 @@ class BrowserProcess:
             # a per-session Emulation override: overrides die with the DevTools
             # session that set them, so every screenshot connection closing made
             # the viewport snap back to 1x and the live view flip size.
-            mode = [] if visible else ["--headless=new", f"--user-agent={_clean_user_agent(chrome)}",
-                                       f"--force-device-scale-factor={LIVE_SCALE}"]
+            # Visible: a shared Chrome stays on the desktop while a bot whose user
+            # handed back works on in a minimised / background window (set_visible),
+            # so occluded windows must keep compositing or its screenshots stall.
+            mode = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] if visible else [
+                "--headless=new", f"--user-agent={_clean_user_agent(chrome)}", f"--force-device-scale-factor={LIVE_SCALE}"]
             args = [
                 chrome, *mode,
                 f"--remote-debugging-port={port}",
@@ -1008,6 +1011,8 @@ class BrowserProcess:
                 v._fresh = True  # no window yet in this process: _page_target may open one even when visible
                 if self.shared():
                     v._own = []
+                if not visible:
+                    v.popped = False  # headless: no bot has the desktop any more
             write_json_atomic(self.session_path, sess)
             view = self.views[0] if self.views else None
             if view is not None and restore and restore != "about:blank":
@@ -1096,10 +1101,34 @@ class BrowserProcess:
         """Relaunch the same profile visible/headless and return to the last URL.
         `restore_for` is the view whose page is brought back (the one that asked);
         other views on a shared process reopen on their own last page when they
-        next act (`Browser._page_target`)."""
+        next act (`Browser._page_target`).
+
+        Visibility is a property of the process (one Chrome is headless or it is
+        not), but a take-over is per bot: on a shared process the headless
+        relaunch waits until the LAST popped-out view hands back. Relaunching on
+        the first hand-back killed the Chrome under every other bot's desktop
+        window (the user closed bot A's window, bot B's vanished mid-login).
+        Returns True when Chrome was relaunched, False when it was left as is."""
         view = restore_for or (self.views[0] if self.views else None)
         with self.lock:
             sess = self.session()
+            if view is not None:
+                view.popped = bool(visible)
+            if not visible and self.shared() and any(v.popped for v in self.views if v is not view):
+                # Another bot still drives this Chrome from the desktop: keep it
+                # visible. The handing-back bot carries on in a real window (its
+                # own tabs if any are left, else a new window on its next step).
+                if view is not None and sess and self.alive(sess):
+                    try:
+                        own = view._own_targets(sess["port"])
+                        if not own:
+                            view._fresh = True  # window gone: let _page_target open one instead of raising
+                            view._main_tab = None
+                        else:
+                            view._minimize(sess["port"], own)  # out of the user's way; still renders (start() flags)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return False
             url = ""
             if view is not None and sess and self.alive(sess) and not view.window_closed():
                 try:
@@ -1125,6 +1154,7 @@ class BrowserProcess:
                     ws.call("Page.bringToFront")
             if view is not None:
                 view._run(restore)
+            return True
 
     def visible(self):
         return bool((self.session() or {}).get("visible"))
@@ -1165,6 +1195,7 @@ class Browser:
         self._own = self._read_own()  # target ids this view opened (shared process only)
         self._main_tab = None  # target id of the tab we drive
         self._fresh = True     # no tab of ours in this process yet (set again on every relaunch)
+        self.popped = False    # this bot's user has the desktop window (BrowserProcess.set_visible); per view, unlike visible()
         self.idle = False      # set by the bot's idle sleep; cleared on the next action (stop_if_idle)
         self.idle_check = None  # bot.py sets a callable: "may this bot's browser sleep right now?" (looked at, task, control)
         self.live_seen = 0.0
@@ -1244,7 +1275,9 @@ class Browser:
         return self.proc.shared()
 
     def set_visible(self, visible):
-        self.proc.set_visible(visible, restore_for=self)
+        """Returns True when Chrome was relaunched, False when a shared process
+        stayed visible for another bot's take-over."""
+        return self.proc.set_visible(visible, restore_for=self)
 
     def visible(self):
         return self.proc.visible()
@@ -1327,7 +1360,11 @@ class Browser:
         foreground tab, so bots sharing a process never throttle each other)."""
         ws = self._browser_ws(port)
         try:
-            tid = ws.call("Target.createTarget", url=url or "about:blank", newWindow=True)["targetId"]
+            # On a visible Chrome (another bot's user is in their window) ask for the
+            # new window in the background so it does not steal their focus; headless
+            # keeps the default, where a window's only tab is the foreground anyway.
+            extra = {"background": True} if self.visible() else {}
+            tid = ws.call("Target.createTarget", url=url or "about:blank", newWindow=True, **extra)["targetId"]
         finally:
             ws.close()
         self._own.append(tid)
@@ -1338,6 +1375,27 @@ class Browser:
                 return t
             time.sleep(0.1)
         raise RuntimeError("the new tab did not appear")
+
+    def _minimize(self, port, targets):
+        """Minimise the windows holding `targets` (this bot handed back while
+        another bot's user still has the shared Chrome on the desktop)."""
+        ws = self._browser_ws(port)
+        try:
+            seen = set()
+            for t in targets:
+                try:
+                    w = ws.call("Browser.getWindowForTarget", targetId=t["targetId"])
+                except Exception:  # noqa: BLE001
+                    continue
+                if w["windowId"] in seen:
+                    continue
+                seen.add(w["windowId"])
+                try:
+                    ws.call("Browser.setWindowBounds", windowId=w["windowId"], bounds={"windowState": "minimized"})
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            ws.close()
 
     def _page_target(self, port):
         """The one tab we drive. Stays the same tab across calls (popups from
@@ -1351,7 +1409,9 @@ class Browser:
         else:
             tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
         if not tabs:
-            if (self.session() or {}).get("visible") and not (self.shared() and self._fresh):
+            # Only the bot whose user has the desktop window must not reopen one (the status poll docks
+            # it); a bot that already handed back on a still-visible shared Chrome gets a new window.
+            if (self.session() or {}).get("visible") and (self.popped or not self.shared()) and not (self.shared() and self._fresh):
                 raise RuntimeError("the desktop window was closed")
             if self.shared():
                 last = self.last_url()
