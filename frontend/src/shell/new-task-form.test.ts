@@ -1591,8 +1591,8 @@ describe("the folder recents come from the app's own recents", () => {
     // Both surfaces use the same server-side ordering. Home takes its bounded
     // endpoint; the form retains the exhaustive API and slices its five rows.
     expect(src).toContain("getClaudeSessionFolders()");
-    expect(readFileSync(join(import.meta.dir, "Home.tsx"), "utf8"))
-      .toContain("getHomeClaudeSessionFolders(Math.min(limit, MAX_ROW))");
+    expect(readFileSync(join(import.meta.dir, "home/data.ts"), "utf8"))
+      .toContain("getHomeClaudeSessionFolders(Math.min(limit * rows, MAX_ROW))");
     // Five, and the server already answers newest-session-first, so the slice
     // is the whole of the ordering — the folders reach the list in the order
     // they arrived in, with no client-side re-sort to disagree with the strip.

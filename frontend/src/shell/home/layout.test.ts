@@ -3,6 +3,8 @@ import {
   DEFAULT_LAYOUT,
   SOURCES,
   addWidget,
+  dims,
+  itemCapacity,
   moveWidget,
   normalizeLayout,
   removeWidget,
@@ -97,6 +99,15 @@ test("addWidget appends with the source defaults", () => {
 test("addWidget respects the 48 widget cap", () => {
   const full = lay(...Array.from({ length: 48 }, (_, i) => w(`w${i}`)));
   expect(addWidget(full, "apps")).toBe(full);
+});
+
+test("itemCapacity grows with size", () => {
+  expect(dims("2x2")).toEqual({ cols: 2, rows: 2 });
+  expect(itemCapacity("2x1", "list")).toBe(2);
+  expect(itemCapacity("2x2", "list")).toBe(6);
+  expect(itemCapacity("4x1", "list")).toBe(4);
+  expect(itemCapacity("2x1", "icons")).toBe(6);
+  expect(itemCapacity("4x1", "icons")).toBe(12);
 });
 
 test("removeWidget / setSize / setFormat", () => {

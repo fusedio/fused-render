@@ -209,6 +209,22 @@ export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat):
   );
 }
 
+/** Columns and rows a size spans. */
+export function dims(size: WidgetSize): { cols: number; rows: number } {
+  const [c, r] = size.split("x");
+  return { cols: Number(c), rows: Number(r) };
+}
+
+/** How many list rows / icon tiles a widget of this size draws before it says
+    "+N more". Fixed per size: the grid's row height is fixed, so this needs no
+    measuring. A full-row list runs in two columns. */
+export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
+  const { cols, rows } = dims(size);
+  if (format === "icons") return cols * 3 * rows;
+  const perColumn = rows === 1 ? 2 : 6;
+  return perColumn * (cols >= 4 ? 2 : 1);
+}
+
 /** Menu labels for sizes. */
 export const SIZE_LABELS: Record<WidgetSize, string> = {
   "1x1": "1×1",
